@@ -190,10 +190,10 @@ def _tasks_matching(env: dict[str, str], prefix: str) -> list[str]:
     if not IS_WINDOWS:
         return []
     try:
-        # Bare `/Query` distinguishes "the service answered, no such task" from "the
-        # service did not answer" -- `task_exists` alone cannot, since both are
-        # non-zero.
-        if win.schtasks("/Query").returncode != 0:
+        # `scheduler_answers` distinguishes "the service answered, no such task"
+        # from "the service did not answer" -- `task_exists` alone cannot, since
+        # both are non-zero.
+        if not win.scheduler_answers():
             return [f"<schtasks /Query unavailable, residue unverified for {prefix}>"]
     except (subprocess.TimeoutExpired, OSError):
         return [f"<schtasks /Query failed, residue unverified for {prefix}>"]

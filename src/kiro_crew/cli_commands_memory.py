@@ -315,7 +315,13 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
         from kiro_crew.member_memory_backup import is_member_store
         from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 
-        target_store = getattr(args, "store", None) or DEFAULT_MEMORY_STORE
+        # Defaulted only when the flag is ABSENT, as in `_memory_verb`: restore is a
+        # write, and `--store ''` (a shell expanding an unset variable) names no store.
+        target_store = getattr(args, "store", None)
+        if target_store is None:
+            target_store = DEFAULT_MEMORY_STORE
+        if not target_store:
+            raise ValueError("--store names no store; nothing was restored.")
         chosen = getattr(args, "from_backup", None)
         if getattr(args, "cancel_pending", False):
             from kiro_crew.memory_stores import owned_store_path
@@ -328,11 +334,14 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
             print("Current memory and backups are unchanged.")
             return
         source = Path(chosen) if chosen else memory_backup.newest_backup(target_store)
+        # A restore that finds no backup raises ValueError, which `_memory_cmd`
+        # reports as one line on stderr with exit 1.
         if source is None:
-            # Raised so the surrounding command reports a restore that found nothing
-            # as a failure.
-            raise FileNotFoundError(f"no backup found for memory store {target_store!r}")
-        restored = memory_backup.restore_from_backup(source, target_store)
+            raise ValueError(f"no backup found for memory store {target_store!r}")
+        try:
+            restored = memory_backup.restore_from_backup(source, target_store)
+        except FileNotFoundError as exc:
+            raise ValueError(str(exc)) from exc
         print(f"Staged restore for {target_store!r} from {source.name}.")
         print("Restart the gateway to activate it. Current memory is unchanged.")
         if is_member_store(restored):

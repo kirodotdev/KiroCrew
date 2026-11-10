@@ -6,6 +6,7 @@ import { sceneFont, drawLabel, TEXT_CANVAS_STYLE, SCENE_CONTAINER_STYLE, PIXEL_C
 import { initSceneCanvases, runSceneLoop, useVisibleSync } from '../../hooks/sceneCanvas'
 import { useSceneInteraction, type SceneTooltipTheme } from '../../hooks/useSceneInteraction'
 import { i18nT } from '../../i18n/t'
+import { sliceCodePoints } from '../../utils/codePoints'
 
 const UNDERWATER_THEME: SceneTooltipTheme = { active: 'Exploring the deep', idle: 'Surfacing for air' }
 
@@ -526,7 +527,7 @@ export default function UnderwaterLabScene({ agents, visible = true }: Props) {
       // Nameplate on dome
       if (dv.domeIdx >= 0 && dv.activity !== 'entering') {
         const dp = DOME_POSITIONS[dv.domeIdx]
-        drawLabel(T, dv.name.slice(0, 8), (dp.x + 20) * S, (dp.y + 5) * S, { role: 'label', color: '#fff', bgColor: dv.color, align: 'center', scale: S })
+        drawLabel(T, sliceCodePoints(dv.name, 0, 8), (dp.x + 20) * S, (dp.y + 5) * S, { role: 'label', color: '#fff', bgColor: dv.color, align: 'center', scale: S })
       }
     }
 

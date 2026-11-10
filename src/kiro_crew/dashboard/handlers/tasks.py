@@ -1,7 +1,7 @@
 """HTTP routes over the durable task queue (``taskq``) and its capacity view.
 
 The dashboard's "Tasks & capacity" panel and ``kirocrew doctor``-style probes
-read here. Four routes:
+read here. Six routes:
 
 * ``GET /api/tasks`` -- rows from the task store, filterable by ``state`` and
   ``lane``, capped by ``limit``.
@@ -10,6 +10,11 @@ read here. Four routes:
   ``resource_status.adaptive_state()`` and the session-health cap sources),
   the degrade reason, per-slot wait reasons and recovery attempts.
 * ``GET /api/tasks/{task_id}`` -- one row plus its ``task_events`` tail.
+* ``GET /api/tasks/{task_id}/timeline`` -- the owner-only merged history of one
+  task: its ``task_events``, the ``subagent/*`` entries of the session that
+  dispatched it and, for a workflow agent call, the run's events, as markdown in
+  time order (``taskq.timeline``). Every string is scrubbed with this module's
+  :func:`_scrub_value`; a stream that cannot be read is reported, not dropped.
 * ``POST /api/tasks/{task_id}`` -- an action on a PARKED runner row:
   ``{"action": "answer_input", "answer": "..."}`` delivers the operator's
   answer to a ``waiting_input`` TaskRunner / workflow row (never auto-answered
@@ -52,9 +57,10 @@ requests land on is the one every session's turn shares. Auth is the
 dashboard's token middleware, like every sibling handler in this package, and
 the routes are NOT on the internal-path lists, so an MCP caller with only the
 internal secret is refused the same way it is for ``/api/sessions/health``. The
-two action routes (``POST /api/tasks/{task_id}`` and ``.../cancel``) add the
-dashboard owner gate on top: they act on the owner's runs, and a non-owner
-dashboard session passes the middleware just as the owner's does.
+two action routes (``POST /api/tasks/{task_id}`` and ``.../cancel``) and the
+timeline route (``GET /api/tasks/{task_id}/timeline``) add the dashboard owner
+gate on top: they act on or read the owner's runs, and a non-owner dashboard
+session passes the middleware just as the owner's does.
 
 The lane spelling is ``taskq.lanes`` (RFC Q5): the row's stored ``lane``
 column when the accept path filed it, else derived -- cron and hook roots and
@@ -388,6 +394,60 @@ async def api_task_detail(request: web.Request) -> web.Response:
     if detail is None:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
     return web.json_response(detail)
+
+
+def _timeline_sync(state: Any, store: Any, task_id: str) -> Any:
+    """Blocking read and render for ``GET /api/tasks/{id}/timeline``; None for no such row.
+
+    The scrubber handed to the renderer is this module's :func:`_scrub_value`,
+    the one every other payload here passes through, and the tail of
+    ``task_events`` is the detail route's own :data:`_EVENTS_TAIL`.
+    """
+    from kiro_crew.dashboard.chat_utils import crew_log_slots_for
+    from kiro_crew.taskq import timeline as taskq_timeline
+
+    service = getattr(state, "workflow_service", None)
+    registry = getattr(service, "registry", None)
+    reader = taskq_timeline.events_from_registry(registry) if registry is not None else None
+    return taskq_timeline.render_timeline(
+        task_id,
+        store=store,
+        scrub=_scrub_value,
+        events_limit=_EVENTS_TAIL,
+        sources=taskq_timeline.Sources(slots_of=crew_log_slots_for, workflow_events=reader),
+    )
+
+
+async def api_task_timeline(request: web.Request) -> web.Response:
+    """GET /api/tasks/{task_id}/timeline -- one task's history, merged and scrubbed.
+
+    Owner-only: the view joins the queue's events
+    with the spawning session's crew log and a workflow run's events, so it
+    reaches further than the row and its events tail the detail route serves.
+    The gate runs first, so a refused caller learns nothing about the id.
+    """
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, "task_timeline")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    task_id = request.match_info["task_id"]
+    store = _store_of(state)
+    if store is None:
+        return web.json_response(
+            {"error": "task store unavailable", "code": "unavailable"}, status=404
+        )
+    try:
+        timeline = await asyncio.to_thread(_timeline_sync, state, store, task_id)
+    except Exception:
+        logger.warning("task timeline failed for %s", task_id, exc_info=True)
+        return web.json_response(
+            {"error": "task store unavailable", "code": "unavailable"}, status=503
+        )
+    if timeline is None:
+        return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    return web.json_response(timeline.public())
 
 
 async def api_task_cancel(request: web.Request) -> web.Response:

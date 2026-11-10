@@ -160,13 +160,15 @@ _TEMPLATE_LIST_FIELDS = ("tools", "allowedTools", "skills")
 #: Settings page: a template name (``validation.TEMPLATE_NAME_RE``) and an app
 #: grant name (``apps.execution.APP_NAME_RE``). Crewmate names follow
 #: ``members.validate_member_name`` (free text, any script); stored-credential
-#: names follow ``POST /api/secrets`` (any non-empty text).
+#: names follow ``POST /api/secrets`` (any non-empty text). A config path segment
+#: after the first also takes a capital and ``-``, so one may name a Bot
+#: (``validation._AGENT_NAME_RE``) or an app (``apps.<name>.model``).
 _TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])$")
 _APP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _MCP_NAME_RE = re.compile(r"^[@a-zA-Z0-9][@a-zA-Z0-9/_.:-]*$")
-_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
+_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[A-Za-z0-9_-]+)+$")
 _SETTING_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _CRON_EXPR_RE = re.compile(r"^[0-9*/,\- A-Za-z?#LW]{1,100}$")
 
@@ -255,6 +257,9 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "dashboard.mcp_probe_timeout_secs",
         "dashboard.prevent_sleep",
         "dashboard.recent_tint_count",
+        # An allowlist id that picks the local editor a link opens; no value
+        # lets an agent run or reach anything.
+        "dashboard.remote_editor.editor",
         "dashboard.session_sort",
         "dashboard.show_unread_dot",
         # Stored only: the edition's login handler re-checks every flag against
@@ -343,10 +348,14 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
 #: Kiro Crew's own pinned engine bundle, ``acp.harness.kas.KasHarness.resolve_spawn``); a
 #: different binary with its own update cadence is a different program, so a
 #: bool flip here is code exec, not a widen or tighten.
+#: ``dashboard.remote_editor.host`` is the machine the user's own editor connects
+#: to over SSH with the user's keys, so an agent that sets it picks where those
+#: keys are offered.
 _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
     {
         "agent.acp_backend",
         "agent.kas_bundle",
+        "dashboard.remote_editor.host",
         "dashboard.terminal.shell",
         "session.pool_agent",
         # The Coder deployment and the template a session's workspace is built

@@ -227,6 +227,20 @@ class AutoSkillProvenance:
         return lines
 
 
+#: The ``pinned:`` frontmatter values that mean pinned. Writers emit ``true``; a
+#: hand-edited ``yes`` or ``1`` means the same to every reader.
+_PINNED_TRUE_VALUES = frozenset({"true", "1", "yes"})
+
+
+def frontmatter_pinned(meta: dict) -> bool:
+    """Whether a skill's parsed frontmatter *meta* marks it pinned.
+
+    The one reading of ``pinned:``, so the lifecycle that archives a skill and
+    the review that shows it as pinned cannot disagree about the same value.
+    """
+    return str(meta.get("pinned", "")).strip().lower() in _PINNED_TRUE_VALUES
+
+
 def _build_auto_skill_content(
     *,
     slug: str,

@@ -336,11 +336,12 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> bool:
     missing from that snapshot while its file is still on disk.
 
     Consequence worth stating plainly: editing an existing config IN PLACE — say
-    renaming its ``name`` field by hand — refreshes nothing, so that new name
-    stays undispatchable until the next registration or gateway boot. Hand-editing
-    is not how an app agent is meant to appear (``_register_agents`` is), and the
-    alternative is filesystem work on the loop, so the staleness is accepted
-    rather than papered over with a per-file stat.
+    renaming its ``name`` field by hand — refreshes nothing by itself, so that new
+    name stays undispatchable until the next refresh (a registration, a catalog
+    fetch, a pick that misses: :func:`rescan_before_refusal`) or gateway boot.
+    Hand-editing is not how an app agent is meant to appear (``_register_agents``
+    is), and the alternative is filesystem work on the loop, so the staleness is
+    accepted rather than papered over with a per-file stat.
 
     The scan is skipped while nothing it reads has moved: both directories'
     :func:`agents_dir_revision` and the publish count are the same as when the
@@ -596,25 +597,22 @@ def materialized_snapshot_complete() -> bool:
     A pure in-memory read, safe on the event loop. ``False`` before the first
     refresh lands, and after one that skipped a spec it could not read: a name
     missing then may still have its file on disk, so a caller about to fail a
-    turn or a request on that miss rescans once off the loop first
-    (``_turn_admit``, :func:`rescan_if_incomplete`).
+    turn on that miss rescans once off the loop first (``_turn_admit``).
     """
     return _MATERIALIZED_COMPLETE
 
 
-async def rescan_if_incomplete() -> bool:
-    """Rescan once off the loop while the installed snapshot is incomplete.
+async def rescan_before_refusal() -> bool:
+    """Refresh the snapshot once off the loop before refusing an agent that did not resolve.
 
-    For a caller about to refuse an agent that did not resolve. The first scan in
-    a process keeps no name for a spec it could not read, so that agent is missing
-    while its file is on disk. A complete snapshot is trusted and costs no scan.
-    ``True`` when the refresh ran, so the caller resolves again; it reuses the
-    snapshot when no input moved, because a spec that did not parse fails the
-    same way on the same bytes. Never raises: a failed rescan leaves the
-    caller's refusal in place.
+    A spec written outside the in-process writers (by hand, by kiro-cli) is on disk
+    but not in a warm snapshot, and the first scan in a process keeps no name for
+    a spec it could not read. The refresh reuses the snapshot while nothing it
+    reads has moved, so a miss with no new file costs a listing of the agents
+    directories and a stat per spec; a revision it cannot prove scans, as a
+    catalog fetch does. ``True`` when the refresh ran, so the caller resolves
+    again. Never raises: a failed rescan leaves the caller's refusal in place.
     """
-    if materialized_snapshot_complete():
-        return False
     from kiro_crew.executors import discovery_executor
 
     try:

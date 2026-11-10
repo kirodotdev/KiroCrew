@@ -28,7 +28,7 @@ from kiro_crew.acp import session_handle_steering as _sh_steering
 from kiro_crew.acp import session_handle_turn as _sh_turn
 from kiro_crew.acp import session_handle_updates as _sh_updates
 from kiro_crew.acp import session_handle_watchdog as _sh_watchdog
-from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS
+from kiro_crew.acp._dispatch import MAX_ACTIVE_TOOL_CALLS, NativeCompactionStates
 from kiro_crew.acp.elicitation import ElicitationRequest
 from kiro_crew.acp.engine_fallback import EngineFallbackTracker
 from kiro_crew.acp.liveness import (
@@ -226,6 +226,7 @@ class AcpSessionHandle:
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
     _refuse_unreadable_mcp_identity = _sh_permissions._refuse_unreadable_mcp_identity
     _refuse_unretained_provenance = _sh_permissions._refuse_unretained_provenance
+    _reject_with_host_notice = _sh_permissions._reject_with_host_notice
     _audit_handle_reject = _sh_permissions._audit_handle_reject
     apply_session_permission_routing = _sh_permissions.apply_session_permission_routing
     _build_permission_event = _sh_permissions._build_permission_event
@@ -440,6 +441,9 @@ class AcpSessionHandle:
         # never resolves, so the ``session/prompt`` request goes unanswered, which
         # leaves this armed for ``_settle_codex_compaction`` at the turn's terminal.
         self._codex_compaction_pending: bool | str = False
+        # Native ``compaction_update`` lifecycle per id: duplicate terminals and
+        # late starts are dropped against it. Lives as long as the handle.
+        self._native_compaction_states = NativeCompactionStates()
         self._cancelled = False
         # Unresponsive-cancel tracking (mirrors AcpClient._cancel_ts /
         # _cancel_grace_secs). Set by cancel(); the dispatch loop uses them to
@@ -687,6 +691,10 @@ class AcpSessionHandle:
         # their permission requests itself, after the deny floor, the
         # sensitive-path check and the governance ceiling. Empty with no batch.
         self.kas_crew_answered: frozenset[str] = frozenset()
+        # The ``@server/tool`` grants a PreToolUse hook kept at ``ask``
+        # (``kas_hook_coverage.projected_hook_held``): answered the same way, but
+        # only on a surface that fires the hooks. Empty with no batch.
+        self.kas_hook_held: frozenset[str] = frozenset()
         # The agent's `toolsSettings.shell.allowedCommands` as the gate matches
         # them (``kas_permissions.crew_answered_commands``), answered the same way.
         self.kas_crew_answered_commands: tuple[str, ...] = ()
@@ -707,6 +715,8 @@ class AcpSessionHandle:
         # (``kas_write_allowlist.projected_answered_paths``): the gate answers a
         # write every target of which one covers, after its checks.
         self.kas_crew_answered_paths: tuple[str, ...] = ()
+        # The same for the read tool's `allowedPaths` (a covered read).
+        self.kas_crew_answered_read_paths: tuple[str, ...] = ()
         # The agent this session runs: the one the batch was registered for, then
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.
@@ -728,6 +738,9 @@ class AcpSessionHandle:
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.
         self.kas_withheld_credentials_notice: str = ""
+        # The telemetry notice for this session (``kas_cli_settings.session_telemetry_notice``);
+        # "" otherwise.
+        self.kas_telemetry_notice: str = ""
         # JSON-RPC request id -> {"once","always","reject"} optionId map, so
         # approve_tool / reject_tool echo the exact ids the agent advertised
         # (kiro "allow_once"/"allow_always"; claude-agent-acp "allow"/"reject").
@@ -774,6 +787,11 @@ class AcpSessionHandle:
         # The bare model a pair pin landed as when its effort was refused
         # (mirrors AcpClient.model_pin_partial).
         self.model_pin_partial: str = ""
+        # The model ``set_model(..., inherit=True)`` applied from kiro-cli's
+        # ``chat.defaultModel``, or ``""``. Not a pin: ``_model`` stays unpinned,
+        # so effort binding and fallback promotion read the session as unpinned,
+        # and a handle swap re-applies it the same way. Any other set_model clears it.
+        self.inherited_model: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
         # Set by ``_feed_advertised_model_cache`` when the capture changed the
@@ -782,11 +800,14 @@ class AcpSessionHandle:
         # ``AcpClient._advertised_models_changed`` on the direct-spawn path.
         self._advertised_models_changed: bool = False
         # Read by KAS only: the listed id a session born on an unlisted ``auto`` moves to,
-        # or "". One answer read from the ``model`` select, never the list itself:
-        # nobody has shown that list to be the account's complete served set, so
-        # it must not become the entitlement list the picker and the explicit-pick
-        # guard narrow by.
+        # or "". One answer read from the ``model`` select, never the list itself.
         self._kas_auto_fallback: str = ""
+        # Read by KAS only: the ids the ``model`` select listed, for ONE question in
+        # ``set_model``: is the pin about to be sent one the account is served? It
+        # never becomes ``_available_models`` (the picker's list). A live capture
+        # matched kiro-cli v2's ``models`` block id for id, and the one catalog model
+        # it left out failed the turn with ``InvalidModelError``.
+        self._kas_served_ids: list[str] = []
         # Read-path revalidation bookkeeping (see maybe_refresh_available_models).
         # The session-init snapshot is one unconfirmed answer captured at one
         # instant, and the read path (the dashboard picker filter) has no

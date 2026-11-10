@@ -134,7 +134,8 @@ Everything the registry seams brand is rendered by React — which means none of
 exists before React mounts. Four surfaces are shown earlier: the `<title>` during
 boot (and whenever a PWA-install dialog or bookmark samples it), the
 `<meta name="theme-color">`, the boot-failure panel's "worth reporting at" issue
-tracker links (shown when the bundle never arrived), and the PWA identity
+tracker links (shown when the bundle never arrived; the panel's heading also names
+the product from that `<title>` when it reveals), and the PWA identity
 (`manifest.json` plus `icon-192.png` / `icon-512.png`). `registerThemeBranding()`
 cannot reach any of them. The edition plugin patches them instead — the HTML
 fields on every build and dev transform, the `public/` overlay at build emit —
@@ -776,7 +777,9 @@ composition benefit.
 So `api/apiTransport.ts` **exports** the blessed `apiTransport`, the same
 `get`/`post`/`put`/`del`/`patch` plus `j`/`jNullable` the core methods use
 (`client.ts` defines them and installs them via `installApiTransport` at its
-module load). An edition builds its OWN fully-typed API module on it:
+module load), and `getWithSignal`, the same `get` aborted by an `AbortSignal`
+for a read its caller bounds with `lib/withDeadline`. An edition builds its OWN
+fully-typed API module on it:
 
 ```ts
 import { apiTransport as t } from '../api/apiTransport'
@@ -791,7 +794,7 @@ static types on the edition side and no new *registry* contract. It never forks
 `client.ts` and never writes raw `fetch`, which would silently drop the session
 key.
 
-`ApiTransport` (the five request helpers plus the `j`/`jNullable` semantics) **is**
+`ApiTransport` (the six request helpers plus the `j`/`jNullable` semantics) **is**
 a small, intentionally frozen downstream contract, because a separately built
 edition compiles against it. There is no version guard on this seam, and the stock
 build stays green whatever you do to it (the seam is inert), so breakage surfaces

@@ -127,9 +127,12 @@ export default function McpGatewayCard() {
         <ErrorNotice message={metricsQ.error?.message} askAgent className="mb-3" testId="mcp-gateway-metrics-error" />
       )}
 
+      {/* Every count goes through fmtNumber like the sizes and percents beside
+          it, so a locale with its own digits (Bengali) never mixes them with
+          Latin ones in one card. The pid stays raw: it is an identifier. */}
       <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(130px,1fr))] mb-4">
-        <StatCard label={i18nT('pages.mcpGatewayCard.backends')} value={`${backends.length}${metricsQ.data?.max_backends ? ` / ${metricsQ.data.max_backends}` : ''}`} />
-        <StatCard label={i18nT('pages.sessionsTab.mcp_stubs')} value={stubs} />
+        <StatCard label={i18nT('pages.mcpGatewayCard.backends')} value={`${fmtNumber(backends.length)}${metricsQ.data?.max_backends ? ` / ${fmtNumber(metricsQ.data.max_backends)}` : ''}`} />
+        <StatCard label={i18nT('pages.sessionsTab.mcp_stubs')} value={fmtNumber(stubs)} />
         <StatCard label={i18nT('pages.mcpGatewayCard.pool_ram')} value={formatKb(poolKb)} />
         <StatCard label={i18nT('pages.mcpGatewayCard.ram_saved')} value={`${formatKb(savedKb)} (${fmtPercent(savedRatio)})`} accent />
         {warmEnabled && (
@@ -166,7 +169,7 @@ export default function McpGatewayCard() {
               <tr key={backendRowKey(b, i)} className="border-t border-border">
                 <td className="py-1 pr-3">{b.server}</td>
                 <td className="py-1 pr-3">{b.pid ?? '—'}</td>
-                <td className="py-1 pr-3">{b.stubs ?? '—'}</td>
+                <td className="py-1 pr-3">{b.stubs == null ? '—' : fmtNumber(b.stubs)}</td>
                 <td className="py-1 pr-3">{fmtUnit(b.idle_s, 'second', { maximumFractionDigits: 1 })}</td>
                 <td className="py-1">{formatKb(b.rss_kb)}</td>
               </tr>

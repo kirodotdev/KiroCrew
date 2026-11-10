@@ -55,7 +55,7 @@ def _render(
     erroring.
     """
     try:
-        from kiro_crew import dashboard_frame
+        from kiro_crew import dashboard_agentic, dashboard_frame
         from kiro_crew.dashboard.handlers.member_dashboard import (
             _dashboard_slot,
             _page_safe,
@@ -105,6 +105,8 @@ def _render(
             subject="crewmate" if slot is None else "session",
             # Through the same mask as the write times it is compared with.
             last_user_at=str(_page_safe(last_user_at)),
+            # Preview `dashboard_stale_fields` only; `None` leaves the key out.
+            stale_after=dashboard_agentic.page_stale_after(manifest, read.written_at),
         )
         # The catalog's page, redacted like the values that go into it. The scrub is
         # kept because this is the one step producing both the raw body and the

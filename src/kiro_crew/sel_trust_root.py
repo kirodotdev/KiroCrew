@@ -296,7 +296,7 @@ def _load_or_create_hmac_key(self: SecurityEventLog) -> bytes:
         except OSError:
             # Logs the key file PATH, never the key bytes.
             logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                "failed to enforce owner-only permissions on SEL HMAC key %s; "
+                "SECURITY: failed to enforce owner-only permissions on SEL HMAC key %s; "
                 "file may be readable by other users",
                 key_path,
                 exc_info=True,

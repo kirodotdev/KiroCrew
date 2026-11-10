@@ -243,6 +243,11 @@ def _rewrite_heartbeat_locked(
                 logger.warning("HEARTBEAT.md unreadable, not rewriting it: %s", exc)
                 return 0
 
+            # A file saved as "UTF-8 with BOM" keeps its mark, but the mark is
+            # not part of the first line: it would hide that line's heading or
+            # task marker from the parser.
+            bom = "\ufeff" if content.startswith("\ufeff") else ""
+            content = content.removeprefix(bom)
             snapshot = Counter(t for t, _ in original_tasks)
             # Keyed on text AND deliver target: of two same-text tasks bound
             # for different channels, the finished one goes, the kept one stays.
@@ -274,7 +279,7 @@ def _rewrite_heartbeat_locked(
                     # A line split in two keeps the file's own line ending.
                     cr = "\r" if line.raw.endswith("\r") else ""
                     out.append(f"{cr}\n".join(pieces) + cr + newline)
-            atomic_write(path, "".join(out), fsync=True, newline="")
+            atomic_write(path, bom + "".join(out), fsync=True, newline="")
             return appended
 
 
@@ -292,10 +297,12 @@ def _read_heartbeat_file(path: Path) -> str | None:
     removed between them cannot turn a missing file into a raised
     ``FileNotFoundError``, and so the pair costs one worker hop rather than two.
     An unreadable or non-UTF-8 file is treated as absent: raising here would
-    skip the rest of every tick, retention pruning included.
+    skip the rest of every tick, retention pruning included. A leading
+    byte-order mark is dropped, so a file saved as "UTF-8 with BOM" parses
+    like the same file without one.
     """
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8-sig").strip()
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as exc:

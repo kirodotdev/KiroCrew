@@ -6,7 +6,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 
 import { i18nT } from '../../i18n/t'
-import { fmtBytes, fmtList } from '../../i18n/format'
+import { fmtBytes, fmtDateTime, fmtList } from '../../i18n/format'
 import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
@@ -754,7 +754,7 @@ export default function PortabilityTab() {
               </fieldset>
             )}
             <div className="pt-1 border-t border-border mt-1 text-muted">
-              {i18nT('pages.overview.portabilityTab.created')} {preview.created_at} {i18nT('pages.overview.portabilityTab.from')} {preview.user}@{preview.hostname}
+              {i18nT('pages.overview.portabilityTab.created_from', { date: fmtDateTime(preview.created_at), origin: `${preview.user}@${preview.hostname}` })}
             </div>
           </div>
           )

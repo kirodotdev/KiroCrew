@@ -409,6 +409,12 @@ def _request(
     return req
 
 
+def _no_identity_ask() -> str:
+    raise AssertionError(
+        "the service manager is asked only for a service-only ask without the marker"
+    )
+
+
 @pytest.mark.asyncio
 class TestRoute:
     @pytest.mark.parametrize("managed", [True, False])
@@ -417,6 +423,7 @@ class TestRoute:
             return False, 1, 2
 
         monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: managed)
+        monkeypatch.setattr(restart_gate, "service_identity", _no_identity_ask)
 
         resp = await restart_gate.api_restart_when_idle(_request(_gate))
 
@@ -435,6 +442,7 @@ class TestRoute:
             raise AssertionError("no admission pause for a restart that goes elsewhere")
 
         monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: False)
+        monkeypatch.setattr(restart_gate, "service_identity", lambda: "other")
 
         resp = await restart_gate.api_restart_when_idle(
             _request(_gate, body={"service_managed_only": True})
@@ -446,6 +454,7 @@ class TestRoute:
             "turns": 0,
             "background": 0,
             "service_managed": False,
+            "service_identity": "other",
         }
 
     async def test_a_service_only_ask_reaches_the_gate_on_the_service(self, monkeypatch):
@@ -453,12 +462,66 @@ class TestRoute:
             return True, 0, 0
 
         monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: True)
+        # The marker answers alone: the service manager is not asked.
+        monkeypatch.setattr(restart_gate, "service_identity", _no_identity_ask)
 
         resp = await restart_gate.api_restart_when_idle(
             _request(_gate, body={"service_managed_only": True})
         )
 
-        assert json.loads(resp.body)["idle"] is True
+        assert json.loads(resp.body) == {
+            "idle": True,
+            "turns": 0,
+            "background": 0,
+            "service_managed": True,
+        }
+
+    async def test_a_legacy_unit_whose_main_pid_is_this_gateway_counts_as_the_service(
+        self, monkeypatch
+    ):
+        """A unit from before the marker existed: its main pid proves it runs this gateway."""
+
+        async def _gate():
+            return True, 0, 0
+
+        monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: False)
+        monkeypatch.setattr(restart_gate, "service_identity", lambda: "service")
+
+        resp = await restart_gate.api_restart_when_idle(
+            _request(_gate, body={"service_managed_only": True})
+        )
+
+        assert json.loads(resp.body) == {
+            "idle": True,
+            "turns": 0,
+            "background": 0,
+            "service_managed": True,
+            "service_identity": "service",
+        }
+
+    async def test_an_unproven_identity_asks_the_gate_and_says_so(self, monkeypatch):
+        """No marker and no answer from the service manager is not proof of another gateway."""
+        asked: list[bool] = []
+
+        async def _gate():
+            asked.append(True)
+            return True, 0, 0
+
+        monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: False)
+        monkeypatch.setattr(restart_gate, "service_identity", lambda: "unknown")
+
+        resp = await restart_gate.api_restart_when_idle(
+            _request(_gate, body={"service_managed_only": True})
+        )
+
+        assert asked == [True]
+        assert json.loads(resp.body) == {
+            "idle": True,
+            "turns": 0,
+            "background": 0,
+            "service_managed": False,
+            "service_identity": "unknown",
+        }
 
     @pytest.mark.parametrize(
         "body", [[], {"service_managed_only": 1}, {"other": True}, {"service_managed_only": "yes"}]
@@ -599,6 +662,49 @@ class TestCli:
 
         assert exc.value.code == idle_cli.EXIT_GATE_REFUSED
         assert cli.restarts == [] and cli.clock.sleeps == []
+
+    def test_a_gateway_the_service_manager_says_is_another_process_is_refused(
+        self, cli, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
+        cli.answers.append(
+            idle_cli._Verdict("busy", service_managed=False, service_identity="other")
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            idle_cli._restart_when_idle(None)
+
+        assert exc.value.code == idle_cli.EXIT_GATE_REFUSED
+        assert cli.restarts == []
+        assert "is not the running kirocrew service's gateway" in capsys.readouterr().out
+
+    def test_an_idle_legacy_unit_gateway_is_restarted_with_a_hint(self, cli, monkeypatch, capsys):
+        """A unit from before the marker: nothing shows another process runs, so it restarts."""
+        monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
+        cli.answers.append(
+            idle_cli._Verdict("idle", service_managed=False, service_identity="unknown")
+        )
+
+        idle_cli._restart_when_idle(None, max_wait_secs=0)
+
+        assert cli.restarts == [None]
+        out = capsys.readouterr().out
+        assert "kirocrew service install" in out
+        assert "not the running kirocrew service's gateway" not in out
+
+    def test_a_busy_legacy_unit_gateway_is_waited_on_not_refused(self, cli, monkeypatch):
+        monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
+        cli.answers.extend(
+            [
+                idle_cli._Verdict("busy", 1, 0, service_identity="unknown"),
+                idle_cli._Verdict("idle", service_identity="unknown"),
+            ]
+        )
+
+        idle_cli._restart_when_idle(None)
+
+        assert cli.restarts == [None]
+        assert cli.clock.sleeps == [idle_cli.POLL_SECS]
 
     def test_the_idle_service_gateway_is_restarted(self, cli, monkeypatch):
         monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
@@ -793,6 +899,12 @@ class TestAskGate:
             monkeypatch, {"idle": True, "turns": 0, "background": 0, "service_managed": True}
         )
         assert idle_cli._ask_gate(5476).service_managed is True
+        assert idle_cli._ask_gate(5476).service_identity is None
+        self._answer(
+            monkeypatch,
+            {"idle": True, "turns": 0, "background": 0, "service_identity": "unknown"},
+        )
+        assert idle_cli._ask_gate(5476).service_identity == "unknown"
 
     def test_the_body_says_whether_only_the_service_may_answer(self, monkeypatch):
         sent: list = []

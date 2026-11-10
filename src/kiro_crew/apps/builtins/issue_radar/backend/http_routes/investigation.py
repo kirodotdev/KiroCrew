@@ -2,8 +2,8 @@
 
 Purely local triage state -- the linked chat session, status and findings --
 so nothing is written to the provider and there is no forge permission gate. A
-dashboard PUT is owner only; the internal-secret PUT behind the
-``issue_radar_record_investigation`` MCP tool is the one other caller it admits.
+dashboard PUT is owner only; the ``issue_radar_record_investigation`` agent tool
+writes the same record through :func:`put_investigation`.
 """
 
 from __future__ import annotations
@@ -101,11 +101,9 @@ async def _handle_put_investigation(request: web.Request) -> web.Response:
     valid. Purely local triage state; nothing is written to GitHub."""
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
-    from .. import routes  # circular import: backend.routes imports this module
-
-    # Owner only from the dashboard. The internal-secret leg stays open: it is
-    # how the ``issue_radar_record_investigation`` MCP tool records findings, and
-    # the server allowlist admits that caller to this one path by name.
+    # Owner only from the dashboard. The ``issue_radar_record_investigation`` agent
+    # tool writes through ``put_investigation`` in-process, so an internal-secret
+    # caller reaches this route only if the gateway admits one here.
     if not request.get("internal_auth"):
         owner_denied = await require_owner_dashboard_request(
             request, "issue_radar.investigation_put"
@@ -119,6 +117,14 @@ async def _handle_put_investigation(request: web.Request) -> web.Response:
         return web.json_response({"error": "request body must be JSON"}, status=400)
     if not isinstance(body, dict):
         return web.json_response({"error": "request body must be a JSON object"}, status=400)
+    return await put_investigation(body)
+
+
+async def put_investigation(body: dict) -> web.Response:
+    """Upsert the record *body* names: :func:`_handle_put_investigation` past its caller
+    gate and body read, and the write behind the ``issue_radar_record_investigation``
+    agent tool (``backend/agent_tools.py``)."""
+    from .. import routes  # circular import: backend.routes imports this module
 
     key = routes._key_from_body(body)
     owner, repo = key.owner, key.repo

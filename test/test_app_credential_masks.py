@@ -313,6 +313,67 @@ class TestThePlanHidesTheDeclaredLeaves:
             assert target in set(plan.sensitive_dirs)
 
 
+class TestTheToolGateReadsTheShippedDeclarations:
+    """A built-in's declared file is on the agent tool gate's floor, with no core row."""
+
+    def test_only_the_shipped_manifests_feed_the_gate(self, home, tmp_path, monkeypatch):
+        shipped = tmp_path / "builtins" / "shipped_demo" / "app.json"
+        shipped.parent.mkdir(parents=True)
+        shipped.write_text(
+            json.dumps({"name": "shipped-demo", "credentialMasks": ["secrets.json"]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            credential_masks, "_builtin_manifests", lambda: [("shipped-demo", shipped)]
+        )
+        _install(home, "demo", ["token.json"])
+
+        assert credential_masks.declared_crew_leaves(installed=False) == _leaves(
+            "shipped-demo", "secrets.json"
+        )
+        assert "apps/demo/data/token.json" in credential_masks.declared_crew_leaves()
+
+    def test_the_gate_takes_a_shipped_declaration_when_it_loads(self, tmp_path):
+        """The gate's list is built once, at import, so a fresh interpreter proves the wiring."""
+        import subprocess
+
+        shipped = tmp_path / "app.json"
+        shipped.write_text(
+            json.dumps({"name": "shipped-demo", "credentialMasks": ["secrets.json"]}),
+            encoding="utf-8",
+        )
+        program = (
+            "import os, sys\n"
+            "from kiro_crew.apps import credential_masks as c\n"
+            "c._builtin_manifests = lambda: [('shipped-demo', __import__('pathlib').Path(sys.argv[1]))]\n"
+            "from kiro_crew import security\n"
+            "home = os.path.expanduser('~')\n"
+            "for leaf in ('apps/shipped-demo/data/secrets.json', 'apps/shipped-demo/data/other.json'):\n"
+            "    print(security.is_sensitive_path(os.path.join(home, '.kiro/crew', leaf)))\n"
+        )
+        src = str(Path(credential_masks.__file__).resolve().parents[2])
+        env = {**os.environ, "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", "")}
+        result = subprocess.run(
+            [sys.executable, "-c", program, str(shipped)],
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split() == ["True", "False"]
+
+    def test_every_shipped_declaration_is_on_the_tool_gate_floor(self):
+        from kiro_crew import security
+
+        for leaf in credential_masks.declared_crew_leaves(installed=False):
+            assert leaf in security._CREW_SECRET_LEAVES
+            for prefix in _PREFIXES:
+                path = os.path.join(str(Path.home()), f"{prefix}/{leaf}")
+                assert security.is_sensitive_path(path), f"{path} is readable by the file tools"
+
+
 @_POSIX_ONLY
 class TestTheAliasPassesCoverTheDeclaredLeaves:
     def test_a_symlinked_leaf_refuses_the_spawn(self, home, tmp_path):

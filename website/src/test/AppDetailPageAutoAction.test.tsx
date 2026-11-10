@@ -288,6 +288,14 @@ describe('AppDetailPage — auto-action deep links', () => {
       expect(untrustApp).not.toHaveBeenCalled()
     })
 
+    it('names the listing, not a local install, as the source of the repository it trusts', async () => {
+      renderDetail({ state: { autoAction: 'update' } })
+      fireEvent.click(await screen.findByRole('button', { name: /Trust the repository and update/ }))
+      const dialog = within(await screen.findByRole('dialog'))
+      expect(dialog.getByText(i18nT('components.appstore.types.kirocrew_registry'))).toBeInTheDocument()
+      expect(dialog.queryByText(i18nT('appStoreSources.local'))).not.toBeInTheDocument()
+    })
+
     it('offers no trust button for any other install failure', async () => {
       installFromRegistryStream.mockResolvedValue({ ok: false, error: 'clone failed', code: '' })
       renderDetail({ state: { autoAction: 'update' } })

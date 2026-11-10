@@ -47,6 +47,7 @@ from kiro_crew.mate_spec_policy import POLICY_KEYS, SpecPolicyUncarried
 from kiro_crew.mate_worker import (
     MATE_CONDUCTOR_AGENT,
     MATE_WORKER_AGENT,
+    covered_by,
     disabled_tool_refs,
     merge_worker_spec,
     worker_additions,
@@ -708,6 +709,14 @@ def _by_design(grant: tuple[str, ...], owned: set[str], withheld: set[str]) -> b
     return False
 
 
+def _covered_by_source(grant: tuple[str, ...], have_source: set[tuple[str, ...]]) -> bool:
+    """Whether a ``tool`` or ``allow`` *grant* is covered by a broader one of the same kind."""
+    kind = grant[0]
+    if kind not in ("tool", "allow"):
+        return False
+    return covered_by(grant[1], (t[1] for t in have_source if t[0] == kind))
+
+
 @dataclasses.dataclass
 class Differences:
     """How the worker merged from a crewmate file differs from its old agent.
@@ -806,7 +815,13 @@ def differences(
     out.lost = {
         t for t in (have_source - have_base) - have_merged if not _by_design(t, owned, withheld)
     }
-    out.gained = have_merged - (have_base | have_source)
+    # A mount or approval the old agent held through a broader selector of its own
+    # (``*`` covers every ``@server``; ``@server`` covers ``@server/tool``) is not a
+    # gain: the worker spells it per server, and withholding it would leave the
+    # server declared but unmounted, so the worker could not call it at all.
+    out.gained = {
+        t for t in have_merged - (have_base | have_source) if not _covered_by_source(t, have_source)
+    }
     # A server the old agent switched off stays off: the worker base declaring it
     # is no licence to launch it. Base-owned or not, this is a restriction to keep.
     merged_servers = _servers(merged.get("mcpServers"))
@@ -1215,6 +1230,10 @@ def migrate_existing_crewmates(
     del work_dir
     report = MigrationReport()
     repair_partial_platform_servers()
+    from kiro_crew.mate_mount_repair import restore_withheld_mounts
+
+    # Before the moves, so only a Bot an earlier start moved is read.
+    restore_withheld_mounts(cfg)
     try:
         cfg = cfg or KiroCrewConfig.load()
         paths_mod.mate_agents_dir().mkdir(parents=True, exist_ok=True)

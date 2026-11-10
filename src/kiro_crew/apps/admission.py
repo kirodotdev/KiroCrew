@@ -215,7 +215,7 @@ def app_version_refusal(
 
     Asked as ``<app>@<version>`` by every admission (install, update, boot, restart,
     enable), so a version the policy drops stops loading too. An unnamed scope
-    permits on oss; on enterprise it answers the baseline, which is off. Blocking.
+    permits on oss; on LTS it answers the baseline, which is off. Blocking.
     """
     from kiro_crew.extension_governance import app_version_denied
 

@@ -13,8 +13,9 @@
 // URLs are allowed to drive navigation. The string comes from the OS, which
 // hands the app whatever any other program asked LaunchServices (or the
 // Windows/Linux registration) to open, so it is untrusted input. The rule is an
-// allowlist of four shapes -- raise the window, open one session, show one
-// app's detail page, or fill in the Remote Crew add form -- mirroring
+// allowlist of five shapes -- raise the window, open one session, open one
+// session on a remote crew, show one app's detail page, or fill in the Remote
+// Crew add form -- mirroring
 // `external-scheme.js`'s stance on outbound schemes: a deny-by-default shape,
 // never a pass-through.
 //
@@ -54,14 +55,19 @@ function deepLinkFromArgv(argv) {
 /**
  * Resolve a kirocrew:// URL to the dashboard route it may open.
  *
- * Exactly four forms are accepted:
+ * Exactly five forms are accepted:
  *
- *   kirocrew://                       -> { route: "" }           (raise the window)
- *   kirocrew://chat?sid=<slot key>    -> { route: "/chat?sid=<encoded key>", slotKey }
- *   kirocrew://apps/detail/<name>     -> { route: "/apps/detail/<name>" }   (one app's detail page)
+ *   kirocrew://                              -> { route: "" }           (raise the window)
+ *   kirocrew://chat?sid=<slot key>           -> { route: "/chat?sid=<encoded key>", slotKey }
+ *   kirocrew://chat?crew=<crew id>&sid=<key> -> { route: "/chat?crew=<id>&crewSid=<encoded key>", slotKey }
+ *   kirocrew://apps/detail/<name>            -> { route: "/apps/detail/<name>" }   (one app's detail page)
  *   kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]
- *                                     -> { route: "/settings/instances?host=<[u@]ssh host>[&port=<n>][&name=<label>]" }
- *                                        (the Remote Crew add form, filled in; see resolveRemoteCrewAdd)
+ *                                            -> { route: "/settings/instances?host=<[u@]ssh host>[&port=<n>][&name=<label>]" }
+ *                                               (the Remote Crew add form, filled in; see resolveRemoteCrewAdd)
+ *
+ * A crew link's route carries no `sid`, so an older dashboard never opens a
+ * same-named LOCAL session. A `crew` that is not a crew id routes to the
+ * value-free `/chat?crewError=1`, so the dashboard can say so.
  *
  * Anything else -- another scheme, an unknown host, an extra path segment, a
  * missing or malformed sid or app name, any other query parameter -- is refused
@@ -115,10 +121,17 @@ function resolveDeepLink(raw) {
   if (host === "chat") {
     if (segments.length) return refuse("unknown route");
     if (params.length === 0) return refuse("missing sid");
-    if (params.length !== 1 || params[0] !== "sid") return refuse("unknown query parameter");
+    const crewLink = params.length === 2 && params.includes("crew") && params.includes("sid");
+    if (!crewLink && (params.length !== 1 || params[0] !== "sid")) return refuse("unknown query parameter");
     const sid = url.searchParams.get("sid") || "";
-    if (!isSlotKey(sid)) return refuse("invalid sid");
-    return { ok: true, route: `/chat?sid=${encodeURIComponent(sid)}`, slotKey: sid };
+    if (!crewLink) {
+      if (!isSlotKey(sid)) return refuse("invalid sid");
+      return { ok: true, route: `/chat?sid=${encodeURIComponent(sid)}`, slotKey: sid };
+    }
+    if (!CREW_SLOT_KEY_RE.test(sid)) return refuse("invalid sid");
+    const crew = url.searchParams.get("crew") || "";
+    if (!CREW_ID_RE.test(crew)) return { ok: true, route: "/chat?crewError=1", slotKey: "" };
+    return { ok: true, route: `/chat?crew=${crew}&crewSid=${encodeURIComponent(sid)}`, slotKey: sid };
   }
 
   if (host === "apps") {
@@ -193,6 +206,14 @@ const SLOT_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 function isSlotKey(s) {
   return typeof s === "string" && SLOT_KEY_RE.test(s);
 }
+
+// A crew link's key is also stored as that crew's last-chat hint, whose store
+// takes at most 128 characters (`isPaneSlotKey`, website/src/lib/paneLastSlot.ts),
+// so the slot-key rule above is capped there. A test pins both.
+const CREW_SLOT_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+// A crew id as the instances registry mints it (`_ID_RE`,
+// src/kiro_crew/instances/registry.py; a test pins the two).
+const CREW_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 // App names: the manifest's kebab-case grammar, `KEBAB_RE` in
 // src/kiro_crew/apps/manifest_names.py, which every door that admits an app

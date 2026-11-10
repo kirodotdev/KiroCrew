@@ -14,8 +14,9 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from model_registry_row_helpers import add_claude_only_row
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.model_registry import acp_id_correction
 
 
@@ -602,9 +603,12 @@ class TestSavePathRefusesAnUnusablePin:
         assert KiroCrewConfig.load().agents[seeded_agent].model != "claude-opus-4-8"
 
     @pytest.mark.asyncio
-    async def test_update_refuses_a_pin_kiro_has_no_id_for_without_a_catalog(self, seeded_agent):
+    async def test_update_refuses_a_pin_kiro_has_no_id_for_without_a_catalog(
+        self, seeded_agent, monkeypatch
+    ):
         from kiro_crew.config.loader import KiroCrewConfig
 
+        pin = add_claude_only_row(monkeypatch)
         cfg = KiroCrewConfig.load()
         cfg.agent.acp_backend = ACP_BACKEND_KIRO
         cfg.save()
@@ -613,13 +617,38 @@ class TestSavePathRefusesAnUnusablePin:
         app["state"] = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: []))
 
         async with TestClient(TestServer(app)) as client:
-            resp = await client.put(
-                f"/api/agents/{seeded_agent}", json={"model": "claude-fable-5-1"}
-            )
+            resp = await client.put(f"/api/agents/{seeded_agent}", json={"model": pin})
             assert resp.status == 400
             assert (await resp.json())["code"] == "invalid_model"
 
         assert KiroCrewConfig.load().agents[seeded_agent].model == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    async def test_fable_5_1_is_stored_on_kiro_without_a_catalog(
+        self, seeded_agent, method: str
+    ) -> None:
+        """kiro-cli serves claude-fable-5.1, so no live catalog is no reason to refuse it."""
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        cfg.agent.acp_backend = ACP_BACKEND_KIRO
+        cfg.save()
+        app = _crud_app()
+        app["state"] = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: []))
+        name = "fable" if method == "post" else seeded_agent
+        body = {"model": "claude-fable-5.1"}
+        if method == "post":
+            body.update({"name": name, "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(app)) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{name}",
+                json=body,
+            )
+            assert response.status == 200, await response.text()
+
+        assert KiroCrewConfig.load().agents[name].model == "claude-fable-5.1"
 
     @pytest.mark.asyncio
     async def test_a_usable_pin_is_accepted(self, seeded_agent):
@@ -719,18 +748,20 @@ class TestSavePathRefusesAnUnusablePin:
 
 
 class TestNoCatalogRefusesAPinKiroHasNoIdFor:
-    def test_names_the_spelling_and_suggests_no_other_id(self):
+    def test_names_the_spelling_and_suggests_no_other_id(self, monkeypatch):
         from kiro_crew.dashboard.handlers.core import _validate_role_model
 
-        reason = _validate_role_model("claude-fable-5-1", SimpleNamespace(app={}), backend="")
+        pin = add_claude_only_row(monkeypatch)
+        reason = _validate_role_model(pin, SimpleNamespace(app={}), backend="")
 
-        assert reason is not None and "'claude-fable-5-1'" in reason
-        assert "claude-" not in reason.replace("'claude-fable-5-1'", "")
+        assert reason is not None and f"'{pin}'" in reason
+        assert "claude-" not in reason.replace(f"'{pin}'", "")
 
-    def test_a_live_kiro_catalog_that_serves_it_is_asked_first(self):
+    def test_a_live_kiro_catalog_that_serves_it_is_asked_first(self, monkeypatch):
         from kiro_crew.dashboard.handlers.core import _validate_role_model
 
-        provider = _catalog_provider(ACP_BACKEND_KIRO, "claude-fable-5.1")
+        pin = add_claude_only_row(monkeypatch)
+        provider = _catalog_provider(ACP_BACKEND_KIRO, pin)
         request = SimpleNamespace(
             app={
                 "state": SimpleNamespace(
@@ -739,14 +770,22 @@ class TestNoCatalogRefusesAPinKiroHasNoIdFor:
             }
         )
 
-        assert _validate_role_model("claude-fable-5.1", request, backend=ACP_BACKEND_KIRO) is None
+        assert _validate_role_model(pin, request, backend=ACP_BACKEND_KIRO) is None
 
-    def test_the_claude_backend_serves_it_without_a_catalog(self):
+    def test_the_claude_backend_serves_it_without_a_catalog(self, monkeypatch):
         from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE
         from kiro_crew.dashboard.handlers.core import _validate_role_model
 
-        reason = _validate_role_model(
-            "claude-fable-5-1", SimpleNamespace(app={}), backend=ACP_BACKEND_CLAUDE
-        )
+        pin = add_claude_only_row(monkeypatch)
+        reason = _validate_role_model(pin, SimpleNamespace(app={}), backend=ACP_BACKEND_CLAUDE)
+
+        assert reason is None
+
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_KAS])
+    def test_fable_5_1_is_not_refused_without_a_catalog(self, backend):
+        # kiro-cli advertises claude-fable-5.1, so the registry row carries it as its acp id.
+        from kiro_crew.dashboard.handlers.core import _validate_role_model
+
+        reason = _validate_role_model("claude-fable-5.1", SimpleNamespace(app={}), backend=backend)
 
         assert reason is None

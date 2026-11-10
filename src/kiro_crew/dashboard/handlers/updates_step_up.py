@@ -18,8 +18,10 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers.updates_apply import _restart_gateway
 from kiro_crew.dashboard.handlers.updates_check import _do_update_check
 from kiro_crew.dashboard.handlers.updates_verdict import (
+    _display_local_version,
     _display_version,
     _downgrade_target_below_min_version,
+    _is_newer,
     _update_info,
 )
 from kiro_crew.dashboard.state import DashboardState
@@ -28,6 +30,10 @@ from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_provider import resolve_provider
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
+
+#: The longest ``offered`` an arm request may carry. A version string is a few
+#: dozen characters; anything longer is not one, and is refused unparsed.
+_OFFERED_MAX_CHARS = 64
 
 
 # ── In-app wheel update: arm + host-local approve (RFC OQ7) ──
@@ -204,10 +210,15 @@ async def api_update_arm(request: web.Request) -> web.Response:
     either pins the user to a build the feed has already superseded or dead-ends
     the whole flow — arm, host approval, refusal, start over. One request against
     the live feed here is what makes an approval mean "install the newest". It
-    FAILS CLOSED: a check that cannot reach the feed refuses the arm as having no
-    verdict, because the apply fetches the signed manifest before it installs
-    anything — an arm the feed cannot confirm now is an approval the apply cannot
-    honour a moment later.
+    FAILS CLOSED: a check that cannot reach the feed refuses the arm
+    (``arm_check_failed``), because the apply fetches the signed manifest before it
+    installs anything — an arm the feed cannot confirm now is an approval the apply
+    cannot honour a moment later.
+
+    The panel sends the version its button offered (``{"offered": "0.4.8"}``). It
+    is what tells an upgrade click from a channel-move click, which the fresh
+    verdict alone cannot say; a caller that sends none (the CLI, an older bundle)
+    is judged by the verdict cached when the request arrived.
     """
     # Function-local: boot-path rule, same as _restart_gateway's import.
     from kiro_crew.platform import update_stepup
@@ -238,6 +249,24 @@ async def api_update_arm(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    # Validated before the re-check, so a malformed request costs no feed round
+    # trip. Only ever compared, never stored or echoed: it can withdraw an offer
+    # (below), never arm a version the fresh verdict does not name.
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    offered = ""
+    if isinstance(body, dict):
+        raw_offered = body.get("offered")
+        if raw_offered is not None and (
+            not isinstance(raw_offered, str) or len(raw_offered) > _OFFERED_MAX_CHARS
+        ):
+            return web.json_response(
+                {"error": "offered must be a version string", "code": "invalid_offered"},
+                status=400,
+            )
+        offered = (raw_offered or "").strip()
     # AFTER the shape/policy refusals above: neither can be changed by a check,
     # and a host that cannot apply an update at all should not pay a feed round
     # trip to be told so.
@@ -252,53 +281,70 @@ async def api_update_arm(request: web.Request) -> web.Response:
     #
     # A check that cannot reach the feed leaves the FAILED result in the cache
     # (`_set_update_info` replaces it wholesale, so `update_available` is blank) and
-    # the arm falls through to the no-verdict refusal below. There is no fallback to
-    # the snapshot taken before the await: unlike the desktop updater, whose staged
-    # bytes are already on disk, the managed-venv apply fetches the signed manifest
-    # first (`wheel_engine._apply_locked`), so an arm the feed could not confirm is
-    # an approval the apply cannot carry out. The panel reads the same cache off the
-    # status frame and shows the failed check, which is what the refusal describes.
+    # the arm refuses with its own code. There is no fallback to the snapshot taken
+    # before the await: unlike the desktop updater, whose staged bytes are already
+    # on disk, the managed-venv apply fetches the signed manifest first
+    # (`wheel_engine._apply_locked`), so an arm the feed could not confirm is an
+    # approval the apply cannot carry out. The panel reads the same cache off the
+    # status frame and shows why the check failed.
     #
-    # The snapshot survives for one judgement only: whether the offer the user
-    # clicked was an UPGRADE, which the fresh verdict alone cannot say.
+    # The snapshot survives for one judgement only: whether the click was an
+    # UPGRADE, which the fresh verdict alone cannot say (below).
     clicked_info = dict(_update_info)
     await _do_update_check()
-    check_failed = _update_info.get("check_status") == CHECK_FAILED
+    if _update_info.get("check_status") == CHECK_FAILED:
+        # Not the no-verdict refusal below: a check just ran, so "run a check
+        # first" would misstate what happened, and trying again is the remedy.
+        return web.json_response(
+            {
+                "error": "the update check failed, so nothing was armed — try again",
+                "code": "arm_check_failed",
+            },
+            status=409,
+        )
     available = _update_info.get("update_available")
     move_pending = _update_info.get("channel_move_pending")
     version = str(_update_info.get("latest_version") or "")
     channel = str(_update_info.get("channel") or "")
-    # The offer the user clicked was an UPGRADE (`update_available` in the
-    # snapshot). If the fresh verdict is only a pending channel move, the lane
-    # was rolled back below the running build in between, and arming it would
-    # turn an upgrade click into a downgrade nobody chose. The clicked offer is
+    # Was the click an UPGRADE? The version the button offered says so directly.
+    # The panel names every version folded for display (`_display_version`), so
+    # a click naming the move the fresh verdict offers is that move. Any other
+    # click was an upgrade when what it named outranks the running build as the
+    # panel shows it, which is unfolded while a move is pending: the only time
+    # the answer matters. A cache that held an upgrade when the click arrived
+    # also makes it an upgrade, whatever label either carries. That errs toward
+    # refusing, and the next status frame offers the move. A caller that names
+    # nothing is judged by that cache alone, which can hold a verdict the user
+    # never saw.
+    #
+    # shortcut: a same-label rollback already in the cache when the click
+    # arrives reads as the move and arms; have the panel send the raw build if
+    # that ever ships.
+    if offered:
+        clicked_upgrade = (
+            offered != _display_version(version, channel)
+            and _is_newer(offered, _display_local_version()) is True
+        ) or clicked_info.get("update_available") is True
+    else:
+        clicked_upgrade = clicked_info.get("update_available") is True
+    # If the fresh verdict is only a pending channel move, the lane was rolled
+    # back below the running build in between, and arming it would turn an
+    # upgrade click into a downgrade nobody chose. The clicked offer is
     # withdrawn, but "you're already up to date" would be false one status
     # frame later, when the panel offers that move, so it has its own code.
-    if (
-        available is False
-        and move_pending is True
-        and not check_failed
-        and clicked_info.get("update_available") is True
-    ):
+    if available is False and move_pending is True and clicked_upgrade:
         return web.json_response(
             {"error": "This update is no longer offered", "code": "arm_offer_withdrawn"},
             status=409,
         )
-    if available is False and move_pending is not True and not check_failed:
+    if available is False and move_pending is not True:
         # A POSITIVE "nothing for you" — the re-check above reached the feed and the
         # offer the user clicked is gone (withdrawn, or they are already current).
-        # Kept apart from the no-verdict refusal below because "run a check first"
-        # would be both a wrong statement of fact and useless advice on this path:
-        # a check just ran, and another gives the same answer. The offer itself also
-        # disappears from every session within one 5s status frame (the re-check
-        # left `update_available: False` in the cache), so a message telling the
-        # user to re-check for it would send them after something already gone.
-        #
-        # `check_failed` is what earns the withdrawal claim: a failed check blanks
-        # the verdict rather than answering False, and any False that did survive
-        # beside it is not an answer from the feed. That path falls through to the
-        # no-verdict refusal below, which is the honest reply when nothing fresh is
-        # known.
+        # Kept apart from the no-verdict refusal below because a check just ran
+        # and another gives the same answer. The offer itself also disappears from
+        # every session within one 5s status frame (the re-check left
+        # `update_available: False` in the cache), so a message telling the user
+        # to re-check for it would send them after something already gone.
         #
         # `move_pending` excuses the same `available is False`: a pending channel
         # move is armable on its own, and it reads as False here precisely because
@@ -313,9 +359,10 @@ async def api_update_arm(request: web.Request) -> web.Response:
             status=409,
         )
     if (available is not True and move_pending is not True) or not version:
+        # A check that ran without failing and still named nothing to install.
         return web.json_response(
             {
-                "error": "no update-available verdict — run a check first",
+                "error": "no update-available verdict to arm",
                 "code": "arm_no_verdict",
             },
             status=409,

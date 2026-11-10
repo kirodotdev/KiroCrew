@@ -2,7 +2,8 @@
 answers a local slash command before a session is claimed): /workflow, /agent and /goal, the
 backend a slash command would run on, the refusal of a slash command the dashboard does not
 offer, the answer to a slash command no channel can take, and the answer to a /compact the
-session did not compact for (``_turn_compact_command``)."""
+session did not compact for (``_turn_compact_command``), with the mark a /compact carries while
+it runs (``_begin_compact_command``)."""
 
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
 from kiro_crew.quick_prompts import user_quick_prompt
 from kiro_crew.security import redact
+from kiro_crew.workflows.library import command_ref
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -96,15 +98,18 @@ async def _slash_command_backend(state: DashboardState, session_key: str) -> str
     if provider is not None and await state.sessions.is_provider_alive(session_key) is True:
         return capabilities_of(provider).backend
     from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
+    from kiro_crew.members import session_backend_pick
 
     cfg = KiroCrewConfig.load()
     agent_cfg = cfg.agent
+    pick = session_backend_pick(session_key)
     try:
         backend = select_provider_backend(
             session_key,
             getattr(agent_cfg, "member_acp_backend", ""),
             getattr(agent_cfg, "acp_backend", ""),
-            crew_backend=crewmate_backend_pin(cfg, session_key),
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, session_key) if pick is None else None,
         )
     except CrewmateHarnessUnavailable:
         # Only a pre-check: the turn goes on to the session start, which refuses
@@ -236,7 +241,14 @@ async def _handle_workflow_command(
         text = "Saved workflows are not available in this runtime."
         outcome = "unavailable"
     elif not workflow_ref:
-        definitions = await asyncio.to_thread(workflow_service.list_definitions)
+        # A workflow neither of whose refs reaches it has no command that
+        # runs it, so this list leaves it out; the library in Customize >
+        # Workflows still shows it.
+        definitions = [
+            definition
+            for definition in await asyncio.to_thread(workflow_service.list_definitions)
+            if command_ref(definition)
+        ]
         if not definitions:
             text = "No saved workflows yet. Create one under Customize > Workflows."
             outcome = "empty"
@@ -246,7 +258,7 @@ async def _handle_workflow_command(
                 description = definition.get("description") or ""
                 suffix = f" — {description}" if description else ""
                 lines.append(
-                    f"- `/workflow {definition.get('slug')}` "
+                    f"- `/workflow {command_ref(definition)}` "
                     f"(revision {definition.get('revision')}){suffix}"
                 )
             text = "\n".join(lines)
@@ -261,8 +273,13 @@ async def _handle_workflow_command(
             text = str(started.get("error") or "Could not start the saved workflow.")
             outcome = "error"
         else:
+            # When the slug does not reach this workflow (a removed workflow
+            # holds it, or another one answers to it first), only the ref typed
+            # (its id) starts it; naming the slug would offer another command.
+            shadowed = started.get("shadowed_refs") or []
+            shown = workflow_ref if started.get("slug") in shadowed else started.get("slug")
             text = (
-                f"Started `/workflow {started.get('slug') or workflow_ref}` as "
+                f"Started `/workflow {shown or workflow_ref}` as "
                 f"`{started.get('run_id')}` from revision {started.get('revision')}. "
                 "Its result will appear here when it finishes."
             )
@@ -619,6 +636,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
                     _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
+                    _card_origin=turn._card_origin,
                     _turn_actor=_turn_actor,
                 )
             elif status == "blocked":
@@ -764,15 +782,18 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                 CrewmateHarnessUnavailable,
                 crewmate_backend_pin,
             )
+            from kiro_crew.members import session_backend_pick
 
             _cfg = KiroCrewConfig.load()
             _agent_cfg = _cfg.agent
+            _pick = session_backend_pick(session_key)
             try:
                 _cfg_backend = select_provider_backend(
                     session_key,
                     getattr(_agent_cfg, "member_acp_backend", ""),
                     getattr(_agent_cfg, "acp_backend", ""),
-                    crew_backend=crewmate_backend_pin(_cfg, session_key),
+                    backend_override=_pick,
+                    crew_backend=crewmate_backend_pin(_cfg, session_key) if _pick is None else None,
                 )
             except CrewmateHarnessUnavailable:
                 # As in _slash_command_backend: the session start reports it.
@@ -908,13 +929,48 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     return None
 
 
+def _compact_empty_session_notice(turn: _ChatTurn) -> str:
+    """The notice for a /compact whose session holds no conversation yet, else ``""``.
+
+    kiro-cli ends such a turn with "Conversation too short to compact." and sends
+    no compaction status, so awaiting one would hold the chat for the whole
+    compaction timeout. Two cases. A slash command never delivers a pending
+    replay, so the lease is still armed and the provider session is empty. And a
+    FRESH provider session (a brand-new chat) that no ordinary prompt has reached
+    yet: the first-turn history debt is armed at admission and only a kept
+    non-slash turn settles it, so the native session holds nothing.
+    """
+    if turn._replay_pending:
+        return COMPACT_REPLAY_PENDING_NOTICE
+    if (
+        not capabilities_of(turn.client).compacts_inline
+        and turn.state.sessions.first_turn_history_owed_pending(turn.session_key) is True
+    ):
+        return COMPACT_FRESH_SESSION_NOTICE
+    return ""
+
+
+def _begin_compact_command(turn: _ChatTurn) -> None:
+    """Mark the /compact this turn sends as the compaction it is, before it is sent.
+
+    The turn runs the compaction, not a prompt, so a steer has nothing to join
+    and waits in the queue (``steer_into_running_turn``), and the chat shows the
+    compacting state rather than "Thinking…" from the start: on a backend that
+    reports the compaction only when it ends, nothing else says so. A session
+    with nothing to compact answers at once, so it gets no frame.
+    """
+    turn.slot._compact_command_turn = True
+    if not _compact_empty_session_notice(turn):
+        turn.state.broadcast_ws(
+            "chat_message", {"slot": turn.slot.key, "role": "compacting", "content": ""}
+        )
+
+
 async def _turn_compact_command(turn: _ChatTurn) -> None:
     """Answer a /compact the session did not compact for."""
-    _replay_pending = turn._replay_pending
     client = turn.client
     first_word = turn.first_word
     saw_compaction = turn.saw_compaction
-    session_key = turn.session_key
     slot = turn.slot
     state = turn.state
     # /compact acknowledged but compaction deferred — send a lightweight
@@ -956,28 +1012,11 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
         # harness it is. The two arms are not interchangeable: acknowledging a
         # backend that reports asynchronously loses the notice, and awaiting one
         # that already finished strands the waiter for its whole timeout.
-        if _replay_pending:
-            # A slash command never delivers the replay, so the lease is
-            # still armed and the provider session is empty: kiro-cli ends
-            # the turn with "Conversation too short to compact." and sends
-            # no compaction status. Awaiting one would hold the chat for the
-            # whole compaction timeout. Nothing was compacted, so skills
-            # context is not re-armed and the lease stays for the next prompt.
-            _append_compaction_notice(state, slot, COMPACT_REPLAY_PENDING_NOTICE)
-        elif (
-            not capabilities_of(client).compacts_inline
-            and state.sessions.first_turn_history_owed_pending(session_key) is True
-        ):
-            # A FRESH provider session (a brand-new chat) that no ordinary
-            # prompt has reached yet: the first-turn history debt is armed at
-            # admission and only a kept non-slash turn settles it, so the
-            # native session holds no conversation. kiro-cli ends this turn
-            # with "Conversation too short to compact." and sends no
-            # compaction status, the same shape as the replay case
-            # above. Answer now rather than wait out the compaction timeout;
-            # nothing was compacted, so the debt and skills context stay as
-            # they are for the next prompt.
-            _append_compaction_notice(state, slot, COMPACT_FRESH_SESSION_NOTICE)
+        empty_notice = _compact_empty_session_notice(turn)
+        if empty_notice:
+            # Answer now. Nothing was compacted, so skills context, the replay
+            # lease and the first-turn history debt stay for the next prompt.
+            _append_compaction_notice(state, slot, empty_notice)
         elif capabilities_of(client).compacts_inline:
             _restore_skills_context_after_compaction(turn)
             msg = "✅ Conversation compacted."

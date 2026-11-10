@@ -262,19 +262,22 @@ app catalog, it also sends one anonymous per-app receipt. Both signals are
 enabled by default, but first egress waits until the first-run privacy disclosure
 has been shown; they use the same controls below.
 
-To turn it off, flip **Settings → Privacy → Send anonymous usage heartbeat** in
-the dashboard (the same switch appears on the last step of first-run
-onboarding). Or from a terminal:
+To turn it off, click **Turn off** on the Privacy screen of first-run
+onboarding, or flip **Settings > Privacy > Send anonymous usage heartbeat** in
+the dashboard. Or from a terminal:
 
 ```bash
-kirocrew telemetry disable        # persists to config.json
-export KIROCREW_TELEMETRY_DISABLED=1   # or per-shell / per-container
-kirocrew telemetry status         # print exactly what would be sent
+kirocrew telemetry disable        # local metrics and the heartbeat; persists to config.json
+export KIROCREW_TELEMETRY_DISABLED=1   # heartbeat only, per-shell / per-container
+export DO_NOT_TRACK=1             # everything: local metrics and the heartbeat
+kirocrew telemetry status         # print both switches and exactly what would be sent
 ```
 
-The toggle and `kirocrew telemetry disable` write the same setting, so either
-one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` overrides
-both — when it is set, the dashboard toggle is disabled and says so.
+Turn off and `kirocrew telemetry disable` write the same settings, so either
+one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` and
+`DO_NOT_TRACK` override them: when one is set, the dashboard toggle is disabled
+and says so. When the Privacy screen's text changes, existing users see it once
+more at their next dashboard load while local recording is on.
 
 **Exactly these five fields are sent, at most once per day, and nothing else:**
 

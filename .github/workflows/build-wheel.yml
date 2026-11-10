@@ -11,9 +11,26 @@ name: Build Wheel (reusable)
 on:
   workflow_call:
     inputs:
+      edition:
+        description: >-
+          Edition to stamp into the build: oss (the default) or lts. Only
+          release-lts.yml passes lts; every other caller leaves it unset, so
+          their builds are oss exactly as before.
+        required: false
+        default: oss
+        type: string
       wheel_version:
         description: "Exact PEP 440 version to stamp (pyproject.toml + __init__.py)"
         required: true
+        type: string
+      build_channel:
+        description: >-
+          Release lane baked into the wheel's _build_info.BUILD_CHANNEL
+          (scripts/stamp-distribution.sh, read by kiro_crew.build_channel).
+          nightly.yml passes nightly, which makes a nightly build default
+          agent.kas_bundle on. Empty (the default) stamps no lane.
+        required: false
+        default: ""
         type: string
       ui_index_strict:
         description: >-
@@ -34,6 +51,11 @@ permissions:
 # packaging/build-desktop.sh): empty warns on a stale find_ui index, 1 fails.
 env:
   KC_UI_INDEX_STRICT: ${{ inputs.ui_index_strict && '1' || '' }}
+  # The edition stamp (setup.py build_py, packaging/build-desktop.sh). Empty for
+  # every caller but release-lts.yml, which both readers take as oss.
+  KIROCREW_BUILD_EDITION: ${{ inputs.edition == 'lts' && 'lts' || '' }}
+  # Read by scripts/stamp-distribution.sh: the lane baked into _build_info.py.
+  KC_BUILD_CHANNEL: ${{ inputs.build_channel }}
 
 jobs:
   build-wheel:
@@ -97,6 +119,22 @@ jobs:
           mkdir -p src/kiro_crew/static
           cp -R website/dist src/kiro_crew/static/dist
 
+      # The LTS edition ships as its own distribution, kirocrew-lts, so its wheel
+      # file name (kirocrew_lts-<v>-py3-none-any.whl) and pip identity never
+      # collide with oss. publish-cli.yml and the installers pair that stem
+      # with the lts channel. The voice extra names its own distribution, so it
+      # is renamed too, or kirocrew-lts[voice] would pull in the oss kirocrew.
+      - name: Name the LTS distribution
+        if: inputs.edition == 'lts'
+        run: |
+          sed -i -E 's/^name = "kirocrew"$/name = "kirocrew-lts"/' pyproject.toml
+          grep -qx 'name = "kirocrew-lts"' pyproject.toml
+          sed -i -E 's/^    kirocrew\[voice-aws\]$/    kirocrew-lts[voice-aws]/' setup.cfg
+          grep -qx '    kirocrew-lts\[voice-aws\]' setup.cfg
+          if grep -nE '^\s+kirocrew\[' setup.cfg; then
+            echo "::error::setup.cfg still names the oss kirocrew distribution in an extra"; exit 1
+          fi
+
       - name: Build wheel + sdist
         run: |
           pip install --upgrade build
@@ -108,6 +146,11 @@ jobs:
       # lanes cannot drift; the script documents the closure and the mechanism.
       - name: Verify vendored native libs survived into the wheel + sdist
         run: python scripts/verify_vendored_payload.py
+
+      # The public build must name no internal host. Scans the built wheel and
+      # the website dist/, not the source tree (test fixtures there are fine).
+      - name: Verify the build ships no internal host
+        run: python scripts/verify_no_internal_host.py dist website/dist
 
       # `local` is the default speech-to-text provider, so `kirocrew[voice]` has to
       # resolve to a PREBUILT wheel wherever we claim one: a platform that silently

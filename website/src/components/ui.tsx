@@ -68,15 +68,37 @@ export function CardTitle({ children, className, ...rest }: Omit<React.Component
  * A disabled `primary` (and `SendBtn`) takes the muted surface, borderless and
  * at 60%: a faded accent reads as pastel, and a full grey fill as a live button.
  */
-export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean; primary?: boolean }>(
-  ({ children, danger, primary, className, ...rest }, ref) => (
+/**
+ * `busy` is the "an action this button started is still running" state and is
+ * NOT `disabled`: a busy button keeps `aria-disabled`+`aria-busy` and stays in
+ * the tab order, refusing its own press until the work finishes, while a truly
+ * unavailable button keeps native `disabled`. Native `disabled` on the button a
+ * keyboard user just pressed drops their focus to <body>; `aria-disabled` holds
+ * it. (Same fix as the Investigate/Review button, #33132.) The two are
+ * independent — a button can be blocked AND busy — so the `aria-disabled:*`
+ * dimming mirrors the `disabled:*` opacity, and a busy button's click is
+ * swallowed here so every caller refuses the press without repeating the guard.
+ */
+export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean; primary?: boolean; busy?: boolean }>(
+  ({ children, danger, primary, busy, className, onClick, ...rest }, ref) => (
     <button
       ref={autoSiteRef((rest as Record<string, unknown>)['data-ui-auto'], ref)}
-      className={twMerge(`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[13px] cursor-pointer font-body transition-all active:scale-[0.97] active:duration-75 disabled:cursor-not-allowed ${
+      aria-disabled={busy || undefined}
+      aria-busy={busy || undefined}
+      // `data-busy` (set ONLY while busy) is the hook the `.busy-cue*` CSS keys
+      // on — NOT `aria-disabled`, which a caller may set itself for a non-busy
+      // reason. `busy-cue*` is always in the class list, but the styles only
+      // match once this attribute is present, so a plain `<Btn aria-disabled>`
+      // is untouched. The look lives in focus-and-state-cues.css (mirroring each
+      // branch's `disabled:*` surface) rather than as a long per-variant class
+      // string repeated in this always-loaded JS chunk.
+      data-busy={busy || undefined}
+      onClick={(e) => { if (busy) { e.preventDefault(); return } onClick?.(e) }}
+      className={twMerge(`busy-cue inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[13px] cursor-pointer font-body transition-all active:scale-[0.97] active:duration-75 disabled:cursor-not-allowed ${
         primary
-          ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)] disabled:bg-bg-hover disabled:text-muted disabled:border-transparent disabled:shadow-none disabled:opacity-60'
+          ? 'busy-cue-primary bg-accent text-accent-fg border-accent hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)] disabled:bg-bg-hover disabled:text-muted disabled:border-transparent disabled:shadow-none disabled:opacity-60'
           : danger
-            ? 'border-border bg-transparent text-danger hover:text-danger-text hover:border-danger hover:bg-danger-subtle disabled:opacity-30'
+            ? 'busy-cue-danger border-border bg-transparent text-danger hover:text-danger-text hover:border-danger hover:bg-danger-subtle disabled:opacity-30'
             : 'border-border bg-transparent text-text hover:border-border-strong hover:bg-bg-hover disabled:opacity-30'
       }`, className)}
       {...rest}
@@ -86,7 +108,7 @@ export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttribute
   )
 )
 
-export const SendBtn = React.forwardRef<HTMLButtonElement, { children: React.ReactNode } & Omit<React.ComponentPropsWithoutRef<'button'>, 'children' | 'dangerouslySetInnerHTML'>>(function SendBtn({ children, onClick, disabled, style, className, ...rest }, ref) {
+export const SendBtn = React.forwardRef<HTMLButtonElement, { children: React.ReactNode; busy?: boolean } & Omit<React.ComponentPropsWithoutRef<'button'>, 'children' | 'dangerouslySetInnerHTML'>>(function SendBtn({ children, onClick, disabled, busy, style, className, ...rest }, ref) {
   return (
     <button
       ref={autoSiteRef((rest as Record<string, unknown>)['data-ui-auto'], ref)}
@@ -97,8 +119,16 @@ export const SendBtn = React.forwardRef<HTMLButtonElement, { children: React.Rea
       // wraps is not the one it was designed at. Growing leaves the row's
       // heights uneven, which is the lesser defect: uneven is legible, clipped
       // is not.
-      className={twMerge("btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] disabled:bg-bg-hover disabled:text-muted disabled:shadow-none disabled:after:hidden disabled:opacity-60 disabled:cursor-not-allowed transition-all font-body", className)}
-      onClick={onClick}
+      // `busy` is the "an action this button started is still running" state,
+      // the same split `Btn` draws: a busy SendBtn keeps `aria-disabled`+`aria-busy`
+      // and stays in the tab order (native `disabled` on a just-pressed button
+      // drops the keyboard focus to <body>), and swallows its own press. The
+      // `aria-disabled:` variants mirror the `disabled:` ones so a busy button
+      // reads as the same greyed, borderless muted surface, not a faded accent.
+      aria-disabled={busy || undefined}
+      aria-busy={busy || undefined}
+      className={twMerge("btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] disabled:bg-bg-hover disabled:text-muted disabled:shadow-none disabled:after:hidden disabled:opacity-60 disabled:cursor-not-allowed aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:shadow-none aria-disabled:after:hidden aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-bg-hover aria-disabled:hover:shadow-none transition-all font-body", className)}
+      onClick={(e) => { if (busy) { e.preventDefault(); return } onClick?.(e) }}
       disabled={disabled}
       style={style}
       {...rest}

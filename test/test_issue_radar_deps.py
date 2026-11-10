@@ -564,13 +564,6 @@ class FetchDependencyEdgesTest(unittest.TestCase):
             edges, _ = gh.fetch_dependency_edges(OWNER, REPO, open_issues, {})
         self.assertEqual(edges, [])
 
-    def test_absent_dependencies_endpoint_yields_zero_native_edges(self):
-        # A 404/410 from the young dependencies API is tolerated as "no native
-        # edges" so the inferred graph still builds.
-        proc = mock.Mock(returncode=1, stdout="", stderr="HTTP 404: Not Found")
-        with mock.patch.object(gh, "_gh_run", return_value=proc):
-            self.assertEqual(gh.list_issue_blocked_by(OWNER, REPO, 10), [])
-
     def test_a_missing_node_falls_back_to_one_ref_summary(self):
         open_issues = [{"number": 10, "title": "d", "state": "open"}]
         # A blocker seeded from a row that already carries state/title needs NO ref
@@ -1925,6 +1918,8 @@ class DepsAuthFailureTest(unittest.TestCase):
                 gh.list_issue_blocked_by(OWNER, REPO, 10)
 
     def test_a_404_still_reads_as_feature_absent(self):
+        # A 404/410 from the young dependencies API is tolerated as "no native
+        # edges" so the inferred graph still builds.
         proc = mock.Mock(returncode=1, stdout="", stderr="HTTP 404: Not Found")
         with mock.patch.object(gh, "_gh_run", return_value=proc):
             self.assertEqual(gh.list_issue_blocked_by(OWNER, REPO, 10), [])

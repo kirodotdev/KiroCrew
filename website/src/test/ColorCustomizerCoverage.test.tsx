@@ -101,11 +101,9 @@ async function renderPanel(): Promise<HTMLElement> {
   return container
 }
 
-/** The "apply" button for a preset, addressed through its preview image. */
+/** The "apply" button for a preset, addressed by its accessible name. */
 function card(name: string): HTMLElement {
-  const button = screen.getByAltText(name).closest('button')
-  if (!button) throw new Error(`no preset card for ${name}`)
-  return button
+  return screen.getByRole('button', { name })
 }
 
 /** The whole tile for a preset: its "apply" button and, for a custom one, Delete. */
@@ -117,10 +115,7 @@ function tile(name: string): HTMLElement {
 
 /** The manual colour input belonging to one body-part card, by its label. */
 function colorInput(bodyPart: string): HTMLInputElement {
-  const cell = screen.getByAltText(bodyPart).parentElement
-  const input = cell?.querySelector<HTMLInputElement>('input[type="color"]')
-  if (!input) throw new Error(`no colour input for ${bodyPart}`)
-  return input
+  return screen.getByLabelText(bodyPart) as HTMLInputElement
 }
 
 /** Wait for the save form to have closed itself after a successful write. */
@@ -151,21 +146,37 @@ describe('ColorCustomizerPanel — what is on screen after mount', () => {
 
     expect(screen.getByText('Presets')).toBeTruthy()
     expect(screen.getByText('Manual')).toBeTruthy()
-    for (const name of BUILT_IN_NAMES) expect(screen.getByAltText(name)).toBeTruthy()
+    for (const name of BUILT_IN_NAMES) expect(card(name)).toBeTruthy()
 
     // The "Current" cell is the combined preview, not a per-part editor.
     expect(screen.getByAltText('final')).toBeTruthy()
     expect(screen.getByText('Current')).toBeTruthy()
 
     // Three labelled parts plus the colour with no label, which shows its hex.
-    expect(screen.getByAltText('Body / Fur')).toBeTruthy()
-    expect(screen.getByAltText('Tummy / Pads')).toBeTruthy()
-    expect(screen.getByAltText('Outlines / Eyes')).toBeTruthy()
+    expect(colorInput('Body / Fur')).toBeTruthy()
+    expect(colorInput('Tummy / Pads')).toBeTruthy()
+    expect(colorInput('Outlines / Eyes')).toBeTruthy()
     expect(screen.getByText('#123456')).toBeTruthy()
     expect(container.querySelectorAll('input[type="color"]')).toHaveLength(4)
 
     expect(presetsGetColorMap).toHaveBeenCalledWith('default-mochi')
     expect(presetsLoadCustom).toHaveBeenCalled()
+  })
+
+  it('names each preset and colour input once, with the art left decorative', async () => {
+    presetsLoadCustom.mockResolvedValue([customPreset()])
+    const container = await renderPanel()
+
+    // The caption is the name. An alt of the same text made it "Tuxedo Tuxedo".
+    for (const name of [...BUILT_IN_NAMES, 'Sunset Kitty']) {
+      expect(screen.getByRole('button', { name }).querySelector('img')?.getAttribute('alt')).toBe('')
+    }
+    for (const part of ['Body / Fur', 'Tummy / Pads', 'Outlines / Eyes']) {
+      expect(colorInput(part).closest('div')?.querySelector('img')?.getAttribute('alt')).toBe('')
+    }
+    // Only the combined preview, whose caption says something else, keeps an alt.
+    const named = [...container.querySelectorAll('img')].filter(img => img.getAttribute('alt'))
+    expect(named.map(img => img.getAttribute('alt'))).toEqual(['final'])
   })
 
   it('recolours the preview and pre-fills the inputs from the saved map', async () => {
@@ -201,7 +212,7 @@ describe('ColorCustomizerPanel — what is on screen after mount', () => {
     presetsLoadCustom.mockResolvedValue([customPreset({ colorMap: {} })])
     await renderPanel()
 
-    expect(screen.getByAltText('Sunset Kitty').getAttribute('src')).toBe(toDataUri(IDLE_SVG))
+    expect(card('Sunset Kitty').querySelector('img')?.getAttribute('src')).toBe(toDataUri(IDLE_SVG))
   })
 })
 
@@ -312,7 +323,7 @@ describe('ColorCustomizerPanel — saving the current colours as a preset', () =
     expect(saved[0].swatches).toHaveLength(2)
 
     // The preset joins the grid once the form has closed.
-    expect(screen.getByAltText('Sunset Kitty')).toBeTruthy()
+    expect(card('Sunset Kitty')).toBeTruthy()
   })
 
   it('keeps the swatches as they are when two colours already differ', async () => {
@@ -373,7 +384,7 @@ describe('ColorCustomizerPanel — deleting a custom preset', () => {
     fireEvent.click(within(tile('Sunset Kitty')).getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(presetsSaveCustom).toHaveBeenCalledWith([]))
 
-    expect(screen.queryByAltText('Sunset Kitty')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sunset Kitty' })).toBeNull()
     // The card's own click handler must not have fired through the delete button.
     expect(gallerySetColorMap).not.toHaveBeenCalled()
   })
@@ -388,7 +399,7 @@ describe('ColorCustomizerPanel — deleting a custom preset', () => {
     await user.keyboard(key)
     await waitFor(() => expect(presetsSaveCustom).toHaveBeenCalledWith([]))
 
-    expect(screen.queryByAltText('Sunset Kitty')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sunset Kitty' })).toBeNull()
     // The tile used to be a role="button" whose key handler took this keystroke
     // and applied the preset instead of deleting it.
     expect(gallerySetColorMap).not.toHaveBeenCalled()
@@ -411,7 +422,7 @@ describe('ColorCustomizerPanel — deleting a custom preset', () => {
 
     const remaining = presetsSaveCustom.mock.calls[0][0]
     expect(remaining.map(p => p.id)).toEqual(['custom-1'])
-    expect(screen.queryByAltText('Ocean Kitty')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Ocean Kitty' })).toBeNull()
     expect(card('Sunset Kitty').getAttribute('aria-pressed')).toBe('true')
   })
 
@@ -423,7 +434,7 @@ describe('ColorCustomizerPanel — deleting a custom preset', () => {
     expect(card('Sunset Kitty').getAttribute('aria-pressed')).toBe('true')
 
     fireEvent.click(within(tile('Sunset Kitty')).getByRole('button', { name: 'Delete' }))
-    await waitFor(() => expect(screen.queryByAltText('Sunset Kitty')).toBeNull())
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Sunset Kitty' })).toBeNull())
 
     for (const name of BUILT_IN_NAMES) {
       expect(card(name).getAttribute('aria-pressed')).toBe('false')

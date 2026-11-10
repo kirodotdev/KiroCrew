@@ -924,6 +924,39 @@ async def test_approve_tool_echoes_recorded_option():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bridged, sent", [(True, "allow"), (False, "allow_always")])
+async def test_approve_tool_answers_a_connection_tool_once(bridged, sent):
+    """An allow-always on a Crew-owned Connection would stop the harness asking,
+    and the gateway proxy refuses every call no approval was minted for."""
+    from kiro_crew.acp.types import EVENT_PERMISSION_REQUEST, AcpEvent
+    from kiro_crew.connections import crew_oauth_proxy
+
+    rt, _, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle._session_key = "dashboard_chat-bridge-h"
+    if bridged:
+        crew_oauth_proxy.register_bridge(
+            version="vh",
+            token="tok",
+            session_key="dashboard_chat-bridge-h",
+            server="github",
+            slug="github",
+            mcp_url="https://api.githubcopilot.com/mcp/",
+        )
+    handle._permission_options[42] = {"once": "allow", "always": "allow_always"}
+    handle._permission_gate_events[42] = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST, request_id=42, title="get_me", mcp_server_name="github"
+    )
+    try:
+        await handle.approve_tool(42, option_id="allow_always")
+    finally:
+        crew_oauth_proxy._bridges.pop("vh", None)
+    sent_frame = json.loads(proc.stdin.write.call_args.args[0].decode())
+    assert sent_frame["result"]["outcome"]["optionId"] == sent
+
+
+@pytest.mark.asyncio
 async def test_reject_tool_prefers_recorded_reject_option():
     """reject_tool sends a clean 'selected' reject when one was advertised."""
     rt, _, proc = _make_runtime()

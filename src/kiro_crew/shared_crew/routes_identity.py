@@ -1,7 +1,9 @@
 """``GET /api/shared-crew/sessions``, ``/people`` and ``/mode``.
 
-All three answer only the owner's dashboard session or a tailnet person the
-access set admitted (``request["is_dashboard_user"] is True``). An app token or
+All three answer only the owner's dashboard session, a person a sharing path
+admitted (a tailnet person the access set admitted, an SSM invite guest), or a
+team Crew teammate the Kiro relay verified (``request["is_dashboard_user"] is
+True``). An app token or
 an internal caller is refused with 403: these routes are new, and admitting a
 caller the existing session list confines (an app sees only its own sessions
 there) would widen what that caller can read. A non-owner dashboard session (a
@@ -67,6 +69,33 @@ def _tailnet_person(request: web.Request) -> bool:
     return request.get(SSM_GUEST_REQUEST_KEY) is not None and principal.provider == PROVIDER_SSM
 
 
+def _relay_teammate(request: web.Request) -> bool:
+    """A teammate the Kiro relay verified and this Crew's relay client handed over.
+
+    The relay checked the person's Kiro access token and their grant to this team
+    Crew before it delivered the request, so the relay is this path's own check,
+    as the access set is the direct listener's. The caller is the one the relay
+    ingress published under a request key (never a header), and only after the
+    in-process handover credential verified on loopback TCP, so no other caller
+    can carry it; the published actor must be that same teammate's ``kiro_relay``
+    principal. Read-only: the routes here admit it, and the display edit and
+    invite management do not.
+    """
+    from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate
+    from kiro_crew.shared_crew.contracts import ACTOR_REQUEST_KEY, PrincipalKind, Provenance
+    from kiro_crew.shared_crew.identity import PROVIDER_KIRO
+
+    if not is_relay_teammate(request):
+        return False
+    principal = getattr(request.get(ACTOR_REQUEST_KEY), "principal", None)
+    return (
+        principal is not None
+        and principal.kind is PrincipalKind.HUMAN
+        and principal.provider == PROVIDER_KIRO
+        and principal.provenance is Provenance.KIRO_RELAY
+    )
+
+
 async def _refusal(request: web.Request) -> web.Response | None:
     if request.get("is_dashboard_user") is not True or request.get("app"):
         # The owner gate below audits its own refusal; this one is audited here,
@@ -76,7 +105,7 @@ async def _refusal(request: web.Request) -> web.Response | None:
         refused = _error(403, "forbidden", "dashboard user required")
         audit_read_refusal(request, refused, by="shared_crew_identity")
         return refused
-    if _tailnet_person(request):
+    if _tailnet_person(request) or _relay_teammate(request):
         return None
     from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
 

@@ -88,11 +88,6 @@ class TestNoiseFilter:
         assert sess.is_noise("") is False
 
 
-class TestSlotKey:
-    def test_shape(self):
-        assert sess.slot_key("note-taker", "standup") == "meetings-note-taker-standup"
-
-
 class TestAgentQueue:
     @pytest.mark.asyncio
     async def test_flush_joins_and_clears(self):

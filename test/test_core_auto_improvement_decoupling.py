@@ -66,7 +66,7 @@ _SECURITY_POSTURE_ROWS: frozenset[tuple[str, str]] = frozenset(
         "backend/mcp_server.py",
         "backend/pr_watchers.py",
         "backend/runner.py",
-        "profiles/github_repo/pr_recipe.py",
+        "profiles/pr_recipe_base.py",
         "backend/routes.py",
     )
 )

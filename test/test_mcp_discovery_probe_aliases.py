@@ -13,6 +13,7 @@ parked, so overlap is read from state, never from how long a sleep lasted.
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import Counter
 
 import pytest
@@ -239,6 +240,37 @@ class TestSpawnFingerprint:
         odd_command = McpServerInfo(name="y")
         odd_command.command = {"not": "a string"}  # type: ignore[assignment]
         assert _spawn_fingerprint(odd_command) is None
+
+    def test_windows_spellings_of_one_launcher_share_a_key(self, monkeypatch) -> None:
+        """Windows ignores case and the PATHEXT suffix, and a path names the same file."""
+        from kiro_crew import mcp_discovery
+
+        monkeypatch.setattr(mcp_discovery.platform_compat, "IS_WINDOWS", True)
+        # Joined with the host's separator, as ``_win_exec_suffixes`` splits it.
+        monkeypatch.setenv("PATHEXT", os.pathsep.join([".COM", ".EXE", ".BAT", ".CMD"]))
+        keys = {
+            _spawn_fingerprint(McpServerInfo(name=n, command=cmd, args=["-y", "pkg"]))
+            for n, cmd in (
+                ("a", "npx"),
+                ("b", "npx.cmd"),
+                ("c", "NPX.CMD"),
+                ("d", "C:\\Program Files\\nodejs\\npx.cmd"),
+            )
+        }
+        assert keys == {("npx", "-y", "pkg")}
+        other = McpServerInfo(name="e", command="npx.cmd", args=["-y", "other"])
+        assert _spawn_fingerprint(other) == ("npx", "-y", "other")
+        # Only a PATHEXT suffix is one Windows ignores; any other stays in the name.
+        script = McpServerInfo(name="f", command="C:\\tools\\Srv.py", args=[])
+        assert _spawn_fingerprint(script) == ("srv.py",)
+
+    def test_posix_keeps_the_command_as_written(self, monkeypatch) -> None:
+        from kiro_crew import mcp_discovery
+
+        monkeypatch.setattr(mcp_discovery.platform_compat, "IS_WINDOWS", False)
+        a = McpServerInfo(name="a", command="tool", args=[])
+        b = McpServerInfo(name="b", command="Tool", args=[])
+        assert _spawn_fingerprint(a) != _spawn_fingerprint(b)
 
 
 class _CrowdedHost:

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import logging
 import secrets
 import socket
@@ -167,7 +168,8 @@ async def wait_for_callback(
     """Serve the pre-bound loopback socket until the portal redirects back.
 
     Accepts GET on ``/oauth/callback`` or ``/signin/callback`` (kiro-cli honours
-    both), returning ``{login_option, code, state}`` for the token exchange. Raises
+    both), returning ``{login_option, code, state}`` for the token exchange. Any
+    other GET path carrying this sign-in's state fails it at once. Raises
     PortalAuthError on a portal-reported error, a state mismatch (the CSRF check —
     someone other than our browser tab hit the listener), or timeout. The socket is
     taken over by aiohttp for the duration and closed with the listener.
@@ -203,9 +205,36 @@ async def wait_for_callback(
         )
         return web.Response(text=text, content_type="text/html")
 
+    async def _unexpected_path(request: web.Request) -> web.Response:
+        # The token exchange must echo the exact redirect path, so a near-miss
+        # (trailing slash, letter case) cannot be accepted. When the hit carries
+        # this sign-in's state it is the portal's redirect, so fail now instead of
+        # leaving the dashboard to wait out the timeout. Stray hits without the
+        # state (favicon, a port probe) only get the page and change nothing.
+        state = request.query.get("state", "")
+        if not hmac.compare_digest(state.encode(), expected_state.encode()):
+            return web.Response(status=404, text="Not found.", content_type="text/plain")
+        if not result.done():
+            result.set_exception(
+                PortalAuthError(
+                    f"the sign-in page sent the browser back to {request.path!r}, "
+                    "which is not a callback address this computer listens on"
+                )
+            )
+        return web.Response(
+            status=404,
+            text=(
+                "Sign-in could not finish here: the browser came back to an address "
+                "this computer does not handle. Go back to the dashboard and finish "
+                "signing in with the code shown there."
+            ),
+            content_type="text/html",
+        )
+
     app = web.Application()
     app.router.add_get("/oauth/callback", _handle)
     app.router.add_get("/signin/callback", _handle)
+    app.router.add_get("/{tail:.*}", _unexpected_path)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.SockSite(runner, sock)

@@ -60,7 +60,7 @@ function respond(url: string, init?: RequestInit) {
   if (url.includes('/findings')) return { ok: true, status: 200, json: async () => ({ findings: FINDINGS }) }
   if (url.includes('/ruler')) return { ok: true, status: 200, json: async () => ruler }
   if (url.includes('/config')) {
-    return { ok: true, status: 200, json: async () => ({ target_display: 'zzq/fabric', branch: 'origin/main' }) }
+    return { ok: true, status: 200, json: async () => ({ target_display: 'zzq/fabric', target_url: 'https://github.com/zzq/fabric', branch: 'origin/main' }) }
   }
   return { ok: true, status: 200, json: async () => ({}) }
 }

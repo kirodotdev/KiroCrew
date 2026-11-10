@@ -239,8 +239,11 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
       </div>
       <div className="flex gap-2 justify-end pt-1">
         <button onClick={onCancel} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
-        <button onClick={onConfirm} disabled={isPending}
-          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">
+        {/* `aria-disabled` plus the guard, NOT `disabled`, which leaves the tab
+            order and drops a keyboard user's focus while the request runs. */}
+        <button type="button" onClick={() => { if (!isPending) onConfirm() }}
+          aria-disabled={isPending || undefined} aria-busy={isPending || undefined}
+          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md aria-disabled:opacity-50 aria-disabled:cursor-default">
           {isPending ? i18nT('pages.knowledge.sourcesList.starting') : fileCount === 0 ? i18nT('pages.knowledge.sourcesList.watch_anyway') : i18nT('pages.knowledge.sourcesList.start_scanning')}
         </button>
       </div>
@@ -487,12 +490,24 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   }, [sources, queryClient])
 
   const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set())
+  // A failed Sync by source id, so the row that failed shows its own notice.
+  // Cleared when that row starts a sync again (below) and on success; a plain
+  // try/finally dropped the error with no trace, the way delete/add surface
+  // theirs through ErrorNotice.
+  const [syncErrors, setSyncErrors] = useState<Map<string, string>>(new Map())
 
   const syncSource = async (id: string) => {
+    // Ignore a press while this row is already syncing: the button stays
+    // focusable (aria-disabled, not native disabled), so the guard keeps it
+    // from starting a second sync for the same row.
+    if (syncingIds.has(id)) return
     setSyncingIds(prev => new Set(prev).add(id))
+    setSyncErrors(prev => { if (!prev.has(id)) return prev; const next = new Map(prev); next.delete(id); return next })
     try {
       await knowledgeApi<{ synced?: boolean; status?: string }>(`/sources/${id}/sync`, { method: 'POST' })
       queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
+    } catch (err) {
+      setSyncErrors(prev => new Map(prev).set(id, err instanceof Error ? err.message : String(err)))
     } finally {
       setSyncingIds(prev => { const next = new Set(prev); next.delete(id); return next })
     }
@@ -594,9 +609,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     },
   })
 
-  const startRename = (s: Source) => { setEditingId(s.id); setEditDraft(s.name) }
+  // Starting a rename clears any notice the last one left: the field is tied to
+  // editingId, so a reopened row would otherwise show the prior failure.
+  const startRename = (s: Source) => { renameMutation.reset(); setEditingId(s.id); setEditDraft(s.name) }
   const submitRename = () => {
-    if (!editingId) return
+    if (!editingId || renameMutation.isPending) return
     const name = editDraft.trim()
     const current = sources.find(s => s.id === editingId)
     if (!name || (current && name === current.name)) { closeRename(editingId); return }
@@ -647,6 +664,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   }
 
   const handleAdd = () => {
+    // A press while the add is in flight is ignored: the button stays
+    // focusable (aria-disabled, not native disabled) so a keyboard user does
+    // not lose focus, and the guard keeps that focusable button from firing twice.
+    if (addMutation.isPending) return
     if (addType === 'bedrock_kb') {
       const kbIds = addKbIds.split(',').map(s => s.trim()).filter(Boolean)
       const region = addKbRegion.trim()
@@ -730,9 +751,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           aria-label={i18nT('pages.knowledge.sourcesList.folder_path')}
           className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
         {folderPickerAvailable && (
-          <button type="button" onClick={() => pickFolderMutation.mutate()} disabled={pickFolderMutation.isPending}
+          <button type="button" onClick={() => { if (!pickFolderMutation.isPending) pickFolderMutation.mutate() }}
+            aria-disabled={pickFolderMutation.isPending || undefined} aria-busy={pickFolderMutation.isPending || undefined}
             aria-label={i18nT('pages.knowledge.sourcesList.browse_for_a_folder')}
-            className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
+            className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated aria-disabled:opacity-50 aria-disabled:cursor-default flex items-center gap-1">
             <FolderOpen size={14} /> {pickFolderMutation.isPending ? i18nT('pages.knowledge.sourcesList.opening') : i18nT('pages.knowledge.sourcesList.browse')}
           </button>
         )}
@@ -750,8 +772,14 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
       </label>
       <div className="flex gap-2 justify-end">
         <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
-        <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
-          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
+        {/* Busy uses `aria-disabled` plus the guard in handleAdd, NOT `disabled`,
+            which leaves the tab order and drops a keyboard user's focus while
+            the add runs. The empty-path validation stays native disabled: it is
+            inert before interaction, not in flight. */}
+        <button type="button" onClick={handleAdd}
+          aria-disabled={addMutation.isPending || undefined} aria-busy={addMutation.isPending || undefined}
+          disabled={!addMutation.isPending && !addUri.trim()}
+          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-default">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
       </div>
       {/* No hand-off: the folder form holds the unsaved name, path and ignore-pattern drafts. */}
       <ErrorNotice
@@ -885,7 +913,14 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               )}
               <div className="flex gap-2 justify-end">
                 <Btn type="button" onClick={() => setShowAdd(false)}>{i18nT('pages.knowledge.sourcesList.cancel')}</Btn>
-                <Btn type="button" primary onClick={handleAdd} onPointerDown={commitTypedProfileOnSubmit} disabled={addMutation.isPending || !addKbIds.trim() || !addKbRegionShapeOk || !addKbConsentGranted || addKbConflictBlocked}>
+                {/* `busy` keeps the button focusable with `aria-disabled`+
+                    `aria-busy` and swallows the press while the add runs, NOT
+                    `disabled`, which drops a keyboard user's focus. The field and
+                    consent validations stay native `disabled`: they are inert
+                    before interaction, not in flight. */}
+                <Btn type="button" primary onClick={handleAdd} onPointerDown={commitTypedProfileOnSubmit}
+                  busy={addMutation.isPending}
+                  disabled={!addMutation.isPending && (!addKbIds.trim() || !addKbRegionShapeOk || !addKbConsentGranted || addKbConflictBlocked)}>
                   {addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_knowledge_base')}
                 </Btn>
               </div>
@@ -952,8 +987,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               </div>
               <div className="flex gap-2 justify-end">
                 <Btn type="button" onClick={() => setShowAdd(false)}>{i18nT('pages.knowledge.sourcesList.cancel')}</Btn>
-                {/* Nothing can be fetched from a site that is not listed, so the button waits for it. */}
-                <Btn type="button" primary onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim() || !urlAllowedHosts?.length || typedSiteMissing}>
+                {/* Nothing can be fetched from a site that is not listed, so the
+                    button waits for it. `busy` keeps it focusable with
+                    `aria-disabled`+`aria-busy` and swallows the press while the
+                    add runs, NOT `disabled`, which drops a keyboard user's focus;
+                    the link and host validations stay native `disabled`, inert
+                    before interaction. */}
+                <Btn type="button" primary onClick={handleAdd}
+                  busy={addMutation.isPending}
+                  disabled={!addMutation.isPending && (!addUri.trim() || !urlAllowedHosts?.length || typedSiteMissing)}>
                   {addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_page')}
                 </Btn>
               </div>
@@ -1027,10 +1069,26 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                       {...ime.bindEnter({ onEnter: () => { if (!renameMutation.isPending) submitRename() }, onEscape: () => closeRename(s.id) })}
                       maxLength={200} aria-label={i18nT('pages.knowledge.sourcesList.source_name')}
                       className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-hidden w-full max-w-xs focus-ring" />
-                    <button aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename} disabled={renameMutation.isPending}
-                      className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated disabled:opacity-50"><Check size={14} /></button>
+                    {/* `aria-disabled` plus the guard in submitRename, NOT
+                        `disabled`, which drops a keyboard user's focus while the
+                        rename saves. */}
+                    <button type="button" aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename}
+                      aria-disabled={renameMutation.isPending || undefined} aria-busy={renameMutation.isPending || undefined}
+                      className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated aria-disabled:opacity-50 aria-disabled:cursor-default"><Check size={14} /></button>
                     <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => closeRename(s.id)}
                       className="text-muted shrink-0 p-1 rounded hover:bg-bg-elevated"><X size={14} /></button>
+                    {/* No hand-off: the field above holds the user's unsaved
+                        name, and the chat navigation would unmount and discard
+                        it. The failure keeps the field open, so a retry needs
+                        no re-typing. */}
+                    {renameMutation.isError && (
+                      <ErrorNotice
+                        variant="inline"
+                        message={renameMutation.error?.message}
+                        className="min-w-0"
+                        testId="source-rename-error"
+                      />
+                    )}
                   </div>
                 ) : (
                   <div className="flex items-center gap-1 min-w-0 group/name">
@@ -1126,9 +1184,14 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               {isLiveSource && s.last_search && <span className="text-[11px] text-muted whitespace-nowrap">{formatRelativeDate(s.last_search.at)}</span>}
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (
-                <button aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')} onClick={() => confirmMutation.mutate(s.id)}
-                  disabled={isDeleting || confirmMutation.isPending}
-                  className="px-2 py-1 text-[11px] border border-accent rounded hover:bg-accent/10 text-accent disabled:opacity-50 flex items-center gap-1">
+                // Busy uses `aria-disabled` plus the guard, NOT `disabled`,
+                // which drops a keyboard user's focus while the confirm runs.
+                // The row-delete state stays native disabled.
+                <button type="button" aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')}
+                  onClick={() => { if (!confirmMutation.isPending) confirmMutation.mutate(s.id) }}
+                  disabled={isDeleting}
+                  aria-disabled={confirmMutation.isPending || undefined} aria-busy={confirmMutation.isPending || undefined}
+                  className="px-2 py-1 text-[11px] border border-accent rounded hover:bg-accent/10 text-accent disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-default flex items-center gap-1">
                   <CheckCircle size={12} /> {i18nT('pages.knowledge.sourcesList.confirm')}
                 </button>
               )}
@@ -1148,8 +1211,13 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               {/* The gateway marks a row it would refuse Sync on (the Auto-added
                   source: its documents arrive only when the agent submits them). */}
               {!isFolderType && !isLiveSource && s.syncable !== false && (
-                <button aria-label={i18nT('pages.knowledge.sourcesList.sync_source')} onClick={() => syncSource(s.id)} disabled={isDeleting || syncingIds.has(s.id)}
-                  className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
+                // Busy uses `aria-disabled` plus the guard in syncSource, NOT
+                // `disabled`, which drops a keyboard user's focus while the sync
+                // runs. The row-delete state stays native disabled.
+                <button type="button" aria-label={i18nT('pages.knowledge.sourcesList.sync_source')} onClick={() => syncSource(s.id)}
+                  disabled={isDeleting}
+                  aria-disabled={syncingIds.has(s.id) || undefined} aria-busy={syncingIds.has(s.id) || undefined}
+                  className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-default flex items-center gap-1">
                   {syncingIds.has(s.id)
                     ? <RefreshCw size={12} className="animate-spin" />
                     : <><RefreshCw size={12} /> {i18nT('pages.knowledge.sourcesList.sync')}</>}
@@ -1176,6 +1244,30 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 testId="source-delete-error"
               />
             )}
+            {/* A failed Sync of this row. Cleared when it starts a sync again or
+                one succeeds. No unsaved draft on the row, so the hand-off is on
+                while the add form is closed (its open form holds unsaved
+                fields the navigation would drop), matching the delete notice. */}
+            {syncErrors.has(s.id) && !syncingIds.has(s.id) && (
+              <ErrorNotice
+                message={syncErrors.get(s.id)}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-sync-action-error"
+              />
+            )}
+            {/* A failed folder-scan confirm, from this row's Confirm button or
+                the post-add confirm dialog (both mutate this id). The confirm
+                leaves the row pending, so a retry re-clicks; react-query clears
+                the error on the next confirm. No unsaved draft here. */}
+            {confirmMutation.isError && confirmMutation.variables === s.id && (
+              <ErrorNotice
+                message={confirmMutation.error?.message}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-confirm-error"
+              />
+            )}
             {/* No hand-off while the add form is open, for the same unsaved
                 drafts as the delete notice above. */}
             {isLiveSource && s.last_search && s.last_search.outcome !== 'ok' && (
@@ -1186,6 +1278,19 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 askAgent={!showAdd}
                 className="mt-2"
                 testId="bedrock-kb-last-search-error"
+              />
+            )}
+            {/* The red Error badge stays the row's status; this line says what
+                failed. Sources store no error text, so it is a fixed message.
+                No hand-off while the add form is open, for the same unsaved
+                drafts as the delete notice above. */}
+            {!isLiveSource && !isDeleting && shownStatus === 'error' && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.knowledge.sourcesList.sync_failed_notice')}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-sync-error"
               />
             )}
             {/* Inline expandable pattern editor and progress for folder sources */}

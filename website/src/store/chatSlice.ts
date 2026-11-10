@@ -22,7 +22,6 @@ import { releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold,
 import { isClosedIncarnation, watchCloseOutcome } from './dashboard/closeWatch'
 import { isChatPageSurface } from '../utils/channelOrigin'
 import { isNoteRow } from '../lib/noteContract'
-import { gcSessionStorage } from '../utils/storageGc'
 import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import type { RootState } from './index'
 import type { ChatMessage, SideSnapshot, TurnIdentityFields } from '../types'
@@ -618,7 +617,10 @@ function closeRefusalCode(err: unknown): string | null {
 
 /** `discard`: the server closes the slot and deletes its history row only while the
  *  session is empty, and its refusal is quiet: the caller never asked the user to
- *  close anything. */
+ *  close anything. A discard of the active slot opens no other session in its
+ *  place: its callers discard the active slot only once the user has left for a
+ *  page other than the chat, so a landing would open, and mark read, a session
+ *  the user never chose. */
 export type DeleteSlotArg = string | { key: string; discard: true }
 
 export const deleteSlot = createAsyncThunk<
@@ -678,9 +680,9 @@ export const deleteSlot = createAsyncThunk<
       const displayed = [...new Set((root.dashboard.sidebarOrder ?? []).map(row => keyByRow.get(row) ?? row))]
         .filter(k => k === key || sidebarSurface.has(k))
       const landing = nextActiveAfterClose(displayed, key, key)
-      const prev = (landing !== key ? landing : null)
+      const prev = !discard && ((landing !== key ? landing : null)
         || root.chat.slotHistory.filter(k => k !== key && sameSurface.has(k)).pop()
-        || root.dashboard.slots.filter(s => s.key !== key && sameSurface.has(s.key)).map(s => s.key)[0]
+        || root.dashboard.slots.filter(s => s.key !== key && sameSurface.has(s.key)).map(s => s.key)[0])
       // Closing a chat is not choosing the landing: the page picks it. Both
       // moves count as automatic, so a create or fork still pending from
       // before the close opens its new session when it resolves, while a
@@ -707,7 +709,7 @@ export const deleteSlot = createAsyncThunk<
     // so it completes the close instead of failing it.
     let alreadyGone = false
     try {
-      await (discard ? api.discardChatSlot(key) : api.deleteChatSlot(key)).catch((err: unknown) => {
+      await (discard ? api.discardChatSlot(key) : api.deleteChatSlot(key, deletedSlot?.incarnation)).catch((err: unknown) => {
         if (!isNotFoundError(err)) throw err
         alreadyGone = true
       })
@@ -716,12 +718,16 @@ export const deleteSlot = createAsyncThunk<
         // `push_slot_removed` confirms the durable close, while the restore arm
         // puts the key back and publishes a list that releases this hold.
         dispatch(awaitCloseOutcome({ key, requestId }))
-        dispatch(watchCloseOutcome({ key, title: refusedTitle, incarnation }))
         // The hold's wall-clock cap is otherwise evaluated only when a list
         // arrives, and an idle main-dashboard tab may receive none; the timer
         // makes the bound real. Fire-and-forget: the reducer's guards make a
         // late or redundant fire a no-op.
         const inFlightUntil = (getState() as RootState).dashboard.closingSlots?.[key]?.inFlightUntil
+        // The DELETE answered 404, so this close is done for THIS tab, but the
+        // close that popped the key may still be saving. Keep the restore watch
+        // quiet until that in-flight cap passes: a re-listing before it is the
+        // server putting the row back, one after it is the slow save (#31538).
+        dispatch(watchCloseOutcome({ key, title: refusedTitle, incarnation, quietUntil: inFlightUntil ?? undefined }))
         if (inFlightUntil !== null && inFlightUntil !== undefined) {
           setTimeout(() => dispatch(expireCloseHold({ key, requestId })), Math.max(0, inFlightUntil - Date.now()) + 1)
         }
@@ -731,7 +737,6 @@ export const deleteSlot = createAsyncThunk<
         // `await navigation` below, and a peer transcript load that outlasts the
         // in-flight cap would otherwise expire a hold whose close succeeded.
         dispatch(confirmCloseHold({ key, requestId }))
-        gcSessionStorage(key)
       }
     } catch (err) {
       const uncoded = closeRefusalCode(err) === null
@@ -882,9 +887,12 @@ type StopReply = { ok?: boolean; info?: string; already_stopping?: boolean; erro
  *  the reason, so the host can say it in plain words (#20398). */
 export type StopFailure = { error: string; status?: number; code?: string; authRequired?: boolean; edgeChallenge?: boolean } | null
 
-export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean }>(
+/** `rejectPending` (the composer's Stop) rejects the stopped turn's approval
+ *  cards once the stop has landed. A failed stop leaves the turn running, so
+ *  its cards must keep their buttons. */
+export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force: boolean; rejectPending?: boolean }>(
   'chat/requestStop',
-  async ({ slotId, force }, { getState, dispatch }) => {
+  async ({ slotId, force, rejectPending }, { getState, dispatch }) => {
     const state = (getState() as { chat: ChatState }).chat
     if (!force) {
       const lastPress = state.stopPressedAt[slotId] ?? 0
@@ -918,6 +926,12 @@ export const requestStop = createAsyncThunk<StopFailure, { slotId: string; force
     // no-op (a cancel already in flight) and changes nothing here.
     if (reply?.info === 'not running' && !reply.already_stopping) {
       dispatch(chatSlice.actions.settleStopNotRunning({ slot: slotId, epoch }))
+    }
+    // Only the cards on screen for the turn this press was about: a switch
+    // to another chat, or a newer turn on this one, keeps its cards.
+    const now = (getState() as { chat: ChatState }).chat
+    if (rejectPending && now.activeSlot === slotId && (now.runEpoch?.[safeKey(slotId)] ?? 0) === epoch) {
+      dispatch(chatSlice.actions.clearPendingPermissions())
     }
     return null
   },

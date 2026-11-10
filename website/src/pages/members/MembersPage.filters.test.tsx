@@ -374,12 +374,14 @@ describe('MembersPage star', () => {
     await renderPage()
     const star = screen.getByTestId('member-star-pkg-a')
     fireEvent.click(star)
-    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).toBeDisabled())
+    // Held with aria-disabled, not native `disabled`, so the pressed star keeps
+    // its focus (CrewmateStarButton.focus.test.tsx).
+    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-disabled', 'true'))
     // A second click while pending is a no-op: exactly one write in flight.
     fireEvent.click(screen.getByTestId('member-star-pkg-a'))
     expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1)
     settle({ ok: true })
-    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).not.toBeDisabled())
+    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).not.toHaveAttribute('aria-disabled'))
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')
     // No roster refetch after a 2xx: the optimistic row IS the server's state.
     expect(api.members).toHaveBeenCalledTimes(1)

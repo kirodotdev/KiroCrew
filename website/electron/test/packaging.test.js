@@ -321,6 +321,42 @@ describe("Linux desktop naming", () => {
     );
   });
 
+  it("gives the LTS edition its own side-by-side identity, nightly pattern", bashOnly, () => {
+    // RFC crew-lts-edition D11: the LTS app updates from its own lane, so it
+    // must not share an install identity the oss installer would replace.
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew LTS"), [ // brand-ok -- product name under test
+      "-c.linux.desktop.entry.Name=Kiro Crew LTS",
+    ]);
+    assert.match(buildScript, /if \[ "\$\{KIROCREW_BUILD_EDITION:-oss\}" = "lts" \]; then[\s\S]*?PRODUCT_NAME="KiroCrew LTS"/); // brand-ok -- product name under test
+    const block = buildScript.match(/elif \[ "\$PRODUCT_NAME" = "KiroCrew LTS" \]; then[\s\S]*?EB_ARGS\+=\(([\s\S]*?)\n {4}\)/); // brand-ok -- product name under test
+    assert.ok(block, "build-desktop.sh has an LTS identity block");
+    for (const arg of [
+      "-c.productName=KiroCrew LTS", // brand-ok -- product name under test
+      "-c.mac.extendInfo.CFBundleDisplayName=Kiro Crew LTS",
+      "-c.deb.packageName=kirocrew-lts",
+      "-c.rpm.packageName=kirocrew-lts",
+      "-c.linux.executableName=kirocrew-desktop-lts",
+      "-c.extraMetadata.desktopName=kirocrew-desktop-lts.desktop",
+      "-c.extraMetadata.name=kirocrew-desktop-lts",
+      "-c.win.appId=${BASE_APP_ID}.lts",
+    ]) {
+      assert.ok(block[1].includes(`"${arg}"`), `LTS identity sets ${arg}`);
+    }
+    // The Windows appId is package.json's build.appId plus ".lts", and nsis.guid
+    // is electron-builder's own derivation of it (NsisTarget: UUID v5, its namespace).
+    assert.match(buildScript, /BASE_APP_ID="\$\(node -p 'require\(process\.argv\[1\]\)\.build\.appId' "\$ELECTRON_DIR\/package\.json"\)"/);
+    const { UUID } = require("builder-util-runtime");
+    const ltsAppId = `${require("../package.json").build.appId}.lts`;
+    const guid = UUID.v5(ltsAppId, UUID.parse("50e065bc-3134-11e6-9bab-38c9862bdaf3"));
+    assert.ok(block[1].includes(`"-c.nsis.guid=${guid}"`), "nsis.guid is UUID v5 of the LTS appId");
+    // The running app claims the same ID (main.js app.setAppUserModelId).
+    const mainJs = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+    assert.ok(mainJs.includes(`${require("../package.json").build.appId}";`), "main.js names the production ID");
+    assert.ok(mainJs.includes("IS_LTS_BUILD ? `${appUserModelId}.lts` : appUserModelId"), "main.js LTS ID is production + .lts");
+    // The macOS bundle id stays shared, as nightly's does: no new signing identifier.
+    assert.ok(!/"-c\.appId=|"-c\.mac\.appId=/.test(block[1]), "LTS keeps the shared mac appId");
+  });
+
   it("pins the metadata helper to the packaged Linux interpreter", () => {
     const integration = fs.readFileSync(
       path.join(ROOT, "linux-desktop-integration.js"),
@@ -611,52 +647,6 @@ describe("first-download installer design contract", () => {
     assert.match(
       buildScript,
       /precompile_windows\.py" \\\r?\n\s*--root "\$out" --module kiro_crew\.cli_server/
-    );
-  });
-
-  it("compiles the whole macOS tree, so the signed bundle is never written to", () => {
-    // codesign seals every file under a .app's Contents/, so bytecode written
-    // there after signing makes Gatekeeper refuse the app as "damaged". The
-    // desktop shell forbids the write (gatewayBytecodeEnvironment); shipping a
-    // cache for EVERY module is what removes the reason to want one.
-    //
-    // Whole tree, not the traced closure the Windows lane ships: Authenticode
-    // seals no resource tree so a later write on Windows is harmless, while on
-    // macOS any uncovered module is a latent signature break.
-    const buildScript = fs.readFileSync(
-      path.join(REPO_ROOT, "packaging", "build-desktop.sh"),
-      "utf8"
-    );
-    const macStart = buildScript.indexOf("build_backend() {");
-    const macEnd = buildScript.indexOf("build_backend_windows() {", macStart);
-    assert.ok(macStart >= 0 && macEnd > macStart, "could not locate build_backend()");
-    const macBuilder = buildScript.slice(macStart, macEnd);
-
-    assert.match(
-      macBuilder,
-      /-m compileall -q -f \\\r?\n\s*--invalidation-mode checked-hash "\$out\/lib"/,
-      "the macOS backend ships no precompiled tree, so the runtime would have to " +
-        "compile on first use — the write that breaks the signature"
-    );
-    assert.doesNotMatch(
-      macBuilder,
-      /--invalidation-mode timestamp/,
-      "a timestamp pyc records the source mtime, and ditto restamps sources at " +
-        "extraction, so every shipped timestamp pyc is rewritten on first use"
-    );
-    // It must run AFTER the prune that deletes pip's timestamp pycs, or its
-    // output is deleted.
-    assert.ok(
-      macBuilder.indexOf("-name __pycache__ -prune") <
-        macBuilder.indexOf("-m compileall"),
-      "compiling before the prune would have its output deleted"
-    );
-    // And the coverage has to be gated, or a silent compileall failure ships a
-    // tree the runtime wants to write to.
-    assert.match(
-      macBuilder,
-      /shipped without a bytecode cache/,
-      "nothing asserts the tree actually shipped with caches"
     );
   });
 

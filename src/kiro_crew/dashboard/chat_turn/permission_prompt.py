@@ -30,8 +30,15 @@ from kiro_crew.security.readonly_bash import (
 )
 from kiro_crew.shared_crew.decisions import open_slot_approval, settle_slot_approval
 from kiro_crew.slack.handler import resolve_linked_approval
-from kiro_crew.trust_patterns import approval_command, approval_display_command
+from kiro_crew.trust_patterns import (
+    approval_command,
+    approval_display_command,
+)
 from kiro_crew.trust_patterns import extract_bash_command as _extract_bash_command
+from kiro_crew.trust_patterns import (
+    path_trust_target,
+    path_trust_unresolved,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -227,12 +234,23 @@ async def _on_permission_prompt(
     # optional there: a card missing them still renders its command.
     perm_meta["tool_kind"] = _redact_tool_field(event.tool_kind or "", limit=64)
     perm_meta.update(_tool_identity_fields(event))
+    # A file grant is offered only for a path that names no link on this host,
+    # read off the loop (it touches the file system); the trusted-pattern tier
+    # checks the same before it honours one.
+    _path_scope_trusted = event.path_scope_trusted
+    if _path_scope_trusted:
+        _grant_path = path_trust_target(
+            event.tool_name, event.mcp_server_name, event.raw_tool_params
+        )
+        if _grant_path:
+            _path_scope_trusted = not await asyncio.to_thread(path_trust_unresolved, _grant_path)
     _trust_key = approval_command(
         event.tool_input or "",
         is_shell=event.is_shell,
         tool_name=event.tool_name,
         mcp_server_name=event.mcp_server_name,
         raw_tool_params=event.raw_tool_params,
+        path_scope_trusted=_path_scope_trusted,
     )
     _display_command = approval_display_command(
         event.tool_input or "",
@@ -240,6 +258,7 @@ async def _on_permission_prompt(
         tool_name=event.tool_name,
         mcp_server_name=event.mcp_server_name,
         raw_tool_params=event.raw_tool_params,
+        path_scope_trusted=_path_scope_trusted,
     )
     _full = _extract_full_command(_display_command)
     _safe_full, _ = redact_exfiltration_urls(_full)
@@ -279,6 +298,12 @@ async def _on_permission_prompt(
     # unconditional grant and only content-matching paths need the
     # canonical command.
     perm_meta["trust_grantable"] = "1"
+    _override_offer = getattr(turn, "_deny_override", None)
+    if event.takes_rejection_reason and _override_offer is None:
+        # The card may ask why: this backend hands a rejection's reason to the
+        # model. Not on a deny-rule override card, whose rejection is the rule's
+        # own refusal (``_refuse_overridden_call``) and carries no reason.
+        perm_meta["rejection_reason_accepted"] = "1"
     _base = _extract_base_command(_trust_key) if event.is_shell else ""
     _safe_base, _ = redact_exfiltration_urls(_base)
     _safe_base, _ = redact_credentials(_safe_base)
@@ -287,7 +312,6 @@ async def _on_permission_prompt(
         perm_meta["trust_base_grantable"] = "1"
     # A deny-rules refusal the person may override (tool_approval): the card
     # names the rule and offers no standing grant.
-    _override_offer = getattr(turn, "_deny_override", None)
     if _override_offer is not None:
         _deny_override_card_meta(perm_meta, _override_offer)
         if _safe_full:
@@ -323,8 +347,8 @@ async def _on_permission_prompt(
     # never sees it — the turn then parks here for the whole approval
     # window, holding the slot lock and silently dropping inbound
     # messages.
-    # The Slack click resolves THIS future (via state.resolve_approval);
-    # we remain the sole caller of approve_tool/reject_tool below.
+    # The Slack click resolves THIS future on this slot (request ids recur
+    # across slots); we remain the sole caller of approve_tool/reject_tool below.
     _slack_approval_ts: str | None = None
     if (
         # A row pre-declined at its append is not mirrored. The
@@ -373,6 +397,8 @@ async def _on_permission_prompt(
                 mcp_server_name=event.mcp_server_name,
                 tool_name=event.tool_name,
                 mcp_identity_trusted=event.mcp_identity_trusted,
+                slot_key=slot.key,
+                future=fut,
             )
             if _slack_approval_ts is None and not fut.done():
                 # Delivery failed — do not park for the whole
@@ -510,6 +536,28 @@ async def _on_permission_prompt(
             _host_deny_cause = DENY_CAUSE_APPROVAL_NO_BUDGET
             _host_deny_reason = "the turn had no budget left to wait for approval"
         else:
+            # Only a prompt that will really wait is bridged: one declined above for
+            # lack of budget, or already answered, is not pending. One plain call,
+            # never awaited, inside the try whose finally cleans the approval up.
+            from kiro_crew.notifications.bridge_approval_note import schedule_pending_approval
+
+            schedule_pending_approval(
+                state,
+                fut,
+                slot_key=slot.key,
+                session_key=session_key,
+                request_id=str(event.request_id),
+                tool_title=event.tool_name or "",
+                session_title=slot.display_title,
+                slack_card=_slack_approval_ts is not None,
+                approval_detail=event.tool_input or event.title or "",
+                # An override card is answered on the dashboard alone, and an
+                # unverified child request shows only agent-authored text.
+                answerable=_override_offer is None and not _child_lf_warning,
+                ttl_s=_approval_window,
+                crew_log_session=_crew_log_sid,
+                turn=_crew_log_turn_no,
+            )
             outcome = await asyncio.wait_for(fut, timeout=_approval_window)
     except asyncio.TimeoutError:
         outcome = "rejected"
@@ -602,6 +650,8 @@ async def _on_permission_prompt(
             except Exception:
                 logger.debug("Failed to render approval card", exc_info=True)
         _owns_approval = slot.unregister_approval(str(event.request_id), fut)
+        # Taken on every path out, so a reason never outlives its request.
+        _rejection_reason = slot.take_rejection_reason(str(event.request_id), fut)
         if _owns_approval and _decision_id:
             settle_slot_approval(state, _decision_id, fut, withdrawn=_host_cancelled)
         # The decision is final here and nowhere earlier: every path
@@ -944,8 +994,15 @@ async def _on_permission_prompt(
         # above never fires for it and this exemption stays true for
         # exactly the branch it covers; the host auto-declines are
         # that steer's job, not this marker's.
+        # The person's own words go with their own rejection only: a host
+        # auto-decline carries none, and only a request that takes one gets it.
         await _reject_attributed(
-            client, event.request_id, attribution="exempt: interactive user denial"
+            client,
+            event.request_id,
+            attribution="exempt: interactive user denial",
+            reason=(
+                _rejection_reason if event.takes_rejection_reason and not _host_deny_cause else ""
+            ),
         )
         if _safety_reason:
             _reject_label = f"🚫 {_safe_reject_title} (cancelled — {_safety_reason})"

@@ -1,7 +1,7 @@
-"""The existing policy-language terms Kiro Crew reads (RFC crew-enterprise-edition).
+"""The existing policy-language terms Kiro Crew reads (RFC crew-lts-edition).
 
 Each term is translated and then asked through the real parser and evaluator in an
-enterprise build, so a row is pinned by the decision its Crew read sites get: allow,
+LTS build, so a row is pinned by the decision its Crew read sites get: allow,
 deny, a narrowed match, a value with no Crew form, and no rule (the baseline).
 """
 
@@ -17,7 +17,7 @@ from kiro_crew.platform import governance
 
 @pytest.fixture(name="enterprise", autouse=True)
 def enterprise_fixture(_floor_monkeypatch):
-    _floor_monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+    _floor_monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 #: The file cases use POSIX paths; on Windows an item gains a drive letter the

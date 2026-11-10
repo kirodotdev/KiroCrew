@@ -366,10 +366,11 @@ describe('ui.show: point at an indexed location, never click it', () => {
   it('moving a job to a folder has the person tick that one job, never Select all', () => {
     const r = resolveGuideAction({ ...show('schedule.move-to-folder'), params: { location_id: 'schedule.move-to-folder', pick: 'Morning summary' } })
     if (!r.ok) throw new Error(r.reason)
-    const [tick, move] = r.action.steps
+    const [tick, open, move] = r.action.steps
     expect(tick.complete).toMatchObject({ kind: 'select', selection: 'one_job_checked' })
     expect(tick.target).toMatchObject({ kind: 'location', id: 'schedule.job-list', pickName: 'Morning summary' })
     expect(tick.textKey).toBe('components.guideLayer.select_tickjob')
+    expect(open.target).toMatchObject({ kind: 'location', id: 'schedule.batch-actions' })
     expect(move.target).toMatchObject({ kind: 'location', id: 'schedule.move-to-folder' })
     expect(r.action.steps.some(st => st.target.kind === 'location' && st.target.id === 'schedule.select-all')).toBe(false)
   })

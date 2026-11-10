@@ -48,6 +48,12 @@ if TYPE_CHECKING:
 
 def save_all_slots_to_history(state: DashboardState) -> None:
     """Save all active slots to history. Called on gateway shutdown."""
+    # Which chats hold an approval mode, for the next boot's notice that the
+    # restart ended it. First, because it is one small file and the per-slot
+    # saves below can use up the caller's shutdown deadline.
+    from kiro_crew.dashboard import chat_trust_restart
+
+    chat_trust_restart.record(state)
     for key in list(state._slots.keys()):
         # Re-fetch the occupant at each turn: this sequential pass takes real
         # disk time per slot while the loop can still recreate keys, and the
@@ -606,20 +612,25 @@ def _save_slot_to_history(
                 )
                 return False
 
-            payload, frozen_prefix, foreign_lines = _transcript_merge.compose_payload(
-                state,
-                slot,
-                path,
-                history_key,
-                window,
-                disk_older,
-                meta_str,
-                rewrite=rewrite,
-                retired_rows=retired_rows,
+            payload, frozen_prefix, foreign_lines, drop_archives = (
+                _transcript_merge.compose_payload(
+                    state,
+                    slot,
+                    path,
+                    history_key,
+                    window,
+                    disk_older,
+                    meta_str,
+                    rewrite=rewrite,
+                    retired_rows=retired_rows,
+                )
             )
 
             _preserve_mtime: float | None = None
-            if closed and (slot.linked_session_key or is_channel_session_key(history_key)):
+            # A save that keeps this slot's own close is not channel activity either.
+            if (closed or _metadata_line.keeps_own_close(slot, closed, existing_meta)) and (
+                slot.linked_session_key or is_channel_session_key(history_key)
+            ):
                 # This slot shares its transcript with a channel, and the
                 # reconciler decides whether a close still stands by comparing
                 # the file's mtime against ``closed_at``: activity newer than the
@@ -657,8 +668,10 @@ def _save_slot_to_history(
                 )
             except BaseException:
                 # A failed save keeps nothing staged: its rows stay unjudged and
-                # the next save offers them again.
+                # the next save offers them again. Nor does it keep an archive of
+                # rows the unchanged transcript still holds.
                 _display_verdicts.take_pending()
+                drop_archives()
                 raise
             # The rows just written are judged for display once, now, on the
             # verdict worker (display_verdicts); a cheap hand-off, not the work.

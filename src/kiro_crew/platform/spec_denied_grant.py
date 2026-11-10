@@ -30,6 +30,11 @@ class SpecDeniedGrant:
     *commands* ``allowedCommands`` entries, *denied_commands* the spec's
     ``deniedCommands`` as written, *denied_write_paths* its write ``deniedPaths``
     anchored to absolute globs at the session's directory *cwd*.
+
+    *web_fetch_blocked* are the spec's ``web_fetch.blocked`` entries that are plain
+    URLs (``spec_denied_gate.url_literal``), read only to withhold the grant,
+    *web_fetch_blocked_complete* whether that is every entry, and
+    *web_fetch_trusted* the plain-URL ``web_fetch.trusted`` entries it grants by.
     """
 
     builtins: frozenset[str] = frozenset()
@@ -37,6 +42,9 @@ class SpecDeniedGrant:
     denied_commands: tuple[str, ...] = ()
     denied_write_paths: tuple[str, ...] = ()
     cwd: str = ""
+    web_fetch_blocked: tuple[str, ...] = ()
+    web_fetch_blocked_complete: bool = True
+    web_fetch_trusted: tuple[str, ...] = ()
 
 
 def as_spec_denied_grant(value: Any) -> SpecDeniedGrant | None:

@@ -195,6 +195,21 @@ async def dispatch(payload: dict) -> None:
     if action_id == SESSION_LINK_ACTION:
         return
 
+    # ── Slack Code channel: the wrap-up's Archive button ──
+    # Answered there while slack.code_channels is on (origin-inherited
+    # authorization, SEL-audited); otherwise it falls through as before.
+    from kiro_crew.slack.code_channels.wrapup import ARCHIVE_ACTION_ID, handle_archive_click
+
+    if action_id == ARCHIVE_ACTION_ID:
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
+            logger.info("slack code channel archive dropped: denied by channels governance policy")
+            return
+        if await handle_archive_click(_orch, payload):
+            return
+
     # ── OPTIONS choice buttons / "Choose several..." menu ──
     # A choice button RESOLVES an [OPTIONS:] choice: it edits the card to show
     # the answer AND re-dispatches it as a fresh turn. So a ``channels`` policy
@@ -627,6 +642,13 @@ async def dispatch(payload: dict) -> None:
                 logger.debug("Failed to update transport approval message", exc_info=True)
         return
 
+    # ── A bridged notification's action button (RFC bridge actions) ──
+    # Routed before the generic approval fallthrough, which would look this id up
+    # as a native approval it never was.
+    if action_id.startswith(BRIDGE_SLACK_ACTION_PREFIX):
+        await _handle_bridge_action(payload, action, action_id, channel, user_id)
+        return
+
     # ── Tool approval buttons (approve / trust / reject) ──
     if channel and msg_ts:
         await _handle_tool_approval(payload, action_id, channel, msg_ts, user_id)
@@ -966,7 +988,12 @@ from kiro_crew.slack.interactions_approvals import _handle_review_approve  # noq
 from kiro_crew.slack.interactions_approvals import _handle_review_cancel  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_review_edit  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_review_revise  # noqa: E402
+from kiro_crew.slack.interactions_approvals import BRIDGE_ACTION_STALE_NOTICE  # noqa: E402
+from kiro_crew.slack.interactions_approvals import _handle_bridge_action  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_tool_approval  # noqa: E402
+from kiro_crew.notifications.bridge_actions import (  # noqa: E402
+    SLACK_ACTION_PREFIX as BRIDGE_SLACK_ACTION_PREFIX,
+)
 
 # isort: on
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -1017,12 +1044,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_sessions import _clear_session_dismissed  # noqa: F401
     from kiro_crew.slack.interactions_sessions import _record_session_dismissed  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _REVIEW_AUTH_DENIED_MSG  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import _REVIEW_ROOT_SUFFIX  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _can_act_on_review_draft  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _delete_review_placeholder  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _handle_review_edit_submit  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _handle_review_revise_submit  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _parse_draft_key  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _post_review_auth_error  # noqa: F401
+    from kiro_crew.slack.interactions_approvals import _restore_review_card  # noqa: F401
     from kiro_crew.slack.format import OPTIONS_SEVERAL_BLOCK  # noqa: F401
     from kiro_crew.slack.format import OPTIONS_SEVERAL_CALLBACK  # noqa: F401
     from kiro_crew.slack.format import OPTIONS_SEVERAL_INPUT  # noqa: F401

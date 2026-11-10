@@ -2068,6 +2068,16 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   **unconditionally**, comparing the artifact store against
   `artifact_item_state`: ingest what is missing or changed, drop state for
   artifacts that no longer exist. `created` is now reported for logging only.
+  The pass runs as the sync's own task, and `ArtifactKnowledgeSync.stop()`
+  asks it to end at its next artifact boundary: `_stop_artifact_ingest`
+  calls it both when `knowledge.auto_ingest_artifacts` is switched off and
+  at app exit (`on_cleanup`, registered before the knowledge pools shut
+  down), so a pass never outlives the sync that started it by more than the
+  artifact in hand. `stop()` neither cancels nor waits: a cancel mid-ingest
+  skips finalize and strands committed chunks that no artifact owns, and a
+  wait would hold the live-config applier's timeout or the 10 s graceful
+  shutdown on an LLM-backed ingest. The artifact in hand at exit can still
+  be cut short by the pool shutdown, as before this stop existed.
   - **Converged is free.** `ingest_artifact` already skips unchanged content, so
     the steady state spends no extraction calls and logs at debug.
   - **Removals are judged against every artifact, not the eligible kinds.**
@@ -2198,7 +2208,9 @@ the rail), because the chat page shows the active session.
 
 The page's reading comes from its own window and can be stale, so the decision is
 the server's. The page sends `deleteSlot({ key, discard: true })`, which runs the
-sidebar close's client bookkeeping but calls `POST /api/chat/slots/{slot}/discard`.
+sidebar close's client bookkeeping but calls `POST /api/chat/slots/{slot}/discard`,
+and opens no other session in place of the active one it discards: the user is on
+another page, so a landing would open, and mark read, a session they never chose.
 That route refuses with 409 `turn_in_flight` when the slot holds a reservation,
 `slot_not_empty` when it has a transcript row or a queued prompt,
 `automation_active` when a goal loop or monitor is bound to it, paused included as
@@ -2227,6 +2239,12 @@ the row comes back with the refetch, no close-refused notice shows, and another
 session's notice stays. Any untouched
 session the panel showed is discarded, not only one this page created, so a
 session left behind by a full page unload goes the next time its panel closes.
+The untouched reading lives in `website/src/lib/untouchedSession.ts`, shared with
+the routed chat's discard of an app's draft launch session
+([app-kit-platform](app-kit-platform.md#host-mediated-chat-launch-and-cron-toggles)).
+It reads the composer's stored drafts, so while the last write of the text, file
+or session-reference drafts failed (storage full or disabled) it never reads a
+session as untouched: storage can then be older than what the composer holds.
 
 **Live refresh** — the artifact mutation funnel broadcasts a typed
 `artifact_update {slug, version, deleted}` WS event
@@ -2595,10 +2613,24 @@ sandboxed iframe.
 SVG is deliberately **not** an image artifact: it is markup, stored as
 `kind="svg"` text and rendered through the sanitizing `SvgViewer`. Serving
 agent-authored SVG as an image would reintroduce a same-origin script vector.
-`SvgViewer` and the library card draw it inline without its `<style>`
-elements: an inline SVG's stylesheet applies to the whole page, so an SVG
-styled that way renders without that stylesheet rather than restyling the
-dashboard.
+`SvgViewer` and the library card draw it in a shadow root of its own
+(`SvgShadow`) and keep its `<style>` elements there: drawn straight into the
+page, an SVG's stylesheet would apply to the whole dashboard, print included,
+while inside its own root it styles that SVG and nothing else. Each stylesheet
+keeps only what reaches into the drawing, by allowlist (`svgStylesheet.ts`),
+because the page's custom properties inherit into the drawing and CSS keeps
+adding ways to test them (`if()`, `style()`, `attr()`, a `var()` fallback) and
+fetch a remote image as the signal. A declaration, in a stylesheet or a `style`
+attribute, and every other attribute value (SVG reads `fill="..."` as CSS) keep
+only the functions a drawing needs (colors, `url()`, `calc()`, transforms,
+gradients, filters, shapes); any other function, `var()` included, drops it. A selector keeps only
+structural and interaction pseudo-classes, so `:host`, `:host-context()`,
+`:scope` and `:target` go, and a top-level `&` goes. Every at-rule but `@media`,
+`@supports`, `@layer`, `@keyframes`, `@font-face` and `@namespace` goes. CSS text
+holding a backslash goes whole. Both surfaces sanitize with DOMPurify's SVG
+profile, so no HTML (a `popover`, say) sits beside the drawing. The host has
+layout and paint containment, so an SVG placed with `position: fixed` or a
+transform stays inside the host's box.
 
 ### Storage layout
 

@@ -1329,11 +1329,15 @@ def test_a_planned_restart_with_no_running_chat_clears_an_earlier_record(tmp_pat
 def test_a_boot_with_no_record_resumes_nothing(tmp_path, dispatched, monkeypatch):
     """A crash writes no record: its chats keep Resume and wait for the owner."""
     state = _make_state(tmp_path)
-    _interrupted(state.get_or_create_slot("crashed"))
-    _record(monkeypatch, tmp_path, None)
+    slot = state.get_or_create_slot("crashed")
+    _interrupted(slot)
+    path = _record(monkeypatch, tmp_path, None)
 
     assert _boot(state).call_args_list == []
     dispatched.started.assert_not_awaited()
+    # The chat is left exactly as the crash left it: one unanswered user row.
+    assert [(m["role"], m["content"]) for m in slot.messages] == [("user", "refactor the parser")]
+    assert not path.exists()
 
 
 def test_a_recorded_chat_waiting_on_an_approval_is_refused_and_cleared(

@@ -1391,7 +1391,7 @@ def _egress_decision(owner_agent: str = "", session_key: str = "") -> _EgressDec
         from kiro_crew.platform.governance import last_composed_ceiling, policy_level_control
 
         ceiling = last_composed_ceiling()
-        # The policy level as ``resolve`` enforces it: in an enterprise build an
+        # The policy level as ``resolve`` enforces it: in an LTS build an
         # unnamed ``network.egress`` is the built-in baseline (off), not absent.
         control = policy_level_control(ceiling, "network.egress")
         # NO CEILING, OR NONE GOVERNING EGRESS, IS NOT AN ANSWER -- it only means the

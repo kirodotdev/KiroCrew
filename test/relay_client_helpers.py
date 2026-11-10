@@ -31,6 +31,7 @@ from kiro_crew.relay_client.connection import RelayTimings
 from kiro_crew.relay_client.ingress import LoopbackIngress
 from kiro_crew.relay_client.protocol import WS_MESSAGE_MAX_BYTES
 from kiro_crew.relay_client.token_source import (
+    ConnectedPeople,
     HostCredential,
     NewTokenCallback,
     RelayConnected,
@@ -65,7 +66,11 @@ class StaticHostTokenSource:
     def on_new_token(self, callback: Optional[NewTokenCallback]) -> None:
         self._callback = callback
 
-    def track_relay(self, connected: Optional[RelayConnected]) -> None:
+    def track_relay(
+        self,
+        connected: Optional[RelayConnected],
+        people: Optional[ConnectedPeople] = None,
+    ) -> None:
         return None
 
     async def aclose(self) -> None:

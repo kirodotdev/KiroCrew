@@ -287,7 +287,7 @@ def native_custom(kiro_tree, tmp_path, monkeypatch):
     monkeypatch.setattr(projection.platform_compat, "first_linked_ancestor", lambda path: None)
     monkeypatch.setattr(
         "kiro_crew.agent.managed_mcp_spec_entry",
-        lambda name: {"command": "test-core", "args": []},
+        lambda name, **_kw: {"command": "test-core", "args": []},
     )
     monkeypatch.setattr(
         projection,
@@ -393,7 +393,7 @@ def test_an_unmapped_worker_is_a_search_agent_like_the_default(native_custom, mo
 
 def test_inheriting_agent_keeps_its_view_when_search_cannot_be_wired(native_custom, monkeypatch):
     agents, project = native_custom
-    monkeypatch.setattr("kiro_crew.agent.managed_mcp_spec_entry", lambda name: None)
+    monkeypatch.setattr("kiro_crew.agent.managed_mcp_spec_entry", lambda name, **_kw: None)
     _write_agent(agents, {"name": "custom", "tools": ["read"]})
     prepared = projection.prepare_native_skill_projection(project)
     view = prepared.specs["custom"]
@@ -403,7 +403,7 @@ def test_inheriting_agent_keeps_its_view_when_search_cannot_be_wired(native_cust
 
 def test_mapped_agent_is_still_refused_when_search_cannot_be_wired(native_custom, monkeypatch):
     agents, project = native_custom
-    monkeypatch.setattr("kiro_crew.agent.managed_mcp_spec_entry", lambda name: None)
+    monkeypatch.setattr("kiro_crew.agent.managed_mcp_spec_entry", lambda name, **_kw: None)
     _write_agent(
         agents,
         {"name": "custom", "tools": ["read"], "resources": ["skill:///opt/s/one/SKILL.md"]},

@@ -97,6 +97,7 @@ async def _run_turn(
     reply_thread: int | None,
     interpret_commands: bool,
     drain: bool,
+    agent: str | None = None,
 ) -> bool:
     """Run one model turn for a message ``handle_message`` admitted, then drain.
 
@@ -112,12 +113,14 @@ async def _run_turn(
 
     *thread* is the message's own Topic id, which the voice leg answers in;
     *reply_thread* is the Topic the route resolved for every other reply.
+    *agent* is the agent read with *session_key* before admission; ``None``
+    resolves the route's agent here.
     """
     from kiro_crew.telegram import transport_dispatch as facade
 
     assert self.client is not None, "TelegramDispatcher.client must be set"
     channel_id = f"telegram:{user_id}"
-    agent = self._resolve_agent(route)
+    agent = agent or self._resolve_agent(route)
     if resumed_key is not None:
         persisted = await asyncio.to_thread(persisted_session_agent, self.conv_log, resumed_key)
         if persisted:
@@ -420,6 +423,8 @@ async def _run_turn(
             ),
             undelivered_watch_key=session_key,
             script_hooks=hook_turn,
+            hook_agent=agent or "",
+            is_new_session=is_new,
         )
         accumulated = await driver.run(full_message)
         if resumed_key is None:
@@ -761,7 +766,11 @@ async def _run_turn(
                 session_key,
                 exc_info=True,
             )
-        self._active_renderers.pop(session_key, None)
+        # Identity-checked, as Discord does: a second message admitted before this
+        # turn acquired the session publishes its own renderer under the same key,
+        # and this turn must not take it away from that turn's steers.
+        if self._active_renderers.get(session_key) is renderer:
+            del self._active_renderers[session_key]
         if _acquired:
             self.sessions.release(session_key)
         await asyncio.to_thread(facade.cleanup_attachments, attachment_temp_paths)

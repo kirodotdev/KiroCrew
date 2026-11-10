@@ -66,6 +66,7 @@ class _ConvEntry:
     gen: int = 0
     awaiting_compact: bool = False
     last_active: float = 0.0
+    bucket: Hashable = None
 
 
 @dataclass
@@ -77,22 +78,55 @@ class ConversationState(Generic[K]):
     persisted for its bucket (e.g. ``SessionMap.max_generation``); it is called
     once when the key is first seen so the counter is restart-safe. When
     omitted, the counter simply starts at 0 (used by tests / non-DM callers).
+
+    ``bucket_fn`` maps a conversation key to what its bucket depends on that can
+    change while the process runs (a channel passes the agent the conversation
+    runs, which is part of its session key). Every access compares it with the
+    value the counter was seeded under, and a move reseeds the counter from the
+    new bucket BEFORE the access applies, so a ``/new`` bump taken first after
+    the move lands past the new bucket's saved generations rather than on a
+    counter the move then discards.
+
+    :meth:`pinned` holds a value read once per conversation (a channel pins the
+    live default agent with it), so a route keeps the agent its conversation
+    started on while a turn is queued, admitted or running. A new conversation
+    (``/new``, an idle or daily rotation, a ``reseed``) drops the pin BEFORE it
+    applies, so the new conversation reads the value again and its counter is
+    seeded from that bucket.
     """
 
     seed_fn: Optional[Callable[[K], int]] = None
+    bucket_fn: Optional[Callable[[K], Hashable]] = None
     _state: dict[K, _ConvEntry] = field(default_factory=dict)
+    _pins: dict[K, Any] = field(default_factory=dict)
+
+    def pinned(self, key: K, read: Callable[[], Any]) -> Any:
+        """*key*'s value for its current conversation, from *read* the first time."""
+        if key not in self._pins:
+            self._pins[key] = read()
+        return self._pins[key]
+
+    def repin(self, key: K, value: Any) -> None:
+        """Pin *value* for *key*'s current conversation, keeping its counter."""
+        self._pins[key] = value
 
     def _get(self, key: K) -> _ConvEntry:
+        bucket = self.bucket_fn(key) if self.bucket_fn is not None else None
         entry = self._state.get(key)
         if entry is None:
-            entry = _ConvEntry()
+            entry = _ConvEntry(bucket=bucket)
             if self.seed_fn is not None:
                 entry.gen = max(0, self.seed_fn(key))
             self._state[key] = entry
+        elif entry.bucket != bucket:
+            entry.bucket = bucket
+            entry.gen = max(0, self.seed_fn(key)) if self.seed_fn is not None else 0
+            entry.awaiting_compact = False
         return entry
 
     def bump_gen(self, key: K) -> int:
         """Advance to a fresh generation (``/new``) and return the new value."""
+        self._pins.pop(key, None)
         s = self._get(key)
         s.gen += 1
         s.awaiting_compact = False
@@ -107,6 +141,8 @@ class ConversationState(Generic[K]):
             s.last_active, now, idle_minutes=idle_minutes, daily_reset_hour=daily_reset_hour
         )
         if rotate:
+            self._pins.pop(key, None)
+            s = self._get(key)
             s.gen += 1
             s.awaiting_compact = False
         s.last_active = now
@@ -125,8 +161,11 @@ class ConversationState(Generic[K]):
         For a conversation whose bucket just changed (a channel ``/agent``
         switch puts the agent in the key): the counter must follow the NEW
         bucket's persisted generations, or a later ``/new`` could land on one
-        of that bucket's older conversations instead of a fresh one.
+        of that bucket's older conversations instead of a fresh one. With a
+        ``bucket_fn`` the access itself already does this, and the explicit
+        call re-reads the same seed.
         """
+        self._pins.pop(key, None)
         s = self._get(key)
         s.gen = max(0, self.seed_fn(key)) if self.seed_fn is not None else 0
         s.awaiting_compact = False

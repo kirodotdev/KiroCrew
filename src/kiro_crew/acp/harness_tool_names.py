@@ -41,7 +41,8 @@ ones Crew placed, and the ones opencode's own config mounts, which the spawn's
 every ``_``, for a server neither source named. Every split is kept, so a deny
 hook on any of them still runs. When the
 fused title is also opencode's own tool (``apply_patch``), that tool's kiro-cli
-name stays the first name, so a hook's stdin still reports ``fs_write``.
+name stays the first name, so a spec hook's stdin still reports the built-in
+(``write``, :func:`kiro_crew.agent_sdk.spec_hooks.kiro_cli_hook_payload`).
 """
 
 from __future__ import annotations
@@ -256,8 +257,9 @@ def harness_tool_match_names(tool_id: str) -> tuple[str, ...] | None:
     Built as :func:`kiro_crew.acp.kas_permissions.kas_tool_match_names` builds KAS's:
     the kiro-cli name whose row reaches the tool first, then the harness's own name,
     then kiro-cli's aliases for that name. So ``execute_bash``, ``shell`` and
-    ``bash`` all meet an opencode shell call, and the first name is the one a
-    kiro-cli hook would be told the tool is called.
+    ``bash`` all meet an opencode shell call, and the first name is the kiro-cli
+    built-in a spec hook's stdin is told the call is
+    (:func:`kiro_crew.agent_sdk.spec_hooks.kiro_cli_hook_payload`).
     """
     parts = split_harness_tool_id(tool_id)
     if parts is None:
@@ -268,9 +270,9 @@ def harness_tool_match_names(tool_id: str) -> tuple[str, ...] | None:
         # fused name the harness stated. A fused name that is also the harness's
         # own tool (opencode's ``apply_patch``, split at its "_" as ``@apply/
         # patch``) keeps that tool's names too, so a hook on either reading still
-        # runs -- and they go FIRST, because the first name is what a hook's stdin
-        # reports as ``tool_name``: an ``fs_write`` deny that branches on it must
-        # be told ``fs_write``, not a made-up MCP name.
+        # runs -- and they go FIRST, because the first name decides a spec hook's
+        # stdin ``tool_name``: a ``write`` deny that branches on it must
+        # be told ``write``, not a made-up MCP name.
         forms: list[str] = []
         fused: list[str] = []
         for split in name.split(_MCP_SPLIT_SEPARATOR):

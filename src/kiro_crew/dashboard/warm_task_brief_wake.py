@@ -137,15 +137,19 @@ def _backend(cfg: Any, slot: "_ChatSlot") -> str | None:
     route, else the default); ``None`` when it cannot tell. Reads agent
     files: call off the loop."""
     from kiro_crew.crewmate_harness import crewmate_backend_pin
-    from kiro_crew.members import select_provider_backend
+    from kiro_crew.members import select_provider_backend, session_backend_pick
 
     try:
         agent, key = cfg.agent, f"dashboard:{slot.key}"
+        # A chat created on a harness runs there, so a wake on the default
+        # harness is skipped for it (``_may_wake``) unless that is its harness.
+        pick = session_backend_pick(key)
         return select_provider_backend(
             key,
             agent.member_acp_backend,
             agent.acp_backend,
-            crew_backend=crewmate_backend_pin(cfg, key),
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, key) if pick is None else None,
         )
     except Exception:
         logger.debug("warm brief wake: no backend for %s", key, exc_info=True)

@@ -6,7 +6,8 @@ those denies. :func:`spec_denies_refusal` backs the ``spec-denies`` deny row: it
 a call a deny names, on every approval policy. :func:`denied_grant_applies` is
 asked by the ``spec-builtin-grant`` row: it grants only a call a deny check
 cleared, and treats every unknown (a command it cannot split, a target it cannot
-read or resolve) as no grant, so the call asks.
+read or resolve) as no grant, so the call asks. A ``web_fetch`` is granted by a
+plain ``web_fetch.trusted`` URL only, never refused here (:func:`url_literal`).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 #: kiro-cli's shell and write names, as :func:`gate_tiers._spec_builtin_names` gives them.
 _SHELL_NAMES = frozenset({"execute_bash", "execute_pwsh"})
 _WRITE_NAMES = frozenset({"fs_write", "fs_append", "str_replace"})
+_WEB_FETCH = "web_fetch"
 
 
 def _path_denied(target: str, patterns: Sequence[str], cwd: str) -> bool | None:
@@ -103,6 +105,74 @@ def spec_denies_refusal(call: ToolCall, names: tuple[str, ...]) -> str | None:
     return None
 
 
+#: Characters that make a kiro-cli regex more than a literal.
+_URL_REGEX_SYNTAX = frozenset(".^$*+?()[]{}|\\")
+
+
+def url_literal(raw: object) -> tuple[str, bool] | None:
+    """A ``web_fetch.blocked`` / ``trusted`` entry as ``(literal, is_prefix)``, or
+    ``None`` when it is not a plain URL or a plain URL followed by ``.*``.
+
+    kiro-cli anchors an entry with ``^`` and ``$`` unless it already starts or ends
+    with one, then matches the whole URL. Read here with string work only, never
+    as a regex: an optional leading ``^`` or ``\\A``, an optional trailing ``$`` or
+    ``\\z``, then literal characters (a backslash before ASCII punctuation is that
+    character), and at most a final ``.*``. ``\\<`` / ``\\>`` (word boundaries in
+    Rust) and a trailing ``\\$`` (which kiro-cli leaves unanchored) are refused.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    body = raw.removeprefix("\\A") if raw.startswith("\\A") else raw.removeprefix("^")
+    if body.endswith("\\$"):
+        return None
+    if body.endswith("\\z") and not body.endswith("\\\\z"):
+        body = body[:-2]
+    elif body.endswith("$"):
+        body = body[:-1]
+    prefix = body.endswith(".*") and not body.endswith("\\.*")
+    if prefix:
+        body = body[:-2]
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\":
+            nxt = body[i + 1] if i + 1 < len(body) else ""
+            if not (nxt.isascii() and not nxt.isalnum() and nxt.isprintable()) or nxt in "<> ":
+                return None
+            out.append(nxt)
+            i += 2
+        elif ch in _URL_REGEX_SYNTAX:
+            return None
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), prefix
+
+
+def _url_matches(entry: tuple[str, bool], url: str) -> bool:
+    literal, prefix = entry
+    return url.startswith(literal) if prefix else url == literal
+
+
+def _web_fetch_granted(call: ToolCall, grant: SpecDeniedGrant) -> bool:
+    """Whether a ``web_fetch`` call is granted: only by a ``trusted`` entry that is a
+    plain URL (equal) or a plain URL plus ``.*`` (prefix), with every ``blocked``
+    entry of that shape and not matching. Anything else keeps the prompt KAS asked
+    for. A URL with a control character is never granted: Rust's ``.`` does not
+    match a newline, so a prefix test would read the entry wider than kiro-cli."""
+    if not grant.web_fetch_blocked_complete or not grant.web_fetch_trusted:
+        return False
+    url = call.raw_params.get("url") if isinstance(call.raw_params, dict) else None
+    if not isinstance(url, str) or not url or any(ch < " " or ch == "\x7f" for ch in url):
+        return False
+    blocked = [url_literal(raw) for raw in grant.web_fetch_blocked]
+    trusted = [url_literal(raw) for raw in grant.web_fetch_trusted]
+    if any(entry is None or _url_matches(entry, url) for entry in blocked):
+        return False
+    return any(entry is not None and _url_matches(entry, url) for entry in trusted)
+
+
 def denied_grant_applies(call: ToolCall, names: tuple[str, ...]) -> bool:
     """Whether *call*'s ``spec_denied_grant`` grants it: a name it lifted (or a
     command one of its ``allowedCommands`` matches), and every deny that applies to
@@ -112,6 +182,8 @@ def denied_grant_applies(call: ToolCall, names: tuple[str, ...]) -> bool:
         return False
     shell = call.is_shell and bool(_SHELL_NAMES.intersection(names))
     by_name = bool(grant.builtins.intersection(names))
+    if _WEB_FETCH in names:
+        return _web_fetch_granted(call, grant)
     by_command = (
         shell
         and allowed_commands.plain_command(call.command)

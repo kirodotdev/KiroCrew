@@ -349,6 +349,14 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
                 status=400,
             )
+    if "dashboard_card_send" in body and not isinstance(body["dashboard_card_send"], bool):
+        return web.json_response(
+            {
+                "error": "dashboard_card_send must be a boolean",
+                "code": "invalid_dashboard_card_send",
+            },
+            status=400,
+        )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -385,6 +393,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     prior = None
     if "model" in body or "worker_model" in body:
         prior = (await asyncio.to_thread(KiroCrewConfig.load)).agents.get(name)
+    # The Bot's harness can depend on its files on disk; read that answer fresh,
+    # off the loop, before any model below is judged on it.
+    from kiro_crew.crewmate_harness import refresh_crew_verdict
+
+    await refresh_crew_verdict(name)
     prior_moves = prior is None or (
         pending_backend is not None and pending_backend != (prior.acp_backend or "")
     )
@@ -423,9 +436,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         harness_moves = pending_backend is not None and pending_backend != (
             cfg.agents[name].acp_backend or ""
         )
-        harness_pinned = bool(
-            pending_backend if pending_backend is not None else cfg.agents[name].acp_backend
-        )
         try:
             # The editor sends `model` with every save. Without a harness move an
             # inherit value or the stored value judges nothing, so a stored pin that
@@ -439,7 +449,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     request,
                     cfg.agent.provider,
                     backend=_pin_entitlement_backend(cfg, name, pending_backend),
-                    harness_pinned=harness_pinned,
                 )
                 if model_reason:
                     return web.json_response(
@@ -458,7 +467,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     request,
                     cfg.agent.provider,
                     backend=_pin_entitlement_backend(cfg, name, pending_backend, for_workers=True),
-                    harness_pinned=harness_pinned,
                 )
                 if model_reason:
                     return web.json_response(
@@ -784,6 +792,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             agent.star_order = 0
             if "star_order" not in changed:
                 changed.append("star_order")
+        if "dashboard_card_send" in body:
+            # Already validated above, before any mutation.
+            agent.dashboard_card_send = body["dashboard_card_send"]
+            changed.append("dashboard_card_send")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store

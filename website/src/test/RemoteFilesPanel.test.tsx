@@ -285,7 +285,7 @@ describe('RemoteFilesPanel', () => {
     // Said on its own line, not appended to the path (which truncates).
     const notice = await screen.findByRole('status')
     expect(notice).toHaveTextContent("This file is larger than 256 KB, so only the first 256 KB is shown and it can't be edited here.")
-    for (const el of screen.getAllByTitle('big.log')) expect(el).not.toHaveTextContent(/256 KB/)
+    for (const el of screen.getAllByText(/big\.log/)) expect(el).not.toHaveTextContent(/256 KB/)
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
   })
 

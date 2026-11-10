@@ -57,6 +57,8 @@ vi.mock('../api/client', () => ({
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     // ThemeProvider's catalog query retries every 1s, 2s, 4s... until a read succeeds, and each failed retry notifies it.
     themes: vi.fn().mockResolvedValue({ themes: [] }),
+    // The mates dock's roster read retries 1s, 2s, 4s through a failure, past SHELL_SETTLED, so it is answered.
+    members: vi.fn().mockResolvedValue({ members: [] }),
   },
   isAuthBannerShown: isAuthBannerShownMock,
   ApiError: class ApiError extends Error {

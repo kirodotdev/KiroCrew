@@ -1593,7 +1593,7 @@ def _stage_temp(
                 # cannot act on; the destination is the file whose permissions
                 # they need to check.
                 logger.warning(
-                    "atomic_write: could not apply owner-only permissions to %s; "
+                    "SECURITY: atomic_write: could not apply owner-only permissions to %s; "
                     "writing it anyway per restrict_on_error='warn' — the file "
                     "may be readable by other users",
                     path,

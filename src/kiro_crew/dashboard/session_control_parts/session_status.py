@@ -334,7 +334,7 @@ def _created_history_roster(
     if log is None:
         return {}, "unreadable", 0
     try:
-        sessions = log.list_sessions()
+        sessions = log.list_sessions_indexed()
     except Exception:
         logger.debug("session history roster could not be listed", exc_info=True)
         return {}, "unreadable", 0

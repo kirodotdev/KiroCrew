@@ -104,6 +104,7 @@ BASE_NAMES = frozenset(
         "InboundRoute",
         "IngestLimits",
         "KiroCrewConfig",
+        "LiveDefaultAgent",
         "MonitorCompletionHook",
         "MonitorDispatchResult",
         "MonitorWake",
@@ -122,7 +123,6 @@ BASE_NAMES = frozenset(
         "_BUSY_OPTIONS_REFUSAL",
         "_CHANNEL",
         "_CHAT_TYPE_THREAD",
-        "_DEFAULT_KIROCREW_AGENT",
         "_DETACH_EXEMPT_COMMANDS",
         "_MAX_COLLAPSE",
         "_MAX_COLLAPSED_ATTACHMENTS",
@@ -324,6 +324,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_authorized": ("function", False, "(self, user_id: 'str') -> 'bool'"),
     "_channel_reply": ("function", False, "(self, channel_id: 'str') -> \"'ReplyFn'\""),
     "_channel_turns": ("function", False, "(self) -> 'ChannelTurns'"),
+    "_configured_agent": ("function", False, "(self, scope_id: 'str | None' = None) -> 'str'"),
     "_drain_queue": ("function", True, "(self, session_key: 'str') -> 'None'"),
     "_enqueue_with_receipt": (
         "function",

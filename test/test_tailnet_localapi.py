@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
+from conftest import requires_symlinks
 from kiro_crew.dashboard import tailnet
 from kiro_crew.dashboard import tailnet_localapi as la
 
@@ -50,7 +51,7 @@ def test_a_file_the_gateway_user_owns_is_not_trusted(monkeypatch: pytest.MonkeyP
     assert la._root_owned_and_sealed(sock) is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+@requires_symlinks
 def test_a_symlink_is_not_trusted(tmp_path: Path) -> None:
     target = tmp_path / "real"
     target.write_text("")

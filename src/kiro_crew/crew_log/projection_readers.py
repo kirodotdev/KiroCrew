@@ -148,13 +148,30 @@ def read_slot_state(
     if name == WORKERS_FOLD_NAME:
         raise ValueError("the workers fold has no single state; read its projection")
     units = list(_slot_units_for_fold(slot, name))
+    own = len(units)
     known = set(units)
     for extra in also_slots:
         for unit_id in _supplemental_units(extra, name):
             if unit_id not in known:
                 known.add(unit_id)
                 units.append(unit_id)
-    return fold_slot_warm_revised(require_name(name), units, slot=slot, cold=cold)
+    if len(units) == own:
+        return fold_slot_warm_revised(require_name(name), units, slot=slot, cold=cold)
+    # A LONGER list than every other reader of this cell builds. Folded in a throwaway
+    # cell -- no warm memo, no savepoint -- because the shared cell is keyed by slot and
+    # fold, not by list: a pass over these units would leave the cell holding a list the
+    # next ordinary read cannot continue, and would persist its savepoint beside the
+    # list's newest unit, which is another slot's unit, over that slot's own file. The
+    # value is the same either way: a warm cell answers what a cold fold answers.
+    # shortcut: a full fold of every listed unit; it is the operator's rebuild, the only
+    # caller, which walks every slot anyway. Upgrade with the child-process backfill.
+    if not cold:
+        from kiro_crew.crew_log.projection_slot_memo import SlotFoldNotReady
+
+        raise SlotFoldNotReady(slot, name)
+    # Revision 0, below every cell's: a consumer that keeps the highest revision per
+    # (key, fold) must never prefer this one-off value over the shared cell's.
+    return fold_slot_checkpoint(require_name(name), units, slot=slot), 0
 
 
 #: Per ``(data home, crewmate slot)``, the part revisions the last ``workers`` read

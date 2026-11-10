@@ -710,7 +710,18 @@ def _signing_key_refusal_lines() -> list[str]:
 
 
 def _print_token_url(port: int) -> None:
-    """Wait for the gateway to come up, then print a fresh token URL."""
+    """Wait for the gateway to come up, then print a fresh token URL.
+
+    Only to a terminal (``dashboard.urls.login_link_may_print``). Any other stdout is
+    a log something keeps: Dev Fleet's detached restart appends this command's output
+    to ``gateway.log``, where a reader could redeem the link for a dashboard session.
+    That run mints nothing and names ``kirocrew token`` instead.
+    """
+    from kiro_crew.dashboard.urls import login_link_may_print
+
+    if not login_link_may_print():
+        print("\n🔑 Sign in: run kirocrew token for a sign-in link")
+        return
     deadline = time.monotonic() + _RESTART_TOKEN_WAIT
     while time.monotonic() < deadline:
         try:

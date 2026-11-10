@@ -19,10 +19,8 @@ Structured output (``schema=``) is handled upstream by the runner via
 so this module only needs to return the model's text.
 
 Kept out of the hot import path: ``SessionManager`` etc. are passed IN (the
-gateway wires them at startup), so this module imports only ``llm_helpers`` types
-and has no side effects on import. It is NOT in the F1 engine layering graph
-(``dsl→context→runner``); it's an optional production adapter the gateway supplies
-as ``agent_fn``.
+gateway wires them at startup), so importing this module has no side effects.
+It is an optional adapter the gateway supplies as ``agent_fn``, not an engine layer.
 """
 
 from __future__ import annotations
@@ -38,10 +36,12 @@ from kiro_crew.acp_backends import (
     selectable_backends,
     selectable_stored_backend_values,
 )
+from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_REASON_CANCEL_UNACKED, STOP_REASON_CANCELLED
 from kiro_crew.agent_sdk.mcp_problems import UNATTENDED_MCP_WAIT_SECS, wait_for_declared_mcp
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
 from kiro_crew.security import redact
+from kiro_crew.workflows import WorkflowStepInterrupted
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,49 @@ AgentFn = Callable[[str, dict], Any]
 # Per-step tool-call ceiling. Generous enough for any realistic agent step,
 # but prevents infinite tool loops from prompt injection.
 _MAX_TURNS_PER_STEP = 200
+
+#: Stop reasons of a turn something outside the step ended: a session cancel
+#: (the gateway stopping, a session reset) or a cancel the backend never acked.
+#: A workflow never cancels its own step's turn -- a run cancel or a per-task
+#: timeout cancels the awaiting task instead -- so text collected before one of
+#: these is a cut-off answer, not the step's result.
+_INTERRUPTED_STOP_REASONS = frozenset({STOP_REASON_CANCELLED, STOP_REASON_CANCEL_UNACKED})
+
+
+class StepStopWatch:
+    """Records a step turn's stop reason; pass :meth:`on_complete` to ``stream_and_collect``.
+
+    Shared by both executors. :meth:`raise_if_interrupted` raises
+    :class:`WorkflowStepInterrupted` for an ``_INTERRUPTED_STOP_REASONS`` stop, so
+    the step fails instead of recording the cut-off text as its result.
+    """
+
+    def __init__(self) -> None:
+        self.stop_reason = ""
+
+    def on_complete(self, event: Any) -> None:
+        self.stop_reason = str(getattr(event, "stop_reason", "") or "")
+
+    def raise_if_interrupted(self) -> None:
+        if self.stop_reason in _INTERRUPTED_STOP_REASONS:
+            raise WorkflowStepInterrupted(
+                f"agent turn was stopped before it finished ({self.stop_reason})"
+            )
+
+
+def step_text(refusals: list[str], text: str, *, has_schema: bool) -> str:
+    """A step's text, led by its directive refusals unless the step has a ``schema=``.
+
+    A ``schema=`` step's text is parsed as JSON, and a refusal line ahead of a
+    scalar reply would fail that parse and spend the step's re-asks. There the
+    refusal stays in its SEL ``denied`` row and the step's log line only.
+    """
+    if not refusals:
+        return text
+    if has_schema:
+        logger.info("workflow step: refused %d person-only directive(s)", len(refusals))
+        return text
+    return "\n\n".join([*refusals, text])
 
 
 class WorkflowSpawnRefused(Exception):
@@ -151,15 +194,11 @@ async def vet_step_spawn(
     The cwd leg IS offloaded -- a config load plus ``realpath``/``isdir``, the same
     work ``spawn_warm`` offloads -- and only when a directory was actually named.
     """
-    # Function-local, deliberately, against the ``top-level-imports`` rule
-    # (advisory). Two measured reasons, so a later reader can re-judge it rather
-    # than guess: importing ``kiro_crew.subagent`` here adds 133 modules and
-    # ~104ms to importing this module, which is the "kept out of the hot import
-    # path" contract at the top of this file; and this module sits UNDER
-    # ``workflows/service.py``, which ``slack/gateway.py`` imports, while
-    # ``kiro_crew.subagent`` imports ``kiro_crew.slack.format`` -- that chain is
-    # acyclic only while ``slack/__init__`` stays lazy, so a module-scope import
-    # would make this file depend on that staying true.
+    # Function-local despite the advisory ``top-level-imports`` rule: importing
+    # ``kiro_crew.subagent`` adds 133 modules and ~104ms to this module's import,
+    # and ``kiro_crew.subagent`` imports ``kiro_crew.slack.format`` while
+    # ``slack/gateway.py`` imports ``workflows/service.py`` (which imports this
+    # module); that chain is acyclic only while ``slack/__init__`` stays lazy.
     from kiro_crew.subagent import _vet_spawn_governance, validate_cwd
 
     denial = _vet_spawn_governance(session_key, agent or "", app=app)
@@ -197,29 +236,15 @@ async def persist_step_usage_row(
 ) -> None:
     """Write ONE per-turn workflow usage row through the existing usage writer.
 
-    The single source of truth for the ``ctx.agent()`` step usage row, shared by
-    both executors: the cold-start path (``build_agent_fn``) and the default warm
-    pool (``agent_pool``'s pooled worker and its unpooled overflow leg), so every
-    step attributes its spend through the same writer.
+    Shared by both executors (``build_agent_fn`` and ``agent_pool``'s pooled and
+    overflow legs). ``slot_key`` is the step session's real key (``wf:``,
+    ``wf-pool:`` or ``wf-unpooled:``). ``provider`` doubles as ``model_source`` so
+    the writer can name the model that ran when the caller resolved none.
 
-    ``slot_key`` is the step session's REAL key (``wf:``, ``wf-pool:`` or
-    ``wf-unpooled:``); the row is attributed to exactly the session that ran.
-    ``surface``/``trigger`` are fixed ``"workflow"`` — one surface for one
-    concept, the same values every path writes — and ``provider`` doubles as the
-    live ``model_source`` so the writer can name the model that actually ran when
-    the caller resolved none.
-
-    Best-effort analytics that must never break the workflow run — but the guards
-    are deliberately NARROW. A single wide try around the import + context read +
-    persist would swallow ANY of them at debug, so one import failure or a
-    context-read failure would silently drop the ENTIRE row (the workflow surface
-    writing zero rows).
-
-    The import stays function-local on purpose: kiro_crew.dashboard.handlers.usage
-    pulls in the slack handler chain, so a module-scope import can raise
-    ImportError under some import orders. A genuine failure here is a real wiring
-    bug, so surface it (warning) instead of hiding it — while still not aborting
-    the run.
+    Best-effort: it never breaks the run, but each guard is narrow so one failing
+    read cannot silently drop the whole row. The import is function-local because
+    kiro_crew.dashboard.handlers.usage pulls in the slack handler chain and can
+    raise ImportError under some import orders; that is a wiring bug, so it warns.
     """
     try:
         from kiro_crew.dashboard.handlers.usage import (
@@ -342,16 +367,27 @@ def build_agent_fn(
                     agent=opts.get("agent") or default_agent,
                     cwd=step_cwd or cwd,
                 )
+            # A step is never a person's turn and no session applier reads its
+            # stream, so a person-only directive it calls is refused out loud.
+            from kiro_crew.dashboard.session_directive_apply import (
+                person_only_directive_refuser,
+            )
+
+            stop = StepStopWatch()
+            refusals: list[str] = []
             text = await stream_and_collect(
                 provider,
                 prompt,
                 approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
                 max_turns=_MAX_TURNS_PER_STEP,
+                on_complete=stop.on_complete,
+                on_event=person_only_directive_refuser(key, refusals),
             )
+            text = step_text(refusals, text, has_schema=opts.get("schema") is not None)
             # ── Per-turn usage row: attribute workflow spend. ──
-            # One shared writer for both executors (see persist_step_usage_row);
-            # the pooled path calls the same helper so the default workflow path
-            # is not the only one that writes no row.
+            # One shared writer for both executors (see persist_step_usage_row).
+            # Written before the stop check: a turn cut off from outside still
+            # spent what it spent.
             await persist_step_usage_row(
                 slot_key=key,
                 model=opts.get("model") or default_model or "",
@@ -359,6 +395,7 @@ def build_agent_fn(
                 agent=opts.get("agent") or default_agent or "",
                 elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
             )
+            stop.raise_if_interrupted()
             # Apply canonical output redaction to prevent credential or
             # exfiltration-URL leakage into workflow results stored in history
             # or injected into parent chat.

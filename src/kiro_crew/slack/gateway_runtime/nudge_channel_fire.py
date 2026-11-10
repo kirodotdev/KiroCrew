@@ -354,6 +354,8 @@ async def _fire_slack_inner_nudge(
                 # other channel constructors.
                 audit_session_key=key,
                 audit_agent=_get_agent_for_session(key) or "kirocrew",
+                hook_agent=_get_agent_for_session(key) or "",
+                is_new_session=is_new,
             )
             response = await asyncio.wait_for(
                 driver.run(full_msg),

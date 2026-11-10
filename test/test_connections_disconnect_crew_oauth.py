@@ -201,7 +201,7 @@ async def test_connect_uses_crews_sign_in_only_where_routing_does(
 
     started: list[str] = []
 
-    async def _crew_start(slug: str) -> str:
+    async def _crew_start(slug: str, project_dirs=None) -> str:
         started.append(slug)
         return "crew-tok"
 

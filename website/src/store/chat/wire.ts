@@ -132,6 +132,15 @@ export function queueEntryKnowledgeEnvelope(meta: unknown): { knowledgeEnvelope?
   return e && typeof e === 'object' && Number.isInteger(e.len) && typeof e.hash === 'string' ? { knowledgeEnvelope: { len: e.len as number, hash: e.hash } } : {}
 }
 
+/** The steer's decision receipt (`meta.decisions_strip`) a `queue_pop` frame
+ *  carries when the drained entry supersedes a requeued steer row: that row is
+ *  about to be hidden, so the rebuilt row must draw the receipt instead.
+ *  Copied only as a plain object; `readSteerRecord` validates it at render. */
+export function queueEntryDecisionStrip(meta: unknown): { decisions_strip?: Record<string, unknown> } {
+  const strip = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).decisions_strip : undefined
+  return strip && typeof strip === 'object' && !Array.isArray(strip) ? { decisions_strip: strip as Record<string, unknown> } : {}
+}
+
 /** Display correlation only; no other queue metadata grants client authority. */
 export function queueEntrySendId(meta: unknown): { sendId?: string } {
   const id = meta && typeof meta === 'object' ? (meta as Record<string, unknown>).sendId : undefined

@@ -40,6 +40,13 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_VALUE,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing.ids import unallocatable_pids
+
+#: Fake slice pids no OS can issue: ``_unowned`` drops ``os.getpid()``, which a
+#: literal in the agent slice can equal on an xdist worker. Three tool/harness
+#: pairs; the second of each is the managed pid, so order-dependent kill
+#: assertions are unchanged.
+_TOOL_A, _CTRL_A, _TOOL_B, _HARNESS_B, _CTRL_C1, _CTRL_C2 = sorted(unallocatable_pids(6))
 
 _SRC = Path(sandbox.__file__).resolve().parent
 
@@ -308,11 +315,11 @@ def test_a_sandbox_tool_leaves_the_population_before_it_is_counted() -> None:
     """
     killed: list[int] = []
     audited: list[tuple[int, str, str]] = []
-    # 4101 is the tool: marked, and not a harness. 4102 is the control harness.
+    # _TOOL_A is the tool: marked, and not a harness. _CTRL_A is the control harness.
     reconciler = _reconciler(
-        kernel={4101, 4102},
-        sandbox_tools={4101},
-        managed={4102},
+        kernel={_TOOL_A, _CTRL_A},
+        sandbox_tools={_TOOL_A},
+        managed={_CTRL_A},
         killed=killed,
         audited=audited,
     )
@@ -322,9 +329,9 @@ def test_a_sandbox_tool_leaves_the_population_before_it_is_counted() -> None:
     second = reconciler.run_once()
 
     assert second.unowned_alive == 1
-    assert killed == [4102], "the tool is spared and the control pid is signalled"
+    assert killed == [_CTRL_A], "the tool is spared and the control pid is signalled"
     assert all(
-        pid != 4101 for pid, _outcome, _why in audited
+        pid != _TOOL_A for pid, _outcome, _why in audited
     ), "an excluded pid collects no attribution row at all"
 
 
@@ -340,13 +347,16 @@ def test_a_harness_inside_a_tool_tree_stays_a_candidate() -> None:
     """
     killed: list[int] = []
     reconciler = _reconciler(
-        kernel={4111, 4112}, sandbox_tools={4111, 4112}, managed={4112}, killed=killed
+        kernel={_TOOL_B, _HARNESS_B},
+        sandbox_tools={_TOOL_B, _HARNESS_B},
+        managed={_HARNESS_B},
+        killed=killed,
     )
 
     reading = reconciler.run_once()
     assert reading.unowned_alive == 1, "the leaked harness is still counted"
     reconciler.run_once()
-    assert killed == [4112], "the harness is reachable and the tool is not"
+    assert killed == [_HARNESS_B], "the harness is reachable and the tool is not"
 
 
 def test_an_unreadable_marker_does_not_exclude() -> None:
@@ -356,12 +366,12 @@ def test_an_unreadable_marker_does_not_exclude() -> None:
     which is exactly where they sit on a host with no marker at all.
     """
     killed: list[int] = []
-    reconciler = _reconciler(kernel={4201, 4202}, tool_check_raises=True, killed=killed)
+    reconciler = _reconciler(kernel={_CTRL_C1, _CTRL_C2}, tool_check_raises=True, killed=killed)
 
     reading = reconciler.run_once()
     assert reading.unowned_alive == 2
     reconciler.run_once()
-    assert sorted(killed) == [4201, 4202]
+    assert sorted(killed) == [_CTRL_C1, _CTRL_C2]
 
 
 def test_the_exclusion_reads_the_marker_from_a_fixture_process_table(tmp_path: Path) -> None:

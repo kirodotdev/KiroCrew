@@ -77,6 +77,9 @@ class Task:
     superseded: bool = False
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
+    # A file, relative to the step's work directory, where the step reports its
+    # own outcome; a "failed" status there fails the step (task_status_file).
+    status_file: str = ""
     depends_on: list[int] = field(default_factory=list)
     priority: str = "medium"
     story_points: int = 0

@@ -58,8 +58,8 @@ def vault_holds_identity(*, warn: bool = True) -> bool:
     The spawn-time question the KAS relay asks before choosing its auth owner
     (:mod:`kiro_crew.acp.kas_host_auth`), also reported by ``kirocrew doctor``
     and asked by the dashboard's usage poll. Answered by the shared sign-in
-    resolver (:func:`kiro_crew.enterprise_sign_in.select`, oss policy), so it picks
-    the source the enterprise checks pick: a vault entry means the vault and only
+    resolver (:func:`kiro_crew.lts_sign_in.select`, oss policy), so it picks
+    the source the LTS checks pick: a vault entry means the vault and only
     the vault; an empty vault means kiro-cli (``False``). A lapsed entry, or a vault
     that cannot be read, is still ``True`` (fail closed): the spawn is Crew-owned
     and its first token callback reports "not signed in", never a silent switch to
@@ -77,7 +77,7 @@ def vault_holds_identity(*, warn: bool = True) -> bool:
     # are never mixed: a lapsed or unreadable vault keeps the spawn Crew-owned, where
     # its first token callback fails as "not signed in" instead of quietly running
     # as kiro-cli's account.
-    from kiro_crew import enterprise_sign_in as sign_in
+    from kiro_crew import lts_sign_in as sign_in
 
     try:
         chosen = sign_in.select(policy=sign_in.OSS)

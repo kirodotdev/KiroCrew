@@ -72,6 +72,8 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
       // Empty string is a real claim (the root lane); only undefined means the
       // caller makes no assumption about which container it computed against.
       post('/api/chat/folders/reorder', expectedParent === undefined ? { orders } : { orders, expected_parent: expectedParent }).then(j),
+    /** Close every folder in ONE write, so the tree is never left half closed. */
+    collapseAllChatFolders: () => post('/api/chat/folders/collapse-all').then(j),
     deleteChatFolder: (id: string) => del('/api/chat/folders/' + encodeURIComponent(id)).then(j),
     /** Delete every folder whose subtree holds no live session and no setting.
      *  `dryRun` lists the ids (and how many archived sessions each one holds)

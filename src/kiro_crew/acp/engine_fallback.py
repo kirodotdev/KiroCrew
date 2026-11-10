@@ -467,6 +467,10 @@ class EngineFallbackTracker:
                 _serve(owner, to)
                 if not is_unpinned_pick(getattr(owner, "_model", "")):
                     owner._model = to
+                if getattr(owner, "inherited_model", ""):
+                    # The engine moved the session off the model it inherited, so a
+                    # fresh conversation must not put it back.
+                    owner.inherited_model = ""
                 self._turn_restore = None
                 self._turn_override = ""
                 continue

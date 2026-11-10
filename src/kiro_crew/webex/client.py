@@ -75,28 +75,20 @@ def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
 # backoff curve so it cannot hot-loop with zero delay. Mirrors WeComClient.
 _MIN_HEALTHY_CONN_SECS = 5.0
 
-# Minimum quiet time between unparseable-frame WARNINGs on one connection
-# (repeats inside the window log at DEBUG; a reconnect starts a fresh window —
-# bounded to roughly one WARNING per _MIN_HEALTHY_CONN_SECS in the worst
-# close-and-reconnect case, and reconnect churn is already surfaced by
-# _run_loop's own disconnect warnings). A peer interleaving non-JSON frames
-# must not flood WARNING at socket rate, while the window re-arms so genuine
-# corruption later on a long-lived connection still surfaces.
+# Minimum quiet time between unparseable-frame WARNINGs on one connection;
+# repeats inside the window log at DEBUG and a reconnect starts a fresh window.
+# Non-JSON frames must not flood WARNING at socket rate, but later corruption on
+# a long-lived connection still surfaces.
 _UNPARSEABLE_WARN_INTERVAL_SECS = 60.0
 
 # Seam for tests: patching time.monotonic itself would perturb asyncio's own
 # loop.time() process-wide.
 _monotonic = time.monotonic
 
-# How many recently-dispatched message ids to remember for deduplication.
-#
-# The device WebSocket redelivers an activity that was not acknowledged, and a
-# reconnect can replay one the previous connection already handed off. Without a
-# dedup memory the same user message starts a SECOND turn, or — worse — arrives
-# while the first is still running and gets folded in as a mid-turn steer, so the
-# agent is steered by an echo of the instruction it is already following.
-# Bounded FIFO: only the recent window can plausibly be redelivered, and an
-# unbounded set on a long-lived gateway is a leak.
+# How many recently-dispatched message ids to remember for deduplication. The
+# device WebSocket redelivers unacknowledged activities and a reconnect can replay
+# one, which would start a second turn or fold an echo in as a mid-turn steer.
+# Bounded FIFO: only the recent window can be redelivered.
 _DEDUP_WINDOW = 512
 
 # Activity verbs this client accepts, as a POSITIVE set rather than a widened
@@ -728,14 +720,9 @@ class WebexClient:
             }
             await ws.send_json(auth_frame)
             logger.info("Webex WS connected and authorized")
-            # cast, and deliberately to the UNPARAMETERIZED type: aiohttp makes
-            # ClientWebSocketResponse generic over its autoping flag, so
-            # ``ws_connect`` yields ``[bool]`` while the attribute's bare
-            # annotation resolves to the default ``[Literal[True]]``. Which
-            # parameter it carries is irrelevant here — the socket only ever sends
-            # an ack frame — and the versions differ between the two
-            # Python lanes, so subscripting the annotation would fix one and break
-            # the other.
+            # Cast to the UNPARAMETERIZED type: aiohttp's generic autoping
+            # parameter differs between the two Python lanes' versions, so
+            # subscripting the annotation would fix one lane and break the other.
             self._ws = cast("aiohttp.ClientWebSocketResponse", ws)
             self.ready.set()
             self.last_error = ""
@@ -756,20 +743,11 @@ class WebexClient:
                             )
                             frame = json.loads(raw)
                         except (ValueError, RecursionError):
-                            # ValueError covers JSONDecodeError and
-                            # UnicodeDecodeError (both subclasses) AND the
-                            # plain ValueError json.loads raises for an
-                            # over-long integer literal (int()'s digit limit,
-                            # Python 3.10.7+/3.11+) — well-formed JSON syntax,
-                            # so no JSONDecodeError precedes it. RecursionError:
-                            # json.loads recurses per nesting level, so a
-                            # deeply nested frame is unparseable input, not a
-                            # handler bug. The log is content-free (byte
-                            # length only, never the frame) and rate-limited:
-                            # a peer interleaving non-JSON frames must not
-                            # amplify into WARNING at socket rate, while a
-                            # quiet period re-arms the WARNING so later
-                            # corruption on a long-lived connection surfaces.
+                            # ValueError covers JSONDecodeError, UnicodeDecodeError
+                            # and the over-long integer literal (int()'s digit
+                            # limit); RecursionError a deeply nested frame. The log
+                            # is content-free (byte length only) and rate-limited
+                            # (see _UNPARSEABLE_WARN_INTERVAL_SECS).
                             size = (
                                 len(msg.data)
                                 if isinstance(msg.data, (bytes, bytearray))
@@ -931,20 +909,10 @@ class WebexClient:
             if verb == VERB_CARD_ACTION
             else self._hydrate_and_dispatch(public_id)
         )
-        # The dedup mark goes in BEFORE the fetch and the ack goes out AFTER it,
-        # and the two together are what make a message neither lost nor doubled.
-        #
-        # Acking first (the obvious order, since the ack stops redelivery) means a
-        # transient REST failure during hydration silently drops the message for
-        # good: the activity is acknowledged, so Webex never sends it again, and
-        # the dedup mark would refuse it if it did. Marking-but-not-acking is the
-        # inverse: the mark absorbs a redelivery that races the fetch, while the
-        # missing ack leaves Webex free to try again once the fetch has actually
-        # failed and released the id.
-        #
-        # A failure downstream of hydration — the TURN itself — is deliberately
-        # NOT retried. It has already been dispatched, so a redelivery would fold
-        # into the running turn as a steer rather than answering anything.
+        # Dedup mark BEFORE the fetch, ack AFTER it, so a message is neither lost
+        # nor doubled: acking first would drop it for good on a transient fetch
+        # failure, while the mark absorbs a redelivery that races the fetch. A
+        # failed TURN is not retried: a redelivery would fold into it as a steer.
         task = asyncio.create_task(self._ack_after(activity.get("id"), public_id, coro))
         self._handler_tasks.add(task)
         task.add_done_callback(self._handler_tasks.discard)
@@ -1310,13 +1278,10 @@ def _retry_after(headers: Any) -> float:
 async def _write_stream(resp: Any, dest: str) -> None:
     """Stream a response body to *dest* without holding it in memory.
 
-    Every filesystem touch here is a blocking syscall, so all three run in a
-    worker thread — the OPEN and the CLOSE as much as the writes. The gateway
-    shares one event loop with every other conversation and the liveness
-    heartbeat: a 100 MB write on it would stall all of them, and on a
-    network-backed or FUSE temp directory an open or a close (which flushes)
-    stalls just as long for the same reason. Off-loading only the middle of the
-    three leaves the cheapest-looking calls holding the loop.
+    The open, the writes and the close all run in a worker thread: the gateway
+    shares one event loop with every conversation and the liveness heartbeat, and
+    on a network-backed or FUSE temp directory an open or a flushing close stalls
+    as long as a large write.
     """
     handle = await asyncio.to_thread(open, dest, "wb")
     try:

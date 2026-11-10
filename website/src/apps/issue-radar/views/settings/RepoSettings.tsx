@@ -416,10 +416,18 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           disabled={!settingsReady}
           onClick={() => update({ notify_on_new_issue: !settings.notify_on_new_issue })}
         >
-          {i18nT('apps.issueRadar.views.settings.repoSettings.notify_me_when_a')} <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.new_issue')}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.is_opened_in')} {owner}/{repo}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.notify_me_when_a_new_issue_is_opened_in"
+            values={{ repo: `${owner}/${repo}` }}
+            components={{ newIssue: <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.new_issue')}</strong> }}
+          />
         </SettingToggle>
         <StatLine>
-          {i18nT('apps.issueRadar.views.settings.repoSettings.checks_about_once_a_minute_inside_kirocrew_no_cr')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.sign_in_no_extra_credentials_no_webhook', { provider: terms.providerName })}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.checks_once_a_minute_with_cli"
+            values={{ provider: terms.providerName }}
+            components={{ cli: <code>{terms.cli}</code> }}
+          />
         </StatLine>
         {providerKeyOf(repoRef) === 'github' && (
           <div className="mt-4 pt-3 border-t border-border">
@@ -471,7 +479,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         </div>
         <StatLine>
           {settings.workspace_path
-            ? <>{i18nT('apps.issueRadar.views.settings.repoSettings.investigate_will_run_in')} <code>{settings.workspace_path}</code>.</>
+            ? <Trans i18nKey="apps.issueRadar.views.settings.repoSettings.investigate_runs_in_path" components={{ path: <code>{settings.workspace_path}</code> }} />
             : i18nT('apps.issueRadar.views.settings.repoSettings.leave_empty_to_use_the_default_working_directory')}
         </StatLine>
       </Card>
@@ -672,7 +680,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           <AlertTriangle size={14} /> {i18nT('apps.issueRadar.views.settings.repoSettings.disconnect_repository')}
         </div>
         <p className="text-[12px] text-muted mb-3">
-          {i18nT('apps.issueRadar.views.settings.repoSettings.removes')} {owner}/{repo} {i18nT('apps.issueRadar.views.settings.repoSettings.from_issue_radar_and_deletes_its_local_cache_you')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.repoSettings.data_and')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.auth_are_untouched_you_can_reconnect_anytime')}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.removes_repo_from_issue_radar"
+            values={{ repo: `${owner}/${repo}`, provider: terms.providerName }}
+            components={{ cli: <code>{terms.cli}</code> }}
+          />
         </p>
         {confirmingDelete ? (
           <div className="flex items-center gap-2 flex-wrap">

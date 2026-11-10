@@ -528,11 +528,11 @@ Mechanics:
   `"enabled": "false"` (a truthy string) or `"enabled": 1` does not enable
   desktop control.
 - The opt-in is ANDed with the one on/off governance key `capabilities.computer_use`
-  ([rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md)
+  ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md)
   appendix row "Desktop control"; `enable_state.locked_by_policy`, policy layer
   only, fail-closed). When the policy keeps it off, `is_enabled()` answers `False`,
   the config GET carries `locked_by_policy: true`, and a PUT with `enabled: true`
-  answers 409 `locked_by_policy`. An enterprise build is off until a policy turns
+  answers 409 `locked_by_policy`. An LTS build is off until a policy turns
   the key on (D3: the baseline row is off). An `oss` build with no policy naming
   the key is unchanged. Nothing finer (apps, actions, approval) is governed.
 - The only writer is the dashboard PUT handler, which does not route through the
@@ -2432,7 +2432,8 @@ Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
 dead button that only reproduces in a packaged build.
 
 Editor links that name a file get a fourth verdict, `confirm`:
-`vscode://file/<path>` and `vscode://vscode-remote/ssh-remote+<host>/<path>`
+`vscode://file/<path>`, `vscode://file/<drive>:/<path>` (a Windows drive letter,
+local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
 (and `vscode-insiders://`), with an optional `:line[:col]`. The handler shows a
 native dialog with the full URL and hands it to the OS only if the user picks
 Open, one dialog at a time. Its "Don't ask again" box skips the dialog for

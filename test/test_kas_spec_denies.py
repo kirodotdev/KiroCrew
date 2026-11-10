@@ -79,8 +79,9 @@ _SHELL_SETTINGS = {
 # ── shell ─────────────────────────────────────────────────────────────────────
 
 
-def test_an_allowed_command_no_deny_names_runs_without_a_prompt() -> None:
-    out, grant = _project(toolsSettings=_SHELL_SETTINGS)
+@pytest.mark.parametrize("beside", [{}, {"autoAllowReadonly": True}], ids=["alone", "readonly"])
+def test_an_allowed_command_no_deny_names_runs_without_a_prompt(beside) -> None:
+    out, grant = _project(toolsSettings={"shell": {**_SHELL_SETTINGS["shell"], **beside}})
     assert CREW_ANSWERED_COMMANDS_KEY not in out, "only granted once the denies are checked"
     verdict = _judge(_shell("make build"), out, grant)
     assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
@@ -118,9 +119,10 @@ def test_an_unmatched_or_unreadable_command_still_asks(command: str) -> None:
     assert verdict.action != TOOL_AUTO_APPROVE
 
 
-def test_an_allowed_tools_shell_grant_with_denies_runs_what_no_deny_names() -> None:
+@pytest.mark.parametrize("beside", [{}, {"autoAllowReadonly": True}], ids=["alone", "readonly"])
+def test_an_allowed_tools_shell_grant_with_denies_runs_what_no_deny_names(beside) -> None:
     out, grant = _project(
-        allowedTools=["shell"], toolsSettings={"shell": {"deniedCommands": ["rm .*"]}}
+        allowedTools=["shell"], toolsSettings={"shell": {"deniedCommands": ["rm .*"], **beside}}
     )
     assert (_judge(_shell("make build"), out, grant).tier) == "spec-builtin-grant"
     assert _judge(_shell("rm notes.txt"), out, grant).tier == "spec-denies"
@@ -128,7 +130,7 @@ def test_an_allowed_tools_shell_grant_with_denies_runs_what_no_deny_names() -> N
 
 @pytest.mark.parametrize(
     "denied",
-    [["rm \\D+"], [7], "rm .*", ["make clean|npm publish"], ["\\<git.*"]],
+    [["rm \\p{N}+"], [7], "rm .*", ["make clean|npm publish"], ["\\<git.*"]],
     ids=["unreadable-entry", "not-a-string", "not-a-list", "alternation", "rust-word-boundary"],
 )
 def test_a_deny_crew_cannot_read_keeps_the_grant_at_the_prompt(denied: Any) -> None:
@@ -136,6 +138,34 @@ def test_a_deny_crew_cannot_read_keeps_the_grant_at_the_prompt(denied: Any) -> N
     out, grant = _project(toolsSettings=settings)
     assert grant is None
     assert _judge(_shell("make build"), out, grant).action == TOOL_ALLOW
+
+
+def test_a_deny_in_rust_syntax_is_checked_and_the_grant_answers_the_rest() -> None:
+    """``\\d`` is read as Rust reads it on an all-ASCII command, so the deny is
+    checked here and the grant beside it answered. A command with a non-ASCII
+    character is one the ASCII reading cannot judge, so it is not granted."""
+    settings = {
+        "shell": {"allowedCommands": ["make build", "rm .*"], "deniedCommands": [r"rm \d+"]}
+    }
+    out, grant = _project(toolsSettings=settings)
+    assert grant is not None
+    assert _judge(_shell("make build"), out, grant).tier == "spec-builtin-grant"
+    assert _judge(_shell("rm 42"), out, grant).tier == "spec-denies"
+    assert _judge(_shell("rm notes"), out, grant).tier == "spec-builtin-grant"
+    assert _judge(_shell("rm \u0663"), out, grant).action != TOOL_AUTO_APPROVE
+
+
+@pytest.mark.parametrize("order", [1, -1])
+def test_an_ascii_read_deny_never_lifts_the_refusal_another_deny_makes(order: int) -> None:
+    """``make \\w+`` cannot judge a non-ASCII command, but ``npm publish( .*)?`` beside
+    it still names ``npm publish ./caf\u00e9``, so the gate refuses it, as kiro-cli does."""
+    denied = [r"npm publish( .*)?", r"make \w+"][::order]
+    settings = {"shell": {"allowedCommands": ["npm .*"], "deniedCommands": denied}}
+    out, grant = _project(toolsSettings=settings)
+    assert grant is not None
+    verdict = _judge(_shell("npm publish ./caf\u00e9"), out, grant)
+    assert (verdict.tier, verdict.action) == ("spec-denies", TOOL_DENY)
+    assert _judge(_shell("npm test \u00e9"), out, grant).action != TOOL_AUTO_APPROVE
 
 
 @pytest.mark.parametrize(

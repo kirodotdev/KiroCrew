@@ -49,7 +49,7 @@ def _install_ceiling(policy_body, *, edition=None, monkeypatch=None):
     """Compose a context carrying the given policy and install it as active.
 
     ``edition`` is switched only after the base context is composed: an
-    enterprise build refuses to compose without its central policy, and the
+    LTS build refuses to compose without its central policy, and the
     policy under test is installed here directly rather than fetched.
     """
     from kiro_crew.config.loader import KiroCrewConfig
@@ -87,10 +87,10 @@ class TestNoPolicyDefault:
         assert all(row["source"] == "ungoverned" for row in snap["scopes"])
         assert all(row["governed"] is False for row in snap["scopes"])
 
-    def test_enterprise_unnamed_scope_reports_the_baseline(self, profiles_dir, monkeypatch):
-        # An enterprise build answers an unnamed scope from the built-in baseline,
+    def test_lts_unnamed_scope_reports_the_baseline(self, profiles_dir, monkeypatch):
+        # An LTS build answers an unnamed scope from the built-in baseline,
         # so the viewer must not call it "ungoverned" (RFC D3).
-        _install_ceiling({"version": 1, "boot": {}}, edition="enterprise", monkeypatch=monkeypatch)
+        _install_ceiling({"version": 1, "boot": {}}, edition="lts", monkeypatch=monkeypatch)
         rows = _by_scope(build_governance_policy_snapshot())
 
         assert rows["capabilities.browse"]["governed"] is True

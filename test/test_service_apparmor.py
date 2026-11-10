@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from service_helpers import (  # noqa: F401 -- fixtures are found by name
+    _booted_with_systemd,
     _clear_sudo_user,
     _no_host_env_file,
     _no_host_unit_files,
@@ -970,3 +971,162 @@ class TestAppArmorProfileValidation:
 
         self._fake_run(monkeypatch, raises=subprocess.TimeoutExpired("p", 30))
         assert aa.validate("/usr/sbin/apparmor_parser", "profile x {}")[0] is False
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the service profile is Linux-only, and validate_exec_path refuses Windows "
+    "paths outright (backslash is an AppArmor glob metachar)",
+)
+class TestServiceAttachmentFollowsUpdates:
+    """An update must not detach the service profile.
+
+    Every update installs the next version as a sibling tree,
+    ``crew-venv-<version>``, and repoints ``crew-venv-current`` at it. The
+    kernel matches an attachment against the path ``ExecStart`` resolves to, so
+    a profile attached to one tree's launcher stops applying at the first fresh
+    start after an update and the sandbox fails closed.
+    """
+
+    @staticmethod
+    def _host(monkeypatch):
+        from kiro_crew.service import apparmor as aa
+
+        monkeypatch.setattr(aa, "should_install", lambda: (True, "restricted"))
+        monkeypatch.setattr(aa, "parser_path", lambda: "/usr/sbin/apparmor_parser")
+        monkeypatch.setattr(aa, "parser_version", lambda _p: (4, 0))
+        monkeypatch.setattr(aa, "detect_abi", lambda: None)
+        monkeypatch.setattr(aa, "validate", lambda _p, _t: (True, ""))
+        monkeypatch.setattr(aa, "verify_enforcement", lambda _c, _u, _g: (True, None))
+        return aa
+
+    @staticmethod
+    def _layout(monkeypatch, root: Path):
+        from kiro_crew.platform import wheel_engine
+
+        layout = wheel_engine.ManagedVenvLayout(
+            legacy=root / "crew-venv", stable_link=root / "crew-venv-current"
+        )
+        monkeypatch.setattr(wheel_engine, "managed_venv_layout", lambda: layout)
+        return layout
+
+    @staticmethod
+    def _launcher(path: Path) -> Path:
+        path.parent.mkdir(parents=True)
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _attachment(aa, exec_path: Path) -> str:
+        """Run the real install and return what the written profile attaches to."""
+        writes: list[str] = []
+        outcome = aa.install(
+            lambda text, _dest: writes.append(text),
+            lambda *_a: None,
+            lambda *_a: (0, ""),
+            1000,
+            1000,
+            exec_path=str(exec_path),
+            expected_uid=exec_path.stat().st_uid,
+        )
+        assert outcome.ok is True and outcome.changed is True, outcome.message
+        decl = [ln for ln in writes[0].splitlines() if ln.startswith(f"profile {aa.PROFILE_NAME} ")]
+        assert len(decl) == 1, writes[0]
+        return decl[0].split('"')[1]
+
+    def test_a_versioned_tree_launcher_attaches_to_every_sibling_tree(
+        self, monkeypatch, durable_dir
+    ):
+        aa = self._host(monkeypatch)
+        layout = self._layout(monkeypatch, durable_dir)
+        self._launcher(layout.versioned_tree("0.13.0") / "bin" / "kirocrew")
+        layout.stable_link.symlink_to(layout.versioned_tree("0.13.0"))
+
+        attached = self._attachment(aa, layout.stable_link / "bin" / "kirocrew")
+
+        assert attached == f"{durable_dir.resolve()}/crew-venv-*/bin/kirocrew"
+        promoted = durable_dir.resolve() / "crew-venv-0.14.0" / "bin" / "kirocrew"
+        assert aa.attachment_covers(attached, str(promoted))
+
+    def test_a_parent_another_account_can_write_keeps_the_exact_path(
+        self, monkeypatch, durable_dir
+    ):
+        """``KIROCREW_VENV=/srv/crew`` beside another account's ``/srv/crew-dev``:
+        a glob under a parent this account does not own alone would grant the
+        other account's launcher too, so the parent must pass the launcher's
+        own takeover check."""
+        aa = self._host(monkeypatch)
+        layout = self._layout(monkeypatch, durable_dir)
+        launcher = self._launcher(layout.versioned_tree("0.13.0") / "bin" / "kirocrew")
+        parent = durable_dir.resolve()
+        checked: list[Path] = []
+
+        def takeover(path, expected_uid=None, candidate=None):
+            checked.append(path)
+            return "writable by another account" if path == parent else None
+
+        monkeypatch.setattr(aa, "_substitutable_by_others", takeover)
+
+        attached = self._attachment(aa, launcher)
+
+        assert attached == str(launcher.resolve())
+        assert parent in checked
+
+    @pytest.mark.parametrize(
+        "relative",
+        [
+            "crew-venv/bin/kirocrew",
+            "crew-dev-1.0/bin/kirocrew",
+            "crew-venv-1.0/bin/kirocrew-dev",
+            "elsewhere/bin/kirocrew",
+        ],
+    )
+    def test_a_launcher_outside_the_versioned_trees_keeps_the_exact_path(
+        self, monkeypatch, durable_dir, relative
+    ):
+        """The legacy tree, a sibling of another name, another console script
+        and a launcher outside the layout are each one file, never a family."""
+        aa = self._host(monkeypatch)
+        self._layout(monkeypatch, durable_dir)
+        launcher = self._launcher(durable_dir / relative)
+
+        assert self._attachment(aa, launcher) == str(launcher.resolve())
+
+
+class TestAttachmentCovers:
+    """The kernel's attachment-glob semantics, which doctor and the update hold share."""
+
+    _GLOB = "/home/u/.kiro/crew-venv-*/bin/kirocrew"
+
+    def test_a_star_matches_each_sibling_tree_and_never_crosses_a_slash(self):
+        from kiro_crew.service import apparmor as aa
+
+        assert aa.attachment_covers(self._GLOB, "/home/u/.kiro/crew-venv-0.13.0/bin/kirocrew")
+        assert aa.attachment_covers(self._GLOB, "/home/u/.kiro/crew-venv-0.14.0/bin/kirocrew")
+        assert not aa.attachment_covers(self._GLOB, "/home/u/.kiro/crew-venv-0/x/bin/kirocrew")
+        assert not aa.attachment_covers(self._GLOB, "/home/u/.kiro/crew-venv/bin/kirocrew")
+        assert not aa.attachment_covers(self._GLOB, "/home/u/.kiro/other/bin/kirocrew")
+        assert not aa.attachment_covers(self._GLOB, "/home/u/.kiro/crew-venv-1/bin/kirocrew-x")
+
+    def test_an_exact_attachment_covers_only_its_own_file(self):
+        from kiro_crew.service import apparmor as aa
+
+        exact = "/home/u/.kiro/crew-venv-0.13.0/bin/kirocrew"
+        assert aa.attachment_covers(exact, exact)
+        assert not aa.attachment_covers(exact, "/home/u/.kiro/crew-venv-0.14.0/bin/kirocrew")
+        # A dot is literal, not a regex wildcard.
+        assert not aa.attachment_covers(exact, "/home/u/.kiro/crew-venv-0x13.0/bin/kirocrew")
+
+    def test_a_question_mark_is_one_character_and_a_double_star_crosses_slashes(self):
+        from kiro_crew.service import apparmor as aa
+
+        assert aa.attachment_covers("/a/crew-?/kirocrew", "/a/crew-1/kirocrew")
+        assert not aa.attachment_covers("/a/crew-?/kirocrew", "/a/crew-10/kirocrew")
+        assert aa.attachment_covers("/a/**/kirocrew", "/a/b/c/kirocrew")
+
+    def test_glob_syntax_it_never_renders_is_compared_literally(self):
+        """A hand-written ``{a,b}`` or ``[...]`` attachment is not guessed at."""
+        from kiro_crew.service import apparmor as aa
+
+        assert not aa.attachment_covers("/a/{b,c}/kirocrew", "/a/b/kirocrew")
+        assert not aa.attachment_covers("/a/[bc]/kirocrew", "/a/b/kirocrew")

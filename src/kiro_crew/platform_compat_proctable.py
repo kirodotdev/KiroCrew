@@ -83,6 +83,13 @@ _DARWIN_PTI_TOTAL_SYSTEM_OFFSET = 24
 _DARWIN_RUSAGE_INFO_V2 = 2
 _DARWIN_RUSAGE_INFO_V2_SIZE = 16 + 18 * 8
 _DARWIN_RI_PHYS_FOOTPRINT_OFFSET = 16 + 7 * 8
+# ``ri_pageins`` is the fifth uint64 in ``rusage_info_v2`` (user time, system
+# time, the two wakeup counters, then pageins), so 16 bytes of ``ri_uuid`` plus
+# four uint64 fields. It counts the disk pageins this process has taken since it
+# started -- a monotonic process-wide counter, NOT per-thread, and it does NOT
+# include compressor decompressions (macOS serves most memory pressure from the
+# compressor, so this can stay flat while the process stalls paging).
+_DARWIN_RI_PAGEINS_OFFSET = 16 + 4 * 8
 
 _darwin_libproc: Any = None
 _darwin_libproc_loaded = False
@@ -232,6 +239,44 @@ def proc_phys_footprint_bytes_for_pid(pid: int) -> int | None:
     return _darwin_process_phys_footprint_bytes(pid)
 
 
+def _darwin_process_pageins(pid: int) -> int | None:
+    """macOS ``ri_pageins`` of *pid* via ``proc_pid_rusage``, or None when unreadable.
+
+    The count of disk pageins the process has taken since it started: a
+    monotonic, process-wide counter. It is NOT per-thread, and it does NOT
+    count compressor decompressions, so under memory pressure served entirely
+    from the compressor it can stay flat while the process stalls paging.
+    Needs no entitlement for a same-uid process and never spawns a subprocess.
+    """
+    lib = _darwin_libproc_handle()
+    rusage = getattr(lib, "proc_pid_rusage", None) if lib is not None else None
+    if rusage is None:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(_DARWIN_RUSAGE_INFO_V2_SIZE)
+        if rusage(pid, _DARWIN_RUSAGE_INFO_V2, buf) != 0:
+            return None
+        off = _DARWIN_RI_PAGEINS_OFFSET
+        # Both x86_64 and arm64 macOS are little-endian.
+        return int.from_bytes(buf.raw[off : off + 8], "little")
+    except Exception:
+        return None
+
+
+def proc_pageins_for_pid(pid: int) -> int | None:
+    """``ri_pageins`` of *pid* on macOS; None elsewhere or unreadable.
+
+    The process-wide disk page-in count (see ``_darwin_process_pageins``). Other
+    platforms have no equivalent and answer None. A rise between two readings of
+    one silence is the macOS analogue of the Linux loop-stall watchdog's
+    per-thread major-fault delta -- coarser, because it is process-wide, which
+    is why the deferral it feeds uses a shorter grace cap.
+    """
+    if not IS_MACOS:
+        return None
+    return _darwin_process_pageins(pid)
+
+
 def darwin_libproc_available() -> bool:
     """True when ``libproc`` loads, so the macOS memory and tree probes can answer."""
     return _darwin_libproc_handle() is not None
@@ -249,9 +294,15 @@ def darwin_footprint_tree_mb(
     attach a stranger's subtree. A pid in *exclude_pids* is skipped with its
     subtree, and a descendant whose footprint cannot be read adds nothing.
 
+    The members of *pid*'s session (:func:`darwin_session_pids`) are counted
+    with their subtrees too: a runtime is spawned as a session leader, and a
+    job its timed-out shell command left running is reparented to launchd,
+    out of every child list, while it keeps that session id.
+
     None when the root itself cannot be read: "unknown, do not judge", the
     contract :func:`proc_rss_tree_mb_for_pid` keeps on Windows. In-process
-    libproc calls only, one or two per process; executor thread, never the loop.
+    libproc calls only, one or two per process, plus one host-wide process
+    listing for the session; executor thread, never the loop.
     """
     if not IS_MACOS:
         return None
@@ -262,6 +313,12 @@ def darwin_footprint_tree_mb(
         return None
     seen = {pid}
     frontier = [pid]
+    for member in darwin_session_pids(pid) or ():
+        if member in seen or member in exclude_pids:
+            continue
+        seen.add(member)
+        total += _darwin_process_phys_footprint_bytes(member) or 0
+        frontier.append(member)
     while frontier:
         for child in darwin_child_pids(frontier.pop()) or ():
             if child in seen or child in exclude_pids:
@@ -425,8 +482,12 @@ _DARWIN_PROCARGS_ENV_BUFSIZE = 1024 * 1024
 # layout these offsets assume does not hold, so the answer is refused rather
 # than sliced out of the wrong place (the rule the libproc probes follow). A pid
 # that does not exist is not an error: the call succeeds with a zero-length
-# answer. ``KERN_PROC_PGRP`` lists every member of a process group the same way.
+# answer. ``KERN_PROC_PGRP`` lists every member of a process group the same way,
+# and ``KERN_PROC_ALL`` every process on the host. xnu has no session selector:
+# ``sysctl_prochandle`` answers ``KERN_PROC_SESSION`` (3) with ENOTSUP, so a
+# session's members are read as ``KERN_PROC_ALL`` filtered by ``getsid``.
 _DARWIN_KERN_PROC = 14
+_DARWIN_KERN_PROC_ALL = 0
 _DARWIN_KERN_PROC_PID = 1
 _DARWIN_KERN_PROC_PGRP = 2
 _DARWIN_KINFO_PROC_SIZE = 648
@@ -944,10 +1005,45 @@ def darwin_pgroup_members(pgid: int) -> list[DarwinKinfoProc] | None:
     """
     if pgid <= 0:
         return None
+    return _darwin_kinfo_members(_DARWIN_KERN_PROC_PGRP, pgid)
+
+
+def darwin_session_pids(sid: int) -> list[int] | None:
+    """Running processes whose session id is *sid* on macOS; None when unreadable.
+
+    xnu lists no process by session (see ``_DARWIN_KERN_PROC_ALL``), so this
+    reads every process on the host once and keeps those ``getsid`` places in
+    *sid*. ``getsid`` answers for any process, with no permission check
+    (``bsd/kern/kern_prot.c``). A zombie, or a process that exits before it is
+    asked, is left out.
+    """
+    if not IS_MACOS or sid <= 1:
+        return None
+    members = _darwin_kinfo_members(_DARWIN_KERN_PROC_ALL, 0)
+    if members is None:
+        return None
+    pids: list[int] = []
+    for member in members:
+        if member.zombie:
+            continue
+        try:
+            if os.getsid(member.pid) == sid:
+                pids.append(member.pid)
+        except OSError:
+            continue
+    return pids
+
+
+def _darwin_kinfo_members(selector: int, arg: int) -> list[DarwinKinfoProc] | None:
+    """Every ``kinfo_proc`` record ``KERN_PROC/<selector>/<arg>`` lists, or None.
+
+    The sized, retried read :func:`darwin_pgroup_members` describes, for any
+    selector that answers a list.
+    """
     libc = _darwin_sysctl_handle()
     if libc is None:
         return None
-    mib = (ctypes.c_int * 4)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROC, _DARWIN_KERN_PROC_PGRP, pgid)
+    mib = (ctypes.c_int * 4)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROC, selector, arg)
     slack = _DARWIN_KINFO_PGRP_SLACK
     for _attempt in range(_DARWIN_KINFO_PGRP_ATTEMPTS):
         try:
@@ -956,9 +1052,7 @@ def darwin_pgroup_members(pgid: int) -> list[DarwinKinfoProc] | None:
                 return None
         except Exception:
             return None
-        raw = _darwin_kinfo_query(
-            _DARWIN_KERN_PROC_PGRP, pgid, size.value + slack * _DARWIN_KINFO_PROC_SIZE
-        )
+        raw = _darwin_kinfo_query(selector, arg, size.value + slack * _DARWIN_KINFO_PROC_SIZE)
         if raw is not None:
             members: list[DarwinKinfoProc] = []
             for start in range(0, len(raw), _DARWIN_KINFO_PROC_SIZE):
@@ -1369,13 +1463,35 @@ def linux_pgroup_members(
     None -- off Linux, and when ``/proc`` cannot be listed -- means "unknown",
     never "empty". *proc_root* substitutes a fixture process table on every host.
     """
+    return _linux_stat_members(2, pgid, proc_root, "linux_pgroup_members")
+
+
+def linux_session_members(
+    sid: int, *, proc_root: "Path | None" = None
+) -> "dict[int, int | None] | None":
+    """``{pid: start_ticks}`` for every RUNNING process in session *sid*. Linux only.
+
+    :func:`linux_pgroup_members` keyed on the session (``stat`` field 6) instead
+    of the group, with the same reads and the same None. A process can only be
+    in a session by inheriting it from a process already in it, so every member
+    descends from the leader; and the kernel does not hand the leader's pid to a
+    new process while any member keeps the session, so *sid* names one session
+    for as long as it has members, leader alive or not.
+    """
+    return _linux_stat_members(3, sid, proc_root, "linux_session_members")
+
+
+def _linux_stat_members(
+    index: int, value: int, proc_root: "Path | None", caller: str
+) -> "dict[int, int | None] | None":
+    """Running processes whose post-``comm`` ``stat`` token *index* is *value*."""
     proc_root = _linux_proc_root(proc_root)
     if proc_root is None:
         return None
     try:
         names = os.listdir(proc_root)
     except OSError:
-        logger.debug("linux_pgroup_members: cannot list %s", proc_root, exc_info=True)
+        logger.debug("%s: cannot list %s", caller, proc_root, exc_info=True)
         return None
     members: dict[int, int | None] = {}
     for name in names:
@@ -1388,7 +1504,7 @@ def linux_pgroup_members(
             continue  # exited between the listing and the read
         if (
             tokens
-            and _stat_token_int(tokens, 2) == pgid
+            and _stat_token_int(tokens, index) == value
             and tokens[0].decode("ascii", "replace") not in _LINUX_EXITED_STATES
         ):
             members[int(name)] = _stat_token_int(tokens, 19)
@@ -1421,8 +1537,21 @@ def read_proc_status_int(pid: int, label: str, *, proc_root: "Path | None" = Non
     return None
 
 
-def proc_child_map(*, proc_root: "Path | None" = None) -> "dict[int, list[int]] | None":
+def proc_child_map(
+    *, proc_root: "Path | None" = None, session_members: bool = False
+) -> "dict[int, list[int]] | None":
     """Every live process's children, from ONE pass over ``/proc``. Linux only.
+
+    ``session_members=True`` also lists every process under the leader of its
+    session (``stat`` field 6) when that leader is not already its parent. It is
+    for MEASURING a runtime started with ``start_new_session``: a job left behind
+    by a timed-out shell command is reparented to init and drops out of the
+    parent walk, but keeps the runtime's session id. The edge is sound
+    because a process can only enter a session by inheriting it from a process
+    already in it (``setsid`` makes a NEW session, never joins one), so every
+    member descends from the leader, and the kernel does not reuse the leader's
+    pid while the session has members. It is never set on a path that signals
+    anything: those walk real parent edges only.
 
     For the caller that needs the subtrees of MANY roots at once. Asking the
     kernel per root (:func:`_proc_children`) costs one read per THREAD of every
@@ -1491,9 +1620,16 @@ def proc_child_map(*, proc_root: "Path | None" = None) -> "dict[int, list[int]] 
         except OSError:
             # Exited between the listing and the open: it is in no live tree.
             continue
-        ppid = _parse_ppid(raw)
+        tokens = _stat_tokens(raw)
+        ppid = _stat_token_int(tokens, 1)
         if ppid is not None:
             children.setdefault(ppid, []).append(int(name))
+        if session_members:
+            pid = int(name)
+            sid = _stat_token_int(tokens, 3)
+            # sid 0 is a kernel thread; a leader is not its own member.
+            if sid and sid != pid and sid != ppid:
+                children.setdefault(sid, []).append(pid)
     return children
 
 

@@ -115,6 +115,17 @@ def permissions_block_readable(raw: Any) -> bool:
     return parsed is not None
 
 
+def allow_exclude_limit() -> int:
+    """The most ``exclude`` patterns an ``allow`` rule may list and still reach KAS.
+
+    KAS ANDs an exclude list onto every statement it compiles, so a longer one is
+    not split the way a long ``match`` is: the projection leaves that allow out.
+    """
+    from kiro_crew.acp.kas_permissions import _MAX_PATTERNS_PER_RULE
+
+    return _MAX_PATTERNS_PER_RULE
+
+
 def allow_granted_by_spec(rule: dict[str, Any], spec: dict[str, Any]) -> bool:
     """Whether *spec*'s own grants already cover allow *rule* on KAS.
 
@@ -184,8 +195,9 @@ def tools_settings_unenforced(raw: Any) -> list[str]:
     cannot turn into a rule (a regex with no glob form, a URL pattern naming a
     path) and an ``allowedCommands`` entry Crew's gate cannot answer are named,
     and so is a duplicate alias key kiro-cli drops (``canonical_tools_settings``).
-    So is an ``allowedCommands`` entry using ``\\d``, ``\\s`` or ``\\w``: Crew reads
-    those over ASCII and kiro-cli over Unicode, so it is not carried exactly.
+    So is an ``allowedCommands`` entry Crew reads by ASCII (``\\d``, ``\\w``,
+    ``\\s``, ``\\b`` or ``(?i)``, ``Pattern.ascii_only``): kiro-cli reads those by
+    Unicode, so it is not carried exactly.
     Each entry is named under the spelling *raw* wrote (``aliases.as_authored``).
     """
     from kiro_crew.acp import kas_permissions
@@ -208,3 +220,19 @@ def tools_settings_unenforced(raw: Any) -> list[str]:
     return sorted(
         {aliases.as_authored(raw, path) for path in (*not_carried, *inexact)} | set(dropped)
     )
+
+
+def unreadable_allowed_commands(raw: Any) -> list[tuple[str, str, str]]:
+    """``(shell key, entry, reason)`` for each ``allowedCommands`` entry in
+    ``toolsSettings`` *raw* that Kiro Crew's gate cannot read
+    (``kas_unread_commands.unreadable_allowed_commands``), read with one key per
+    kiro-cli alias group as the gate reads it, and each key named under the
+    spelling *raw* wrote (``aliases.as_authored``). For ``kirocrew doctor``."""
+    from kiro_crew.acp import kas_permissions, kas_unread_commands
+    from kiro_crew.platform import tools_settings_aliases as aliases
+
+    settings, _dropped = kas_permissions.canonical_tools_settings(raw)
+    return [
+        (aliases.as_authored(raw, key), entry, reason)
+        for key, entry, reason in kas_unread_commands.unreadable_allowed_commands(settings)
+    ]

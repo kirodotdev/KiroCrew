@@ -536,6 +536,40 @@ def test_the_tail_is_idempotent() -> None:
     assert config == once
 
 
+# -- a kept autoApprove verb is never written into allowedTools -------------------
+
+_GRANT = "@builder-mcp/ReadInternalWebsites"
+
+
+@pytest.mark.parametrize("honour", [True, False])
+def test_the_tail_writes_no_grant_for_an_auto_approve_verb(
+    monkeypatch: pytest.MonkeyPatch, honour: bool
+) -> None:
+    """kiro-cli has no ``autoApprove`` field, so the kept verbs are granted in the
+    skill view it runs, rebuilt at every spawn. The tail adds none to the spec and
+    takes none away: a grant on file would outlive the verb that backs it, and one
+    the owner wrote in ``allowedTools`` is theirs whatever the opt-in says."""
+    from kiro_crew.config import live
+
+    cfg = KiroCrewConfig()
+    cfg.mcp.honour_auto_approve = honour
+    monkeypatch.setattr(live, "snapshot", lambda: cfg)
+    own = "@builder-mcp/OwnersOwn"
+    config = {
+        "tools": ["@builder-mcp"],
+        "allowedTools": [own],
+        "mcpServers": {
+            "builder-mcp": {
+                "command": "/opt/builder-mcp",
+                "autoApprove": ["ReadInternalWebsites", "OwnersOwn"],
+            }
+        },
+    }
+    auto_approve.govern_spec(config, agent_filename="x.json", source="t")
+    assert ("autoApprove" in config["mcpServers"]["builder-mcp"]) is honour
+    assert config["allowedTools"] == [own]
+
+
 # -- the fork refresh is a caller too ---------------------------------------------
 
 

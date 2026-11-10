@@ -458,14 +458,92 @@ async def handle_pod_token(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
-def _audit(request: web.Request, operation: str, result: dict[str, Any], *, target: str) -> None:
-    """One SEL record per mutation, mirroring the backend's ``_audited`` decorator."""
+#: Result ``code``s that are a 503 (no OS sandbox backend, so a step did not run)
+#: rather than a 409 the caller can act on. The action answers ``sandbox_unavailable``
+#: whichever step met the missing backend -- a network read, the fetch or a strict
+#: local step. Everything else it emits -- unpublished, unresolved, path_exists,
+#: name_taken, bad_dest, filter_declared, partial_clone, fetch_failed, provenance_mismatch,
+#: git_failed -- is a 409: a state the operator can change (publish a release, remove
+#: the tree, hydrate the clone) rather than a failure of this request's own machinery.
+_CREATE_WORKTREE_503_CODES = frozenset({"sandbox_unavailable"})
+
+
+@_require_enabled
+@_require_owner_human("dev_fleet_create_release_worktree")
+async def handle_create_release_worktree(request: web.Request) -> web.Response:
+    """POST /api/apps/dev-fleet/create-release-worktree — no body.
+
+    Create ``release-channel-stable`` as a sibling worktree detached at the newest
+    stable release the remote advertises. OWNER-ONLY and refused for every app
+    principal, Dev Fleet's own included: the checkout reads the repository's own
+    ``.git/config`` and follows ``include.path``, so it must run at the strict tier
+    with credentials bind-masked, which only a gateway-driven spawn gets -- a
+    ``mode="strict"`` spawn from inside the sandboxed backend is a nested passthrough
+    that masks no files. An app token is readable by every build child in that
+    backend's namespace, so it must never drive this.
+
+    The server resolves the tag, its advertised commit, and the destination path
+    itself -- the request carries nothing an attacker could steer.
+    """
+    refused = await _ensure_repo()
+    if refused is not None:
+        return refused
+    # Imported on first use, like ``handle_pod_token``: ``release_worktree`` pulls in
+    # the dashboard checkout helpers and the sandbox layer, which a gateway running an
+    # app that is off by default should not pay for at startup.
+    from kiro_crew.apps.builtins.dev_fleet import release_worktree
+
+    try:
+        result = await release_worktree.create_release_worktree()
+    except repository.RepoUnavailable as exc:
+        return web.json_response(
+            {
+                "ok": False,
+                "code": "repo_not_configured",
+                "error": f"Dev Fleet main checkout unavailable: {runtime._redact(str(exc))}",
+            },
+            status=409,
+        )
+    except asyncio.CancelledError:
+        # A gateway restart or shutdown cancels this handler, and the checkout settles
+        # before the cancellation lands (`_run_uninterruptible`), so the tree can exist
+        # with no reply sent. The request is recorded before the cancellation propagates.
+        _audit(
+            request,
+            "dev_fleet_create_release_worktree",
+            {"error": "cancelled before a result was returned; the worktree may exist"},
+            target=release_worktree.WORKTREE_NAME,
+            outcome="cancelled",
+        )
+        raise
+    _audit(request, "dev_fleet_create_release_worktree", result, target=str(result.get("ref", "")))
+    if result.get("ok"):
+        return web.json_response(result)
+    status = 503 if result.get("code") in _CREATE_WORKTREE_503_CODES else 409
+    return web.json_response(
+        {"ok": False, "code": result.get("code"), "error": result.get("error")}, status=status
+    )
+
+
+def _audit(
+    request: web.Request,
+    operation: str,
+    result: dict[str, Any],
+    *,
+    target: str,
+    outcome: str | None = None,
+) -> None:
+    """One SEL record per mutation, mirroring the backend's ``_audited`` decorator.
+
+    ``outcome`` replaces the success/denied reading of ``result`` for a request that
+    ended without one (``cancelled``).
+    """
     ok = bool(result.get("ok"))
     try:
         sel().log_api_access(
             caller=_caller(request),
             operation=operation,
-            outcome="success" if ok else "denied",
+            outcome=outcome or ("success" if ok else "denied"),
             source="dev_fleet_gateway",
             resources=runtime._redact(target) if target else "",
             error="" if ok else runtime._redact(str(result.get("error") or "")),
@@ -504,11 +582,13 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post(f"{API_PREFIX}/restart-gateway", handle_restart_gateway)
     app.router.add_post(f"{API_PREFIX}/make-live", handle_make_live)
     app.router.add_post(f"{API_PREFIX}/pod-token", handle_pod_token)
+    app.router.add_post(f"{API_PREFIX}/create-release-worktree", handle_create_release_worktree)
 
 
 __all__ = (
     "API_PREFIX",
     "APP_NAME",
+    "handle_create_release_worktree",
     "handle_live_target",
     "handle_make_live",
     "handle_pod_token",

@@ -224,7 +224,9 @@ describe('Updates sub-page — list rendering', () => {
     // The pending row's button swaps to the in-flight form and disables;
     // its accessible name changes with it, so locate it by the new label.
     const pendingButton = await screen.findByRole('button', { name: 'pages.discoverPage.updating' })
-    expect(pendingButton).toBeDisabled()
+    // Held, not natively disabled: it is the pressed button and keeps focus
+    // (UpdatesList.focus.test.tsx); a press while held is refused.
+    expect(pendingButton).toHaveAttribute('aria-disabled', 'true')
     // EVERY row freezes while one update runs: `updatePending` is a single
     // slot, so a clickable sibling would invite a dispatch the hook refuses —
     // a dead click. Mirrors the Update All freeze.
@@ -265,11 +267,11 @@ describe('Updates sub-page — list rendering', () => {
     renderDiscover('/apps/-/updates')
 
     fireEvent.click(updateAllButton())
-    // The disabled button IS the progress surface.
+    // The held button IS the progress surface.
     await waitFor(() =>
       expect(updateAllButton()).toHaveTextContent('pages.appsPage.updating_progress {"done":0,"total":2}'),
     )
-    expect(updateAllButton()).toBeDisabled()
+    expect(updateAllButton()).toHaveAttribute('aria-disabled', 'true')
     for (const btn of rowUpdateButtons()) expect(btn).toBeDisabled()
 
     await act(async () => { deferred[0].resolve() })

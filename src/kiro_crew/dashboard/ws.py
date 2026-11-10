@@ -687,8 +687,9 @@ def _handle_slot_focused(
     at most one pending prefetch per connection (a repeat frame for the slot
     whose prefetch is still pending keeps it) — only the task this path
     created is touched, never one armed by the slot-create/project-set
-    intent signals. ``slot_key`` of ``None``/empty means blur (tab hidden,
-    no focused slot): cancel and do nothing else.
+    intent signals, and a reload's respawn (a resume start that reports its
+    end) is kept as it is. ``slot_key`` of ``None``/empty means blur (tab
+    hidden, no focused slot): cancel and do nothing else.
 
     Returns the task now pending for this socket, if any.
     """
@@ -729,6 +730,15 @@ def _handle_slot_focused(
     # and then no-op — silently gutting the fresh eager-spawn path for every
     # new slot. Non-resumable focus preserves whatever task is pending.
     if not sessions.resumable_hint(session_key):
+        return None
+    # A reload's respawn is already pending for this slot: it performs this
+    # same load, and re-arming would cancel it and start over at the debounce,
+    # dropping its priority and the row its reload posts. It is not this
+    # socket's to cancel. Another window's focus prefetch is re-armed instead,
+    # so the window now focused tracks it and the other's blur cannot cancel it.
+    pending = getattr(slot, "_eager_spawn_task", None)
+    reported = getattr(slot, "_eager_spawn_reported_resume", False)
+    if pending is not None and not pending.done() and reported:
         return None
     return schedule_eager_spawn(state, slot, allow_resume=True)
 

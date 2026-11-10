@@ -198,6 +198,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "unconsolidated_count": ("function", "028659ce42ac", "history_marker"),
     "update_metadata": ("function", "5e1ab1217b61", "history"),
     "update_metadata_if": ("function", "316452efe533", "history"),
+    "warm_listing_index": ("function", "a0bbc81108fa", "history"),
     "warm_search": ("function", "b60c5fea256e", "history"),
 }
 

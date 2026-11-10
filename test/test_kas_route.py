@@ -468,6 +468,48 @@ class TestHarnessRoute:
         assert "kiro-cli login" not in text
         assert kas_engine_install.install_snapshot()["error"]
 
+    @pytest.mark.asyncio
+    async def test_a_host_that_cannot_run_the_engine_is_not_told_to_retry(
+        self, tmp_path, switch_open, monkeypatch
+    ):
+        """Amazon Linux 2 with kiro-cli signed out: the bundle route is taken, and the
+        host's glibc is below the engine's floor. No reconnect or retry changes that,
+        so the refusal carries no retry advice and the retry layer reads it as final."""
+        from kiro_crew.llm_helpers import acp_error_is_transient
+
+        monkeypatch.setattr(kas_route, "kiro_cli_signed_out", lambda **k: True)
+        monkeypatch.setattr(kas_route, "crew_entry_skips_launcher", lambda *a: False)
+
+        def unsupported(*a, **k):
+            raise kas_bundle.KasHostUnsupported(
+                "this host's glibc (2.26) is older than KAS requires (glibc 2.28+). "
+                "Nothing was installed."
+            )
+
+        with (
+            patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=False),
+            patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", _a_bin),
+            patch("kiro_crew.acp.harness.kas.vault_holds_identity_off_loop", return_value=False),
+            patch.object(kas_bundle, "installed_bundle", return_value=None),
+            patch.object(kas_bundle, "install_pinned", side_effect=unsupported),
+        ):
+            with pytest.raises(AcpRuntimeError) as caught:
+                await KasHarness().resolve_spawn(_ctx(tmp_path))
+        text = str(caught.value)
+        assert text.startswith(
+            "KAS runs on Kiro Crew's own engine because kiro-cli is not signed in."
+        )
+        assert "glibc (2.26)" in text
+        error = kas_engine_install.install_snapshot()["error"]
+        assert "glibc (2.26)" in error
+        for shown in (text, error):
+            assert "retry" not in shown.lower()
+            assert "connect it first" not in shown
+            assert "kirocrew kas install" not in shown
+        # On the type, not read from the prose: a reworded cause cannot turn it retryable.
+        assert getattr(caught.value, "transient", None) is False
+        assert acp_error_is_transient(caught.value) is False
+
 
 # ── the pin reaches the spawn ──────────────────────────────────────────────────
 
@@ -612,6 +654,26 @@ class TestEngineInstaller:
         )
         with pytest.raises(kas_bundle.KasBundleError, match="--version 0.99.0 --unpinned"):
             kas_engine_install.install_pinned_engine("https://h.test", caller="spawn")
+
+    def test_a_host_that_cannot_run_the_engine_keeps_its_type(self, monkeypatch):
+        """The dashboard's Install and a spawn both see ``KasHostUnsupported``, not a
+        transfer failure, with the cause and no offline or retry advice."""
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+
+        def unsupported(*a, **k):
+            raise kas_bundle.KasHostUnsupported(
+                "KAS bundles are not published for this operating system (plan9)"
+            )
+
+        monkeypatch.setattr(kas_bundle, "install_pinned", unsupported)
+        with pytest.raises(kas_bundle.KasHostUnsupported) as caught:
+            kas_engine_install.install_pinned_engine("https://h.test", caller="dashboard")
+        assert "(plan9)" in str(caught.value)
+        assert "connect it first" not in str(caught.value)
+        snapshot = kas_engine_install.install_snapshot()
+        assert snapshot["running"] is False
+        assert "(plan9)" in snapshot["error"]
+        assert "retry" not in snapshot["error"].lower()
 
     def test_an_installed_engine_installs_nothing(self, tmp_path, monkeypatch):
         installed = _installed(tmp_path)

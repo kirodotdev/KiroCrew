@@ -97,6 +97,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         census_projected_aliases,
         census_projection_residue,
         drain_stale_aliases,
+        prune_stale_aliases_at_stop,
     )
     from kiro_crew.acp.skill_projection_parts.inheritance_overlay import (  # noqa: F401
         _ABSENT_SETTINGS,
@@ -128,6 +129,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _has_spec_pin,
         _pinned_source,
         _projection_enabled,
+        _relaunch_reserved_servers,
         _warn_ceiling_fallback_once,
         prepare_native_skill_projection,
         project_agent_view,

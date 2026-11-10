@@ -278,6 +278,9 @@ describe('Activity detail', () => {
 
     fireEvent.click(screen.getByTestId('webhook-row-context-review:pr-123'))
     expect(screen.getByTestId('webhook-context-banner').textContent).toContain('injected verbatim')
+    expect(screen.getByText('register_hook', { selector: 'code' }).parentElement?.textContent).toContain(
+      'Written by the register_hook tool. The agent reads it before the inbound message',
+    )
     fireEvent.click(screen.getByTestId('webhook-delete-context'))
     expect(deleteWebhookContext).not.toHaveBeenCalled()
     fireEvent.click(screen.getByTestId('webhook-delete-context'))
@@ -567,6 +570,6 @@ describe('failure handling', () => {
     await waitFor(() => expect(testWebhook).toHaveBeenCalledWith(undefined, 'reviewer'))
     const banner = await screen.findByTestId('webhook-test-result')
     expect(banner.textContent).toContain('202')
-    expect(banner.textContent).toContain('hook:test:1')
+    expect(banner.textContent).toContain("Session hook:test:1 started. The agent's answer arrives in notifications.")
   })
 })

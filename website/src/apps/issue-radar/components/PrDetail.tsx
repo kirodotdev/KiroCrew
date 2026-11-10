@@ -55,6 +55,7 @@ import {
 import { commitUrlFor, userUrlFor, repoScopeKey } from '../lib/links'
 import { providerKeyOf, providerTerms } from '../lib/links'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../../i18n/t'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtDateTime } from '../../../i18n/format'
@@ -373,9 +374,9 @@ function eventVisual(
         ),
       }
     case 'labeled':
-      return { Icon: Tag, color: 'text-accent', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.added_the')} {labelChip} {i18nT('apps.issueRadar.components.prDetail.label')}</> }
+      return { Icon: Tag, color: 'text-accent', body: <Trans i18nKey="apps.issueRadar.components.prDetail.added_the_label_chip" components={{ who, label: labelChip ?? <></> }} /> }
     case 'unlabeled':
-      return { Icon: Tag, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.removed_the')} {labelChip} {i18nT('apps.issueRadar.components.prDetail.label')}</> }
+      return { Icon: Tag, color: 'text-muted', body: <Trans i18nKey="apps.issueRadar.components.prDetail.removed_the_label_chip" components={{ who, label: labelChip ?? <></> }} /> }
     case 'assigned':
       return { Icon: UserPlus, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.assigned')} {ev.assignee ?? 'someone'}</> }
     case 'unassigned':
@@ -391,10 +392,15 @@ function eventVisual(
     case 'renamed':
       return {
         Icon: Pencil, color: 'text-muted',
-        body: <>{who} {i18nT('apps.issueRadar.components.prDetail.changed_the_title')} <span className="line-through">{ev.rename?.from}</span> → <span className="text-text">{ev.rename?.to}</span></>,
+        body: (
+          <Trans
+            i18nKey="apps.issueRadar.components.prDetail.changed_the_title_from_to"
+            components={{ who, from: <span className="line-through">{ev.rename?.from}</span>, to: <span className="text-text">{ev.rename?.to}</span> }}
+          />
+        ),
       }
     case 'milestoned':
-      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.prDetail.added_this_to_the')} <span className="font-medium text-text">{ev.milestone}</span> {i18nT('apps.issueRadar.components.prDetail.milestone')}</> }
+      return { Icon: MilestoneIcon, color: 'text-muted', body: <Trans i18nKey="apps.issueRadar.components.prDetail.added_this_to_the_milestone_name" components={{ who, milestone: <span className="font-medium text-text">{ev.milestone}</span> }} /> }
     case 'cross-referenced':
       return {
         Icon: Link2, color: 'text-accent',

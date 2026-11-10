@@ -32,7 +32,8 @@ import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewDashboardTab from './CrewDashboardTab'
 import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { claimDashboardOnLoad } from './dashboardOnLoad'
-import { suggestPaneDraft } from '../../utils/chatPaneDrafts'
+import { mergePaneDraft, suggestPaneDraft } from '../../utils/chatPaneDrafts'
+import { sendCardReply } from './sendCardReply'
 import { revealComposer } from '../chat/composerFocus'
 import { sessionTitleRoster } from '../../utils/sessionRoster'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -562,6 +563,18 @@ export function MembersPageSidePanel({
           // chat box; the person sends it. The composer is revealed (focused on
           // desktop) so the result of the click is where the reader looks.
           onAct={activeSlot ? (text: string) => { suggestPaneDraft(activeSlot, text); revealComposer() } : undefined}
+          // A late-refused reply, when a newer one is already in the box: added, never swapped in.
+          onActKeep={activeSlot ? (text: string) => { mergePaneDraft(activeSlot, text, []); revealComposer() } : undefined}
+          // One click sends it into THIS crewmate's thread, only when the person turned
+          // "Send replies in one click" on for it (off, the default: no send is offered,
+          // so a page's `send` fills the composer exactly as `act` does and nothing
+          // reaches the gateway), and only once the open was confirmed (a send cannot be
+          // recalled by the unbind that follows a refused open); never a target the page
+          // names; a refusal falls back to the line above. The gateway's own
+          // `card_send_off` check stays the enforcement point.
+          onSend={confirmedSlot && active.dashboard_card_send === true
+            ? (text: string) => sendCardReply(confirmedSlot, text)
+            : undefined}
           // Badge click opens the Profile tab directly so the person can unlock.
           // Guard against an unsaved schedule form in the already-open card:
           // openProfile() increments the nonce which re-mounts the panel.

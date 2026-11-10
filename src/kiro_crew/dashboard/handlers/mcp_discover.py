@@ -33,6 +33,7 @@ from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.mcp_providers.base import (
     McpSearchResponse,
     McpSearchResult,
+    McpServerDetail,
     ProviderRegistry,
     ProviderUnavailableError,
 )
@@ -168,6 +169,58 @@ def _featured_results(
     return rows[:limit]
 
 
+async def _edition_featured(
+    registry: ProviderRegistry, provider: str | None, limit: int
+) -> list[McpSearchResult]:
+    """The edition package registry's own featured servers, shaped like search hits.
+
+    The bundled list names official-registry servers only, so an edition that
+    withholds that registry gets none of it; its capability provider marks its
+    own rows ``featured`` instead (:meth:`CapabilityProvider.featured`). A
+    provider without that read, a failed read, or one past the detail budget
+    adds nothing, so the dialog still opens.
+    """
+    if limit <= 0 or provider not in (None, "capability"):
+        return []
+    edition = registry.get("capability")
+    read = getattr(edition, "featured", None)
+    if edition is None or read is None or not edition.is_available():
+        return []
+    try:
+        rows = await asyncio.wait_for(read(limit), timeout=_DETAIL_TIMEOUT_SECS)
+    except asyncio.TimeoutError:
+        logger.warning("edition featured servers timed out")
+        return []
+    except Exception:  # noqa: BLE001 - an edition's failed read shows no featured rows
+        logger.warning("edition featured servers failed", exc_info=True)
+        return []
+    return list(rows)[:limit]
+
+
+async def edition_package_detail(server_id: str) -> McpServerDetail | None:
+    """The edition package registry's entry for *server_id*, or ``None``.
+
+    ``None`` when no capability provider is registered or available, the read
+    fails or runs past :data:`_DETAIL_TIMEOUT_SECS`, or the registry has no such
+    row. Read by a server request (``member_capability_catalog.resolve_server``)
+    whose id the official registry cannot resolve, to say which card installs it.
+    """
+    registry = await asyncio.to_thread(_get_registry)
+    provider = registry.get("capability")
+    if provider is None or not provider.is_available():
+        return None
+    try:
+        return await asyncio.wait_for(
+            provider.fetch_detail(server_id), timeout=_DETAIL_TIMEOUT_SECS
+        )
+    except asyncio.TimeoutError:
+        logger.warning("edition package lookup timed out for %s", server_id)
+        return None
+    except Exception:  # noqa: BLE001 - a failed lookup keeps the request's own refusal
+        logger.warning("edition package lookup failed for %s", server_id, exc_info=True)
+        return None
+
+
 async def search_registry(
     query: str, *, provider: str | None = None, limit: int = 20, featured: bool = False
 ) -> dict[str, Any]:
@@ -178,16 +231,17 @@ async def search_registry(
     (:func:`redact_external_text`) and badged ``installed`` against the servers
     this gateway already configures. A query shorter than :data:`_MIN_QUERY_LEN`
     calls no provider. With ``featured`` and an empty query it returns the
-    bundled featured servers instead, also without calling a provider. Also read
+    bundled featured servers instead, without searching, followed by the rows
+    the edition package registry marks featured (:func:`_edition_featured`). Also read
     by a crewmate's capability catalog (``handlers.member_capability_catalog``),
     so the two answer alike.
     """
     registry = await asyncio.to_thread(_get_registry)
     provider_names = [p.name for p in registry.available_providers]
     if featured and not query:
-        search_response = McpSearchResponse(
-            results=_featured_results(provider_names, provider, limit), provider_outcomes=[]
-        )
+        rows = _featured_results(provider_names, provider, limit)
+        rows += await _edition_featured(registry, provider, limit - len(rows))
+        search_response = McpSearchResponse(results=rows, provider_outcomes=[])
     elif len(query) < _MIN_QUERY_LEN:
         return {"results": [], "providers": provider_names, "provider_outcomes": []}
     else:
@@ -243,7 +297,8 @@ async def api_mcp_discover(request: web.Request) -> web.Response:
     gates its UI on. Completed searches add one ``provider_outcomes`` row per
     attempted provider while preserving the legacy ``providers`` name list.
     An empty query with ``featured=1`` returns the bundled featured servers
-    (``discovery_featured``), again without calling a provider.
+    (``discovery_featured``) without searching, plus the edition package
+    registry's own featured rows.
     """
     query = request.query.get("q", "").strip()
     provider_filter = request.query.get("provider", "").strip() or None
@@ -522,8 +577,8 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
             source="dashboard",
             resources=f"capability:{server_id}",
         )
-        message = (res.message or "install failed")[:500]
-        return web.json_response({"error": _redact_external(message)}, status=500)
+        message = _redact_external(res.message or "install failed")[:500]
+        return web.json_response({"error": message}, status=500)
 
     async with _get_config_lock():
         # Off the loop: _sync_mcp_to_agent takes bridges' synchronous _mcp_lock

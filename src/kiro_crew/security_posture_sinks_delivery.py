@@ -29,6 +29,13 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "channel whose audience is usually wider than the dashboard's.",
     ),
     (
+        "Slack code-channel posts",
+        "slack/code_channels/wrapup.py",
+        "The bound agent's wrap-up summary, views, plan canvas and context-bar labels "
+        "posted to its code channel through the agents.conversations API rather than "
+        "slack/handler.py; one shared redact( pass, plus channel-wide pings defanged.",
+    ),
+    (
         "Slack cron / notification posts",
         "slack/gateway_runtime/subagent_injection.py",
         "Job names, cron results, and error strings before they reach a channel.",
@@ -931,5 +938,12 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "A note's title and body before the dispatcher hands it to a chat transport's "
         "sink (an owner DM on Slack): both redactors, through `bridge_egress.redact_note`, "
         "after governance and before every sink, so no transport can skip it.",
+    ),
+    (
+        "Notification bridge approval buttons",
+        "notifications/bridge_slack.py",
+        "What a pending approval will run, shown above its Slack Approve and Deny: both "
+        "redactors, then the native approval card's own renderer. `redact_note` covers "
+        "only a note's title and body, so the sink scrubs this field itself.",
     ),
 )

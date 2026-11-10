@@ -218,3 +218,29 @@ class TestTheGateActuallyThreadsTheEnabledSet:
 
     def test_disabling_the_imds_rule_reaches_the_gate(self) -> None:
         assert self._deny_reason("nc 2852039166 80", ["credential-exfil-imds-any"]) is None
+
+
+def test_prepare_pr_rest_fallback_uses_stdin() -> None:
+    """The REST body fallback streams its JSON on stdin, leaving no shared temp file."""
+    from pathlib import Path
+
+    skill = (
+        Path(__file__).resolve().parents[1]
+        / "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/references/ci.md"
+    ).read_text(encoding="utf-8")
+    assert "-X PATCH --input -\n" in skill
+    assert "--input /tmp/" not in skill
+
+
+def test_code_review_sage_poster_streams_its_payload_on_stdin() -> None:
+    """The shipped poster prompt pipes its payload on stdin, which this gate allows."""
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[1]
+        / "src/kiro_crew/apps/builtins/code_review_sage/sage_lib/review_driver.py"
+    ).read_text(encoding="utf-8")
+    assert "--input <tmpfile>" not in src
+    assert "reviews --input -" in src
+    command = "jq .payload r.json | gh api --method POST repos/o/r/pulls/1/reviews --input -"
+    assert audit_bash_exfiltration(command) is None

@@ -27,7 +27,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 import kiro_crew
 import kiro_crew._facade_mirror as _facade_mirror
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import aws_consent, beacon, platform_compat, stt
+from kiro_crew import aws_consent, beacon, edition, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -77,6 +77,9 @@ from kiro_crew.config.sections import (
     EXTERNAL_TERMINAL_APPS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    PRIVACY_ACK_VERSION_MAX,
+    REMOTE_EDITOR_HOST_PATTERN,
+    REMOTE_EDITOR_IDS,
     SESSION_SORT_MODES,
     STT_LANGUAGE_AUTO,
     TITLE_REFRESH_EVERY_TURNS_MAX,
@@ -321,8 +324,25 @@ async def api_branding(request: web.Request) -> web.Response:
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
             "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),
+            "remote_editor": _remote_editor_branding(cfg.dashboard.remote_editor),
         }
     )
+
+
+def _remote_editor_branding(raw: dict) -> dict[str, str]:
+    """``dashboard.remote_editor`` with each value the schema refuses read as ``""``.
+
+    Both values become part of the side panel's ⋯ menu link, and a key three
+    segments deep keeps an invalid hand-edited value on load, so an unknown editor
+    or a host outside the pattern is dropped here rather than forwarded.
+    """
+    editor, host = raw.get("editor"), raw.get("host")
+    return {
+        "editor": editor if editor in REMOTE_EDITOR_IDS else "",
+        "host": (
+            host if isinstance(host, str) and re.fullmatch(REMOTE_EDITOR_HOST_PATTERN, host) else ""
+        ),
+    }
 
 
 async def _liveness_payload(request: web.Request) -> dict[str, object]:
@@ -354,11 +374,13 @@ async def _liveness_payload(request: web.Request) -> dict[str, object]:
         # The desktop production/nightly cross-app guard calls over loopback and
         # needs exact identity to decide whether it can reuse the shared port.
         # Anonymous non-loopback probes get only the liveness bit, avoiding an
-        # exact-version fingerprint on the public probe boundary.
+        # exact-version fingerprint on the public probe boundary. `edition`
+        # lets an LTS shell tell its own gateway from an oss one on the port.
         payload.update(
             {
                 "app": "kirocrew",
                 "version": kiro_crew.__version__,
+                "edition": edition.EDITION,
                 "gateway_id": await asyncio.to_thread(gateway_id),
             }
         )
@@ -493,7 +515,17 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
 
     One builder for all four response sites so a newly-added preference cannot
     be surfaced by some of them and silently omitted by the rest.
+
+    An LTS build reports ``privacy_acked`` as true and the notice version as
+    current, so the SPA never opens the first-run Privacy chapter there, nor the
+    once-more showing of a changed notice: the admin, not the user, decides where
+    usage data goes. Only the response says so; the stored values are unchanged.
     """
+    from kiro_crew.beacon import PRIVACY_NOTICE_VERSION
+    from kiro_crew.edition import is_lts
+
+    lts = is_lts()
+
     return {
         "mode": cfg.dashboard.theme_mode or "",
         "color": cfg.dashboard.theme_color or "",
@@ -501,7 +533,12 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "translucent_panels": cfg.dashboard.translucent_panels or "",
         "onboarded": cfg.dashboard.onboarded,
         "import_onboarded": cfg.dashboard.import_onboarded,
-        "privacy_acked": cfg.dashboard.privacy_acked,
+        "privacy_acked": cfg.dashboard.privacy_acked or lts,
+        "privacy_ack_version": (
+            max(cfg.dashboard.privacy_ack_version, PRIVACY_NOTICE_VERSION)
+            if lts
+            else cfg.dashboard.privacy_ack_version
+        ),
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
     }
 
@@ -522,8 +559,8 @@ async def api_theme_config(request: web.Request) -> web.Response:
 
     GET returns the current config. PUT accepts
     {mode?, color?, language?, translucent_panels?, onboarded?, import_onboarded?,
-    privacy_acked?, crewmates_onboarded?} and persists ONLY those ``dashboard.*``
-    keys.
+    privacy_acked?, privacy_ack_version?, crewmates_onboarded?} and persists ONLY
+    those ``dashboard.*`` keys.
 
     The PUT is a locked delta read-modify-write, never a whole-document
     ``KiroCrewConfig.save()``. A momentarily unreadable ``config.json`` (a torn
@@ -591,6 +628,19 @@ async def api_theme_config(request: web.Request) -> web.Response:
             if not isinstance(body[flag], bool):
                 raise web.HTTPBadRequest(text=f"{flag} must be a boolean")
             updates[flag] = body[flag]
+    # A real int only, for the same reason: ``True`` is an int in Python and
+    # would store as 1.
+    if "privacy_ack_version" in body:
+        version = body["privacy_ack_version"]
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or not 0 <= version <= PRIVACY_ACK_VERSION_MAX
+        ):
+            raise web.HTTPBadRequest(
+                text=f"privacy_ack_version must be an integer from 0 to {PRIVACY_ACK_VERSION_MAX}"
+            )
+        updates["privacy_ack_version"] = version
 
     if updates:
 
@@ -716,8 +766,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_view import (
         _AGENT_UNTRUSTED_TEXT_FIELDS,
+        _DASHBOARD_LOCKS,
         _SENSITIVE_MASK,
         _changed_paths_need_restart,
+        _config_body,
         _hot_apply_after_write,
         _mask_agent_free_text,
         _mask_strings,
@@ -1137,7 +1189,18 @@ async def api_app_token(request: web.Request) -> web.Response:
             source="app_auth",
             error="invalid secret",
         )
-        return web.json_response({"error": "invalid secret"}, status=403)
+        return web.json_response(
+            {
+                "error": "invalid secret",
+                # One message for every refusal reason, so it tells a caller nothing
+                # about which check failed. The second sentence is the upgrade path.
+                "hint": (
+                    "The app must be enabled by the owner. An app installed before "
+                    "this version must be turned off and on once in the App Store."
+                ),
+            },
+            status=403,
+        )
 
     token = generate_token(app_name, app=app_name)
     sel().log_api_access(

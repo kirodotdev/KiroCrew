@@ -21,6 +21,9 @@ from kiro_crew.acp.types import ACP_CLIENT_CAPABILITIES
 CODEX_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
     "subagents": {},
+    # Opts into codex-acp's native compaction lifecycle frames, as the Codex row
+    # of ``client_native_children.CLIENT_CAPABILITIES_BY_BACKEND`` does.
+    "session": {"compaction": {}},
 }
 
 #: A native subagent's lifecycle, sent on its PARENT's session after

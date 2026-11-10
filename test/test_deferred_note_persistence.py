@@ -1009,6 +1009,7 @@ class TestRestartRoundTrip:
             "session": "dashboard:fork",
             "slot": "fork",
             "title": "Fork",
+            "createdAt": "2026-10-02T18:00:00+00:00",
             "after": "",
             "through": "message-1",
             "digest": "ab" * 32,

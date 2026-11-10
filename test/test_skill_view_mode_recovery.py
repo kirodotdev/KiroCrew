@@ -60,7 +60,7 @@ def native_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(projection.platform_compat, "first_linked_ancestor", lambda path: None)
     monkeypatch.setattr(
         "kiro_crew.agent.managed_mcp_spec_entry",
-        lambda name: {"command": "test-core", "args": []},
+        lambda name, **_kw: {"command": "test-core", "args": []},
     )
     monkeypatch.setattr(
         projection,

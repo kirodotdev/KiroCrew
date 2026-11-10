@@ -1,9 +1,9 @@
 """``updates.channel``, ``yolo_max_seconds`` and ``channels.posture.slack.allowed_channel_ids``.
 
-RFC crew-enterprise-edition, appendix rows "Update channel", "Auto-approval duration"
+RFC crew-lts-edition, appendix rows "Update channel", "Auto-approval duration"
 and "Slack channels". Each key parses (and a bad value fails the load), folds across
 tiers, and is enforced where its feature reads it. With no policy an ``oss`` build
-behaves as before; an enterprise build follows ``stable``, caps a grant at the
+behaves as before; an LTS build follows ``lts`` (D11), caps a grant at the
 shortest duration and admits no Slack channel.
 """
 
@@ -19,7 +19,7 @@ import pytest
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import parse_policy, parse_profile
 
-EDITIONS = ("oss", "enterprise")
+EDITIONS = ("oss", "lts")
 
 #: The package sources, read as text by the route-coverage tests.
 _SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
@@ -31,7 +31,7 @@ def _doc(**body: object) -> dict:
 
 def _set_edition(monkeypatch: pytest.MonkeyPatch, value: str) -> bool:
     monkeypatch.setattr("kiro_crew.edition.EDITION", value)
-    return value == "enterprise"
+    return value == "lts"
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, doc: dict | None) -> None:
@@ -48,7 +48,8 @@ class TestUpdateChannel:
     def test_the_pin_parses_and_an_unknown_channel_fails_the_load(self) -> None:
         assert parse_policy(_doc(updates={"channel": "Insider"})).updates.channel == "insider"
         assert parse_policy(_doc()).updates.channel == ""
-        for bad in ("beta", 3, False):
+        # ``lts`` is the LTS edition's own channel (D11): no policy pins it.
+        for bad in ("beta", "lts", 3, False):
             with pytest.raises(PlatformCompositionError):
                 parse_policy(_doc(updates={"channel": bad}))
 
@@ -72,18 +73,30 @@ class TestUpdateChannel:
     def test_release_channel_follows_the_pin(self, monkeypatch, tmp_path, edition, pin) -> None:
         from kiro_crew.platform import update_layout
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
         (tmp_path / "channel").write_text("nightly\n", encoding="utf-8")
         monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
         _install(monkeypatch, _doc(updates={"channel": pin}) if pin else None)
-        expected = pin or ("stable" if enterprise else "nightly")
+        # D11: an LTS build follows lts whatever the policy pins.
+        expected = "lts" if lts else (pin or "nightly")
         assert update_layout.release_channel() == expected
+
+    def test_an_oss_install_cannot_pick_the_lts_channel(self, monkeypatch, tmp_path) -> None:
+        from kiro_crew.platform import update_layout
+
+        _set_edition(monkeypatch, "oss")
+        monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
+        _install(monkeypatch, None)
+        with pytest.raises(ValueError):
+            update_layout.set_release_channel("lts")
+        (tmp_path / "channel").write_text("lts\n", encoding="utf-8")
+        assert update_layout.release_channel() == "stable"
 
     @pytest.mark.parametrize("requested", ["nightly", "insider"])
     def test_the_switch_api_refuses_another_channel_than_the_pin(
         self, monkeypatch, tmp_path, requested
     ) -> None:
-        from test_enterprise_unkeyed_locks import _owner_request
+        from test_lts_unkeyed_locks import _owner_request
 
         from kiro_crew.dashboard.handlers import updates
         from kiro_crew.platform import update_layout
@@ -266,12 +279,12 @@ class TestYoloCap:
     @pytest.mark.parametrize("edition", EDITIONS)
     @pytest.mark.parametrize("cap", [0, 900])
     def test_yolo_ttl_cap(self, monkeypatch, edition, cap) -> None:
-        from kiro_crew.platform.governance_parts.baseline import ENTERPRISE_YOLO_MAX_SECONDS
+        from kiro_crew.platform.governance_parts.baseline import LTS_YOLO_MAX_SECONDS
         from kiro_crew.safety_override_permits import yolo_ttl_cap
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
         _install(monkeypatch, _doc(yolo_max_seconds=cap) if cap else None)
-        expected = cap or (ENTERPRISE_YOLO_MAX_SECONDS if enterprise else 0)
+        expected = cap or (LTS_YOLO_MAX_SECONDS if lts else 0)
         assert yolo_ttl_cap() == expected
 
     def test_no_untimed_grant_under_a_cap(self, monkeypatch) -> None:
@@ -397,12 +410,12 @@ class TestSlackChannels:
         self, monkeypatch, edition, doc
     ) -> None:
         # No list: an oss build opens channels as before; a locked-off
-        # (enterprise) build admits none until the policy names the leaf.
+        # (LTS) build admits none until the policy names the leaf.
         from kiro_crew.slack.channel_policy import new_channel_refusal
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
         _install(monkeypatch, doc)
-        assert bool(new_channel_refusal()) is enterprise
+        assert bool(new_channel_refusal()) is lts
 
     @pytest.mark.parametrize("edition", EDITIONS)
     @pytest.mark.parametrize(
@@ -433,14 +446,12 @@ class TestSlackChannels:
         [None, _doc(), _doc(channels={"members": {"mode": "allow", "allow": ["slack"]}})],
         ids=["no-ceiling", "unnamed", "no-leaf"],
     )
-    def test_an_unnamed_list_admits_nothing_only_in_enterprise(
-        self, monkeypatch, edition, doc
-    ) -> None:
+    def test_an_unnamed_list_admits_nothing_only_in_lts(self, monkeypatch, edition, doc) -> None:
         from kiro_crew.slack.channel_policy import channel_refusal
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
         _install(monkeypatch, doc)
-        assert bool(channel_refusal("C0123")) is enterprise
+        assert bool(channel_refusal("C0123")) is lts
 
     def test_every_refusal_is_audited_once(self, monkeypatch) -> None:
         from kiro_crew.slack.channel_policy import channel_refusal
@@ -460,17 +471,17 @@ class TestSlackChannels:
         )
 
     @pytest.mark.parametrize("edition", EDITIONS)
-    def test_an_evaluation_error_refuses_only_in_enterprise(self, monkeypatch, edition) -> None:
+    def test_an_evaluation_error_refuses_only_in_lts(self, monkeypatch, edition) -> None:
         from kiro_crew.platform import context as pc
         from kiro_crew.slack.channel_policy import channel_refusal
 
-        enterprise = _set_edition(monkeypatch, edition)
+        lts = _set_edition(monkeypatch, edition)
 
         def _boom():
             raise RuntimeError("transient")
 
         monkeypatch.setattr(pc, "current_context", _boom)
-        assert bool(channel_refusal("C0123")) is enterprise
+        assert bool(channel_refusal("C0123")) is lts
 
     @pytest.mark.asyncio
     async def test_a_client_write_to_a_refused_channel_never_reaches_slack(
@@ -600,20 +611,20 @@ class TestSlackInteractions:
         ]
 
 
-class TestEnterpriseTiers:
-    """A local tier under a central policy narrows the enterprise values, never sets them."""
+class TestLtsTiers:
+    """A local tier under a central policy narrows the LTS values, never sets them."""
 
     def _compose(self, monkeypatch, central: dict, home: dict):
         from dataclasses import replace
 
         from kiro_crew.platform.governance import TIER_CENTRAL, TIER_HOME, compose_tier_ladder
 
-        _set_edition(monkeypatch, "enterprise")
+        _set_edition(monkeypatch, "lts")
         top = replace(parse_policy(central), tier=TIER_CENTRAL)
         low = replace(parse_policy(home), tier=TIER_HOME)
         return compose_tier_ladder(top, low)
 
-    def test_a_home_tier_cannot_replace_the_enterprise_values(self, monkeypatch) -> None:
+    def test_a_home_tier_cannot_replace_the_lts_values(self, monkeypatch) -> None:
         central = _doc(channels={"members": {"mode": "allow", "allow": ["slack"]}})
         home = {
             **_slack_channels("C0123"),
@@ -622,7 +633,7 @@ class TestEnterpriseTiers:
         }
         ceiling = self._compose(monkeypatch, central, home)
         assert ceiling.yolo_max_seconds == 1800
-        assert ceiling.updates.channel == "stable"
+        assert ceiling.updates.channel == "lts"
         _install(monkeypatch, None)
         from kiro_crew.platform import context as pc
 
@@ -635,7 +646,8 @@ class TestEnterpriseTiers:
         central = _doc(yolo_max_seconds=3600, updates={"channel": "insider"})
         ceiling = self._compose(monkeypatch, central, _doc(yolo_max_seconds=600))
         assert ceiling.yolo_max_seconds == 600
-        assert ceiling.updates.channel == "insider"
+        # D11: not even the central policy moves the edition off lts.
+        assert ceiling.updates.channel == "lts"
 
 
 class TestSessionRenewalCap:

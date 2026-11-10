@@ -517,6 +517,9 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
   })
 
   const data = availableQ.data
+  // AWS CLI v1 has no `configure list-profiles`, so a retry can never clear it.
+  const cliV1 =
+    availableQ.error instanceof AwsControlError && availableQ.error.message === 'unsupported_aws_cli_v1'
   const unregistered = useMemo(
     () => (data?.profiles ?? []).filter((p) => !p.registered),
     [data],
@@ -597,8 +600,12 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
           <AwsErrorNotice
             askAgent={!hasDraft}
             error={availableQ.error}
-            message={availableQ.isError ? i18nT('apps.awsControl.page.add_accounts_load_error') : null}
-            onRetry={() => availableQ.refetch()}
+            message={
+              availableQ.isError
+                ? i18nT(cliV1 ? 'apps.awsControl.page.add_accounts_cli_v1' : 'apps.awsControl.page.add_accounts_load_error')
+                : null
+            }
+            onRetry={cliV1 ? undefined : () => availableQ.refetch()}
             className="mb-2"
             testId="add-accounts-load-error"
           />
@@ -809,7 +816,17 @@ function AccountsPane({ accountsQ, selected, onUse, openAddAccounts = false }: {
           </span>
         ) : undefined}
         actions={
-          <Btn onClick={() => void refreshAccounts()} disabled={accountsQ.isFetching} data-testid="refresh">
+          <Btn
+            onClick={() => { if (!accountsQ.isFetching) void refreshAccounts() }}
+            // `aria-disabled` plus the click guard, NOT `disabled`, which takes
+            // the button out of the tab order and drops a keyboard user's focus
+            // to the page for the whole refresh. The visual muting is kept via
+            // the `aria-disabled:` classes so the look is unchanged.
+            aria-disabled={accountsQ.isFetching || undefined}
+            aria-busy={accountsQ.isFetching || undefined}
+            className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+            data-testid="refresh"
+          >
             <RefreshCw className={`h-3.5 w-3.5 ${accountsQ.isFetching ? 'animate-spin' : ''}`} />
             {i18nT('apps.awsControl.page.refresh')}
           </Btn>
@@ -1047,7 +1064,15 @@ function OverviewPane({ accountsQ, selected, drive, driveQ, sharesQ, onUse, onOp
         title={i18nT('apps.awsControl.overview.title')}
         subtitle={i18nT('apps.awsControl.overview.subtitle')}
         actions={
-          <Btn onClick={refreshAll} disabled={accountsQ.isFetching} data-testid="refresh">
+          <Btn
+            onClick={() => { if (!accountsQ.isFetching) refreshAll() }}
+            // See the Accounts pane refresh: `aria-disabled` + guard keeps the
+            // button focusable so a keyboard refresh does not drop focus.
+            aria-disabled={accountsQ.isFetching || undefined}
+            aria-busy={accountsQ.isFetching || undefined}
+            className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+            data-testid="refresh"
+          >
             <RefreshCw className={`h-3.5 w-3.5 ${accountsQ.isFetching ? 'animate-spin' : ''}`} />
             {i18nT('apps.awsControl.page.refresh')}
           </Btn>

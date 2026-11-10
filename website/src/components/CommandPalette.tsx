@@ -594,7 +594,8 @@ export default function CommandPalette({
       role="dialog"
       aria-modal="true"
       aria-label={i18nT('components.commandPalette.search_everywhere')}
-      onMouseDown={onClose}
+      // The press's own default action would clear the focus this close gives back.
+      onMouseDown={e => { e.preventDefault(); onClose() }}
     >
       {/* Containment only: the panel's handlers perform no action. onMouseDown
           keeps a press inside the panel from reaching the backdrop's dismiss;

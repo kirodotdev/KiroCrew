@@ -15,7 +15,20 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 
 1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`,
    dropping records git flags `prunable` (checkout directory deleted without a
-   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`
+   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`.
+   That git runs in the agent sandbox, which masks the whole scratch root, so a worktree under
+   any session's `$KIROCREW_SCRATCH` also reads as `prunable` and is dropped. A name lookup that
+   finds nothing else (`repository._find_worktree`, behind `pod_up` / `pod_status` /
+   `pod_restart` / `pod_down`) checks for that case (`scratch_worktrees`) and answers with the
+   scratch path and the commands that recreate it under `<repo>/.worktrees/`, instead of
+   `worktree not found`: `test -d <path>` first, since the name match spans every session's
+   scratch and only the owning session can see the tree (on a missing path `git worktree
+   remove` exits 0 and drops the owner's record, dirty or not), then
+   `git worktree remove` (which refuses uncommitted work), then
+   `git worktree add` on the same branch; a detached tree first gets a branch named after
+   it (`git switch -c`), so a commit made after the refusal is not orphaned by the remove. Not
+   `git worktree move`: in an agent's sandboxed shell the scratch dir is its own mount,
+   so the move fails with `Invalid cross-device link`
 2. **Pod integration** — spin up/down/restart isolated pod instances per worktree
 3. **Pull+Build sync** — pull the resolved base branch and rebuild (venv + frontend dist)
 4. **Prune** — safely remove merged/empty worktrees with PR-shipped verification
@@ -305,10 +318,10 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/pod/provision/dismiss` | `{name, run_id}` | Forget a terminal provision failure when the run id still matches |
 | `/apps/dev-fleet/api/rebase` | `{name}` | Rebase worktree onto `{remote}/{base branch}` |
 
-Seven routes are served by the **gateway process** rather than the backend, under the
+Eight routes are served by the **gateway process** rather than the backend, under the
 in-gateway namespace `/api/apps/dev-fleet/` (`gateway_routes.py`, mounted by the
-`BUILTIN_NAMES` loop). `restart-gateway`, `make-live` and `pod-token` are **dashboard-owner only**
-and refuse any app token. `live-target` and the three `live-target/removal-lease`
+`BUILTIN_NAMES` loop). `restart-gateway`, `make-live`, `pod-token` and
+`create-release-worktree` are **dashboard-owner only** and refuse any app token. `live-target` and the three `live-target/removal-lease`
 verbs admit ONLY Dev Fleet's own app token (`_principal_is_backend`); a dashboard
 human and any other app's token are refused:
 
@@ -317,6 +330,7 @@ human and any other app's token are refused:
 | `POST /api/apps/dev-fleet/restart-gateway` | — | Restart the live gateway through its service-manager backend; returns the pre-restart `start_id` for the restart handshake |
 | `POST /api/apps/dev-fleet/make-live` | `{path, dry_run?, undo?, expected_staged?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
 | `POST /api/apps/dev-fleet/pod-token` | `{name}` | Mint the pod's 2h dashboard token for the row's Open button; answers `{ok, token, url}`. Here because the pod's `/api/token/local` certifies only a caller in the gateway's own namespaces (see *Token mint runs in the gateway*), so a mint from the sandboxed backend is always refused. App tokens are refused because Dev Fleet's is readable by every build child in the backend's namespace, and a pod runs outside the sandbox |
+| `POST /api/apps/dev-fleet/create-release-worktree` | — | Create `release-channel-stable` detached at the newest stable release the remote advertises (see *Create release worktree*); answers `{ok, path, name, version, ref, oid}` or a refusal `{ok: false, code, error}`. Here, not in the backend, because the checkout reads the repo's own `.git/config` and follows `include.path`, so it must run at a strict tier with credentials bind-masked — which only a gateway-driven spawn gets. Owner-only; every app token refused |
 | `GET /api/apps/dev-fleet/live-target` | `?fresh=1` | The pointer-state read broker `{live, staged, staged_cancel_available, previous, live_verified}` (`previous` is the pointer's validated one-level undo target, so the fleet's Undo banner needs no pointer read of its own; `live_verified` is false when `live` is the pointer's target taken on trust because a packaged gateway has no running checkout to compare it with) — admits ONLY Dev Fleet's own app token (how the sandboxed backend learns which row is live); a dashboard human and any other app's token are refused |
 | `POST /api/apps/dev-fleet/live-target/removal-lease` | `{path}` | Lease a worktree before `git worktree remove`, so a cutover or a gateway restart cannot land mid-deletion; answers `{ok, granted, token}`, refused while a cutover is in flight. The token is the capability to renew or release |
 | `PUT /api/apps/dev-fleet/live-target/removal-lease` | `{token}` | Renew the lease; `{ok, renewed}`, where `false` means it is gone and the holder must not start a mutation it has not started |
@@ -327,6 +341,161 @@ that file is bind-masked from the sandboxed backend **and every child it spawns*
 nested sandbox is denied by design, so a worktree's `npm ci` lifecycle script runs in the
 backend's namespace. See *Make Live → Pointer file*. `pod-token` is the exception: it
 needs the gateway's host namespaces, not the pointer.
+
+### Create release worktree
+
+`POST /api/apps/dev-fleet/create-release-worktree` materializes
+`release-channel-stable` as a sibling worktree detached at the newest published
+`vX.Y.Z` release, so an operator can pod it or Make Live onto it without leaving
+the dashboard, finding the current tag by hand, and remembering to refresh it. The
+action lives in `release_worktree.py` and runs entirely in the gateway process.
+
+**Why the gateway, not the backend.** `git worktree add <tag>` reads the
+repository's own `.git/config` and follows `include.path` during checkout, so a
+hostile config could name a `filter.<name>.smudge` driver or point `include.path`
+at a credential file. The checkout therefore has to run at the **strict** tier,
+with `~/.aws`, `~/.ssh` and the rest bind-masked from the git child. The sandboxed
+backend cannot provide that: a `mode="strict"` spawn from inside it is a
+nested-sandbox passthrough that re-applies only the env scrub, not the file hides.
+The gateway is unsandboxed, so it can give the child a FRESH strict sandbox — the
+same reason Make Live runs here. The route is owner-only and refuses every app
+token, Dev Fleet's own included, because that token is readable by every build
+child in the backend's namespace.
+
+**The trust boundary, in one statement.** No git child this action runs is ever
+*less* confined than an agent's own commands. The local steps — the worktree-list,
+`_checkout_filter` and promisor probes, `rev-parse`, `git worktree add --detach`, the
+HEAD readback and cleanup — run at the **strict** tier through `handlers/worktree.py`'s
+`_run_git`, reused not re-implemented (`-c core.hooksPath=/dev/null -c
+core.fsmonitor=false`, config hooks disabled by name, `~/.aws`/`~/.ssh`/vault
+bind-masked). The two network steps — `ls-remote` and the one-tag `fetch` — run at
+the **stricter of `standard` and this install's effective `agent.sandbox` tier**
+(`_network_tier`, which returns the canonical tier name, so the shipped default
+`agent.sandbox = auto` reads as `standard`): on that default it is `standard`, and
+on a `cc`/`strict` install they clamp UP to that tier rather than running at a
+hardcoded `standard` above it, after which `runtime._run_cmd` applies any governed
+`sandbox.min_level` floor exactly as it does for the agent's own spawns. Either way
+`_GIT_ENV_NEUTRALIZERS` pin transports to `https`/`ssh` (so `ext::`, `git://`,
+`core.gitProxy` and a local-path `uploadpack` are refused by git) and reset several
+code-execution config keys the fetch would otherwise honor (`core.sshCommand`→`ssh`,
+`credential.helper` empty, gpg off) -- defense in depth, not a claim to close every
+such key. The network steps also take two opt-ins of `runtime._run_cmd` that no other
+caller passes (`_run_network_git`): the scan that lists config-defined hook names, so
+each is disabled by name, runs inside the sandbox at the same tier as the step rather
+than as a gateway git; and the step's own git output is read incrementally under a 4 MiB cap,
+past which the child is killed and the step refuses with a worded reason, so a hostile
+advertisement is not buffered whole in the gateway process. So a worktree-controlled `.git` — a planted `filter.<name>` driver, a redirected
+`remote.<name>.url`/`url.<base>.insteadOf`, a `refs/replace` graft, a swapped ref —
+gains the agent that wrote it nothing it could not already do at its own tier: any
+credential a redirected remote could reach at `standard` is one the agent's own
+`standard` commands already reach, and at `cc`/`strict` the network steps run at the
+agent's tier with git credentials withheld. The filter and promisor probes and the
+neutralizers are therefore **early, friendly refusals**, not the boundary; the tier is.
+The promisor probe refuses a **partial clone** (`partial_clone`) before the fetch: its
+filter applies to the one-tag fetch too, so the release's files would arrive only when
+`git worktree add` fetched them itself, a network step outside the two the action
+bounds; the refusal names the commands that hydrate the clone. The route's
+main-checkout discovery (`_ensure_repo`), which runs before the action, is outside that
+statement. Nor does it cover an agent session whose isolation Kiro Crew leaves to the
+Kiro CLI's own sandbox (on macOS with that sandbox switched on, or the official Kiro CLI
+on Windows), which these tiers do not confine.
+
+**The cost of the clamp.** At `cc`/`strict`, `runtime._run_cmd` withholds the
+credential-helper env (it adds it only at `standard`), so a PRIVATE remote cannot
+authenticate: the action refuses `unresolved`/`fetch_failed` with a worded reason that
+names the tier. A public remote is unaffected, and the default `standard` install is
+unchanged.
+
+**Provenance is the whole `.git`.** The newest stable tag and its commit come from
+`git ls-remote` against the configured upstream (`advertised_release_commit`), and
+before checkout that commit must be present locally or the action refuses
+`provenance_mismatch`. That guards against a **stale or planted local tag** — one
+written into `refs/tags/` — not against a writer of `.git`: git's content-addressing
+refuses a loose object whose bytes do not hash to its oid, and the local verify,
+checkout and readback pass `--no-replace-objects`, so a `refs/replace` graft cannot
+swap the checked-out tree; but a redirected remote is honored, so config, refs and
+objects are trusted exactly as
+Dev Fleet's sync pull, rebase and Make Live already trust them. There is no
+gateway-held canonical URL for a generic fork to anchor against, and anchoring would
+not change that boundary, so the action does not. A release is a whole `vX.Y.Z` whose
+parts are ASCII digits with no leading zero, nine at most (`is_release_tag`, which reads
+the tag whole). Prerelease spellings (`-rc.N`, `-insider.N`) and every other `v*` name the
+remote lists are dropped before anything is counted, so none of them can refuse the
+action or outrank the tip; `_MAX_NETWORK_OUTPUT_BYTES` bounds the listing. Ordering is by
+`apps.version.parse_version`, so `v0.10.0` beats `v0.9.0`. The action adds **no background
+tag mirror** and no refresher: two `ls-remote` reads run per request, the tag listing and
+then the confirm of the chosen tag's advertised commit, and the fetch
+is a single `git -c fetch.bundleURI= fetch --no-auto-maintenance --no-tags
+--no-write-fetch-head --refmap= --no-recurse-submodules <remote> refs/tags/<tag>` that
+writes no `refs/tags/` entry and no `FETCH_HEAD`: `--refmap=` ignores a
+`remote.<name>.fetch` that maps tags, `--no-recurse-submodules` stops a
+`submodule.recurse` config fetching inside a submodule, the emptied `fetch.bundleURI`
+stops a bundle pull that would write `refs/bundles/*`, and `--no-auto-maintenance`
+starts no `git maintenance run --auto`, which would detach and keep working on the
+shared `.git` after the request has answered.
+No private git common dir is written either.
+
+**A missing sandbox reads the same on every step.** A host with no OS sandbox backend
+answers `sandbox_unavailable`, the route's 503, whichever step meets it: either
+`ls-remote`, the fetch, or a strict local step, the probes included. The exception is a
+host that permits unsandboxed execution: `agent.sandbox_allow_unsandboxed_exec` in
+effect (its default on Windows only) and no governance `sandbox.min_level` floor above
+`off`. There `wrap_argv` runs every step's git with no OS sandbox around it and only a
+credential-scrubbed environment, the same as any agent spawn on that host that Kiro Crew
+does not hand to the Kiro CLI's own sandbox. Every other refusal is a 409, a state the
+operator can change.
+
+**The destination is derived, never supplied.** It is always the
+`release-channel-stable` sibling of the primary checkout (`worktree_path`), derived
+from the checkout's own path rather than taken from a caller — so it is that sibling
+by construction, and there is no caller-supplied parent to validate. Immediately
+before the checkout, `create_release_worktree` claims the path atomically with
+`os.mkdir` (an empty directory `git worktree add` checks out into): if anything
+already holds the reserved name — a concurrent create, a manual checkout — the mkdir
+fails and the action refuses `path_exists` WITHOUT touching it, so the only non-empty
+tree cleanup can remove is one this action itself created. A worktree already registered under the
+same basename at another path owns the fleet-row name this action would claim, so it is
+refused `name_taken` before the fetch (the comparison resolves both paths, so it runs off
+the event loop, like the destination check); so is a record still registered at the reserved
+path itself with no directory there, and the refusal names the `git worktree prune`
+(after `git worktree unlock`, when git kept the add's lock) that clears it. Every
+failed `worktree add` refuses, and the unwind removes at most an empty directory or the
+tree this request's own add made. An
+add that exits with an error has already removed what it created, and one that refused
+because another writer took the path after the claim has left that writer's tree, so a
+non-zero exit releases only the claimed directory, and only while it is empty. An add
+killed by a signal (an OOM kill, a CPU limit) exits non-zero as well: its partial tree
+and locked record stay, and the next request refuses `path_exists`, then `name_taken`
+with the commands that clear it. A timeout removes nothing: the checkout may still be
+finishing at that path, so the refusal says so and names the `git worktree remove -f -f`
+that clears the tree once it stops. A tree that the add did create but the readback refuses
+is removed by git (a doubly forced remove of the one derived path); nothing deletes
+the path by name, so if git cannot remove it, it is left, and the refusal names the
+same command. The claim, checkout, readback and cleanup are one transaction
+awaited through `runtime._run_uninterruptible`, as the worktree removal is, so a
+gateway restart that cancels the request mid-checkout waits for the checkout step to
+return, and for its readback or unwind, before the cancellation lands. The tree can then
+exist with no reply sent, so the route writes the request's SEL record, with outcome
+`cancelled`, before it lets the cancellation propagate. A hard kill of the gateway
+mid-checkout is not covered and can leave a partial tree: the next request refuses
+`path_exists`, and once that directory is deleted, `name_taken` until its record is
+pruned. The created tree is detached, so the fleet renders it as an
+ordinary row — no pinned-row UI, and **the prune rules are unchanged** (this action
+adds no exemption). Single-flight under one loop lock: a second request while one runs
+waits, then finds the tree present and refuses `path_exists`.
+
+**In the page** the action is the **Create worktree from latest stable** item of the
+toolbar's labelled **More actions** menu, a keyboard-operable `DropdownMenu`. Prune merged
+stays the toolbar's one button and the menu's trigger is the row's second control
+(`max-two-buttons-per-row` counts the trigger), so Refresh moved from a toolbar button
+into the menu, as its first item beside Create worktree from latest stable. The Refresh
+item's accessible name is its visible label, "Refresh", and its hover `title` is
+"Refresh fleet". The new item's
+visible label names the whole action and is its accessible name, so it carries no `title`
+hint. While the request runs, the menu trigger shows a spinner and is `aria-busy`, and the
+reopened item reads "Creating stable worktree…" and is disabled; the result is a toast
+naming the tree and version, or the route's worded refusal in the page's action-error
+banner.
 
 ### Agent surface (gateway process, `/api/apps/dev-fleet/pod/*`)
 
@@ -437,8 +606,23 @@ Contract:
   records the call.
 
 The model-facing half is the `pod_up` / `pod_restart` / `pod_down` / `pod_status` /
-`pod_ls` tools on
-`kirocrew-core` (`mcp_tools/apps.py`). The pod token is returned to the agent
+`pod_ls` tools, which this app declares in its own `app.json` (`agentTools`, namespace
+`pod`, so the names are the ones these tools always had) and `kirocrew-core` lists and
+forwards ([app-kit-platform §30.1](app-kit-platform.md)). No code of this app runs in
+that MCP server. A call reaches `POST /api/app-tools/call`, which hands it to the one
+route `backend.hooks.routes` (`agent_tools.py`) registers in the gateway,
+`POST /api/apps/dev-fleet/agent-tools`; the seam serves a tool from an app's own gateway
+route when it registered one, so the sandboxed backend is never asked. That route
+re-asserts the caller gate above and the host-exec grant, runs the same verb the
+matching `pod/*` route runs (`agent_pod_api.pod_*_response`), reads its answer as the
+core's gateway client read a route's (a refusal becomes `{error, code}` with its message
+scrubbed) and answers with the reply the core tool rendered. Each tool is
+declared `result: "text"` with the wait the core tool had (210s to start or restart,
+120s to stop, 45s to read: a pod read spawns a `python -m kiro_crew pod` child in the
+gateway, which 10s cannot cover) and the core tool's bounds (a worktree of at most 200
+characters, `memory` / `cpu` of at most 16). The `pod/*` routes above are unchanged.
+The core redacts that reply as it relays it, except the pod token: a pod start's
+answer names the token as its `credential`, so it is returned to the agent
 verbatim — redacting it would hand back an unusable handle — which is safe because it
 is a credential scoped to that pod's own gateway, minted server-side from the
 pod's own internal-API credential so the agent never touches the secret itself.
@@ -867,8 +1051,9 @@ build will not boot:
    - the unit carries a directive this build has removed (`unit._REMOVED_DIRECTIVES`,
      currently `ExecStopPost=` — see the pod module's teardown section)
    - the unit lacks a directive this build requires (`unit._REQUIRED_DIRECTIVES`,
-     currently `RestartPreventExitStatus=`, which makes a boot refusal terminal, and
-     `LimitCORE=`, which keeps a crashed pod from waiting minutes on its core file)
+     currently `RestartPreventExitStatus=`, which makes a boot refusal terminal,
+     `LimitCORE=`, which keeps a crashed pod from waiting minutes on its core file,
+     and `TimeoutStopSec=`, which bounds a stop; see *Pod stop timeout*)
 2. Re-renders the unit with a currently-valid binary (`unit.install_unit(cfg)`)
 3. Runs `daemon-reload`
 4. Audits the self-heal event
@@ -879,6 +1064,22 @@ worktrees are pruned after the unit was installed. The second is the upgrade pat
 unit installed by an older build would otherwise keep a teardown hook that races the
 pod's own subprocesses and wipes the HOME on the stop half of a `Restart=`, and it
 would keep doing so until someone reinstalled by hand.
+
+### Pod stop timeout
+
+`systemctl --user stop` returns when the stop job ends, so every wait above it must
+outlast what systemd may take. The unit sets `TimeoutStopSec` to
+`pod.config.POD_STOP_TIMEOUT_SECS`, the live gateway unit's shutdown budget
+(`gateway_shutdown_budget.TOTAL_SHUTDOWN_BUDGET_SECS`). systemd allows that long for
+SIGTERM and again for the SIGKILL after it, so `halt_pod` and `stop_pod` wait
+`SYSTEMCTL_STOP_WAIT_SECS` (twice that, plus a margin). Dev Fleet's `_pod_down` gives
+`kirocrew pod down` `_POD_DOWN_TIMEOUT_SECS`, which adds the unit refresh, the cgroup
+drain and the CLI start, and the `pod_down` MCP tool's client timeout is above that,
+so the gateway's bound fires first and names the cause. A shorter wait reports a pod
+that is still stopping as a failed `pod down`. Before stopping, `halt_pod` and
+`stop_pod` re-render and reload a stale installed unit even when no teardown hook is
+loaded, so required directives such as `TimeoutStopSec=` apply to the stop, and
+refuse to stop if that refresh fails.
 
 ## Background Tasks
 
@@ -905,7 +1106,8 @@ would keep doing so until someone reinstalled by hand.
   storing a snapshot that would resurrect the row. Tombstones are reaped by the first build
   that started after them, so a worktree later re-created under the same name is not hidden.
   The dashboard refreshes with
-  `?fresh=1` after every mutating action (and on the explicit Refresh button) so it never
+  `?fresh=1` after every mutating action (and on the Refresh item of the toolbar's More
+  actions menu) so it never
   renders the pre-mutation snapshot.
 
 ## Async Runs

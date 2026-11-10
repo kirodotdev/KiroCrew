@@ -31,13 +31,18 @@ from kiro_crew.apps.manifest_agent_tools import (  # noqa: F401
     _SCALAR_KEYS,
     _TOOL_KEYS,
     DEFAULT_RESULT_CHARS,
+    DEFAULT_TIMEOUT_SECONDS,
     MAX_AGENT_TOOLS_PER_APP,
     MAX_ARRAY_ITEMS,
+    MAX_NAMESPACE_CHARS,
     MAX_RESULT_CHARS,
     MAX_STRING_ARGUMENT_CHARS,
+    MAX_TIMEOUT_SECONDS,
     MAX_TOOL_DESCRIPTION_CHARS,
     MAX_TOOL_PROPERTIES,
     MAX_TOOL_TITLE_CHARS,
+    NAMESPACE_RE,
+    RESULT_MODES,
     ROUTE_RE,
     TOOL_NAME_RE,
     AgentToolDecl,
@@ -791,8 +796,12 @@ class AppManifest:
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
 
-        # Agent tools: shape, the core-enforced schema subset, and the app's namespace.
-        errors.extend(self.agentTools.validate(self.name))
+        # Agent tools: shape, the core-enforced schema subset, the app's namespace, and
+        # no strictSession on a process-backed app. Imported here: app_frame imports
+        # the manager, which imports this module.
+        from kiro_crew.apps.app_frame import process_backed
+
+        errors.extend(self.agentTools.validate(self.name, process_backed(self)))
 
         # A contributed command's `agent` is contained to the agents THIS app ships.
         # The prompt is app-authored, so letting it name any host agent would let an

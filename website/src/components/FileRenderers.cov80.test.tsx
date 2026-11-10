@@ -10,6 +10,7 @@ import {
   PdfViewer,
 } from './FileRenderers'
 import { i18nT } from '../i18n/t'
+import { svgShadow } from '../test/svgShadow'
 
 describe('ImageViewer', () => {
   it('fetches the raw bytes by encoded path and names the image by basename', () => {
@@ -25,9 +26,10 @@ describe('SvgViewer', () => {
     const { container } = render(
       <SvgViewer content={'<svg><circle r="4" /><script>zzqPwn()</script></svg>'} />,
     )
-    expect(container.querySelector('circle')).toBeTruthy()
-    expect(container.querySelector('script')).toBeNull()
-    expect(container.innerHTML).not.toContain('zzqPwn')
+    const shadow = svgShadow(container)
+    expect(shadow?.querySelector('circle')).toBeTruthy()
+    expect(shadow?.querySelector('script')).toBeNull()
+    expect(shadow?.innerHTML).not.toContain('zzqPwn')
   })
 })
 

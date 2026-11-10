@@ -55,9 +55,11 @@ def _fresh_reexec_environment(_floor_monkeypatch):
     ``platform_compat._KEPT_FOR_REEXEC`` for the gateway's own exec restart, and
     ``launched_as_managed_service`` reads it there; a value one test's launch
     consumed must not make a later test's gateway read as service-launched, nor
-    be written into the environment by a later test's stubbed exec.
+    be written into the environment by a later test's stubbed exec. The boot-time
+    ssh-agent socket a ``gateway`` launch records is reset for the same reason.
     """
     from kiro_crew import platform_compat, platform_compat_runtime
+    from kiro_crew.mcp_gateway import agent_socket
 
     # ONE fresh dict bound in both modules: ``keep_for_reexec`` and the
     # ``reexec_*`` seams resolve ``_KEPT_FOR_REEXEC`` in
@@ -68,6 +70,8 @@ def _fresh_reexec_environment(_floor_monkeypatch):
     fresh: dict[str, str] = {}
     _floor_monkeypatch.setattr(platform_compat, "_KEPT_FOR_REEXEC", fresh)
     _floor_monkeypatch.setattr(platform_compat_runtime, "_KEPT_FOR_REEXEC", fresh)
+    _floor_monkeypatch.setattr(agent_socket, "_recorded", False)
+    _floor_monkeypatch.setattr(agent_socket, "_boot_socket", None)
 
 
 @pytest.fixture(autouse=True)
@@ -310,6 +314,37 @@ def _forget_enterprise_profile_pin():
     forget()
 
 
+def forget_home_bound_caches() -> None:
+    """Empty the process caches the boot smoke test checks before it boots.
+
+    The integration layer's ``home_bound_globals_are_clear`` requires them
+    empty. Unit tests that run a hook, load an embedder or resolve app
+    permissions fill them, so the boot test failed on any worker where such a
+    test ran first. ``pytest_runtest_teardown`` calls this after every fixture,
+    the test's ``monkeypatch`` included, so a stand-in a test patched in is
+    already gone and only a real leftover is cleared. Never called before a
+    test, so that pre-boot check still catches a leak this does not know about.
+    """
+    import sys
+
+    governance = sys.modules.get("kiro_crew.platform.governance")
+    if governance is not None:
+        governance._CONFIRM_PATTERNS_MEMO = None
+    sandbox_rlimit = sys.modules.get("kiro_crew.sandbox_rlimit")
+    if sandbox_rlimit is not None:
+        sandbox_rlimit._SHIM_ARGV_CACHE.clear()
+    embeddings = sys.modules.get("kiro_crew.embeddings")
+    if embeddings is not None:
+        # Dropped, not retired: a boot's memory thread may still be using it,
+        # and retiring it under that thread hangs the worker's later tests.
+        embeddings._shared_embedder = None
+        embeddings._download_manager = None
+    token_auth = sys.modules.get("kiro_crew.dashboard.token_auth")
+    if token_auth is not None:
+        token_auth._app_perms_cache.clear()
+        token_auth._app_perms_denied.clear()
+
+
 @pytest.fixture(autouse=True)
 def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
     """Forget which roots the legacy auth-store temp sweep has found clean.
@@ -323,6 +358,21 @@ def _forget_legacy_auth_sweep_clean_roots(_floor_monkeypatch):
     from kiro_crew import sandbox_staging
 
     _floor_monkeypatch.setattr(sandbox_staging, "_LEGACY_AUTH_SWEEP_CLEAN", {})
+
+
+@pytest.fixture(autouse=True)
+def _forget_mount_source_sweep_pacing(_floor_monkeypatch):
+    """Forget when the periodic mount-source pass last ran and where it stopped.
+
+    ``sandbox_mount_sweep._SWEEP_STATE`` rate-limits the default-roots pass and
+    ``_SWEEP_CURSORS`` remembers the resume point per root, both for the process
+    lifetime. A test that runs the sweep after another one in the same worker
+    would otherwise find its pass skipped as too soon, or started mid-listing.
+    """
+    from kiro_crew import sandbox_mount_sweep
+
+    _floor_monkeypatch.setattr(sandbox_mount_sweep, "_SWEEP_STATE", {}, raising=False)
+    _floor_monkeypatch.setattr(sandbox_mount_sweep, "_SWEEP_CURSORS", {}, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -655,6 +705,7 @@ def _reset_crewmate_worker_slots():
             module._CREWMATE_WORKER_SLOTS.clear()
             module._CREWMATE_WORKER_MEMBERS.clear()
             module._CREWMATE_WORKER_PROMPT_IN_CONTEXT.clear()
+            module._SESSION_BACKEND_PICKS.clear()
 
     clear()
     try:

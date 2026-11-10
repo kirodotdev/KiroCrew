@@ -260,7 +260,7 @@ def test_a_claude_bash_call_fires_an_execute_bash_post_tool_hook(
     assert finished.kind == EVENT_TOOL_RESULT and finished.tool_status == "completed"
     ran = _fake_runs(monkeypatch)
     _post_tool_fire(tmp_path, hooks, started)
-    assert ran == [(HOOK_EVENT_POST_TOOL_USE, "post.sh", "execute_bash")]
+    assert ran == [(HOOK_EVENT_POST_TOOL_USE, "post.sh", "shell")]
 
 
 def test_the_default_agents_audit_hook_fires_on_a_claude_bash_call(
@@ -279,7 +279,7 @@ def test_the_default_agents_audit_hook_fires_on_a_claude_bash_call(
     started, _finished = _claude_bash_call()
     ran = _fake_runs(monkeypatch)
     _post_tool_fire(tmp_path, hooks, started)
-    assert ran == [(HOOK_EVENT_POST_TOOL_USE, audit["command"], "execute_bash")]
+    assert ran == [(HOOK_EVENT_POST_TOOL_USE, audit["command"], "shell")]
 
 
 def test_a_claude_edit_its_permission_request_named_fires_an_fs_write_post_tool_hook(
@@ -314,7 +314,7 @@ def test_a_claude_edit_its_permission_request_named_fires_an_fs_write_post_tool_
             tool_match_names=_all,
         )
     )
-    assert ran == [(HOOK_EVENT_POST_TOOL_USE, "write.sh", "fs_write")]
+    assert ran == [(HOOK_EVENT_POST_TOOL_USE, "write.sh", "write")]
 
 
 def test_a_claude_call_that_is_not_shell_keeps_title_matching():

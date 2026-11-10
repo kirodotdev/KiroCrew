@@ -24,7 +24,11 @@ from aiohttp import web
 from kiro_crew import __version__ as _local_version
 from kiro_crew import platform_compat
 from kiro_crew.changelog import release_of_build
-from kiro_crew.config.loader import KiroCrewConfig, overlay_pins
+from kiro_crew.config.loader import (  # noqa: F401 - overlay_pins: the updates facade serves it
+    KiroCrewConfig,
+    overlay_pins,
+)
+from kiro_crew.config.overlay_owners import overlay_pin
 from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes
 from kiro_crew.dashboard.handlers.updates_verdict import (
     _capability_fields,
@@ -37,6 +41,7 @@ from kiro_crew.dashboard.handlers.updates_verdict import (
     _refresh_auto_update_effect_once,
     _set_update_info,
     _status_auto_update_effect,
+    _status_auto_update_manual_only,
     _update_info,
     remediation_command,
 )
@@ -101,6 +106,15 @@ _CLI_MANIFEST_SCHEMA = "kirocrew-cli-artifact-manifest-v1"
 #: the very same document. Enforced against RECEIVED bytes, not Content-Length.
 _FEED_MAX_BYTES = 65536
 _FEED_TIMEOUT_SECS = 15
+
+#: Total deadline for a source checkout's update fetch. A killed fetch keeps none
+#: of what it downloaded, so a deadline shorter than the transfer fails the same
+#: way on every later check and a far-behind checkout never recovers. 300s is the
+#: largest bound ``git_tmp_packs`` vouches for, so its reaper still cannot take a
+#: pack this fetch is writing.
+#: shortcut: a total-time bound; a fetch still slower than this still fails every
+#: time, upgrade to a no-progress bound if that is reported.
+_GIT_FETCH_TIMEOUT_S = 300.0
 
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._+!-]{1,64}$")
 _PUB_DATE_RE = re.compile(r"^[0-9TZ:.\-]{1,32}$")
@@ -210,6 +224,11 @@ def status_update_fields() -> dict[str, object]:
         # gateway's update loop acts on, so the switch's label cannot promise
         # what the loop will not do.
         "update_auto_effect": _status_auto_update_effect(),
+        # ``notify`` only because the security policy turns unattended installs
+        # off: a person's Update still installs here. The switch's note reads it,
+        # since ``update_can_apply`` is false on a managed venv whose Update is
+        # the arm and approve flow.
+        "update_auto_manual_only": _status_auto_update_manual_only(),
         # Whether the desktop app bundles and launches this gateway, from the
         # baked packaging stamp. Independent of who owns the update: a policy
         # ``updates`` provider makes ``update_managed_by`` read ``command`` on
@@ -247,7 +266,7 @@ async def api_update_check(request: web.Request) -> web.Response:
     # Offloaded for the same reason as every other config read in the update
     # handlers: the data home can be network-backed.
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
-    overlay_override = await asyncio.to_thread(overlay_pins, "auto_update")
+    pin = await asyncio.to_thread(overlay_pin, "auto_update")
     return web.json_response(
         {
             **_update_info,
@@ -264,10 +283,10 @@ async def api_update_check(request: web.Request) -> web.Response:
                 str(_update_info.get("channel") or ""),
             ),
             "auto_update": cfg.auto_update,
-            # Whether config.local.json pins it, so the panel can explain a
-            # switch that snaps back: this endpoint's writer updates the base
-            # file, which the overlay deep-merges over.
-            "overlay_override": overlay_override,
+            # Whether config.local.json pins it, and whose entry it is, so the
+            # panel can explain a switch that snaps back: this endpoint's writer
+            # updates the base file, which the overlay deep-merges over.
+            **pin.fields(),
             # Surface the pin so the dashboard can say WHY an update is mandatory
             # rather than showing a bare button. ``minimum_version_enforced``
             # stays governance-only (its historical meaning); the combined
@@ -539,7 +558,7 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
     # tip comes back as a commit id the reads below use directly; no ref in this
     # checkout is written. The same helper fetches for the unattended apply.
     remote_sha = await fetch_and_pin_upstream(
-        proj, remote_name, remote_branch, git=git, env=env, timeout=30
+        proj, remote_name, remote_branch, git=git, env=env, timeout=_GIT_FETCH_TIMEOUT_S
     )
     if remote_sha is None:
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)

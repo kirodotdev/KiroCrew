@@ -34,6 +34,7 @@ from kiro_crew.slack.renderer import (
     is_wait_identity,
     split_approval_token,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 
 class _RecSlack:
@@ -101,6 +102,13 @@ class _RecSlack:
     async def post_message(self, channel, text, thread_ts=None, **kw):
         self.calls.append(("post_message", {"text": text, "thread_ts": thread_ts}))
         return self._ts()
+
+
+async def _until(condition, what: str) -> None:
+    """Wait for *condition* on the clock, not for a count of loop yields: the
+    driver's PreToolUse gate reads the saved hooks off the loop before a prompt
+    is posted, so no fixed number of ``sleep(0)`` turns is enough."""
+    await async_wait_until(condition, describe=lambda: f"timed out waiting for {what}")
 
 
 class _Provider:
@@ -389,10 +397,7 @@ class TestSlackRendererMapping:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures:
-                    break
-                await asyncio.sleep(0)
+            await _until(lambda: bool(decider._futures), "the approval prompt")
             decider.resolve("rq1", True)
             await task
 
@@ -435,10 +440,7 @@ class TestSlackRendererMapping:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures:
-                    break
-                await asyncio.sleep(0)
+            await _until(lambda: bool(decider._futures), "the approval prompt")
             decider.resolve("rq1", True)
             await task
 
@@ -497,10 +499,7 @@ class TestApprovalDecider:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures:
-                    break
-                await asyncio.sleep(0)
+            await _until(lambda: bool(decider._futures), "the approval prompt")
             assert decider.resolve("rq1", True) is True
             await task
 
@@ -528,10 +527,9 @@ class TestApprovalDecider:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures and rec.approval_token():
-                    break
-                await asyncio.sleep(0)
+            await _until(
+                lambda: bool(decider._futures and rec.approval_token()), "the approval prompt"
+            )
             token = rec.approval_token()
             assert token is not None
             key, nonce = token
@@ -560,10 +558,9 @@ class TestApprovalDecider:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures and rec.approval_token():
-                    break
-                await asyncio.sleep(0)
+            await _until(
+                lambda: bool(decider._futures and rec.approval_token()), "the approval prompt"
+            )
             # Resolve WITHOUT a direct decider reference — as interactions.py does.
             token = rec.approval_token()
             assert token is not None
@@ -594,10 +591,9 @@ class TestApprovalDecider:
 
         async def scenario():
             task = asyncio.create_task(driver.run("hi"))
-            for _ in range(1000):
-                if decider._futures and rec.approval_token():
-                    break
-                await asyncio.sleep(0)
+            await _until(
+                lambda: bool(decider._futures and rec.approval_token()), "the approval prompt"
+            )
             token = rec.approval_token()
             assert token is not None
             key, nonce = token
@@ -648,10 +644,7 @@ class TestApprovalDecider:
             assert nonce_a and nonce_b and nonce_a != nonce_b
             task_a = _asyncio.create_task(dec_a(ev))
             task_b = _asyncio.create_task(dec_b(ev))
-            for _ in range(1000):
-                if dec_a._futures and dec_b._futures:
-                    break
-                await _asyncio.sleep(0)
+            await _until(lambda: bool(dec_a._futures and dec_b._futures), "the approval prompt")
             # Both deciders are registered under DISTINCT namespaced keys.
             assert SlackApprovalDecider._REGISTRY.get("thread-A:1") is dec_a
             assert SlackApprovalDecider._REGISTRY.get("thread-B:1") is dec_b

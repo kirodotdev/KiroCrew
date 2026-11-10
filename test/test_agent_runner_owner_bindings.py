@@ -68,6 +68,7 @@ _DEFINED: dict[str, frozenset[str]] = {
             "_governance_denial",
             "_refusal",
             "_requested_command",
+            "_segments",
             "_shell_words",
             "_tool_permitted",
             "shell_command_refusal",

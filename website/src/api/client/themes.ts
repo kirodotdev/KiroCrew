@@ -16,6 +16,8 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
       /** Whether the gateway host can open a file manager right now: the launcher
        *  `/api/reveal` starts, and on Linux a desktop session for it. */
       desktop_launcher?: boolean
+      /** `dashboard.remote_editor`, each value the schema refuses already read as "". */
+      remote_editor?: { editor?: string; host?: string }
     }>,
   }
 
@@ -53,6 +55,8 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
       import_onboarded?: boolean
       /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */
       privacy_acked?: boolean
+      /** Which Privacy chapter notice text the user acknowledged. */
+      privacy_ack_version?: number
     }) =>
       put('/api/config/theme', body).then(j),
   }

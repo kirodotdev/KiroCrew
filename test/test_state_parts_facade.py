@@ -219,8 +219,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, prompt: 'str', run_chat_coro: 'Callable[[DashboardState, "
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
         "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
-        "relay_meta: 'dict[str, Any] | None' = None, workflow_followup: 'bool' = "
-        "False) -> 'bool'",
+        "relay_meta: 'dict[str, Any] | None' = None, gateway_prompt_kind: 'str' = "
+        "'') -> 'bool'",
     ),
     "flush_deferred_notes": (
         "function",
@@ -260,6 +260,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "mentions_source_identity": ("function", False, False, "(self, identity_key: 'str') -> 'bool'"),
     "messages": ("property", False, False, "(self) -> 'list[dict[str, Any]]'"),
     "model_withheld": ("property", False, False, "(self) -> 'bool | None'"),
+    "note_close_recorded": ("function", False, False, "(self) -> 'None'"),
     "note_disk_tail": ("function", False, False, "(self, *candidates: 'str | None') -> 'None'"),
     "note_pending_subagent_delivery": (
         "function",
@@ -323,6 +324,12 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "release_pending_chunks": ("function", False, False, "(self) -> 'int'"),
     "running": ("property", False, False, "(self) -> 'bool'"),
+    "set_rejection_reason": (
+        "function",
+        False,
+        False,
+        "(self, request_id: 'str', future: 'asyncio.Future[str]', reason: 'str') -> 'None'",
+    ),
     "set_mcp_report": (
         "function",
         False,
@@ -381,6 +388,12 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self) -> 'tuple[tuple[str, str, bool], ...]'",
     ),
+    "take_rejection_reason": (
+        "function",
+        False,
+        False,
+        "(self, request_id: 'str', future: 'asyncio.Future[str]') -> 'str'",
+    ),
     "todo_task_text": ("function", False, False, "(self, task_id: 'str') -> 'str | None'"),
     "turn_running": ("property", False, False, "(self) -> 'bool'"),
     "unattended": ("property", False, False, "(self) -> 'bool'"),
@@ -422,6 +435,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_channel_runtime_origin": ("value", "False"),
     "_channel_window_mtime": ("value", "0.0"),
     "_chunk_seq": ("value", "0"),
+    "_close_recorded": ("value", "False"),
     "_closing": ("value", "0"),
     "_compacting": ("value", "False"),
     "_preparing_count": ("value", "0"),
@@ -461,6 +475,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_dismissed_txn_pending": ("value", "set()"),
     "_dropped_note_ids": ("value", "set()"),
     "_eager_spawn_failures": ("value", "0"),
+    "_eager_spawn_reported_resume": ("value", "False"),
     "_eager_spawn_retry_at": ("value", "0.0"),
     "_eager_spawn_task": ("value", "None"),
     "_effort_pick_gen": ("value", "0"),
@@ -547,6 +562,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_pending_memory_mode": ("value", "None"),
     "_pending_model_pick": ("value", "None"),
     "_pending_release_deferred": ("value", "False"),
+    "_pending_reset_clears_cwd": ("value", "False"),
     "_pending_reset_history_key": ("value", "None"),
     "_pending_rewrite": ("value", "False"),
     "_pending_steers": ("value", "[]"),
@@ -574,6 +590,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_refusal_fallback_session_key": ("value", "''"),
     "_refusal_pick_gen": ("value", "0"),
     "_regenerate_target": ("value", "None"),
+    "_rejection_reasons": ("value", "{}"),
     "_responsive": ("value", "None"),
     "_resumed_count": ("value", "0"),
     "_revived_by": ("value", "''"),
@@ -605,6 +622,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_steer_rpc_in_flight": ("value", "set()"),
     "_native_steer_in_flight": ("value", "set()"),
     "_steer_segment_cut": ("value", "None"),
+    "_compact_command_turn": ("value", "False"),
     "_steer_send_ids": ("value", "{}"),
     "_steer_user_origin": ("value", "{}"),
     "_stop_declined_at": ("value", "0.0"),
@@ -671,12 +689,14 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_wait_state": ("value", "None"),
     "_wait_steer_baseline": ("value", "0.0"),
     "_wake_starting_task": ("value", "None"),
+    "_welcome_preview": ("type", "builtins.tuple"),
     "_welcomed_agent": ("value", "''"),
     "_window_loader_thread": ("value", "None"),
     "_window_swap_applying": ("value", "None"),
     "_window_swap_epoch": ("value", "0"),
     "agent": ("value", "''"),
     "agent_kind": ("value", "''"),
+    "backend": ("value", "''"),
     "crew_mode_agent": ("value", "''"),
     "app_agent_owner": ("value", "''"),
     "channel_origin": ("value", "False"),

@@ -7,6 +7,7 @@ import { Btn } from '../../components/ui'
 import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useCrewMode } from '../../hooks/usePreviewFlag'
+import { FOLLOWUP_START_SENDS_KEY } from '../chat/followupStartSends'
 import { loadChatConfig, saveChatConfig, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
 import { CARD_LINE_OPTIONS, isCardLineCount } from '../chat/cardLineCount'
 import { api } from '../../api/client'
@@ -292,6 +293,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // is not in DURABLE_PREF_KEYS, so it stays on this device, like the diff
   // layout toggle above. The transcript reads the same key.
   const [copyOnSelect, setCopyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
+  // Browser-local and outside the uiPrefs host backup on purpose: see followupStartSends.ts.
+  const [followupStartSends, setFollowupStartSends] = usePersistedBool(FOLLOWUP_START_SENDS_KEY, false)
 
   // ── Local chat config (localStorage) ──
   const setChat = useCallback(<K extends keyof ChatConfig>(k: K, v: ChatConfig[K]) => {
@@ -923,6 +926,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             onChange={v => setBusyDefault(v as BusySendMode)}
           />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.quick_send')} hint={i18nT('pages.settings.chatPanel.click_a_suggested_reply_to_send_it_instantly', { mod: isMac ? '⇧' : 'Shift' })} checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.followup_start_sends')} hint={i18nT('pages.settings.chatPanel.followup_start_sends_hint')} checked={followupStartSends} onChange={setFollowupStartSends} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.merge_queued_messages')} hint={i18nT('pages.settings.chatPanel.combine_follow_up_messages_into_a_single_labeled')} checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.arrow_key_prompt_history')} hint={i18nT('pages.settings.chatPanel.arrow_key_prompt_history_desc')} checked={chatCfg.arrowKeyPromptHistory} onChange={v => setChat('arrowKeyPromptHistory', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.spellcheck_input')} hint={i18nT('pages.settings.chatPanel.spellcheck_input_desc')} checked={chatCfg.spellcheck} onChange={v => setChat('spellcheck', v)} />
@@ -1113,6 +1117,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.compact_empty_folders')} hint={i18nT('pages.settings.chatPanel.a_folder_with_no_chats_takes_one_row_instead_of')} checked={chatCfg.hideEmptyFolderBody} onChange={v => setChat('hideEmptyFolderBody', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders')} hint={i18nT('pages.settings.chatPanel.folder_count_includes_subfolders_description')} checked={chatCfg.countSubfolderContents} onChange={v => setChat('countSubfolderContents', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.full_titles_on_scroll')} hint={i18nT('pages.settings.chatPanel.full_titles_on_scroll_description')} checked={chatCfg.fullTitlesOnScroll} onChange={v => setChat('fullTitlesOnScroll', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.needs_me_hover_card')} hint={i18nT('pages.settings.chatPanel.needs_me_hover_card_hint')} checked={chatCfg.needsMeHoverCard} onChange={v => setChat('needsMeHoverCard', v)} />
           <SettingsSelect
             label={i18nT('settings.chat.defaultMemoryMode.label')}
             description={i18nT('settings.chat.defaultMemoryMode.description_summary')}

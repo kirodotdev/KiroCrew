@@ -233,6 +233,7 @@ def test_a_refused_kas_path_is_not_served_from_the_counts_cache(tmp_path, monkey
 
     assert result["total_sessions"] == 0
     assert result["refused_transcripts"] == 1
+    assert result["unreadable_session_dirs"] == 0
     assert reads == []
     assert usage_sessions._TRANSCRIPT_COUNTS == {}
 
@@ -291,7 +292,9 @@ def test_a_refused_session_root_is_not_listed(tmp_path, monkeypatch):
         result = _parse_sessions()
 
     assert result["total_sessions"] == 0
+    assert result["unreadable_session_dirs"] == 1
     assert result["refused_transcripts"] == 0
+    assert "error" not in result
     assert not any(p.startswith(str(root / "aaaa")) for p in listed)
 
 
@@ -316,7 +319,8 @@ def test_an_unreadable_kas_record_directory_counts_as_not_loaded(tmp_path, monke
         result = _parse_sessions()
 
     assert result["total_sessions"] == 1
-    assert result["refused_transcripts"] == 1
+    assert result["unreadable_session_dirs"] == 1
+    assert result["refused_transcripts"] == 0
 
 
 @pytest.mark.parametrize("exc", [FileNotFoundError("gone"), NotADirectoryError("now a file")])
@@ -332,6 +336,7 @@ def test_a_kas_record_directory_gone_during_the_listing_is_skipped(tmp_path, mon
 
     assert result["total_sessions"] == 1
     assert result["refused_transcripts"] == 0
+    assert result["unreadable_session_dirs"] == 0
 
 
 def test_an_unreadable_session_root_counts_as_not_loaded(tmp_path, monkeypatch):
@@ -343,7 +348,8 @@ def test_an_unreadable_session_root_counts_as_not_loaded(tmp_path, monkeypatch):
         result = _parse_sessions()
 
     assert result["total_sessions"] == 0
-    assert result["refused_transcripts"] == 1
+    assert result["unreadable_session_dirs"] == 1
+    assert result["refused_transcripts"] == 0
 
 
 def test_a_refused_cli_directory_link_is_not_listed(tmp_path, monkeypatch):
@@ -360,9 +366,63 @@ def test_a_refused_cli_directory_link_is_not_listed(tmp_path, monkeypatch):
     ):
         result = _parse_sessions()
 
-    assert result["code"] == "sessions_dir_unreadable"
+    assert "error" not in result
+    assert result["unreadable_session_dirs"] == 1
+    assert result["refused_transcripts"] == 0
     assert result["all_time_sessions"] == 0
     assert not any(p.startswith(targets) for p in listed)
+
+
+def test_a_home_on_an_untrusted_share_counts_as_not_loaded_without_an_error(tmp_path):
+    """The path check refuses both session directories of a home on a UNC share.
+
+    The payload then reports the refused directories instead of an ``error``, which
+    would make the Usage page drop its billing along with the session counts. They
+    count as directories, not transcripts: how many transcripts they hold is unknown.
+    """
+    root, cli = _sessions_root(tmp_path)
+    _write_jsonl(cli / "s1.jsonl", [{"kind": "Prompt"}])
+    _write_jsonl(root / "aaaa" / "sess_a" / "messages.jsonl", _KAS_TURN)
+    refused_dirs = {str(root), str(cli)}
+
+    def validate(path):
+        return None if path in refused_dirs else os.path.realpath(path)
+
+    with (
+        patch.object(usage_mod, "_SESSIONS_DIR", cli),
+        patch.object(usage_mod, "validate_file_path", side_effect=validate),
+    ):
+        result = _parse_sessions()
+
+    assert "error" not in result
+    assert "code" not in result
+    assert result["unreadable_session_dirs"] == 2
+    assert result["refused_transcripts"] == 0
+    assert result["all_time_sessions"] == 0
+    assert "today" in result
+
+
+def test_an_unlistable_cli_directory_keeps_its_error_and_is_not_a_directory_count(
+    tmp_path, monkeypatch
+):
+    root, cli = _sessions_root(tmp_path)
+    _fail_listing(monkeypatch, cli, PermissionError("denied"))
+
+    with patch.object(usage_mod, "_SESSIONS_DIR", cli):
+        result = _parse_sessions()
+
+    assert result["code"] == "sessions_dir_unreadable"
+    assert result["unreadable_session_dirs"] == 0
+    assert result["refused_transcripts"] == 0
+
+
+def test_the_cold_refresh_placeholder_has_the_parsed_shape(tmp_path):
+    root, cli = _sessions_root(tmp_path)
+
+    with patch.object(usage_mod, "_SESSIONS_DIR", cli):
+        parsed = _parse_sessions()
+
+    assert usage_sessions._empty_session_summary() == parsed
 
 
 def test_a_windows_special_directory_is_still_listed(tmp_path, monkeypatch):

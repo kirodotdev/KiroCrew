@@ -19,6 +19,8 @@ from kiro_crew import agent_ipc_client
 from kiro_crew.acp import ipc_pickup
 from kiro_crew.agent_ipc_wire import CAPABILITY_HEADER, GATEWAY_PID_ENV, PICKUP_ENV
 from kiro_crew.dashboard import agent_ipc
+from kiro_crew.mcp_gateway import STUB_MODULE
+from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
 from kiro_crew.testing.ids import unallocatable_pids
 
 # Pids no live process can own, so nothing here can reach a real process.
@@ -77,6 +79,28 @@ def test_an_enforced_harness_gets_a_pickup_on_kirocrew_core_only(bound, backend)
     assert entry.runtime_pid() == _ROOT_PID
     runtime.pid = _RESPAWNED_PID
     assert entry.runtime_pid() == _RESPAWNED_PID
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-m", STUB_MODULE, "--server", "kirocrew-core", "--agent", "kirocrew"],
+        [
+            "-m",
+            STUB_MODULE,
+            f"{STUB_FLAGS_FLAG}={encode_target_args(['--server', 'kirocrew-core'])}",
+        ],
+        ["-m", STUB_MODULE, f"{STUB_FLAGS_FLAG}=!not-base64!"],
+    ],
+    ids=["plain", "enveloped", "unreadable"],
+)
+def test_a_broker_stub_for_kirocrew_core_gets_no_pickup(bound, args):
+    # A stub never takes the pickup out of its environment, so a same-uid shell in
+    # the session could read it from /proc/<stub>/environ and redeem it.
+    stub = {"name": "kirocrew-core", "command": sys.executable, "args": args, "env": []}
+    (out,) = _issue([stub])
+    assert PICKUP_ENV not in _env(out) and GATEWAY_PID_ENV not in _env(out)
+    assert not bound._pickups
 
 
 @pytest.mark.parametrize("backend", ["kiro", "kas", "claude"])

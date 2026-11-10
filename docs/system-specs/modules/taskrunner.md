@@ -29,6 +29,29 @@ receives that same context before provider allocation. Explicit member selection
 uses the existing member's store; a missing member never falls back to Global.
 Ordinary tasks without a member retain their existing V1 memory behavior.
 
+A run that names no `agent` runs its steps, review and decompose as the agent of
+the chat that started it: `workflow_memory.inherited_step_agent` reads the
+captured carrier, and a `template` record not bound to a member gives its
+`template_id`. So a `task_run` or `/task run` from a custom agent's chat keeps
+that agent's MCP servers, tools, hooks and prompt, and a resume, retry or restart
+keeps it too, because the carrier is persisted. The `kirocrew` floor (a default
+chat, or a dashboard start with no origin), a carrier bound to a member, an app's
+own agent (`apps.manager_lookup.owning_app_for_agent`: its chat runs the app's
+registered spec through a launch copy no step session carries), a template with
+no user-level spec (neither `agent.session_agent_spec_path` nor the linked reader
+`member_essential_context.linked_global_template_spec` finds one, as a session's own
+spec read looks, or two specs claim it with no pin: a name only a checkout's `.kiro/agents` declares may resolve to
+nothing in the run's own working directory) and no carrier give `""`, the
+configured default agent. An explicit `agent` still wins.
+
+The inherited agent is resolved per run, each time one of those sessions opens:
+a step or review reads `run.execution_context`, and decompose (a replan too)
+reads the carrier bound to the run's runtime key, because `plan` decomposes
+before it registers the run. It is never written to `Project.agent`, which
+holds only the run's explicit agent, so `status()` and `runs.json` report the
+explicit pick and runs going at once from different chats each keep their own
+chat's agent. Lesson extraction runs the explicit agent or the default one.
+
 Persistent tasks store one complete task record. Incognito and temporary tasks
 keep their bodies, steps, outputs and execution state in memory only: checkpoints,
 progress files, task history and failure-lesson extraction do not retain them.
@@ -405,6 +428,7 @@ class Task:
     superseded: bool = False  # a revised plan replaced it; execute_plan never resets it
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
+    status_file: str = ""  # where the step reports its own outcome (see Declared step status)
     depends_on: list[int] = field(default_factory=list)
 
 @dataclass
@@ -439,6 +463,12 @@ class Project:
     derived_from_revision: int = 0
 ```
 
+When a step's stream runs to its end, `Task.result` holds its answer without kiro-cli's
+complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
+acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
+answer (#32476). The snapshot taken while the turn runs stays raw, so a step whose stream
+raises (a dead process, a context overflow) keeps that snapshot as it is.
+
 ## Concurrent Tasks
 
 - `_runs: dict[str, TaskRun]` — keyed by task_id
@@ -446,7 +476,7 @@ class Project:
 - `start_background()` accepts optional `agent` param, returns a collision-resistant task ID (`{spec_stem}_{time_ns}`)
 - The agent belongs to the run, not to the runner: `plan()` and `start_background()` store it on `Project.agent`, `runs.json` persists it, and every step, review, decompose (including a replan) and lesson session of the run reads `run.agent` when it opens. Starting another run, resuming, retrying or a gateway restart therefore never changes the agent of a run already planned or in flight. `status()` reports each run's `agent`; its top-level `agent` is the latest run's. `retry_from_task(..., agent=...)` re-targets the retried steps only when an agent is given; `POST /api/taskrunner/{task_id}/retry` passes none, so a retry keeps the run's agent
 - `_start_lock` serializes concurrency admission, completed-run pruning, ID allocation, durable planning-placeholder persistence, and `_tasks` registration
-- Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the specified agent; `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
+- Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the run's explicit `run.agent`, or, when there is none, the template its own captured carrier names, resolved per run as each session opens (`inherited_step_agent`, § Module Architecture); `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
 - Each task gets its own work dir: `{work_dir}/{spec_stem}/`
 - `cancel(task_id)` cancels specific task; `cancel()` cancels all
@@ -472,8 +502,8 @@ For persistent executions with an admission attached:
 
 | Unit | Row | Lifecycle |
 |---|---|---|
-| a run | `taskrunner:<task_id>` (`kind=taskrunner_step`, `params={task_id, name, spec_path, steps, safe_retry}`) | `_taskq_begin_run` (an `async def`: `accept_async` + `claim_only_async` + `running_async`, every store touch on the writer thread) accepts + claims it with no lane slot -- the run executes nothing itself -- right before `_execute_tasks`, so `safe_retry = bool(run.branch_name)` is known. A refused `starting → running` mark on this row is answered by the row's STATE, not by the refusal (below); `_taskq_end_run` (also `async def`) settles it from the final status: `completed → done`, `failed → failed`, `paused` / `cancelled → cancelled` (an operator decision ends this execution; a resume is a NEW row, so the adopter never restarts what the operator stopped) |
-| a step | `taskrunner:<task_id>:task<N>` (child of the run row, `params={task_id, index, title, safe_retry}`, `scope_ref={auto_approve, agent}`) | `_taskq_admit_step` accepts it through `accept_async` (write-before-ack; a refused write fails the step closed, it never runs off the record) and `await admission.admit(...)` -- memory-pressure DEFER, a lane slot by effective cap, `claim` under a lease -- BEFORE the step opens a session; `_execute_single_task` marks it `running` and settles it `done` / `failed` / `cancelled` — once the step is RUNNING. That mark is a FENCE, not a notification: `admit` committed `starting` one statement earlier, so a refusal is a newer owner or a store outage, and the step body does not run under it (the row is failed and the step returns False) because a row left `starting` reaches no WAITING state and could not persist the first dependency or input wait the turn needed. A cancel that lands earlier, while `admit` is still waiting for a lane slot (a run cancel, a pause, the global timeout), is settled `cancelled` by the ADMISSION instead: `_execute_single_task` catches only `RunnerTaskCancelled` there, and a `queued` row left behind would never be claimed again because `taskrunner_step` has no dispatcher (`taskq.md` § Runner adapters). The normal arms await (`done_async` / `fail_async` / `cancel_async`); the `except CancelledError` / `except BaseException` arms use the SYNCHRONOUS write, because an `await` there can be interrupted before the write is submitted and a dropped terminal write leaves the row active for the next boot's reconciler |
+| a run | `taskrunner:<task_id>` (`kind=taskrunner_step`, `params={task_id, name, spec_path, steps, safe_retry}`) | `_taskq_begin_run` (an `async def`: `accept_async` + `claim_only_async` + `running_async`, every store touch on the writer thread) accepts + claims it with no lane slot -- the run executes nothing itself -- right before `_execute_tasks`, so `safe_retry = bool(run.branch_name)` is known. A refused `starting → running` mark on this row is answered by the row's STATE, not by the refusal (below), and a cancel landing during the mark cancels the row synchronously, since the handle is not in `_run_handles` yet for `_taskq_end_run` to settle; `_taskq_end_run` (also `async def`) settles it from the final status: `completed → done`, `failed → failed`, `paused` / `cancelled → cancelled` (an operator decision ends this execution; a resume is a NEW row, so the adopter never restarts what the operator stopped) |
+| a step | `taskrunner:<task_id>:task<N>` (child of the run row, `params={task_id, index, title, safe_retry}`, `scope_ref={auto_approve, agent}`) | `_taskq_admit_step` accepts it through `accept_async` (write-before-ack; a refused write fails the step closed, it never runs off the record) and `await admission.admit(...)` -- memory-pressure DEFER, a lane slot by effective cap, `claim` under a lease -- BEFORE the step opens a session; `_execute_single_task` marks it `running` and settles it `done` / `failed` / `cancelled` — once the step is RUNNING. That mark is a FENCE, not a notification: `admit` committed `starting` one statement earlier, so a refusal is a newer owner or a store outage, and the step body does not run under it (the row is failed and the step returns False) because a row left `starting` reaches no WAITING state and could not persist the first dependency or input wait the turn needed. A cancel that lands earlier, while `admit` is still waiting for a lane slot (a run cancel, a pause, the global timeout), is settled `cancelled` by the ADMISSION instead: `_execute_single_task` catches only `RunnerTaskCancelled` there, and a `queued` row left behind would never be claimed again because `taskrunner_step` has no dispatcher (`taskq.md` § Runner adapters). A cancel that lands after `admit` returned and before the body runs (while the `running` mark is written, or while the workflow view is told the step started) is `_execute_single_task`'s to settle: the mark has its own synchronous `cancel` arm and the start publication sits inside the body's `try`, because the handle already holds the lane slot and the lease. The normal arms await (`done_async` / `fail_async` / `cancel_async`); the `except CancelledError` / `except BaseException` arms use the SYNCHRONOUS write, because an `await` there can be interrupted before the write is submitted and a dropped terminal write leaves the row active for the next boot's reconciler |
 
 A step re-run after a failure (retry, replan, resume) gets `~N` suffixed ids so the
 earlier outcome stays on the record. The lane is `system` for a run whose
@@ -610,7 +640,7 @@ already handed back to its run:
 
 | Row | Verdict |
 |---|---|
-| run row, `is_safe_retry` (`params.safe_retry`, i.e. the run had a git worktree, or class `none` / `idempotent_key`) | `recovering`, then `execute_plan(task_id)` -- only steps that did not PASS re-run (`runs.json` / `progress.md` is the checkpoint) |
+| run row, `is_safe_retry` (`params.safe_retry`, i.e. the run had a git worktree, or class `none` / `idempotent_key`) | `recovering`, then `execute_plan(task_id)` -- only steps that did not PASS re-run (`runs.json` / `progress.md` is the checkpoint); a "Resumed after a gateway restart" notice follows a resume that started |
 | run row, not safe (legacy import, no worktree) | `unknown_side_effect`; the run stays `paused`, a "Run not auto-resumed" notice tells the operator to review and resume by hand |
 | run row, safe, that `model.RECOVERY_MAX_ATTEMPTS` (3) earlier gateway lives already resumed | `failed` (`adopted: lost_owner_limit`, listed in `AdoptReport.lost_owner_limit`); the run stays `paused`, a "Run not auto-resumed" notice says the limit counts every gateway stop, a routine restart as much as a crash, and the operator resumes by hand (which opens a new `~N` row) |
 | step row, safe | `failed` ("interrupted by a gateway restart; re-run on resume") -- the resume creates a fresh `~N` row for it |
@@ -655,7 +685,7 @@ A graceful gateway stop or restart ends active runs the same way a crash does. `
 `task_executor.execute_single_task()` evaluates task-level approval before agent execution.
 
 - With an `on_approval` callback, either `requires_approval` or `force_approval` prompts the owning surface; a denial pauses the project for editing.
-- Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate.
+- Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate: it fails the run, and `_try_replan` plans nothing for a run that is already `failed`.
 - `cli_server.py` constructs the standalone `kirocrew run TASK.md` runner without an approval callback. Use `force_approval`, not `requires_approval`, for an action that must not execute unattended.
 - The dashboard supplies the callback and renders Approve/Deny controls in the project detail view.
 
@@ -739,11 +769,36 @@ semaphore and the host-safe ceiling are the only throttling mechanisms.
 
 ## Runs Persistence
 
-Persistent, non-cron runs are snapshotted throughout their lifecycle to
-`{work_dir}/runs.json` and loaded by `__init__`. Admission, plan/task edits,
-progress, terminal transitions, and deletion all await the fsync-backed snapshot
-path. See [Task snapshot persistence](#task-snapshot-persistence) for the full
-record, privacy exclusions, failure handling, and ordering contract.
+Persistent, non-cron runs are snapshotted throughout their lifecycle to the
+registry file in `{work_dir}` (`runs.json`, or the per-home name below) and loaded
+by `__init__`. Admission, plan/task edits, progress, terminal transitions, and
+deletion all await the fsync-backed snapshot path. See
+[Task snapshot persistence](#task-snapshot-persistence) for the full record,
+privacy exclusions, failure handling, and ordering contract.
+
+The default workspace root is one folder per OS user (see
+[config](config.md#workspace-root)), so every data home with no workspace of its
+own shares one work dir. There a `KIROCREW_HOME` override names its registry
+`runs-<data_home_id>.json` (the `session_work_dir.data_home_id()` a run-dir marker
+records), so a gateway lists and rewrites only its own home's runs. The name
+depends only on the data home and the folder: a configured
+`taskrunner.workspace_dir` inside that root gets the per-home name too, and the
+default home and every work dir outside that root keep `runs.json`. While the work
+dir stays the folder `_load_runs` read, every write goes to that file. Both macOS
+bases (`/Volumes/workplace` and `~/workplace`) count as that root, so a volume
+mounting later never changes a folder's name; a live `taskrunner.workspace_dir`
+change to another folder writes the name a start there reads.
+
+On the first start under a per-home name, `_adopt_home_rows` copies the shared
+`runs.json` rows whose `taskrunner:<task_id>:runtime` session record is in this
+home's own session history (binding the run's execution writes it) into the new
+per-home file; the shared file is never written, moved or deleted. Rows it
+cannot attribute stay there, and a warning names the file and counts them. If the
+copy cannot finish (a read or the write fails; a record whose first line is
+corrupt counts as unattributed, since no restart could read it), the start fences
+writes until a restart, so no new snapshot creates the per-home file and ends the retry. A later
+start reads its own file and copies nothing. Pinned by
+`test_taskrunner_atomic_persistence.py::TestRegistryPerDataHome`.
 
 A plan's default work directory is provisional until the plan is accepted. A
 failed attempt removes that taskrunner-owned directory; an explicit caller
@@ -795,10 +850,15 @@ loop): a traversal, a missing file or a UNC/laundered link answers
 Starting is refused while the `projects` app (the Task Runner page) is
 switched off in Library: `POST /api/taskrunner` answers 409 `app_disabled`
 ("Task Runner is disabled. Enable it in Library to start tasks.") before any
-inline spec is written. `POST /api/taskrunner/plan`, `/{task_id}/execute` and
-`/{task_id}/retry` answer the same before a plan is made or a run admitted
-(`_task_runner_disabled`). The `task_run` MCP tool relays the start refusal, and
-the chat command `task run <spec>` replies with that sentence. Only an
+inline spec is written. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
+`/{task_id}/execute` and `/{task_id}/retry` answer the same before a plan is
+made, a refine session started or a run admitted (`_task_runner_disabled`).
+The `task_run` MCP tool relays the start refusal, and
+the chat command `task run <spec>` replies with that sentence. A saved
+`task-plan` workflow is refused the same way before it is planned:
+`POST /api/workflows/definitions/{ref}/run` answers 409 `app_disabled`,
+`/workflow <name>` replies with that sentence and the `workflow_run` MCP tool
+relays it. Saved Python workflows do not read the switch. Only an
 explicit `enabled: false` install record counts as disabled
 (`apps.manager.app_disabled`); a host with no record runs tasks.
 
@@ -844,6 +904,48 @@ A partial example; each run also carries `name`, `auto_approve`,
 `task_models.py` owns retry, recovery, replan, total-task, timeout, token-budget, progress-file, and session-prefix constants; `TaskRunner` owns the persistence filename (`_RUNS_FILE`); the concurrent-run fallback (`_MAX_CONCURRENT_TASKS`) lives in `taskrunner_parts/run_lifecycle.py` and the parallel-step fallback (`_MAX_PARALLEL_TASKS`) in `taskrunner_parts/run_inputs.py`, both still importable from `kiro_crew.taskrunner`. `task_executor.execute_task()`, `TaskRunner._try_replan()`, `TaskRunner._watchdog_loop()`, and `task_executor.run_tests()` consume those bounds. `test_scenarios_v2_logic.py` pins retry exhaustion and `test_taskrunner_planning.py::test_replan_blocked_by_step_limit` pins the total-task boundary, so documentation names the enforcement seams instead of copying tunables.
 
 The global timeout and the watchdog's stall bounds compare a run's AGE, not two wall-clock readings. `started_at` and `last_task_time` stay wall-clock for display and `runs.json`; `_MonotonicAge` keeps a monotonic reading of each. The one for `started_at` is taken where the run is stamped (a new run, a restart, a retry) and shared by `_execute_tasks` and `_watchdog_loop`, so the executor and the watchdog cannot disagree, and a wall-clock step neither times out or stall-cancels a healthy run nor spares one past its bound. The age is awake time, like the steps' own `asyncio` deadlines: `time.monotonic()` stops while the host is suspended on Linux and macOS, so a suspend there is neither timeout nor stall time, and it keeps counting on Windows. `test_taskrunner_run_steps.py::TestGlobalTimeoutClock` and `TestWatchdog::test_watchdog_measures_stalls_on_the_monotonic_clock` pin the step cases; a suspend on Linux or macOS reads as their forward step, the wall clock moving while the monotonic clock does not.
+
+## Declared step status
+
+A step's turn ending normally says only that the agent stopped. A YAML workflow
+agent may therefore name `status_file`: a path, relative to the step's work
+directory, where the step reports its own outcome as a JSON object.
+`decompose_yaml` accepts it only as a non-empty relative path with no `..` part
+(`task_status_file.validate_status_file`), and it round-trips through
+`runs.json`, `plan_to_yaml` and a plan edit. The plan chat's Tasks JSON names
+`status_file` on every step (`""` for none), as it names `force_approval`, and
+`update_plan_tasks` reads it from the edited item: a value sets it (a path outside
+the work directory is refused), `null` or `""` clears it, and an item without the
+key in an edit that names it on another item has none, so a step inserted, removed
+or moved in that JSON keeps its own. Only an edit that names `status_file` on no
+item keeps the old step's value at the same index. That is the step editor
+(`ProjectDetailPage`), which edits every step in place and sends no
+`status_file`, so a step it renames, even to another step's title, keeps its
+declaration.
+
+When a step that names one lands its turn, `task_executor.execute_task` reads the
+file off the loop (`task_status_file.declared_failure`) before the test command
+and the review run. A `"status"` of `"failed"` (any case) fails the step with the
+error `The step reported failure in <file>: <reason>`, quoting a `reason`,
+`error` or `message` string from the file, redacted and bounded. A file that is
+missing, unreadable, outside the work directory once symlinks resolve, larger
+than `STATUS_FILE_MAX_BYTES`, not valid JSON or not a JSON object fails it the
+same way, because the step said it would write it. The gateway reads it, not the
+step, so the read goes through `hooks.safe_read_file_bytes_nolink` held to the work
+directory: a sensitive path (`~/.aws/credentials` in a work directory that is the
+home directory), a hardlinked inode, or a FIFO or other non-regular file is refused
+without being read or opened for blocking, and that refusal (`could not be read
+safely`) fails the step too. Any other status, or none,
+lets the step go on to verification and review unchanged. The file is read as
+found: a file an earlier run left in the same work directory counts.
+
+A failure the step declared is not retried and not re-planned around. It also
+fails the run (`run.status = "failed"`, `run.error = "Task N failed: ..."`), and
+`_try_replan` plans nothing for a run that is already `failed`, so the step's
+dependents never start and the DAG does not continue on the data the step said
+is incomplete. The usual `❌ Task N/M failed` notice and failure lesson follow. A
+resume (`execute_plan`) runs the step again. Pinned by
+`test/test_taskrunner_status_file.py`.
 
 ## Test verification
 
@@ -920,6 +1022,7 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 | Stall warning | ⚠️ Task may be stalled | Minutes since last activity |
 | Session reset | 🔧 Watchdog: cancelling stalled task | Minutes + resetting |
 | Process died | 💀 Task N: process died | Recovery count |
+| Resumed after a restart | ▶️ Resumed after a gateway restart | The run continues from its checkpoint |
 | Lesson learned | 📝 Lesson learned | Rule text |
 | Replan started | 🔄 Re-planning (attempt N/2) | Failed step title + error |
 | Revised plan | 📋 Revised plan | New step count + titles |
@@ -930,19 +1033,37 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 ### Where a notification lands: the originating conversation
 
 `start_background(..., session_key=)` records the conversation the run was
-started FROM in `TaskRunner._run_session_keys` (task_id → key, in memory only —
-a persisted channel key would outlive the binding it names and send a restart's
-first notice into a conversation that may no longer resolve). `_notify` resolves
-it from `run.task_id` and hands it to `task_reporter.notify`, which forwards it
-to the sink. It is dropped when the run is pruned or deleted; a notification with
-no run attached carries no key.
+started FROM in `TaskRunner._run_session_keys` (task_id → key). `runs.json`
+carries it as the run's `origin_session_key`, and `_load_runs` puts it back, so a
+run a restart recovered still knows its conversation. `_notify` resolves it from
+`run.task_id` and hands it to `task_reporter.notify`, which forwards it to the
+sink. It is dropped when the run is pruned or deleted; a notification with no run
+attached carries no key. A stored key is only a hint: the sink resolves it at
+delivery time, so a conversation that no longer resolves (its tab closed, its
+channel binding gone) gets nothing and the bell keeps the notice.
 
-The sink is what decides where a notice goes, and the one notice a run cannot
-proceed without is an approval request. The gateway's `_task_notify` therefore
-tries the governed cross-surface channel ladder first (`_deliver_channel_reply`,
-see [slack-gateway](slack-gateway.md)) and keeps the owner Slack DM as the
-fallback, so a Telegram-only operator is told about an approval their task is
-waiting on.
+The sink is what decides where a notice goes. Every notice reaches the dashboard
+bell. The one notice a run cannot proceed without is an approval request, so the
+gateway's `_task_notify` tries the governed cross-surface channel ladder first
+(`_deliver_channel_reply`, see [slack-gateway](slack-gateway.md)) and keeps the
+owner Slack DM as the fallback, so a Telegram-only operator is told about an
+approval their task is waiting on.
+
+The notices that say something happened to the run that the person who started it
+from a chat would otherwise never see also reach that conversation
+(`dashboard/task_run_notices.py`, chosen in `reaches_origin` by how the title
+ends, so a run whose name holds one of these words, behind the `[label]` prefix,
+does not route its other notices there): a step's runtime died (`💀 Task N:
+process died`, and the watchdog's `💀 Watchdog: ACP process died`), and a gateway
+restart interrupted the run (`⏸️ Run not auto-resumed`, `▶️ Resumed after a
+gateway restart`). The sink appends the notice,
+title then body as the bell shows them, to the open dashboard tab showing the
+conversation (`dashboard_slot_key`) as an assistant-role `taskrunner_notice`
+system notice row (`dashboard/system_notices.py` and its frontend twin
+`website/src/lib/systemNotice.ts`), so no scan reads it as a turn, and sends it to
+the channel conversation behind the key through the same governed ladder. A Slack
+conversation has no ladder and gets the bell only. The startup restore rebuilds the
+open tabs before the adoption sweep runs, so a restart's notices find the tab.
 
 `task_reporter.NotifyCallback` is `Union[SessionAwareNotify, LegacyNotify]`, not
 one widened signature:
@@ -1090,6 +1211,7 @@ Independent review using separate session (`taskrunner:{task_id}:review`):
 - The generic review prompt is used only for a non-git run, or a git run whose commit failed
 - **Fails closed.** A review that raises, or a git run whose step left no diff (unless its commit failed), sets `task.error` to start with `_REVIEW_UNVERIFIED` and FAILS the step: no revert and no re-run, because a re-run would repeat any push or CR the step made and pass without a review
 - Only a real `{"ok": false}` verdict → revert commit → re-run the step once → re-commit on success
+- A step whose declared status file fails it never reaches the review (see Declared step status)
 
 ## Tool Approval
 
@@ -1226,7 +1348,10 @@ only job is to produce a better-written spec from the user's input.
 **WS events**: `refine` type with `{status, text, error}` fields. A refine whose turn the
 backend never finished (stop reason `timeout` or `stale_recover`) ends with status `error`
 and an error that names the stop reason, with the partial text still sent beside it, so it
-cannot pass for a finished spec.
+cannot pass for a finished spec. However the turn ends, the final `refine` event and the GET
+status carry the text without kiro-cli's complete `[STEERING steer-…]` acks
+(`messaging.driver.strip_steering_markers`): the line acknowledges the deny's steer and is
+not the spec (#32476).
 
 ## Dashboard UI (Projects Page)
 
@@ -1246,11 +1371,13 @@ The page uses a left run rail plus a detail/compose area. The rail defaults to
 ### Task snapshot persistence
 
 `runs.json` is the ordinary JSON list of retained task records, including each
-run's captured `execution_context`, input, results and diagnostic state. Each
-task entry carries its `resume_hint` (see Step Prompt Context), restored on load
-so it survives a gateway restart; the `/api/taskrunner` status payload does not
-expose it. Each task entry also carries its `verification` verdict (see Test
-verification), which the status payload does return. There is
+run's captured `execution_context`, input, results and diagnostic state, and the
+conversation it was started from (`origin_session_key`, see Notifications). Each
+task entry carries its `resume_hint` (see Step Prompt Context) and its declared
+`status_file` (see Declared step status), restored on load so they survive a
+gateway restart; the `/api/taskrunner` status payload does not expose them. Each
+task entry also carries its `verification` verdict (see Test verification), which
+the status payload does return. There is
 no private sidecar, hidden directory or separate public projection. Incognito and
 Temporary runs are omitted according to their captured mode; cron runs are also
 excluded from this registry. Restored records reuse their captured identity,

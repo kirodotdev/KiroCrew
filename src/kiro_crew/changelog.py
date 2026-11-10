@@ -57,12 +57,11 @@ _H2_RE = re.compile(r"^##\s+\S")
 # spelling of a release folds onto that release.
 #
 # The alternation is EXHAUSTIVE and CLOSED by construction -- every branch ends
-# in a counted group, and none of them can absorb arbitrary trailing text. Two
-# earlier shapes ended in an open ``[0-9A-Za-z.-]*`` tail, and each time the
-# consequence was the same: ``## [0.1.2rc4junk]`` folded onto ``0.1.2`` and,
-# because the last body for a version wins, the malformed section silently
-# REPLACED the real release's notes. A spelling this does not recognise keeps its
-# own row, which is visible instead of destructive.
+# in a counted group, and none of them can absorb arbitrary trailing text. An
+# open ``[0-9A-Za-z.-]*`` tail would fold ``## [0.1.2rc4junk]`` onto ``0.1.2``
+# and, because the last body for a version wins, let the malformed section
+# silently REPLACE the real release's notes. A spelling this does not recognise
+# keeps its own row, which is visible instead of destructive.
 #
 # The branches are the release pipeline's own output, and nothing else
 # (``.github/workflows/release.yml`` maps every semver prerelease tag to ``rcN``
@@ -78,8 +77,8 @@ _H2_RE = re.compile(r"^##\s+\S")
 #   ...+local                      a build/local segment on any of the above
 #
 # Every digit class is ASCII ``[0-9]``, never ``\d``: ``\d`` also matches other
-# Unicode decimal digits, and ``## [0.1.2rc٤]`` folding onto ``0.1.2`` is the
-# same overwrite bug as ``0.1.2junk`` wearing a different hat.
+# Unicode decimal digits, and ``## [0.1.2rc٤]`` folding onto ``0.1.2`` would be
+# the same overwrite as ``0.1.2junk``.
 _BASE_RE = re.compile(
     r"(?P<base>[0-9]+(?:\.[0-9]+)*)"
     r"(?P<pre>"

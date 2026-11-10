@@ -850,6 +850,10 @@ export function IssueRadarProvider({
       queryClient.setQueryData(['issue-radar', 'pulls', scopeKey, prFetchState], data)
     },
   })
+  // Same as `resetRefresh` below: a PR refresh's error describes the list it
+  // refreshed, so drop it when the shown list changes.
+  const resetPullsRefresh = refreshPullsMutation.reset
+  useEffect(() => { resetPullsRefresh() }, [scopeKey, prFetchState, resetPullsRefresh])
   // Progressive first paint for PRs — the same shape as `firstPageQuery` for
   // issues, and the larger win: a cold `pullsQuery` blocks on BOTH the full
   // pagination AND the GraphQL enrichment before it resolves, so the PR pane is
@@ -924,6 +928,11 @@ export function IssueRadarProvider({
       queryClient.invalidateQueries({ queryKey: ['issue-radar', 'members', scopeKey] })
     },
   })
+  // A refresh's error describes the list it refreshed. The provider outlives a
+  // repo or state switch, so drop that error when the shown list changes;
+  // otherwise `issuesError` would report the old list's failure on the new one.
+  const resetRefresh = refreshMutation.reset
+  useEffect(() => { resetRefresh() }, [scopeKey, stateFilter, resetRefresh])
 
   // The full list once it exists, else the cold-start first page. Falling back
   // only when `issuesQuery.data` is undefined means the authoritative set ALWAYS
@@ -1327,7 +1336,9 @@ export function IssueRadarProvider({
     // `issues.length` is the honest signal — it is fed by both queries above.
     issuesLoading: issuesQuery.isLoading && issues.length === 0,
     issuesPartial,
-    issuesError: (issuesQuery.error as Error) ?? null,
+    // A manual refresh goes through refreshMutation, so its failure is reported
+    // here too, as `pullsError` reports refreshPullsMutation's.
+    issuesError: ((issuesQuery.error ?? refreshMutation.error) as Error) ?? null,
     labelsLoading: labelsQuery.isLoading,
     labelsError: (labelsQuery.error as Error) ?? null,
     refresh,
@@ -1413,6 +1424,7 @@ export function IssueRadarProvider({
     repos, active, switchRepo, onAddRepo, activePermissions, canWrite,
     me, issues, repoLabels, issuesQuery.isLoading, issuesQuery.error, issuesQuery.dataUpdatedAt,
     issuesPartial, labelsQuery.isLoading, labelsQuery.error, refresh, refreshMutation.isPending,
+    refreshMutation.error,
     repoSettings, needsTriage, isGoodFirstIssue,
     colorByName, countByLabel, sortedRepoLabels, filteredIssues, sortedIssues, activeIssue,
     memberRoleByLogin, query, setQuery,

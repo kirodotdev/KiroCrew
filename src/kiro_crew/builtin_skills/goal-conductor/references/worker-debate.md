@@ -32,7 +32,7 @@ objection ids.
 Every participant's seed carries a **role card**:
 
 - **Role**: its short name.
-- **Guards**: the goal it protects, tied to the anchor question.
+- **Guards**: one goal it protects, tied to the anchor question.
 - **Finding**: what counts as one, and the evidence it must carry.
 - **Out of scope**: what it leaves to the other roles.
 - **Done for a round when**: it writes `no_blocking:` plus what it checked.
@@ -77,7 +77,8 @@ or merge it into another.
      the top, and after each round appends your rulings and the round log
      exactly as your message states them.
    - Never wait for a relay with the `wait` tool. Write your file, report
-     `progress` naming it, and end your turn. A relay that arrives while you
+     `done` naming its path, and end your turn. When the next relay arrives,
+     report `progress` before you start on it. A relay that arrives while you
      are inside `wait` sits in a queue until the wait ends.
    - A round file you have reported is frozen. Do not rewrite it. If a relay
      asks for a round you already filed, reply with its path. A correction
@@ -88,8 +89,20 @@ or merge it into another.
    `round-0-<aspect>.md`, its own risk list, before any proposal exists, so
    the proposers cannot frame what the critics look for. Its first entry
    always answers: what is the smallest thing that meets the acceptance, and
-   do existing parts already do it? When every critic has filed, relay the
-   round-0 paths to the proposers; they read them before writing round 1.
+   do existing parts already do it? It then names the biggest risk to the
+   owner's needs, whatever role owns it, and at most three risks it saw
+   outside its role. The biggest-risk entry may name one of its own ids
+   instead. Every blocking risk and every biggest-risk entry gets an id
+   `<aspect>-0-<n>` and a row; the outside-role list is for you and gets no
+   row. Proposers answer the rows in round 1. When every critic has filed,
+   relay the round-0 paths to the proposers; they read them before writing
+   round 1.
+
+   Before that relay, read the Round 0 lists side by side. A biggest-risk
+   entry or a blocking risk outside every card's goal: widen the closest
+   card's Finding line; its Guards goal stays one. Add a critic only when no
+   card fits and the budget has a work item. Send changed cards with the
+   round-1 critic relay and log the change.
 
 ## The debate note
 
@@ -107,13 +120,17 @@ It holds, in order:
   ruled on and how, who is expected next.
 - The human's rulings, quoted verbatim.
 
-Critics check the note keeper's copy against your message; a wrong copy is a
-blocking objection like any other.
+One critic, named on its card, checks the note keeper's copy against your
+message; a wrong copy is a blocking objection like any other.
 
 ## Objections
 
 - **Stable ids**: `<aspect>-<round>-<n>`, e.g. `security-1-2`. An id never
   changes or gets reused; a re-raised point keeps its first id.
+- The same point from two critics keeps the first id: same target, same
+  failure, one fix closes both. In Round 0, the same target means the same
+  part of the question. Rule the later one `same as <id>`. The proposer
+  answers once; both critics verify.
 - **Severity**: `blocking` (the goal fails or is unsafe as written), `major`,
   `minor`.
 - **Evidence is required.** A path and line, a command and its output, a source
@@ -134,13 +151,22 @@ that serves no need is not proposed. For a question with more than about five
 mechanisms, round 1 is this table alone (an outline); details come in round 2,
 only for the rows the critics did not reject.
 
+Any critic, in any role, may file an objection as a question. Its claim cell
+starts with `Q:`, quotes one claim (`path:line`), asks one question from this
+bank — what is the mechanism or evidence; what if it is wrong; what happens
+when this part fails; which alternative was rejected and why; what stays at
+half the scope; how is it rolled back — and gives your recommended answer.
+The proposer answers a question with evidence (a `path:line`, a command and
+its output, or a link); added text is not an answer. A mechanism-table row
+that says an existing part already does it carries a `proof` cell.
+
 ## A round
 
 Round `r` is one proposal step and one critique step.
 
 | Step | Who | Writes or does |
 |---|---|---|
-| a | each proposer | `round-<r>-<letter>.md`: response table (r > 1), then the new version or a diff |
+| a | each proposer | `round-<r>-<letter>.md`: response table (round 1: Round 0 rows only), then the new version or a diff |
 | b | you | relay to every critic |
 | c | each critic | `round-<r>-<aspect>.md`: a short steelman of the proposal, then its objection table or `no_blocking:` |
 | d | you | wait for every critic, rule, run the checkpoint, relay to the proposers |
@@ -171,6 +197,18 @@ pointer:
 | `rebuttal_accepted` | the rebuttal's evidence holds |
 | `parked` | off-topic for the anchor; may become its own item after the debate. An objection that affects the goal cannot be parked |
 | `downgraded` | blocking without evidence |
+
+A `proof` cell and an adopted critic recommendation are proposer claims. In
+each step-b relay, give one line per checker naming the ids or mechanism rows
+it checks: each new or changed one, never by its author; others may also
+check. With one critic, the author answers its own "what if it is wrong" with
+evidence. The checker asks what happens if the claim is wrong on the path the
+proposal uses it for, and lists what it checked on a `proof checked:` line.
+An assignment not on that line by step d stays open as a row under its
+original id (a `proof` cell's id is its proposal letter and mechanism row,
+e.g. `A-M3`) and is reassigned in the next step-b relay. Rule
+`fixed_verified` on a question only after a critic says, in its critique
+step, that the evidence holds; a failed answer is re-asked under the same id.
 
 A `needs-a-decision` stays open until the human rules. When critics conflict,
 rule on the evidence. A participant that does not file gets one nudge; after

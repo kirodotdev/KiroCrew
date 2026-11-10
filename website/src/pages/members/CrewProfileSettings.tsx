@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { fmtList } from '../../i18n/format'
-import { Check, Cpu, Gauge, Loader2, Lock, Puzzle, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
+import { Check, Cpu, Gauge, Loader2, Lock, Puzzle, SendHorizontal, Shield, SlidersHorizontal, Sparkles, Users } from 'lucide-react'
 import { api, type MemberRosterRow } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
@@ -51,6 +51,34 @@ interface Picker {
   options: Option[]
   /** The line under the page's list: what the current pick resolves to or trades. */
   caption?: string
+}
+
+type TFn = ReturnType<typeof useTranslation>['t']
+
+/**
+ * The Inherited option's hint: what it resolves to, then where that comes from
+ * (`inherited_source` on the crew readout). A fallback names the Settings harness
+ * Crew bots cannot run on, so the person sees why Inherited is not that harness.
+ */
+function inheritedHarnessHint(
+  t: TFn,
+  inherited: string,
+  source: string | undefined,
+  settings: string | undefined,
+): string {
+  const harness = acpBackendName({ id: inherited })
+  const hint = t('pages.membersPage.profile_harness_inherited_hint', { harness })
+  const from =
+    source === 'legacy'
+      ? t('pages.membersPage.profile_harness_source_legacy')
+      : source === 'fallback' && settings !== undefined
+        ? t('pages.membersPage.profile_harness_source_fallback', { settings: acpBackendName({ id: settings }), harness })
+        : source === 'worker_spec' && settings !== undefined
+          ? t('pages.membersPage.profile_harness_source_worker_spec', { settings: acpBackendName({ id: settings }), harness })
+          : source === 'settings'
+            ? t('pages.membersPage.profile_harness_source_settings')
+            : ''
+  return from ? `${hint} ${from}` : hint
 }
 
 /** The stored permission a refused compare-and-set PUT reports, or undefined
@@ -133,10 +161,15 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
   // A crewmate pinned to a harness picks from THAT harness's models, never the
   // install's: a model only another harness serves is refused at save.
   const harness = value('acp_backend')
+  // A pin to a harness Bots cannot run on runs where the server says it lands
+  // (KAS, or the floor when a policy denies KAS), so that harness's models are offered.
+  const modelHarness = resolved?.kas_pin_harnesses?.includes(harness)
+    ? (resolved.kas_pin_landing || 'kas')
+    : harness
   const harnessModels = useQuery({
-    queryKey: ['available-models', 'harness', harness],
-    queryFn: () => api.harnessModels(harness),
-    enabled: !!harness,
+    queryKey: ['available-models', 'harness', modelHarness],
+    queryFn: () => api.harnessModels(modelHarness),
+    enabled: !!modelHarness,
   })
   // The model names *target* serves, read raw from that harness's own list. A
   // list that cannot be read throws, so the save stops and no pin is cleared on
@@ -211,6 +244,22 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
     : lockFlip.isError
       ? t(lockFlip.variables ? 'pages.membersPage.profile_dashboard_lock_failed' : 'pages.membersPage.profile_dashboard_unlock_failed')
       : null
+
+  // Whether a button on the crewmate's Dashboard tab may send its reply in one click.
+  // Stored on the crewmate's record and enforced by the gateway; off, a button only
+  // fills the chat box. This is a preview, off by default: absent (an older gateway,
+  // or a crewmate that never opted in) reads as off.
+  const cardSendFlip = useMutation({
+    mutationFn: (want: boolean) => api.updateKirocrewAgent(member.name, { dashboard_card_send: want }),
+    onSuccess: (_data, want) => {
+      queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
+        rows?.map((r) => (r.name === member.name ? { ...r, dashboard_card_send: want } : r)))
+    },
+  })
+  const cardSendOn = member.dashboard_card_send === true
+  // Show the state being requested while the write is in flight, so the switch does
+  // not snap back before the roster row is updated.
+  const displayCardSend = cardSendFlip.isPending ? (cardSendFlip.variables ?? cardSendOn) : cardSendOn
 
   // Dynamic capabilities: a per-crewmate preview, off by default, stored on the
   // crewmate's own record (`kiro_crew/crewmate_dynamic_capabilities.py`). On, the
@@ -412,7 +461,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         value: h,
         label: harnessUnavailable(h) ? t('pages.membersPage.profile_harness_unavailable_value', { harness: harnessLabel(h) }) : harnessLabel(h),
         desc: h === INHERIT_HARNESS
-          ? joinDesc(resolved?.inherited_harness ? t('pages.membersPage.profile_harness_inherited_hint', { harness: acpBackendName({ id: resolved.inherited_harness }) }) : undefined, harnessEffect(h))
+          ? joinDesc(resolved?.inherited_harness ? inheritedHarnessHint(t, resolved.inherited_harness, resolved.inherited_source, resolved.settings_harness) : undefined, harnessEffect(h))
           : joinDesc(harnessLimit(h), harnessEffect(h)),
       })),
     },
@@ -688,6 +737,31 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
         </RowStatic>
       </RowGroup>
       <ErrorNotice message={lockError} testId="crew-profile-dashboard-lock-error" />
+      {/* Its own group, so its caption (what a click on a card does) sits under it. */}
+      <RowGroup caption={t('pages.membersPage.profile_dashboard_card_send_hint', { name })}>
+        <RowStatic icon={<SendHorizontal size={16} />} tone="accent" label={t('pages.membersPage.profile_dashboard_card_send_switch')} testId="crew-profile-dashboard-card-send">
+          <Toggle
+            checked={displayCardSend}
+            onChange={(v) => cardSendFlip.mutate(v)}
+            disabled={cardSendFlip.isPending}
+            label={t('pages.membersPage.profile_dashboard_card_send_switch')}
+          />
+        </RowStatic>
+      </RowGroup>
+      {/* No hand-off: the Crewmates page's composer may hold an unsent draft to
+          this crewmate, and "Ask the agent" navigates away, which would discard
+          it. This notice only reports that the switch write failed and the setting
+          is unchanged, so it needs no hand-off. */}
+      <ErrorNotice
+        // Names the state it stayed in: the write that failed was the flip TO
+        // `variables`, so the setting is still the other way.
+        message={cardSendFlip.isError
+          ? t(cardSendFlip.variables
+            ? 'pages.membersPage.profile_dashboard_card_send_failed_on'
+            : 'pages.membersPage.profile_dashboard_card_send_failed_off')
+          : null}
+        testId="crew-profile-dashboard-card-send-error"
+      />
       {/* Its own group, so its caption (what the preview lets the crewmate do)
           sits under it rather than under the lock's. */}
       <RowGroup caption={t('pages.membersPage.profile_dynamic_capabilities_hint', { name })}>

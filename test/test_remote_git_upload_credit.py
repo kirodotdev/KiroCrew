@@ -182,8 +182,14 @@ def test_a_guest_of_another_build_refuses_to_start_instead_of_hanging(tmp_path, 
         cwd=str(tmp_path),
     )
     assert proc.stdin is not None and proc.stdout is not None
-    proc.stdin.write(("ab" * 32 + "\n").encode())
-    proc.stdin.flush()
+    try:
+        proc.stdin.write(("ab" * 32 + "\n").encode())
+        proc.stdin.flush()
+    except BrokenPipeError:
+        # A refusing guest exits before it reads stdin, closing the read end; the
+        # write then races the exit and may hit a broken pipe. That is the refusal
+        # winning, so it is fine here -- but a started guest must have read it.
+        assert refusal is not None
     if refusal is None:
         assert json.loads(proc.stdout.readline()) == {"t": "lend", "id": 0}
         assert port_file.exists()

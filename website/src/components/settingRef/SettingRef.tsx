@@ -138,7 +138,7 @@ export function SettingRef({ configKey, kind = 'config', schemaIndex: schemaInde
 
   // Config key mode: resolve against registry + schema
   const resolution = resolveSettingRef(configKey, schemaIndex)
-  // An enterprise build ignores this local value; the badge says so beside the chip.
+  // An LTS build ignores this local value; the badge says so beside the chip.
   const locked = schemaLockedByPolicy(configKey, schemaIndex)
   const withLock = (chip: ReactElement) => (locked ? <>{chip} <LockedByPolicyBadge /></> : chip)
 

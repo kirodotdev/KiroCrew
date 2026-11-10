@@ -12,11 +12,15 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.start_priority import StartPriority
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _SESSION_RELOAD_NOTICE,
         _TEARDOWN_INCOMPLETE_WARNING,
+        SESSION_RELOAD_DEFERRED_TEXT,
         SESSION_RELOAD_KIND,
+        SESSION_RELOAD_READY_TEXT,
         AcpProvider,
         DashboardState,
         LLMProvider,
@@ -37,12 +41,15 @@ if TYPE_CHECKING:
         deny_app_slot_access,
         effective_session_key,
         is_sensitive_path,
+        is_system_notice,
         logger,
         owner_start_priority,
         read_bounded_json,
         relay_archive_refusal,
+        row_mid,
         schedule_eager_spawn,
         sel,
+        session_reload_failed_notice,
         slot_not_found,
         voice_runtime_workspace_conflict,
     )
@@ -111,6 +118,9 @@ async def api_chat_slot_reload(request: web.Request) -> web.Response:
         denied=_denied,
         busy=_busy,
         notice=_SESSION_RELOAD_NOTICE,
+        # The owner pressed Reload on their own tab and is about to type: the
+        # respawn is a start a person waits on (rule: kiro_crew.start_priority).
+        start_priority=owner_start_priority(request),
     )
 
 
@@ -124,6 +134,7 @@ async def reload_slot_session(
     busy: Callable[[str], bool],
     notice: str,
     after_reset_in_lock: Callable[[str], Awaitable[None]] | None = None,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> web.Response:
     """Tear down *slot*'s agent process and re-arm its resume spawn.
 
@@ -131,7 +142,11 @@ async def reload_slot_session(
     and ``session_control.reload_target`` (the ``session_reload`` MCP verb), so
     the lock order and the re-checks below cannot drift between the two. The
     transcript is not touched: only the agent session is reset, and one notice
-    row (*notice*, tagged ``SESSION_RELOAD_KIND``) is appended afterwards.
+    row (*notice*, tagged ``SESSION_RELOAD_KIND``) is appended afterwards, then
+    one more once the respawn has ended, unless a reply already followed the
+    notice (``_report_reload_respawn``).
+    ``start_priority`` is the respawn's (rule: ``kiro_crew.start_priority``):
+    FOREGROUND only from the owner's own tab menu.
 
     The caller supplies its own authorization as three callbacks:
 
@@ -350,19 +365,70 @@ async def reload_slot_session(
     # append() itself broadcasts the row -- with the per-row ``mid`` identity
     # clients dedupe on -- so an explicit broadcast here would deliver the
     # notice twice.
-    slot.append(
-        "assistant",
-        notice,
-        "msg msg-a",
-        meta={"kind": SESSION_RELOAD_KIND},
+    notice_mid = row_mid(
+        slot.append(
+            "assistant",
+            notice,
+            "msg msg-a",
+            meta={"kind": SESSION_RELOAD_KIND},
+        )
     )
     # Respawn + session/load now rather than on the next message, so the fresh
     # process (and its rebuilt toolset) is ready when the user comes back.
-    schedule_eager_spawn(state, slot, allow_resume=True)
+    respawn = schedule_eager_spawn(
+        state,
+        slot,
+        allow_resume=True,
+        start_priority=start_priority,
+        on_ended=lambda failure: _report_reload_respawn(state, slot, failure, notice_mid),
+    )
+    if respawn is None:
+        # Eager spawn is off or held back: nothing starts before a message.
+        _report_reload_respawn(state, slot, None, notice_mid)
     state.push_slots_update()
     if teardown_incomplete:
         return web.json_response({"ok": True, "warning": _TEARDOWN_INCOMPLETE_WARNING})
     return web.json_response({"ok": True})
+
+
+def _report_reload_respawn(
+    state: DashboardState, slot: _ChatSlot, failure: Exception | None, notice_mid: str | None
+) -> None:
+    """Append the row that says how a reload's respawn ended.
+
+    The reload's notice (its row id is *notice_mid*) says the agent process is
+    being relaunched; this row closes it: the agent is ready (a live session is
+    registered for the slot), it failed to start (*failure*), or it starts with
+    the next message (the respawn stood down, or eager spawn is off). A message
+    still waiting on the respawn gets the row. Nothing is appended once a row
+    other than a person's message or a system notice follows the notice (a
+    reply, a tool call, an error card): that turn already shows how the agent
+    came back, and a respawn that ends late (one queued for its start permit)
+    would land this row after it. Nor while a turn is running with no live
+    session yet, which is starting the agent itself, or for a slot closed or
+    replaced meanwhile.
+    """
+    if state.get_slot(slot.key) is not slot:
+        return
+    if notice_mid is not None:
+        for row in reversed(slot.messages):
+            if row_mid(row) == notice_mid:
+                break
+            role = row.get("role")
+            if role != "user" and not is_system_notice(role, row.get("meta")):
+                return  # a turn already answered after the notice
+        else:
+            return  # the notice is gone (the chat was cleared): nothing to close
+    sessions = getattr(state, "sessions", None)
+    if sessions is not None and sessions.has_session(effective_session_key(slot)):
+        text = SESSION_RELOAD_READY_TEXT
+    elif slot.running:
+        return
+    elif failure is not None:
+        text = session_reload_failed_notice(failure)
+    else:
+        text = SESSION_RELOAD_DEFERRED_TEXT
+    slot.append("assistant", text, "msg msg-a", meta={"kind": SESSION_RELOAD_KIND})
 
 
 async def api_chat_slot_workspace(request: web.Request) -> web.Response:
@@ -601,8 +667,17 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         # The transcript boundary for the reset, still inside both locks so
         # the same-value check above and this append cannot interleave.
         await _append_session_switch_notice(slot, "workspace", ws_name)
+    # The welcome page's greeting is read per project: a project's own agent
+    # spec can shadow the user-level one.
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
     state.push_slots_update()
-    ws_resp: dict = {"ok": True, "workspace": ws_name}
+    # Read after that await, as the agent switch reads its answer: a newer switch
+    # can commit during it, and the acting tab writes what this answer names.
+    if state._slots.get(name) is not slot:
+        return slot_not_found()
+    ws_resp: dict = {"ok": True, "workspace": slot.workspace or "default"}
     if teardown_incomplete:
         # Advisory only — the switch itself succeeded and the response
         # carries the committed state (agent-handler precedent).
@@ -725,6 +800,20 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_project", session_key)
         if denied is not None:
             return denied
+        if not project:
+            try:
+                await state.sessions.aprepare_cwd_clear()
+            except Exception:
+                logger.warning("Slot %s: the session map cannot save a clear", name, exc_info=True)
+                return web.json_response(
+                    {
+                        "error": "the project clear could not be saved",
+                        "code": "project_clear_not_saved",
+                    },
+                    status=500,
+                )
+            if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
+                return _slot_not_found()
         old_project = slot.project
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
@@ -784,6 +873,8 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            if not project:
+                state.sessions.retract_cwd(session_key)
             # Determine whether a start that captured the OLD cwd is already
             # in flight BEFORE scheduling the replacement eager spawn, because
             # that scheduling cancels any prior eager task and roots a new one
@@ -829,6 +920,27 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             if arm_reset:
                 from kiro_crew.dashboard.transcript_binding import arm_project_reset
 
-                arm_project_reset(state, slot, session_key)
+                arm_project_reset(state, slot, session_key, clears_cwd=not project)
+    if not project:
+        try:
+            await state.sessions.aflush()
+        except Exception:
+            logger.warning("Slot %s: saving the cleared project cwd failed", name, exc_info=True)
+            state.push_slots_update()
+            return web.json_response(
+                {
+                    "error": "the project clear could not be saved",
+                    "code": "project_clear_not_saved",
+                },
+                status=500,
+            )
+    # The welcome page's greeting is read per project, as on a workspace switch.
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
     state.push_slots_update()
-    return web.json_response({"ok": True, "project": project})
+    # Read after the awaits since the locks were released, as the workspace switch
+    # reads its answer.
+    if state._slots.get(name) is not slot:
+        return _slot_not_found()
+    return web.json_response({"ok": True, "project": slot.project or ""})

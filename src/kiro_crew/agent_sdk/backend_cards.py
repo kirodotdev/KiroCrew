@@ -378,6 +378,11 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_CREW_OAUTH_BRIDGE": (
+        "which harness reaches a Crew-held Connection through the gateway bridge. It is "
+        "behind the crew_oauth preview, and the Connections page states which sign-in "
+        "each card uses, so a harness card line would repeat it"
+    ),
     "ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED": (
         "whether a deny-rule refusal on the direct client may become an override "
         "card. A non-member keeps today's refusal, which the person already meets "
@@ -606,6 +611,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "The card already reports whether effort can be changed on this harness at all, "
         "and a wrong membership is a defect, not an absent feature a card could mark: "
         "outside it the control is hidden on every session that serves no concrete id"
+    ),
+    "ACP_BACKENDS_ULTRACODE_CONFIG_OPTION": (
+        "whether the session's advertised ultracode switch is read and written. The "
+        "switch shows only while the adapter advertises it, so a member needs no card "
+        "line, and a wrong membership is a defect, not a feature a card could mark: a "
+        "hidden switch, or a write to another harness's option of the same id"
     ),
     "ACP_BACKENDS_AGENT_STARTED_TURNS": (
         "whether a turn the agent starts on its own between prompts is read when it "

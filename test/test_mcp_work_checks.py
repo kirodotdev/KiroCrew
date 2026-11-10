@@ -1,10 +1,10 @@
-"""The ``kirocrew-work`` ``accept_eval`` and ``patrol_budget`` tools.
+"""The ``kirocrew-work`` ``accept_eval`` tool.
 
-They run goal-conductor's bundled scripts in-process so a conductor's verify
+It runs goal-conductor's bundled evaluator in-process so a conductor's verify
 cycle needs no ``execute_bash`` approval. Pinned here:
 
-* **Same logic, imported.** The tools call the packaged scripts' own functions,
-  and agree with the scripts run by stdin / argv.
+* **Same logic, imported.** The tool calls the packaged script's own functions,
+  and agrees with the script run by stdin.
 * **Fixed argv.** No argument names a command; the only argv that reaches
   ``subprocess`` is the evaluator's own template, and ``cmd`` stays refused.
 * **Typed input.** A malformed document is refused by the schema, not run.
@@ -24,7 +24,6 @@ from kiro_crew.skills import _BUILTIN_SKILLS_DIR
 from kiro_crew.validation import ValidationError
 
 SCRIPTS = Path(_BUILTIN_SKILLS_DIR) / "goal-conductor" / "scripts"
-LINE = "[patrol budget: cycle 270/288, 8000s/86400s runtime left; 10% or less left]"
 
 
 class _Proc:
@@ -67,10 +66,10 @@ def _call(name: str, args: dict) -> str:
     return mcp_work._call_tool_inner(name, mcp_work._validate_args(name, args))
 
 
-def test_both_tools_are_advertised_and_granted_to_the_conductor_and_team_lead():
+def test_the_check_is_advertised_and_granted_to_the_conductor_and_team_lead():
     names = [t["name"] for t in mcp_work._list_tools()]
-    assert names[-2:] == ["accept_eval", "patrol_budget"]
-    assert mcp_work.CHECK_TOOLS == ("accept_eval", "patrol_budget")
+    assert names[-1] == "accept_eval"
+    assert mcp_work.CHECK_TOOLS == ("accept_eval",)
     # One tuple serves kirocrew-conductor and kirocrew-team-lead.
     for tool in mcp_work.CHECK_TOOLS:
         assert f"@kirocrew-work/{tool}" in agent._LEDGER_CONDUCTOR_WORK_GRANTS
@@ -80,21 +79,19 @@ def test_both_tools_are_advertised_and_granted_to_the_conductor_and_team_lead():
 def test_no_advertised_field_carries_a_command_or_path_to_run():
     defs = {t["name"]: t for t in mcp_work._list_tools()}
     assert set(defs["accept_eval"]["inputSchema"]["properties"]) == {"items"}
-    assert set(defs["patrol_budget"]["inputSchema"]["properties"]) == {
-        "mode",
-        "interval_secs",
-        "max_cycles",
-        "max_runtime_secs",
-        "line",
-        "base_cycles",
-        "base_runtime_secs",
-        "open_items",
-    }
 
 
-def test_the_tools_load_the_packaged_scripts():
+def test_the_tool_loads_the_packaged_script():
     assert Path(mcp_work._skill_script("accept_eval").__file__) == SCRIPTS / "accept_eval.py"
-    assert Path(mcp_work._skill_script("patrol_budget").__file__) == SCRIPTS / "patrol_budget.py"
+
+
+def test_the_retired_patrol_budget_tool_is_gone(caller):
+    """rfc-permanent-patrol.md: a work-ledger patrol has no bound to check."""
+    assert "patrol_budget" not in {t["name"] for t in mcp_work._list_tools()}
+    assert not (SCRIPTS / "patrol_budget.py").exists()
+    out = mcp_work._call_tool_inner("patrol_budget", {"mode": "check"})
+    assert out == "Error: unknown tool 'patrol_budget'"
+    assert caller == []
 
 
 def test_a_pr_checks_batch_runs_only_the_fixed_gh_argv(caller, argvs):
@@ -231,102 +228,8 @@ def test_the_tool_and_the_script_agree(caller, tmp_path):
     assert json.loads(bad.stdout) == {"error": 'stdin must be JSON: {"items": [...]}'}
 
 
-def test_patrol_budget_renew_reads_the_line(caller):
-    out = json.loads(
-        _call(
-            "patrol_budget",
-            {
-                "mode": "renew",
-                "line": LINE,
-                "base_cycles": 288,
-                "base_runtime_secs": 86400,
-                "open_items": 2,
-            },
-        )
-    )
-    assert out["exit"] == 0
-    assert out["monitor_update"] == {"max_cycles": 576, "max_runtime_secs": 172800}
-
-
-def test_patrol_budget_renew_without_figures_is_exit_2(caller):
-    out = json.loads(
-        _call(
-            "patrol_budget",
-            {
-                "mode": "renew",
-                "line": "hello",
-                "base_cycles": 1,
-                "base_runtime_secs": 1,
-                "open_items": 1,
-            },
-        )
-    )
-    assert out == {"action": "error", "exit": 2, "why": "no budget figures found in line"}
-
-
-def test_patrol_budget_check_matches_the_script(caller):
-    out = json.loads(
-        _call(
-            "patrol_budget",
-            {"mode": "check", "interval_secs": 1800, "max_cycles": 24, "max_runtime_secs": 86400},
-        )
-    )
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-B",
-            str(SCRIPTS / "patrol_budget.py"),
-            "check",
-            "--interval-secs",
-            "1800",
-            "--max-cycles",
-            "24",
-            "--max-runtime-secs",
-            "86400",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-    assert out.pop("exit") == proc.returncode == 20
-    assert out == json.loads(proc.stdout)
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        {"mode": "shell", "interval_secs": 1},
-        {"mode": "check", "interval_secs": "600", "max_cycles": 1, "max_runtime_secs": 1},
-        {"mode": "check", "interval_secs": True, "max_cycles": 1, "max_runtime_secs": 1},
-    ],
-)
-def test_patrol_budget_refuses_out_of_shape_arguments(args):
-    with pytest.raises(ValidationError):
-        mcp_work._validate_args("patrol_budget", args)
-
-
-@pytest.mark.parametrize(
-    ("args", "missing"),
-    [
-        ({"mode": "check", "interval_secs": 600, "max_cycles": 300}, "max_runtime_secs"),
-        (
-            {"mode": "renew", "line": LINE, "base_cycles": 1, "base_runtime_secs": 1},
-            "open_items",
-        ),
-    ],
-)
-def test_patrol_budget_names_a_missing_field_and_runs_nothing(caller, args, missing, monkeypatch):
-    monkeypatch.setattr(mcp_work, "_skill_script", lambda name: pytest.fail("ran"))
-    out = _call("patrol_budget", args)
-    assert out.startswith("Error:") and missing in out
-
-
-def test_each_check_passes_the_ledger_gate_first(caller):
-    _call(
-        "patrol_budget",
-        {"mode": "check", "interval_secs": 600, "max_cycles": 300, "max_runtime_secs": 86400},
-    )
+def test_each_check_passes_the_ledger_gate_first(caller, argvs):
+    _call("accept_eval", {"items": [{"id": "h", "accept": {"kind": "human_approval"}}]})
     assert caller == ["/api/work-ledger?compact=true"]
 
 

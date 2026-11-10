@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast  # noqa: F401
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
     from kiro_crew.session_capabilities import LoadedCapabilities  # noqa: F401
+    from kiro_crew.session_rss_rebound import RssHold
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import model_registry, model_scope, platform_compat, shutdown_event  # noqa: F401
@@ -707,6 +708,8 @@ class SessionManager:
     compaction_waits_for_turn = _turn_context.compaction_waits_for_turn
     mark_needs_reinjection = _turn_context.mark_needs_reinjection
     consume_needs_reinjection = _turn_context.consume_needs_reinjection
+    remember_agent_spawn_context = _turn_context.remember_agent_spawn_context
+    agent_spawn_context = _turn_context.agent_spawn_context
     provider_switch_replay_pending = _turn_context.provider_switch_replay_pending
     mark_provider_switch_replay = _turn_context.mark_provider_switch_replay
     provider_switch_replay_delivered = _turn_context.provider_switch_replay_delivered
@@ -931,6 +934,14 @@ class SessionManager:
         # surface that can reach the user (a dashboard notification, a Slack DM)
         # decides what to do with it. Args: (session_key, parked_secs).
         self.on_stuck_turn: Callable[[str, float], None] | None = None
+        # Fired once per turn by the RSS tick for a session over the ceiling whose
+        # memory is held by processes outside its runtime's tree. Args: (key, notice).
+        self.on_leftover_memory: Callable[[str, str], None] | None = None
+        # Fired once when the RSS recycle stops recycling a session whose fresh
+        # processes keep climbing straight back over the ceiling
+        # (``session_rss_rebound``), so the chat can say which setting to raise.
+        # The same kind of seam as ``on_stuck_turn``. Args: (session_key, hold).
+        self.on_rss_hold: Callable[[str, RssHold], None] | None = None
         # Fired after a turn lease is released (``release``), with the folded
         # key. Also a seam: the dashboard uses it to land a model pick at a
         # channel turn's end, which no dashboard turn boundary sees, and to push
@@ -1096,6 +1107,30 @@ class SessionManager:
         cache[cache_key] = (model, dir_mtime, now)
         return model
 
+    def retract_cwd(self, key: str) -> None:
+        """Forget *key*'s directory after its project was cleared, keeping the conversation.
+
+        Drops the stored cwd, and flags a live session so no later write stores it again.
+        """
+        folded = self._fold_key(key)
+        self._session_map.clear_cwd(folded)
+        self._allocation_boundary().retract_reservation_cwds(folded)
+        session = self._sessions.get(folded)
+        if session is not None:
+            session.cwd_retracted = True
+
+    async def aprepare_cwd_clear(self) -> None:
+        """Make the session map writable before a project clear changes anything.
+
+        After a failed load the map holds none of the file's entries, so a clear would
+        drop nothing and the next save would adopt the old cwd from the file. This
+        retries that read and lands any owed write, and raises when either fails, so a
+        clear whose earlier save failed is not acknowledged until it is on disk.
+        """
+        await self._session_map.aflush()
+        if self._session_map.writes_refused():
+            raise OSError("the session map is unreadable, so a project clear would not hold")
+
     def commit_provider_switch_replay_sid(self, key: str) -> bool:
         """Settle replay, promoting the live ACP SID when one was deferred.
 
@@ -1123,7 +1158,7 @@ class SessionManager:
             folded,
             sid,
             provider=_provider_label(session.provider),
-            cwd=session.provider.cwd,
+            cwd="" if session.cwd_retracted else session.provider.cwd,
         )
         session.provider_switch_replay = False
         return True

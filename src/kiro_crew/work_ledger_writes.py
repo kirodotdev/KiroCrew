@@ -36,7 +36,6 @@ from kiro_crew.work_ledger_records import (
     MAX_EVENT_TEXT_CHARS,
     MAX_GOAL_CHARS,
     MAX_GOAL_CONCURRENCY_CAP,
-    MAX_GOAL_ITEM_CAP,
     MAX_ITEMS_PER_CONDUCTOR,
     MAX_SUMMARY_CHARS,
     MAX_TITLE_CHARS,
@@ -58,6 +57,7 @@ from kiro_crew.work_ledger_rules import (
     _require_count,
     _require_pr,
     _require_text,
+    _require_wake_at,
     depth_cap_hint,
     is_acceptance_concrete,
     may_conduct,
@@ -240,7 +240,6 @@ def apply_conductor_action(
     goal: Any = None,
     round_number: Any = None,
     fails: Any = None,
-    item_cap: Any = None,
     concurrency_cap: Any = None,
     new_goal: Any = None,
 ) -> dict[str, Any]:
@@ -257,8 +256,8 @@ def apply_conductor_action(
     ``decide``  ``item_id``, ``decision``, optional ``round_number``.
     ``verdict`` ``item_id``, ``verdict``, optional ``fails``.
     ``close``   ``item_id``, ``state``, optional ``decision`` — stamps ``closed_at``.
-    ``goal``    ``goal``, optional ``round_number``, ``item_cap``,
-                ``concurrency_cap`` and ``new_goal`` — the conductor record only.
+    ``goal``    ``goal``, optional ``round_number``, ``concurrency_cap`` and
+                ``new_goal`` — the conductor record only.
 
     Returns ``{"conductor", "item", "event"}``; ``item`` and ``event`` are ``None``
     for ``goal``. Raises :class:`WorkLedgerError` with a ``code`` from the ``CODE_*``
@@ -282,7 +281,6 @@ def apply_conductor_action(
                 record,
                 goal,
                 round_number,
-                item_cap,
                 new_goal,
                 concurrency_cap=concurrency_cap,
             ),
@@ -340,7 +338,6 @@ def _write_goal(
     record: ConductorRecord,
     goal: Any,
     round_number: Any,
-    item_cap: Any = None,
     new_goal: Any = None,
     *,
     concurrency_cap: Any = None,
@@ -357,13 +354,6 @@ def _write_goal(
     """
     checked_goal = None if goal is None else _require_text(goal, MAX_GOAL_CHARS, "goal")
     checked_round = None if round_number is None else _require_count(round_number, "round")
-    checked_cap = None if item_cap is None else _require_count(item_cap, "item_cap")
-    if checked_cap is not None and not 1 <= checked_cap <= MAX_GOAL_ITEM_CAP:
-        raise WorkLedgerError(
-            f"item_cap must be between 1 and {MAX_GOAL_ITEM_CAP}; got {checked_cap}",
-            code=CODE_INVALID_VALUE,
-            field="item_cap",
-        )
     checked_concurrency = (
         None if concurrency_cap is None else _require_count(concurrency_cap, "concurrency_cap")
     )
@@ -401,8 +391,6 @@ def _write_goal(
             current.goal_items_base = current.created_total
         if checked_round is not None:
             current.round = checked_round
-        if checked_cap is not None:
-            current.item_cap = checked_cap
         if checked_concurrency is not None:
             current.concurrency_cap = checked_concurrency
         current.goal_version += 1
@@ -419,10 +407,8 @@ def _create_item(
 ) -> dict[str, Any]:
     """Mint one item under the conductor lock.
 
-    The caps are checked by :func:`_admit_create_locked`. The goal's
-    :attr:`ConductorRecord.item_cap` refuses nothing (it is reported as
-    :attr:`ConductorRecord.cap_exceeded`), and nothing bounds a board's lifetime
-    creates, since the ``work`` fold forgets old closed items.
+    The caps are checked by :func:`_admit_create_locked`. Nothing bounds a
+    board's lifetime creates, since the ``work`` fold forgets old closed items.
 
     The header (with ``created_total`` bumped) is written FIRST, then the item, and
     restored if the item write raises. A failure between them over-counts, the safe
@@ -712,12 +698,15 @@ def apply_worker_report(
     artifacts: Any = None,
     pr: Any = None,
     reason: Any = None,
+    wake_at: Any = None,
 ) -> dict[str, Any]:
-    """Write the fields the WORKER owns: ``status``, ``reason``, ``summary``,
-    ``artifacts``, ``pr`` and ``last_report_at``. Nothing else is reachable from here.
+    """Write the fields the WORKER owns: ``status``, ``reason``, ``wake_at``,
+    ``summary``, ``artifacts``, ``pr`` and ``last_report_at``. Nothing else is
+    reachable from here.
 
-    ``reason`` rides only on ``blocked`` / ``question`` and is replaced by every
-    report, so a later report without one clears it.
+    ``reason`` rides only on ``blocked`` / ``question``, and ``wake_at`` (when the
+    worker will resume) only on ``progress``. Every report replaces both, so a later
+    report without one clears it.
 
     No ``verdict``, ``state``, ``acceptance``, ``decision`` or ``round`` parameter,
     so a worker cannot accept itself or widen its bar; ``status: done`` only
@@ -748,6 +737,7 @@ def apply_worker_report(
                 code=CODE_INVALID_VALUE,
                 field="reason",
             )
+    checked_wake_at = _require_wake_at(wake_at, checked_status)
     checked_id = _require_item_id(item_id)
 
     with item_lock(slot_key, checked_id, create=False):
@@ -760,6 +750,7 @@ def apply_worker_report(
             raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
         item.status = checked_status
         item.reason = checked_reason
+        item.wake_at = checked_wake_at
         item.summary = checked_summary
         item.artifacts = checked_artifacts
         if checked_pr is not None:

@@ -211,6 +211,12 @@ _TG_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)[^>]*>")
 #: renderer, but stay generous so a cut never lands inside "&amp;"/"&#1234;").
 _MAX_ENTITY_LEN = 12
 
+#: How long ``close()`` lets in-flight handlers finish on the open session.
+#: Kept under the 2 s the channel registry gives a whole ``close()``
+#: (``registry.shutdown_tasks``), so the cancel below runs inside that bound.
+#: shortcut: a fixed grace; make it a setting only if a deployment needs another.
+_CLOSE_DRAIN_GRACE_S = 1.0
+
 
 def normalize_reaction_emoji(emoji: str) -> str:
     """Strip U+FE0F so a keyboard's ❤️ and the docs' ❤ are one value.
@@ -805,9 +811,22 @@ class TelegramClient:
                 finally:
                     self._task = None
         finally:
-            if self._session and not self._session.closed:
-                await self._session.close()
-                self._session = None
+            # Give in-flight handlers (turns, the album flush above, the cursor
+            # write) a short grace on the open session so they can land. They are
+            # NOT cancelled: a cancelled turn can be cut off inside its own
+            # teardown and leave its session permit held. A turn still running
+            # after the close finds the client closed instead -- ``_ensure_session``
+            # refuses to open a new session -- so its sends fail like a transport
+            # error and its teardown runs normally. The session close is nested in
+            # its own ``finally`` so a cancellation during the wait cannot skip it.
+            try:
+                handlers = [task for task in self._handler_tasks if not task.done()]
+                if handlers:
+                    await asyncio.wait(handlers, timeout=_CLOSE_DRAIN_GRACE_S)
+            finally:
+                if self._session and not self._session.closed:
+                    await self._session.close()
+                    self._session = None
 
     def set_message_handler(self, on_message: Callable[[TelegramInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.
@@ -1356,13 +1375,15 @@ class TelegramClient:
         aiohttp/OSError so callers can distinguish "bad token" from "offline".
         """
         data = await self._call_raw("getMe", {})
-        if isinstance(data, dict) and data.get("ok") and data.get("result"):
+        if not isinstance(data, dict) or "ok" not in data:
+            # Not a Bot API reply (empty body, or a proxy's own JSON error): the
+            # proxy failed, Telegram never judged the token.
+            raise ConnectionError("getMe got no Bot API reply")
+        if data.get("ok") and data.get("result"):
             return data["result"]
-        desc = ""
-        if isinstance(data, dict):
-            # Telegram error descriptions are short fixed strings
-            # ("Unauthorized") — token-free and safe to surface in settings.
-            desc = str(data.get("description") or "")
+        # Telegram error descriptions are short fixed strings
+        # ("Unauthorized") — token-free and safe to surface in settings.
+        desc = str(data.get("description") or "")
         raise TelegramAuthError(f"Telegram rejected getMe ({desc or 'invalid bot token'})")
 
     @staticmethod
@@ -1580,14 +1601,14 @@ class TelegramClient:
 
         elif "callback_query" in update:
             cq = update["callback_query"]
-            user = cq.get("from", {})
-            msg = cq.get("message", {})
-            chat = msg.get("chat", {})
+            user = cq.get("from") or {}
+            msg = cq.get("message") or {}
+            chat = msg.get("chat") or {}
             data = cq.get("data", "")
             # Recover the pressed button's display text from the message's
             # inline keyboard (callback_data carries only the index).
             label = ""
-            for kb_row in msg.get("reply_markup", {}).get("inline_keyboard", []):
+            for kb_row in (msg.get("reply_markup") or {}).get("inline_keyboard") or []:
                 for btn in kb_row:
                     if btn.get("callback_data") == data:
                         label = btn.get("text", "")

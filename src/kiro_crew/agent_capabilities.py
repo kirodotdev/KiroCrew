@@ -27,6 +27,10 @@ from kiro_crew.agent import (
     agents_spec_lock,
     kiro_agents_dir_path,
 )
+from kiro_crew.agent_capabilities_tool_limits import (  # noqa: F401 - re-exported
+    disabled_tool_names,
+    tool_limited_servers,
+)
 from kiro_crew.agent_capabilities_withheld import withheld_approvals as _withheld_approvals
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME
 from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
@@ -43,7 +47,6 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import mate_agents_dir, project_agents_dir
-from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.platform import redact_via_context
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.platform.governance_profiles import governance_answer_generation
@@ -1904,28 +1907,9 @@ def prepare_member_capabilities(member: str, project_dir: str | Path | None = No
         # Launched servers whose entry turns single tools off. Not every member
         # backend can carry that (``ACP_BACKENDS_MEMBER_TOOL_LIMITS``).
         "tool_limited_servers": tool_limited_servers(spec),
+        # ``server/tool`` per tool those servers turn off, for the bell to name.
+        "disabled_tools": disabled_tool_names(spec),
     }
-
-
-def tool_limited_servers(spec: dict) -> tuple[str, ...]:
-    """Launched MCP servers in *spec* whose entry turns single tools off.
-
-    The one definition both the chat-start seam (via
-    :func:`prepare_member_capabilities`) and the Capabilities page warning read,
-    so the page cannot name a different set than the start refuses on.
-    """
-    servers = spec.get("mcpServers", {})
-    if not isinstance(servers, dict):
-        return ()
-    return tuple(
-        sorted(
-            name
-            for name, server in servers.items()
-            if isinstance(server, dict)
-            and server.get("disabledTools")
-            and not mcp_entry_is_muted(server)
-        )
-    )
 
 
 def member_backend_gap(backend: str, limited_servers: tuple[str, ...]) -> str | None:

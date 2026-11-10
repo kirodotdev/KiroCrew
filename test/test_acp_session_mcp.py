@@ -612,7 +612,9 @@ class TestWithholdWarningNamesTheCause:
                 encoding="utf-8",
             )
         if cause == "permission-mode":
-            kw["permission_mode"] = "auto"
+            # A mode the pin neither sets nor moves away (``auto`` is pinned to
+            # ``default`` and keeps the array).
+            kw["permission_mode"] = "plan"
         client = AcpClient(
             work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, **kw
         )
@@ -628,7 +630,7 @@ class TestWithholdWarningNamesTheCause:
         ]
         expected = {
             "old-adapter": "Upgrade with 'npm i -g ",
-            "permission-mode": "requested permission mode 'auto'",
+            "permission-mode": "requested permission mode 'plan'",
             "hooks": "sets hooks or sandbox settings",
             "link": "is a symlink or resolves to a sensitive path",
         }[cause]

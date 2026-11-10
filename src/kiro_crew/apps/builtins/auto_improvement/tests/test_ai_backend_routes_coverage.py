@@ -290,7 +290,12 @@ def recipe(monkeypatch: pytest.MonkeyPatch) -> type[FakeRecipe]:
     FakeRecipe.instances = []
     FakeRecipe.raises = None
     FakeRecipe.ref = "https://github.com/owner/repo/pull/9"
-    monkeypatch.setattr(routes, "GitHubPRRecipe", FakeRecipe)
+
+    def _fake_factory(provider: str, **kwargs: Any) -> FakeRecipe:
+        # Same signature as the real factory: routes picks the provider and the user.
+        return FakeRecipe(**kwargs)
+
+    monkeypatch.setattr(routes, "build_pr_recipe", _fake_factory)
     return FakeRecipe
 
 
@@ -832,6 +837,17 @@ class TestSessions:
         response = await routes._handle_delete_session(_request(match_info={"key": "a b"}))
         assert response.status == 400
         assert _json_of(response)["code"] == "invalid_request"
+
+    async def test_a_key_with_a_trailing_newline_is_a_400(self) -> None:
+        # `%0A` in the URL reaches the handler as a literal newline.
+        saved = await routes._handle_save_session(
+            _request("PUT", match_info={"key": "pr-o-r-1\n"}, body={"slot_key": "s"})
+        )
+        deleted = await routes._handle_delete_session(_request(match_info={"key": "pr-o-r-1\n"}))
+        assert saved.status == 400
+        assert deleted.status == 400
+        assert _json_of(saved)["code"] == _json_of(deleted)["code"] == "invalid_request"
+        assert store.list_sessions() == []
 
 
 # ── run artifacts ────────────────────────────────────────────────────────────

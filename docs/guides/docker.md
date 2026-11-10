@@ -63,9 +63,10 @@ Two one-time steps after the container is up:
    Open the printed link, substituting the host you reach the container on
    (with the mapping above: `http://localhost:5476/?token=...`). Login links
    expire minutes after minting — mint, then open immediately. (The gateway
-   also prints one link at boot, as on every platform; by the time you read
-   it in `docker logs` it has usually expired, so `docker exec` minting is
-   the reliable path.)
+   prints its own link at boot only when its stdout is a terminal. The
+   `docker run -d` above and compose give it none, so `docker logs` shows the
+   bare dashboard URL and a line naming `kirocrew token`, and `docker exec`
+   minting is the path.)
 
 ## Configuration
 

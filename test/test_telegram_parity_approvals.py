@@ -273,7 +273,7 @@ class TestSessionTrust:
         ), "the override-expiry revoke must exclude slots carrying standing trust"
         assert (
             # The HELD grants: the reset runs inside a ceiling install, while the
-            # ``permission_mode`` trust mask is on (RFC enterprise edition D9).
+            # ``permission_mode`` trust mask is on (RFC LTS edition D9).
             "if slot._trust_held or slot._trust_reads_held:"
             in src
         ), "the exclusion set must be built from the same condition the reset loop skips"

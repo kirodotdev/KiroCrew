@@ -205,7 +205,8 @@ async def _handle_repos(request: web.Request) -> web.Response:
             owner, name = pr["owner"], pr["repo"]
         else:
             try:
-                repo_host, owner, name = adapters.parse_repo_ref(name)
+                # Off the loop: a refused host can read config.json for the wording.
+                repo_host, owner, name = await asyncio.to_thread(adapters.parse_repo_ref, name)
             except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
                 return web.json_response(
                     {"code": "invalid_repo_url", "error": f"invalid repo url: {e}"}, status=400

@@ -108,7 +108,8 @@ class TestTheFormatterTellsTheTruth:
         assert "authentication failed" not in out.lower()
 
     def test_expired_still_advises_re_authentication(self):
-        out = _format_acp_error(_EXPIRED)
+        # An AWS-signed harness: kiro-cli's own refusal names Kiro's sign-in instead.
+        out = _format_acp_error(_EXPIRED, backend="claude")
         assert "authentication failed" in out.lower()
         assert "propagation" not in out.lower()
 

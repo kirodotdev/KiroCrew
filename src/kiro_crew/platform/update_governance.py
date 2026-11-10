@@ -1501,9 +1501,24 @@ def unattended_apply_allowed() -> bool:
     ``updates.unattended_apply: false`` makes every route notify-only; a
     person's Update still applies, and a build below the floor still takes its
     mandatory update. True when ungoverned.
+
+    A governance read that fails answers False, where :func:`active_update_pins`
+    reads every other pin as unpinned. Unpinned keeps a host updatable; "on"
+    here would install unattended on a host whose policy may forbid it, while
+    "off" leaves a person's Update and ``kirocrew update`` working.
     """
     from kiro_crew.platform.governance import active_update_pins
 
+    try:
+        from kiro_crew.platform.context import current_context
+
+        current_context()
+    except Exception:
+        logger.warning(
+            "Security policy unreadable; treating unattended update installs as off",
+            exc_info=True,
+        )
+        return False
     return active_update_pins().unattended_apply
 
 

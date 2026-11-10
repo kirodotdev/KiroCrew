@@ -1021,7 +1021,7 @@ class TestMonitorToolsCanSetTheBanner:
             "message": "watch CI",
             "idle_secs": 300,
             "max_cycles": 5,
-            "max_runtime_secs": 14400,
+            "max_runtime_secs": 604800,
             "gate": True,
         }, "the no-banner payload shape changed (banner must stay absent; gate is the tool default)"
 

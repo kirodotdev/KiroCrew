@@ -217,6 +217,11 @@ def _install_dashboard_middlewares(
                 raise
         return await handler(request)  # type: ignore[operator]
 
+    from kiro_crew.dashboard.card_send import (
+        card_turn_arrival_middleware,
+        card_turn_delegation_middleware,
+    )
+
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
         # Outermost: privacy-safe per-route latency. Times the FULL
@@ -224,6 +229,11 @@ def _install_dashboard_middlewares(
         # method / bounded route_template / status_class — never a real path,
         # query, id, or body — so it cannot leak content or explode cardinality.
         make_route_latency_middleware(),
+        # Next, before any layer that awaits: whether the caller's session runs a
+        # Dashboard card turn as the request arrives, so stopping that turn while the
+        # request is in flight cannot unmark it (dashboard/card_send.py). The latency
+        # layer above awaits nothing before it calls this one.
+        card_turn_arrival_middleware,
         # The relay-path header rule (dashboard/kiro_relay): a request the in-process
         # relay client handed over is verified and served with every x-kiro-relay-*
         # header removed, before any barrier or auth layer reads a header; every
@@ -263,13 +273,17 @@ def _install_dashboard_middlewares(
             ssm_gate=ssm_gate,
         ),
         sel_audit_middleware,
+        # Inner to token auth (it reads ``internal_auth``) and to the audit record:
+        # a turn started by a Dashboard card hands no work to another session or job
+        # (dashboard/card_send.py).
+        card_turn_delegation_middleware,
         # Inner to token auth (it reads the ``app`` claim) and to the audit
         # record: every /api/chat/slots/{slot}/* route takes one app-ownership
         # decision here before its handler runs (dashboard/slot_ownership.py).
         slot_ownership_middleware,
         spa_fallback,
     ]
-    _insert_enterprise_gate(app, spa_shell_handler=handlers.index)
+    _insert_lts_gate(app, spa_shell_handler=handlers.index)
 
     # Verify security invariant: if dashboard_url expands the CSRF origin
     # set for a remote URL, token auth middleware MUST be active.
@@ -394,18 +408,18 @@ def _install_api_middlewares(
         # per-slot route registered on this server is decided the same way.
         slot_ownership_middleware,
     ]
-    _insert_enterprise_gate(app, spa_shell_handler=None)
+    _insert_lts_gate(app, spa_shell_handler=None)
 
 
-def _insert_enterprise_gate(app: web.Application, *, spa_shell_handler: Any) -> None:
-    """Put the enterprise gate right after token auth. Nothing in an ``oss`` build.
+def _insert_lts_gate(app: web.Application, *, spa_shell_handler: Any) -> None:
+    """Put the LTS gate right after token auth. Nothing in an ``oss`` build.
 
     Inner to token auth so it only narrows what token auth admitted, and outer
     to the SEL request audit so its raised 403 is recorded by ``deny_audit``.
     """
-    from kiro_crew.dashboard.enterprise_gate_middleware import enterprise_gate_middleware_for
+    from kiro_crew.dashboard.lts_gate_middleware import lts_gate_middleware_for
 
-    gate_mw = enterprise_gate_middleware_for(app, spa_shell_handler=spa_shell_handler)
+    gate_mw = lts_gate_middleware_for(app, spa_shell_handler=spa_shell_handler)
     if gate_mw is None:
         return
     index = next(
@@ -413,5 +427,5 @@ def _insert_enterprise_gate(app: web.Application, *, spa_shell_handler: Any) -> 
         None,
     )
     if index is None:
-        raise RuntimeError("enterprise build: no token auth middleware to place the gate after")
+        raise RuntimeError("LTS build: no token auth middleware to place the gate after")
     app.middlewares.insert(index + 1, gate_mw)

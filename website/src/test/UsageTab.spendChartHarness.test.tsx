@@ -35,7 +35,7 @@ function report(): NormalizedUsage {
     billing: { plan: 'Plan', unit: 'credits', used: 10, limit: 100, percentUsed: 10 },
     sessions: {
       total: 3, today: period, thisWeek: period, thisMonth: period,
-      avgMsgsPerSession: 4, refusedTranscripts: 0, dailyHistory: [],
+      avgMsgsPerSession: 4, refusedTranscripts: 0, unreadableSessionDirs: 0, dailyHistory: [],
     },
   }
 }

@@ -26,6 +26,7 @@ import {
 } from '@tanstack/react-table'
 import { ChevronDown, ChevronRight, ChevronUp, MemoryStick, Columns3, TriangleAlert } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 import { api } from '../../api/client'
 import { Btn, Card, ContentSkeleton, EmptyState, IconButton, SearchInput } from '../../components/ui'
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
@@ -128,7 +129,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
     planeStateRef.current = { ...planeStateRef.current, sessions: state }
   }, [sorting, groupBy, filter, visibility, planeStateRef])
 
-  const { data, isPending, isError, isFetching, refetch } = useQuery<Payload>({
+  const { data, isPending, isError, isFetching, errorUpdateCount, refetch } = useQuery<Payload>({
     queryKey: ['sessionsMemory'],
     queryFn: () => api.sessionsMemory(),
     refetchInterval: 5000,
@@ -139,6 +140,10 @@ export default function SessionsTab({ planeStateRef }: Props) {
     // and spend passes; this makes their cost invisible instead of disruptive.
     placeholderData: keepPreviousData,
   })
+  // Every refetch of a no-data query, the 5s poll as well as Retry, goes back to
+  // pending; `queryReadFailed` keeps the could-not-read panel (and a focused
+  // Retry) up through it until data lands.
+  const readFailed = !data && queryReadFailed({ isError, isPending, errorUpdateCount })
 
   const sessions = data?.sessions ?? EMPTY_SESSIONS
   const tasks = data?.tasks ?? EMPTY_TASKS
@@ -468,13 +473,13 @@ export default function SessionsTab({ planeStateRef }: Props) {
       </div>
 
       <div className="overflow-hidden rounded-b-lg">
-      {isPending ? (
+      {isPending && !readFailed ? (
         // "No active sessions" is a claim about the machine, and during the first
         // fetch it is one we cannot make — a slow or failing endpoint made the page
         // assert there were none while it was still asking. A skeleton says
         // "not known yet", which is the truth.
         <ContentSkeleton rows={6} />
-      ) : isError && !data ? (
+      ) : readFailed ? (
         // The same false claim, by a different route: a failed request resolves the
         // query with no data, so the empty state would render — indistinguishable
         // from a healthy idle host, and re-asserted every 5s. That lands hardest on
@@ -490,20 +495,30 @@ export default function SessionsTab({ planeStateRef }: Props) {
           testId="sessions-error"
           icon={<TriangleAlert className="lucide-inline" />}
           title={i18nT('pages.sessionsTab.could_not_read_sessions')}
-          subtitle={i18nT('pages.sessionsTab.could_not_read_sessions_hint')}
           action={
-            // Relabelled off `isFetching`, not decorative: the default retry +
-            // backoff leaves the screen pixel-identical for several seconds after
-            // the click, so an unacknowledged button reads as a dead one and gets
-            // clicked again — exactly when the user is already anxious.
-            <Btn
-              type="button"
-              onClick={() => refetch()}
-              disabled={isFetching}
-              className="text-[11.5px]"
-            >
-              {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.sessionsTab.retry')}
-            </Btn>
+            <div className="flex flex-col items-center gap-2 max-w-[320px]">
+              {/* A failed read with nothing to lose (no rows, no draft), so the
+                  hand-off is on, as on the stale-rows banner above. */}
+              <ErrorNotice
+                variant="inline"
+                askAgent
+                message={i18nT('pages.sessionsTab.could_not_read_sessions_hint')}
+              />
+              {/* Relabelled off `isFetching`, not decorative: the default retry +
+                  backoff leaves the screen pixel-identical for several seconds
+                  after the click, so an unacknowledged button reads as a dead one
+                  and gets clicked again. The panel stays up while any refetch
+                  runs, so `aria-disabled` plus the guard, NOT `disabled`, which
+                  would drop a keyboard user's focus. */}
+              <Btn
+                type="button"
+                onClick={() => { if (!isFetching) void refetch() }}
+                aria-disabled={isFetching || undefined}
+                className="text-[11.5px] aria-disabled:opacity-30 aria-disabled:cursor-default"
+              >
+                {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.sessionsTab.retry')}
+              </Btn>
+            </div>
           }
         />
       ) : table.getRowModel().rows.length === 0 ? (

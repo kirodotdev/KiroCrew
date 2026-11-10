@@ -26,6 +26,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Consolidation write child: this interpreter, -P, a fixed module; jobs travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "consolidation_write_child.py::_spawn",
+        # Pin scan child: this interpreter, -P, a fixed module and a fixed scan kind;
+        # the reply is one JSON line on stdout. No agent input reaches the spawn.
+        "sandbox_pin_scan_child.py::scan_in_child",
+        # Slot backfill child: this interpreter, -P, a fixed module; the home, slot and
+        # fold travel on stdin as one JSON object, never as argv. No agent input
+        # reaches the spawn.
+        "crew_log/slot_backfill_child.py::backfill",
         # Recall pool child: this interpreter, -P, a fixed module; jobs travel on its
         # pipes as data, never as argv. No agent input reaches the spawn.
         "recall_pool.py::_spawn",
@@ -200,6 +207,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # child still sees. No agent value reaches it; it runs once at load, before
         # any tool call.
         "agent_sdk/gate_extensions/strands/kiro_crew_strands_gate.py::in_thread",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run``, which
+        # here only drives ``kiro_prerequisite_process._run_process`` -- the
+        # sandbox-routed probe runner listed below -- and that runner makes the spawn.
+        "agent_sdk/drivers/acp.py::_sandboxed_acp_help",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's
@@ -590,6 +601,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # credential VALUE is never requested or printed.
         "cli_doctor_parts/host_probes.py::_aws_profile_names",
         "cli_doctor_parts/host_probes.py::_aws_auto_refreshes",
+        # ``aws --version`` for the same Credentials section, asked only once
+        # ``_aws_profile_names`` could not answer, to name AWS CLI v1 (which has no
+        # ``configure list-profiles``) as the cause. Same binary resolution, env,
+        # timeout and classification as the two rows above: a fixed argv with
+        # nothing interpolated, read-only, and a version string is all it returns.
+        "cli_doctor_parts/host_probes.py::_aws_cli_is_v1",
         # Read-only diagnostic for the Source Checkout section: ``git -C <repo>
         # rev-parse/rev-list`` with a hardcoded argv whose only variable is the
         # install's own source directory (derived from the package's module
@@ -1194,6 +1211,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # platform_compat.trusted_system_bin("systemctl"); a miss is inconclusive
         # and spawns nothing, so neither PATH nor an agent can choose it.
         "gateway_restart.py::_systemd_show",
+        # The restart idle check's launchd identity read: `launchctl print
+        # <domain>/<label>`, a fixed argv (this uid's gui/user domain and
+        # LAUNCHD_LABEL) with no agent input, bounded by a timeout. The binary
+        # comes only from platform_compat.trusted_system_bin("launchctl"); a miss
+        # answers unknown and spawns nothing.
+        "service/gateway_identity.py::_launchd_pids",
         "slack/gateway_runtime/update_apply.py::_auto_apply_update",
         # The `git status --porcelain` and `git diff --diff-filter=A` spawns,
         # moved out of _auto_apply_update into its nested pre-check so every
@@ -1293,7 +1316,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # (`/dev/fd/N`) of the snapshot it already validated and copied — a hostile
         # value can only name a bad input, never a second command, and the output
         # path (`_extract_segment`) is a gateway-chosen name under the snapshot dir,
-        # not agent input.
+        # not agent input. `_registered_clip` reuses `_extract_segment` to give a
+        # registered STT provider a WAV copy: same fixed flags, the input is the
+        # clip `transcribe_audio` already path-checked, and the output a fresh
+        # mkstemp name.
         "transcribe.py::_detect_silence_ends",
         "transcribe.py::_extract_segment",
         "transcribe_aws.py::_transcribe_aws",

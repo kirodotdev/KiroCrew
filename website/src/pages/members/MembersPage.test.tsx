@@ -511,7 +511,9 @@ describe('MembersPage roster', () => {
 
   it('shows the load-failure state when the roster call rejects', async () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
-    renderWithProviders(<MembersPage />)
+    // The roster read retries on its own (`retryThroughRestart`); no backoff,
+    // so the failure shows at once.
+    renderWithProviders(<MembersPage />, { queryDefaults: { retryDelay: 0 } })
     // Both columns say it: the roster's own notice, and — since no chat can
     // open and the hero is gated on a good read — the chat column's, so a
     // wide window is never half blank.
@@ -681,7 +683,9 @@ describe('MembersPage roster cache (React Query)', () => {
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
     })
-    await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
+    // The re-read and the one retry an answered failure gets
+    // (`retryThroughRestart`).
+    await waitFor(() => expect(api.members).toHaveBeenCalledTimes(3))
     expect(roster().getByText('oncall')).toBeInTheDocument()
     expect(screen.queryByText(/Could not load your Bots/i)).toBeNull()
   })
@@ -694,6 +698,24 @@ describe('MembersPage thread', () => {
     renderWithProviders(<MembersPage />, { route: '/members?member=Review%20%26%20QA' })
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-review-qa')
     expect(api.memberThread).toHaveBeenCalledExactlyOnceWith('review-qa')
+  })
+
+  it('a relay teammate sees the Bots and is told plainly that only the owner can chat', async () => {
+    // A teammate's roster row carries no slot or preview (`_teammate_roster`), and
+    // the thread POST answers the owner gate's 403 `owner_only`.
+    localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
+    const refusal = Object.assign(new Error('owner authorization required'), {
+      status: 403,
+      body: JSON.stringify({ error: 'owner authorization required', code: 'owner_only' }),
+    })
+    const teammateRow = { name: 'oncall', slug: 'oncall', dashboard_created: true, source: 'kirocrew' } as unknown as ReturnType<typeof row>
+    await renderPage([teammateRow], 'kirocrew', { thread: refusal })
+    expect(await rosterRow('oncall')).toBeInTheDocument()
+    const notice = await screen.findByTestId('member-thread-owner-only', undefined, PANE_READY)
+    expect(notice).toHaveTextContent("Only this bot's owner can chat with it.")
+    expect(screen.queryByTestId('member-thread-error')).toBeNull()
+    expect(screen.queryByText(/Could not load your bots/i)).toBeNull()
+    expect(screen.queryByText(/Could not open this bot's chat/i)).toBeNull()
   })
 
   it('shows the concrete private memory refusal when opening a member conversation fails', async () => {

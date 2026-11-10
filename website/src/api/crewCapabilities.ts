@@ -1,3 +1,4 @@
+import { withDeadline } from '../lib/withDeadline'
 import { agentPath } from './agentPath'
 import { apiTransport } from './apiTransport'
 
@@ -63,10 +64,18 @@ export interface CapabilityPreview extends CapabilityView {
    * or Kiro Crew rebuilds that connection without approvals. */
   withheld_approvals?: (CapabilityRef & { reason: 'governed' | 'not_connected' | 'managed' | 'unexplained' })[]
 }
+/** Deadline for the two reads the Bot editor's Abilities pane waits on, which
+ *  shows its spinner until they settle. Longer than the gateway's own 20s bound
+ *  on each read (`_GET_TIMEOUT_SECS` in `dashboard/handlers/agent_capabilities.py`
+ *  and `member_worker_kit.py`), so its coded 503 normally answers first; this
+ *  ends the wait when no answer comes back at all. */
+export const ABILITIES_READ_TIMEOUT_MS = 30_000
+const { getWithSignal, post, put, j } = apiTransport
+const getWithDeadline = (url: string): Promise<unknown> =>
+  withDeadline(ABILITIES_READ_TIMEOUT_MS, undefined, signal => getWithSignal(url, signal).then(j))
 const endpoint = (member: string) => agentPath(member, '/capabilities')
-const { get, post, put, j } = apiTransport
 export const crewCapabilitiesApi = {
-  get: (member: string): Promise<CapabilityView> => get(endpoint(member)).then(j) as Promise<CapabilityView>,
+  get: (member: string): Promise<CapabilityView> => getWithDeadline(endpoint(member)) as Promise<CapabilityView>,
   preview: (member: string, draft: CapabilityDraft): Promise<CapabilityPreview> =>
     post(`${endpoint(member)}/preview`, draft).then(j) as Promise<CapabilityPreview>,
   save: (member: string, draft: CapabilityDraft & { preview_token: string }): Promise<CapabilityView> =>
@@ -105,7 +114,7 @@ export interface WorkerKitRequest {
 }
 const workerKitEndpoint = (member: string) => agentPath(member, '/worker-kit')
 export const crewWorkerKitApi = {
-  get: (member: string): Promise<WorkerKitView> => get(workerKitEndpoint(member)).then(j) as Promise<WorkerKitView>,
+  get: (member: string): Promise<WorkerKitView> => getWithDeadline(workerKitEndpoint(member)) as Promise<WorkerKitView>,
   preview: (member: string, body: WorkerKitRequest): Promise<WorkerKitPreview> =>
     post(`${workerKitEndpoint(member)}/preview`, body).then(j) as Promise<WorkerKitPreview>,
   apply: (member: string, body: WorkerKitRequest & { revision: string }): Promise<WorkerKitView> =>

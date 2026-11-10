@@ -178,7 +178,7 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   #14436 had to revert a tightening whose sweep missed such a client.
 - **Computer use is governed by one on/off row only**: the operator opt-in on the
   keystone `computer_use.json`, ANDed with `capabilities.computer_use`
-  ([rfc-crew-enterprise-edition](docs/request-for-change/rfc-crew-enterprise-edition.md),
+  ([rfc-crew-lts-edition](docs/request-for-change/rfc-crew-lts-edition.md),
   appendix "Desktop control"). Never add finer `computer_use.*` scopes, more
   capability rows, approval ordinals or pointer permits. Its refusals run **in band** on
   `tools._dispatch`, never at the fail-OPEN `hooks` gate, because a pre-authorized

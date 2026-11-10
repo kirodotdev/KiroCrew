@@ -48,6 +48,7 @@ An item is the unit of dispatch. It holds:
 | `state` | conductor | `open`, or terminal: `accepted` / `rejected` / `abandoned` |
 | `status` | worker | `progress` / `done` / `blocked` / `question`, and `reply` while `work_ledger.remote_dispatch` is on |
 | `reason` | worker | on `blocked` / `question`, when only a person can move it: `approval` / `needs_human` |
+| `wake_at` | worker | on `progress`, when the worker will resume: an ISO-8601 time with a zone, at most 24 hours ahead |
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
 | `pr` | worker | a pull-request number it produced |
@@ -114,10 +115,11 @@ conductor's own children are workers. An operator who runs a deeper
 organization raises the cap with `work_ledger.max_depth` (2 to 10); `work_ledger_read`
 reports the cap in force as `max_depth`, and a `depth_exceeded` refusal names
 the setting. Lowering the cap does not close ledgers that are already open: it
-refuses new ledgers and new items at the levels it removes. A bound lead's or
-conductor's `work_report` waits on an approval prompt unless the agent's allowed
-tools include `@kirocrew-work/work_report`, so a deeper run that nobody watches
-needs that entry for the parent to wake on its own. A worker holds one open item at a time.
+refuses new ledgers and new items at the levels it removes. A bound team lead's or
+goal conductor's `work_report` runs without an approval prompt: their allowed
+tools include `@kirocrew-work/work_report`, as every worker's do, so a deeper run
+that nobody watches still wakes its parent. The pipeline and security conductors
+keep it gated. A worker holds one open item at a time.
 
 ## Other refusals
 
@@ -125,7 +127,7 @@ With the crew log on, a write can still be refused. Each answer carries a `code`
 
 | Code | What happened | What to do |
 |---|---|---|
-| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | Retry the write. For a `create` whose answer carries an `item_id`, do not repeat the `create`; read the board first. |
+| `503 crew_log_unrecorded` | The store took the write but the crew log did not confirm it, so the write is undone and counts as not done. If the undo itself fails, the board turns `cache_dirty`. | When the message says the write has been undone, retry it; that holds for a `create` too, whose item was removed. When it says the write could not be undone, read the board before retrying (a `cache_dirty` refusal: see the next row). |
 | `409 cache_dirty` | An undo failed, so the board's files may not match the record. Reads and writes of the board (`work_ledger_read`, `work_ledger_record`, `work_brief`, `work_report`) are refused until it is repaired. | Run `work_ledger_rebuild`. To keep the files as they stand instead, remove the marker file the message names. |
 | `400 work_entry_too_large` | The write does not fit one crew-log line. | Shorten the fields you sent. |
 | `400 work_item_too_large` | The item predates the record and, written whole, does not fit one line; usually its acceptance is too large. | The conductor shrinks it with `work_ledger_record action=accept` and a smaller acceptance. |
@@ -174,13 +176,28 @@ separate values and not one "stuck". A build the worker does not control is
 
 **`reason` says when a `blocked` or `question` report waits on a person.**
 `approval` means a tool approval timed out or is waiting, and `needs_human`
-means only a person can unblock it. A wait on a build, service or other item
+means the worker says only a person can unblock it: credentials or a
+permission, spend, an irreversible step or deleting someone else's work, a
+costly preference nobody can infer, or a choice the person asked to make. It
+is the worker's claim; the conductor checks it against those five and decides
+any choice that fits none, so a worker with a recommendation reports
+`question` without it. A wait on a build, service or other item
 carries no reason. It is refused on `progress` and `done`, and every report
 replaces it. When every open item waits on a person (`approval` or
 `needs_human`) and nothing on the ledger changed since the conductor's last
 turn, the conductor's `work-ledger` watch holds: no turns, no extension, and
 the goal popover says it is waiting on you. A worker's new report releases it;
 the conductor's own writes do not.
+
+**`wake_at` says a `progress` report is a wait until a known time.** The item is
+not flagged `stale` before that time, so the Ultra Mode sidebar does not call the
+worker stalled; once it passes, the staleness window runs from it. A `wake_at`
+that does not parse with a zone, is in the past or is more than a day ahead is
+refused (`wake_at_invalid`, `wake_at_in_past`, `wake_at_too_far`), and so is one
+on any other status (`wake_at_requires_progress`): a longer wait is a `blocked`
+report. Every report replaces it. Nothing wakes the conductor at that time yet; a
+worker still idle one window after it is flagged `stale` like any other. A
+remote-dispatch report does not carry it to the hub's board yet.
 
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
 and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
@@ -243,12 +260,11 @@ A worker's `done` never closes an item. The conductor reads its whole ledger
 with `work_ledger_read` — every item, its own derived staleness flags, and a
 ready-to-evaluate batch — runs the acceptance evaluator against the item's own
 condition, and records the answer with `work_ledger_record` as a `verdict`.
-The evaluator is the `accept_eval` tool on `kirocrew-work`, and the loop's
-budget check is its sibling `patrol_budget`. Both run the goal-conductor skill's
-bundled scripts in-process with typed arguments, take no command or path to
-run, and are auto-approved for the conductor and the team lead, so an
-unattended verify cycle waits on no click. The scripts still run by shell for an
-older spec. The verdicts are:
+The evaluator is the `accept_eval` tool on `kirocrew-work`. It runs the
+goal-conductor skill's bundled script in-process with typed arguments, takes no
+command or path to run, and is auto-approved for the conductor and the team
+lead, so an unattended verify cycle waits on no click. The script still runs by
+shell for an older spec. The verdicts are:
 
 - `pass` / `fail` — final for that cycle.
 - `pending` — the condition is not true yet; keep waiting, for at most 24 hours on
@@ -288,16 +304,12 @@ it (`concurrency_cap`, 1 to 32). A `create` past it is refused
 stop: the next item that lands frees a seat, and the conductor waits for it
 rather than asking to raise the cap. Closed items never count toward it.
 
-The total is advisory. Each goal is expected to create at most `item_cap` items,
-closed ones and every round's re-plans included; the default is 20 and a `goal`
-write sets it (`item_cap`, 1 to 256). Nothing is refused past it. The read
-returns `goal_items_used` and `cap_exceeded` on the `conductor` block, compact
-reads included. The conductor keeps the count out of its round reports and
-tells the user once, the first report after `cap_exceeded` turns true, that the
-goal has spent past its line. Only a goal write with `new_goal=true` (a goal the user replaced)
-starts a new count; rewording the goal, moving the round or changing a cap
-keeps it. A board that never records a goal, such as a pipeline or security
-conductor's queue, has neither goal cap. After two rounds in a row with
+The total has no cap. The read returns the goal's item count, closed items and
+every round's re-plans included, as `goal_items_used` on the `conductor` block,
+compact reads included. Only a goal write with `new_goal=true` (a goal the user
+replaced) starts a new count; rewording the goal, moving the round or changing
+the cap keeps it. A board that never records a goal, such as a pipeline or
+security conductor's queue, has no concurrency cap. After two rounds in a row with
 nothing accepted the conductor tells the user and re-plans the failing items
 once; a third stops new dispatches until the user answers.
 

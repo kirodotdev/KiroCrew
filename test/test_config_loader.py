@@ -652,6 +652,8 @@ _DISPATCH_EXEMPT = {
     "effective_memory_config",
     # Session selection validates admitted member/mode before this target comparison.
     "execution_context",
+    # What a new chat with the member would run, told to the user; not this target.
+    "new_chat_agent",
 }
 
 
@@ -674,6 +676,7 @@ def _dispatch_field_mutations() -> dict[str, object]:
         "selection_revision": "observed-selection-revision",
         "effective_memory_config": {"embedding_provider": "drift-pin-other"},
         "execution_context": object(),
+        "new_chat_agent": "drift-pin-new-chat-agent",
     }
 
 

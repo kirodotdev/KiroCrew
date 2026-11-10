@@ -20,10 +20,11 @@
  *   with the switch off, muted again while a save waits for a restart.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { api, type KasBundleStatus } from '../api/client'
 import { KAS_BUNDLE_CONFIG_KEY, KasBundleCard } from '../pages/developer/KasBundleCard'
+import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -208,6 +209,22 @@ describe('KasBundleCard', () => {
     fireEvent.click(screen.getByTestId('kas-bundle-retry'))
     await screen.findByText('KAS engine 0.66.33 (installed by you)')
     expect(kasBundleStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps Retry and drops the alert for a read that failed while the gateway was down, then re-reads it on reconnect (#32966)', async () => {
+    kasBundleStatus.mockRejectedValueOnce(new Error('Failed to fetch'))
+    kasBundleStatus.mockResolvedValue(INSTALLED)
+    setGatewayConnected(false)
+    try {
+      renderWithProviders(<KasBundleCard />)
+      await screen.findByTestId('kas-bundle-retry')
+      expect(screen.queryByText('Could not read the KAS engine status.')).toBeNull()
+      act(() => { setGatewayConnected(true) })
+      await screen.findByText('KAS engine 0.66.33 (installed by you)')
+      expect(kasBundleStatus).toHaveBeenCalledTimes(2)
+    } finally {
+      __resetGatewayConnectedForTests()
+    }
   })
 
   it("renders the server's remedy when the last install failed", async () => {

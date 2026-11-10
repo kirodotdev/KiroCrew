@@ -592,6 +592,7 @@ class TestOneEditorsSavesLandInOrder:
             {"seq": 1},
             {"editor": "", "seq": 1},
             {"editor": "has space", "seq": 1},
+            {"editor": "tab-a\n", "seq": 1},
             {"editor": "x" * 65, "seq": 1},
             {"editor": "tab-a", "seq": 0},
             {"editor": "tab-a", "seq": -1},

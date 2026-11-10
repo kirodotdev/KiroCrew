@@ -140,7 +140,7 @@ class DefaultGatewayLifecycleProvider:
 
 
 class DefaultAgentRuntime:
-    """Today's managed MCP servers + first-run setup."""
+    """Today's managed MCP servers + first-run setup; no repository is worked in place."""
 
     def managed_mcp_servers(self) -> Dict[str, dict]:
         # RESERVED (see context.RESERVED_METHODS['agent_runtime']): no core call
@@ -163,6 +163,10 @@ class DefaultAgentRuntime:
         from kiro_crew import agent  # circular import: agent imports platform
 
         agent.run_first_run_setup()
+
+    def works_in_place(self, repo: str) -> bool:
+        # WIRED: ``crewmate_worktree.ensure``. Every repository gets a Bot worktree.
+        return False
 
 
 class DefaultAgentExecutableResolver:

@@ -94,3 +94,22 @@ def test_a_malformed_crumb_is_still_reaped(home: Path) -> None:
     crumb.write_text("not json at all", encoding="utf-8")
     assert sess.backfill_crashed_sessions() == 0
     assert not crumb.exists()
+
+
+@pytest.mark.parametrize(
+    "stamp", ["1" + "0" * 400, "1e400", "-1e400"], ids=["huge-int", "inf", "-inf"]
+)
+def test_a_crumb_whose_start_is_not_a_finite_number_is_reaped_and_the_scan_goes_on(
+    home: Path, stamp: str
+) -> None:
+    """``float(started_at)`` raised OverflowError on an int past float range,
+    which ended the whole scan at that crumb on every boot, so the crumbs after
+    it were never reaped. Such a crumb is malformed, like one that is not JSON."""
+    d = home / "metrics" / "open-sessions"
+    d.mkdir(parents=True)
+    bad = d / "a-bad.json"
+    bad.write_text('{"key": "dashboard:x", "started_at": %s}' % stamp, encoding="utf-8")
+    later = d / "b-later.json"
+    later.write_text('{"key": "dashboard:y", "started_at": 1000}', encoding="utf-8")
+    assert sess.backfill_crashed_sessions() == 0
+    assert _crumbs(home) == []

@@ -1576,6 +1576,21 @@ def _nested_shell_payloads(
 
 
 def _shell_payload_walk(text_lower: str) -> "list[tuple[str, list[str]]]":
+    """:func:`_shell_payload_walk_uncached`, once per text inside one ``sharing_views``
+    call; each caller gets fresh lists, so one that edits its argv cannot reach the next."""
+    from .shell_commands import _CALL_VIEWS  # circular import: the reader imports this module
+
+    memo = _CALL_VIEWS.get()
+    if memo is None:
+        return _shell_payload_walk_uncached(text_lower)
+    key = ("payload_walk", text_lower)  # the redirect views' keys are plain str
+    frames = memo.get(key)
+    if frames is None:
+        frames = memo[key] = _shell_payload_walk_uncached(text_lower)
+    return [(source, list(tokens)) for source, tokens in frames]
+
+
+def _shell_payload_walk_uncached(text_lower: str) -> "list[tuple[str, list[str]]]":
     """``(source, argv)`` for *text_lower* and every nested shell payload in it.
 
     ``bash -c "kirocrew token"`` tokenizes to ``['bash', '-c', 'kirocrew token']``

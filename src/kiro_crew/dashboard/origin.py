@@ -483,14 +483,14 @@ def check_origin(
     canon = _canonical_origin(origin_base)
     if canon is not None:
         _scheme, canon_host, canon_port = canon
-        # An enterprise build matches a non-loopback origin exactly as listed
+        # An LTS build matches a non-loopback origin exactly as listed
         # (``dashboard_origins`` is an exact-origin list): no other spelling passes.
         # Each approved origin is stored in ``urls.stored_origin`` form (the
         # ``origin_policy_item`` spelling a browser sends), so the exact
         # ``origin_base in allowed`` test above is the comparison in that form.
         from kiro_crew import edition
 
-        exact_only = edition.is_enterprise() and not is_loopback(canon_host)
+        exact_only = edition.is_lts() and not is_loopback(canon_host)
         if not exact_only and any(_canonical_origin(a) == canon for a in allowed):
             return True
         if is_loopback(canon_host):

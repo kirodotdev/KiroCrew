@@ -367,7 +367,7 @@ def _restrict_memory_files(self: VectorMemoryStore) -> None:
             platform_compat.restrict_to_owner(path)
         except OSError:
             logger.warning(
-                "Cannot restrict %s to owner; it may be readable by other users",
+                "SECURITY: Cannot restrict %s to owner; it may be readable by other users",
                 path,
                 exc_info=True,
             )

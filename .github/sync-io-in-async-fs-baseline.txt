@@ -23,9 +23,9 @@
 3 src/kiro_crew/cli_server.py
 2 src/kiro_crew/dashboard/chat_api/session_relaunch.py
 2 src/kiro_crew/dashboard/file_api/uploads.py
-12 src/kiro_crew/dashboard/file_api/workspaces.py
+5 src/kiro_crew/dashboard/file_api/workspaces.py
 1 src/kiro_crew/dashboard/file_index.py
-5 src/kiro_crew/dashboard/handlers/mcp.py
+1 src/kiro_crew/dashboard/handlers/mcp.py
 1 src/kiro_crew/dashboard/handlers/terminal.py
 1 src/kiro_crew/dashboard/server.py
 2 src/kiro_crew/voice_reply.py

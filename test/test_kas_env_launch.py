@@ -178,6 +178,26 @@ class TestProjection:
         assert result.returncode == 0, result.stderr
         assert CANARY in result.stdout
 
+    def test_a_placeholder_set_only_in_agent_env_reaches_the_server(
+        self, home, script, monkeypatch
+    ):
+        """kiro-cli would fill ``${VAR}`` from ``agent.env``; the launcher snapshot does too."""
+        from types import SimpleNamespace
+
+        monkeypatch.delenv("KC33089_ENDPOINT", raising=False)
+        loaded = SimpleNamespace(agent=SimpleNamespace(env={"KC33089_ENDPOINT": CANARY}))
+        monkeypatch.setattr(
+            "kiro_crew.config.KiroCrewConfig.load", staticmethod(lambda: loaded), raising=True
+        )
+        server = {**_server_spec(script), "env": {"CANARY_26256_ENDPOINT": "${KC33089_ENDPOINT}"}}
+        entry = _project(_spec(mcpServers={"canary": server}))
+        doc = json.loads(_snapshot(home, entry["mcpServers"]["canary"]).read_text(encoding="utf-8"))
+        assert doc["env"] == {"CANARY_26256_ENDPOINT": CANARY}
+        assert CANARY not in _wire_text(entry)
+        result = _run_entry(entry["mcpServers"]["canary"])
+        assert result.returncode == 0, result.stderr
+        assert CANARY in result.stdout
+
     def test_a_relayed_flag_stays_on_the_entry_and_the_snapshot_takes_the_rest(self, home, script):
         entry = _project(_spec(mcpServers={"c": _server_spec(script, FEATURE_ENABLED="true")}))
         launched = entry["mcpServers"]["c"]

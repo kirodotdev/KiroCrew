@@ -276,8 +276,8 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
   // detail, so updated_at changed without the specs list knowing and the rail's
   // ordering went stale until its own 15s poll.
   const messageMutation = useMutation({
-    mutationFn: ({ msg, pastes }: { msg: string; pastes?: ChatEmbedSendMeta['pastes'] }) =>
-      specApi.message(name, msg, specId(), pastes),
+    mutationFn: ({ msg, meta }: { msg: string; meta?: ChatEmbedSendMeta }) =>
+      specApi.message(name, msg, specId(), meta),
     onMutate: () => { lastSendAt.current = Date.now() },
     onError: (e) => setErr((e as Error).message),
     onSettled: invalidate,
@@ -790,7 +790,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
               <ChatColumn
                 name={name}
                 slotKey={detail.slot_key}
-                onSend={(msg, meta) => messageMutation.mutateAsync({ msg, pastes: meta?.pastes })}
+                onSend={(msg, meta) => messageMutation.mutateAsync({ msg, meta })}
               />
             )
             : <ChatColumnSkeleton />}

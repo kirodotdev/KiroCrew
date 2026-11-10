@@ -29,6 +29,9 @@ export interface WarmConn {
   token: string
 }
 
+/** `staleToken`: the dead pane the link's own reconnect replaces; its readiness does not count. */
+export interface PendingPaneSlot { id: string; key: string; staleToken?: string }
+
 /** One switcher tab as relayed to an embedded pane (parent → frame). */
 export interface HostTab {
   id: string
@@ -214,6 +217,10 @@ interface InstancesState {
    *  warm entry is dropped.
    *  Optional because tests preload partial slices. */
   connectError?: Record<string, string>
+  /** A `kirocrew://chat?crew=` link waiting for that crew's pane to be ready
+   *  (see lib/crewDeepLink.ts). One in total: a newer link replaces
+   *  it, and any switch to another pane drops it. */
+  pendingPaneSlot: PendingPaneSlot | null
   host: HostModel | null
   crewForms: CrewFormState
 }
@@ -224,6 +231,7 @@ const initialState: InstancesState = {
   mru: [],
   unread: {},
   ready: {},
+  pendingPaneSlot: null,
   host: null,
   crewForms: { add: null, edit: null },
 }
@@ -271,6 +279,7 @@ const instancesSlice = createSlice({
         delete state.connectError[state.activeId]
       }
       state.activeId = action.payload
+      if (state.pendingPaneSlot && state.pendingPaneSlot.id !== action.payload) state.pendingPaneSlot = null
       if (action.payload) {
         state.mru = [action.payload, ...state.mru.filter(x => x !== action.payload)]
         // Selecting an instance clears its unread badge.
@@ -286,6 +295,10 @@ const instancesSlice = createSlice({
       if (state.connectError) delete state.connectError[id]
       state.mru = state.mru.filter(x => x !== id)
       if (state.activeId === id) state.activeId = null
+      if (state.pendingPaneSlot?.id === id) state.pendingPaneSlot = null
+    },
+    setPendingPaneSlot(state, action: PayloadAction<PendingPaneSlot | null>) {
+      state.pendingPaneSlot = action.payload
     },
     /** The pane's embedded SPA mounted and announced `mc-embedded-ready`. */
     setPaneReady(state, action: PayloadAction<string>) {
@@ -365,6 +378,7 @@ export const {
   setConnectError,
   setActiveId,
   removeWarm,
+  setPendingPaneSlot,
   setPaneReady,
   clearPaneReady,
   setUnread,

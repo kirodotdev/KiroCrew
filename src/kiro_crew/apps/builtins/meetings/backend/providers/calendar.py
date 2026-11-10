@@ -73,7 +73,9 @@ _MAX_ATTENDEES = 100
 # with continuations starting with a single space or tab.
 _FOLD_RE = re.compile(r"\r?\n[ \t]")
 # ``DTSTART;TZID=America/Los_Angeles:20260730T090000`` → name, params, value.
-_LINE_RE = re.compile(r"^(?P<name>[A-Za-z0-9-]+)(?P<params>;[^:]*)?:(?P<value>.*)$")
+# Lines are split on ``\n`` first, so none carries a newline; ``\Z`` keeps the package
+# free of ``$`` anchors for the regex-anchor contract without changing a match.
+_LINE_RE = re.compile(r"^(?P<name>[A-Za-z0-9-]+)(?P<params>;[^:]*)?:(?P<value>.*)\Z")
 
 
 @dataclass
@@ -571,8 +573,10 @@ def parse_ics(text: str, *, days: int = k.CALENDAR_SYNC_DAYS) -> list[CalendarEv
     return [event for _, _, event in sorted(heap, reverse=True)]
 
 
+# The caller strips the value first, so it never ends in a newline; ``\Z`` keeps the
+# package free of ``$`` anchors for the regex-anchor contract.
 _DURATION_RE = re.compile(
-    r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?$"
+    r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?\Z"
 )
 
 #: Ceiling on a parsed ``DURATION``, in days. Ten years — orders of magnitude above

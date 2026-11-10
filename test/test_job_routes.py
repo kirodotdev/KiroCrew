@@ -33,7 +33,7 @@ import kiro_crew.apps.job_sdk as js
 import kiro_crew.dashboard.handlers._shared as shared
 import kiro_crew.dashboard.handlers.source_providers as sp
 from kiro_crew.apps.job_sdk import JobError, JobSDK, forget_sdk, get_sdk, register_sdk
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, wait_until
 
 APP = "jobs-cov-app"
 
@@ -402,24 +402,49 @@ async def test_start_with_malformed_body_is_treated_as_empty_not_500(
 
 
 @pytest.mark.asyncio
-async def test_start_run_unreadable_is_500(
+async def test_a_start_whose_run_the_cap_removed_still_answers_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
 ) -> None:
-    # start_async succeeds but the record cannot be read back — the defensive
-    # 500 branch. start_async is stubbed so no real thread is spawned, and get
-    # returns None.
+    # A fast run finishes, and a second run's sweep removes its record before the
+    # start route reads it back. The run did start, so the route answers with the
+    # record as it stood at the start, never a 500 a client might retry.
     _setup_guards(tmp_path, monkeypatch)
-    sdk.register("k", lambda handle, **p: None)
+    sdk.register("k", lambda handle, **p: None, retention=1)
+    real_get = sdk.get
 
-    async def _start_async(kind: str, *, params: Any = None, dedupe_key: str = "") -> str:
-        return "deadbeef" * 4
+    def swept(run_id: str) -> bool:
+        live = sdk.cancelling_and_live_ids()[1]
+        return run_id not in live and run_id not in sdk._unswept  # noqa: SLF001
 
-    monkeypatch.setattr(sdk, "start_async", _start_async)
-    monkeypatch.setattr(sdk, "get", lambda run_id: None)
+    def get_after_a_newer_run(run_id: str) -> js.JobRun | None:
+        wait_until(lambda: swept(run_id))
+        newer = sdk.start("k")
+        wait_until(lambda: swept(newer))
+        return real_get(run_id)
+
+    monkeypatch.setattr(sdk, "get", get_after_a_newer_run)
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post(f"{_base()}/k/start", json={})
-        assert resp.status == 500
-        assert (await resp.json())["code"] == "run_unreadable"
+        assert resp.status == 200
+        run = (await resp.json())["run"]
+    assert run["status"] == js.STARTING
+    assert not (sdk.store.dir / f"{run['run_id']}.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_capped_kind_answers_400_to_an_overlong_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    _setup_guards(tmp_path, monkeypatch)
+    sdk.register("k", lambda handle, **p: None, retention=1)
+    key = "secret-" + "k" * js._MAX_DEDUPE_KEY
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post(f"{_base()}/k/start", json={"dedupe_key": key})
+        assert resp.status == 400
+        body = await resp.json()
+    assert body["code"] == "invalid_dedupe_key"
+    assert "secret-" not in body["error"]
+    assert not sdk.store.dir.is_dir() or not list(sdk.store.dir.glob("*.json"))
 
 
 @pytest.mark.asyncio
@@ -526,6 +551,40 @@ async def test_cancel_missing_run_is_404_job_not_found(
         resp = await client.post(f"{_base()}/{'b' * 32}/cancel")
         assert resp.status == 404
         assert (await resp.json())["code"] == "job_not_found"
+
+
+@pytest.mark.asyncio
+async def test_a_run_the_retention_cap_removed_reads_as_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sdk: JobSDK
+) -> None:
+    # Every route reads the store, so a record the cap removed answers like an
+    # id that never existed, and the run the cap kept is served as before.
+    _setup_guards(tmp_path, monkeypatch)
+    sdk.register("k", lambda handle, **p: None, retention=1)
+
+    def swept(run_id: str) -> bool:
+        # Out of the live table and past its own sweep (``_unswept``), so the
+        # sweeps run in the order the runs finish.
+        live = sdk.cancelling_and_live_ids()[1]
+        return run_id not in live and run_id not in sdk._unswept  # noqa: SLF001
+
+    first = sdk.start("k")
+    await _wait_terminal(sdk, first)
+    await async_wait_until(lambda: swept(first), off_loop=True)
+    second = sdk.start("k")
+    await _wait_terminal(sdk, second)
+    await async_wait_until(lambda: swept(second), off_loop=True)
+    # Checked by name, not by reading it: on Windows an open record blocks its delete.
+    assert not (sdk.store.dir / f"{first}.json").exists()
+    async with TestClient(TestServer(_make_app())) as client:
+        recent = await client.get(f"{_base()}/recent")
+        assert [r["run_id"] for r in (await recent.json())["runs"]] == [second]
+        got = await client.get(f"{_base()}/{first}")
+        cancel = await client.post(f"{_base()}/{first}/cancel")
+        for resp in (got, cancel):
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "job_not_found"
+        assert (await client.get(f"{_base()}/{second}")).status == 200
 
 
 @pytest.mark.asyncio
@@ -868,7 +927,8 @@ async def test_sdk_refusal_becomes_a_coded_503_not_a_bare_500(
     def refuse(*_a: Any, **_kw: Any) -> str:
         raise JobError("could not persist the initial record for job kind 'k'")
 
-    monkeypatch.setattr(sdk, "start", refuse)
+    # The start route calls ``_start_run``, the body of ``start``.
+    monkeypatch.setattr(sdk, "_start_run", refuse)
     try:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post(f"{_base()}/k/start", json={})

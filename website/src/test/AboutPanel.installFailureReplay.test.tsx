@@ -133,6 +133,10 @@ describe('AboutPanel install-failure replay', () => {
     const card = await screen.findByTestId('update-card')
     fireEvent.click(within(card).getByRole('button', { name: /install update/i }))
     await settleReplay()
+    // The click dispatched, so the re-armed button below is a reset latch, not a
+    // click that never happened.
+    const bridge = (window as unknown as { updateAPI: { install: ReturnType<typeof vi.fn> } }).updateAPI
+    expect(bridge.install).toHaveBeenCalledTimes(1)
 
     act(() => { push!({ state: 'found', version: '0.1.4' }) })
     act(() => { push!({ state: 'downloaded', version: '0.1.4' }) })

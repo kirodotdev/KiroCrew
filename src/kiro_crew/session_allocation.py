@@ -182,6 +182,9 @@ class SessionRegistryState:
     #: still cold-starting. Reads like the set it replaces.
     starting_pids: PidRefcount = field(default_factory=PidRefcount)
     allocation_reservations: dict[str, set[object]] = field(default_factory=dict)
+    #: Reservation tokens in flight when their key's cwd was retracted: the
+    #: session each one registers stores no cwd. A token leaves with its reservation.
+    cwd_retracted_reservations: set[object] = field(default_factory=set)
     inbound_callback_reservations: set[object] = field(default_factory=set)
     ownership_generations: dict[str, int] = field(default_factory=dict)
     #: Per key, bucketed like ``ownership_generations``: the stamp of the write that last
@@ -227,11 +230,19 @@ class SessionRegistryState:
     #: won race) or with its reservation.
     spawning_reservations: set[object] = field(default_factory=set)
     #: Per key, the event a speculative (eager) allocation sets when it returns,
-    #: registered or not, and that allocation's start priority. A real claim of
-    #: no higher priority that finds no live session but finds this waits for it
-    #: and claims what it registered, instead of cold-starting a second process
-    #: for the same key. Removed by the call that added it.
-    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority]] = field(default_factory=dict)
+    #: registered or not, its start priority, whether it is a resume prefetch
+    #: (``speculative_resume``) and its reservation token. A real claim that
+    #: finds no live session but finds this waits for it and claims what it
+    #: registered, instead of cold-starting a second process for the key: when
+    #: of no higher priority, or when the start is a resume prefetch past its
+    #: spawn door (token in ``spawning_reservations``). Removed by its caller.
+    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority, bool, object]] = field(
+        default_factory=dict
+    )
+    #: Tokens of BACKGROUND resume prefetches a person's claim found short of
+    #: their spawn door and started itself: each stands down at that door
+    #: (``SpeculativeResumeRefused``). Removed with the announcement.
+    superseded_speculative_starts: set[object] = field(default_factory=set)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration
@@ -529,6 +540,11 @@ class SessionAllocationService:
     def has_allocation_reservation(self, key: str) -> bool:
         """Return whether a folded alias has an allocation/claim in flight."""
         return bool(self._allocation_reservations.get(self._owner._fold_key(key)))
+
+    def retract_reservation_cwds(self, key: str) -> None:
+        """Mark every allocation in flight under *key* so the session it registers stores no cwd."""
+        folded = self._owner._fold_key(key)
+        self.state.cwd_retracted_reservations.update(self._allocation_reservations.get(folded, ()))
 
     def spawn_in_flight(self, key: str) -> str | None:
         """Why a cold start under *key* is a process the ending caller must name, or None.
@@ -1218,6 +1234,11 @@ class SessionAllocationService:
                 # than a task that has let the permit go
                 # (``compaction_waits_for_turn``, ``cancel_owned_turn``).
                 session.turn_owner = None
+                # The turn's leftover-memory notice is spent with it, so the next
+                # turn gets its own (``session_cleanup_leftovers.report_busy_sessions``).
+                cleanup_state = getattr(self._owner, "_cleanup_state_boundary", None)
+                if cleanup_state is not None:
+                    cleanup_state().leftover_noticed.pop(key, None)
                 # A release marks the end of a live turn, not the start of
                 # idleness: refresh liveness so the idle sweep measures from
                 # when the session went quiet rather than when it was

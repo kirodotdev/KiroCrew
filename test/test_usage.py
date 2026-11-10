@@ -31,6 +31,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_model,
     read_turn_model,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 # ── _parse_sessions ─────────────────────────────────────────────────────
 
@@ -70,9 +71,9 @@ class TestParseSessions:
             # dropped, so the did-not-load total is a present zero rather than
             # an absent key. Omitting it would make "complete" and
             # "unknown" indistinguishable on the wire -- the adapter's
-            # ``s.refused_transcripts ?? 0`` would synthesise the promise of
-            # completeness the payload never made.
+            # ``?? 0`` defaults would synthesise a promise the payload never made.
             "refused_transcripts": 0,
+            "unreadable_session_dirs": 0,
         }
         assert sessions_dir.exists() == directory_exists
 
@@ -115,8 +116,8 @@ class TestParseSessions:
         real_names = platform_compat.PinnedDirectory.names
 
         def names(self):
-            # The cli directory alone fails. An unlistable KAS root would add a
-            # did-not-load count that the baseline lacks.
+            # The cli directory alone fails. An unlistable KAS root would add an
+            # unreadable-directory count that the baseline lacks.
             if os.path.realpath(self.path) == os.path.realpath(d):
                 raise OSError("boom")
             return real_names(self)
@@ -1133,6 +1134,9 @@ class TestCachedParseSessions:
             return {"total_sessions": calls["n"], "daily_history": []}
 
         monkeypatch.setattr(usage_mod, "_cached_parse_sessions", _fake_cached_parse)
+        # This test asserts the refreshed answer, so a stalled loop must not run out the
+        # route's short session wait and hand back the refreshing placeholder instead.
+        monkeypatch.setattr(usage_mod, "_USAGE_SESSION_WAIT_SECONDS", FALLBACK_TIMEOUT_SECS)
         first = usage_mod.asyncio.create_task(_fake_cached_parse())
         assert await first == {"total_sessions": 1, "daily_history": []}
         usage_mod._USAGE_SESSION_REFRESH_TASK = first

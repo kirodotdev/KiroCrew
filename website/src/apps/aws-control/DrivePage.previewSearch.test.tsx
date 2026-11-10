@@ -438,10 +438,17 @@ describe('DrivePage sections: preview, rename, search', () => {
     fireEvent.change(inputB, { target: { value: 'b-half' } })
 
     // B's Rename button is held while A flies (one mutation observer); it
-    // coming back is the signal that A has settled.
-    expect(screen.getByTestId('drive-rename-save')).toBeDisabled()
+    // coming back is the signal that A has settled. Held with `aria-disabled`,
+    // not native `disabled`, so a keyboard user editing B keeps focus. The
+    // button stays clickable, so the commit guard -- not the native disable --
+    // is what refuses B's press and keeps A's one move in flight.
+    expect(screen.getByTestId('drive-rename-save')).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(screen.getByTestId('drive-rename-save'))
+    expect(awsControlApi.driveMove).toHaveBeenCalledTimes(1)
     finishA({ moved: true })
-    await waitFor(() => expect(screen.getByTestId('drive-rename-save')).not.toBeDisabled())
+    await waitFor(() =>
+      expect(screen.getByTestId('drive-rename-save')).not.toHaveAttribute('aria-disabled'),
+    )
     // B's editor and its half-typed name survive A's completion.
     expect(screen.getByTestId('drive-rename-input')).toHaveValue('b-half')
   })

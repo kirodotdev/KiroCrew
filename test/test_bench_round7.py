@@ -51,7 +51,9 @@ def _instance() -> BenchInstance:
 
 
 @pytest.mark.parametrize("width", [8, 768, 1024, 1536])
-def test_the_store_adopts_the_embedders_actual_width(tmp_path: Path, width: int) -> None:
+def test_the_store_adopts_the_embedders_actual_width(
+    tmp_path: Path, width: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A non-1024 embedder must ingest cleanly.
 
     `VectorMemoryStore` defaults to 1024 and gates every write on that width, so
@@ -59,6 +61,8 @@ def test_the_store_adopts_the_embedders_actual_width(tmp_path: Path, width: int)
     FAISS add. 1024 is included so the test cannot pass by being width-agnostic in
     a way that breaks the normal case.
     """
+    # One fake vector for every text trips FAISS's near-duplicate check.
+    monkeypatch.setattr("kiro_crew.vector_memory._HAS_FAISS", False)
     loaded = ingest_instance(
         _instance(),
         db_path=tmp_path / f"w{width}.db",

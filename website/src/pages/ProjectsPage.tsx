@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useReducedMotion } from '../hooks/useReducedMotion'
 import { Hourglass, ClipboardList, ClipboardCheck, RefreshCw, CheckCircle, XCircle, Square, Sparkles, FileText, Settings, X, MessageSquare, Pencil, Clock, Pause, Play, RotateCcw, Plus, PanelLeftOpen, Zap } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from '../store'
@@ -19,6 +20,7 @@ import {
 } from './projectsLayout'
 
 import { i18nT } from '../i18n/t'
+import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
@@ -500,7 +502,10 @@ export default function ProjectsPage() {
             <div className="w-10 h-1 bg-bg-elevated rounded-full overflow-hidden shrink-0">
               <div className={`h-full rounded-full ${r.status === 'failed' ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
             </div>
-            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} disabled={busyRuns.has(r.task_id)} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none disabled:opacity-50 disabled:cursor-default" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load, r.task_id) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
+            {/* `aria-disabled` while the request runs, not `disabled`: the press
+                that started it holds focus here, and a native disabled button
+                would drop it to <body>. `runAction` ignores a second press. */}
+            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} aria-disabled={busyRuns.has(r.task_id)} aria-busy={busyRuns.has(r.task_id)} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none aria-disabled:opacity-50 aria-disabled:cursor-default" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load, r.task_id) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
           </div>
         )
       })}
@@ -611,7 +616,7 @@ export default function ProjectsPage() {
         <TextInputPanel text={specText} setText={setSpecText} rows={6} placeholder={i18nT('pages.projectsPage.paste_spec_content_or_upload_a_file')} accept=".md,.txt" onUpload={handleFileUpload} onRun={() => handleRun(specText, 'spec')} onPlan={() => generatePlan(specText, 'spec')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError} />
       ) : (
         <TextInputPanel text={yamlText} setText={setYamlText} rows={8} placeholder={i18nT('pages.projectsPage.paste_yaml_workflow_or_upload_a_yaml_file')} accept=".yaml,.yml" onUpload={handleYamlUpload} onRun={() => handleRun(yamlText, 'yaml')} onPlan={() => generatePlan(yamlText, 'yaml')} disabled={anyPlanning} isPlanning={isPlanning} onCancel={cancelPlan} planError={planError}
-          banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.yaml_workflows_bypass_the_llm_decomposer')} <code>{i18nT('pages.projectsPage.depends_on')}</code> {i18nT('pages.projectsPage.is_enforced_as_a_hard_dag_constraint')}</div>} />
+          banner={<div className="rounded-md border bg-bg-elevated px-3 py-2 text-[12px] text-text" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, transparent)' }}><Settings className="lucide-inline" /> <Trans i18nKey="pages.projectsPage.yaml_workflows_hard_dag" components={{ field: <code>{i18nT('pages.projectsPage.depends_on')}</code> }} /></div>} />
       )}
     </div>
   )
@@ -867,10 +872,14 @@ function CollapsedRail({ width, onExpand, horizontal = false }: {
 
 function PlanningBanner({ onCancel }: { onCancel: () => void }) {
   const [dots, setDots] = useState('')
+  // Ticking text is motion too: under reduced motion the line holds still,
+  // and the static copy below it still says the plan is being built.
+  const reduceMotion = useReducedMotion()
   useEffect(() => {
+    if (reduceMotion) return
     const iv = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 500)
     return () => clearInterval(iv)
-  }, [])
+  }, [reduceMotion])
   return (
     <div className="relative overflow-hidden rounded-lg border border-accent/50 bg-accent/10 px-4 py-3 mt-2">
       <div className="absolute inset-0 bg-gradient-to-r from-transparent via-accent/10 to-transparent animate-shimmer" />
@@ -879,7 +888,7 @@ function PlanningBanner({ onCancel }: { onCancel: () => void }) {
             "work in flight" signal, so nothing here needs to spin. */}
         <Hourglass size={18} className="text-accent shrink-0" />
         <div className="flex-1">
-          <div className="text-accent text-[14px] font-semibold">{i18nT('pages.projectsPage.generating_execution_plan')}{dots}</div>
+          <div className="text-accent text-[14px] font-semibold">{i18nT('pages.projectsPage.generating_execution_plan')}{reduceMotion ? '' : dots}</div>
           <div className="text-muted text-[12px] mt-0.5">{i18nT('pages.projectsPage.analyzing_task_and_building_step_by_step_plan')}</div>
         </div>
         <button className="px-3 h-7 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer font-body hover:text-danger hover:border-danger transition-all shrink-0" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>

@@ -319,16 +319,37 @@ class TestManifestReaders:
         assert session_storage._summarize_manifest(batch) is None
         assert session_storage._read_manifest(batch) is None
 
-    def test_undecodable_bytes_still_propagate(self, tmp_path: Path) -> None:
-        """read_text raised UnicodeDecodeError on corrupt bytes and the streaming
-        readers must keep that contract rather than silently absorbing it."""
+    def test_undecodable_bytes_read_as_unreadable(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Bytes that are not UTF-8 make the manifest unreadable (None), the
+        posture every caller already keeps the batch's files safe under, rather
+        than an exception that fails the caller's whole operation."""
         batch = tmp_path / self._BATCH_ID
         batch.mkdir(parents=True)
         (batch / session_storage.MANIFEST_NAME).write_bytes(b'{"schema": 1}\n\xff\xfe garbage\n')
-        with pytest.raises(UnicodeDecodeError):
-            session_storage._read_manifest(batch)
-        with pytest.raises(UnicodeDecodeError):
-            session_storage._summarize_manifest(batch)
+        with caplog.at_level("WARNING", logger="kiro_crew.session_storage"):
+            assert session_storage._read_manifest(batch) is None
+            assert session_storage._summarize_manifest(batch) is None
+            assert session_storage._manifest_rels(batch) == []
+        assert "not valid UTF-8" in caplog.text
+
+    def test_one_undecodable_manifest_does_not_hide_the_other_batches(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """list_trash omits the one batch it cannot read and still lists the rest;
+        a restore of that batch is refused as not restorable, not crashed."""
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+        session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW)
+        [good] = session_storage.list_trash()
+        bad = session_storage.trash_root() / self._BATCH_ID
+        bad.mkdir()
+        (bad / session_storage.MANIFEST_NAME).write_bytes(b'{"schema": 1}\n\xff\xfe garbage\n')
+
+        assert [b.batch_id for b in session_storage.list_trash()] == [good.batch_id]
+        with pytest.raises(SessionStorageError):
+            session_storage.restore(self._BATCH_ID)
 
     def test_an_oserror_mid_iteration_returns_none(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

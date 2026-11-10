@@ -24,7 +24,11 @@ from test_tool_call_classification_kas import _kas_builtin_flow
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
 from kiro_crew.acp.harness.kas import KasHarness
-from kiro_crew.acp.kas_permissions import CREW_ANSWERED_PATHS_KEY, CREW_SHELL_READONLY_KEY
+from kiro_crew.acp.kas_permissions import (
+    CREW_ANSWERED_PATHS_KEY,
+    CREW_ANSWERED_READ_PATHS_KEY,
+    CREW_SHELL_READONLY_KEY,
+)
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.acp_backends import ACP_BACKEND_KAS
 from kiro_crew.hooks import (
@@ -48,6 +52,7 @@ _STAMPED = (
     "spec_write_cwd",
     "spec_shell_readonly",
     "spec_granted_paths",
+    "spec_granted_read_paths",
 )
 
 
@@ -265,13 +270,110 @@ def test_the_answered_paths_never_reach_the_wire() -> None:
     assert "_crewAnsweredPaths" not in wire and "_crewShellReadonly" not in wire
 
 
+# ── read.allowedPaths ─────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def docs(tmp_path: Path) -> Path:
+    """A folder outside the session's directory, holding one file."""
+    root = Path(os.path.realpath(tmp_path)) / "docs"
+    root.mkdir()
+    (root / "a.md").write_text("a")
+    return root
+
+
+def _read(path: str, *, tool: str = "read_file") -> AcpEvent:
+    return _kas_builtin_flow(tool, title="Read", kind="read", raw_input={"path": path})
+
+
+@pytest.mark.parametrize("key", ["read", "fs_read", "fsRead"])
+def test_a_read_inside_allowed_paths_is_answered_by_the_grant(
+    work: Path, docs: Path, key: str
+) -> None:
+    """``read`` is not in ``allowedTools``: on kiro-cli ``allowedPaths`` alone lets
+    the read run unasked."""
+    spec = _spec({key: {"allowedPaths": [f"{docs}/**"]}})
+    verdict = _judge(_own_request(_read(str(docs / "a.md")), spec, work))
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
+def test_a_relative_read_is_anchored_at_the_session_directory(work: Path) -> None:
+    (work / "out" / "b.txt").write_text("b")
+    spec = _spec({"read": {"allowedPaths": ["out/**"]}})
+    verdict = _judge(_own_request(_read("out/b.txt"), spec, work))
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
+@pytest.mark.parametrize(
+    "case", ["outside", "missing", "folder", "listing", "tilde-user", "symlink-out", "denied"]
+)
+def test_a_read_the_entries_do_not_name_exactly_is_not_granted(
+    work: Path, docs: Path, case: str
+) -> None:
+    """Each keeps main's answer: no ``spec-builtin-grant``. A missing file is not
+    granted, because KAS's ``read_file`` would retry another name."""
+    settings: dict[str, Any] = {"allowedPaths": [f"{docs}/**"]}
+    event = _read(str(docs / "a.md"))
+    if case == "outside":
+        (work / "c.txt").write_text("c")
+        event = _read(str(work / "c.txt"))
+    elif case == "missing":
+        event = _read(str(docs / "gone.md"))
+    elif case == "folder":
+        event = _read(str(docs))
+    elif case == "listing":
+        event = _read(str(docs), tool="list_directory")
+    elif case == "tilde-user":
+        event = _read("~root/a.md")
+    elif case == "symlink-out":
+        outside = work.parent / "outside"
+        outside.mkdir()
+        (outside / "s.md").write_text("s")
+        make_dir_link(docs / "link", outside)
+        event = _read(str(docs / "link" / "s.md"))
+    else:
+        settings["deniedPaths"] = [f"{docs}/secret/**"]
+    verdict = _judge(_own_request(event, _spec({"read": settings}), work))
+    assert verdict.tier != "spec-builtin-grant"
+
+
+def test_a_read_grant_never_answers_a_write(work: Path) -> None:
+    spec = _spec({"read": {"allowedPaths": ["out/**"]}})
+    verdict = _judge(_own_request(_write(str(work / "out" / "a.txt")), spec, work))
+    assert verdict.action != TOOL_AUTO_APPROVE
+
+
+def test_the_read_paths_never_reach_the_wire_and_grep_is_not_recorded() -> None:
+    entry = kas_agents.to_client_custom_agent(
+        "probe",
+        _spec({"read": {"allowedPaths": ["docs/**"]}, "grep": {"allowedPaths": ["x"]}}),
+        "p",
+    )
+    assert entry[CREW_ANSWERED_READ_PATHS_KEY] == ["docs/**"]
+    params: dict[str, Any] = {}
+    attach_kas_custom_agents(params, [entry])
+    assert "_crewAnsweredReadPaths" not in str(params)
+
+
+def test_a_withheld_read_grant_is_named() -> None:
+    spec = _spec({"read": {"allowedPaths": ["docs/**"], "deniedPaths": ["docs/x/**"]}})
+    assert CREW_ANSWERED_READ_PATHS_KEY not in kas_agents.to_client_custom_agent("probe", spec, "p")
+    assert "toolsSettings.read.allowedPaths" in _notice_keys(spec)
+
+
 # ── the session-start notice ──────────────────────────────────────────────────
 
 
 def test_the_notice_no_longer_names_what_is_now_carried() -> None:
     """The reported notice named ``allowedCommands``, ``autoAllowReadonly`` and
     ``write.allowedPaths``; each now runs as on kiro-cli."""
-    spec = _spec({"shell": dict(_SHELL), "write": {"allowedPaths": ["out/**"]}})
+    spec = _spec(
+        {
+            "shell": dict(_SHELL),
+            "write": {"allowedPaths": ["out/**"]},
+            "read": {"allowedPaths": ["docs/**"]},
+        }
+    )
     assert _notice_keys(spec) == []
 
 

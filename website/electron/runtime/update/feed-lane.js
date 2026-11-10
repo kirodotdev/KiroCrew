@@ -56,6 +56,8 @@ function createFeedLane({
   dialog,
   Notification,
   getAutoDownloadPreference,
+  // The policy channel ("lts" on an LTS build), "" when none. Read fresh.
+  getRequiredChannel = () => "",
   notifyUpdateFound,
   stopGateway,
   onInstallDispatched,
@@ -90,6 +92,10 @@ function createFeedLane({
   let updateReady = false;
   let downloading = false;
   let stagedVersion = null; // version electron-updater has downloaded + staged
+  // The channel whose feed served the staged build. The freshness gate refuses a
+  // stage from a channel the install no longer follows, so it has to know where
+  // the bytes came from, not just where the latest check was sent.
+  let stagedChannel = null;
   let stagedNotes = "";
   // Was the staged build fetched by the auto-download policy rather than asked
   // for? It decides whether turning the preference OFF also disarms the
@@ -105,6 +111,7 @@ function createFeedLane({
   // the update-downloaded handler -- the event carries no provenance of its own.
   let downloadWasAutomatic = false;
   let foundVersion = null; // last version surfaced to the user, awaiting consent
+  let foundChannel = null; // the channel whose feed offered foundVersion
   let installing = false;
   // The install claiming `installing` was dispatched from the quit handler, not
   // from a click. Read only on the failure path, where the two want opposite
@@ -150,7 +157,7 @@ function createFeedLane({
     log,
     currentChannel,
     feedChannel: () => feedChannel,
-    stage: () => ({ ready: updateReady, version: stagedVersion }),
+    stage: () => ({ ready: updateReady, version: stagedVersion, channel: stagedChannel }),
     configureFeed,
     safeCheck,
     emit,
@@ -437,35 +444,21 @@ function createFeedLane({
       if (gate.checking && gate.checkInFlight !== ownCheck) {
         // A NEWER check now owns the feed: the new-lane re-check an earlier
         // click queued behind the check this one joined, or one the user
-        // started. It has re-pointed `feedChannel`, so the channel guard below
-        // would pass while `foundVersion` still holds the old check's answer,
-        // and electron-updater would download that check's build. Its handlers
+        // started. `foundVersion` still holds the old check's answer, and
+        // electron-updater would download that check's build. Its handlers
         // report what it finds; `checking` replaces the interim `downloading`,
         // since the gate kept that check's own `checking` off the renderer.
         log.info("[update] a newer check owns the feed — letting it answer instead of downloading");
         if (!gate.ownsCheck()) emit("checking");
         return;
       }
-      if (feedChannel !== currentChannel()) {
-        // The preference moved during the wait: what the card offers came from a
-        // lane this install no longer follows. Ask the new lane instead of
-        // spending the transfer on the old one's build.
-        log.info(`[update] channel changed before the download (${feedChannel} -> ${currentChannel()}) — re-checking instead`);
-        // Behind the check that still holds `checking` (an abandoned one, past the
-        // bound), or safeCheck would stand down and the new lane go unasked.
-        // `checkInFlight` resolves only from the check's owner, after
-        // electron-updater has released its own in-flight promise, so the
-        // re-check issues a new request instead of being handed the old one.
-        // `checking` now, while it waits: the old check can hold its socket for a
-        // minute, and the interim `downloading` must not stand for that long.
-        if (gate.checkInFlight) {
-          emit("checking");
-          void gate.checkInFlight.then(() => safeCheck());
-        } else {
-          void safeCheck();
-        }
-        return;
-      }
+      // The offer came from a channel this install no longer follows, or the
+      // check that judged it was sent to one (a switch before the click or during
+      // the wait, whose new-lane check failed or has not answered): ask the new
+      // lane instead of spending the transfer on the old one's build. The guard
+      // emits `checking` while it waits, so the interim `downloading` does not
+      // stand.
+      if (gate.refuseFromChangedChannel(foundVersion ? foundChannel : null)) return;
       if (updateReady && stagedVersion) {
         emit("downloaded", { version: stagedVersion, notes: stagedNotes });
         return;
@@ -722,6 +715,14 @@ function createFeedLane({
       emit(foundVersion ? "found" : "not-available", foundVersion ? { version: foundVersion } : {});
       return;
     }
+    // The before-quit listener is what holds a quit pressed while this dispatch
+    // runs (deferredInstallOnQuit's `installing || verifyingStage` branch).
+    // `update-downloaded` arms it, but the dispatch removes it before the
+    // installer runs and an installer failure does not put it back, so a Retry
+    // arrives here without it. Removed first so `once` registers it once.
+    app.removeListener("before-quit", deferredInstallOnQuit);
+    app.once("before-quit", deferredInstallOnQuit);
+    armSessionEndNotice();
     // From the freshness gate on, this call OWNS the dispatch, so every exit that
     // does not hand off to the installer replays a quit held while it ran (see
     // honorDeferredQuit). The finally states that once; the returns above it
@@ -736,12 +737,17 @@ function createFeedLane({
       // next check immediately re-downloads the newer one. Bounded, because this
       // runs inside the click: a feed that never answers must fall through to the
       // install the user asked for, not leave the button doing nothing.
-      if (await gate.verifyStageIsLatest() === "superseded") {
+      const freshness = await gate.verifyStageIsLatest();
+      if (freshness === "superseded" || freshness === "channel-changed") {
         // Deliberately no state emit: the check's own handlers have ALREADY told
         // the renderer what replaced this stage — "found"/"downloading" for a
         // newer release, "not-available" for a retraction — and an error card
-        // stacked over a running download would contradict them.
-        log.info("[update] install refused: the stage is no longer the newest build — pursuing the newest instead");
+        // stacked over a running download would contradict them. A stage from a
+        // channel the user left gets `checking` from the gate, which asks the
+        // selected channel instead.
+        log.info(freshness === "superseded"
+          ? "[update] install refused: the stage is no longer the newest build — pursuing the newest instead"
+          : "[update] install refused: the stage came from a channel this install no longer follows");
         return;
       }
       // Re-check governance after the async freshness verify: policy may have
@@ -1005,6 +1011,12 @@ function createFeedLane({
         app.quit();
         return;
       }
+      if (freshness === "channel-changed") {
+        log.info("[update] staged build came from a channel this install no longer follows — quitting without installing");
+        notifyInstallLeftForChannel();
+        app.quit();
+        return;
+      }
       // Re-check governance after the async freshness verify (same race as the
       // manual path): policy may have arrived during the gate's network round trip.
       if (isPolicyGoverned()) {
@@ -1118,6 +1130,15 @@ function createFeedLane({
    */
   function notifyInstallCanceled() {
     showNotice(Notification, "Update canceled", "The staged update was withdrawn or superseded, so it was not installed. You\u2019ll be offered the latest version next launch.");
+  }
+
+  /**
+   * "The quit did not install a build from the channel the user left." Separate
+   * copy again: nothing was withdrawn or superseded, the bytes came from the
+   * channel the user moved away from, and the next launch asks the one they chose.
+   */
+  function notifyInstallLeftForChannel() {
+    showNotice(Notification, "Update not installed", "You changed the update channel, so the update downloaded from the previous channel was not installed. You\u2019ll be offered your channel\u2019s version next launch.");
   }
 
   /**
@@ -1484,6 +1505,7 @@ function createFeedLane({
       return;
     }
     foundVersion = (info && info.version) || null;
+    foundChannel = feedChannel;
     // What the followed lane publishes, recorded BEFORE the direction gate
     // below can null `foundVersion` out. The suppressed case is precisely the
     // one the display layer needs it for: an insider build whose preference was
@@ -1515,8 +1537,9 @@ function createFeedLane({
         // The lane this build follows with NO preference. Folds a promoted
         // stable build's insider-stamped bytes back to stable, so only an
         // explicit preference that MOVES the install off its default lane reads
-        // as a deliberate channel switch (see shouldAutoOffer).
-        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), ""),
+        // as a deliberate channel switch (see shouldAutoOffer). A required
+        // channel is the default lane too, so an LTS build on lts is no switch.
+        defaultChannel: resolveChannel(channelForVersion(app.getVersion()), "", getRequiredChannel()),
       })
     ) {
       log.info(
@@ -1544,6 +1567,9 @@ function createFeedLane({
     if (updateReady && stagedVersion) {
       if (foundVersion === stagedVersion) {
         log.info(`[update] ${stagedVersion} already downloaded — awaiting install`);
+        // This lane serves the very build that is staged (a promoted release is
+        // the same bytes on both channels), so the stage now belongs to it.
+        stagedChannel = feedChannel;
         // Not for an install gate's own re-check: the renderer is already on
         // this stage, the manual path emits `installing` next, and the quit
         // path has emitted it already. A `downloaded` here would replace the
@@ -1589,6 +1615,9 @@ function createFeedLane({
         version: foundVersion,
         notes: notesFrom(info),
         pubDate: (info && info.releaseDate) || "",
+        // The decision above, so a renderer waiting for a click's download
+        // reads this one instead of a cached preference that may have changed.
+        autoDownload,
       });
     }
     // AFTER the "found" emit: the renderer must see the version it is about to
@@ -1636,6 +1665,11 @@ function createFeedLane({
     updateReady = true;
     downloading = false;
     stagedVersion = (info && info.version) || null;
+    // electron-updater downloads what the last successful check offered, so the
+    // bytes come from the channel that offered `foundVersion`. No check runs
+    // while a download is in flight (safeCheck stands down on `downloading`), so
+    // that record still describes this download.
+    stagedChannel = foundChannel || feedChannel;
     stagedNotes = notesFrom(info);
     stagedWasAutomatic = downloadWasAutomatic;
     log.info(`[update] downloaded ${stagedVersion} — ${uiDriven ? "notifying UI" : "prompting"}`);

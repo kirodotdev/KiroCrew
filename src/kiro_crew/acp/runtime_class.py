@@ -117,6 +117,9 @@ class AcpRuntime:
     # The spawn entry point: ``kiro_crew.acp.runtime_spawn_entry``.
     spawn = _rt_entry.spawn
     _spawn_admitted_rederiving_once = _rt_entry._spawn_admitted_rederiving_once
+    _spawn_admitted_repairing_kas_extract = _rt_entry._spawn_admitted_repairing_kas_extract
+    _broken_kas_server_path = _rt_entry._broken_kas_server_path
+    kas_extract_broken_message = _rt_entry.kas_extract_broken_message
     _revive_after_failed_start = _rt_entry._revive_after_failed_start
     # What a session start is built from: ``kiro_crew.acp.runtime_session_setup``.
     _session_work_dir = _rt_setup._session_work_dir
@@ -287,15 +290,16 @@ class AcpRuntime:
         launch_agent: str = "",
         native_skill_projection: bool = True,
         harness_pin: str = "",
+        governance_scope: tuple[str, str] | None = None,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
         else:
             # config.paths is a stdlib-only leaf: importing it here can't
             # re-enter the config.loader -> providers.acp -> acp.client cycle.
-            from kiro_crew.config.paths import config_dir
+            from kiro_crew.config.paths import KEYLESS_WORK_DIR_NAME, config_dir
 
-            self._work_dir = config_dir() / "workspace"
+            self._work_dir = config_dir() / KEYLESS_WORK_DIR_NAME
         self._agent = agent
         # The name kiro-cli is asked for in place of ``agent`` -- on ``--agent`` and
         # in ``session/set_mode`` -- when they differ: an app's launch copy
@@ -315,6 +319,11 @@ class AcpRuntime:
         # sessions created on this runtime; a warm-pool rekey overwrites it so
         # later sessions inherit the claiming crew, not the pool's spawn state.
         self._crew_agent = crew_agent
+        # The (session key, governance app) of the provider that built this
+        # runtime: the app-bound profile a session started under that key runs
+        # under. None for a runtime no provider built (the background runtime,
+        # a review pool), whose sessions' app is then not known.
+        self._governance_scope = governance_scope
         self._acp_backend = acp_backend
         # The Bot pin of the session this process was started for, as stored
         # (``SpawnContext.harness_pin``); ``""`` when it pins no harness.
@@ -326,6 +335,12 @@ class AcpRuntime:
         # setting it inherits (see create_session).
         self._tool_search = tool_search
         self._tool_search_wire: dict[str, Any] = {}
+        # The ``telemetryEnabled`` this KAS process's ``initialize`` carried
+        # (``kas_cli_settings``); None before a KAS handshake.
+        self._kas_telemetry_sent: bool | None = None
+        # The agent.env snapshot this spawn's handshake judged telemetry on, handed
+        # to launch so the child gets the same values; None lets launch read it.
+        self._spawn_agent_env: dict[str, str] | None = None
         # Resolved on FIRST USE, never here: ``ACP_BACKENDS_KNOWN`` admits
         # backends the shared-process runtime has no harness for, and provider
         # safety constructs a runtime for every one of them to prove the reader
@@ -632,6 +647,14 @@ class AcpRuntime:
         # fails before ``initialize`` completes, so the pre-``_first_session_ready``
         # window is where it is caught; see the arming guard in ``_drain_stderr``.
         self._saw_delegate_launch_failure = False
+        # The fix-it message for a KAS start that died on a broken kiro-cli extract
+        # and could not be repaired; empty otherwise. Set and cleared by
+        # ``_spawn_admitted_repairing_kas_extract`` alone, once per spawn.
+        self._kas_extract_broken_message = ""
+        # The server path from kiro-cli's ``failed to canonicalize KAS server path``
+        # line, latched by ``_drain_stderr`` before the first session is ready
+        # (whatever ``recording_allowed`` says) and cleared by a revive.
+        self._kas_extract_server_path = ""
         # Whether a session handle has ever been produced on this runtime. The
         # startup window the two latches above arm in, and the reason it is a separate
         # flag from ``_initialized``: the handshake is the middle of startup, not

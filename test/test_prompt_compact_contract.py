@@ -34,7 +34,7 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}` slots are still counted as their
 # raw tokens.
 BABYSIT_SKILL_DIR = CONFIG.parent / "builtin_skills" / "kirocrew-dev" / "babysit"
-PROMPT_BYTE_CEILINGS = {"prompt.md": 41_385}
+PROMPT_BYTE_CEILINGS = {"prompt.md": 40_676}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
 
@@ -325,7 +325,7 @@ def test_the_babysit_skill_keeps_the_monitor_contract() -> None:
         r"`max_agent_turns` where 0 = no wake cap",
         r"token cap applies only when usage is reported.*`token_usage_known`",
         r"runtime always caps, turns only if set positive",
-        r"never use `0` for unlimited work",
+        r"never pass `0` for unlimited work",
         r"pending application request, not proof that the monitor armed.*END THE TURN",
         r"Terminal records are read-only; restarting requires an explicit new watch",
         r"never add wait/poll beside it",

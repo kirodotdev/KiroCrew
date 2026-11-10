@@ -780,18 +780,16 @@ def test_an_ungoverned_host_may_start_a_cloud_session(monkeypatch):
 
 
 @pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
-def test_an_enterprise_build_refuses_a_cloud_session_its_policy_does_not_name(
-    monkeypatch, ceiling_kind
-):
+def test_an_lts_build_refuses_a_cloud_session_its_policy_does_not_name(monkeypatch, ceiling_kind):
     from kiro_crew.coder import session_launch as sl
     from kiro_crew.platform.governance_parts.baseline import BASELINE_CONTROLS
 
-    # An enterprise build answers an unnamed scope from its baseline, which keeps
+    # An LTS build answers an unnamed scope from its baseline, which keeps
     # cloud execution off until the remote policy enables it.
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
     _governed(monkeypatch, None if ceiling_kind == "none" else _ceiling())
     refusal = sl.kiro_cloud_governance_refusal("dashboard:d1")
-    assert refusal is not None and "enterprise baseline" in refusal
+    assert refusal is not None and "LTS baseline" in refusal
     assert BASELINE_CONTROLS[sl.KIRO_CLOUD_CAPABILITY] == {"enabled": False}
     allow = {"capabilities": {"kiro_cloud_sessions": {"enabled": True}}}
     _governed(monkeypatch, _ceiling(**allow))

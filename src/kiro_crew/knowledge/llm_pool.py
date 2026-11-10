@@ -189,10 +189,10 @@ def _get_sandbox_mode(config: Optional[dict] = None) -> str:
 
 
 class KnowledgeHarnessUnavailable(RuntimeError):
-    """An enterprise knowledge pool would fall back to the Kiro CLI harness.
+    """An LTS knowledge pool would fall back to the Kiro CLI harness.
 
-    Enterprise only (RFC D6): KAS is the floor and the Kiro CLI harness is being
-    retired, so an enterprise build never falls back to it. The pool cannot run on
+    LTS only (RFC D6): KAS is the floor and the Kiro CLI harness is being
+    retired, so an LTS build never falls back to it. The pool cannot run on
     KAS (it needs a client KAS has no arm in), so it runs on Kiro CLI only when the
     user picked Kiro CLI (``agent.acp_backend`` ``"kiro"``) and the remote
     ``agent_backend`` policy allows it. Otherwise it refuses before any process.
@@ -203,7 +203,7 @@ class KnowledgeHarnessUnavailable(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(
             f"{self.code}: knowledge extraction cannot run here ({reason}). Kiro Crew "
-            "does not fall back to the Kiro CLI harness in an enterprise build. Run "
+            "does not fall back to the Kiro CLI harness in an LTS build. Run "
             "`kiro-cli update` to get a kiro-cli that supports `--agent-engine v3`, "
             "and to run knowledge extraction on the Kiro CLI harness, pick it "
             '(agent.acp_backend "kiro") and ask your administrator to allow `kiro` '
@@ -216,13 +216,13 @@ def _kiro_fallback(reason: str) -> str:
     """``ACP_BACKEND_KIRO`` as the pool's FALLBACK harness: ``oss`` only.
 
     Every automatic move to Kiro CLI in this module goes through here. In an ``oss``
-    build it returns Kiro CLI, as before. In an enterprise build it always raises
+    build it returns Kiro CLI, as before. In an LTS build it always raises
     :class:`KnowledgeHarnessUnavailable`: there is no automatic fallback to Kiro CLI
     there (RFC D6), and an explicit Kiro CLI pick never reaches this function.
     """
     from kiro_crew import edition
 
-    if edition.is_enterprise():
+    if edition.is_lts():
         raise KnowledgeHarnessUnavailable(reason)
     return ACP_BACKEND_KIRO
 
@@ -231,12 +231,12 @@ def _kiro_pick_allowed() -> str:
     """``ACP_BACKEND_KIRO`` for a worker that STARTS on Kiro CLI again (a restart).
 
     Kiro CLI reaches a worker only as an explicit pick (``_get_acp_backend``), so a
-    restart repeats that pick. In an enterprise build the pick must still be one the
+    restart repeats that pick. In an LTS build the pick must still be one the
     governed selection allows (``selectable_backends()``); otherwise it refuses.
     """
     from kiro_crew import edition
 
-    if edition.is_enterprise() and ACP_BACKEND_KIRO not in selectable_backends():
+    if edition.is_lts() and ACP_BACKEND_KIRO not in selectable_backends():
         raise KnowledgeHarnessUnavailable("the agent_backend policy does not allow `kiro`")
     return ACP_BACKEND_KIRO
 
@@ -547,7 +547,7 @@ class AcpWorker(Worker):
         if acp_backend == ACP_BACKEND_KIRO:
             # A worker restarts with the backend it chose before (a recycle or a
             # stalled client), or a caller hands one in, so every start that would
-            # run Kiro CLI asks the same enterprise check as the first pick does.
+            # run Kiro CLI asks the same LTS check as the first pick does.
             # In-memory; unchanged in an oss build.
             acp_backend = _kiro_pick_allowed()
         logger.info(

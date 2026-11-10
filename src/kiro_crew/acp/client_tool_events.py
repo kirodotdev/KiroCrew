@@ -213,13 +213,18 @@ async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "Ac
     status, so every tool call of an ``auto`` session has an SEL record. A call that
     did ask is skipped, because the consumer that answered it owns its record.
 
-    Scope: only a session whose seeded mode is ``auto``, and never an
+    Scope: only a session whose seeded mode is ``auto`` and that runs in it (not
+    one pinned to ``default`` on the exclusion path), and never an
     ``audit_source`` client (``_maybe_audit_tool_call`` already records each of its
     calls). ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a
     call gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an
     SEL failure or hang is logged and never breaks dispatch.
     """
     if getattr(self, "_permission_mode", None) != CC_PERMISSION_MODE_AUTO:
+        return
+    # A session that left a foreign settings file out runs pinned to ``default``
+    # whatever it requested, so no classifier approved its unasked calls.
+    if self._claude_session_excludes_local():
         return
     if getattr(self, "_audit_source", None):
         return

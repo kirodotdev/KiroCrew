@@ -336,7 +336,7 @@ DEVELOPER_FLAG = "KIROCREW_DEV_MODE"
 def session_environments_enabled() -> bool:
     """Whether remote placement is reachable at all; off unless ``KIROCREW_DEV_MODE``.
 
-    An enterprise build ignores the flag (RFC D3, ``kiro_crew.edition_locks``).
+    An LTS build ignores the flag (RFC D3, ``kiro_crew.edition_locks``).
     """
     from kiro_crew.constants import env_flag_enabled
     from kiro_crew.edition_locks import local_enable_locked

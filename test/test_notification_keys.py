@@ -152,12 +152,17 @@ class TestKeyValidation:
         with pytest.raises(NotificationValidationError, match="key"):
             _agent_payload("t", key=key).validate()  # type: ignore[arg-type]
 
-    def test_meta_cannot_set_a_key_or_mark_a_note_quiet(self, monkeypatch, tmp_path):
+    def test_meta_cannot_set_a_key_or_mark_a_note_quiet_or_replaced(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
-        state.notify("cron", "t", "b", meta={"key": "forged", "quiet": True, "job_id": "j1"})
+        state.notify(
+            "cron",
+            "t",
+            "b",
+            meta={"key": "forged", "quiet": True, "replaced": True, "job_id": "j1"},
+        )
         note = state._notification_log[-1]
         assert note["job_id"] == "j1"
-        assert "key" not in note and "quiet" not in note
+        assert "key" not in note and "quiet" not in note and "replaced" not in note
 
 
 class TestReplacement:
@@ -306,6 +311,30 @@ class TestReplacement:
         assert "quiet" not in first_note
         second_note = await _push(state, _agent_payload("two", key="k", priority=second))
         assert second_note.get("quiet", False) is quiet
+
+    @pytest.mark.asyncio
+    async def test_only_a_note_that_replaced_one_is_marked_replaced_everywhere(
+        self, monkeypatch, tmp_path
+    ):
+        state = _make_state(monkeypatch, tmp_path)
+        frames: list[dict] = []
+        monkeypatch.setattr(state, "_broadcast", frames.append)
+        await _push(state, _agent_payload("one", key="k"))
+        await _push(state, _agent_payload("plain"))
+        await _push(state, _agent_payload("two", key="k"))
+        assert [(f["title"], f.get("replaced")) for f in frames] == [
+            ("one", None),
+            ("plain", None),
+            ("two", True),
+        ]
+        assert [(n["title"], n.get("replaced")) for n in state._notification_log] == [
+            ("plain", None),
+            ("two", True),
+        ]
+        assert [(n["title"], n.get("replaced")) for n in _load_notifications()] == [
+            ("plain", None),
+            ("two", True),
+        ]
 
     @pytest.mark.asyncio
     async def test_the_replacement_is_unread_even_when_the_replaced_note_was_read(

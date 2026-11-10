@@ -87,9 +87,8 @@ _CLOSERS = "\"'\u201d\u2019\u300d\u300f\u300b\u00bb)\uff09"
 #: a name; four or more words closed by a terminator is a sentence.
 SENTENCE_MIN_WORDS = 4
 
-# Openers that mark the reply as prose about the model rather than a name. The
-# observed failure was a pasted URL producing "I cannot access external URLs
-# like Quip documents. Based solely on the message c…" as the session name.
+# Openers that mark the reply as prose about the model rather than a name, such
+# as "I cannot access external URLs..." in answer to a pasted link.
 PROSE_OPENERS = (
     "i cannot",
     "i can not",
@@ -129,8 +128,8 @@ PROSE_OPENERS = (
 )
 
 #: Korean refusal/prose shape. Hangul spaces its words, so the word ceiling
-#: bounds a long Korean sentence -- but a refusal is SHORT (five words in the
-#: observed case), and ``PROSE_OPENERS`` is English-only, so a short Korean
+#: bounds a long Korean sentence -- but a refusal can be SHORT (about five
+#: words), and ``PROSE_OPENERS`` is English-only, so a short Korean
 #: refusal clears every other check. Korean is SOV: the verb that marks a
 #: sentence as a sentence comes LAST, so prefix openers cannot catch it --
 #: match the sentence-final conjugation instead. The polite declarative

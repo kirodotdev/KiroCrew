@@ -186,8 +186,11 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
     { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
     { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   ],
-  // Its spec renders no primitive, but it carries the literal labels of the two
-  // credential fields BotChannelPanel draws, which settingsManual indexes.
+  // These channels' spec files render no primitive, but they carry the literal labels of
+  // the credential fields BotChannelPanel draws, which settingsManual indexes.
+  'DiscordPanel.tsx': { tab: 'channels', params: { channel: 'discord' }, labelSuffix: 'Discord' },
+  'TelegramPanel.tsx': { tab: 'channels', params: { channel: 'telegram' }, labelSuffix: 'Telegram' },
+  'WeComPanel.tsx': { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
   'FeishuPanel.tsx': { tab: 'channels', params: { channel: 'feishu' }, labelSuffix: 'Feishu' },
   'DeveloperPanel.tsx': 'developer',
   // The Feature Previews cards DeveloperPanel mounts on its Feature Previews
@@ -231,9 +234,11 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
   // tab so a primitive added to either lands on the right deep link.
   'RemoteCrewPanel.tsx': 'instances',
-  // RemoteCrewPanel.tsx's component owners (the setup tab's cards, one crew row).
+  // RemoteCrewPanel.tsx's component owners (the setup tab's cards, one crew row,
+  // the not-active-yet banner).
   'RemoteCrewPanelLaunch.tsx': 'instances',
   'RemoteCrewPanelCrewRow.tsx': 'instances',
+  'RemoteCrewPanelRestartBanner.tsx': 'instances',
   // Mounted from outside pages/settings, so each is also a root in panelRoots:
   // ImportPanel mounts PortabilityTab, FeaturePreviewsSection the gateway-wide
   // automatic-cards switch.

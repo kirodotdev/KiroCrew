@@ -53,8 +53,9 @@ def _normalize_row(row: Any) -> dict[str, str | bool] | None:
     """Normalize one manager registry row to the fields discovery consumes.
 
     The seam contract says rows conventionally carry ``id``, ``installed``,
-    ``title``, ``description`` (plus edition extras we ignore). Defensive:
-    rows without a usable ``id`` are skipped, non-string fields coerced.
+    ``title``, ``description`` and, optionally, ``featured`` (plus edition
+    extras we ignore). Defensive: rows without a usable ``id`` are skipped,
+    non-string fields coerced, and only a literal ``True`` marks a row featured.
     """
     if not isinstance(row, dict):
         return None
@@ -70,6 +71,8 @@ def _normalize_row(row: Any) -> dict[str, str | bool] | None:
         # The seam's ``installed`` is truthy-string or bool depending on the
         # edition ("yes" / True) — collapse to bool here.
         "installed": bool(row.get("installed")),
+        # The Add Server dialog's starting list, which the edition curates.
+        "featured": row.get("featured") is True,
     }
 
 
@@ -192,23 +195,39 @@ class CapabilityProvider:
         for entry in await self._list_entries(needle):
             if not _matches(entry, needle):
                 continue
-            results.append(
-                McpSearchResult(
-                    id=str(entry["id"]),
-                    name=str(entry["title"]) or str(entry["id"]),
-                    title=str(entry["title"]),
-                    description=str(entry["description"]),
-                    provider=self.name,
-                    version="",
-                    repo_url="",
-                    installed=bool(entry["installed"]),
-                    methods=["capability"],
-                    deprecated=False,
-                )
-            )
+            results.append(self._result(entry))
             if len(results) >= limit:
                 break
         return results
+
+    async def featured(self, limit: int = 20) -> list[McpSearchResult]:
+        """The rows the edition marks ``featured``, for the Add Server dialog's starting list.
+
+        Read from the unfiltered listing, which keeps the first
+        :data:`_LIST_LIMIT_GUARD` rows, so a featured row past them is not shown.
+        """
+        results: list[McpSearchResult] = []
+        for entry in await self._list_entries():
+            if not entry["featured"]:
+                continue
+            results.append(self._result(entry))
+            if len(results) >= limit:
+                break
+        return results
+
+    def _result(self, entry: dict[str, str | bool]) -> McpSearchResult:
+        return McpSearchResult(
+            id=str(entry["id"]),
+            name=str(entry["title"]) or str(entry["id"]),
+            title=str(entry["title"]),
+            description=str(entry["description"]),
+            provider=self.name,
+            version="",
+            repo_url="",
+            installed=bool(entry["installed"]),
+            methods=["capability"],
+            deprecated=False,
+        )
 
     async def fetch_detail(self, server_id: str) -> McpServerDetail | None:
         """Find one registry entry by id. install_plan is always None — the

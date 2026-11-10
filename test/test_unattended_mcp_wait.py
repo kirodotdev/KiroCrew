@@ -11,6 +11,7 @@ reported, and a run that still lacks one says which, with a distinct webhook out
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,10 +19,13 @@ import pytest
 from acp_runtime_helpers import _bounded, _make_runtime, _register
 
 from kiro_crew import webhooks
+from kiro_crew.acp import client as client_mod
+from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
     EVENT_COMPLETE,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
@@ -177,6 +181,79 @@ def test_the_client_records_the_spec_servers_only_on_a_reporting_host(tmp_path):
     claude._mcp_report.begin_session([])
     claude._guard_unresolved_mcp_refs([])
     assert claude._mcp_report.declared == ()
+
+
+# ── Servers the spec mounts from mcp.json ───────────────────────────────────
+
+#: A spec that defines no server of its own and opts in to the user's mcp.json.
+_OPTED_IN = {"includeMcpJson": True, "mcpServers": {}}
+
+
+def _global_mcp_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, servers: dict) -> None:
+    """A kiro home of the test's own whose ``settings/mcp.json`` holds *servers*."""
+    home = tmp_path / "kiro-home"
+    (home / "settings").mkdir(parents=True)
+    (home / "settings" / "mcp.json").write_text(
+        json.dumps({"mcpServers": servers}), encoding="utf-8"
+    )
+    monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", home / "settings" / "mcp.json")
+
+
+def test_the_report_also_waits_for_the_servers_named_from_mcp_json():
+    report = McpSessionReport()
+    report.begin_session([])
+    report.record_declared({"mcpServers": {"own": {}}}, mcp_json=("slow", "own"))
+
+    assert report.declared == ("own", "slow")
+    report.record_event(EVENT_MCP_SERVER_INITIALIZED, "own")
+    assert report.declared_unreported() == ("slow",)
+
+
+def test_the_client_waits_for_a_server_only_the_global_mcp_json_defines(tmp_path, monkeypatch):
+    _global_mcp_json(tmp_path, monkeypatch, {"slow": {"command": "npx"}})
+    monkeypatch.setattr(client_mod, "agent_spec_snapshot", lambda _a, **_k: dict(_OPTED_IN))
+    client = AcpClient(work_dir=tmp_path / "work", agent="kirocrew")
+
+    client._prepare_spawn_workspace()
+    client._mcp_report.begin_session([])
+    client._guard_unresolved_mcp_refs([])
+
+    assert client._mcp_report.declared_unreported() == ("slow",)
+    client._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, "slow")
+    assert client._mcp_report.declared_unreported() == ()
+
+
+def test_the_runtime_waits_for_a_server_only_the_global_mcp_json_defines(tmp_path, monkeypatch):
+    _global_mcp_json(tmp_path, monkeypatch, {"slow": {"command": "npx"}})
+    monkeypatch.setattr(runtime_mod, "agent_spec_snapshot", lambda _a, **_k: dict(_OPTED_IN))
+    monkeypatch.setattr(runtime_mod, "pooled_session_servers", lambda *_a, **_k: [])
+    servers, spec, mcp_json = runtime_mod._pooled_session_servers_and_ref_spec(
+        None, "kirocrew", ACP_BACKEND_KIRO, tmp_path / "work"
+    )
+    rt, _, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    handle.mcp_session_report().begin_session(servers)
+
+    rt._guard_unresolved_mcp_refs(handle, spec, "kirocrew", servers, mcp_json)
+
+    assert handle.mcp_session_report().declared_unreported() == ("slow",)
+
+
+def test_without_the_opt_in_the_global_mcp_json_is_not_waited_for(tmp_path, monkeypatch):
+    _global_mcp_json(tmp_path, monkeypatch, {"slow": {"command": "npx"}})
+    monkeypatch.setattr(
+        client_mod,
+        "agent_spec_snapshot",
+        lambda _a, **_k: {**_OPTED_IN, "includeMcpJson": False},
+    )
+    client = AcpClient(work_dir=tmp_path / "work", agent="kirocrew")
+
+    client._prepare_spawn_workspace()
+    client._mcp_report.begin_session([])
+    client._guard_unresolved_mcp_refs([])
+
+    assert client._mcp_report.declared == ()
 
 
 # ── The shared-runtime session handle ───────────────────────────────────────

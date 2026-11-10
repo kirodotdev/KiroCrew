@@ -87,7 +87,7 @@ import os
 import time
 from typing import Any, Callable
 
-from kiro_crew import work_preview
+from kiro_crew import ledger_wake, work_preview
 from kiro_crew.work_vocab import WORK_FOLD_NAME, WORK_REMOTE_DISPATCH_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
@@ -184,7 +184,8 @@ class _Registry:
 _registry = _Registry()
 
 
-#: One rendered item as the registry reads it: ``(item_id, report stamp, status)``.
+#: One rendered item as the registry reads it: ``(item_id, report stamp, status)``,
+#: the status ``""`` when the newest report repeats the one before (:func:`_repeats_status`).
 _Item = tuple[str, str, str]
 
 
@@ -208,14 +209,30 @@ def _board_items(value: Any) -> "list[_Item]":
             continue
         item_id = item.get("item_id")
         status = item.get("status")
-        out.append(
-            (
-                item_id if isinstance(item_id, str) else "",
-                _report_stamp(item),
-                status if isinstance(status, str) else "",
-            )
-        )
+        stamp = _report_stamp(item)
+        if _repeats_status(item) or not isinstance(status, str):
+            status = ""
+        out.append((item_id if isinstance(item_id, str) else "", stamp, status))
     return out
+
+
+def _repeats_status(item: "dict[str, Any]") -> bool:
+    """Whether *item*'s newest report says the same status as the event before it.
+
+    Such a report pushes nothing (:func:`~kiro_crew.ledger_wake.repeats_status`); its
+    status is read as ``""``, which no wake status matches.
+    """
+    events = item.get("events")
+    if not isinstance(events, list):
+        return False
+    rows = [event for event in events if isinstance(event, dict)]
+    for index in range(len(rows) - 1, 0, -1):
+        if rows[index].get("kind") == "report":
+            before = rows[index - 1]
+            return ledger_wake.repeats_status(
+                before.get("kind"), before.get("status"), rows[index].get("status")
+            )
+    return False
 
 
 #: The item fields a worker's ``report`` writes, besides its stamp. The fold's own list
@@ -321,7 +338,9 @@ async def _observe_board(
     read on the loop's next scheduled tick, and pulling that tick forward
     would buy a cycle the gate then answers quiet. Those quiet cycles are not free: each
     runs the probe, counts against ``max_cycles``, and advances the quiet streak whose
-    floor delivers a turn anyway.
+    floor delivers a turn anyway. A report that repeats the status of the event
+    right before it pushes nothing either (:func:`_repeats_status`): the probe
+    raises no wake for it, so the tick would answer quiet.
 
     THREE SHAPES OF NEWS. *items* with *order* ``None`` is the whole board. *items*
     with an *order* is a ``work`` delta: only the changed items, and the ids the board
@@ -630,9 +649,9 @@ _ITEM_WINDOW_SECS = 3600.0
 #: regardless. The window moves WHEN a report is read, never WHETHER.
 DEFAULT_WAKE_BATCH_SECS = 10.0
 
-#: Environment override for :data:`DEFAULT_WAKE_BATCH_SECS`. ``0`` restores the
-#: fire-on-first-report behaviour that shipped before the window existed, which is what
-#: an operator who wants the old latency back should reach for.
+#: Environment override for :data:`DEFAULT_WAKE_BATCH_SECS`. ``0`` turns the window
+#: off: a waking report's push carries no delay instead of one window, which is what
+#: an operator who wants the lowest latency over the fewest turns should reach for.
 WAKE_BATCH_ENV = "KIROCREW_WORK_LEDGER_WAKE_BATCH_SECS"
 
 
@@ -737,18 +756,14 @@ def _admit(svc: Any, loop_id: str, item_id: str, now: float) -> bool:
             )
         return False
     recent.append(now)
-    # Write the live window back, but POP the item id once that window is empty so a
-    # finished item leaves both tables. ``recent`` is non-empty here (we just
-    # appended), so this admit always retains -- the empty-and-pop arm exists for the
-    # shared ``_evict_stale`` sweep below, which prunes items that stopped writing and
-    # would otherwise retain an aged-out key for the life of the loop (``max_cycles =
-    # 0`` outlives the gateway). The persisted half of this population is bounded at
-    # ``ledger_wake._MAX_TRACKED_ITEMS``; this bounds the in-memory half the same way.
-    if recent:
-        per_loop[item_id] = recent
-    else:  # pragma: no cover - defensive; the append above keeps it non-empty here
-        per_loop.pop(item_id, None)
+    per_loop[item_id] = recent
     capped.discard(pair)
+    # A finished item leaves both tables through this sweep, which every counted admit
+    # runs over the loop's items: it prunes each item with no pull-forward inside the
+    # last ``_ITEM_WINDOW_SECS``, which would otherwise stay for the life of the loop
+    # (``max_cycles = 0`` outlives the gateway). The persisted half of this population is
+    # capped at ``ledger_wake._MAX_TRACKED_ITEMS`` items; this half is bounded by that
+    # window instead, at most ``ITEM_PULLS_PER_HOUR`` stamps per item.
     _evict_stale(per_loop, capped, loop_id, now)
     return True
 
@@ -765,10 +780,10 @@ def _evict_stale(
     was pulled forward, then stopped writing (its ``it_<hex>`` id retired when its work
     closed) would keep an aged-out stamp list -- and its ``capped`` pair -- for the life
     of the loop, which ``model.max_cycles = 0`` lets outlive the gateway. The only other
-    release was ``mutations.remove_sync`` at loop teardown. Sweeping the sibling items on
-    each admit bounds the nested table at the count of items with a LIVE pull-forward,
-    matching the persisted half's ``ledger_wake._MAX_TRACKED_ITEMS`` bound and satisfying
-    ``a-bound-bounds-every-field-it-retains``.
+    release is ``mutations.remove_sync`` at loop teardown. Sweeping the sibling items on
+    each counted admit bounds the nested table at the count of items with a LIVE
+    pull-forward, satisfying ``a-bound-bounds-every-field-it-retains``; the bound is by
+    age, unlike the persisted half's ``ledger_wake._MAX_TRACKED_ITEMS`` count cap.
     """
     stale = [
         key
@@ -839,8 +854,8 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
     rather than at once; a report that arrives while that window is still open rides the
     tick already armed and arms nothing. So N workers reporting close together spend ONE
     of their conductor's turns, and that turn reads every one of their reports, because
-    the tick reads the ledger when it runs. With the window at zero this is the
-    fire-on-first-report behaviour that shipped.
+    the tick reads the ledger when it runs. With the window at zero no report joins a
+    batch: each admitted one calls ``fire_now`` with no delay.
 
     Refused without calling ``fire_now`` once *item_id* has spent its hourly budget of
     pull-forwards on this loop (:func:`_admit`). The write still landed in the ledger and

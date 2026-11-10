@@ -780,6 +780,35 @@ describe('CrewProfileSettings harness', () => {
     expect(within(options).getByRole('radio', { name: /Inherited/ })).toHaveTextContent('Follows the crew default (now Kiro Agent).')
   })
 
+  it.each([
+    ['settings', 'Set in Settings → Agent Harness.'],
+    ['legacy', 'Set by agent.member_acp_backend in config.json.'],
+    ['fallback', "Settings → Agent Harness is Claude Code, which bots can't run on, so this is Kiro Agent."],
+    ['worker_spec', "This bot's workers use settings Claude Code can't carry, so this is Kiro Agent."],
+  ])('says where Inherited comes from (%s)', async (source, text) => {
+    readout({ inherited_source: source, settings_harness: 'claude' })
+    setup(member())
+    await waitFor(() => expect(rowValue('acp_backend')).toHaveTextContent(/^Inherited \(Kiro Agent\)$/))
+    const options = open('acp_backend')
+    expect(within(options).getByRole('radio', { name: /Inherited/ })).toHaveTextContent(
+      `Follows the crew default (now Kiro Agent). ${text}`,
+    )
+  })
+
+  it('lists KAS models for a pin that runs on KAS', async () => {
+    readout({ acp_backend: 'pi', harness: 'kas', kas_pin_harnesses: ['pi', 'goose'] })
+    setup(member())
+    await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kas'))
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('pi')
+  })
+
+  it('lists the floor models when policy sends the pin to the floor', async () => {
+    readout({ acp_backend: 'pi', harness: 'kiro', kas_pin_harnesses: ['pi'], kas_pin_landing: 'kiro' })
+    setup(member())
+    await waitFor(() => expect(mockApi.harnessModels).toHaveBeenCalledWith('kiro'))
+    expect(mockApi.harnessModels).not.toHaveBeenCalledWith('kas')
+  })
+
   it('lists the pinned harness models, not the install list', async () => {
     readout({ acp_backend: 'claude', harness: 'claude' })
     setup(member())
@@ -950,5 +979,45 @@ describe('CrewProfileSettings harness', () => {
     const radios = within(open('acp_backend')).getAllByRole('radio')
     expect(radios.filter((r) => r.getAttribute('tabindex') === '0')).toHaveLength(1)
     expect(radios[0]).toHaveAttribute('tabindex', '0')
+  })
+})
+
+/* The per-crewmate switch for one-click Dashboard card replies. A preview, OFF by
+ * default: an older gateway sends no field, and a crewmate that never opted in has
+ * none, both of which read as off. The gateway enforces it; this only writes the
+ * crewmate's record. */
+describe('CrewProfileSettings dashboard card send', () => {
+  const SWITCH = 'Send replies in one click'
+
+  it('is off when the roster row says nothing, and off when it says false', async () => {
+    setup(member())
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('is on only when the record says true', async () => {
+    setup(member({ dashboard_card_send: true }))
+    expect(await screen.findByRole('switch', { name: SWITCH })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('crew-profile-settings')).toHaveTextContent("a reply button on oncall's Dashboard tab")
+  })
+
+  it('writes the crewmate record and updates the roster row', async () => {
+    mockApi.updateKirocrewAgent.mockResolvedValue({ ok: true })
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith('oncall', { dashboard_card_send: true }))
+    await waitFor(() => {
+      const rows = lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)
+      expect(rows?.[0].dashboard_card_send).toBe(true)
+    })
+  })
+
+  it('says the setting did not change when the write fails, and leaves the row alone', async () => {
+    mockApi.updateKirocrewAgent.mockRejectedValue(new Error('500'))
+    setup(member())
+    fireEvent.click(await screen.findByRole('switch', { name: SWITCH }))
+    expect(await screen.findByTestId('crew-profile-dashboard-card-send-error')).toHaveTextContent(
+      "Couldn't turn on one-click send. It's still off.",
+    )
+    expect(lastQc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)?.[0].dashboard_card_send).toBeUndefined()
   })
 })

@@ -105,8 +105,10 @@ describe('TelemetryPanel — conversations by spend', () => {
 
   it('renders an unnamed conversation as text, never as a link', async () => {
     await mount([convo()])
-    // The row is present…
-    await waitFor(() => expect(screen.getByTitle('chat-1-1700000000')).toBeTruthy())
+    // The row is present, and still identified by its slot, through the shared
+    // tip rather than a native title the desktop app may not paint…
+    await waitFor(() => expect(screen.getByText(/^Untitled/)).toHaveAccessibleDescription('chat-1-1700000000'))
+    expect(screen.getByText(/^Untitled/)).not.toHaveAttribute('title')
     // …and carries no anchor: its slot is closed, so a click could only ever
     // land on ChatPage's delayed "Session not found".
     expect(screen.queryByRole('link')).toBeNull()
@@ -158,6 +160,6 @@ describe('TelemetryPanel — conversations by spend', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
     // Still named, though — falling back to "Untitled" would lose the one piece
     // of identity the row has.
-    expect(screen.getByTitle('telegram:kirocrew:direct:874')).toBeInTheDocument()
+    expect(screen.getByText('Asked over Telegram')).toHaveAccessibleDescription('telegram:kirocrew:direct:874')
   })
 })

@@ -634,7 +634,7 @@ class TestAcpRuntimeLoadSession:
         monkeypatch.setattr(
             rt,
             "_guard_unresolved_mcp_refs",
-            lambda handle, spec, agent, wire: reported.append(wire),
+            lambda handle, spec, agent, wire, mcp_json=(): reported.append(wire),
         )
         rt._acp_backend = ACP_BACKEND_KAS
 

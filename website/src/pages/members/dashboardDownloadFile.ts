@@ -102,7 +102,13 @@ export function applyPushedRead(held: DashboardRead, arrived: DashboardRead): Da
   }
   if (!sameGeneration || version !== versionOf(held) + 1) return held
   const asObject = (v: unknown) => (v && typeof v === 'object' ? (v as DashboardRead) : {})
+  // `stale_after` rides only while the `dashboard_stale_fields` preview is on; like the
+  // bootstrap's `mergePatch`, it is the patch's and is kept only when the patch has it.
+  const staleAfter = Object.prototype.hasOwnProperty.call(arrived, 'stale_after')
+    ? { stale_after: asObject(arrived.stale_after) }
+    : {}
   return {
+    ...staleAfter,
     fields: { ...asObject(held.fields), ...asObject(arrived.fields) },
     agentic: arrived.agentic || [],
     seq: typeof arrived.seq === 'number' ? arrived.seq : 0,

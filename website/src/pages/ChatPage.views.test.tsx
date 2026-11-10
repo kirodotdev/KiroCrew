@@ -17,6 +17,7 @@ const seen = vi.hoisted(() => ({
   headerMenu: null as null | { onReveal?: () => void; onRename?: () => void },
   pinnedPrompt: null as null | { onToggleExpanded: () => void; onJump: () => void },
   toolGroups: [] as Array<{ onApprove: (a: string) => Promise<void>; pendingPermCount: number; count: number }>,
+  welcome: null as null | { agentWelcome?: string },
 }))
 
 vi.mock('./chat/crew-window/CrewChatWindow', () => ({
@@ -55,7 +56,7 @@ vi.mock('./chat/CollapsibleToolGroup', () => ({
 vi.mock('./chat/TurnBlock', () => ({ default: () => null }))
 vi.mock('./chat/TurnNavigationMinimap', () => ({ default: () => null }))
 vi.mock('./chat/EarlierMessagesBar', () => ({ default: () => null }))
-vi.mock('../components/WelcomeView', () => ({ default: () => null }))
+vi.mock('../components/WelcomeView', () => ({ default: (p: { agentWelcome?: string }) => { seen.welcome = p; return null } }))
 vi.mock('../components/SessionPulseSurveyCard', () => ({ default: () => null }))
 vi.mock('../components/ChatTranscriptSkeleton', () => ({ ChatTranscriptSkeleton: () => null }))
 vi.mock('../hooks/virtualizer/MeasureFarm', () => ({ MeasureFarm: () => null }))
@@ -92,6 +93,7 @@ beforeEach(() => {
   seen.headerMenu = null
   seen.pinnedPrompt = null
   seen.toolGroups = []
+  seen.welcome = null
   vi.mocked(api.resolveApproval).mockClear()
 })
 
@@ -300,6 +302,13 @@ describe('ChatTranscriptView', () => {
     expect(screen.getByTestId('chat-preparing-catch-up')).toHaveTextContent(caption)
     rerender(<ChatTranscriptView {...base([], { currentSlot: slot(false) })} />)
     expect(screen.queryByTestId('chat-preparing-catch-up')).toBeNull()
+  })
+
+  it("hands the welcome page the chat's agent greeting from the slot", () => {
+    // An unstarted chat writes no row, so the greeting rides the slot summary.
+    const slot = { key: 'slot-a', messages: 0, running: false, welcome_message: 'Drop a URL and I will draft slides.' } as never
+    render(<ChatTranscriptView {...base([], { isWelcomeState: true, crewModeOn: false, currentSlot: slot })} />)
+    expect(seen.welcome?.agentWelcome).toBe('Drop a URL and I will draft slides.')
   })
 
   it('routes a group approval to the newest unresolved permission, else to the page approve', async () => {

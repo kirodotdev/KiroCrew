@@ -8,7 +8,8 @@ grants the deny alone held back under :data:`CREW_SPEC_DENIES_KEY`, together wit
 the list, and the session handle reads them back as one
 :class:`~kiro_crew.platform.spec_denied_grant.SpecDeniedGrant`. See that module for
 how the gate uses it. Any other key beside a deny (``denyByDefault``,
-``fallbackAction``, an authored ``ask``) keeps the grant withheld, as before.
+``fallbackAction``, an authored ``ask``) keeps the grant withheld, as before; a
+boolean shell ``autoAllowReadonly`` does not.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from kiro_crew.acp.kas_permissions import (
     withhold_answered_under_authored_rules,
 )
 from kiro_crew.platform import allowed_commands, allowed_paths
+from kiro_crew.platform.spec_denied_gate import url_literal
 from kiro_crew.platform.spec_denied_grant import SpecDeniedGrant
 from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
 
@@ -36,6 +38,111 @@ _LIFTABLE: frozenset[str] = frozenset(
 
 #: Bound on each recorded deny list, like the allowlists'.
 _MAX_DENIES = 64
+
+#: The capabilities whose rule reaches a ``web_fetch`` call.
+_WEB_FETCH_CAPABILITIES = frozenset({"web_fetch", "builtin", "all"})
+
+
+def _web_fetch_entries(settings: dict[str, Any], field: str, read: Any) -> tuple[list[str], bool]:
+    """``(readable, complete)``: the *field* entries *read* accepts, deduplicated and
+    bounded, and whether that is every entry. An absent field is complete."""
+    if field not in settings:
+        return [], True
+    entries = settings[field]
+    if not isinstance(entries, list):
+        return [], False
+    complete = all(isinstance(r, str) and read(r) is not None for r in entries)
+    readable = list(dict.fromkeys(r for r in entries if isinstance(r, str) and read(r) is not None))
+    if len(readable) > _MAX_DENIES:
+        return readable[:_MAX_DENIES], False
+    return readable, complete
+
+
+def _web_fetch_lists(tools_settings: Any) -> tuple[list[str], bool, list[str], bool]:
+    """``(blocked, blocked_complete, trusted, trusted_complete)`` of the canonical
+    ``web_fetch`` key. ``trusted`` is empty unless ``blocked`` is complete: a grant
+    is never made past a ``blocked`` entry Crew cannot read."""
+    settings = tools_settings.get("web_fetch") if isinstance(tools_settings, dict) else None
+    if not isinstance(settings, dict):
+        return [], True, [], True
+    blocked, blocked_complete = _web_fetch_entries(settings, "blocked", url_literal)
+    trusted, trusted_complete = _web_fetch_entries(settings, "trusted", url_literal)
+    if not blocked_complete:
+        return blocked, False, [], False
+    return blocked, True, trusted, trusted_complete
+
+
+def _authored_web_fetch_restricted(authored_permissions: Any) -> bool:
+    """Whether the spec's own ``permissions`` block restricts ``web_fetch``: an
+    ``ask`` or ``deny`` reaching it (any scope, meta capabilities included), read
+    raw like ``kas_permissions.authored_restricted_capabilities``, so a rule the
+    merge drops still counts; or a block the merge refuses whole, or one this
+    cannot read. Crew's gate then grants no ``web_fetch``, so the author's rule
+    keeps the prompt it had on main."""
+    raw = authored_permissions
+    if raw is None:
+        return False
+    from kiro_crew.acp.kas_permissions import projection_accepts
+
+    if not isinstance(raw, dict) or set(raw) - {"rules", "policies"}:
+        return True
+    rules = raw.get("rules", [])
+    if raw.get("policies") not in (None, []) or not isinstance(rules, list):
+        return True
+    if not projection_accepts(raw):
+        return True
+    for rule in rules:
+        if not isinstance(rule, dict) or not isinstance(rule.get("capability"), str):
+            return True
+        if rule.get("effect") != "allow" and rule["capability"] in _WEB_FETCH_CAPABILITIES:
+            return True
+    return False
+
+
+def web_fetch_gate(tools_settings: Any, authored_permissions: Any = None) -> dict[str, Any]:
+    """The ``web_fetch`` part of the :data:`CREW_SPEC_DENIES_KEY` record.
+
+    kiro-cli matches ``web_fetch.trusted`` against the whole URL; KAS carries no
+    allow for it, so the fetch asks. On a fetch that reaches Crew's gate,
+    ``spec-builtin-grant`` grants one a trusted entry names as a plain URL or a
+    plain URL plus ``.*`` (:func:`url_literal`), only when every
+    ``web_fetch.blocked`` entry has that shape too and none matches. Anything
+    else keeps main's prompt; the blocked list is only read to withhold the grant,
+    and KAS's host deny stays as on main. An ``ask`` or ``deny`` in
+    *authored_permissions* reaching ``web_fetch``, or a block the merge refuses,
+    drops the grant (:func:`_authored_web_fetch_restricted`). Empty when nothing
+    can be granted.
+    """
+    blocked, complete, trusted, _ = _web_fetch_lists(tools_settings)
+    if not trusted or not complete or _authored_web_fetch_restricted(authored_permissions):
+        return {}
+    return {
+        "webFetchBlocked": blocked,
+        "webFetchBlockedComplete": complete,
+        "webFetchTrusted": trusted,
+    }
+
+
+def web_fetch_carried(tools_settings: Any, authored_permissions: Any) -> frozenset[str]:
+    """The ``web_fetch.<key>`` paths Crew's gate applies for *tools_settings*, for the
+    session-start notice: ``web_fetch.trusted`` when every blocked and trusted entry
+    is readable, the spec's own block does not restrict ``web_fetch`` and the
+    ceiling lets the gate grant it. ``web_fetch.blocked`` is never dropped: a fetch
+    KAS's policy allows skips the gate, so an entry KAS cannot carry still may not
+    apply.
+    """
+    _blocked, complete, trusted, trusted_complete = _web_fetch_lists(tools_settings)
+    if not (trusted and complete and trusted_complete):
+        return frozenset()
+    if _authored_web_fetch_restricted(authored_permissions):
+        return frozenset()
+    from kiro_crew.platform.governance import may_grant_builtin_at_gate_now
+
+    return (
+        frozenset({"web_fetch.trusted"})
+        if may_grant_builtin_at_gate_now("web_fetch")
+        else frozenset()
+    )
 
 
 def _checkable(tools_settings: Any, keys: tuple[str, ...], field: str, read: Any) -> list[str]:
@@ -174,6 +281,17 @@ def _entry_spec_denies(entry: Any, cwd: str) -> SpecDeniedGrant | None:
     if not all(isinstance(v, list) and all(isinstance(x, str) for x in v) for v in values):
         return None
     builtins, commands, denied_commands, denied_paths = cast(list[list[str]], values)
+    web_blocked = raw.get("webFetchBlocked", [])
+    web_trusted = raw.get("webFetchTrusted", [])
+    web_complete = raw.get("webFetchBlockedComplete", True)
+    if not (
+        all(
+            isinstance(v, list) and all(isinstance(x, str) for x in v)
+            for v in (web_blocked, web_trusted)
+        )
+        and isinstance(web_complete, bool)
+    ):
+        return None
     from kiro_crew.acp.kas_write_allowlist import anchor_write_allowlist
 
     per_entry = [anchor_write_allowlist([path], cwd) for path in dict.fromkeys(denied_paths)]
@@ -188,6 +306,9 @@ def _entry_spec_denies(entry: Any, cwd: str) -> SpecDeniedGrant | None:
         denied_commands=tuple(denied_commands),
         denied_write_paths=anchored,
         cwd=cwd if os.path.isabs(cwd) else "",
+        web_fetch_blocked=tuple(web_blocked),
+        web_fetch_blocked_complete=web_complete,
+        web_fetch_trusted=tuple(web_trusted),
     )
 
 

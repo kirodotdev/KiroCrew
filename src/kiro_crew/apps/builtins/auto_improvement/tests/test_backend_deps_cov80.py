@@ -8,6 +8,8 @@ install and never an authenticated CLI.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,7 +43,8 @@ def which(monkeypatch: pytest.MonkeyPatch):
     table: dict[str, str] = {}
 
     def _fake(binary: str) -> str | None:
-        return table.get(binary)
+        # Windows asks by full PATH-entry path, so key on the name alone.
+        return table.get(os.path.basename(binary))
 
     monkeypatch.setattr(deps.shutil, "which", _fake)
     return table
@@ -55,6 +58,93 @@ class TestWhich:
     def test_a_missing_binary_yields_the_empty_string_not_none(self, which: dict[str, str]) -> None:
         """Callers do ``bool(path)`` and put the value straight in ``detail``."""
         assert deps._which("nope") == ""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="emulates Windows lookup on POSIX")
+    def test_windows_skips_the_working_directory(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Windows' bare-name lookup tries the cwd first; only PATH's absolute entries count."""
+        cwd, on_path = tmp_path / "cwd", tmp_path / "bin"
+        for d in (cwd, on_path):
+            d.mkdir()
+            (d / "ruff").write_bytes(b"")
+            (d / "ruff").chmod(0o755)
+        real = shutil.which
+
+        def cwd_first(
+            cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
+        ) -> str | None:
+            if os.path.dirname(cmd):
+                return real(cmd, mode)
+            return real(cmd, mode, os.pathsep.join([os.curdir, path or os.environ["PATH"]]))
+
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("PATH", os.pathsep.join(["relative", str(on_path)]))
+        monkeypatch.setattr(deps.shutil, "which", cwd_first)
+        monkeypatch.setattr(os, "name", "nt")
+        assert deps._which("ruff") == str(on_path / "ruff")
+        monkeypatch.setenv("PATH", "relative")
+        assert deps._which("ruff") == ""
+        # Stub the pip launch: nothing installs, and no WindowsPath is built on POSIX.
+        monkeypatch.setattr(deps.platform_compat, "isolated_python_argv", lambda *a: ["py", *a])
+        monkeypatch.setattr(deps.subprocess, "run", lambda *_a, **_k: _proc(0))
+        assert deps.install_deps()["installed"] == ["ruff"]
+
+
+class TestGlabAuthenticated:
+    """glab's login is checked on the target host alone, with the host-pinned env."""
+
+    def test_the_probe_names_the_target_host_and_withholds_the_saas_token(
+        self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        which["glab"] = _stub_bin("glab")
+        monkeypatch.setenv("GITLAB_TOKEN", "glpat-saas")
+        monkeypatch.setenv("GITLAB_HOST", "elsewhere.example")
+        seen: dict[str, Any] = {}
+
+        def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            seen["cmd"], seen["env"] = cmd, kwargs.get("env")
+            return _proc(0)
+
+        monkeypatch.setattr(deps.subprocess, "run", _run)
+        assert deps._glab_authenticated("gitlab.corp.example") == (True, "authenticated")
+        assert seen["cmd"] == ["glab", "auth", "status", "--hostname", "gitlab.corp.example"]
+        assert seen["env"]["GITLAB_HOST"] == "gitlab.corp.example"
+        assert "GITLAB_TOKEN" not in seen["env"]
+
+    @pytest.mark.parametrize(
+        ("target_url", "host"),
+        [
+            ("https://gitlab.example.com:8443/g/p", "gitlab.example.com:8443"),
+            ("https://www.gitlab.com/g/p", "gitlab.com"),
+            ("https://GitLab.example.com:443/g/p", "gitlab.example.com"),
+            ("http://gitlab.example.com/g/p", ""),
+        ],
+    )
+    def test_the_probe_uses_the_host_intake_stores(
+        self, target_url: str, host: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-443 port is kept and ``www.gitlab.com`` folds to ``gitlab.com``, so an
+        authenticated target is not reported as logged out."""
+        monkeypatch.setattr(deps, "read_json", lambda *_a: {"target_url": target_url})
+        assert deps._configured_host() == host
+
+    def test_a_github_target_never_runs_glab(
+        self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        which["glab"] = _stub_bin("glab")
+        which["gh"] = _stub_bin("gh")
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITHUB)
+        ran: list[list[str]] = []
+
+        def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            ran.append(cmd)
+            return _proc(0)
+
+        monkeypatch.setattr(deps.subprocess, "run", _run)
+        report = deps.check_deps()
+        assert not [cmd for cmd in ran if cmd and cmd[0] == "glab"]
+        assert {d["id"]: d for d in report["deps"]}["glab"]["ok"] is True
 
 
 class TestGhAuthenticated:
@@ -117,16 +207,24 @@ class TestCheckDeps:
     def test_everything_present_is_ok_with_nothing_blocking(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        which.update({"git": _stub_bin("git"), "gh": _stub_bin("gh"), "ruff": _stub_bin("ruff")})
+        which.update(
+            {
+                "git": _stub_bin("git"),
+                "gh": _stub_bin("gh"),
+                "glab": _stub_bin("glab"),
+                "ruff": _stub_bin("ruff"),
+            }
+        )
         monkeypatch.setattr(deps.subprocess, "run", lambda *a, **k: _proc(0))
         report = deps.check_deps()
         assert report["ok"] is True
         assert report["blocking"] == []
         by_id = {d["id"]: d for d in report["deps"]}
-        assert set(by_id) == {"git", "gh", "pytest", "ruff"}
+        assert set(by_id) == {"git", "gh", "glab", "pytest", "ruff"}
         assert by_id["git"]["detail"] == _stub_bin("git")
         assert by_id["ruff"]["installable"] is True
         assert by_id["gh"]["installable"] is False
+        assert by_id["glab"]["installable"] is False
 
     def test_a_missing_required_binary_blocks_the_run(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
@@ -156,10 +254,38 @@ class TestCheckDeps:
     def test_both_required_entries_can_block_at_once(
         self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """With a GitHub target configured, git and gh can block together."""
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITHUB)
         monkeypatch.setattr(deps.subprocess, "run", lambda *a, **k: _proc(0))
         report = deps.check_deps()
         assert report["blocking"] == ["git", "gh"]
         assert report["ok"] is False
+
+    def test_a_gitlab_target_requires_glab_not_gh(
+        self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The forge CLI requirement follows the configured target's provider."""
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITLAB)
+        monkeypatch.setattr(deps.subprocess, "run", lambda *a, **k: _proc(0))
+        report = deps.check_deps()
+        assert report["blocking"] == ["git", "glab"]
+        by_id = {d["id"]: d for d in report["deps"]}
+        assert by_id["gh"]["required"] is False
+        assert by_id["glab"]["required"] is True
+        assert "glab auth login" in by_id["glab"]["fix"]
+
+    def test_no_configured_target_leaves_both_forge_clis_optional(
+        self, which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Neither CLI can block setup before a repository is connected."""
+        which["git"] = _stub_bin("git")
+        monkeypatch.setattr(deps.subprocess, "run", lambda *a, **k: _proc(0))
+        report = deps.check_deps()
+        assert report["ok"] is True
+        assert report["blocking"] == []
+        by_id = {d["id"]: d for d in report["deps"]}
+        assert by_id["gh"]["required"] is False
+        assert by_id["glab"]["required"] is False
 
 
 class TestInstallDeps:

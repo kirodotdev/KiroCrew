@@ -53,6 +53,7 @@ from kiro_crew.messaging.approval import (
     open_approval,
 )
 from kiro_crew.messaging.display_safety import joins_to_a_credential
+from kiro_crew.messaging.markup import strip_thinking_tags
 from kiro_crew.messaging.outbound_files import Rejection, hide_local_refs
 from kiro_crew.messaging.renderer import (
     Renderer,
@@ -100,6 +101,19 @@ _ERROR_TEXT = "Something went wrong on my side. Please try again."
 def _strip_options(text: str) -> str:
     """Drop the dashboard-only [OPTIONS: ...] trailer (no buttons here)."""
     return OPTIONS_RE_TRAILER.sub("", relocate_glued_tail_marker(text)).strip()
+
+
+def _is_silence(body: str) -> bool:
+    """Whether an unprompted reply chose silence, read as the group would see it.
+
+    The reasoning block is dropped first, as delivery drops it, and code,
+    emphasis or strike marks and a closing full stop around the sentinel are ignored:
+    a model that wraps ``[[NO_REPLY]]`` still meant to stay quiet, and an exact
+    match posted that bare marker into the group.
+    """
+    visible, _ = strip_thinking_tags(body, strip_whitespace=True, hide_partial=True)
+    bare = visible.strip().strip("`*_~. ")
+    return not bare or bare == SILENCE_SENTINEL
 
 
 class WhatsAppRenderer(Renderer):
@@ -538,7 +552,7 @@ class WhatsAppRenderer(Renderer):
         ok = stop_reason != "error"
         self.failed = not ok
         body = self.text()
-        if self._unprompted and (not body or body == SILENCE_SENTINEL):
+        if self._unprompted and _is_silence(body):
             # The model chose silence (or produced nothing): deliver nothing.
             # Nothing was streamed either: _schedule_flush never arms for an
             # unprompted turn.
@@ -663,7 +677,9 @@ class WhatsAppRenderer(Renderer):
                 # neither the picture nor the path nor any hint one existed: the
                 # agent silently answered a question about an image it never sent.
                 logger.warning("whatsapp: image upload failed", exc_info=True)
-                rejections.append(Rejection(outbound.path, REASON_UPLOAD_FAILED, ""))
+                rejections.append(
+                    Rejection(outbound.path, REASON_UPLOAD_FAILED, "the upload to WhatsApp failed")
+                )
         note = rejection_note(rejections)
         if note:
             await self._send(note)

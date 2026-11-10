@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import codex_session_mcp_helpers
 import pytest
@@ -426,13 +426,8 @@ class TestSpecDisabledToolRefusal:
         says the codex refusal must then fire on the ``tool_call`` frame instead.
         """
         from kiro_crew import mcp_core, mcp_cron
-        from kiro_crew.mcp_tools import apps as apps_tools
 
-        # ``kirocrew-core`` lists an app's tools only while that app is enabled and
-        # the isolated test home has none installed, so the gate is held open: the
-        # premise must hold for every DECLARED tool, hidden or not.
-        with patch.object(apps_tools, "app_enabled_state", lambda _name: True):
-            core_tools = mcp_core._list_tools()
+        core_tools = mcp_core._list_tools()
         for server, tools in (
             ("kirocrew-core", core_tools),
             ("kirocrew-cron", mcp_cron._list_tools()),

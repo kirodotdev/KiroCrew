@@ -321,7 +321,8 @@ def apply_update(
     re-checks status, so the worst case is one no-op spawn.
 
     Without ``full_replace`` the changes apply in order: add, remove by id,
-    modify by id (unknown ids silently skipped), then metadata.
+    modify by id (unknown ids silently skipped), then metadata. A metadata key
+    the params omit is left unchanged; one passed as ``None`` is removed.
     """
     now = _now_ms() if now_ms is None else now_ms
 
@@ -404,7 +405,11 @@ def apply_update(
     updated: MochiQueue = dict(queue)
     updated["tasks"] = tasks
     for key in ("mood", "narrative", "planner_notes", "needs_replan"):
-        if key in params and params[key] is not None:
+        if key not in params:
+            continue  # absent leaves the field unchanged
+        if params[key] is None:
+            updated.pop(key, None)  # an explicit null clears it
+        else:
             updated[key] = params[key]
 
     return {"queue": updated}

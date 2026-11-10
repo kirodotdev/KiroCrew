@@ -192,7 +192,19 @@ def local_operator_principal(token_subject: str) -> Principal:
     )
 
 
-def relay_principal(caller: RelayCaller, owner_subject: str) -> Principal:
+def _email_label(email: str, handle_domains: frozenset[str]) -> str:
+    """*email* as a person's label: its handle when its domain is one of *handle_domains*.
+
+    The whole domain after the last ``@`` must equal a listed one, ignoring case, so
+    a subdomain or a longer lookalike keeps the full address.
+    """
+    handle, _, domain = email.rpartition("@")
+    return handle if handle and domain.lower() in handle_domains else email
+
+
+def relay_principal(
+    caller: RelayCaller, owner_subject: str, handle_email_domains: frozenset[str] = frozenset()
+) -> Principal:
     """The principal of a person the Kiro relay verified and the relay client handed over.
 
     A teammate is keyed by their Kiro user ID, exactly as the relay named it (no
@@ -200,14 +212,20 @@ def relay_principal(caller: RelayCaller, owner_subject: str) -> Principal:
     The relayed owner of a personal Crew is the owner at the machine: the same id
     as :func:`local_operator_principal` of *owner_subject*, so the two tabs are one
     person, but with ``kiro_relay`` provenance, so every gate that requires the
-    local operator still refuses them remotely. The email and name are labels only.
+    local operator still refuses them remotely. The email and name are labels only;
+    an email in one of *handle_email_domains* (``tunnel.relay_handle_email_domains``)
+    is labelled by its handle.
     """
     if caller.is_owner:
         local = local_operator_principal(owner_subject)
         if local.is_unknown:
             return local
         return dataclasses.replace(local, provenance=Provenance.KIRO_RELAY)
-    label = caller.display_name or caller.email or f"Kiro user ...{caller.kiro_user_id[-6:]}"
+    label = (
+        caller.display_name
+        or _email_label(caller.email, handle_email_domains)
+        or f"Kiro user ...{caller.kiro_user_id[-6:]}"
+    )
     return Principal(
         id=principal_id_for(PROVIDER_KIRO, KIRO_ISSUER, caller.kiro_user_id),
         kind=PrincipalKind.HUMAN,
@@ -346,6 +364,14 @@ async def publish_actor(
     return actor
 
 
+def _handle_email_domains(request: web.Request) -> frozenset[str]:
+    """The relay ingress's handle domains for *request*'s app, empty without an ingress."""
+    from kiro_crew.dashboard.kiro_relay.ingress import RELAY_INGRESS_APP_KEY, RelayIngress
+
+    ingress = request.app.get(RELAY_INGRESS_APP_KEY)
+    return ingress.handle_email_domains if isinstance(ingress, RelayIngress) else frozenset()
+
+
 async def _derive_actor(
     request: web.Request,
     *,
@@ -365,7 +391,9 @@ async def _derive_actor(
         request[DEVICE_REQUEST_KEY] = "kiro-relay"
         request_id = uuid.uuid4().hex
         return ActorContext(
-            principal=relay_principal(relayed, str(request.get("user") or "")),
+            principal=relay_principal(
+                relayed, str(request.get("user") or ""), _handle_email_domains(request)
+            ),
             request_id=request_id,
             transport=Transport.REMOTE,
             correlation_id=_correlation_of(request, request_id),

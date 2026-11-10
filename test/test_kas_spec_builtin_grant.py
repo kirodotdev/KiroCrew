@@ -27,7 +27,7 @@ from unittest.mock import MagicMock
 import pytest
 from test_tool_call_classification_kas import _kas_builtin_flow
 
-from kiro_crew.acp import kas_agents
+from kiro_crew.acp import kas_agents, kas_spec_carry
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
 from kiro_crew.acp.kas_permissions import (
     CREW_ANSWERED_BUILTINS_KEY,
@@ -267,6 +267,42 @@ def test_the_projection_records_the_grants_and_relays_no_allow_rule() -> None:
     assert not [r for r in rules if r["capability"] in ("shell", "fs_read", "fs_write")]
 
 
+def test_a_use_aws_deny_travels_and_keeps_the_shell_grant() -> None:
+    settings = {"use_aws": {"deniedServices": ["iam", "S3; rm", "x" * 2000]}}
+    spec = _spec(tools=["*"], allowedTools=["shell"], toolsSettings=settings)
+    out = kas_agents.to_client_custom_agent("a", spec, "p")
+    assert out[CREW_ANSWERED_BUILTINS_KEY] == ["execute_bash"]
+    rules = out["permissions"]["rules"]
+    assert {"capability": "shell", "match": ["aws iam *"], "effect": "deny"} in rules
+    # Named still: a global option before the service slips the shell deny.
+    assert "toolsSettings.use_aws.deniedServices" in kas_agents.spec_keys_without_carrier(
+        spec, translates_tools_settings=True
+    )
+
+
+def test_use_aws_service_names_accepted_and_refused_are_unchanged() -> None:
+    accepted = ["s3", "ec2-instance-connect", "0x", "a-", " iam\n", "x" * 128]
+    refused = ["-s3", "S3", "s3 *", "s3_x", "s3.x", "", " ", "ｓ3", "é", "s3*", "x" * 129, 3]
+    block = kas_spec_carry.use_aws_shell_denies({"use_aws": {"deniedServices": accepted + refused}})
+    assert block == {
+        "rules": [
+            {
+                "capability": "shell",
+                "match": [
+                    "aws s3 *",
+                    "aws ec2-instance-connect *",
+                    "aws 0x *",
+                    "aws a- *",
+                    "aws iam *",
+                    f"aws {'x' * 128} *",
+                ],
+                "effect": "deny",
+            }
+        ]
+    }
+    assert kas_spec_carry.use_aws_shell_denies({"use_aws": {"deniedServices": refused}}) is None
+
+
 def test_no_grant_means_no_key() -> None:
     out = kas_agents.to_client_custom_agent("a", _spec(allowedTools=["web_fetch"]), "p")
     assert CREW_ANSWERED_BUILTINS_KEY not in out
@@ -397,6 +433,27 @@ def test_the_notice_names_a_permissions_block_the_projection_refuses(
     assert "permissions" not in kas_agents.spec_keys_without_carrier(spec)
 
 
+@pytest.mark.parametrize(("excluded", "named"), [(65, True), (64, False)], ids=["over", "at"])
+def test_the_notice_names_an_allow_the_projection_leaves_out(excluded: int, named: bool) -> None:
+    """An allow whose ``exclude`` is too long to send is left out alone and the rest
+    of the block still travels, so what it allowed prompts: the session-start notice
+    names that rule, and only on a KAS session."""
+    deny = {"capability": "web_search", "effect": "deny"}
+    allow = {
+        "capability": "web_fetch",
+        "match": ["https://*"],
+        "exclude": [f"https://h{i}.example/*" for i in range(excluded)],
+        "effect": "allow",
+    }
+    spec = _spec(permissions={"rules": [deny, allow]})
+    lost = kas_agents.spec_keys_without_carrier(spec, translates_tools_settings=True)
+    assert lost == (["permissions.rules[1]"] if named else [])
+    notice = _spec_keys_notice("a", lost)
+    assert ("exclude list has more than 64 patterns" in notice) is named
+    assert "policies bundle" not in notice
+    assert kas_agents.spec_keys_without_carrier(spec) == []
+
+
 def test_an_authored_allow_withholds_nothing() -> None:
     spec = _spec(
         allowedTools=["fs_read"],
@@ -456,6 +513,8 @@ def test_an_allowed_write_inside_allowed_paths_runs_without_a_prompt() -> None:
         ({"write": {"allowedPaths": ["~/a/**"]}}, ["execute_bash", "fs_write"]),
         ({"fs_write": {"allowedPaths": ["~/a/**"]}}, ["execute_bash", "fs_write"]),
         ({"shell": {"allowedCommands": ["git status"]}}, ["execute_bash", "fs_write"]),
+        ({"shell": {"autoAllowReadonly": True}}, ["execute_bash", "fs_write"]),
+        ({"shell": {"autoAllowReadonly": "yes"}}, ["fs_write"]),
         ({"write": {"allowedPaths": ["~/a/**"], "deniedPaths": ["~/a/x"]}}, ["execute_bash"]),
         ({"write": {"allowedPaths": ["~/a/**"], "fallbackAction": "deny"}}, ["execute_bash"]),
         ({"write": {"allowedPaths": "not-a-list", "x": 1}}, ["execute_bash"]),
@@ -466,6 +525,8 @@ def test_an_allowed_write_inside_allowed_paths_runs_without_a_prompt() -> None:
         "write-allowed-paths",
         "fs-write-allowed-paths",
         "shell-allowed-commands",
+        "shell-auto-allow-readonly",
+        "shell-auto-allow-readonly-not-a-bool",
         "denied-paths-beside",
         "fallback-deny-beside",
         "other-key-beside",
@@ -476,9 +537,9 @@ def test_an_allowed_write_inside_allowed_paths_runs_without_a_prompt() -> None:
 def test_only_the_grant_keys_are_not_a_restriction(
     settings: dict[str, Any], kept: list[str]
 ) -> None:
-    """``allowedPaths`` on a read or write entry and ``allowedCommands`` on a shell
-    entry only add unprompted work on kiro-cli. Any other key keeps the grant at the
-    prompt, as before (fail toward ask)."""
+    """``allowedPaths`` on a read or write entry, and ``allowedCommands`` or a boolean
+    ``autoAllowReadonly`` on a shell entry, only add unprompted work on kiro-cli. Any
+    other key keeps the grant at the prompt, as before (fail toward ask)."""
     spec = _spec(allowedTools=["shell", "write"], toolsSettings=settings)
     out = kas_agents.to_client_custom_agent("a", spec, "p")
     assert out.get(CREW_ANSWERED_BUILTINS_KEY, []) == kept

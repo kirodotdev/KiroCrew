@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
+from real_session_manager import open_session, real_sessions
 from test_dashboard_chat import TestAcpProcessDiedRecovery as _AcpDiedSuite
 
 
@@ -358,11 +359,22 @@ class TestAcpProcessDiedRecoveryRequeue:
         from kiro_crew.acp.client import AcpProcessDied
 
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
+        state.sessions = real_sessions(client)
+        key = await open_session(state.sessions, f"dashboard:{slot.key}")
         self._make_stream_raise(client, AcpProcessDied("pipe broken"))
+        streamed = []
+
+        async def _raise_and_note(msg):
+            streamed.append(msg)
+            raise AcpProcessDied("pipe broken")
+            yield  # noqa: E501
+
+        client.stream = _raise_and_note
 
         await _run_chat(state, slot, "test message")
 
-        state.sessions.reset.assert_awaited_once_with(f"dashboard:{slot.key}")
+        assert streamed, "the turn never reached the provider's stream"
+        assert not state.sessions.has_session(key)
 
     @pytest.mark.asyncio
     async def test_stop_state_suppresses_requeue(self, tmp_path: Path) -> None:

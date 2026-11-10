@@ -154,6 +154,30 @@ class TestHandleClassifies:
         idx = src.index("self.last_infra_error = None")
         assert 'self._last_stop_reason = ""' in src[:idx]
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "src/kiro_crew/mcp_gateway/pool.py:41:class BackendGone(RuntimeError):",
+            "docs/x.md:12: if the backend is gone, the stub retries",
+            "test.py:3: ERR = -32001",
+        ],
+    )
+    @pytest.mark.parametrize("status", ["completed", "in_progress"])
+    def test_a_call_that_prints_a_marker_is_not_infra(self, text, status):
+        """A search that succeeds, or streams, and prints a marker is not a refusal."""
+        h = _handle()
+        h._handle_update(_tool_call("t1"))
+        h._handle_update(_tool_result("t1", text, status=status))
+        assert h.last_infra_error is None
+
+    @pytest.mark.parametrize("status", ["failed", ""])
+    def test_a_refusal_that_did_not_complete_is_still_infra(self, status):
+        h = _handle()
+        h._handle_update(_tool_call("t1"))
+        h._handle_update(_tool_result("t1", _CAPACITY, status=status))
+        assert h.last_infra_error is not None
+        assert h.last_infra_error.error_class == lad.CLASS_CAPACITY
+
     def test_gateway_recoverable_infra_marker(self):
         h = _handle()
         h._handle_update(_tool_call("t1"))

@@ -49,7 +49,7 @@ if TYPE_CHECKING:
         effective_session_key,
         folder_principal,
         is_owner_dashboard_request,
-        is_sensitive_path,
+        is_sensitive_canonical_path,
         logger,
         members_mod,
         owner_start_priority,
@@ -146,11 +146,13 @@ async def _birth_default_project(cfg: KiroCrewConfig | None, workspace: str) -> 
     def resolve() -> str:
         if isinstance(cfg_proj, str) and cfg_proj:
             resolved = os.path.realpath(os.path.expanduser(cfg_proj))
+            # *resolved* is canonical, so the canonical gate judges it: it answers
+            # inline off the loop, where a resolver stall cannot read as a match.
             # A configured default that overlaps the data home would be refused
             # at spawn anyway, so it is skipped here like a sensitive path.
             if (
                 os.path.isdir(resolved)
-                and not is_sensitive_path(resolved)
+                and not is_sensitive_canonical_path(resolved)
                 and voice_runtime_workspace_conflict(resolved) is None
             ):
                 return resolved
@@ -175,6 +177,7 @@ async def _check_new_slot_assignment(
     """
     from kiro_crew.dashboard.chat_persistence import (
         _member_private_selection,
+        _missing_member_database_repair,
         member_store_ownership_holds,
     )
     from kiro_crew.execution_context import resolve_member_execution
@@ -182,8 +185,12 @@ async def _check_new_slot_assignment(
 
     if agent_kind != "template":
         selected, store = _member_private_selection(agent, cfg)
-        if store and not await asyncio.to_thread(
-            member_store_ownership_holds, cfg, selected, store
+        # A deleted memory.db the assignment's pin repairs is not a refusal here.
+        if (
+            store
+            and not await asyncio.to_thread(member_store_ownership_holds, cfg, selected, store)
+            and await asyncio.to_thread(_missing_member_database_repair, cfg, selected, store)
+            is None
         ):
             raise UnknownMemoryStore(
                 f"Bot {selected!r} does not own its private memory store; " "no session was created"
@@ -475,16 +482,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
-            from kiro_crew.config.loader_snapshots import rescan_if_incomplete
+            from kiro_crew.config.loader_snapshots import rescan_before_refusal
 
             if (
-                agent_kind == "template"
+                agent_kind != "member"
                 and not bindings.requested_resolved
-                and await rescan_if_incomplete()
+                and await rescan_before_refusal()
             ):
-                # A scan that could not read a spec may lack this template while
-                # its file is on disk (a member comes from the config just loaded).
-                # The staleness check below covers the extra await.
+                # The snapshot may lack a template whose file is on disk (a
+                # member comes from the config just loaded). The staleness check
+                # below covers the extra await.
                 bindings = await asyncio.to_thread(
                     resolve_agent_bindings,
                     cfg,
@@ -1207,6 +1214,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
     if slot.executor != "remote" and not bound_remote:
         schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
+    # The greeting the welcome page shows before the first message, since an
+    # unstarted chat writes no row. Read after the spawn is armed, so the two
+    # overlap, and before the answer is built, so the answer carries it.
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
+    # The read runs after the create's block, so a close or a same-name recreate
+    # can land during it, and the browser adds this answer to its list and drops
+    # the close's tombstone for that key. A slot that has lost its key answers
+    # the 404 a missing slot gets, as the switches do.
+    if state._slots.get(slot.key) is not slot:
+        return slot_not_found()
     created = _created_slot_row(state, request, slot)
     if session_folder_notice:
         created["session_folder_notice"] = session_folder_notice

@@ -375,7 +375,7 @@ class TestSpawnShimArgv:
 
     def test_extractor_profile_is_a_fixed_memory_and_cpu_ceiling(self):
         # The document-parser child: RLIMIT_AS on by DEFAULT (the tool profile
-        # leaves it to ``max_memory_mb``, default 0), a CPU cap, the OOM bias --
+        # leaves it to ``max_address_space_mb``, default 0), a CPU cap, the OOM bias --
         # and no dependence on the operator's ``resource_limits`` block.
         prefix = spawn_shim_argv(RLIMIT_PROFILE_EXTRACTOR)
         [spec] = [a for a in prefix if a.startswith("--rlimits=")]

@@ -78,12 +78,16 @@ import { readPersistedString, usePersistedString } from '../../hooks/usePersiste
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { readCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../../utils/companySignIn'
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
+import { RemoteCrewWindowsNotice } from './RemoteCrewWindowsNotice'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm, setCrewLaunchDraft, dropLaunchedCrewDraft, type CrewLaunchDraft } from '../../store/instancesSlice'
 import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
-import { AddInstanceForm, RestartToActivateText } from './InstancesPanel'
+import { Trans } from 'react-i18next'
+import { AddInstanceForm } from './InstancesPanel'
+import { RemoteCrewRestartBanner } from './RemoteCrewPanelRestartBanner'
 import { CrewVersionsReadError } from './CrewVersionStatus'
 import { awsCliRefusalCopy, awsCliRefusalReport, credentialHelperMissingSentence, pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
@@ -97,7 +101,7 @@ import {
 import {
   SizeCard, ProvisionerCard, SettingUpRow, PrereqRow, LaunchProgressCard,
 } from './RemoteCrewPanelLaunch'
-import { CREW_SWITCH_HINT_ID, CREW_NEEDS_RESTART_BANNER_ID, CrewRow } from './RemoteCrewPanelCrewRow'
+import { CREW_SWITCH_HINT_ID, CrewRow } from './RemoteCrewPanelCrewRow'
 export { TurnUrlField } from './RemoteCrewPanelCrewRow'
 
 /** The shape of an AWS Region name, e.g. us-east-1 or us-gov-west-1. The gateway validates it again. */
@@ -465,6 +469,9 @@ export function RemoteCrewPanel() {
     ? undefined
     : getRemoteProvisionerRenderer(selectedProvisioner.kind)
 
+  // The built-in launcher is POSIX-only and the server refuses it on Windows
+  // before any AWS call, so a known-Windows gateway runs no check at all.
+  const windowsGateway = useGatewayPlatform() === 'windows'
   const preflightQuery = useQuery({
     queryKey: ['cloud', 'preflight', checkedProfile, checkedRegion],
     queryFn: () => api.cloudPreflight(checkedProfile || undefined, checkedRegion || undefined),
@@ -472,7 +479,7 @@ export function RemoteCrewPanel() {
     // says, so the probe fires at once, as it always did. Only a remembered
     // choice waits for the list: it may resolve to a lane whose form must not
     // trigger an AWS probe at all.
-    enabled: tab === 'setup' && !disabled && !noDrawableLane
+    enabled: tab === 'setup' && !disabled && !noDrawableLane && !windowsGateway
       && (persistedProvisioner === '' || (builtinProvisioner && !provisionersQuery.isLoading)),
   })
 
@@ -883,6 +890,10 @@ export function RemoteCrewPanel() {
   const preflightSandboxKind = preflightNoSandbox && preflightQuery.error instanceof ApiError
     ? parseErrorField(preflightQuery.error.body, 'kind')
     : undefined
+  // The platform signal can be missing (still loading, or an older gateway), so
+  // the server's own refusal also counts.
+  const launcherNeedsPosix = windowsGateway || (preflightQuery.error instanceof ApiError
+    && parseErrorCode(preflightQuery.error.body) === 'posix_host_required')
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
@@ -980,7 +991,7 @@ export function RemoteCrewPanel() {
         {restartPending && (
           <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
             <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-            <span>{i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}</span>
+            <span><Trans i18nKey="pages.settings.instancesPanel.disabled_restart_to_tear_down_tunnels" components={{ cmd: <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code> }} /></span>
           </div>
         )}
         <Btn primary onClick={() => enableMutation.mutate()} disabled={enableMutation.isPending}>
@@ -1108,12 +1119,7 @@ export function RemoteCrewPanel() {
             <p id={CREW_SWITCH_HINT_ID} className="text-[12px] text-muted mb-1">
               {i18nT('pages.settings.remoteCrewPanel.crew_switch_hint')}
             </p>
-            {needsRestart && (
-              <div id={CREW_NEEDS_RESTART_BANNER_ID} role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
-                <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
-                <RestartToActivateText />
-              </div>
-            )}
+            {needsRestart && <RemoteCrewRestartBanner />}
             {listLoading ? (
               <div className="flex items-center gap-2 text-muted text-sm py-2">
                 <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.instancesPanel.loading')}
@@ -1306,6 +1312,8 @@ export function RemoteCrewPanel() {
             <Card>
               <div className="text-[13px] text-muted">{i18nT('pages.settings.remoteCrewPanel.provisioner_none_drawable')}</div>
             </Card>
+          ) : builtinProvisioner && launcherNeedsPosix ? (
+            <RemoteCrewWindowsNotice error={windowsGateway ? undefined : preflightQuery.error} />
           ) : builtinProvisioner ? (
           <>
           {/* AWS prerequisites — the account inputs live HERE, above the rows they

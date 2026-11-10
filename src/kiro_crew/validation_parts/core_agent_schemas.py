@@ -413,6 +413,7 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),
         FieldSpec("max_provider_errors", int, min_val=1, max_val=MAX_MONITOR_PROVIDER_ERRORS),
         FieldSpec("wake_instructions", str, max_len=MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS),
+        FieldSpec("wake_on_terminal", bool),
     ],
 )
 

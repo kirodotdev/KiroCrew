@@ -88,7 +88,7 @@ from kiro_crew.service.common import (
     system_restart_command_hint,
     user_restart_command_hint,
 )
-from kiro_crew.service.linux_systemctl import _stale_unit_line, _systemctl, _unit_state
+from kiro_crew.service.linux_systemctl import _stale_unit_lines, _systemctl, _unit_state
 from kiro_crew.service.linux_uninstall import _first_line
 
 
@@ -257,10 +257,20 @@ def alias_holder() -> AliasHolder | None:
     return None
 
 
-def stop() -> None:
-    """Stop the service in every scope where it runs, without disabling it."""
+def stop() -> list[str]:
+    """Stop the service in every scope where it runs, without disabling it.
+
+    Returns the command to run by hand for each scope whose ``systemctl stop``
+    exited non-zero (sudo refused, polkit denied), empty when every scope
+    stopped. Every scope is still tried after a refusal.
+    """
+    refused: list[str] = []
     for user in _running_scopes():
-        _systemctl("stop", f"{SERVICE_NAME}.service", user=user)
+        res = _systemctl("stop", f"{SERVICE_NAME}.service", user=user)
+        if res.returncode != 0:
+            spelled = "systemctl --user" if user else "sudo systemctl"
+            refused.append(f"{spelled} stop {SERVICE_NAME}")
+    return refused
 
 
 # How long a unit the manager just restarted must stay up before the restart is
@@ -449,9 +459,10 @@ def status() -> str:
     each scope that actually has a unit. A scope with no unit never shows
     systemd's ``inactive (dead)`` for it: that line, printed for the system
     scope alone, is what makes a running user-scope gateway read as dead. A
-    loaded unit of ours whose manager-loaded ``RestartPreventExitStatus`` does
-    not name :data:`LIVE_HOLDER_EXIT_CODE` gets one more line under its headline
-    naming the directive and the command that adds it (:func:`_stale_unit_line`);
+    loaded unit of ours that lags this build's unit gets one more line under its
+    headline per lag, naming it and the command that fixes it
+    (:func:`_stale_unit_lines`): a ``RestartPreventExitStatus`` that does not name
+    :data:`LIVE_HOLDER_EXIT_CODE`, or a start-rate cap other than the unit's;
     nothing is rewritten.
 
     Status is queryable without sudo. We avoid sudo here so
@@ -462,9 +473,7 @@ def status() -> str:
     for user in (False, True):
         state = _unit_state(user=user)
         lines = [state.headline()]
-        stale = _stale_unit_line(state)
-        if stale is not None:
-            lines.append(stale)
+        lines += [f"  ⚠️  {line}" for line in _stale_unit_lines(state)]
         if state.installed:
             res = _systemctl(
                 "status", f"{SERVICE_NAME}.service", "--no-pager", sudo=False, user=user
@@ -474,6 +483,19 @@ def status() -> str:
                 lines.append(block)
         sections.append("\n".join(lines))
     return "\n\n".join(sections)
+
+
+def stale_unit_notes() -> list[str]:
+    """The lines :func:`status` prints under a scope whose loaded unit lags this
+    build's, each naming its scope, for ``kirocrew doctor`` to repeat."""
+    notes: list[str] = []
+    for user in (False, True):
+        state = _unit_state(user=user)
+        notes += [
+            f"{SERVICE_NAME}.service ({state.scope} scope): {line}"
+            for line in _stale_unit_lines(state)
+        ]
+    return notes
 
 
 # This module is the facade of the Linux service owners, and every name is reached through
@@ -529,17 +551,21 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.service.linux_systemctl import (  # noqa: F401
         _SHOW_PROPERTIES,
         _STOPPED_STATES,
+        _UNIT_INTERVAL_SHOWN,
         _UP_STATES,
         ServiceInstallError,
         _loaded_restart_prevent,
+        _loaded_start_limit,
         _privilege_prefix,
         _require_privilege,
+        _stale_unit_line,
+        _start_limit_line,
         _sudo_run,
+        _unit_remedy,
         _UnitState,
         _user_scope_unreachable_reason,
     )
     from kiro_crew.service.linux_uninstall import (  # noqa: F401
-        _SYSTEMD_BOOTED_DIR,
         MANAGED_MARKER_LINE,
         OwnedUnit,
         UninstallReport,
@@ -562,8 +588,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.service.linux_unit import (  # noqa: F401
         _ENV_FILE_TEMPLATE,
+        _SYSTEMD_BOOTED_DIR,
         ENV_DIR,
         ENV_FILE_PATH,
+        START_LIMIT_BURST,
+        START_LIMIT_INTERVAL_SECS,
         UNIT_PATH,
         USER_UNIT_SUBDIR,
         _current_group,

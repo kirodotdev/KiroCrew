@@ -206,6 +206,9 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                     self.defer_removal(terminal.id)
             except Exception:
                 logger.exception("Failed to merge result for job '%s'", job.name)
+            # A quiet run that ended as it should leaves no row: a gateway job
+            # ticking often would otherwise fill the shared, capped index.
+            quiet = terminal.quiet_run and status == "success"
             try:
                 # The row's cause is this run's own. A stopped run with no
                 # outcome carries the previous run's last_error (close_run),
@@ -226,9 +229,10 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                     trace=run_result or "",
                     error=row_error,
                 )
-                await self._history.append(record)
-                if self._push_refresh:
-                    self._push_refresh("cron_history")
+                if not quiet:
+                    await self._history.append(record)
+                    if self._push_refresh:
+                        self._push_refresh("cron_history")
             except Exception:
                 logger.exception("Failed to record history for job '%s'", job.name)
         # Re-arm last, after this run's outcome is settled: _next_wake_secs()
@@ -339,6 +343,7 @@ async def _execute(self: CronService, job: CronJob, claim: _RunClaim | None = No
     job.fire_time_denied = False
     job.run_never_started = False
     job.refusal_cannot_clear = False
+    job.quiet_run = False
     # The callback only increments `_transient_attempts`; this method reads,
     # clears and persists it, in a `finally` so a cancelled run cannot leak a
     # half-spent retry budget into the next run.

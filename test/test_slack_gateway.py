@@ -10,7 +10,6 @@ and the builders other test files import from here are re-exported below.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import threading
 import time
@@ -1157,23 +1156,35 @@ class TestShutdown:
     ):
         """The wait after the cut is bounded by the graceful deadline, whether that
         deadline is ``_shutdown``'s own or the bound ``_shutdown_and_exit`` applies,
-        and the write it leaves is named at WARNING."""
+        and the write it leaves is named at WARNING.
+
+        The outer bound is applied as the cancellation it delivers at expiry, once
+        the wait after the cut has started. A timer racing the drain cut would land
+        before that wait on a loaded runner and test a different path."""
         orch, service, add_task, release, finished = await self._cut_drain_over_a_slow_write(
-            tmp_path, monkeypatch, graceful_secs=0.3
+            tmp_path, monkeypatch, graceful_secs=_LOST_RUN_SECS if under_graceful_bound else 0.3
         )
-        # Replace teardown with a no-op so ``settle_admitted_writes`` is always
-        # reached before the graceful deadline, regardless of shard load.  Once
-        # reached, the warning fires unconditionally (via deadline or via the
-        # CancelledError path in settle_admitted_writes), making the assertion
-        # deterministic.  The real teardown is not under test here.
+        # The real teardown is not under test here.
         orch._stop_services_and_sessions = AsyncMock(return_value=None)
+        settle_entered = asyncio.Event()
+        real_settle = service.settle_admitted_writes
+
+        async def recording_settle(deadline):
+            settle_entered.set()
+            return await real_settle(deadline)
+
+        monkeypatch.setattr(service, "settle_admitted_writes", recording_settle)
         caplog.set_level("WARNING", logger="kiro_crew.autonudge")
         try:
-            shutdown = orch._shutdown()
             if under_graceful_bound:
-                shutdown = asyncio.wait_for(shutdown, timeout=gw.GRACEFUL_SHUTDOWN_SECS)
-            with contextlib.suppress(asyncio.TimeoutError):
-                await _within_lost_run(shutdown, "shutdown over a wedged AutoNudge write")
+                shutdown = asyncio.create_task(orch._shutdown())
+                await _within_lost_run(settle_entered.wait(), "the wait after the drain cut")
+                shutdown.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await _within_lost_run(shutdown, "shutdown cut by the graceful bound")
+            else:
+                await _within_lost_run(orch._shutdown(), "shutdown over a wedged AutoNudge write")
+            assert settle_entered.is_set()
             assert not finished.is_set()
             assert any(
                 "at the graceful shutdown deadline" in record.getMessage()

@@ -6,7 +6,7 @@
  * would be circular - the console navigates INTO the drive page, so the drive
  * page cannot import from the console.
  */
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Copy, Check, RefreshCw } from 'lucide-react'
 import { Btn, StatCard } from '../../components/ui'
@@ -347,3 +347,33 @@ export function QuickTile({ icon, label, count, testId, onClick }: {
  * took over — leaving `CrumbHeader` with zero call sites and 12 catalogs of
  * copy nothing rendered. */
 
+
+/**
+ * A listing's Load more button. Held with `aria-disabled`, never `disabled`,
+ * while the next page loads: the button stays on screen, and disabling the
+ * pressed button blurs it to <body>. A ref latches the press synchronously, so
+ * a second press that beats the re-render is refused too, while the fetch keeps
+ * the default `cancelRefetch` and so still cancels a background refetch of the
+ * loaded pages instead of being swallowed by it.
+ */
+export function LoadMoreButton({ listQ, testId }: {
+  listQ: { isFetchingNextPage: boolean; fetchNextPage: () => Promise<unknown> }
+  testId: string
+}) {
+  const inFlight = useRef(false)
+  const onClick = () => {
+    if (inFlight.current || listQ.isFetchingNextPage) return
+    inFlight.current = true
+    void listQ.fetchNextPage().finally(() => { inFlight.current = false })
+  }
+  return (
+    <Btn
+      onClick={onClick}
+      aria-disabled={listQ.isFetchingNextPage || undefined}
+      className="aria-disabled:cursor-not-allowed aria-disabled:opacity-30"
+      data-testid={testId}
+    >
+      {i18nT('apps.awsControl.console.load_more')}
+    </Btn>
+  )
+}

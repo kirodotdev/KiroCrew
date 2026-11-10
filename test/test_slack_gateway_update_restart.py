@@ -252,7 +252,7 @@ class TestCallbackSafeUpdateRestart:
 
         await orch._restart_after_update(lambda: str(interpreter))
 
-        assert order == ["drain:30.0", "fence", "close", "drain:None", "exec"]
+        assert order == ["drain:30.0", "fence", "close", "drain:None", "drain:0.0", "exec"]
         assert orch._pending_update_respawn is None
 
     @pytest.mark.asyncio

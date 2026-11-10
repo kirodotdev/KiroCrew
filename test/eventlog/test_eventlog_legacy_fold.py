@@ -1055,3 +1055,30 @@ class TestAnImportedLegacyRowIsMarkedAndDoesNotDuplicate:
         ]
         assert native, "no native activity record was written"
         assert svc_mod.LEGACY_PROVENANCE_KEY not in native[0]
+
+
+def test_a_legacy_row_with_an_out_of_range_ts_does_not_break_the_fold(tmp_path, monkeypatch):
+    """A legacy ``ts`` past float range raised OverflowError out of the activity
+    view while the fold appended the row, so ``ensure`` failed -- and failed again
+    on every later call, because the row now sits in the log. The row is kept
+    and skipped by the view like any unreadable timestamp; the other rows serve."""
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+    dest = members.member_dir("hale") / members.ACTIVITY_FILE_NAME
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        '{"ts": 1' + "0" * 400 + ', "member": "Hale", "session": "s0"}\n'
+        '{"ts": 1000, "member": "Hale", "session": "s1"}\n',
+        encoding="utf-8",
+    )
+
+    svc = MemberEventLogService(root)
+    svc.ensure("hale", "Hale")
+    svc.ensure("hale", "Hale")
+
+    activity = svc.snapshot("hale")["values"][types.PROJ_ACTIVITY]
+    assert [r["session"] for r in activity["recent"]] == ["s1"]
+    json.dumps(activity, allow_nan=False)

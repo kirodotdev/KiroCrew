@@ -1,7 +1,7 @@
 # Auto-Improvement — user manual
 
-An opt-in built-in app that finds and fixes real defects in a GitHub repository, then
-opens them as **draft pull requests** for you to review.
+An opt-in built-in app that finds and fixes real defects in a GitHub or GitLab
+repository, then opens them as **draft pull or merge requests** for you to review.
 
 Its central idea: **measure before you change, and never let the agent grade its own
 work.** The agent proposes; deterministic Python decides. That is why a run can honestly
@@ -13,11 +13,13 @@ report "I found nothing" — and why a fix that reaches you has already been pro
 
 You need:
 
-* **`git`** and an authenticated **`gh`** (`gh auth status`). An unauthenticated `gh`
-  only fails at the moment a PR is drafted, which is the worst time to discover it — so
-  the app checks up front and refuses to start.
-* **A GitHub repository with a Python test suite.** The suite is the app's measuring
-  instrument, so this is a hard requirement, not a nicety.
+* **`git`**, plus the CLI for your repository's host: an authenticated **`gh`**
+  (`gh auth login`) for GitHub, or an authenticated **`glab`** (`glab auth login`) for
+  GitLab. An unauthenticated CLI only fails at the moment a PR or MR is drafted, which is
+  the worst time to discover it — so the app checks the one your repository needs up
+  front and refuses to start.
+* **A GitHub or GitLab repository with a Python test suite.** The suite is the app's
+  measuring instrument, so this is a hard requirement, not a nicety.
 * **`ruff`** (optional). Improves defect discovery; the app degrades cleanly without it.
 
 The app is **disabled by default** (`defaultEnabled: false`). Enable it from the Apps
@@ -105,7 +107,11 @@ The gate runs your suite several times per candidate (build → lint → collect
 
 ## 2. Connect a repository
 
-1. Paste an `https://github.com/<owner>/<repo>` URL and click **Connect**.
+1. Paste an `https://github.com/<owner>/<repo>` or `https://gitlab.com/<group>/<project>`
+   URL and click **Connect**. A self-hosted GitLab URL works once its host is listed in
+   the `dashboard.gitlab_hosts` allowlist and resolves to a public address. A host that
+   resolves to a private (RFC 1918), loopback, link-local or other reserved address is
+   refused even when it is listed.
 2. Pick a **base branch**.
 
 The app clones into its own scratch directory and immediately **disables push** on that
@@ -114,11 +120,13 @@ run and refuses to start if the check does not hold.
 
 Two refusals you may hit, both deliberate:
 
-* **"Only github.com URLs are supported"** — the host list is an allowlist, not a
-  denylist.
+* **An unsupported-host refusal** — the host list is an allowlist, not a denylist.
+  `github.com` and `gitlab.com` are built in; a self-hosted GitLab instance counts only
+  once its host is added to the `dashboard.gitlab_hosts` config.
 * **"Existing clone … has origin X, which does not match Y — refusing to reuse it"** —
-  usually because `gh` switched between HTTPS and SSH. Delete or move the old scratch
-  clone and reconnect. The app will not silently reuse a clone it cannot vouch for.
+  usually because `gh` or `glab` switched between HTTPS and SSH. Delete or move the old
+  scratch clone and reconnect. The app will not silently reuse a clone it cannot vouch
+  for.
 
 Changing repositories clears `branch` and `scopeDiffBase`, because a branch belongs to the
 repository it came from.
@@ -168,7 +176,7 @@ Click **Run**. Each cycle:
    must **fail on your unmodified code (twice, to catch flakes)**, **pass with the fix**,
    and **leave the rest of the suite green**.
 4. **Keep** — only a real transition is accepted.
-5. **Draft a PR** (or commit — §6).
+5. **Draft a PR or MR** (or commit — §6).
 
 A run ends on any of: the cycle cap, the time budget, the cost ceiling (only on a
 backend that reports USD cost — on Kiro, which reports credits, it never trips, so
@@ -201,7 +209,7 @@ Click any finding to expand its evidence:
 | `discarded_noise` | A perf change that did not beat the noise band. | sticky |
 | `duplicate` | Same fingerprint already resolved; not re-filed. | — |
 | `error` | A harness failure, not a verdict on the code. | after 24 h |
-| `filed` | A draft PR exists. **Review it.** | — |
+| `filed` | A draft PR or MR exists. **Review it.** | — |
 | `committed` | Pushed to your branch (autocommit mode). Click **View commit**. | — |
 
 Findings are keyed by a **content fingerprint** and scoped per repository *and* branch, so
@@ -211,11 +219,12 @@ switching either gives you a separate set, and the same defect is never filed tw
 
 ---
 
-## 6. Draft PRs vs autocommit
+## 6. Draft PRs/MRs vs autocommit
 
-**Draft PR (default).** A verified fix is pushed to a generated
-`auto-improvement/<kind>-<fingerprint>` branch and opened as a **draft**. The app never
-marks a PR ready, never merges, and never enables auto-merge — those stay yours.
+**Draft PR / MR (default).** A verified fix is pushed to a generated
+`auto-improvement/<kind>-<fingerprint>` branch and opened as a **draft** — a GitHub draft
+PR or a GitLab draft MR. The app never marks it ready, never merges, and never enables
+auto-merge or merge-when-pipeline-succeeds — those stay yours.
 
 **Autocommit** (`directCommit`). A verified fix is committed straight to your base branch.
 Use it on a feature branch you own. Guards that still apply:
@@ -249,6 +258,7 @@ at least one check actually run**, no unresolved comments.
 | `watcherAutoStart` | off | Let the app start watchers for filed PRs whose checks went red (§8). |
 | `watcherAcceptEgressRisk` | off | Acknowledge a watcher's residual network-egress risk; no watcher runs without it (§8). |
 | `acceptUnsandboxedAgentRisk` | off | The explicit risk decision for unattended assignments outside a `strict` sandbox (§1). |
+| `candidateAdmissionCommand` | unset | Ask your own evidence checker before any candidate is kept (below). |
 
 The UI sets the repository, branch and a few run controls; most keys in this table are
 set through `PUT /api/apps/auto-improvement/config`. Some keys are deliberately **not**
@@ -256,12 +266,50 @@ settable through the config API — `clone` and
 `target_url` decide which repository the agent is turned loose on, so they move only
 through Connect. Rejected keys are echoed back rather than silently dropped.
 
+### Your own check before a keep
+
+`candidateAdmissionCommand` is not settable through the config API; write it into the
+app's `config.json` as an argv list whose first element is an absolute path, for example
+`["/opt/checks/admit", "--strict"]`. A value of any other shape stops the run from
+starting, and so does any value on Windows, where the checker is not supported. When it
+is set, both tracks ask the checker before a candidate is committed:
+
+- The checker gets one JSON object on stdin: a fresh `request_id`, `base_sha`, `branch`,
+  `candidate_id`, `patch_sha256`, `profile_id`, `track`, `metric` and `direction`.
+- It admits the candidate only by exiting 0 and printing a JSON object (64 KiB at most)
+  whose `request_sha256` is the SHA-256 of the exact request bytes it read and whose
+  `status` is `"admitted"`. Other keys are ignored.
+- Anything else refuses the keep: another status, a wrong or missing digest, a non-zero
+  exit, no answer within 60 seconds, or a clone that is not clean. The checker vouches for
+  the candidate's diff alone, so the clone must have no uncommitted changes before the
+  check and the same `HEAD`, branch and files after it, whatever the checker answered. The
+  candidate is recorded as `failed_verify` and is not committed; the log names the reason.
+- A check that left unsafe git settings in the clone stops the run, and the clone is set
+  aside and not reused. A check that changed the clone otherwise has the branch and tracked
+  files put back (if that fails, the run stops and the clone is quarantined). An untracked
+  file in the clone, whoever left
+  it, refuses every later keep, in this run and the next, until you remove it; `git status`
+  in the clone shows it.
+
+The checker runs in the same `strict` sandbox as the target repository's tests, from its
+own directory, with credential directories, credential environment variables and
+`~/.kiro/crew` hidden. It runs in its own process group, and when the check ends, by an
+answer or at the 60-second limit, that whole group is stopped before the clone is
+checked: a process the checker left running is stopped with it unless it left the
+group. Install it outside `~/.kiro/crew`, and give it evidence it can read without
+credentials. It can only add a refusal: every built-in gate still runs.
+
 ---
 
 ## 8. Troubleshooting
 
 **"the clone's push is not disabled — re-run repository setup."** The safety invariant
 failed. Reconnect the repository.
+
+**The run refuses to start with an authentication error.** The up-front CLI check failed
+for the host your repository lives on. GitHub repositories need an authenticated `gh`
+(`gh auth login`); GitLab repositories need an authenticated `glab` (`glab auth login`,
+or `glab auth login --hostname <host>` for a self-hosted instance).
 
 **Every candidate fails `failed_gate: test_invalid`.** Its reproducing test would not
 collect. Most often the test depends on something only the *fix* introduces (a new import,
@@ -279,12 +327,12 @@ attempt them. Raise `maxHours`; `maxCycles` is already generous.
 deduplicates by fingerprint, so a subtree it has already worked gets quieter over time.
 Point `editAllowlist` somewhere new.
 
-**A PR's CI goes red after the run finished.** Re-driving it is opt-in. Automatic
-promotion of a watcher for a filed PR whose checks went red needs `watcherAutoStart: true`
-(default off), and no watcher runner is built at all until `watcherAcceptEgressRisk: true`
-(default off) acknowledges its network-egress risk — a manually started watcher needs that
-consent too. Once enabled, watchers are bounded by a concurrency cap; over-cap findings are
-deferred, never dropped.
+**A PR's or MR's CI goes red after the run finished.** Re-driving it is opt-in. Automatic
+promotion of a watcher for a filed PR or MR whose checks went red needs
+`watcherAutoStart: true` (default off), and no watcher runner is built at all until
+`watcherAcceptEgressRisk: true` (default off) acknowledges its network-egress risk — a
+manually started watcher needs that consent too. Once enabled, watchers are bounded by a
+concurrency cap; over-cap findings are deferred, never dropped.
 
 ---
 
@@ -293,12 +341,13 @@ deferred, never dropped.
 Stated plainly, because these are guarantees:
 
 * Never pushes to a protected branch.
-* Never merges, marks a PR ready (unless you enable `autoPublish`), or enables auto-merge.
+* Never merges, marks a PR or MR ready (unless you enable `autoPublish`), or enables
+  auto-merge or merge-when-pipeline-succeeds.
 * Never edits your tests to make a metric look better — the tests are the measuring
   instrument, and a candidate that deletes tests is rejected by name.
 * Never reports an estimate as a measurement.
 * Never keeps a fix on the agent's word. Every accepted change passed a deterministic
-  gate, and a perf win is independently reproduced before a PR is drafted.
+  gate, and a perf win is independently reproduced before a PR or MR is drafted.
 
 ---
 

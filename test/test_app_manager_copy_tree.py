@@ -705,6 +705,40 @@ class TestCopyAppTree:
             p.name for p in dest.parent.iterdir() if p.name.startswith(".test-app-update-old-")
         ] == []
 
+    def test_data_in_two_places_refuses_the_update_and_deletes_neither_copy(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """An update that failed part-way can leave `data/` partial and the only
+        complete copy in `.<name>-data-tmp`. The next update refuses
+        before the transaction opens, names both paths and writes an audit
+        record, instead of deleting that copy as stale."""
+        from kiro_crew.apps.manager import app_dir
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        dest = app_dir("test-app")
+        (dest / "data" / "a_state.json").write_text("a", encoding="utf-8")
+        tmp_data = dest.parent / ".test-app-data-tmp"
+        (tmp_data / "db").mkdir(parents=True)
+        (tmp_data / "a_state.json").write_text("a", encoding="utf-8")
+        (tmp_data / "db" / "app.sqlite").write_bytes(b"only copy")
+        before = _read_installed("test-app")
+        audit: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.apps.manager.sel",
+            lambda: type("FakeSel", (), {"log_api_access": lambda self, **kw: audit.append(kw)})(),
+        )
+
+        result = update_app(_make_app_source(tmp_path / "v2", version="2.0.0"))
+
+        assert not result.ok
+        assert str(tmp_data) in result.error and str(dest / "data") in result.error, result.error
+        assert (tmp_data / "db" / "app.sqlite").read_bytes() == b"only copy"
+        assert (dest / "data" / "a_state.json").read_text(encoding="utf-8") == "a"
+        assert _read_installed("test-app") == before
+        assert [(e["operation"], e["outcome"]) for e in audit] == [
+            ("data_in_two_places", "rejected")
+        ]
+
     @requires_symlinks
     @pytest.mark.parametrize("secret_installed", [True, False])
     def test_update_never_keeps_a_shipped_app_secret_link(

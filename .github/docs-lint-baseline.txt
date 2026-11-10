@@ -61,7 +61,6 @@ dead-identifier	docs/build/signing-runbook.md	KiroCrewNotary
 dead-identifier	docs/ci/e2e-gate.md	webServer
 dead-identifier	docs/guides/docker-troubleshooting.md	initialDelaySeconds
 dead-identifier	docs/guides/docker-troubleshooting.md	livenessProbe
-dead-identifier	docs/reference/kiro-cli/hooks.md	cache_ttl_seconds
 dead-identifier	docs/reference/kiro-cli/mcp/examples.md	read_documentation
 dead-identifier	docs/reference/kiro-cli/mcp/examples.md	search_documentation
 dead-identifier	docs/reference/kiro-cli/mcp/oauth-token-storage.md	ascii_serialization

@@ -407,6 +407,11 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
     )
     if refusal is not None:
         return refusal
+    from kiro_crew.dashboard.card_send import card_turn_seen
+
+    # A card turn seen when this request arrived, even if stopped during the awaits.
+    if parent_session and card_turn_seen(request, parent_session):
+        return web.json_response({"status": "ignored_card_turn", "batch_id": batch_id})
     state.subagents.record_lost_submission(
         batch_id, batch_total, reason, parent_session_key=parent_session
     )

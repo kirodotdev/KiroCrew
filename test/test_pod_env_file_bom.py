@@ -145,8 +145,10 @@ def test_dev_fleet_strict_pin_reader_drops_the_mark(
 
 
 def _cp1252_locale(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The locale default a Western-European Windows host has outside UTF-8 mode.
+    # The locale a Western-European Windows host has outside UTF-8 mode: both the
+    # preferred encoding and the code page name cp1252.
     monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "cp1252")
+    monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
 
 
 def test_bomless_non_ascii_pin_round_trips_under_a_non_utf8_locale(
@@ -187,6 +189,41 @@ def test_bomless_file_saved_in_the_locale_code_page_still_reads(
     cfg.env_file("x").write_bytes("SEED='caf\u00e9'\n".encode("cp1252"))
 
     assert rt.read_env_file(cfg, "x") == {"SEED": "caf\u00e9"}
+
+
+def _utf8_mode_with_cp1252_codepage(monkeypatch: pytest.MonkeyPatch) -> None:
+    # What a Windows host under the gateway's PYTHONUTF8=1 sees: UTF-8 mode makes
+    # getpreferredencoding answer "utf-8", but getencoding still names the real
+    # ANSI code page. Patching both lets the UTF-8-mode branch run off Windows.
+    monkeypatch.setattr(locale, "getpreferredencoding", lambda do_setlocale=True: "utf-8")
+    monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+
+
+def test_bomless_locale_code_page_file_still_reads_under_utf8_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Under UTF-8 mode getpreferredencoding is "utf-8", so the fallback must use
+    # getencoding (the real code page) rather than re-running the UTF-8 decode.
+    cfg = _cfg(tmp_path, monkeypatch)
+    _utf8_mode_with_cp1252_codepage(monkeypatch)
+    cfg.env_file("x").write_bytes("SEED='caf\u00e9'\n".encode("cp1252"))
+
+    assert rt.read_env_file(cfg, "x") == {"SEED": "caf\u00e9"}
+
+
+def test_file_no_decoder_can_read_raises_poderror_naming_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A byte sequence that is neither valid UTF-8 nor valid in the ANSI code
+    # page raises PodError naming the file, not a bare UnicodeDecodeError.
+    cfg = _cfg(tmp_path, monkeypatch)
+    _utf8_mode_with_cp1252_codepage(monkeypatch)
+    # Patch the ANSI code page to a double-byte one that rejects a lone 0x81.
+    monkeypatch.setattr(locale, "getencoding", lambda: "cp932")
+    cfg.env_file("x").write_bytes(b"SEED='\x81'\n")
+
+    with pytest.raises(rt.PodError, match=r"is not valid UTF-8 or cp932.*save it as UTF-8"):
+        rt.read_env_file(cfg, "x")
 
 
 def test_pod_reader_agrees_with_the_peer_and_strict_pin_readers(

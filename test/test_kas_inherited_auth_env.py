@@ -282,9 +282,10 @@ async def test_the_runtime_hands_the_harness_its_launch_verdict(forwarded):
     ("launch", "now", "spawn_mode", "relayed"),
     [
         (True, True, "strict", True),
-        # The wrap dropped it, a floor was raised or a consent revoked since.
+        # A floor was raised or a consent revoked since the launch.
         (True, False, "strict", False),
-        # The engine was denied it: a verdict re-derived now never re-adds it.
+        # The engine (or its sandbox wrap) was denied it: a verdict re-derived now
+        # never re-adds it.
         (False, True, "strict", False),
         # No spawn recorded a tier.
         (True, True, None, False),

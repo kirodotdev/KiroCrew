@@ -603,14 +603,31 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         relay_lease_url=str(section.get("relay_lease_url") or ""),
         relay_lease_credential=str(section.get("relay_lease_credential") or ""),
         relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        relay_handle_email_domains=_handle_email_domains(section.get("relay_handle_email_domains")),
         # Only the JSON boolean ``true`` turns the viewer on, as for relay_enabled.
         relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
         **_relay_viewer_targets(section),
     )
 
 
+def _handle_email_domains(raw: object) -> list[str]:
+    """The non-empty domain strings in *raw*, trimmed and lower-cased, first spelling kept.
+
+    A non-list reads as empty, and an entry that is not a string or holds an ``@``
+    is dropped, so a hand edit can only label fewer people by their handle.
+    """
+    domains: list[str] = []
+    for item in _safe_list(raw):
+        if not isinstance(item, str):
+            continue
+        domain = item.strip().lower()
+        if domain and "@" not in domain and domain not in domains:
+            domains.append(domain)
+    return domains
+
+
 def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
-    """The viewer's control plane URL and credential reference, or "" for a bad one.
+    """The viewer's control plane URL, credential reference and Crew domain, or "" for a bad one.
 
     The URL carries the person's sign-in, so it is held to the lease URL's rule:
     https://, or http:// only for a loopback port-forward. The credential setting
@@ -637,7 +654,17 @@ def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
                 "absolute path of a file holding the credential, never the credential itself"
             )
             ref = ""
-    return {"relay_viewer_cps_url": url, "relay_viewer_credential": ref}
+    # No format check: the viewer compares hosts against it exactly, so a value
+    # that is not the relay's domain matches no address and lists no Crew. A
+    # parsed host is lower-case ASCII, so only an ASCII value is lower-cased.
+    domain = str(section.get("relay_viewer_relay_domain") or "").strip()
+    if domain.isascii():
+        domain = domain.lower()
+    return {
+        "relay_viewer_cps_url": url,
+        "relay_viewer_credential": ref,
+        "relay_viewer_relay_domain": domain,
+    }
 
 
 def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig:
@@ -1010,6 +1037,7 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         submit_on_release=section.read("submit_on_release", _safe_bool),
         slide_to_send=section.read("slide_to_send", _safe_bool),
         dictation_panel=section.read("dictation_panel", _safe_bool),
+        dictation_note=section.read("dictation_note", _safe_bool),
         timeout_secs=section.read(
             "timeout_secs", _safe_int, lo=_STT_MIN_TIMEOUT_SECS, hi=_STT_MAX_TIMEOUT_SECS
         ),

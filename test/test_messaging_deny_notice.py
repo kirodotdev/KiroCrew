@@ -745,7 +745,8 @@ _SURFACES = {
         audit=r"^\s*sel\(\)\.log_tool_invocation\(",
         sites=(
             _Site('outcome="rejected_blocked_tool"', "host"),
-            _Site('outcome="rejected_hook_deny"', "host"),
+            # The security gate's deny or the agent spec's own PreToolUse refusal.
+            _Site("outcome=_gate_outcome,", "host"),
             _Site('outcome="rejected_over_bound_title"', "host"),
             # One reject line, two provenances: the card expired (host) or the
             # reader clicked Deny (user). The steer sits under the timeout flag.
@@ -759,6 +760,8 @@ _SURFACES = {
         sites=(
             _Site("reason=untrusted_sender", "host"),
             _Site("reason=hook_deny", "host"),
+            # A PreToolUse script hook (the Hooks page's or the agent spec's) refused.
+            _Site("reason=pre_tool_hook", "host"),
             # The decider said no. ``_steer_deny_cause`` steers ONLY when the
             # decider recorded a host cause (an expired prompt); a human's Deny
             # stays bare. Its audit row is written by the caller after the wire.

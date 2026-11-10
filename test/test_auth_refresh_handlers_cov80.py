@@ -1099,6 +1099,35 @@ async def test_logout_records_a_noop_when_the_access_cookie_was_not_revocable(
 
 
 @pytest.mark.asyncio
+async def test_logout_revokes_on_unavailable_state_even_if_the_store_reads_again(
+    audit: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revoke follows the validation's own answer, not a second look at the store."""
+    unavailable = (False, "alice", "refresh state unavailable (x)", "chain-1", "j", 1.0)
+    monkeypatch.setattr(h, "validate_refresh_token", lambda _t: unavailable)
+    fake = MagicMock()
+    fake.degraded_reason.return_value = ""  # the file read again in between
+    fake.revoke_chain.return_value = True
+    monkeypatch.setattr(h, "_get_state", lambda: fake)
+    request = _mk("POST", "/api/auth/logout", cookies={refresh_cookie_name(str(PORT)): "tok"})
+    await h.api_auth_logout(request)
+    assert fake.revoke_chain.call_args.args[0] == "chain-1"
+
+
+@pytest.mark.asyncio
+async def test_logout_reports_an_unstored_access_cookie_revocation(
+    audit: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A logout the denylist could not store answers 503, not 200, and clears the cookies."""
+    monkeypatch.setattr(h, "revoke_access_cookie", MagicMock(side_effect=OSError("unreadable")))
+    request = _mk("POST", "/api/auth/logout", cookies={f"mc_token_{PORT}": "tok"})
+    response = await h.api_auth_logout(request)
+    assert response.status == 503
+    assert ("", "access_cookie_revoked", "not_persisted", "") in audit
+    assert f"mc_token_{PORT}" in _set_cookie_names(response)
+
+
+@pytest.mark.asyncio
 async def test_a_refused_rotation_leaves_an_audit_row_like_every_other_outcome(
     state: RefreshStateManager, audit: list, monkeypatch: pytest.MonkeyPatch
 ) -> None:

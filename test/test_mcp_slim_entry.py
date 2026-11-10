@@ -241,6 +241,30 @@ def test_detached_stderr_falls_back_before_logging(
     assert startup["log"] == [] and startup["boot"] == []
 
 
+def test_a_refused_root_run_falls_back_before_the_data_home_is_touched(
+    startup: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew import config as kc_config
+    from kiro_crew import data_home_owner
+
+    seen: list[tuple] = []
+
+    def refuse(home, command, argv):
+        seen.append((command, argv))
+        return "refused"
+
+    def touched():
+        raise AssertionError("the data home was touched before the refusal")
+
+    monkeypatch.setattr(data_home_owner, "root_run_refusal", refuse)
+    monkeypatch.delenv("KIROCREW_PROJECT_DIR")
+    monkeypatch.setattr(project_dir, "detect_project_dir", lambda saved: touched())
+    monkeypatch.setattr(kc_config, "ensure_data_home", touched)
+    assert mcp_entry.slim_server(["mcp-core"]) is None
+    assert seen == [("mcp-core", ["mcp-core"])]
+    assert startup["lock"] == [] and startup["log"] == []
+
+
 def test_run_if_slim_calls_the_server(monkeypatch: pytest.MonkeyPatch) -> None:
     ran: list[str] = []
     monkeypatch.setattr(mcp_entry, "slim_server", lambda argv: lambda: ran.append(argv[0]))
@@ -337,6 +361,9 @@ def _spy_steps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
         return lambda *a, **k: steps.append(name) or result
 
     monkeypatch.setattr(platform_compat, "ensure_utf8_console", rec("utf8"))
+    from kiro_crew import data_home_owner
+
+    monkeypatch.setattr(data_home_owner, "root_run_refusal", rec("root_refusal", ""))
     monkeypatch.setattr(cli, "_detect_project_dir", rec("project_dir", str(tmp_path / "p")))
     monkeypatch.setattr(project_dir, "detect_project_dir", rec("project_dir", str(tmp_path / "p")))
     monkeypatch.setattr(tree_liveness, "hold_running_tree_lock", rec("tree_lock"))

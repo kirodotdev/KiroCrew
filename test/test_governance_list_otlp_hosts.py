@@ -1,6 +1,6 @@
 """``capabilities.telemetry`` ``otlp_hosts``: which OTLP collectors metrics may reach.
 
-RFC crew-enterprise-edition, appendix row "Diagnostic telemetry target". The key's
+RFC crew-lts-edition, appendix row "Diagnostic telemetry target". The key's
 parse and evaluator contract is in ``test_governance_list_keys.py``; this file
 covers host globs and the call sites: the reader build (audited), the per-export
 gate, the local-only enable gate (unfiltered on purpose) and the context-less MCP

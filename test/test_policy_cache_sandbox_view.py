@@ -1,13 +1,13 @@
-"""An enterprise build's sandboxed processes take the ceiling from a read-only cache view.
+"""An LTS build's sandboxed processes take the ceiling from a read-only cache view.
 
 A Kiro Crew MCP server that kiro-cli starts inside the agent sandbox enters the central
-tier in an enterprise build, but the sandbox hides the Kiro sign-in from it, so it can
+tier in an LTS build, but the sandbox hides the Kiro sign-in from it, so it can
 never fetch. Instead the sandbox shows it the policy cache the gateway wrote, read-only,
 and the process resolves the ceiling in cache-only mode: no fetch, no sign-in, and a
 refusal when the cache is missing, damaged or stale. The vault and the sign-in stay
 hidden. An oss build is unchanged.
 
-The enterprise transport is a fake from the shared ``transport`` fixture, so nothing here
+The LTS transport is a fake from the shared ``transport`` fixture, so nothing here
 opens a socket.
 """
 
@@ -48,7 +48,7 @@ def _outside_any_sandbox(_floor_monkeypatch):
     pd.reset_process_state()
 
 
-#: What the gateway records an enterprise copy against: the source plus the profile.
+#: What the gateway records an LTS copy against: the source plus the profile.
 _EE_CACHE_SOURCE = f"{pd.ENTERPRISE_POLICY_URL}?profile=one-profile&translation={TRANSLATION_TAG}"
 
 
@@ -64,9 +64,9 @@ def _one_signed_in_profile(_floor_monkeypatch):
     _floor_monkeypatch.setattr(epf, "pinned_scope", lambda: "one-profile")
 
 
-@pytest.fixture(name="enterprise")
-def enterprise_fixture(monkeypatch):
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+@pytest.fixture(name="lts")
+def lts_fixture(monkeypatch):
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 def _as_child(monkeypatch) -> None:
@@ -104,7 +104,7 @@ class TestTheCacheHoldsNoCredential:
     def test_the_marker_is_the_launchers(self):
         assert sandbox_launch_mark.SANDBOX_MARKER == sandbox_tiers._IN_SANDBOX_MARKER
 
-    def test_the_cache_holds_only_the_document_and_its_validators(self, enterprise, transport):
+    def test_the_cache_holds_only_the_document_and_its_validators(self, lts, transport):
         """Every file the cache writes: the document, its metadata, an empty lock."""
         _gateway_boot(transport)
 
@@ -122,13 +122,11 @@ class TestTheCacheHoldsNoCredential:
 
 
 class TestTheChildEnforcesTheCachedCeiling:
-    def test_a_sandboxed_enterprise_process_is_cache_only(self, enterprise, monkeypatch):
+    def test_a_sandboxed_lts_process_is_cache_only(self, lts, monkeypatch):
         _as_child(monkeypatch)
         assert pd.cache_only() is True
 
-    def test_the_child_boots_from_the_cache_without_fetching(
-        self, enterprise, transport, monkeypatch
-    ):
+    def test_the_child_boots_from_the_cache_without_fetching(self, lts, transport, monkeypatch):
         _gateway_boot(transport)
         _as_child(monkeypatch)
         seen = _child_transport(transport)
@@ -140,7 +138,7 @@ class TestTheChildEnforcesTheCachedCeiling:
         assert ceiling.tier == governance.TIER_CENTRAL
         assert seen == []
 
-    def test_the_child_does_not_write_the_cache(self, enterprise, transport, monkeypatch):
+    def test_the_child_does_not_write_the_cache(self, lts, transport, monkeypatch):
         _gateway_boot(transport)
         before = {p.name: p.stat().st_mtime_ns for p in pd.cache_dir().iterdir()}
         _as_child(monkeypatch)
@@ -151,7 +149,7 @@ class TestTheChildEnforcesTheCachedCeiling:
 
         assert {p.name: p.stat().st_mtime_ns for p in pd.cache_dir().iterdir()} == before
 
-    def test_a_child_refresh_never_fetches(self, enterprise, transport, monkeypatch):
+    def test_a_child_refresh_never_fetches(self, lts, transport, monkeypatch):
         _gateway_boot(transport)
         _as_child(monkeypatch)
         seen = _child_transport(transport)
@@ -181,36 +179,32 @@ class TestTheChildDeniesWithoutAUsableCache:
             governance.load_security_policy()
         assert seen == []
 
-    def test_no_cache_refuses(self, enterprise, transport, monkeypatch):
+    def test_no_cache_refuses(self, lts, transport, monkeypatch):
         _as_child(monkeypatch)
         self._expect_refusal(transport, "found no cached ceiling")
 
-    def test_an_empty_precreated_cache_refuses(self, enterprise, transport, monkeypatch):
+    def test_an_empty_precreated_cache_refuses(self, lts, transport, monkeypatch):
         pd.cache_dir().mkdir(parents=True)
         _as_child(monkeypatch)
         self._expect_refusal(transport, "found no cached ceiling")
 
-    def test_a_document_that_does_not_match_its_metadata_refuses(
-        self, enterprise, transport, monkeypatch
-    ):
+    def test_a_document_that_does_not_match_its_metadata_refuses(self, lts, transport, monkeypatch):
         _gateway_boot(transport)
         (pd.cache_dir() / "policy.json").write_bytes(_body("looser"))
         _as_child(monkeypatch)
         self._expect_refusal(transport, "found no cached ceiling")
 
-    def test_an_unusable_document_refuses(self, enterprise, transport, monkeypatch):
+    def test_an_unusable_document_refuses(self, lts, transport, monkeypatch):
         pd.write_cache(b'{"version": 999}', source=_EE_CACHE_SOURCE)
         _as_child(monkeypatch)
         self._expect_refusal(transport, "unusable in cache-only mode")
 
-    def test_a_cache_for_another_source_refuses(self, enterprise, transport, monkeypatch):
+    def test_a_cache_for_another_source_refuses(self, lts, transport, monkeypatch):
         pd.write_cache(_body("elsewhere"), source="https://elsewhere.example.invalid/p")
         _as_child(monkeypatch)
         self._expect_refusal(transport, "found no cached ceiling")
 
-    def test_a_cache_past_the_fleets_staleness_bound_refuses(
-        self, enterprise, transport, monkeypatch
-    ):
+    def test_a_cache_past_the_fleets_staleness_bound_refuses(self, lts, transport, monkeypatch):
         doc = _body("old", distribution={"max_cache_age_secs": 3600})
         pd.write_cache(doc, source=_EE_CACHE_SOURCE, now=time.time() - 3601)
         _as_child(monkeypatch)
@@ -243,18 +237,16 @@ class TestTheSandboxShowsTheCacheReadOnly:
     def _pinned_ssh_probe(self, _floor_monkeypatch):
         _floor_monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
 
-    def test_an_enterprise_sandbox_shows_the_cache(self, enterprise):
+    def test_an_lts_sandbox_shows_the_cache(self, lts):
         assert sandbox.enterprise_policy_cache_view() == (_cache_target(),)
 
     @pytest.mark.parametrize("hidden", ["cache", "crew home"])
-    def test_a_callers_own_mask_over_the_cache_is_kept(self, enterprise, hidden):
+    def test_a_callers_own_mask_over_the_cache_is_kept(self, lts, hidden):
         """Lifting would cancel a caller mask that contains the cache (a whole crew home)."""
         target = _cache_target() if hidden == "cache" else os.path.dirname(_cache_target())
         assert sandbox.enterprise_policy_cache_view("strict", (target,)) == ()
 
-    def test_a_callers_mask_through_a_crew_home_alias_is_kept(
-        self, enterprise, tmp_path, monkeypatch
-    ):
+    def test_a_callers_mask_through_a_crew_home_alias_is_kept(self, lts, tmp_path, monkeypatch):
         """The caller hides ``$HOME``'s spelling; the data home resolves to another one."""
         canonical = str(tmp_path / "real" / "crew")
         alias = str(tmp_path / "link" / "crew")
@@ -267,7 +259,7 @@ class TestTheSandboxShowsTheCacheReadOnly:
             os.path.join(canonical, "policy_cache"),
         )
 
-    def test_an_unrelated_caller_mask_keeps_the_view(self, enterprise):
+    def test_an_unrelated_caller_mask_keeps_the_view(self, lts):
         assert sandbox.enterprise_policy_cache_view("strict", ("/elsewhere/secret",)) == (
             _cache_target(),
         )
@@ -280,17 +272,17 @@ class TestTheSandboxShowsTheCacheReadOnly:
             b"[]",
         ],
     )
-    def test_metadata_that_may_name_its_source_keeps_the_cache_hidden(self, enterprise, meta):
+    def test_metadata_that_may_name_its_source_keeps_the_cache_hidden(self, lts, meta):
         """Older builds wrote the source URL in plain text, and a pre-signed URL is a credential."""
         pd.cache_dir().mkdir(parents=True)
         (pd.cache_dir() / "policy.meta.json").write_bytes(meta)
         assert sandbox.enterprise_policy_cache_view() == ()
 
-    def test_current_metadata_shows_the_cache(self, enterprise):
+    def test_current_metadata_shows_the_cache(self, lts):
         pd.write_cache(_body("current"), source=_EE_CACHE_SOURCE)
         assert sandbox.enterprise_policy_cache_view() == (_cache_target(),)
 
-    def test_a_304_rewrites_legacy_metadata_without_its_source(self, enterprise):
+    def test_a_304_rewrites_legacy_metadata_without_its_source(self, lts):
         pd.write_cache(_body("current"), source=_EE_CACHE_SOURCE)
         legacy = json.loads((pd.cache_dir() / "policy.meta.json").read_bytes())
         legacy["source"] = pd.ENTERPRISE_POLICY_URL
@@ -301,18 +293,18 @@ class TestTheSandboxShowsTheCacheReadOnly:
 
         assert sandbox.enterprise_policy_cache_view() == (_cache_target(),)
 
-    def test_a_cache_beneath_a_foreign_mask_is_not_shown(self, enterprise, monkeypatch):
+    def test_a_cache_beneath_a_foreign_mask_is_not_shown(self, lts, monkeypatch):
         monkeypatch.setattr(
             sandbox_tiers, "carveout_shadowed_by_foreign_mask", lambda *a, **k: True
         )
         assert sandbox.enterprise_policy_cache_view() == ()
 
-    @pytest.mark.parametrize("enterprise_build", [True, False])
-    def test_wrap_argv_hands_the_view_to_the_launcher_only_in_enterprise(
-        self, enterprise_build, install_ceiling, monkeypatch
+    @pytest.mark.parametrize("lts_build", [True, False])
+    def test_wrap_argv_hands_the_view_to_the_launcher_only_in_lts(
+        self, lts_build, install_ceiling, monkeypatch
     ):
-        if enterprise_build:
-            monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        if lts_build:
+            monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         # A booted context, as a real spawn has: the wrap reads the governance floor.
         install_ceiling(governance.parse_policy(_doc("booted")))
         seen: dict = {}
@@ -329,7 +321,7 @@ class TestTheSandboxShowsTheCacheReadOnly:
         sandbox.wrap_argv(["/bin/true"], mode="standard")
 
         visible = seen.get("extra_visible_dirs", ())
-        assert (_cache_target() in visible) is enterprise_build
+        assert (_cache_target() in visible) is lts_build
 
     @pytest.mark.skipif(sys.platform == "win32", reason="the namespace plan is POSIX-only")
     @pytest.mark.parametrize("mode", _MODES)
@@ -359,9 +351,7 @@ class TestTheSandboxShowsTheCacheReadOnly:
     def test_the_cache_is_precreated_so_its_seal_has_a_target(self):
         assert "policy_cache" in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
 
-    def test_an_empty_precreated_cache_is_no_cache_and_the_gateway_fills_it(
-        self, enterprise, transport
-    ):
+    def test_an_empty_precreated_cache_is_no_cache_and_the_gateway_fills_it(self, lts, transport):
         pd.cache_dir().mkdir(parents=True, mode=0o700)
         assert pd.read_cache_meta() is None and pd.read_cache() is None
 

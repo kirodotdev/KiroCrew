@@ -310,11 +310,12 @@ type PathResolution = {
   candidate: boolean
   /** Path SHAPE alone, independent of whether probing is enabled.
    *
-   * `candidate` also requires the probe to be on, so it flips the moment a
-   * message stops streaming — and anything keyed to it would appear then,
-   * re-wrapping a paragraph whose text has just become final. The glyph reserve
-   * is keyed to this instead, so it is already in place before the probe's
-   * answer (or the probe itself) can arrive. */
+   * `candidate` also requires the probe to be on, so it flips the moment the
+   * text stops moving (its block closes or the message stops streaming) or
+   * the span is probed on demand, and anything keyed to it would appear then,
+   * re-wrapping a paragraph whose text has just become final. The glyph
+   * reserve is keyed to this instead, so it is already in place before the
+   * probe's answer (or the probe itself) can arrive. */
   shaped: boolean
   kind: PathKind | undefined
   path: string

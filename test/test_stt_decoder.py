@@ -28,6 +28,7 @@ from kiro_crew import platform_compat as _pc
 from kiro_crew import transcribe
 from kiro_crew.stt import decoder
 from kiro_crew.stt import models as stt_models
+from kiro_crew.testing.clock import ManualClock
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -824,6 +825,83 @@ class TestInstallCli:
         assert code == 1
         assert "decoder download failed" in capsys.readouterr().err
         assert list(target_dir.iterdir()) == []
+
+    def test_a_transient_failure_is_retried_until_it_installs(self, monkeypatch, tmp_path, capsys):
+        import io
+        import urllib.error
+
+        artifact = next(a for a in decoder.ARTIFACTS if a.platform_key == "linux-x86_64")
+        body = b"decoder bytes"
+        failures = [
+            urllib.error.HTTPError(artifact.url, 504, "Gateway Time-out", {}, io.BytesIO()),
+            urllib.error.HTTPError(artifact.url, 429, "Too Many Requests", {}, io.BytesIO()),
+            TimeoutError("timed out"),
+            ConnectionResetError("reset"),
+        ]
+        clock = ManualClock()
+        calls: list[str] = []
+
+        def _stream(url, *, label, expected_size, expected_sha256, write, **kw):
+            calls.append(url)
+            if failures:
+                raise failures.pop(0)
+            write(body)
+
+        monkeypatch.setattr(decoder, "stream_pinned_payload", _stream)
+        clock.install(monkeypatch, decoder)
+        target_dir = tmp_path / "bundle"
+
+        code = decoder.main(["--install-into", str(target_dir), "--platform", "linux-x86_64"])
+
+        assert code == 0
+        assert len(calls) == 5
+        assert clock.sleeps == (2, 4, 8, 16)
+        assert (target_dir / artifact.filename).read_bytes() == body
+
+    def test_a_persistent_5xx_fails_after_five_tries(self, monkeypatch, tmp_path, capsys):
+        import io
+        import urllib.error
+
+        calls: list[str] = []
+
+        def _stream(url, **kw):
+            calls.append(url)
+            raise urllib.error.HTTPError(url, 504, "Gateway Time-out", {}, io.BytesIO())
+
+        monkeypatch.setattr(decoder, "stream_pinned_payload", _stream)
+        ManualClock().install(monkeypatch, decoder)
+        target_dir = tmp_path / "bundle"
+
+        code = decoder.main(["--install-into", str(target_dir), "--platform", "linux-x86_64"])
+
+        assert code == 1
+        assert len(calls) == 5
+        assert "decoder download failed: HTTP Error 504" in capsys.readouterr().err
+        assert list(target_dir.iterdir()) == []
+
+    def test_a_4xx_or_refused_payload_is_not_retried(self, monkeypatch, tmp_path):
+        import io
+        import urllib.error
+
+        clock = ManualClock()
+        clock.install(monkeypatch, decoder)
+        calls: list[str] = []
+
+        def _not_found(url, **kw):
+            calls.append(url)
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO())
+
+        monkeypatch.setattr(decoder, "stream_pinned_payload", _not_found)
+        assert (
+            decoder.main(["--install-into", str(tmp_path / "a"), "--platform", "linux-x86_64"]) == 1
+        )
+        assert len(calls) == 1
+
+        _serve(monkeypatch, b"not the pinned bytes")
+        assert (
+            decoder.main(["--install-into", str(tmp_path / "b"), "--platform", "linux-x86_64"]) == 1
+        )
+        assert clock.sleeps == ()
 
     def test_a_pinned_platform_installs_and_prints_the_path(self, monkeypatch, tmp_path, capsys):
         """The named platform's pin, not the host's, decides what is fetched."""

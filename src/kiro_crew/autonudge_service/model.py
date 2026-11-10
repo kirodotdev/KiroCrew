@@ -139,6 +139,11 @@ MODEL_REFUSED_REASON = "model_refused"
 CLAIM_UNSAVED_REASON = "claim_unsaved"
 
 
+# Persisted reason for a loop ``_load`` held stopped because a restart caught it
+# mid-delivery with an unresolved cycle claim. Resumable like ``claim_unsaved``.
+INTERRUPTED_CYCLE_REASON = "interrupted_cycle"
+
+
 def new_goal_token() -> str:
     """A fresh opaque identity for a goal write.
 
@@ -242,13 +247,17 @@ _BUDGET_EXHAUSTED_REASONS = frozenset({CYCLE_CAP_REASON, RUNTIME_BUDGET_REASON})
 # in-flight cycle right after the user paused must NOT replace that pause and
 # make it directive-revivable; and (2) they are re-armable (folded into
 # ``_REPLACEABLE_LOOP_STOP_REASONS`` below). ``structural_terminal`` needs both,
-# for the same reason ``cycle_cap``/``runtime_budget`` do.
+# for the same reason ``cycle_cap``/``runtime_budget`` do. The two cycle-claim
+# stops need both too: the system records them, so a re-arm may displace them,
+# and a later reasonless pause must not relabel them ``manual``.
 _TERMINAL_BOUND_REASONS = _BUDGET_EXHAUSTED_REASONS | {
     APPROVAL_STALL_REASON,
     STRUCTURAL_TERMINAL_REASON,
     SESSION_START_FAILURE_REASON,
     CONSECUTIVE_FAILURE_REASON,
     MODEL_REFUSED_REASON,
+    CLAIM_UNSAVED_REASON,
+    INTERRUPTED_CYCLE_REASON,
 }
 
 
@@ -774,8 +783,7 @@ def budget_elapsed(loop: "NudgeLoop", now: float | None = None) -> bool:
 
 
 #: Share of a loop's cycle or runtime cap at or under which the nudge header
-#: says ``10% or less left``. Mirrors ``RENEW_THRESHOLD`` in goal-conductor's
-#: ``patrol_budget.py``, which re-checks it before it renews.
+#: says ``10% or less left``.
 NUDGE_RENEW_DUE_SHARE = 0.10
 
 

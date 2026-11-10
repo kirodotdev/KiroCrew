@@ -8,7 +8,7 @@
  * The header shows the mate's identity; the X close button is rendered by
  * DialogContent itself.
  */
-import { Loader2, ChevronRight, Wrench, Plug, BookOpen, ScrollText, type LucideIcon } from 'lucide-react'
+import { Loader2, ChevronRight, Wrench, Plug, BookOpen, ScrollText, FileText, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -40,13 +40,26 @@ import MemoryBackupsCard from '../../pages/overview/MemoryBackupsCard'
 import MemoryRetiredCard from '../../pages/overview/MemoryRetiredCard'
 import MemoryCarveCard from '../../pages/overview/MemoryCarveCard'
 import { api } from '../../api/client'
+import { pathBasename } from '../../utils/pathBasename'
 import { apiErrorCode } from '../../api/apiError'
+import { isDeadlineError } from '../../api/queryClient'
 import { type CrewEditorController } from './useCrewEditor'
 import CrewEditorNextRail from './CrewEditorNextRail'
 import { uiLocation } from '../../uiLocations/uiLocation'
 
 export type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'danger'
 type MemoryTab = 'profile' | 'memories' | 'recovery'
+
+/** What the Abilities pane shows for a failed capabilities read. A read the
+ *  gateway gave up on (`capabilities_unavailable`, its code as its message) and
+ *  one the dashboard's own deadline ended (the untranslated `deadline exceeded`)
+ *  carry no sentence of their own, so both read as the pane's load error. */
+function capabilitiesLoadErrorText(error: unknown): string {
+  if (isDeadlineError(error) || apiErrorCode(error) === 'capabilities_unavailable') {
+    return i18nT('crewEditorNext.load_error')
+  }
+  return error instanceof Error ? error.message : i18nT('crewEditorNext.load_error')
+}
 
 /** Split a skill id into owner/namespace + skill name, and de-slugify the name
  *  into a readable Title Case label (hyphens/underscores → spaces). An id with no
@@ -63,11 +76,18 @@ function parseSkillId(id: string): { owner: string | null; name: string; display
   return { owner, name, display: display || name }
 }
 
+/** A resource row's name: a skill URI by its skill, a `file://` one by its path. */
+function resourceLabel(id: string): string {
+  if (id.startsWith('skill://')) return skillLabel(id)
+  return id.startsWith('file://') ? id.slice('file://'.length) || id : id
+}
+
 /** The label a capability row shows in a band. */
 function bandRowLabel(row: CapabilityRow): string {
   if (row.section === 'skills') {
     return row.label || (row.id.includes('://') ? skillLabel(row.id) : parseSkillId(row.id).display)
   }
+  if (row.section === 'resources') return resourceLabel(row.id)
   if (row.section === 'tools') return row.label || toolMeta(row.id).label
   if (row.section === 'prompt') return i18nT('crewEditorNext.band_directions')
   return row.label || row.id
@@ -82,7 +102,7 @@ function bandRowSecondary(row: CapabilityRow): string {
     if (v && typeof v === 'object' && !Array.isArray(v)) {
       const t = v as Record<string, unknown>
       if (typeof t.url === 'string') { try { return new URL(t.url).host } catch { return t.url } }
-      if (typeof t.command === 'string') return t.command.split('/').pop() || t.command
+      if (typeof t.command === 'string') return pathBasename(t.command) || t.command
     }
   }
   return ''
@@ -91,7 +111,8 @@ function bandRowSecondary(row: CapabilityRow): string {
 /** The capability kinds a band shows, in order: heading, icon, and whether the
  *  group starts collapsed (Tools is the long one, so it does). Behaviour
  *  directions is the one prompt slot an add fills; it leads, as it shapes how
- *  the worker uses everything below it. */
+ *  the worker uses everything below it. Resources lists every other `resources`
+ *  entry the agent loads (a `file://` document or glob), so none is left off. */
 const BAND_KINDS: {
   section: CapabilityRow['section']
   heading: () => string
@@ -102,9 +123,10 @@ const BAND_KINDS: {
   { section: 'tools', heading: () => i18nT('crewEditorNext.tab_tools'), Icon: Wrench, collapsed: true },
   { section: 'mcpServers', heading: () => i18nT('crewEditorNext.stat_mcp_servers'), Icon: Plug, collapsed: false },
   { section: 'skills', heading: () => i18nT('crewEditorNext.tab_skills'), Icon: BookOpen, collapsed: false },
+  { section: 'resources', heading: () => i18nT('crewEditorNext.band_resources'), Icon: FileText, collapsed: false },
 ]
 
-/** One collapsible kind group (Tools / MCP servers / Skills) inside a band. */
+/** One collapsible kind group (Tools / MCP servers / Skills / Resources) inside a band. */
 function BandKindGroup({
   testId, section, heading, Icon, startCollapsed, items, onRemove, removeBusy,
 }: {
@@ -184,8 +206,8 @@ function BandKindGroup({
 
 /**
  * One band of the read-only capabilities view: a heading and, under it, the
- * crewmate's tools / MCP servers / skills as collapsible kind groups. Each group
- * shows a count so the whole band scans at a glance; rows are compact (name +
+ * crewmate's tools / MCP servers / skills / resources as collapsible kind groups.
+ * Each group shows a count so the whole band scans at a glance; rows are compact (name +
  * inline description). `onRemove` adds a per-row Remove control (the "Added"
  * band). Approvals and the rest are configured elsewhere.
  */
@@ -774,7 +796,7 @@ export default function CrewEditorNextDialog({
                       // unsaved edits in its other sections; the hand-off would
                       // navigate away and discard them.
                       <ErrorNotice
-                        message={capsQuery.error instanceof Error ? capsQuery.error.message : i18nT('crewEditorNext.load_error')}
+                        message={capabilitiesLoadErrorText(capsQuery.error)}
                         variant="inline"
                         askAgent={false}
                         testId="next-builtfrom-error"
@@ -905,7 +927,7 @@ export default function CrewEditorNextDialog({
                       <p className="text-[12px] text-muted">
                         {i18nT('crewEditorNext.webhooks_frame')}
                       </p>
-                      <CrewWebhookSection crew={editing} onNavigateAway={guardedNavigate} />
+                      <CrewWebhookSection crew={editingAgent} onNavigateAway={guardedNavigate} />
                     </fieldset>
                   </div>
                 </div>

@@ -24,8 +24,8 @@ Redirects are refused for the same reason the external bearer-token path in
 would replay the secret to whatever host ``Location`` names.
 
 This module is a **stdlib-only leaf** and must stay one: it imports only
-standard-library modules (``urllib.request``, ``http.client``, ``os``,
-``socket``) and nothing from ``kiro_crew``. That is what lets the cheapest
+standard-library modules (``urllib.request``, ``http.client``, ``json``,
+``os``, ``socket``) and nothing from ``kiro_crew``. That is what lets the cheapest
 callers use it -- ``cron_trigger`` imports nothing from ``kiro_crew`` at all,
 and the MCP stdio proxies deliberately avoid importing the gateway, since
 reaching ``parse_dashboard_url`` through ``dashboard.origin`` costs ~605 ms and
@@ -34,6 +34,7 @@ that pulls aiohttp in behind it would defeat the point.
 """
 
 import http.client
+import json
 import os
 import socket
 import urllib.error
@@ -43,6 +44,7 @@ from collections.abc import Callable
 __all__ = [
     "build_loopback_opener",
     "deadline_expired",
+    "http_error_reason",
     "loopback_urlopen",
     "unix_socket_urlopen",
 ]
@@ -366,3 +368,38 @@ def deadline_expired(exc: BaseException) -> bool:
     """
     reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
     return isinstance(reason, TimeoutError)
+
+
+# An error body is a small JSON object; reading more than this is never needed.
+_ERROR_BODY_READ_BYTES = 4096
+# Longest server reason shown to the user; longer text is cut with an ellipsis.
+_ERROR_REASON_MAX_CHARS = 200
+
+
+def http_error_reason(err: urllib.error.HTTPError) -> str:
+    """Return the gateway's own reason from an error response, or ``""``.
+
+    The ``except urllib.error.HTTPError`` arms at the loopback call sites use
+    this to say WHY the gateway refused, not only its status. Only the JSON
+    ``error`` string (or, without one, the ``code`` string) is used, so an HTML
+    or other non-JSON body is never shown. At most ``_ERROR_BODY_READ_BYTES`` of
+    the body are read, control characters are dropped and the text is capped at
+    ``_ERROR_REASON_MAX_CHARS`` (ASCII ellipsis, so any console encoding can
+    print it).
+    """
+    try:
+        raw = err.read(_ERROR_BODY_READ_BYTES)
+        body = json.loads(raw)
+    except (OSError, ValueError, TypeError, http.client.HTTPException):
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    reason = body.get("error")
+    if not isinstance(reason, str) or not reason.strip():
+        reason = body.get("code")
+    if not isinstance(reason, str):
+        return ""
+    reason = " ".join("".join(ch if ch.isprintable() else " " for ch in reason).split())
+    if len(reason) > _ERROR_REASON_MAX_CHARS:
+        reason = reason[: _ERROR_REASON_MAX_CHARS - 3].rstrip() + "..."
+    return reason

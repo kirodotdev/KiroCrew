@@ -33,6 +33,7 @@ from kiro_crew.apps.manager_records import (
     _now_iso,
     _read_installed,
     _update_in_progress,
+    _write_approve_declared,
     _write_installed,
     app_dir,
     apps_dir,
@@ -778,8 +779,8 @@ def register_builtin_apps() -> int:
         if existing is None and name in _adoption_pin_names() and _update_in_progress(name):
             # A hard-killed adoption swap that recovery could not settle: the record's
             # tree, data and secret sit aside. A fresh record here would put a reset
-            # app over them, and a later adoption's stale-copy cleanup would delete
-            # the data, so nothing registers until the files are put back.
+            # app over them, with its data then in two places, so nothing registers
+            # until the files are put back.
             logger.warning(
                 "Not registering builtin %r: an interrupted switch to its repository "
                 "left its files beside %s; restore them before it can run again",
@@ -856,6 +857,9 @@ def register_builtin_apps() -> int:
                 # record would claim it already had.
                 defaultOnBackfilled=default_enabled and name in _DEFAULT_ON_BACKFILL,
             )
+            # A built-in approves what it declares. Stored with the first record, so
+            # one registered after the one-time import is not left approving nothing.
+            _write_approve_declared(name)
             _write_installed(name, meta)
 
         # Persist manifest so dashboard can show full info

@@ -290,30 +290,29 @@ _OAUTH_QUERY_PARAMS = frozenset(
     }
 )
 
-# Salesforce Connected App consumer keys: a fixed public prefix followed by 70
-# to 100 letters, digits, dots or underscores. The set has no `%`, so a value
-# that matches decodes to itself and every decoded form has the same shape.
-_OAUTH_SALESFORCE_CLIENT_ID_RE = re.compile(r"3MVG9[A-Za-z0-9._]{70,100}\Z")
+# A client_id an operator-listed endpoint may carry unscanned: RFC 7591 lets a
+# DCR server pick any unique string. The set has no `%` or `+`, so a value that
+# is made of them decodes to itself and every decoded form has the same shape.
+_OAUTH_OPERATOR_CLIENT_ID_CHARS = frozenset(string.ascii_letters + string.digits + "._-")
 
 
-def _salesforce_client_id_shaped(value: str) -> bool:
-    """Return whether *value* has the Salesforce consumer-key shape."""
-    return bool(_OAUTH_SALESFORCE_CLIENT_ID_RE.fullmatch(value))
+def _operator_client_id_shaped(value: str) -> bool:
+    """Return whether *value* is a client_id an operator-listed endpoint may carry."""
+    return 16 <= len(value) <= 128 and all(c in _OAUTH_OPERATOR_CLIENT_ID_CHARS for c in value)
 
 
-def _operator_listed_salesforce_query(host: str, path: str, query: str) -> bool:
-    """Check operator trust only for a non-builtin Salesforce client_id query.
+def _operator_listed_client_id_query(host: str, path: str, query: str) -> bool:
+    """Check operator trust only for a query carrying a token-safe client_id.
 
-    Endpoint approval is checked by the caller. Builtins and queries without
-    this client_id shape need no additional operator-file lookup.
+    Endpoint approval is checked by the caller. Builtins are looked up too, so
+    listing one clears the rejection whose remedy text names the operator file.
     """
-    key = (host.lower(), path)
-    if key in _OAUTH_AUTHORIZATION_ENDPOINTS or not any(
-        name == "client_id" and bool(separator) and _salesforce_client_id_shaped(value)
+    if not any(
+        name == "client_id" and bool(separator) and _operator_client_id_shaped(value)
         for name, separator, value in (segment.partition("=") for segment in query.split("&"))
     ):
         return False
-    return _operator_listed_oauth_endpoint(*key)
+    return _operator_listed_oauth_endpoint(host, path)
 
 
 def _operator_listed_oauth_endpoint(host: str, path: str) -> bool:

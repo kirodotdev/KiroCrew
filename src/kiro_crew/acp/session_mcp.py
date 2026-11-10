@@ -101,7 +101,6 @@ from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-export
     _UNREADABLE_TOO_DEEP,
     _UNREADABLE_TOO_LARGE,
     _UNREADABLE_UNOPENABLE,
-    _WIDE_BOMS,
     NativeSettingsUnreadable,
     SettingsReadRefusal,
     _named_path,
@@ -126,7 +125,7 @@ from kiro_crew.platform.governance import (
     registry_local_control_plane_permitted as _registry_local_control_plane_permitted,
 )
 from kiro_crew.template_mcp_additions import MERGED_MARK, merge_at_spawn
-from kiro_crew.user_json import loads_user_jsonc
+from kiro_crew.user_json import loads_user_jsonc, wide_bom_reason
 
 logger = logging.getLogger(__name__)
 
@@ -375,12 +374,11 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
         raise SettingsReadRefusal(*refusal)
     # A UTF-16 or UTF-32 mark (Windows PowerShell 5.1's ``>`` and ``Out-File``
     # default) is refused, not decoded, but with the one repair that fixes it.
-    for bom, family in _WIDE_BOMS:
-        if raw.startswith(bom):
-            raise SettingsReadRefusal(
-                f"MCP settings are saved as {family}",
-                f"it is saved as {family}; re-save it as UTF-8",
-            )
+    # The mark table and the reason wording live once in ``user_json`` so the
+    # default backend's readers and this kiro-cli path name the same cause.
+    _wide_reason = wide_bom_reason(raw)
+    if _wide_reason is not None:
+        raise SettingsReadRefusal("MCP settings cannot be read as UTF-8", _wide_reason)
     # Windows editors commonly save UTF-8 with a byte-order mark. Drop it before
     # the emptiness test so a BOM-only file reads as the empty file it is.
     raw = raw.removeprefix(codecs.BOM_UTF8)
@@ -437,37 +435,6 @@ def _global_settings(*, strict: bool = False) -> dict[str, Any]:
             raise
         logger.debug("session MCP: global settings unreadable")
         return {}
-
-
-def settings_server_names(work_dir: str | Path | None) -> frozenset[str]:
-    """Names of MCP servers declared in the settings files kiro-cli reads.
-
-    The user's global ``~/.kiro/settings/mcp.json`` and, when *work_dir* is
-    given, the checkout's ``.kiro/settings/mcp.json`` -- the same two sources
-    :func:`native_settings_sources` enumerates, read once each with no bracketing
-    because a name set is advisory here, not a restriction to fail closed on.
-
-    Used by :func:`~kiro_crew.acp.kas_agents.hoist_servers_for_session` as
-    ``reserved_names`` on the ``session/load`` path: a user-declared server whose
-    name a settings file also declares stays in the agent block, so the resumed
-    session resolves that name exactly as ``session/new`` did -- by kiro-cli's own
-    precedence between its settings files and the agent block -- instead of by a
-    session-level injection that would outrank both. Covering the workspace file
-    as well as the global one is what keeps new and resumed sessions agreeing
-    whichever file the colliding entry lives in. A file that is absent or
-    unreadable contributes no names.
-    """
-    names: set[str] = set(_global_settings().get("mcpServers", {}))
-    if work_dir:
-        try:
-            project = _read_mcp_settings(Path(work_dir) / ".kiro" / "settings" / "mcp.json")
-        except (OSError, ValueError):
-            logger.debug("session MCP: project settings unreadable")
-            project = {}
-        declared = project.get("mcpServers", {}) if isinstance(project, dict) else {}
-        if isinstance(declared, dict):
-            names.update(declared)
-    return frozenset(names)
 
 
 class ToolsAllowlist(NamedTuple):

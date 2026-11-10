@@ -447,6 +447,23 @@ def test_an_oversized_displaced_bucket_does_not_report_the_board_unmeasured() ->
     assert live in bounded
 
 
+def test_a_green_board_with_more_than_100_passing_checks_is_review_ready() -> None:
+    """Every row was read; only the stored passed list is trimmed, so it stays measured."""
+    rows = [
+        {"__typename": "StatusContext", "context": f"ci-{index:03d}", "state": "SUCCESS"}
+        for index in range(101)
+    ]
+    provider, _runner = _provider(_primary(statusCheckRollup=rows))
+
+    result = _probe_one(provider)
+
+    assert result.observation.status is MonitorObservationStatus.SUCCESS
+    assert result.observation.reason_code == "review_ready"
+    # The stored list is cut, and the cut is marked, so 100 never reads as the total.
+    assert len(result.canonical["checks"]["passed"]) == 100
+    assert "checks:incomplete" in result.canonical["checks"]["unknown"]
+
+
 def test_two_rows_of_one_workflow_run_are_both_live_and_neither_is_marked() -> None:
     """Two rows of ONE run are concurrent, so start time must not collapse them.
 

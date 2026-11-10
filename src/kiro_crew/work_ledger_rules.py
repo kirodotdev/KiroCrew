@@ -23,6 +23,10 @@ from kiro_crew.work_ledger_records import (
     CODE_DEPTH_EXCEEDED,
     CODE_FIELD_TOO_LONG,
     CODE_INVALID_VALUE,
+    CODE_WAKE_AT_IN_PAST,
+    CODE_WAKE_AT_INVALID,
+    CODE_WAKE_AT_REQUIRES_PROGRESS,
+    CODE_WAKE_AT_TOO_FAR,
     DEFAULT_STALE_WINDOW_SECS,
     MAX_ARTIFACT_KEY_CHARS,
     MAX_ARTIFACT_KEYS,
@@ -30,6 +34,7 @@ from kiro_crew.work_ledger_records import (
     MAX_DEPTH,
     MAX_PR,
     MAX_RECORD_BYTES,
+    MAX_WAKE_AT_SECS,
     MIN_PR,
     PENDING_BUDGET_SECS,
     STALE_ELIGIBLE_STATUSES,
@@ -159,6 +164,42 @@ def _require_pr(value: Any) -> int | None:
             field="pr",
         )
     return number
+
+
+def _require_wake_at(value: Any, status: str) -> str | None:
+    """A report's ``wake_at``: an instant with a zone, at most a day ahead, on ``progress``.
+
+    Returned as a UTC stamp at seconds precision, so every reader parses one shape and
+    its width is that of the store's other stamps. ``None`` when the report names no
+    wait. Each rule refuses with its own code.
+    """
+    if value is None:
+        return None
+    if status != "progress":
+        raise WorkLedgerError(
+            "wake_at is allowed only with status progress; a longer wait is 'blocked'",
+            code=CODE_WAKE_AT_REQUIRES_PROGRESS,
+            field="wake_at",
+        )
+    parsed = _parse_iso(value) if isinstance(value, str) else None
+    if parsed is None or parsed.tzinfo is None:
+        raise WorkLedgerError(
+            f"wake_at must be an ISO-8601 time with a zone; got {value!r}",
+            code=CODE_WAKE_AT_INVALID,
+            field="wake_at",
+        )
+    ahead = (parsed - datetime.now(timezone.utc)).total_seconds()
+    if ahead <= 0:
+        raise WorkLedgerError(
+            f"wake_at {value!r} is not in the future", code=CODE_WAKE_AT_IN_PAST, field="wake_at"
+        )
+    if ahead > MAX_WAKE_AT_SECS:
+        raise WorkLedgerError(
+            f"wake_at {value!r} is more than a day ahead; a longer wait is a 'blocked' report",
+            code=CODE_WAKE_AT_TOO_FAR,
+            field="wake_at",
+        )
+    return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
 def _require_count(value: Any, name: str) -> int:
@@ -321,8 +362,10 @@ def is_stale(
     worker CLOSED after reporting is flagged at once: nobody is left to act on the answer.
     :data:`STALE_ELIGIBLE_STATUSES` names the statuses that count, and so does no report.
 
-    An item with no report is measured from ``created_at``. An unparseable timestamp
-    reads as stale, or the item could never be flagged.
+    An item with no report is measured from ``created_at``, and one whose ``progress``
+    report named a ``wake_at`` from that time (:func:`quiet_since`), so a declared wait
+    is not flagged before it ends. An unparseable timestamp reads as stale, or the item
+    could never be flagged.
     """
     if item.is_terminal or worker_running:
         return False
@@ -361,10 +404,17 @@ def quiet_since(item: WorkItem) -> str:
     """The stamp :func:`is_stale` measures *item*'s quiet window from, ``""`` for none.
 
     The conductor's ``decide`` when it answered a ``blocked`` / ``question`` report,
-    else the last report, else the item's creation.
+    else the last report, else the item's creation. A ``wake_at`` later than that
+    stamp wins: the worker said it is idle until then, so its silence starts there.
     """
     handed_back = _decided_after_report(item) if item.status in WAITING_STATUSES else None
-    return handed_back or item.last_report_at or item.created_at or ""
+    since = handed_back or item.last_report_at or item.created_at or ""
+    if item.wake_at:
+        wake = parse_stamp(item.wake_at)
+        start = parse_stamp(since) if since else None
+        if wake is not None and start is not None and wake > start:
+            return item.wake_at
+    return since
 
 
 def _worker_owns_next_move(item: WorkItem) -> bool:

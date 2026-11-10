@@ -128,6 +128,13 @@ def slim_server(argv: list[str]) -> Callable[[], None] | None:
     sandbox_launch_mark.note()  # the governance tier reads it after the pop below
     os.environ.pop("KIROCREW_SANDBOX_ACTIVE", None)
     os.environ.pop("KIROCREW_SANDBOX_LEVEL", None)
+    # A root run aimed at a person's data home is refused before anything can
+    # write into it, project detection included; the full CLI prints the refusal.
+    from kiro_crew.config import paths as config_paths
+    from kiro_crew.data_home_owner import root_run_refusal
+
+    if root_run_refusal(config_paths.peek_data_home(), argv[0], argv):
+        return None
     if not os.environ.get("KIROCREW_PROJECT_DIR"):
         from kiro_crew.project_dir import detect_project_dir
 

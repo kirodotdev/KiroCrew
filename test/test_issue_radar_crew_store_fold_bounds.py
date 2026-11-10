@@ -445,10 +445,12 @@ def test_a_unit_recreated_under_its_id_folds_cold_however_far_its_seq_climbed(tm
 def test_the_radar_ci_bounds_and_label_limit_are_the_record_tools_own():
     """The fold's per-member CI bounds and label count are copied from the record
     tool's field specs; this pins the copy so the two cannot drift apart silently."""
-    from kiro_crew.crew_log import entry_types
-    from kiro_crew.validation import ISSUE_RADAR_CREW_RECORD_SCHEMA
+    from issue_radar_agent_tools_helpers import RECORD_TOOL, shipped
 
-    specs = {f.name: f for f in ISSUE_RADAR_CREW_RECORD_SCHEMA.fields}
+    from kiro_crew.apps import app_agent_tools
+    from kiro_crew.crew_log import entry_types
+
+    specs = {f.name: f for f in app_agent_tools.build_tool_schema(shipped(RECORD_TOOL)).fields}
     assert set(entry_types.RADAR_CI_BOUNDS) == set(entry_types.RADAR_CI_KEYS)
     for key, (kind, bound) in entry_types.RADAR_CI_BOUNDS.items():
         spec = specs[f"ci_{key}"]

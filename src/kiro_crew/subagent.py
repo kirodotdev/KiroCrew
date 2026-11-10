@@ -227,6 +227,7 @@ from kiro_crew.subagent_manager.monitoring import (  # noqa: F401 - resolved by 
     tombstone_recovery_action,
 )
 from kiro_crew.subagent_manager.run import _PendingDepthEmit, _PendingDepthRetry
+from kiro_crew.subagent_mcp_roster import session_mcp_roster_gb
 from kiro_crew.subagent_parts import admission_surface as _admission_surface
 from kiro_crew.subagent_parts import agent_policy as _agent_policy
 from kiro_crew.subagent_parts import cancellation_surface as _cancellation_surface
@@ -261,6 +262,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     ParentSpawnPolicy,
     _accepted_project_dirs,
     _available_agents_hint,
+    _bot_worker_allowlist,
     _inherited_member_agent,
     _internal_agent_refusal,
     _parent_project_resolver,
@@ -627,6 +629,7 @@ _COMPONENT_GLOBAL_BINDINGS = (
     cap_buckets,
     learned_settled_for,
     read_learned_costs_checked,
+    session_mcp_roster_gb,
     Any,
     CONTEXT_GROUP_LESSONS,
     CONTEXT_GROUP_MEMORY,

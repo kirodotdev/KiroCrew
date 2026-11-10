@@ -22,6 +22,11 @@ from kiro_crew.doctor_checks import resources as doctor_resources
 
 
 class TestManagedServicePolicyDoctor:
+    @pytest.fixture(autouse=True)
+    def _no_loaded_unit_lag(self, _floor_monkeypatch):
+        """The loaded-unit read asks the host's systemd; each test names its answer."""
+        _floor_monkeypatch.setattr(cli_doctor.service_controller, "stale_unit_notes", lambda: [])
+
     def test_no_service_is_silent(self, monkeypatch, capsys):
         monkeypatch.setattr(
             cli_doctor.service_controller,
@@ -56,6 +61,20 @@ class TestManagedServicePolicyDoctor:
         cli_doctor._doctor_managed_service_policy(issues)
         assert "managed-service policy marker installed" in capsys.readouterr().out
         assert issues == []
+
+    def test_a_loaded_unit_that_lags_this_build_is_named_with_its_remedy(self, monkeypatch, capsys):
+        note = (
+            "kirocrew.service (system scope): the loaded unit caps restarts at 5 starts "
+            "in 10s, not this build's 3 in 300s, ...: re-run `sudo kirocrew service install`"
+        )
+        monkeypatch.setattr(
+            cli_doctor.service_controller, "installed_service_has_managed_marker", lambda: True
+        )
+        monkeypatch.setattr(cli_doctor.service_controller, "stale_unit_notes", lambda: [note])
+        issues: list[str] = []
+        cli_doctor._doctor_managed_service_policy(issues)
+        assert f"unit:        ⚠️  {note}" in capsys.readouterr().out
+        assert issues == ["managed service unit lags this build"]
 
 
 class TestFixHint:
@@ -94,14 +113,17 @@ class TestFfmpegLinuxHintResolvable:
     def test_hint_does_not_name_the_deliberately_excluded_dir(self) -> None:
         assert ".local/bin" not in cli_doctor._FFMPEG_LINUX_HINT
 
-    def test_every_directory_named_is_actually_searched(self) -> None:
-        from kiro_crew import transcribe
+    def test_every_directory_named_is_actually_searched(self, monkeypatch) -> None:
+        from kiro_crew import platform_compat, transcribe
 
+        # The Linux search set, whatever host runs this.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        searched = transcribe._ffmpeg_candidate_dirs()
         dirs = re.findall(r"/[A-Za-z0-9._/-]+", cli_doctor._FFMPEG_LINUX_HINT)
         assert dirs, "the hint must name at least one concrete install directory"
         for directory in dirs:
             assert (
-                directory in transcribe._FFMPEG_CANDIDATE_DIRS
+                directory in searched
             ), f"{directory} is in the doctor hint but _find_ffmpeg never searches it"
 
     def test_hint_offers_the_managed_store_download(self) -> None:

@@ -8,6 +8,7 @@ wave, with the App SDK gateway hooks system.
 from __future__ import annotations
 
 import asyncio
+import functools
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -37,8 +38,12 @@ async def _warm_builtin_app_names() -> None:
     filesystem and must not run on the event loop). The gate's app-own-server
     auto-approve then does a pure in-memory membership test with zero I/O; an
     empty set (should this fail) simply fails closed (owns-server calls prompt).
+
+    A former built-in adopted from its pin joins all three sets for the servers
+    ``adopted_app_own_mcp_servers`` keeps, so adoption leaves the grant as it was.
     """
     try:
+        from kiro_crew.apps.builtin_adoption_gate import adopted_app_own_mcp_servers
         from kiro_crew.apps.execution import (
             builtin_app_agents,
             builtin_app_mcp_servers,
@@ -50,18 +55,18 @@ async def _warm_builtin_app_names() -> None:
             set_builtin_app_names,
         )
 
-        names = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), builtin_app_names
-        )
-        set_builtin_app_names(names)
-        servers = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), builtin_app_mcp_servers
-        )
-        set_builtin_app_mcp_servers(servers)
+        loop = asyncio.get_running_loop()
+        adopted = await loop.run_in_executor(subprocess_executor(), adopted_app_own_mcp_servers)
+        # An app name holds no ":", so the key's first segment is its app.
+        adopted_apps = frozenset(key.partition(":")[0] for key in adopted)
+        names = await loop.run_in_executor(subprocess_executor(), builtin_app_names)
+        set_builtin_app_names(names | adopted_apps)
+        servers = await loop.run_in_executor(subprocess_executor(), builtin_app_mcp_servers)
+        set_builtin_app_mcp_servers(servers | adopted)
         # Agent → owning app, so a builtin whose UI is not an app iframe
         # (empty Slot._app) can still auto-approve calls to its OWN server.
-        agents = await asyncio.get_running_loop().run_in_executor(
-            subprocess_executor(), builtin_app_agents
+        agents = await loop.run_in_executor(
+            subprocess_executor(), functools.partial(builtin_app_agents, adopted_apps)
         )
         set_builtin_app_agents(agents)
     except Exception:  # noqa: BLE001 — a warm failure only costs an extra prompt
@@ -196,7 +201,10 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
                 "Error stopping background pollers on shutdown; proceeding to the "
                 "gateway hook shutdown sweep so app backends are torn down"
             )
-        await on_gateway_shutdown()
+        try:
+            await on_gateway_shutdown()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.exception("Gateway hook shutdown sweep failed")
 
     app.on_cleanup.append(_hooks_shutdown)
 

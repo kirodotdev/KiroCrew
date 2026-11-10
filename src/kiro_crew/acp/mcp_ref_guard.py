@@ -15,7 +15,7 @@ finding differently.
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
 from kiro_crew.acp.mcp_session_report import NAME_CAP, sanitize_sink_text
@@ -129,11 +129,13 @@ def warn_unresolved_server_refs(
     backend: str,
     agent: str,
     gateway_enabled: bool,
+    mcp_json: Iterable[str] = (),
 ) -> list[str]:
     """Evaluate the detector and log ONE structured line when it finds something.
 
     Returns the refs -- SANITIZED -- so a caller can also record them where a user
-    will see them.
+    will see them. *mcp_json* is handed to the resolver unchanged: the servers the
+    spec's opt-in mounts from the user's ``mcp.json``, read in the caller's hop.
 
     **A ref is untrusted text, and this is the boundary where it becomes a sink
     payload.** It is the substring of a ``tools`` entry after ``@``, so its content
@@ -155,7 +157,9 @@ def warn_unresolved_server_refs(
     channel is the projection. Reading the line without knowing which world it
     came from is what made this defect take three diagnoses.
     """
-    raw = drop_gate_withheld(unresolved_server_refs(spec, wire_servers, backend=backend))
+    raw = drop_gate_withheld(
+        unresolved_server_refs(spec, wire_servers, backend=backend, mcp_json=mcp_json)
+    )
     if not raw:
         return []
     unresolved = [safe for safe in (sanitize_sink_text(ref, NAME_CAP) for ref in raw) if safe]

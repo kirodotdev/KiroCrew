@@ -1,7 +1,7 @@
 "use strict";
 
 const { nextInstallingDialogState } = require("../../bundle-integrity");
-const { tailLines } = require("../../gateway-wait");
+const { readLogTail } = require("../../gateway-wait");
 const { unrecoverableGatewayDialog } = require("../../gateway-recovery");
 
 // How often the "installation still finishing" dialog re-probes the bundle.
@@ -88,6 +88,7 @@ function createFailureDialog({
       portConflict,
       noRetry = false,
       localGatewayOff = false,
+      showLog: configuredShowLog,
       offerLocalStart = false,
       crewAction = null,
       primaryAction: configuredPrimaryAction,
@@ -136,8 +137,10 @@ function createFailureDialog({
     const remoteCrew = noRetry ? null : crewAction;
     // Client-only mode launched nothing, so there is no launch to diagnose:
     // the log on disk belongs to earlier runs, and rendering that tail is what
-    // made a state the user asked for read as a crash report.
-    const showLog = !localGatewayOff;
+    // made a state the user asked for read as a crash report. A caller whose
+    // launch did write evidence there (the refused port holder's pid and
+    // command) passes `showLog`.
+    const showLog = configuredShowLog ?? !localGatewayOff;
 
     return new Promise((resolve) => {
       const dark = nativeTheme.shouldUseDarkColors;
@@ -447,9 +450,10 @@ function createFailureDialog({
       : options;
     if (!window || window.isDestroyed()) return;
     revealForUserDecision(window);
-    let logTail = "";
-    try { logTail = tailLines(fs.readFileSync(gatewayLogPath(), "utf8"), 60); }
-    catch { /* no log yet */ }
+    // Bounded tail read: the main process is blocked on this the moment the
+    // gateway fails, and the launch log can be hundreds of MB on a long-lived
+    // install. readLogTail reads only the file's last 256 KiB.
+    const logTail = readLogTail(gatewayLogPath(), { fs, lines: 60 });
     const action = await showGatewayErrorDialog(window, {
       ...unrecoverableGatewayDialog({
         port: failedPort,

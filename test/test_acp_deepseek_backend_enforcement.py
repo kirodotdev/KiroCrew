@@ -598,9 +598,12 @@ def test_it_carves_nothing_out_of_the_deny_list_because_its_key_comes_from_the_v
     # ... on the same footing as every other harness's store, so the floor this mask
     # is derived from has no hole in it at all for this harness.
     assert _has_leaf(hidden, ".pi/agent/auth.json")
-    # And nothing is re-exposed read-only inside the masked directories either: a
-    # re-exposure would hand the same file back through the other door.
-    assert gate.adapter_expose_files(ACP_BACKEND_DEEPSEEK, hidden) == ()
+    # And no credential is re-exposed read-only inside the masked directories: a
+    # re-exposure would hand the same file back through the other door. Only the
+    # public host keys every enforced harness gets come back.
+    assert gate.adapter_expose_files(ACP_BACKEND_DEEPSEEK, hidden) == (
+        os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts"),
+    )
 
 
 def test_the_credential_leaves_are_declared_with_their_override_spelling() -> None:

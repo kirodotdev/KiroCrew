@@ -384,6 +384,7 @@ export default function AgentPanel({
         <div className="flex items-center gap-2 pt-2 border-t border-border">
           <Input
             ref={inputRef}
+            data-unsent
             type="text"
             className="flex-1"
             placeholder={i18nT('apps.meetings.agentPanel.messagePlaceholder', {

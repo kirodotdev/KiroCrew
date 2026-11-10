@@ -122,7 +122,7 @@ async def api_chat_slot_followup(request: web.Request) -> web.Response:
         resp["warning"] = (
             "this session has no project directory, so the card offers 'Start "
             "in new chat' (a new chat with no worktree) instead of 'Start in "
-            "new worktree'; for isolated git work, suggest scoping a git "
+            "a separate copy'; for isolated git work, suggest scoping a git "
             "repository first"
         )
     return web.json_response(resp)

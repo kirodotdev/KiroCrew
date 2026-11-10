@@ -1,20 +1,15 @@
 """Transcript extraction and payload shaping for intent-level session summaries.
 
-Two jobs, both deliberately free of any model call so they can be tested
-directly:
+Both jobs make no model call, so they test directly:
 
 * :func:`extract_turns` turns raw transcript records into the bounded input a
   summarization pass reads.
-* :func:`normalize_payload` validates and clamps whatever the model returns
-  before it reaches the sidecar cache, so a malformed generation degrades to a
-  smaller valid summary instead of poisoning the panel.
+* :func:`normalize_payload` validates and clamps the model's output before the
+  sidecar cache, so a malformed generation degrades to a smaller valid summary.
 
-Why the input is shaped the way it is: a session transcript is dominated by
-assistant records and their tool payloads, while intent lives almost entirely in
-the (small) user messages. Reading ``role``/``content`` only, keeping user text
-whole and excerpting assistant text, holds the input to around 1% of a
-transcript's bytes and drops tool output entirely, which carries nothing about
-intent.
+Intent lives in the small user messages, not the assistant records and tool
+payloads that dominate a transcript. Keeping user text whole, excerpting assistant
+text and dropping tool output holds the input to about 1% of a transcript's bytes.
 """
 
 from __future__ import annotations
@@ -35,9 +30,10 @@ _READ_ROLES = frozenset({"user", "assistant"})
 
 # A record can carry role "user" without a human having typed it: automation
 # injects cron notifications, subagent completions, auto-nudge cycles, tool
-# refusals and restored webhook context under that role. Counting one as intent
-# invents a goal the user never had, so they are marked and excluded from the
-# intent signal while staying visible as context.
+# refusals, the turn run when a workflow finishes and restored webhook context
+# under that role. Counting one as intent invents a goal the user never had, so
+# they are marked and excluded from the intent signal while staying visible as
+# context.
 _INJECTED_PREFIXES = (
     "[cron notification",
     "[subagent completion event]",
@@ -47,6 +43,7 @@ _INJECTED_PREFIXES = (
     "[work-ledger wake]",
     "[tool refusal",
     "[tool stall",
+    "[workflow `",
     "=== restored context",
     "[system]",
 )
@@ -195,14 +192,9 @@ def count_user_turns_in_records(records: list[dict]) -> int:
     the same ``_is_injected`` test, so a cron or subagent injection is not
     mistaken for a person typing -- without building excerpted turns.
 
-    Exists because the one caller needs the count and nothing else: the panel
-    endpoint asks "does this session have enough turns to offer a button?" on
-    every mount, and it answers from ``slot.messages`` -- an in-memory window the
-    persistence layer caps, not a whole transcript. Excerpting that window into
-    TranscriptTurns would allocate a string per assistant message to answer a
-    yes/no question. The saving is small and bounded by the window, not the
-    session: the reason to keep this separate is that the count is all the caller
-    wants, not a measured transcript-size win.
+    The panel endpoint needs only the count, on every mount, from the capped
+    in-memory ``slot.messages`` window; building TranscriptTurns would allocate a
+    string per assistant message for a yes/no answer.
     """
     total = 0
     for rec in records:
@@ -460,17 +452,10 @@ def normalize_payload(
         return None
     intents.sort(key=lambda i: i.last_touched_turn, reverse=True)
     if len(intents) > max_intents:
-        # A rail, not an editorial choice. This runs BEFORE the sidecar is
-        # written, so what it removes is absent from the record rather than
-        # collapsed in the panel -- the panel itself withholds nothing it is
-        # given. The tail is the oldest-touched, so it is the least likely to be
-        # what a returning reader came back for.
-        #
-        # Logged at WARNING because the rail sits high enough that reaching it is
-        # pathological rather than routine, and because the loss is otherwise
-        # invisible: nothing downstream can report a difference between a session
-        # that produced 50 intents and one that produced 90. An operator asking
-        # "why does my summary stop there" has no other thread to pull.
+        # A rail, run BEFORE the sidecar is written, so the dropped tail (the
+        # oldest-touched intents) is absent from the record, not collapsed in the
+        # panel. WARNING because reaching the rail is pathological and the loss is
+        # otherwise invisible downstream.
         logger.warning(
             "session summary: dropping %d of %d intents at the max_intents rail (%d); "
             "they are absent from the stored summary, not collapsed in the panel",

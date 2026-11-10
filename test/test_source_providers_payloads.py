@@ -494,8 +494,8 @@ async def test_fetch_github_normalizes_commits_checks_comments_and_files(monkeyp
     # built-in fetchers produce", so the two must not drift: a key added to or
     # removed from `_fetch_github` without the schema (or vice versa) breaks
     # every downstream plugin silently. Exact equality, both directions (the
-    # GitHub fetcher emits none of the `total=False` extras).
-    assert set(data) == set(source.SourceChangePayload.__required_keys__)
+    # GitHub fetcher emits `failedSections` and no other `total=False` extra).
+    assert set(data) == set(source.SourceChangePayload.__required_keys__) | {"failedSections"}
     assert set(data["commits"][0]) == set(source.SourceChangeCommit.__annotations__)
     assert set(data["files"][0]) == set(source.SourceChangeFile.__annotations__)
     assert {frozenset(comment) for comment in data["comments"]} == {
@@ -508,6 +508,8 @@ async def test_fetch_github_normalizes_commits_checks_comments_and_files(monkeyp
     assert {comment["kind"] for comment in data["comments"]} == {"comment", "review", "inline"}
     assert data["files"][0]["patch"].startswith("@@")
     assert data["partialSections"] == ["files"]
+    # Cut at a page limit, not failed: the panel keeps it a status banner.
+    assert data["failedSections"] == []
 
     inline = next(comment for comment in data["comments"] if comment["kind"] == "inline")
     assert inline["threadId"] == "PRRT_thread1"
@@ -569,6 +571,7 @@ async def test_fetch_github_marks_failed_secondary_endpoints_partial(
     )
 
     assert data["partialSections"] == [expected_section]
+    assert data["failedSections"] == [expected_section]
 
 
 @pytest.mark.asyncio
@@ -640,6 +643,7 @@ async def test_fetch_github_core_payload_survives_rollup_failure(monkeypatch) ->
     # The degraded state is distinguishable IN THE PAYLOAD: an empty `checks`
     # list plus the named partial section, never a silent "no checks".
     assert "checks" in data["partialSections"]
+    assert data["failedSections"] == ["checks"]
 
 
 @pytest.mark.asyncio
@@ -665,6 +669,8 @@ async def test_fetch_github_discards_rollup_from_a_different_head(monkeypatch) -
 
     assert data["checks"] == []
     assert "checks" in data["partialSections"]
+    # A head race is not a failed read; the next refresh re-pairs them.
+    assert data["failedSections"] == []
 
 
 @pytest.mark.asyncio
@@ -707,6 +713,7 @@ async def test_fetch_gitlab_marks_failed_secondary_endpoints_partial(
     )
 
     assert data["partialSections"] == [expected_section]
+    assert data["failedSections"] == [expected_section]
 
 
 MERGE_STATE_REREAD_FIELDS = "mergeable,mergeStateStatus"

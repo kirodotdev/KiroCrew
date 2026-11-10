@@ -313,14 +313,13 @@ logger = logging.getLogger(__name__)
 _ReadingT = TypeVar("_ReadingT")
 
 # Lazy caches of per-target stores. The key is NOT a bare name: a memory store
-# and a workspace are two namespaces, and a single key cannot hold both. A crew
-# bound to store "acme" and a workspace also called "acme" collapsed into one
-# cache slot and one path resolution, so whichever arrived first decided where
-# the other one read. ``_target_key`` is the only thing that mints these keys:
+# and a workspace are two namespaces, so a store "acme" and a workspace "acme"
+# must get two cache slots and two path resolutions. ``_target_key`` is the only
+# thing that mints these keys:
 #
-#   "default"        the global v1 store -- UNCHANGED spelling, seeded eagerly
-#                    in ``ContextBuilder.__init__`` and what every existing
-#                    caller resolves to.
+#   "default"        the global v1 store, seeded eagerly in
+#                    ``ContextBuilder.__init__``; every existing caller
+#                    resolves to it.
 #   "ws:<name>"      a named workspace on the v1 path (markdown under that
 #                    workspace, vectors shared with the global store).
 #   "store:<name>"   a named store. V2 learned records and vectors share one
@@ -641,12 +640,10 @@ class _InflightStoreOpen:
 #: In-flight opens by RESOLVED store name, touched only on the event-loop thread
 #: (``_build_store_vectors`` is a coroutine and never awaits between its check and
 #: its insert). One open per store at a time: a burst of first-touch requests on
-#: an uncached store -- the 65-fact seeding in ``member-memory.spec.ts`` sends five
-#: ``PUT /api/memory/semantic`` at once -- shares a single ``_prepare`` worker.
-#: Without the sharing each request runs its own: two ``KiroCrewConfig.load()``,
-#: an identity check with ``PRAGMA quick_check``, and a SQLite open plus
-#: migrations under the exclusive namespace lock, after which every worker but
-#: the first discards its store at publication.
+#: an uncached store shares a single ``_prepare`` worker. Without the sharing each
+#: request runs its own config loads, ``PRAGMA quick_check`` and SQLite open plus
+#: migrations under the exclusive namespace lock, and every worker but the first
+#: then discards its store at publication.
 _inflight_store_opens: dict[str, _InflightStoreOpen] = {}
 
 
@@ -750,7 +747,7 @@ async def _open_store_vectors(name: str, generation: int) -> "VectorMemoryStore 
             # Revalidate at the publication edge. Restore, retirement, or an
             # operator edit may have changed the declaration while initialization
             # was running; never publish a handle for a store that does not
-            # resolves to the declared member database.
+            # resolve to the declared member database.
             require_memory_store(name)
             with _stores_lock:
                 if cancelled.is_set():
@@ -953,22 +950,18 @@ def _resolve_caps(window_tokens: int | None) -> _ResolvedCaps:
     return _resolve_caps_cached(_effective_window(window_tokens))
 
 
-# Global ceiling at the reference (1M) window — the historical
-# ``_MAX_CONTEXT_CHARS``, now DERIVED from the single section-sum in
-# ``_ResolvedCaps.max_context`` so it can never drift from the per-section caps.
+# Global ceiling at the reference (1M) window, DERIVED from the single section-sum
+# in ``_ResolvedCaps.max_context`` so it can never drift from the per-section caps.
 _MAX_CONTEXT_CHARS = _resolve_caps(_REFERENCE_WINDOW_TOKENS).max_context
 
 
 def _build_stop_event_notes(conversation_log: "ConversationLog", session_key: str) -> str:
     """Render recent resolved stop_events as short system notes for LLM context."""
-    # Bound the scan: only the last _STOP_EVENT_CAP stop events matter,
-    # and stop events from hundreds of turns ago are not actionable context.
-    # Matches the pattern used by ``build_cancelled_turn_preamble`` below.
+    # Bound the scan: stop events from hundreds of turns ago are not actionable.
     messages = conversation_log.recent(session_key, max_messages=20)
     return _replay.stop_event_notes(messages)
 
 
-# Docs directory bundled inside the kiro_crew package
 _BUNDLED_DOCS_DIR = Path(__file__).resolve().parent / "docs"
 
 
@@ -1407,10 +1400,9 @@ class ContextBuilder:
                             vector_store=_vector_stores.get(store_name),
                         )
                         store.init()
-                        # NO shared-vector hop. Attaching the global store here is
-                        # what made the crew editor's Memory Store control a
-                        # read-side illusion: markdown split while every crew's
-                        # semantic, episodic and lesson rows stayed in one table.
+                        # NO shared-vector hop: attaching the global store here
+                        # would put every crew's semantic, episodic and lesson
+                        # rows in one table while only the markdown split.
                         store.vector_store = _vector_stores.get(store_name)
                         if memory_store_version(store_name) == 2 and store.vector_store is None:
                             raise UnknownMemoryStore(
@@ -1549,35 +1541,26 @@ class ContextBuilder:
         self._lessons_shown_lock = threading.Lock()
         # Per-session record of triggered-skill BODIES injected, so a later match
         # in the same provider window sends the cheap pointer line instead of the
-        # whole body again. Recorded at build time and keyed by a fixed-size
-        # digest of the session key (`_cap_memo_key`) -> {skill_key_digest:
-        # body_sha256}, both keys digested so the caps govern bytes, not just
-        # entries: `_SENT_SKILL_BODY_SESSIONS` bounds how many sessions are held,
-        # `_SENT_SKILL_BODY_ENTRIES` bounds the
-        # skills held per session, and both evict oldest-first. The hash lets an
-        # edited skill re-inject. One builder serves every session and runs on a
+        # whole body again. Keyed by a digest of the session key (`_cap_memo_key`)
+        # -> {skill_key_digest: body_sha256}; digested keys let the caps govern
+        # bytes. `_SENT_SKILL_BODY_SESSIONS` and `_SENT_SKILL_BODY_ENTRIES` bound
+        # sessions and skills per session, both evicting oldest-first. The hash
+        # lets an edited skill re-inject. One builder serves every session from a
         # thread executor, so the read-check-write is guarded, like `_cap_figures`.
-        # The record fails SAFE in both directions: a rare turn that never lands
-        # demotes the skill to its POINTER next turn (the agent still learns the
-        # skill applies), not to silence; and the record drops for a session whose
-        # provider window cannot hold the bodies — a fresh session and the first
-        # turn after a compaction — tracked alongside the agent last seen so an
-        # agent switch on the same key also resets.
+        # The record fails SAFE: a turn that never lands demotes the skill to its
+        # POINTER next turn, never to silence; and the record drops when the
+        # provider window cannot hold the bodies (a fresh session, the first turn
+        # after a compaction, or an agent switch on the same key).
         #
-        # The record is written at build time so the dedup holds at every
-        # `build_message` caller with no per-caller wiring. A build-time write
-        # can name a body a turn never delivered (a provider error or cancel
-        # after the prompt was built), so each build also stashes the prior
-        # value of every entry it touched into `_sent_skill_bodies_undo`, keyed
-        # by the same digest. A caller whose turn does not land calls
-        # `rollback_skill_bodies(session_key)` at its turn `finally` — the same
-        # seam that re-arms the post-compaction flag — to restore that prior
-        # state, so the record never outlives the provider copy it names. Turns
-        # on one session key are serialized by the per-session turn permit, so
-        # the single last-build undo entry per session is not raced. A caller
-        # that never rolls back keeps the fail-safe above (a pointer next turn,
-        # never silence), so the rollback is a refinement, not a correctness
-        # dependency.
+        # Written at build time so the dedup holds at every `build_message`
+        # caller with no per-caller wiring. A build can name a body its turn never
+        # delivered (a provider error or cancel), so each build stashes the prior
+        # value of every entry it touched in `_sent_skill_bodies_undo`. A caller
+        # whose turn does not land calls `rollback_skill_bodies(session_key)` in
+        # its turn `finally`, the seam that re-arms the post-compaction flag. The
+        # per-session turn permit serializes turns on one key, so the single undo
+        # entry per session is not raced. A caller that never rolls back still
+        # gets the fail-safe above, so the rollback is a refinement only.
         self._sent_skill_bodies: dict[str, dict[str, str]] = {}
         self._sent_skill_agents: dict[str, str | None] = {}
         # session_key_digest -> {skill_key_digest: prior body_sha256 | None},
@@ -1594,7 +1577,6 @@ class ContextBuilder:
             # substitutes, not prose about the product: respelling it would
             # change what the model is told to answer to.
             self._bot_name = "KiroCrew" if is_claude_code(provider) else "Kiro"  # brand-ok
-        # Register default memory in the workspace cache
         _memory_stores[_DEFAULT_KEY] = self.memory
 
     # ── Per-session delivery records (context_assembly/delivery_records.py) ──

@@ -147,12 +147,10 @@ class IMessageRenderer(Renderer):
                 await self._client.send(self._handle, chunk)
             except (RpcError, RpcTransportError) as exc:
                 # Log which chunk died -- the driver's own error will not know --
-                # then RE-RAISE. Swallowing here is what made an undelivered
-                # answer look like a completed turn: `on_done` is the terminal
-                # hook, so a clean return tells `drive_turn` the reply was
-                # delivered and the turn is persisted as successful. Catching in
-                # `client.send` and then catching again here would have moved the
-                # defect up a layer rather than fixing it.
+                # then RE-RAISE. Swallowing here would make an undelivered answer
+                # look like a completed turn: `on_done` is the terminal hook, so a
+                # clean return tells `drive_turn` the reply was delivered and the
+                # turn is persisted as successful.
                 #
                 # Remaining chunks are abandoned deliberately: the bridge is down
                 # or rejecting, so they would fail too.

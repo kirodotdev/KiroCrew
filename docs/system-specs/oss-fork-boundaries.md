@@ -119,6 +119,25 @@ reach a verdict — a broken ruleset, or a diff that was not intact. That is not
 your change's fault and not something to retry past. It fails the build on
 purpose: a scan that reaches no conclusion must never be read as a pass.
 
+### The built-artifact scan is a different check
+
+`scripts/verify_no_internal_host.py` runs in `build.yml` and `build-wheel.yml`
+against the BUILT wheel and website `dist/`, not against a diff. It answers a
+question the gate above cannot: does a file that ships to users name an internal
+host, whenever and however it got there.
+
+It keeps its denylist as sha256 digests of a few host and package names, not as
+a readable wordlist, so the rule above still holds: nothing in `scripts/` can be
+read off as a list of what to avoid writing. The digests are unsalted hashes of
+short names, so anyone who already suspects a name can confirm it by hashing;
+they keep the names out of the text, they do not make them secret. The private
+ruleset stays the authority for the diff gate.
+
+`EXCLUSIONS` there is not an exemption from the gate. It names only shipped
+files whose job is to DETECT internal hosts, each with a reason and the exact
+digests that file may contain; any other denied host in the same file still
+fails the build.
+
 ### What it replaced, and why that one did not work
 
 The two files that gate used to live in — scripts/scrub-lint.sh and its

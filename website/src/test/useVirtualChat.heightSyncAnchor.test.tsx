@@ -124,6 +124,64 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     expect(state.scrollTop).toBe(9000 - 400)
   })
 
+  it('keeps follow through a reprice that lands mid-glide, so the send-time glide ends at the live bottom', () => {
+    // A send from a little above the bottom glides there smoothly, and the new
+    // turn's rows reprice while it runs. Mid-glide scrollTop sits below the
+    // glide's target, which the pre-paint re-pin read as a scroll-up: follow
+    // dropped, the glide landed on the old bottom and the reply streamed on
+    // below it (kirodotdev/KiroCrew#29818).
+    const { el, state } = makeScroller({ scrollTop: 4600, scrollHeight: 5000, clientHeight: 400 })
+    // A smooth write starts a glide; it does not teleport.
+    ;(el as unknown as { scrollTo: (o: { top: number; behavior?: string }) => void }).scrollTo =
+      (o) => { if (o.behavior !== 'smooth') state.scrollTop = o.top }
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const view = renderHook(
+      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      { initialProps: { items: mkItems(30), sessionId: 'anchor-sync-glide', getKey, externalScrollerRef: ref, followOutput: true } },
+    )
+    const scrollTo = (top: number) => act(() => { state.scrollTop = top; el.dispatchEvent(new Event('scroll')) })
+    scrollTo(4000) // the reader is a little above the bottom
+    act(() => { view.result.current.scrollToBottom('smooth') }) // the send's glide, toward 4600
+    act(() => { vi.advanceTimersToNextFrame() }) // its write lands in the next frame
+    scrollTo(4300) // mid-glide frame
+
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
+    node.getBoundingClientRect = () =>
+      ({ top: 100, bottom: 350, left: 0, right: 390, width: 390, height: 250, x: 0, y: 100, toJSON: () => ({}) }) as DOMRect
+    act(() => { view.result.current.measureRef(5)(node) })
+    state.scrollHeight = 6000 // the reply grew
+    act(() => { vi.advanceTimersByTime(120) })
+
+    scrollTo(4600) // the glide lands on the bottom it was aimed at
+    expect(state.scrollTop).toBe(6000 - 400)
+  })
+
+  it('keeps following a send from the very bottom, whose glide has nowhere to go', () => {
+    // Sending from the bottom asks for a smooth glide to where the reader
+    // already is. It never moves, so no scroll event arrives to disarm it.
+    const { el, state } = makeScroller({ scrollTop: 4600, scrollHeight: 5000, clientHeight: 400 })
+    ;(el as unknown as { scrollTo: (o: { top: number; behavior?: string }) => void }).scrollTo =
+      (o) => { if (o.behavior !== 'smooth') state.scrollTop = o.top }
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const view = renderHook(
+      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      { initialProps: { items: mkItems(30), sessionId: 'anchor-sync-still-glide', getKey, externalScrollerRef: ref, followOutput: true } },
+    )
+    act(() => { view.result.current.scrollToBottom('smooth') }) // the send's glide, from 4600 to 4600
+    act(() => { vi.advanceTimersToNextFrame() })
+
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
+    node.getBoundingClientRect = () =>
+      ({ top: 100, bottom: 350, left: 0, right: 390, width: 390, height: 250, x: 0, y: 100, toJSON: () => ({}) }) as DOMRect
+    act(() => { view.result.current.measureRef(5)(node) })
+    state.scrollHeight = 6000 // the reply grew
+    act(() => { vi.advanceTimersByTime(120) })
+
+    expect(state.scrollTop).toBe(6000 - 400)
+  })
+
   it('does NOT re-pin a followed reader whose upward gesture is still in flight', () => {
     // A reader who has just started scrolling up is still `stick` for the few
     // ms until the scroll handler's rAF evaluates and releases follow. A

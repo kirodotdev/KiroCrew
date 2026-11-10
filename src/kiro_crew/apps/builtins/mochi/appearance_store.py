@@ -79,7 +79,10 @@ _DATA_URI_PREFIX = re.compile(r"^data:image/\w+;base64,")
 #: A pack id must be safe to use as a single path segment. Ids we mint are UUID4,
 #: but an overwrite id arrives from the client, so it is validated rather than
 #: trusted — otherwise `../` in an id would let a caller write outside the tree.
-_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+#: It ends at ``\Z``, not ``$``, which also matches before a trailing newline that
+#: would then reach a directory or file name. ``test/test_regex_anchor_contract.py``
+#: holds this package to that rule.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 
 
 class PackError(Exception):

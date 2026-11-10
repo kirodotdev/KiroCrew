@@ -696,16 +696,71 @@ class TestAutoUpdateEffect:
     def test_the_update_loop_acts_on_that_effect(self, monkeypatch, shape, effect, route):
         """``install`` applies with the switch on; ``mandatory`` applies with it off;
         ``notify`` never pauses admission, even with the switch on."""
+        provider = self._shape(monkeypatch, shape)
+        orch, published = self._run_one_cycle(shape, auto_update=effect != "mandatory")
+
+        applied = {
+            "git": orch._auto_apply_update.await_count,
+            "wheel": orch._auto_apply_wheel_update.await_count,
+            "provider": provider.apply.await_count if provider is not None else 0,
+        }
+        if effect == "notify":
+            orch._prepare_auto_update_apply.assert_not_awaited()
+            assert set(applied.values()) == {0}
+            if provider is not None:
+                # Notify really notifies: the provider's verdict reaches the badge.
+                assert published["update_available"] is True
+                # And keeps the Update button wherever a person's Update applies.
+                assert published["can_apply"] is (route == "provider")
+        else:
+            if route == "wheel":
+                # The shadow apply builds with admission open and pauses it only
+                # for its own restart, inside the apply.
+                orch._prepare_auto_update_apply.assert_not_awaited()
+            else:
+                orch._prepare_auto_update_apply.assert_awaited_once()
+            assert applied[route] == 1
+            assert sum(applied.values()) == 1
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            pytest.param({"managed_by": "git", "manual": True}, id="git"),
+            pytest.param({"managed_by": "kirocrew", "manual": True}, id="managed-venv"),
+            pytest.param(
+                {"managed_by": "kirocrew", "provider": "apply", "manual": True}, id="provider"
+            ),
+        ],
+    )
+    def test_a_policy_that_turns_unattended_installs_off_logs_at_info(
+        self, monkeypatch, caplog, shape
+    ):
+        """The operator chose it, so the loop's notify line is INFO on every route."""
+        caplog.set_level(logging.INFO, logger=_GATEWAY_LOGGER)
+        self._shape(monkeypatch, shape)
+        self._run_one_cycle(shape, auto_update=True)
+
+        lines = [
+            r
+            for r in caplog.records
+            if r.name == _GATEWAY_LOGGER and "notifying instead" in r.getMessage()
+        ]
+        assert [r.levelno for r in lines] == [logging.INFO]
+        assert "the security policy turns off unattended installs" in lines[0].getMessage()
+
+    @staticmethod
+    def _run_one_cycle(shape, *, auto_update):
+        """One ``_check_for_updates`` with an update available; the orchestrator and the
+        published verdict."""
         import kiro_crew.dashboard.handlers as handlers
         from kiro_crew.platform.governance import UpdatePins
 
-        provider = self._shape(monkeypatch, shape)
         orch = TestAutoApplyGuard._orchestrator()
         orch._prepare_auto_update_apply = AsyncMock(return_value=True)
         orch._finish_auto_update_apply = AsyncMock()
         orch._restart_after_update = AsyncMock()
         cfg = MagicMock()
-        cfg.auto_update = effect != "mandatory"
+        cfg.auto_update = auto_update
 
         original = dict(handlers._update_info)
         try:
@@ -731,29 +786,7 @@ class TestAutoUpdateEffect:
         finally:
             handlers._update_info.clear()
             handlers._update_info.update(original)
-
-        applied = {
-            "git": orch._auto_apply_update.await_count,
-            "wheel": orch._auto_apply_wheel_update.await_count,
-            "provider": provider.apply.await_count if provider is not None else 0,
-        }
-        if effect == "notify":
-            orch._prepare_auto_update_apply.assert_not_awaited()
-            assert set(applied.values()) == {0}
-            if provider is not None:
-                # Notify really notifies: the provider's verdict reaches the badge.
-                assert published["update_available"] is True
-                # And keeps the Update button wherever a person's Update applies.
-                assert published["can_apply"] is (route == "provider")
-        else:
-            if route == "wheel":
-                # The shadow apply builds with admission open and pauses it only
-                # for its own restart, inside the apply.
-                orch._prepare_auto_update_apply.assert_not_awaited()
-            else:
-                orch._prepare_auto_update_apply.assert_awaited_once()
-            assert applied[route] == 1
-            assert sum(applied.values()) == 1
+        return orch, published
 
 
 @pytest.mark.parametrize(
@@ -1144,7 +1177,19 @@ class TestTheStatusFrameAnswersBeforeAnyCheck:
 
         assert status_fields_of(_no_derivation_yet)["update_auto_effect"] == "notify"
 
-    def test_a_managed_venv_reports_install(self, monkeypatch, _no_derivation_yet):
+    @pytest.mark.parametrize(
+        ("unattended", "effect", "manual_only"),
+        [
+            pytest.param(True, "install", False, id="installs"),
+            # `updates.unattended_apply: false`. A managed venv's Update is the arm
+            # and approve flow, so `update_can_apply` cannot say it still installs;
+            # this field does.
+            pytest.param(False, "notify", True, id="policy-turns-unattended-off"),
+        ],
+    )
+    def test_a_managed_venv_reports_its_effect(
+        self, monkeypatch, _no_derivation_yet, unattended, effect, manual_only
+    ):
         self._no_git(monkeypatch)
         monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
         monkeypatch.setattr("kiro_crew.platform.update_provider.resolve_provider", lambda: None)
@@ -1168,8 +1213,13 @@ class TestTheStatusFrameAnswersBeforeAnyCheck:
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_required", lambda _v: False
         )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.unattended_apply_allowed", lambda: unattended
+        )
 
-        assert status_fields_of(_no_derivation_yet)["update_auto_effect"] == "install"
+        fields = status_fields_of(_no_derivation_yet)
+        assert fields["update_auto_effect"] == effect
+        assert fields["update_auto_manual_only"] is manual_only
 
     @pytest.mark.parametrize(
         "can_apply, floor, expected",

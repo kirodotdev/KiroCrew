@@ -858,6 +858,38 @@ class TestSearchDenyTargetSynthesis:
         assert "\\" not in target
         assert target.endswith("path=/srv/app/sub")
 
+    @pytest.mark.parametrize(
+        ("spelling", "field"),
+        [
+            ("\\\\?\\C:\\data\\tree", "C:/data/tree"),
+            ("\\\\.\\C:\\data\\tree", "C:/data/tree"),
+            ("//?/C:/data/tree", "C:/data/tree"),
+            ("\\??\\C:\\data\\tree", "C:/data/tree"),
+            ("C:\\data\\tree::$INDEX_ALLOCATION", "C:/data/tree"),
+            ("\\\\?\\UNC\\host\\share", "//?/UNC/host/share"),  # a share stays a share
+        ],
+    )
+    def test_a_windows_namespace_alias_reaches_a_rule_as_its_plain_root(
+        self, monkeypatch, spelling, field
+    ):
+        # Windows opens `\\?\C:\x` as `C:\x`, so a rule naming the plain root must see it.
+        # Read the way a Windows gateway reads it, on any host.
+        import ntpath
+
+        from kiro_crew import hooks
+        from kiro_crew.security import paths_resolver
+
+        class _NtOs:
+            name, sep, altsep, path = "nt", "\\", "/", ntpath
+
+            def __getattr__(self, attr):
+                return getattr(os, attr)
+
+        monkeypatch.setattr(hooks, "os", _NtOs())
+        monkeypatch.setattr(paths_resolver, "_ON_WINDOWS", True)
+        target = hooks._search_deny_target({"path": spelling, "pattern": "*"})
+        assert target == f"file-search path={field}"
+
     def test_tilde_and_home_var_expand_to_the_real_root(self, monkeypatch, tmp_path):
         from kiro_crew.hooks import _search_deny_target
 

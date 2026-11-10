@@ -50,6 +50,9 @@ import {
   PREVIEW_INSTANCE_SESSIONS,
   PREVIEW_REMOTE_CREW_CHAT,
   PREVIEW_WEBHOOKS,
+  PREVIEW_DASHBOARD_STALE_FIELDS,
+  PREVIEW_DASHBOARD_STALE_WAKE,
+  PREVIEW_BRIDGE_APPROVALS,
   readPreviewFlag,
   setPreviewFlag,
 } from '../utils/previewFlags'
@@ -490,7 +493,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 10 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 13 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
@@ -537,7 +540,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(10)
+      expect(screen.getAllByRole('switch')).toHaveLength(13)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
@@ -553,7 +556,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(10) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(13) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })
@@ -573,6 +576,30 @@ describe('Settings > Developer > Feature Previews', () => {
     for (const other of [PREVIEW_WEBHOOKS, PREVIEW_INSTANCE_SESSIONS]) {
       expect(localStorage.getItem(other)).not.toBe('1')
     }
+  })
+
+  it('shows the stale-wake switch only while out-of-date fields are marked', async () => {
+    // Waking a Bot for its out-of-date fields needs the mark: with it off the
+    // switch is not drawn, and turning the mark on brings it, off by default.
+    renderTab()
+    const wake = () => screen.queryByRole('switch', { name: /^wake bots to update out-of-date fields$/i })
+    expect(wake()).toBeNull()
+    await act(async () => {
+      screen.getByRole('switch', { name: /^mark out-of-date dashboard fields$/i }).click()
+    })
+    expect(wake()?.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { wake()?.click() })
+    expect(localStorage.getItem(PREVIEW_DASHBOARD_STALE_WAKE)).toBe('1')
+    expect(localStorage.getItem(PREVIEW_DASHBOARD_STALE_FIELDS)).toBe('1')
+  })
+
+  it('offers the pending-approvals switch, off by default', async () => {
+    // Sending a pending tool approval to the notification bridge is opt-in.
+    renderTab()
+    const approvals = screen.getByRole('switch', { name: /^send pending approvals to chat apps$/i })
+    expect(approvals.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { approvals.click() })
+    expect(localStorage.getItem(PREVIEW_BRIDGE_APPROVALS)).toBe('1')
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {

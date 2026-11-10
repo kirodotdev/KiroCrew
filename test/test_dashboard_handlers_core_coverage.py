@@ -71,6 +71,7 @@ class TestPageAndAssets:
             "avatar": "/logo.png",
             "direct_local": True,
             "desktop_launcher": True,
+            "remote_editor": {"editor": "", "host": ""},
         }
 
     @pytest.mark.asyncio

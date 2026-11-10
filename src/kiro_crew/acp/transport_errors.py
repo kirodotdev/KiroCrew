@@ -47,7 +47,12 @@ from kiro_crew.acp.runtime_models import (
     model_is_unusable,
     resolve_pin_spelling_on,
 )
-from kiro_crew.acp.structured_error_data import provider_data_text, structured_data_prose
+from kiro_crew.acp.structured_error_data import (
+    OVERSIZE_REPLY_DATA,
+    _error_kind_from_frame,
+    provider_data_text,
+    structured_data_prose,
+)
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -185,6 +190,9 @@ class AcpError(Exception):
         # ``llm_helpers.acp_error_is_session_not_found`` routes it down the
         # reset-and-reload-once path a dropped session takes.
         self.credential_reload: bool = False
+        # The AWS exception name of a credential rejection (``ExpiredTokenException``),
+        # set by :func:`_raise_acp_error` from the raw frame, so a caller compares a code.
+        self.auth_error_code: str = ""
 
 
 class AcpTimeoutError(AcpError):
@@ -1437,7 +1445,9 @@ def _format_acp_error_worded(
     being raised to the dashboard / Slack / CLI surfaces.
     """
     worded = True
-    if isinstance(error, dict):
+    if isinstance(error, dict) and error.get("data") == OVERSIZE_REPLY_DATA:
+        formatted = str(error.get("message", "") or "")  # wire can send it: redact below
+    elif isinstance(error, dict):
         data = provider_data_text(error)  # a structured `data` reads its prose from `message`
         prose = structured_data_prose(error)
         message = str(error.get("message", "") or "")
@@ -1837,27 +1847,6 @@ def _rejected_model_from_error(error: object) -> str | None:
     return m.group(1) if m else None
 
 
-def _error_kind_from_frame(error: object) -> str:
-    """Return the structured ``errorKind`` a raw ACP frame's ``data`` carries.
-
-    claude-agent-acp names some provider answers with a machine-readable kind
-    alongside the prose (``{"code": -32603, "message": "Internal error",
-    "data": {"errorKind": "cloud_credential_error"}}`` -- the same field the
-    ``{'errorKind': 'unknown'}`` wrapper note at ``_RE_5XX_HINT`` describes).
-    Only a ``data`` that IS a mapping is read: the formatter pastes a
-    non-mapping ``data`` verbatim into the user-visible message, so matching
-    the kind out of that string would be the prose path structured readers
-    exist to avoid. Returns "" when the frame names no kind.
-    """
-    if not isinstance(error, dict):
-        return ""
-    data_field = error.get("data")
-    if isinstance(data_field, dict):
-        kind = data_field.get("errorKind")
-        return kind if isinstance(kind, str) else ""
-    return ""
-
-
 def _raise_acp_error(
     error: object,
     available_models: Sequence[str] | None = None,
@@ -1905,6 +1894,8 @@ def _raise_acp_error(
     _frame_kind = classify_provider_error(raw_data).kind
     err.connection_failure = bool(err.transient) and _frame_kind == PROVIDER_ERROR_CONNECTION
     err.throttle = bool(err.transient) and _frame_kind == PROVIDER_ERROR_THROTTLE
+    verdict = classify_provider_error(raw_data)
+    err.auth_error_code = verdict.matched if verdict.kind == PROVIDER_ERROR_AUTH else ""
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
     # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error, except

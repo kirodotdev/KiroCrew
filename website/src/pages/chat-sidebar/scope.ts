@@ -494,6 +494,7 @@ export interface SidebarScope {
   createFolderMutation: ReturnType<typeof useFolderMutations>['createFolderMutation']
   updateFolderMutation: ReturnType<typeof useFolderMutations>['updateFolderMutation']
   toggleCollapse: ReturnType<typeof useFolderMutations>['toggleCollapse']
+  collapseAllFolders: ReturnType<typeof useFolderMutations>['collapseAllFolders']
 
   // From `useHoldPinnedHeaderOnCollapse`
   armHold: ReturnType<typeof useHoldPinnedHeaderOnCollapse>['armHold']

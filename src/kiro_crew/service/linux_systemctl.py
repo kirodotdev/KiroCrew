@@ -3,7 +3,7 @@
 Privilege escalation (:func:`_privilege_prefix`, :func:`_sudo_run`), ``systemctl``
 against the system manager or the calling account's own (:func:`_systemctl`), and
 the state one scope reports for ``kirocrew.service`` (:class:`_UnitState`,
-:func:`_unit_state`, :func:`_stale_unit_line`). Every ``systemctl`` call and every sudo
+:func:`_unit_state`, :func:`_stale_unit_lines`). Every ``systemctl`` call and every sudo
 argv prefix of the family comes from here; ``linux_install._write_unit_via_sudo`` and
 the account queries in :mod:`kiro_crew.service.linux_unit` spawn their own children.
 Imports only :mod:`kiro_crew.service.linux_unit`.
@@ -25,7 +25,12 @@ from dataclasses import dataclass
 
 from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE
 from kiro_crew.service.common import SERVICE_NAME, systemctl_user_env
-from kiro_crew.service.linux_unit import UNIT_PATH, _current_user
+from kiro_crew.service.linux_unit import (
+    START_LIMIT_BURST,
+    START_LIMIT_INTERVAL_SECS,
+    UNIT_PATH,
+    _current_user,
+)
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 
@@ -393,12 +398,95 @@ def _stale_unit_line(state: _UnitState) -> str | None:
     if value is None or str(LIVE_HOLDER_EXIT_CODE) in value.split():
         return None
     directive = f"RestartPreventExitStatus={LIVE_HOLDER_EXIT_CODE}"
-    if state.scope == "system":
-        remedy = "re-run `sudo kirocrew service install` to re-render it"
-    else:
-        where = f" in {state.fragment}" if state.fragment else ""
-        remedy = f"add it under [Service]{where}, then run `systemctl --user daemon-reload`"
     return (
-        f"  ⚠️  the loaded unit lacks `{directive}`, which this build's unit carries "
-        f"(no upgrade re-renders an installed unit): {remedy}."
+        f"the loaded unit lacks `{directive}`, which this build's unit carries "
+        f"(no upgrade re-renders an installed unit): {_unit_remedy(state, 'it')}."
     )
+
+
+def _unit_remedy(state: _UnitState, what: str) -> str:
+    """How to bring *what* into the scope's loaded unit: a re-install for the
+    system unit, a hand edit and a ``daemon-reload`` (never sudo) for the
+    per-user one, which ``service install`` does not write."""
+    if state.scope == "system":
+        return "re-run `sudo kirocrew service install` to re-render it"
+    where = f" in {state.fragment}" if state.fragment else ""
+    return f"add {what} under [Service]{where}, then run `systemctl --user daemon-reload`"
+
+
+def _loaded_start_limit(*, user: bool) -> tuple[str, str] | None:
+    """The start-rate cap the scope's manager has LOADED for our unit, as
+    ``(burst, interval)`` the way ``systemctl show`` prints them, or ``None``
+    when it did not print both.
+
+    The interval has two spellings: systemd 219 names it ``StartLimitInterval``
+    and prints raw microseconds (``10000000``); later releases name it
+    ``StartLimitIntervalUSec`` and print a span (``10s``, ``5min``).
+    """
+    res = _systemctl(
+        "show",
+        "--all",
+        "-p",
+        "StartLimitBurst",
+        "-p",
+        "StartLimitIntervalUSec",
+        "-p",
+        "StartLimitInterval",
+        f"{SERVICE_NAME}.service",
+        sudo=False,
+        user=user,
+    )
+    props: dict[str, str] = {}
+    for line in (res.stdout or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            props[key.strip()] = value.strip()
+    burst = props.get("StartLimitBurst")
+    interval = props.get("StartLimitIntervalUSec") or props.get("StartLimitInterval")
+    if not burst or not interval:
+        return None
+    return burst, interval
+
+
+#: The unit's interval in both spellings ``systemctl show`` prints (see
+#: :func:`_loaded_start_limit`): a span on systemd >= 230 (300s is ``5min``),
+#: microseconds on 219.
+_UNIT_INTERVAL_SHOWN = frozenset({"5min", str(START_LIMIT_INTERVAL_SECS * 1_000_000)})
+
+
+def _start_limit_line(state: _UnitState) -> str | None:
+    """One line saying the LOADED unit caps restarts differently from this
+    build's unit, naming both caps and the remedy, or ``None``.
+
+    A unit written before v0.10.0 carries ``StartLimit*`` under ``[Unit]``
+    only, which systemd 219 does not read there: it keeps its own 5 starts in
+    10 seconds, which ``RestartSec=10`` never reaches, so a gateway that fails
+    at boot restarts without end. Same reading as :func:`_stale_unit_line`: the
+    manager's loaded values, read-only, a loaded unit of ours only, and no
+    claim when ``systemctl`` did not print them.
+    """
+    if state.load != "loaded" or not state.ours:
+        return None
+    loaded = _loaded_start_limit(user=state.scope == "user")
+    if loaded is None:
+        return None
+    burst, interval = loaded
+    if burst == str(START_LIMIT_BURST) and interval in _UNIT_INTERVAL_SHOWN:
+        return None
+    shown = f"{int(interval) / 1_000_000:g}s" if interval.isdigit() else interval
+    directives = (
+        f"`StartLimitBurst={START_LIMIT_BURST}` and "
+        f"`StartLimitInterval={START_LIMIT_INTERVAL_SECS}`"
+    )
+    return (
+        f"the loaded unit caps restarts at {burst} starts in {shown}, not this build's "
+        f"{START_LIMIT_BURST} in {START_LIMIT_INTERVAL_SECS}s (no upgrade re-renders an "
+        f"installed unit): {_unit_remedy(state, directives)}."
+    )
+
+
+def _stale_unit_lines(state: _UnitState) -> list[str]:
+    """Every way the scope's LOADED unit lags this build's: :func:`_stale_unit_line`
+    and :func:`_start_limit_line`, each when it has something to say."""
+    lines = (_stale_unit_line(state), _start_limit_line(state))
+    return [line for line in lines if line is not None]

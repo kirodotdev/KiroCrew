@@ -40,6 +40,8 @@ from kiro_crew.memory_stores import (
 )
 from kiro_crew.snapshot_archive import (
     _bundle_carries_named_stores,
+    _recorded_skips,
+    _records_omission_of,
     _safe_name,
 )
 from kiro_crew.snapshot_components import (
@@ -1181,6 +1183,7 @@ def _do_replace_mutations(
     for comp in _WHOLE_TREE_COMPONENTS:
         if not _want(components, comp):
             continue
+        kept_live = False
         for dirname in COMPONENTS[comp].trees:
             d = mc / dirname
             # Required by `test_each_trees_loop_is_guarded`: the pre-flight runs in the
@@ -1193,6 +1196,17 @@ def _do_replace_mutations(
                 # so this is not gated on `sd.is_dir()`. Only the document moves, under its
                 # owner's lock; the directory is never swapped.
                 rel = _LOCKED_DOCUMENT_TREES[dirname]
+                if not (snap / rel).is_file() and _records_omission_of(_recorded_skips(snap), rel):
+                    # Except where the bundle's own manifest says it could not carry the
+                    # document (a sandboxed run, an unreadable tree): its absence then says
+                    # nothing about the live document, and removing that would lose it.
+                    print(
+                        f"  ↩️  {dirname}: kept the live "
+                        f"{_safe_name(PurePosixPath(rel).name)}; this bundle did not carry it "
+                        "(MANIFEST.json lists it as skipped)."
+                    )
+                    kept_live = True
+                    continue
                 save = _save_locked_document_to(backup, rel)
                 # The rollback copy is taken by the installer inside its lock hold, so
                 # `installed` is recorded only once the mutation has run: a failure
@@ -1217,7 +1231,8 @@ def _do_replace_mutations(
                     must_create=True,
                     on_skip=pinned_fs.fatal_skip_reporter(f"restore of {dirname!r}"),
                 )
-        print(f"  ✅ {comp}")
+        if not kept_live:
+            print(f"  ✅ {comp}")
 
     # Scoped to memory's own trees as `_do_replace` selected them: the two workspace/
     # subtrees only when `workspace` is not also selected (that pass has already replaced

@@ -59,7 +59,6 @@ from kiro_crew.session_environment import WORKSPACE_DENY_ALIASES, WORKSPACE_TOOL
 # Logs under the facade's name, which operators and tests filter on.
 logger = logging.getLogger("kiro_crew.acp._dispatch")
 
-
 #: The workspace tool arguments that name a guest path (``cwd`` is ``run_command``'s).
 _WORKSPACE_PATH_ARGUMENTS = ("path", "cwd")
 
@@ -269,7 +268,28 @@ def gate_envelope(tool_call: dict[str, Any], nonce: str | None) -> dict[str, Any
         # Read only on the Strands harness (:func:`strands_envelope_identity`);
         # pi's extension writes none.
         "owner": owner if isinstance(owner, str) else "",
+        # pi only: the Kiro Crew server and tool its extension registered for this
+        # call (``crewMcpOwner``), read for the Connection approval and nothing else.
+        "mcp": _envelope_mcp_owner(body.get("mcp")),
     }
+
+
+def _pi_connection_identity(
+    harness_backend: str, envelope: dict[str, Any] | None, handed_off: Iterable[str]
+) -> tuple[str, str] | None:
+    """A pi envelope's ``mcp`` owner, when it names a server Crew handed this session."""
+    owner = envelope.get("mcp") if harness_backend == ACP_BACKEND_PI and envelope else None
+    return owner if owner is not None and owner[0] in tuple(handed_off or ()) else None
+
+
+def _envelope_mcp_owner(value: Any) -> tuple[str, str] | None:
+    """``(server, tool)`` from a gate envelope's ``mcp`` field, or ``None``."""
+    if not isinstance(value, dict):
+        return None
+    server, tool = value.get("server"), value.get("tool")
+    if isinstance(server, str) and server and isinstance(tool, str) and tool:
+        return server, tool
+    return None
 
 
 #: Strands built-in tool -> the ACP kind Crew judges it by. Keyed by the
@@ -608,6 +628,37 @@ def claude_mcp_identity(
     return server, tool
 
 
+def bridged_title_identity(
+    backend: str, stated_tool_name: str, placed_servers: Iterable[str], bridged: Iterable[str]
+) -> tuple[str, str]:
+    """The ``(server, tool)`` a dsh MCP call names, for a bridged server only.
+
+    dsh has no identity channel: it states the tool under the public name it
+    registered and dispatches by, on the ``tool_call`` frame for that call id. The name is split at a server prefix
+    only when exactly one placed server's prefix fits, and only a Crew-owned
+    Connection's server is named. A wrong split cannot widen anything: the gateway
+    proxy forwards a call only when its own bridge, tool and arguments match.
+    """
+    if not (backend == ACP_BACKEND_DEEPSEEK and stated_tool_name):
+        return "", ""
+
+    def prefix_of(server: str) -> str:
+        # ``publicToolName``'s clean case; a rewritten name carries a hash and fits none.
+        return f"mcp__{server}__"
+
+    fits = [
+        s
+        for s in set(placed_servers) | set(bridged)
+        if s
+        and stated_tool_name.startswith(prefix_of(s))
+        and len(stated_tool_name) > len(prefix_of(s))
+    ]
+    if len(fits) != 1 or fits[0] not in set(bridged):
+        return "", ""
+    tool = mcp_identity_name(stated_tool_name[len(prefix_of(fits[0])) :])
+    return (fits[0], tool) if tool else ("", "")
+
+
 def build_permission_event(
     msg: JsonRpcMessage,
     *,
@@ -626,6 +677,7 @@ def build_permission_event(
     harness_tool_name_cache: dict[str, str] | None = None,
     harness_backend: str = "",
     harness_mcp_servers: tuple[str, ...] = (),
+    bridged_mcp_servers: tuple[str, ...] = (),
     side_read_only: bool = False,
     deepseek_read_only_issue: str = "the harness composition was not read back",
     remote_workspace_server: str = "",
@@ -657,6 +709,8 @@ def build_permission_event(
     ``harness_mcp_servers`` are the server names
     Crew placed on the session, so an opencode MCP tool's fused name is split and a
     claude MCP call names its server (:func:`claude_mcp_identity`).
+    ``bridged_mcp_servers`` are the placed servers that are Crew-owned Connections;
+    a dsh call names one only through :func:`bridged_title_identity`.
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
     the two transports cannot drift on the kiro/claude permission payload shape:
@@ -1004,6 +1058,8 @@ def build_permission_event(
         and tool_call_id
         and identity_unreadable_cache.get(_ck, False)
     )
+    # Which check set the mark, the first that fired, so the refusal names it.
+    _unreadable_reason = "tool_call_identity" if _mcp_identity_unreadable else ""
     _frame_meta = params.get("_meta") if _cached_tool is not None else None
     _frame_kiro = _frame_meta.get("kiro") if isinstance(_frame_meta, dict) else None
     if isinstance(_frame_kiro, dict):
@@ -1017,11 +1073,21 @@ def build_permission_event(
             # cached name or the toolId as if the frame had named nothing. Only
             # for a harness handed the store (KAS, H13): the mark is what the
             # handle refuses on, and no other harness has that refusal mode.
-            if identity_unreadable_cache is not None and (
-                mcp_identity_unreadable(_identity.get("serverName"))
-                or mcp_identity_unreadable(_identity.get("toolName"))
-            ):
+            _refused_half = next(
+                (
+                    half
+                    for half in (_identity.get("serverName"), _identity.get("toolName"))
+                    if mcp_identity_unreadable(half)
+                ),
+                None,
+            )
+            if identity_unreadable_cache is not None and _refused_half is not None:
                 _mcp_identity_unreadable = True
+                _unreadable_reason = _unreadable_reason or (
+                    "request_identity_over_bound"
+                    if isinstance(_refused_half, str)
+                    else "request_identity_not_string"
+                )
             if (
                 _id_server
                 and _id_server != _mcp_server_name
@@ -1035,6 +1101,7 @@ def build_permission_event(
                 # server, and the call is judged by its toolId below.
                 if identity_unreadable_cache is not None:
                     _mcp_identity_unreadable = True
+                    _unreadable_reason = _unreadable_reason or "server_mismatch"
             if _id_server and _id_server == _mcp_server_name and not _tool_name and _id_tool:
                 _tool_name = _id_tool
         if not _tool_name:
@@ -1063,6 +1130,30 @@ def build_permission_event(
         _mcp_server_name, _tool_name = claude_mcp_identity(
             tool_call, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
         )
+    # dsh names a Connection's call only by its title: that names the
+    # call for the proxy's approval alone, never as a trusted MCP identity.
+    _connection_identity: tuple[str, str] | None = None
+    if (
+        bridged_mcp_servers
+        and envelope is None
+        and _mcp_identity_trusted
+        and not _mcp_server_name
+        and not _tool_name
+        and harness_tool_name_cache is not None
+    ):
+        _pair = bridged_title_identity(
+            harness_backend,
+            harness_tool_name_cache.get(_ck, ""),
+            harness_mcp_servers,
+            bridged_mcp_servers,
+        )
+        _connection_identity = _pair if all(_pair) else None
+        if _connection_identity and title in ("", "unknown"):
+            # dsh's ask names only the call id. The title the gate judges is the
+            # one the deny tiers and governance read as ``@server/tool`` and the
+            # grant tiers never trust, so a ceiling denying the server still binds
+            # before any approval is minted.
+            title = _redact(f"mcp__{_connection_identity[0]}__{_connection_identity[1]}")
     if harness_backend == ACP_BACKEND_STRANDS:
         # The Strands card carries no identity channel, so the caches above hold
         # empty names. The envelope is the identity: Kiro Crew's gate module read
@@ -1076,6 +1167,7 @@ def build_permission_event(
         else:
             _mcp_server_name, _tool_name, _mcp_identity_trusted = "", "", False
             _mcp_identity_unreadable = True
+            _unreadable_reason = _unreadable_reason or "strands_identity_unclassified"
 
     # The path the preceding tool_call's diff CONTENT BLOCK named, cached by the
     # same scoped toolCallId as the params. An edit backend may stream trusted
@@ -1175,6 +1267,8 @@ def build_permission_event(
         )
         # An envelope for another call: refused before any consumer judges it.
         _mcp_identity_unreadable = _mcp_identity_unreadable or not _readable
+        if not _readable:
+            _unreadable_reason = _unreadable_reason or "workspace_arguments_unreadable"
         _resolved_raw_params = _anchored_in_workspace(_resolved_raw_params, remote_workspace_root)
         # Tagged by TYPE, which no model input can forge: governance then matches
         # these targets as the guest's POSIX paths, not as this gateway's. A call
@@ -1246,6 +1340,10 @@ def build_permission_event(
         title=title,
         tool_kind=tool_kind,
         raw_params_trusted=_raw_params_trusted,
+        connection_mcp_identity=_pi_connection_identity(
+            harness_backend, envelope, harness_mcp_servers
+        )
+        or _connection_identity,
         shell_classified=cached_shell is not None,
         options=options,
         tool_input=tool_input,
@@ -1257,6 +1355,7 @@ def build_permission_event(
         tool_name=_tool_name,
         mcp_identity_trusted=_mcp_identity_trusted,
         mcp_identity_unreadable=_mcp_identity_unreadable,
+        mcp_identity_unreadable_reason=_unreadable_reason,
         # The unreadable-identity store is handed to this parser only for a
         # member of ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS; the
         # handle's ``_identity_unreadable_cache_for_wire`` and the client gate
@@ -1272,5 +1371,13 @@ def build_permission_event(
         deepseek_read_only_issue=_deepseek_read_only_issue,
         side_read_only_refusal=_side_read_only_refusal,
         tool_purpose=_purpose,
+        # KAS reads a reason only on its one-time Deny, which ``reject_tool``
+        # answers with when one was offered (``recorded["reject"]``).
+        takes_rejection_reason=bool(
+            kas_consent_meta
+            and recorded is not None
+            and kind_to_id.get("reject_once")
+            and recorded.get("reject") == kind_to_id.get("reject_once")
+        ),
     )
     return event, recorded

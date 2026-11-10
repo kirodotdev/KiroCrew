@@ -27,7 +27,7 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import { api } from '../api/client'
+import { usePullRequestClient } from './pullRequestClient'
 import type {
   PullRequestCheck,
   PullRequestComment,
@@ -358,6 +358,14 @@ const settledMergeField = (value: string | undefined): string | undefined =>
  *    nobody asked. `SourceTabState` suppresses CI on the same predicate and for
  *    the same reason -- the lifecycle glyph is the terminal signal.
  */
+/** A source's partial sections split by cause. A failed read is an error the
+ *  panel shows through `ErrorNotice`; a section cut at a page limit failed
+ *  nothing, so it stays the status note. */
+export function partialSectionsByCause(source: { partialSections?: string[]; failedSections?: string[] }) {
+  const failed = source.failedSections ?? []
+  return { failed, truncated: (source.partialSections ?? []).filter(section => !failed.includes(section)) }
+}
+
 export function selectedSourceStatus(
   source: PullRequestSource,
   cached: PullRequestStatus | undefined,
@@ -673,6 +681,7 @@ export function pullRequestIsLive(source: PullRequestSource): boolean {
  * double-click cannot land on a confirm that appeared under the cursor. */
 export function PullRequestActions({ source }: { source: PullRequestSource }) {
   const queryClient = useQueryClient()
+  const client = usePullRequestClient()
   const [confirmAutoMerge, setConfirmAutoMerge] = useState(false)
   const [immediateMergeWarning, setImmediateMergeWarning] = useState('')
   const meta = sourceProviderMeta(source.provider)
@@ -689,12 +698,12 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
     void queryClient.invalidateQueries({ queryKey: ['pull-request-statuses'] })
   }
   const readyMutation = useMutation({
-    mutationFn: () => api.markPullRequestReady(source.url),
+    mutationFn: () => client.markReady(source.url),
     onSuccess: invalidate,
   })
   const autoMergeMutation = useMutation({
     mutationFn: (acknowledgeImmediateMerge: boolean) =>
-      api.enablePullRequestAutoMerge(source.url, acknowledgeImmediateMerge),
+      client.enableAutoMerge(source.url, acknowledgeImmediateMerge),
     onSuccess: () => {
       setConfirmAutoMerge(false)
       setImmediateMergeWarning('')
@@ -928,6 +937,7 @@ export default function PullRequestPanel({
   const checkPollStateRef = useRef({ url: '', failures: 0 })
   const forceRefreshRef = useRef(false)
   const queryClient = useQueryClient()
+  const client = usePullRequestClient()
 
   useEffect(() => {
     if (selected && selected.url !== selectedUrl) (onReconcile || onSelect)(selected.url)
@@ -956,7 +966,7 @@ export default function PullRequestPanel({
     queryFn: () => {
       const force = forceRefreshRef.current
       forceRefreshRef.current = false
-      return api.pullRequestSource(selected!.url, force)
+      return client.source(selected!.url, force)
     },
     enabled: !!selected,
     staleTime: Infinity,
@@ -1009,7 +1019,7 @@ export default function PullRequestPanel({
     queryFn: async () => {
       const url = selected!.url
       try {
-        const result = await api.pullRequestChecks(url)
+        const result = await client.checks(url)
         const nextState = { url, failures: 0 }
         checkPollStateRef.current = nextState
         setCheckPollState(nextState)
@@ -1072,7 +1082,7 @@ export default function PullRequestPanel({
   const statusQuery = useQuery<PullRequestStatusBatch>({
     queryKey: ['pull-request-statuses', statusUrls] as const,
     queryFn: async () => {
-      const result = await api.pullRequestStatuses(statusUrls)
+      const result = await client.statuses(statusUrls)
       // Count consecutive polls that found a refresh in flight, so a provider
       // that never settles can't hold the panel on the fast interval forever.
       statusFollowupsRef.current = result.refreshing?.length
@@ -1137,6 +1147,7 @@ export default function PullRequestPanel({
     && checkCounts.complete === checkCounts.total
   const showAllChecksPassed = allChecksPassed && !query.isFetching
   const mergeBlocker = source ? pullRequestMergeBlocker(source) : null
+  const partial = partialSectionsByCause(source ?? {})
   const statusByUrl = useMemo(() => {
     const cached = statusQuery.data?.statuses || {}
     const merged: Record<string, PullRequestStatus> = { ...cached }
@@ -1405,13 +1416,28 @@ export default function PullRequestPanel({
             </div>
           )}
 
-          {source.partialSections && source.partialSections.length > 0 && (
+          {partial.failed.length > 0 && (
+            // askAgent on: the panel is read-only (no draft), and a secondary
+            // read the provider refused is the kind of failure the agent can
+            // diagnose.
+            <ErrorNotice
+              className="shrink-0 mx-4 my-2"
+              variant="inline"
+              message={sourceProviderMeta(source.provider).pullRequestWording
+                ? i18nT('components.pullRequestPanel.provider_results_failed_pull_request', { sections: partial.failed.join(', ') })
+                : i18nT('components.pullRequestPanel.provider_results_failed_merge_request', { sections: partial.failed.join(', ') })}
+              askAgent
+              testId="pull-request-panel-failed-sections"
+            />
+          )}
+
+          {partial.truncated.length > 0 && (
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
               <span>
                 {sourceProviderMeta(source.provider).pullRequestWording
-                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: source.partialSections.join(', ') })
-                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: source.partialSections.join(', ') })}
+                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: partial.truncated.join(', ') })
+                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: partial.truncated.join(', ') })}
               </span>
             </div>
           )}

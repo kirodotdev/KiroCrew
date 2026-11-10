@@ -23,6 +23,8 @@ import {
 } from '../api'
 import { approvalRoute } from './approvalActions'
 import { noteStaleOwnerResponse } from '../../../api/staleOwnerSignal'
+import { SilenceWatchdog } from '../../../utils/socketSilenceWatchdog'
+import { jittered, provedHealthy } from '../../../utils/reconnectBackoff'
 import { purposeFromToolArgs } from '../../../utils/toolPurpose'
 import { readSendReceipt } from '../../../utils/sendDelivery'
 import { chunkScopeCapability } from '../../../lib/chunkScopeCapability'
@@ -546,6 +548,41 @@ let wsOnline = false
 let socket: WebSocket | null = null
 let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+/** When the live socket opened; null while none is open. */
+let socketOpenedAt: number | null = null
+
+/**
+ * Replace a socket that stays OPEN but has stopped delivering frames (a phone
+ * off-network, an OS-frozen tab): the same silence check the dashboard socket
+ * uses, through the one shared helper so they cannot drift. `isOpen` reads this
+ * module's live socket; `onDead` closes it and reopens at once (bypassing the
+ * backoff, exactly as the onclose path's first retry would), so the fresh
+ * socket's onopen re-seeds every push.
+ */
+const silenceWatchdog = new SilenceWatchdog({
+  isOpen: () => socket?.readyState === WebSocket.OPEN,
+  onDead: () => forceSilentReconnect(),
+})
+
+/** Close a silent-but-open socket and reconnect now. */
+function forceSilentReconnect(): void {
+  const dead = socket
+  socket = null
+  if (provedHealthy(socketOpenedAt, Date.now())) reconnectDelay = 1000
+  socketOpenedAt = null
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  setOnline(false)
+  // Drop the handler so its onclose cannot schedule a second, backed-off
+  // reconnect that would race the immediate one below.
+  if (dead) {
+    dead.onclose = null
+    try { dead.close() } catch { /* already closing */ }
+  }
+  connect()
+}
 
 /** Fire status subscribers only on an actual transition. */
 function setOnline(next: boolean): void {
@@ -563,12 +600,15 @@ function connect(): void {
   socket = ws
 
   ws.onopen = () => {
-    reconnectDelay = 1000
+    socketOpenedAt = Date.now()
     setOnline(true)
     ws.send(JSON.stringify({ type: 'chunk_watch', slots: [MOCHI_SLOT] }))
+    silenceWatchdog.markOpen()
+    silenceWatchdog.start()
   }
 
   ws.onmessage = (ev) => {
+    silenceWatchdog.markFrame()
     let msg: { type?: string; data?: Record<string, unknown> }
     try {
       msg = JSON.parse(ev.data as string)
@@ -720,12 +760,14 @@ function connect(): void {
   const reopen = () => {
     socket = null
     setOnline(false)
-    // Capped backoff; the panel may outlive a gateway restart. Held in a
-    // handle so retryConnect() can cancel it and reconnect immediately.
+    if (provedHealthy(socketOpenedAt, Date.now())) reconnectDelay = 1000
+    socketOpenedAt = null
+    // Capped, jittered backoff; the panel may outlive a gateway restart. Held in
+    // a handle so retryConnect() can cancel it and reconnect immediately.
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       connect()
-    }, reconnectDelay)
+    }, jittered(reconnectDelay))
     reconnectDelay = Math.min(reconnectDelay * 2, 30_000)
   }
   ws.onclose = reopen

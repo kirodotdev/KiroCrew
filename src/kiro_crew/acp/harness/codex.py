@@ -488,7 +488,7 @@ class CodexHarness(MembershipHarness):
 
     @property
     def client_capabilities(self) -> dict[str, Any]:
-        """The shared declaration plus ``subagents``.
+        """The shared declaration plus ``subagents`` and ``session.compaction``.
 
         ``subagents`` is what makes codex-acp give each native subagent its own
         ACP session, announced on the parent and streamed under the child's id.
@@ -511,6 +511,7 @@ class CodexHarness(MembershipHarness):
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
+        governance_app: str | None = None,
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 

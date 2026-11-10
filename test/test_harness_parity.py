@@ -1303,6 +1303,17 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
+        "src/kiro_crew/acp/runtime_spawn_entry.py",
+        "spawn",
+    ): "moving kiro-cli's broken KAS extract aside and retrying is a repair for the "
+    "KAS relay alone (kiro-cli's v3 engine copy); every other harness, Kiro CLI "
+    "included, starts exactly as before",
+    (
+        "src/kiro_crew/acp/runtime_liveness.py",
+        "_drain_stderr",
+    ): "the broken-KAS-extract stderr latch feeds only the KAS repair; a non-KAS "
+    "runtime never latches it",
+    (
         "src/kiro_crew/acp/session_handle_turn.py",
         "_build",
     ): (
@@ -1318,6 +1329,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "(kas_custom_agents). KAS is the only host that sends that allowlist, so a "
     "positive identity test refuses every other harness instead of letting one run "
     "the agent's local tools on the gateway machine.",
+    (
+        "src/kiro_crew/acp/session_handle_permissions.py",
+        "reject_tool",
+    ): "``_meta.kiro.rejectionReason`` on a one-time Deny is a key only the KAS engine "
+    "reads (it hands the text to the model); every other harness must be sent the bare "
+    "reject, so a positive identity test keeps the key off their wire.",
     (
         "src/kiro_crew/acp/session_handle_permissions.py",
         "_build_permission_event",

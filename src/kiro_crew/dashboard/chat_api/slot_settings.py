@@ -289,16 +289,19 @@ async def _slot_harness_managed_backend(state: DashboardState, slot: Any) -> str
         return backend if isinstance(backend, str) and backend else None
     try:
         from kiro_crew.crewmate_harness import crewmate_backend_pin
+        from kiro_crew.members import session_backend_pick
 
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
         agent_cfg = cfg.agent
         # A crewmate pinned to a harness that cannot start raises here and falls
         # to the debug path: its next session is refused, so no hint applies.
+        pick = session_backend_pick(key)
         backend = select_provider_backend(
             key,
             getattr(agent_cfg, "member_acp_backend", ""),
             getattr(agent_cfg, "acp_backend", ""),
-            crew_backend=crewmate_backend_pin(cfg, key),
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, key) if pick is None else None,
         )
     except Exception:
         logger.debug("autocompact: could not resolve slot %s's backend", key, exc_info=True)

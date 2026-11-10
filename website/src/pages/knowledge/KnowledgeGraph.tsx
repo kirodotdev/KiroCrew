@@ -10,6 +10,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { knowledgeApi } from './api'
 import type { GraphData, Source } from './types'
 import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 import { i18nT } from '../../i18n/t'
 
 const TYPE_COLORS: Record<string, string> = {
@@ -122,7 +123,7 @@ export default function KnowledgeGraph({
   const graphQueryParams = selectedSourceId
     ? `/graph?limit=200&source_id=${selectedSourceId}`
     : '/graph?limit=200'
-  const { data: graphData, isLoading, isError, error, isFetching, refetch } = useQuery({
+  const { data: graphData, isLoading, isError, error, isFetching, isPending, errorUpdateCount, refetch } = useQuery({
     queryKey: ['knowledge-graph', selectedSourceId],
     queryFn: () => knowledgeApi<GraphData>(graphQueryParams),
   })
@@ -748,7 +749,17 @@ export default function KnowledgeGraph({
     )
   }, [])
 
-  if (isLoading) {
+  // queryReadFailed, not `isError`: with no graph cached a Retry clears `error`
+  // and returns to pending, so a notice keyed on `isError` alone would unmount
+  // this Retry -- and the keyboard focus on it -- for the whole retry. This is
+  // computed BEFORE the loading return below: a Retry with nothing cached puts
+  // the query back to `isLoading`, so a loading return reached first would
+  // unmount the Retry just the same.
+  const failed = queryReadFailed({ isError, isPending, errorUpdateCount })
+  // The first-load placeholder, only while not already showing the failure row:
+  // during a retry `failed` is true and `isLoading` is also true, and the row
+  // below owns that state so the pressed Retry stays mounted and focused.
+  if (isLoading && !failed) {
     return (
       <div className="text-muted text-sm p-4">
         {i18nT('pages.knowledge.knowledgeGraph.loading_graph')}
@@ -760,22 +771,30 @@ export default function KnowledgeGraph({
   // background refetch keeps the last good graph instead.
   // Over a graph from an earlier read the notice sits above it instead, so a
   // failed refetch is not passed off as a fresh graph.
-  const loadError = isError ? (
+  const loadError = failed ? (
     <div className="p-4 flex flex-col items-start gap-2">
-      <ErrorNotice
-        askAgent
-        testId="knowledge-graph-load-error"
-        title={i18nT('pages.knowledge.knowledgeGraph.load_failed')}
-        message={errMessage(error) || i18nT('pages.knowledge.knowledgeGraph.load_failed_unknown')}
-        messagePlacement="below"
-        className="w-full"
-      />
-      <Btn disabled={isFetching} onClick={() => void refetch()}>
+      {/* The error text is briefly cleared while a retry reads, so show a
+          loading line in its place rather than leaving the Retry context-less. */}
+      {isFetching ? (
+        <p role="status" className="text-muted text-sm w-full">{i18nT('pages.knowledge.knowledgeGraph.loading_graph')}</p>
+      ) : (
+        <ErrorNotice
+          askAgent
+          testId="knowledge-graph-load-error"
+          title={i18nT('pages.knowledge.knowledgeGraph.load_failed')}
+          message={errMessage(error) || i18nT('pages.knowledge.knowledgeGraph.load_failed_unknown')}
+          messagePlacement="below"
+          className="w-full"
+        />
+      )}
+      {/* busy, not native `disabled`: a disabled button leaves the tab order,
+          dropping a keyboard user to the page body for the whole retry. */}
+      <Btn busy={isFetching} onClick={() => void refetch()}>
         <RotateCcw size={12} className="lucide-inline" /> {i18nT('pages.knowledge.knowledgeGraph.retry')}
       </Btn>
     </div>
   ) : null
-  if (isError && !graphData?.nodes.length) return loadError
+  if (failed && !graphData?.nodes.length) return loadError
   if (!graphData || !graphData.nodes.length) {
     return (
       <EmptyState

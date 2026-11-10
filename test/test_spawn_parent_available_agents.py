@@ -1137,3 +1137,63 @@ class TestSessionProjectForSpawnGate:
         assert session_project_for_spawn_gate(state, "subagent:nocwd") == []
         assert session_project_for_spawn_gate(state, "subagent:missing") == []
         assert session_project_for_spawn_gate(state, "") == []
+
+
+class TestBotWorkerAllowlist:
+    """A Bot's worker runs its session's merged spec, kept in the Bot's folder, so
+    the gate reads that spec's ``availableAgents`` as well as ``~/.kiro/agents``."""
+
+    WORKER = "kirocrew-mate-worker"
+
+    def _merged(self, monkeypatch: pytest.MonkeyPatch, answer: Any) -> list[str]:
+        from kiro_crew import mate_worker
+
+        asked: list[str] = []
+
+        def _scope(agent: str, key: str) -> Any:
+            asked.append(key)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(mate_worker, "mate_service_scope_spec", _scope)
+        monkeypatch.setattr(sa, "_parent_project_resolver", lambda key: [])
+        return asked
+
+    def test_the_workers_carried_list_refuses_a_spawn_it_does_not_name(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        spec = {"toolsSettings": {"subagent": {"availableAgents": ["agent1"]}}}
+        asked = self._merged(monkeypatch, (spec, agents_dir))
+        lists = sa.parent_template_allowlists("worker-1", self.WORKER)
+        assert asked == ["worker-1"]
+        assert lists == (("agent1",),)
+        assert sa._vet_parent_available_agents((self.WORKER, lists), "rogue") is not None
+        assert sa._vet_parent_available_agents((self.WORKER, lists), "agent1") is None
+
+    def test_a_worker_that_declares_nothing_admits_as_before(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._merged(monkeypatch, ({"name": self.WORKER}, agents_dir))
+        assert sa.parent_template_allowlists("worker-1", self.WORKER) == ()
+
+    @pytest.mark.parametrize("answer", ["unreadable", "raises"])
+    def test_an_unreadable_merged_spec_refuses(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, answer: str
+    ) -> None:
+        from kiro_crew.mate_worker import WorkerKitUnreadable
+
+        self._merged(
+            monkeypatch,
+            (None, agents_dir) if answer == "unreadable" else WorkerKitUnreadable("gone"),
+        )
+        lists = sa.parent_template_allowlists("worker-1", self.WORKER)
+        assert lists is None
+        assert sa._vet_parent_available_agents((self.WORKER, lists), "agent1")
+
+    def test_another_template_never_reads_a_worker_spec(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        asked = self._merged(monkeypatch, AssertionError("read a worker spec"))
+        assert sa.parent_template_allowlists("chat-1", "plain") == ()
+        assert asked == []

@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import credential_masks, protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
@@ -28,13 +28,14 @@ from kiro_crew.apps.manager_records import (
     AppResult,
     InstalledApp,
     _approved_grants_after_manifest_change,
-    _approved_grants_path,
+    _approved_grants_snapshot,
     _declared_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _restore_approved_grants,
     _session_control_widening,
     _tree_swap,
     _update_retired_tree_prefix,
@@ -440,7 +441,9 @@ def install_app(
         approvedGrantsStored=True,
         installedAt=_now_iso(),
         source=market_source or str(source),
-        origin="local" if market_source else InstalledApp.origin,
+        # Only a registry install scopes a repository; a folder or marketplace
+        # install is local.
+        origin="registry" if source_repository else "local",
         # Persist the server-resolved repository at the first durable metadata
         # write.  The registry's richer set_app_provenance bookkeeping happens
         # later and may fail after the copied app is already the live occupant;
@@ -593,7 +596,6 @@ def update_app(
     # ``permissions.api`` / ``permissions.events`` are read live too. An added
     # entry is held back instead of disabling the app: it keeps running on the
     # set the owner approved until they approve the new one.
-    # Read before the tree swap: the file lives in the tree the swap retires.
     existing_approved = _effective_approved_grants(name, existing)
     approved_grants = _approved_grants_after_manifest_change(
         existing_approved=existing_approved,
@@ -601,10 +603,11 @@ def update_app(
         new_permissions=grant_source(manifest),
     )
     widened_grants = any(_held_back_entries(approved_grants, grant_source(manifest)).values())
+    # Same discriminator as ``manager_builtins._builtin_owns_install`` (a later
+    # owner, so not importable here): only ``register_builtin_apps`` writes it.
+    builtin_owned = existing.source == "builtin" or existing.origin == "builtin"
     if _adoption is not None:
-        # Same discriminator as ``manager_builtins._builtin_owns_install`` (a later
-        # owner, so not importable here): only ``register_builtin_apps`` writes it.
-        if not (existing.source == "builtin" or existing.origin == "builtin"):
+        if not builtin_owned:
             return AppResult(
                 ok=False,
                 name=name,
@@ -634,6 +637,9 @@ def update_app(
             widened_session_approval=widened_session_approval,
         ),
         source=str(source),
+        # A registry update makes the record a registry one; a built-in changes
+        # provenance only through adoption, below.
+        origin="registry" if source_repository and not builtin_owned else existing.origin,
         sourceUrl=source_repository.strip(),
         sourceRegistry="",
         sourceCommit="",
@@ -724,23 +730,51 @@ def update_app(
         )
         return AppResult(ok=False, name=name, error=secret_link_refusal)
 
-    # Clean up stale tmp files from a previous failed update
+    # BEFORE the transaction opens, too: data in two places. An update whose
+    # move-aside or rollback stopped part-way leaves `data/` partial and
+    # `.<name>-data-tmp` holding what it moved, maybe the only complete copy.
+    # Nothing here tells that from an older copy, so neither is deleted.
     if _owned_data_dir(tmp_data) and _owned_data_dir(data_dir):
-        shutil.rmtree(str(tmp_data))
+        two_places = (
+            f"{tmp_data} holds a copy of this app's data left by an earlier "
+            "interrupted install, update or uninstall; move what you need from it "
+            f"back into {data_dir} and remove it, then retry the update."
+        )
+        sel().log_api_access(
+            caller="app_update",
+            operation="data_in_two_places",
+            outcome="rejected",
+            resources=f"name={name!r}",
+            error=two_places,
+        )
+        return AppResult(ok=False, name=name, error=two_places)
+
+    # Clean up a stale secret copy from a previous failed update
     if tmp_secret.is_file() and secret_file.is_file():
         tmp_secret.unlink()
 
+    # The approved set lives outside the tree the swap retires, so a rollback puts
+    # this copy back itself. Read before the marker is held: a set that cannot be
+    # read refuses the update with nothing changed and no marker left behind.
+    try:
+        prior_grants_text = _approved_grants_snapshot(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
+        )
+    prior_owner_disabled = protected_app_state.owner_disabled(name)
     try:
         update_marker = _UpdateMarker.hold(name)
     except OSError as exc:
         return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
     with _tree_swap(name), update_marker:
         try:
-            # The swap below takes the approved-set file with the old tree. A record
-            # that stored a set must say so before then, or a reader meeting it
-            # beside the missing file would approve everything declared.
-            if not existing.approvedGrantsStored and _approved_grants_path(name).is_file():
-                _write_installed(name, existing)
+            if existing.enabled and not meta.enabled:
+                # Turned off for consent. Decided here, from the record read
+                # before the swap: the swap leaves no record on disk for
+                # ``_write_installed`` to compare against. The rollback below
+                # puts the prior state back.
+                protected_app_state.set_owner_disabled(name, True)
             # The old manifest leaves with the old tree below while the data waits aside:
             # its credential masks must stand in the record first (apps.credential_masks).
             credential_masks.remember_declaration(name)
@@ -773,8 +807,6 @@ def update_app(
             refusal = gateway_data_dir_obstruction(dest)
             if refusal:
                 raise InstalledTreeRefused(refusal)
-            # The new tree carries no set (the copy skips the file); a rollback
-            # restores the old tree's file with it.
             _write_approved_grants(name, approved_grants)
             _write_installed(name, meta)
         except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
@@ -797,6 +829,8 @@ def update_app(
                     restored_secret = dest / ".app_secret"
                     _remove_any_shape(restored_secret)
                     shutil.move(str(tmp_secret), str(restored_secret))
+                _restore_approved_grants(name, prior_grants_text)
+                protected_app_state.set_owner_disabled(name, prior_owner_disabled)
                 _write_installed(name, existing)
             except (OSError, shutil.Error, ValueError) as rollback_exc:
                 rollback_error = f"; rollback failed: {rollback_exc}"

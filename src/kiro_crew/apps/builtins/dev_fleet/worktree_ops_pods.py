@@ -20,7 +20,13 @@ from kiro_crew import hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, live, repository, runtime
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.pod.config import SYSTEMCTL_STOP_WAIT_SECS
 from kiro_crew.sandbox import sandboxed_spawn_argv, shielded_prepare_off_loop
+
+#: How long ``kirocrew pod down`` may run: the ``systemctl stop`` wait, plus the
+#: unit refresh and state queries before it, the cgroup drain after it, and the
+#: CLI's own start. Shorter than that, a pod still stopping is reported as failed.
+_POD_DOWN_TIMEOUT_SECS = SYSTEMCTL_STOP_WAIT_SECS + 45
 
 
 def _pod_env() -> dict:
@@ -450,7 +456,7 @@ async def _pod_down(name: str) -> dict:
         await runtime._warm_build_path()
         cmd = runtime._find_cli() + ["pod", "down", name]
         rc, stdout, stderr = await runtime._run_cmd(
-            cmd, cwd=repository._repo(), env=_pod_env(), timeout=30
+            cmd, cwd=repository._repo(), env=_pod_env(), timeout=_POD_DOWN_TIMEOUT_SECS
         )
         if rc != 0:
             return {"ok": False, "error": runtime._redact(stderr or stdout)}

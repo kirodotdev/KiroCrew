@@ -7,6 +7,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsToggle } from '../../components/settings'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 import { Btn } from '../../components/ui'
+import { useOutageFailure } from '../../hooks/useOutageFailure'
 import { fmtBytes, fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
@@ -47,6 +48,15 @@ export function KasBundleCard() {
     refetchInterval: query => (query.state.data?.installing ? INSTALL_POLL_MS : false),
   })
   const status = statusQ.data
+  // A read that failed because the gateway was down (a restart; the engine
+  // notice polls this same entry): the offline state says so, not this card.
+  // The card does not poll, so the hook re-reads it once the gateway is back.
+  const outageFailure = useOutageFailure(
+    statusQ.isError,
+    statusQ.errorUpdatedAt,
+    () => statusQ.refetch({ cancelRefetch: false }),
+  )
+  const statusFailed = statusQ.isError && !outageFailure
 
   const installMut = useMutation({
     mutationFn: () => api.kasBundleInstall(),
@@ -71,13 +81,16 @@ export function KasBundleCard() {
   if (!status) {
     // The same recovery the tab offers when its own config read fails: a read
     // that failed once is not a dead end, and a page reload is not the remedy.
+    // Retry stays through an outage: only the alert is the offline state's.
     return statusQ.isError ? (
       <div className="space-y-2" data-testid="kas-bundle-card">
-        <ErrorNotice
-          message={i18nT('pages.developer.kasBundleCard.status_unavailable')}
-          variant="inline"
-          askAgent
-        />
+        {statusFailed && (
+          <ErrorNotice
+            message={i18nT('pages.developer.kasBundleCard.status_unavailable')}
+            variant="inline"
+            askAgent
+          />
+        )}
         <Btn type="button" onClick={() => void statusQ.refetch()} data-testid="kas-bundle-retry">
           {i18nT('pages.developer.agentBackendTab.retry')}
         </Btn>
@@ -193,7 +206,7 @@ export function KasBundleCard() {
           lines above are that stale answer, and this notice is what says so. */}
       <ErrorNotice
         message={
-          statusQ.isError
+          statusFailed
             ? i18nT('pages.developer.kasBundleCard.status_unavailable')
             : status.error
               ? status.error

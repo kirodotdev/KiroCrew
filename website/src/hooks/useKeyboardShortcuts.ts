@@ -277,10 +277,12 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'nav-notifications': 'hooks.useKeyboardShortcuts.notifications_panel',
   'nav-projects': 'hooks.useKeyboardShortcuts.projects_panel',
   'nav-schedule': 'hooks.useKeyboardShortcuts.schedule_panel',
-  // Reused: the same commands as the top-bar arrows, so the reference list and
-  // the buttons cannot drift apart.
-  'history-back': 'app.nav_back',
-  'history-forward': 'app.nav_forward',
+  // Same commands as the top-bar arrows, but list-only keys: the handler leaves
+  // ⌘/Ctrl+←/→ to a focused text field (line start/end or word-jump), so the
+  // rows name that rule the way the Alt+arrow rows do. The buttons keep the
+  // plain `app.nav_back` / `app.nav_forward`, because a click works anywhere.
+  'history-back': 'hooks.useKeyboardShortcuts.back_outside_text_fields',
+  'history-forward': 'hooks.useKeyboardShortcuts.forward_outside_text_fields',
   'focus-input': 'hooks.useKeyboardShortcuts.focus_text_input',
   'focus-approval': 'hooks.useKeyboardShortcuts.focus_pending_approval',
   'reject-approval': 'hooks.useKeyboardShortcuts.reject_pending_approval',

@@ -1466,6 +1466,30 @@ async def test_patch_definition_shape_is_validated(agents_dir, body):
     assert (await _body(resp))["code"] == "invalid_definition"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "keys"),
+    [
+        ({"description": "new", "mcpServers": {"srv": {"command": "x"}}}, ["mcpServers"]),
+        ({"resources": ["file:///home/x/notes.md"]}, ["resources"]),
+        ({"prompt": "p", "resources": [], "mcpServers": {}}, ["mcpServers", "resources"]),
+    ],
+)
+async def test_patch_refuses_the_read_only_keys_and_writes_nothing(agents_dir, body, keys):
+    """The tab shows MCP servers and resources read-only, so a PATCH carrying either
+    is refused by name rather than answered 200 with the key dropped, and none of
+    its keys is written."""
+    _write(agents_dir, "reviewer.json", description="old", prompt="old", mcpServers={})
+    _seed_config()
+    before = (agents_dir / "reviewer.json").read_text(encoding="utf-8")
+    resp = await api_agent_detail(_request("PATCH", "reviewer", body))
+    assert resp.status == 400, resp.text
+    payload = await _body(resp)
+    assert payload["code"] == "definition_key_read_only"
+    assert payload["keys"] == keys
+    assert (agents_dir / "reviewer.json").read_text(encoding="utf-8") == before
+
+
 # ── PATCH: granting Crew's spawn tools declares the control plane ──────
 
 _MANAGED_CORE = {"command": "/managed/kirocrew", "args": ["mcp-core"]}

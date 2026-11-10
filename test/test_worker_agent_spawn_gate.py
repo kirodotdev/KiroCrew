@@ -691,7 +691,52 @@ def test_the_kas_projection_reads_nothing_after_the_gate(tmp_path, monkeypatch):
     assert extras.custom_agents
     assert reads == [], f"the harness re-read the spec after the gate: {reads}"
     snap = agent.require_fresh_derived_spec("kirocrew-worker", str(tmp_path / "wd"))
-    assert snap is not None and projected == [snap.spec]
+    from kiro_crew.acp.kas_steering import with_kas_steering
+
+    # The gate's object, with only the steering entries KAS loads itself dropped.
+    assert snap is not None and projected == [with_kas_steering(snap.spec, str(tmp_path / "wd"))]
+
+
+def test_the_kas_steering_check_reads_the_sessions_own_folder(tmp_path, monkeypatch):
+    """A subagent's session runs in its own folder on the parent's runtime: KAS loads
+    that folder's steering, so the steering check and the inheritance notice read it."""
+    import asyncio
+
+    from kiro_crew import agent_state
+    from kiro_crew.acp.harness import harness_for
+    from kiro_crew.acp.harness import kas as kas_harness
+    from kiro_crew.acp.types import ACP_BACKEND_KAS
+
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    monkeypatch.setattr(agent_state, "config_dir", lambda: tmp_path)
+    (tmp_path / AGENT_FILENAME).write_text(json.dumps(_DEFAULT_SPEC_ON_DISK), encoding="utf-8")
+    agent._install_worker_agent()
+
+    import kiro_crew.config.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "kiro_agents_dir", lambda: tmp_path)
+    monkeypatch.setattr(agent, "require_fork_governance", lambda a, w: None)
+
+    seen: list[object] = []
+    real_steering = kas_harness.with_kas_steering
+
+    def _record(spec, work_dir):
+        seen.append(work_dir)
+        return real_steering(spec, work_dir)
+
+    monkeypatch.setattr(kas_harness, "with_kas_steering", _record)
+    monkeypatch.setattr(
+        kas_harness, "inheritance_off_notice", lambda work_dir: seen.append(work_dir) or ""
+    )
+
+    session_dir = str(tmp_path / "subagent-cwd")
+    asyncio.run(
+        harness_for(ACP_BACKEND_KAS).session_extras(
+            "kirocrew-worker", work_dir=str(tmp_path / "wd"), session_cwd=session_dir
+        )
+    )
+
+    assert seen == [session_dir, session_dir]
 
 
 def test_the_kas_projection_cannot_be_called_without_a_verified_spec():

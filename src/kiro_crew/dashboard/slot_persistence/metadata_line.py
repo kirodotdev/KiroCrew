@@ -445,6 +445,22 @@ def close_identity(closed: bool) -> str:
     return secrets.token_hex(8) if closed else ""
 
 
+def keeps_own_close(slot: _ChatSlot, closed: bool, existing_meta: dict) -> bool:
+    """Whether an open-shaped full save of *slot* keeps the close on its line.
+
+    True once the slot's own close archived the line (``note_close_recorded``)
+    while the close fence still stands. Such a save -- a turn that outlived the
+    close's cancel wait -- reads open only because it is stale: a reopen is a new
+    slot object, and a close that puts its slot back releases the fence.
+    """
+    return (
+        not closed
+        and bool(existing_meta.get("closed"))
+        and getattr(slot, "_close_recorded", False) is True
+        and bool(getattr(slot, "is_closing", False))
+    )
+
+
 def merge_empty_window(
     conv_log: ConversationLog,
     slot: _ChatSlot,
@@ -925,6 +941,13 @@ def build_full_line(
     # repeatedly regenerating a reply cannot re-bill a failing
     # consolidation turn on each gesture.
     rotation = int(existing_meta.get("rotation_generation", 0) or 0) + 1 if rewrite else None
+    closed_id = close_identity(closed)
+    if keeps_own_close(slot, closed, existing_meta):
+        # Written back verbatim, ``closed_id`` included, so the close still
+        # answers to the compare-and-clear keyed on the stamp it wrote.
+        closed = True
+        closed_at = existing_meta.get("closed_at")
+        closed_id = str(existing_meta.get("closed_id") or "")
     # Preserve history-layer-owned metadata this dashboard save does NOT
     # manage: the save is authoritative only for the slot fields it writes
     # (SLOT_OWNED_META_KEYS), where an absent field means "cleared"; every
@@ -938,7 +961,7 @@ def build_full_line(
             last_consolidated=existing_meta.get("last_consolidated", 0),
             closed=closed,
             closed_at=closed_at,
-            closed_id=close_identity(closed),
+            closed_id=closed_id,
             dismissed_source_links=dismissed,
             deferred_notes=surviving_hold,
             queued_prompts=_durable_queue,

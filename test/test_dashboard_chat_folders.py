@@ -433,7 +433,7 @@ class TestFolderCRUD:
         # not the paginated client history window.
         monkeypatch.setattr(
             state.conversation_log,
-            "list_sessions",
+            "list_sessions_indexed",
             lambda: [
                 {"key": "a", "folder_id": "f1"},
                 {"key": "b", "folder_id": "f1"},

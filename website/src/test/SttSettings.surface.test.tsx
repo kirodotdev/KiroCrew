@@ -529,6 +529,20 @@ describe('Voice panel keeps only the necessary decisions on its surface', () => 
     expect(screen.queryByText(/^Decode threads$/)).toBeNull()
   })
 
+  it('keeps "Tell the agent this was dictated" under Fine-tuning, off by default, and saves it on toggle', async () => {
+    mountPanel()
+    await waitFor(() => expect(screen.getByRole('button', { name: /fine-tuning/i })).toBeTruthy())
+    expect(screen.queryByText('Tell the agent this was dictated')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /fine-tuning/i }))
+    const toggle = await screen.findByRole('switch', { name: /tell the agent this was dictated/i })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+
+    fireEvent.click(toggle)
+    await waitFor(() => expect(mockApi.saveSttConfig).toHaveBeenCalledWith({ dictation_note: true }))
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'))
+  })
+
   it('reaches the key binding through its own group, two levels down', async () => {
     mountPanel()
     await waitFor(() => expect(screen.getByRole('button', { name: /fine-tuning/i })).toBeTruthy())

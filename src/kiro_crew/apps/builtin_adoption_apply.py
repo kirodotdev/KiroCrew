@@ -357,8 +357,8 @@ def _record_eligible(name: str) -> bool:
         return False
     tmp_data = path.parent / f".{name}-data-tmp"
     if _owned_data_dir(tmp_data) and _owned_data_dir(path / "data"):
-        # Data in two places: ``update_app`` would delete the moved-aside copy as
-        # stale, and it may be the only copy a killed swap preserved.
+        # Data in two places: ``update_app`` refuses it, since the moved-aside
+        # copy may be the only one a killed swap preserved.
         logger.warning("Adoption of %s skipped: its data is in two places", name)
         return False
     return not _temp_data_name_obstruction(tmp_data)

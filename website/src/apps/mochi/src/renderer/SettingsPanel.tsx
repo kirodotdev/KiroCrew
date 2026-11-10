@@ -1052,7 +1052,9 @@ const MiniToggle: React.FC<{ on: boolean; onChange: (v: boolean) => void; label:
   </div>
 )
 
-const McpSection: React.FC<{
+// Exported for testing: the Refresh tools button lives here, and reaching it
+// through the whole SettingsPanel would need the full config/rail setup.
+export const McpSection: React.FC<{
   config: AppConfig
   editMochi: (partial: Partial<AppConfig['mochi']>) => void
   trustMode: 'normal' | 'trust_reads' | 'trust' | 'yolo'
@@ -1215,8 +1217,16 @@ const McpSection: React.FC<{
         <TabsContent value={tab} style={{ outline: 'none' }}>
         {/* Refresh tools */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-          <button onClick={() => refreshTools(s.name)} disabled={refreshing === s.name} style={{
-            fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: 'pointer',
+          <button onClick={() => { if (refreshing !== s.name) refreshTools(s.name) }}
+            // `aria-disabled` + the click guard, NOT `disabled`: a native
+            // `disabled` takes the button out of the tab order, so a keyboard
+            // user who pressed Refresh lost focus to the window until the
+            // discovery finished. The inline `opacity` keeps the muted look
+            // (utility classes do not resolve in this settings window).
+            aria-disabled={refreshing === s.name || undefined}
+            aria-busy={refreshing === s.name || undefined}
+            style={{
+            fontSize: 10, padding: '3px 8px', borderRadius: 4, cursor: refreshing === s.name ? 'default' : 'pointer',
             background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)',
             opacity: refreshing === s.name ? 0.5 : 1,
           }}>{refreshing === s.name ? i18nT('apps.mochi.settingsPanel.mcp_refreshing') : i18nT('apps.mochi.settingsPanel.mcp_refresh_tools')}</button>

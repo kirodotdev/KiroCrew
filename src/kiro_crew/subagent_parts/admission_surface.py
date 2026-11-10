@@ -311,6 +311,7 @@ def spawn(
     _memory_reading: "tuple[float, str] | None" = None,
     _depth: int | None = None,
     _root_session_key: str | None = None,
+    _card_turn: bool = False,
 ) -> SubagentInfo | None:
     result = self._admission.spawn_impl(
         task,
@@ -358,6 +359,7 @@ def spawn(
         _memory_reading=_memory_reading,
         _depth=_depth,
         _root_session_key=_root_session_key,
+        _card_turn=_card_turn,
     )
     assert not isinstance(result, PreparedSpawn)
     # Every synchronous gate return (started, queued, or refused) receives

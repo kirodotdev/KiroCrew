@@ -4,7 +4,7 @@ The ``webhooks`` scope (``kiro_crew.webhook_sources``) names the inbound sources
 policy permits, and ``ops-mission-control`` is this app's. The webhook provider asks
 :func:`kiro_crew.webhook_sources.source_refusal` before its own switch, token or
 signature checks, so a policy that does not name the source refuses it, and an
-enterprise build refuses it with no policy at all (RFC crew-enterprise-edition,
+LTS build refuses it with no policy at all (RFC crew-lts-edition,
 appendix Red "Webhooks by source").
 """
 
@@ -17,12 +17,12 @@ import pytest
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import webhook
 from kiro_crew.platform.governance import parse_policy
 
-EDITIONS = ("oss", "enterprise")
+EDITIONS = ("oss", "lts")
 
 
 def _set_edition(monkeypatch: pytest.MonkeyPatch, value: str) -> bool:
     monkeypatch.setattr("kiro_crew.edition.EDITION", value)
-    return value == "enterprise"
+    return value == "lts"
 
 
 def _install_policy(monkeypatch: pytest.MonkeyPatch, *allowed: str) -> None:
@@ -40,14 +40,14 @@ def _install_policy(monkeypatch: pytest.MonkeyPatch, *allowed: str) -> None:
 
 
 @pytest.mark.parametrize("edition", EDITIONS)
-def test_the_webhook_source_is_off_in_enterprise(monkeypatch, edition) -> None:
-    enterprise = _set_edition(monkeypatch, edition)
+def test_the_webhook_source_is_off_in_lts(monkeypatch, edition) -> None:
+    lts = _set_edition(monkeypatch, edition)
     monkeypatch.setattr(webhook, "provider_enabled", lambda _id: False)
 
     accepted, detail = webhook.enqueue(b"{}", "sha256=x")
 
     assert accepted is False
-    assert ("enterprise edition" in detail) is enterprise
+    assert ("LTS edition" in detail) is lts
 
 
 @pytest.mark.parametrize("edition", EDITIONS)

@@ -386,7 +386,7 @@ _SIGNATURES: dict[str, str] = {
     "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, pending_backfills: 'list[tuple[str, dict]] | None' = None) -> 'None'",
     "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None, preserve_remote_only: 'bool' = False, tail: 'list[dict] | None' = None, dropped: 'set[str] | None' = None, pending_backfills: 'list[tuple[str, dict]] | None' = None) -> 'int'",
     "_approx_window_payload_bytes": "(window: 'list[dict]') -> 'int'",
-    "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'None'",
+    "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'Path | None'",
     "_attach_variants": "(slot: '_ChatSlot', m: 'dict') -> 'None'",
     "_build_history_prefix": "(slot: '_ChatSlot', *, conversation_log: 'ConversationLog | None' = None, current_message: 'dict | None' = None, model_window: 'int | None' = None) -> 'str'",
     "_build_kiro_model_map": "() -> 'dict[str, str]'",

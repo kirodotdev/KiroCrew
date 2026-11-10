@@ -41,6 +41,7 @@ import GithubLogo from '../../components/icons/GithubLogo'
 import GitlabLogo from '../../components/icons/GitlabLogo'
 
 import { i18nT } from '../../i18n/t'
+import { Trans } from 'react-i18next'
 import { fmtDateTimeNumeric } from '../../i18n/format'
 import { useImeGuard } from '../../hooks/useImeGuard'
 /** The provider a connect flow is pointed at.
@@ -1014,15 +1015,21 @@ function ProviderSetupNotice({ detail, onRetry, provider }: {
         {i18nT('apps.issueRadar.connectPanel.please_set_up_the')} {terms.providerName} {i18nT('apps.issueRadar.connectPanel.cli')}
       </p>
       <p className="text-[11.5px] text-muted leading-[1.6]">
-        {i18nT('apps.issueRadar.connectPanel.issue_radar_reads')} {terms.providerName} {i18nT('apps.issueRadar.connectPanel.through_your_own')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.connectPanel.session_install_and_sign_in_to')}{' '}
-        <code>{terms.cli}</code>{i18nT('apps.issueRadar.connectPanel.then')}{' '}
-        <button
-          onClick={onRetry}
-          className="underline text-accent bg-transparent border-0 p-0 cursor-pointer text-[11.5px]"
-        >
-          {i18nT('apps.issueRadar.connectPanel.check_again')}
-        </button>
-        .
+        <Trans
+          i18nKey="apps.issueRadar.connectPanel.reads_through_cli_session"
+          values={{ provider: terms.providerName }}
+          components={{
+            cli: <code>{terms.cli}</code>,
+            retry: (
+              <button
+                onClick={onRetry}
+                className="underline text-accent bg-transparent border-0 p-0 cursor-pointer text-[11.5px]"
+              >
+                {i18nT('apps.issueRadar.connectPanel.check_again')}
+              </button>
+            ),
+          }}
+        />
       </p>
       {/* Azure DevOps needs a second step the other two do not: `az` alone
         * cannot talk to Azure DevOps at all until its extension is installed, so

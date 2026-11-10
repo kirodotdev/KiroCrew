@@ -367,7 +367,9 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "missing), never replaced by the default. Pass 'model' as an "
                             "id from THAT backend's list. Batch-wide; a tasks[] object can "
                             "override it per task. A spawn_continue follow-up asks for the "
-                            "run's backend."
+                            "run's backend. Omitted in a session that was created on a "
+                            "harness (session_create `backend`), the run starts on that "
+                            "same harness, unless it names `crew`."
                         ),
                     },
                     "reasoning_effort": {

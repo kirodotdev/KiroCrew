@@ -483,7 +483,9 @@ def _build_helper(name: str, source: str, *, build: bool = True) -> str | None:
     # into a directory that stayed world-traversable.
     try:
         if (os.stat(cache).st_mode & 0o077) != 0:
-            logger.warning("%s is not owner-only; helper stays group/other readable", cache)
+            logger.warning(
+                "SECURITY: %s is not owner-only; helper stays group/other readable", cache
+            )
     except OSError:
         pass
     binary = cache / name

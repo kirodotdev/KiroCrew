@@ -17,8 +17,9 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_native_launch_sources``, ``_native_launch_view_alias``, ``_native_skill_projection``,
 ``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_prompt_capabilities``, ``_reader_task``, ``_sandbox_cleanup``, ``_scope_unit``,
-``_skill_projection_generation``, ``_spawn_monotonic``, ``_spawn_skill_projection``,
-``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_tool_search_wire``.
+``_skill_projection_generation``, ``_spawn_agent_env``, ``_spawn_monotonic``,
+``_spawn_skill_projection``, ``_kas_telemetry_sent``, ``_spawn_start_token``, ``_start_time``, ``_stderr_task``,
+``_tool_search_wire``.
 
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
@@ -40,7 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import agent_scratch, member_essential_context, platform_compat
-from kiro_crew.acp import kas_secret_storage
+from kiro_crew.acp import kas_cli_settings, kas_secret_storage
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.client import (
@@ -57,6 +58,7 @@ from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
 from kiro_crew.acp.runtime_process_tree import ChildRecord, _kill_escaped_children
 from kiro_crew.acp.runtime_tree_kill import _prune_dead_descendants
 from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeError, AcpRuntimeOverloaded
+from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked, is_windows_spawn_blocked
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
@@ -212,6 +214,10 @@ async def _retrying_spawn_factory(
             return await factory(**kwargs)
         except OSError as exc:
             if attempt:
+                # Classified only after the retry: a spawn inside the update window
+                # can also fail with access denied, and the retry is what clears it.
+                if is_windows_spawn_blocked(exc):
+                    raise AcpSpawnBlocked(_spawn_binary(factory, exc)) from exc
                 raise
             logger.warning(
                 "ACP runtime subprocess creation failed (%s), retrying after "
@@ -220,6 +226,14 @@ async def _retrying_spawn_factory(
             )
             await asyncio.sleep(_ACP_RUNTIME_RESPAWN_BACKOFF_S)
     raise AssertionError("unreachable: the second attempt returns or re-raises")
+
+
+def _spawn_binary(factory: Any, exc: OSError) -> str:
+    """The program a failed spawn tried to start: the error's file, else argv[0]."""
+    if exc.filename:
+        return str(exc.filename)
+    args = getattr(factory, "args", ())
+    return str(args[0]) if args else ""
 
 
 def _launch_tools() -> LaunchTools:
@@ -644,6 +658,8 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     # spec read is the generation the child will load. Every other host reads
     # its constant directly: no new await, no new step on that path.
     client_capabilities = self._harness.client_capabilities
+    # Set by the handshake below when it read agent.env; None lets launch read it.
+    self._spawn_agent_env = None
     if self._harness.client_meta_settings:
         client_capabilities = await self._handshake_client_capabilities()
 
@@ -764,6 +780,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             backend=self._acp_backend,
             sandbox_mode=self._sandbox_mode,
             extra_env=self._extra_env,
+            agent_env=self._spawn_agent_env,
             scratch_label="runtime",
             env_before_scrub=_env_before_scrub,
             env_after_marker=_env_after_marker,
@@ -1233,6 +1250,18 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     """
     base = self._harness.client_capabilities
     base = await _with_mcp_sign_in_storage(self, base)
+    if self._harness.client_meta_settings:
+        # KAS takes the opt-out only at initialize. It is judged on the child's own
+        # environment, in launch's order: the gateway's, agent.env, then extra_env.
+        # The agent.env snapshot read here is the one launch applies.
+        self._spawn_agent_env = await asyncio.to_thread(agent_env_overlay)
+        telemetry_on = await asyncio.to_thread(
+            kas_cli_settings.kiro_cli_telemetry_enabled,
+            self._work_dir,
+            {**os.environ, **self._spawn_agent_env, **self._extra_env},
+        )
+        base = kas_cli_settings.with_telemetry_opt_out(base, telemetry_on)
+        self._kas_telemetry_sent = telemetry_on
     if self._tool_search is None:
         return base
     spec = await asyncio.to_thread(self._projected_spawn_spec)

@@ -91,7 +91,7 @@ def _ceiling_control() -> object:
 def _ceiling_denied() -> frozenset[str]:
     """The trust modes the installed ceiling's rule refuses. Pure memory, no file read.
 
-    The enterprise baseline control allows both, so it denies nothing. A control that
+    The LTS baseline control allows both, so it denies nothing. A control that
     cannot be read denies both (fail closed: a rule is there and cannot be asked).
     """
     from kiro_crew.platform.governance_parts.evaluator import _query_level

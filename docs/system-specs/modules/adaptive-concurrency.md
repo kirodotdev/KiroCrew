@@ -71,7 +71,7 @@ has a "not measured" value and an unmeasured field never fires.
 | `procs` | daemon `stats.admission.host_budget` (`procs` / `max_procs`) | both tracks | `>= 90 %` of the budget |
 | `start_latency` | `record_start(duration_ms, ...)` hook (session/new, backend initialize) | both tracks | p95 over the window `>= 30 s` |
 | `timeouts` | attributable start timeouts + attributable run failures / finished in window | both tracks | rate `>= DEFAULT_TIMEOUT_RATE` (0.2) |
-| `completion_rate` | successful runs / runs finished in window (needs >= 5 finished) | both tracks | `< 0.5` |
+| `completion_rate` | successful runs / successful plus attributable runs finished in window (needs >= 5; `non_congestion` runs are left out) | both tracks | `< 0.5` |
 | `slow_keys` | distinct PoolKeys with a slow or failing start in the window | both tracks | `>= 2` |
 | `gate_failures` | `SpawnGate` `failure` outcomes (daemon snapshot, or `note_gate_outcome` for an in-process gate) | both tracks; **sufficient alone for the gate** | `>= 2` in window |
 | `gate_slow_inits` | `SpawnGate` snapshot `slow_inits`: successful inits in the daemon's last `SLOW_INIT_WINDOW_SECS` (60) that took `>= SLOW_INIT_FRACTION` (80 %) of their own `initialize_timeout_secs` | both tracks; **sufficient alone for the gate** | `>= gate_slow_inits` (2), so one slow but healthy server does not cut it |

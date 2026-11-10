@@ -13,7 +13,7 @@ import reducer, {
 import { EMPTY_INSTANCE_FORM as FORM } from '../pages/settings/InstanceFormFields'
 
 const initial = {
-  warm: {}, activeId: null, mru: [], unread: {}, ready: {}, host: null,
+  warm: {}, activeId: null, mru: [], unread: {}, ready: {}, pendingPaneSlot: null, host: null,
   crewForms: { add: null, edit: null },
 }
 

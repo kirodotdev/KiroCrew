@@ -393,6 +393,10 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # crewmate's", which an empty string would also read as, so the
         # schema leaves absence to the handler rather than spelling it.
         FieldSpec("reasoning_effort", str, required=False, max_len=32),
+        # The harness (ACP backend) the new session runs on, spelled the way
+        # ``spawn_run.backend`` spells it (``kiro``, ``claude``, ``codex``, ...).
+        # The route refuses one that cannot start here; this only bounds it.
+        FieldSpec("backend", str, required=False, max_len=MAX_SHORT_STRING),
         # The new session's own compaction threshold, the override the context
         # meter's "Auto-compact at" slider sets. This range check is the early
         # refusal; create_session repeats it with the NaN guard, because the HTTP
@@ -613,6 +617,7 @@ WORK_DISPATCH_SCHEMA = ToolSchema(
             pattern=_MODEL_NAME_RE,
         ),
         FieldSpec("reasoning_effort", str, required=False, max_len=32),
+        FieldSpec("backend", str, required=False, max_len=MAX_SHORT_STRING),
     ],
 )
 

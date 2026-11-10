@@ -102,8 +102,10 @@ def test_a_created_idle_session_is_reset_and_respawned(tmp_path, eager, audits):
 
 def test_the_transcript_is_untouched_except_one_notice_naming_the_caller(tmp_path, eager):
     """Mutation guard: a reload that rewrote or dropped history, or appended an
-    unattributed notice, fails here."""
+    unattributed notice, fails here. The one row after the notice says how the
+    respawn ended (here: eager spawn is off, so nothing was scheduled)."""
     state, caller, target = _world(tmp_path)
+    state.sessions.has_session = MagicMock(return_value=False)
     target.append("user", "hello", "msg msg-u")
     target.append("assistant", "hi there", "msg msg-a")
     before = [dict(m) for m in target.messages]
@@ -111,8 +113,11 @@ def test_the_transcript_is_untouched_except_one_notice_naming_the_caller(tmp_pat
     _reload(state, caller)
 
     assert target.messages[: len(before)] == before
-    assert len(target.messages) == len(before) + 1
-    notice = target.messages[-1]
+    assert len(target.messages) == len(before) + 2
+    outcome = target.messages[-1]
+    assert outcome["meta"]["kind"] == "session_reload"
+    assert outcome["content"] == "The reloaded agent starts with the next message."
+    notice = target.messages[-2]
     assert notice["role"] == "assistant"
     assert notice["meta"]["kind"] == "session_reload"
     assert notice["meta"]["kind"] == "session_reload"

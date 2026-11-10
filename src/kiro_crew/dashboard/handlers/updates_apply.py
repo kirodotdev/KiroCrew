@@ -44,6 +44,7 @@ from kiro_crew.platform_compat import (
     reexec_python_module,
 )
 from kiro_crew.pre_exec_stops import run_pre_exec_stops
+from kiro_crew.restart_session_close import close_sessions_for_restart
 from kiro_crew.safety_override import flush_breadcrumb_writes
 from kiro_crew.security import (  # noqa: F401 - pinned by test_updates_handlers_facade.py
     redact_credentials,
@@ -284,6 +285,14 @@ async def _restart_gateway(
         from kiro_crew.dashboard.chat_persistence import wait_for_unwinding_turns
         from kiro_crew.executors import subprocess_executor
 
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+
+        def step(name: str) -> None:
+            # Logged as each step starts, so a restart that stalls names its step.
+            logger.info("Gateway restart: %s (+%.1fs)", name, loop.time() - started)
+
+        step("saving chat history")
         try:
             # Offload the synchronous per-slot save (per-session lock + disk I/O)
             # to the bounded subprocess_executor with a deadline: on the event loop
@@ -305,14 +314,17 @@ async def _restart_gateway(
         # A planned restart: the turns close_all() cuts resume on the next boot.
         # Imported at module load, before an apply can remove this tree; that
         # also preloads it for the gateway's update restart.
+        step("recording running chats")
         await restart_resume.record_running_slots(state)
-        try:
-            await state.sessions.close_all()
-        except Exception:
-            logger.debug("Session cleanup before restart failed", exc_info=True)
+        # Bounded, and the bound holds against a task that outlives its cancel:
+        # close_all shuts turn admission first, and only the exec below ends
+        # this image.
+        step("closing sessions")
+        await close_sessions_for_restart(state.sessions.close_all())
         # close_all() cut every turn that was mid-reply, and each one saves the text
         # its user watched stream as it unwinds, after the save above. The exec
         # below would beat that save.
+        step("waiting for cut turns")
         await wait_for_unwinding_turns(state)
         # The broker this gateway spawned dies with it, the same as on a clean
         # shutdown; an adopted daemon belongs to its own owner and is left alone,
@@ -328,6 +340,7 @@ async def _restart_gateway(
         # Wired by the orchestrator after dashboard init; absent means no broker.
         stop_broker = getattr(state, "_mcp_gateway_stop", None)
         if stop_broker is not None:
+            step("stopping the MCP broker")
             try:
                 await stop_broker()
             except Exception:
@@ -337,6 +350,7 @@ async def _restart_gateway(
         # The exec skips the cleanup hooks that stop supervised children too, and
         # a child whose parent pid survives the exec is never reclaimed. Each
         # such owner registers its stop with the pre-exec seam.
+        step("running pre-exec stops")
         await run_pre_exec_stops()
         sys.stdout.flush()
         sys.stderr.flush()
@@ -346,11 +360,13 @@ async def _restart_gateway(
         # would lose the very notice this restart is what makes necessary (found
         # in review). Offloaded so a stalled write cannot block the loop, and
         # bounded, so a restart is never held up by it.
+        step("flushing safety-override records")
         try:
             await asyncio.to_thread(flush_breadcrumb_writes, 2.0)
         except Exception:
             logger.debug("Breadcrumb flush before restart failed", exc_info=True)
         await asyncio.sleep(0.5)
+        step("exec")
         # Same point of no return as the orchestrator path: the refusal above
         # removed the reachable failures, but only the kernel can refuse the
         # image itself, and the sessions closed above do not come back. Exit on
@@ -395,6 +411,29 @@ async def _snapshot_memory_or_refuse(state: DashboardState) -> web.Response | No
     message = snapshot_refusal(failure)
     state.push_update_progress("failed", message)
     return web.json_response({"error": message, "code": "memory_snapshot_failed"}, status=500)
+
+
+def _restart_pending_refusal(state: DashboardState) -> web.Response | None:
+    """Refuse an update while a restart the idle gate approved is on its way.
+
+    Synchronous on purpose: the caller launches its installer right after this
+    returns ``None``, with no await between, so the gate cannot approve a
+    restart in a gap the installer then starts in. That restart's shutdown
+    would stop the installer partway through.
+    """
+    # Only a wired probe answering ``True`` refuses: unwired is ``None``, and a
+    # state stand-in's auto-attribute is not an answer.
+    held = getattr(state, "_restart_gate_held", None)
+    if not callable(held) or held() is not True:
+        return None
+    logger.warning("Update refused: a restart is about to begin")
+    return web.json_response(
+        {
+            "error": "A restart is about to begin. Update again once the gateway is back.",
+            "code": "restart_pending",
+        },
+        status=409,
+    )
 
 
 def _user_excludes_file(proj: str, env: dict[str, str]) -> str:
@@ -489,6 +528,11 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # waits for its installer to stop (``policy_applies_in_flight``). Inline, the
     # handler is cancelled only by aiohttp's own teardown, which the graceful
     # cap exits ahead of, and the installer would be left running unsupervised.
+    # The restart check runs here, after the snapshot's await: the tracked task
+    # is created before the next yield.
+    refused = _restart_pending_refusal(state)
+    if refused is not None:
+        return refused
     try:
         applied = await _run_tracked_policy_apply(apply_policy_update)
     except _PolicyApplyStopped:
@@ -898,7 +942,11 @@ async def api_update_apply(request: web.Request) -> web.Response:
             owned.close()
 
     # Named so the restart gate (``_restart_gate_when_idle``) counts it as work
-    # a restart would cut off.
+    # a restart would cut off. A restart it already approved never sees this
+    # task, so that case is refused here, with no await before the launch.
+    refused = _restart_pending_refusal(state)
+    if refused is not None:
+        return refused
     task = asyncio.create_task(_apply(), name="dashboard-update")
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)

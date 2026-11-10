@@ -83,7 +83,7 @@ function FolderChip({ artifact }: { artifact: Artifact }) {
             {...uiLocation('artifacts.detail.move-to-folder')}
           >
             <FolderIcon size={13} className={current ? 'text-accent' : undefined} />
-            {current ? current.name : 'folder'}
+            {current ? current.name : i18nT('pages.artifactDetailPage.folder_chip_unfiled')}
           </button>
       </DropdownMenuTrigger>
       </HoverTip>

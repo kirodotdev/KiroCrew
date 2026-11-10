@@ -28,7 +28,7 @@ import { sourceProviderMeta } from '../utils/sourceProviderMeta'
 
 const CR_URL = 'https://review.acme.example/cr/123'
 
-/** A stand-in for an enterprise edition's internal code-review system: its own
+/** A stand-in for an LTS edition's internal code-review system: its own
  *  host, its own `CR-123` reference grammar, and only some capabilities. */
 const acmeProvider: SourceProviderDescriptor = {
   id: 'acme',

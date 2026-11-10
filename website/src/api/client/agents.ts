@@ -105,6 +105,10 @@ export interface MemberRosterRow {
    *  placed yet (sorts last). Written by dragging a dock row. Absent on an
    *  older gateway. */
   star_order?: number
+  /** Preview, off by default: whether a Dashboard-tab button may send its reply
+   *  in one click. Absent on an older gateway, which has no such switch, or when
+   *  the crewmate never opted in: read it as off. */
+  dashboard_card_send?: boolean
   /** The person created this crewmate (the Crewmates page's create, or an
    *  approved `crewmate.create` / `crewmate.import` card): `source` is
    *  `kirocrew` AND the record carries a member id. Never true for the reserved
@@ -161,6 +165,14 @@ export interface AgentResolvedModel {
   acp_backend?: string
   /** What clearing the pin would run on (the install's member harness), same spelling. */
   inherited_harness?: string
+  /** Where `inherited_harness` comes from: `legacy` (`agent.member_acp_backend`), `settings` (`agent.acp_backend`), `fallback` (KAS, because Crew bots cannot run on `settings_harness`), or `worker_spec` (KAS, because `settings_harness` cannot carry this Crew bot's worker tool limits, hooks, permissions or toolsSettings). */
+  inherited_source?: 'legacy' | 'settings' | 'fallback' | 'worker_spec'
+  /** Harnesses a pin to which runs the Bot on KAS (config spelling); its models are KAS's. */
+  kas_pin_harnesses?: string[]
+  /** Where a pin in `kas_pin_harnesses` runs (config spelling): `kas`, or the floor when policy denies KAS. */
+  kas_pin_landing?: string
+  /** `agent.acp_backend` in the config spelling, which a fallback names. */
+  settings_harness?: string
   /** What the crewmate's chat runs on, same spelling; `''` when the pin cannot start. */
   harness?: string
   /** The model a crew with a `member_id` starts its DM on (`''` when the harness picks); absent otherwise. */
@@ -384,9 +396,11 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
      *  the sync route it enrols nothing and allocates no member memory, so
      *  every picker can call it without side effects. Same `X-Session-Key`
      *  scoping as `kirocrewAgents`: project templates come from THIS chat's
-     *  project, never from another open pane's. */
-    agentCatalog: (sessionKey?: string) =>
-      fetch('/api/agents/catalog', {
+     *  project, never from another open pane's. With no chat to name,
+     *  `projectPath` names the directory instead (the folder settings modal);
+     *  the server honours it for the owner only. */
+    agentCatalog: (sessionKey?: string, projectPath?: string) =>
+      fetch('/api/agents/catalog' + (projectPath ? '?project_path=' + encodeURIComponent(projectPath) : ''), {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
       }).then(j) as Promise<{
         agents: KiroCrewAgent[]

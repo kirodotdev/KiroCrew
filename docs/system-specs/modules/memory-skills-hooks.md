@@ -613,6 +613,28 @@ and it refuses only the long tail of values. Only consolidation is bound: owner
 edits, imports, the dashboard and lessons keep the byte ceiling alone
 ([Semantic Memory](#semantic-memory)).
 
+A refused value is carried to the same session's next pass instead:
+`_audit_oversized_semantic` also adds each one, whole, with its key and length, to
+the session's refused-value note, the `memory_meta` row
+`consolidation_refused_semantic:<session>` (`_update_refused_semantic_note`), under
+the same hold, so the note lands exactly when the audit row does; an entry already in
+the note is not added twice. The session's next consolidation prompt lists the note
+under `## Semantic Values Refused Last Pass`, after the semantic table and outside its
+cap, and asks the model to propose a fact that is still true again as separate keys
+within the bound. Each value has passed `validate_semantic` (the byte ceiling and the
+injection check), as every row the table shows has. Once that pass has written its
+answer, the entries it showed are dropped under a publication hold, so a value
+refused again unchanged is not listed again, while a shortened value still over the
+bound is a new entry; a pass that ends before its writes keeps the note. A note keeps
+at most `_MAX_REFUSED_SEMANTIC_NOTES` (5) values, newest kept, which bounds the
+section; a write that drops older values says so in one warning naming their count
+and keys. Each change deletes, in the same commit, every session's note left
+`_REFUSED_SEMANTIC_NOTE_DAYS` (30) days without a write, by the store's clock. That
+prune aside, only the session's own passes, which its lease runs one at a time, change
+its row, and only that session is shown it, so a refusal on a session's last pass is still never proposed again. A note
+that cannot be written is logged and skipped, its statement rolled back under the
+store lock so the pass goes on. There is no dashboard view of it.
+
 The prompt's `## Current Semantic Memory` block is bounded too, on BOTH passes
 (the preference-only pass builds the same block): the active table is read
 whole, in key-ordered pages of 500 (`_semantic_snapshot_in_pages`, keyset
@@ -836,7 +858,25 @@ with their actual units remain visible.
 Only explicit member creation initializes an empty Memory V2 database. Existing
 members retain their current memory; edits offer no provisioning or migration
 action. An unavailable member database remains an error and requires restoring
-its backup. The Crew Manager notice distinguishes new members from existing
+its backup, with one exception: when a member's own store is bound to it alone by
+name and immutable id, its directory is a real directory, nothing sits at
+`memory.db` (the user deleted the file to wipe the memory), and every leftover
+`-wal`/`-shm`/`-journal` file is a regular file, opening that member's chat renames
+those side files aside to `<name>.orphaned-<ns>` (never deleting them), creates a
+new empty database with the same identity and owner-only permissions, and logs it
+once (`chat_persistence_parts/member_store.py:_recreate_missing_member_database`).
+Before taking the namespace lock, the pin closes this process's cached handles
+(`release_cached_memory_store`), then rechecks repair eligibility and does the
+rename and create under the namespace and store's exclusive use locks
+(`hold_stores_for_replace`). The new database is built aside as
+`memory.db.repair-<hex>`, its WAL checkpointed (`wal_checkpoint(TRUNCATE)`,
+`journal_mode=DELETE`) and closed with no side file left, fsynced, and only then
+renamed onto `memory.db`; any failure removes only that temp file and its own
+side files, so the real path never holds a half-made database; a store another process still holds open is refused
+with a "still open in another process" reason and a restart applies the repair.
+The new-chat precheck admits that same case so the open can repair it. Any other
+failure (identity mismatch, a link or non-file at the database or a side-file
+path) keeps refusing, and the refusal names the store check's reason. The Crew Manager notice distinguishes new members from existing
 members. A disabled Manage memory
 action shows its unsaved-changes reason as visible helper text for keyboard and
 touch users. Member status distinguishes an explicitly
@@ -1534,7 +1574,8 @@ Global Memory is **V1**. Explicit member creation allocates a unique empty **V2*
 store before publication. Automatic discovery registers agents on Global V1.
 Existing members retain their exact V1 binding. Only explicit new member
 creation provisions a member database; member edits never migrate a V1 binding
-or create a replacement for missing memory. Existing V1 data is preserved.
+or create a replacement for missing memory (the one deleted-file case above is
+repaired on chat open, not by an edit). Existing V1 data is preserved.
 The crew editor describes each member's memory ownership and states that V2 is
 available only when creating a new crew member. Existing members retain their
 current version and have no migration or provisioning action in the editor.
@@ -3690,7 +3731,7 @@ Parses legacy markdown files into structured memory:
 - Idempotent: re-running skips existing semantic entries (conflict resolution), episodic dedup via FAISS when available
 
 **Automatic migration (`GatewayOrchestrator._auto_migrate_memory`)**: migration is fully automatic; there is no dashboard "Migrate" button. After the deferred memory initialization worker completes recovery and opens the readiness barrier, the gateway schedules a task retained in `_background_tasks` and cancelled on shutdown. It runs two idempotent phases with blocking work offloaded to the maintenance executor:
-1. **Migrate** (gated on `memory.migrated == False`): detects legacy content via the shared `memory.legacy_memory_present()` helper (also used by `/api/memory/stats`), runs `migrate_from_markdown()`, then flips `memory.migrated=True` for **everyone** — fresh installs with zero legacy entries included, so all users land in vector-only mode. Syncs the live `consolidator._migrated`, and **acknowledges** with a `migration` audit event (`memory_events`, visible in the dashboard Audit tab, `source="auto"`, counts in `new_value`) plus a `logger.info` line. On error: logs and leaves `migrated=False` so the next boot retries.
+1. **Migrate** (gated on `memory.migrated == False`): detects legacy content via the shared `memory.legacy_memory_present()` helper (also used by `/api/memory/stats`), runs `migrate_from_markdown()`, then flips `memory.migrated=True` for **everyone** — fresh installs with zero legacy entries included, so all users land in vector-only mode. Syncs the live `consolidator._migrated`, and **acknowledges** with a `migration` audit event (`memory_events`, written on the maintenance executor because it takes the store's writer lock, visible in the dashboard Audit tab, `source="auto"`, counts in `new_value`) plus a `logger.info` line. On error: logs and leaves `migrated=False` so the next boot retries.
 2. **Re-embed sweep** (independent of the migrated flag): awaits the background model download if one is still in flight (safe — we are our own task), then `VectorMemoryStore.backfill_missing_embeddings()` embeds any episodic rows written with a NULL vector and rebuilds the FAISS index. Self-healing across boots and across a download that failed then later succeeded.
    - **The sweep probes before it loads.** `wait_ready()` kicks the GGUF load, so asking the model to be ready is not a free question — it costs ~1GB of RSS for the process's lifetime (measured: `VmRSS` +1069 MiB, of which `RssAnon` +455 MiB is private KV/compute buffers and `RssFile` +614 MiB is the mmap'd weights). A steady-state boot has nothing to embed, so the sweep asks two **non-loading** questions first and returns 0 when both say no: `store.has_pending_embeddings()` (three `SELECT 1 … LIMIT 1` reads over the same predicates the three sub-sweeps use) and `store_embedding_space_is_stale(store)` (a signature comparison over `model_id`/`dim`, which are set when the backend is *constructed*). Only when there IS work does it wait on readiness, reconcile, and sweep — so a stale vector space still reconciles and re-embeds, and rows deferred with `defer_embedding=True` are still picked up on a later boot. The non-mutating probe is used deliberately rather than `reconcile_store_embedding_space()`, which is destructive and refuses to clear against an unready backend. A store that does not implement the probe keeps the old always-load behaviour rather than silently losing its sweep.
    - **The model still loads lazily on the first real embedding need.** `_start_embeddings()` binds `embed_fn`/`embed_fn_factory` without loading anything: `make_sync_embed_fn()` returns a closure, and the load is kicked inside `embed_batch()` the first time it finds `_llm is None` (returning `None` so that caller degrades to keyword search).
@@ -5513,8 +5554,11 @@ exclude). To keep it off the per-message filesystem/config hot path:
 - the walk that rebuilds it (`_iter_skill_files`, on a worker thread) asks the
   sensitive-path fence through `is_sensitive_resolved_path` against the
   `realpath` it has already computed for loop detection and containment, with
-  the fence's anchors resolved on that same thread, so the ~1.4k per-scan
-  checks on an install with a few provider packages submit nothing to the
+  the fence's anchors resolved on that same thread, and `_iter_uncached`
+  judges each row it keeps (the skills dir's dedupe set and every extra-path
+  row) with `validate_file_path(..., canonical_gate=True)`, which answers
+  inline off the event loop and keeps the bounded gate on it, so the ~1.4k
+  per-scan checks on an install with a few provider packages submit nothing to the
   two-worker `mc-pathres` pool. That pool is FIFO and sized for
   the event loop; a scan flooding it from worker threads queued the loop's own
   resolutions behind the backlog until the loop-stall watchdog fired
@@ -6438,14 +6482,14 @@ deny blocked:
 | `targets` | deny | per-target rules `sensitive-path`, `sensitive-bash`, `exfil`, run TARGET-MAJOR over the normalized title then the raw command; a sandboxed shell's own command is spared the path rule. With no recovered command and no MCP server, the tool's own `command`/`cmd` argument then meets the shell rules only (`sensitive-bash`, `exfil`), never the path rule |
 | `param-paths` | deny | every path spelling in the arguments, and a target walk that hit its work cap |
 | `write-protected` | deny | a file edit (the `edit` kind or a diff block) of a write-protected config path, or one naming no or an unanchored target |
-| `deny-rules` | deny | the effective deny set through the snapshot's `PolicyAuthority`, over the title forms, the trusted identities, the command and that `command`/`cmd` argument |
+| `deny-rules` | deny | the effective deny set through the snapshot's `PolicyAuthority`, over the title forms, the trusted identities, the command and that `command`/`cmd` argument, each distinct string asked once (a title with no display prefix is one form) |
 | `mcp-auto-deny` | deny | the operator's `auto_deny_tools` globs against the `_meta.kiro` `@server/tool` identity, verified or not (a deny can only deny) |
 | `search-target` | deny | the operator's own rules against a file search's synthesized scope target |
 | `governance` | deny_policy | the ceiling ∩ active profile (`_governance_denial`) |
 | `spec-shell-allowlist` | deny_policy | a KAS agent spec's `toolsSettings.shell.denyByDefault`: its own shell call whose command no usable `allowedCommands` entry matches whole (`ToolCall.spec_shell_allowlist`) |
 | `spec-write-allowlist` | deny_policy | a KAS agent spec's `toolsSettings.fs_write.fallbackAction: "deny"`: its own file write with a target no usable `allowedPaths` entry covers, as written or symlink-resolved (`ToolCall.spec_write_allowlist`) |
 | `spec-denies` | deny_policy | a KAS agent spec's `deniedCommands` / write `deniedPaths` that Crew reads itself: its own shell call a deny matches (whole or any leading piece), or write whose target, as written or symlink-resolved, a deny covers (`ToolCall.spec_denied_grant`) |
-| `app-own-server` | grant | a builtin app agent calling its own declared MCP server |
+| `app-own-server` | grant | a first-party app agent (a builtin, or a former builtin adopted from its pin, `apps/builtin_adoption_gate.py`) calling its own declared MCP server |
 | `operator-grants` | grant | the operator's `auto_approve_tools` patterns, unless a `confirm_tools` pattern names the call or the list is unknown |
 | `read-only` | classify | the read-only classifier, except for an MCP call `confirm_tools` names (or any MCP call while the list is unknown) and a shell command that runs `git` at any command position (`readonly_bash.command_invokes_git`), which falls through to the surface's own approval; the only auto-approve under `classifier_only` |
 
@@ -6470,7 +6514,7 @@ result or config type to `hook_types`.
 
 A script hook's `command` is a single shell command line stored in
 `~/.kiro/crew/hooks.json`. It runs in that platform's native shell language, and
-a hook is therefore **not portable across platforms**. A stored PreToolUse hook's tool matcher is compared with every name the call is known by (`hook_dispatch.pre_tool_match_names`): its title, its trusted identity and the kiro-cli names the harness's own id for the call stands for, so `execute_bash` meets KAS's `run_command`, goose's `shell`, opencode's `bash` and claude's `Bash` (`acp/harness_tool_names.py`; on claude the id is the name the adapter stamps in `_meta.claudeCode.toolName`). `ScriptHookStore.fire` also runs a caller's never-persisted `extra_hooks` (an agent spec's own `hooks` on a backend that cannot run them, `agent_sdk/spec_hooks.py`) after the stored ones, through the same matcher, gate and spawn, in `extra_hooks_cwd` (the session's workspace), and their payload's `cwd` says so. Their tool matcher is written in kiro-cli's tool names, so the caller passes `extra_hooks_tool_names`, the names the harness's own id for the call stands for. A dashboard turn and a subagent run pass them on PostToolUse as on PreToolUse (#25320): the id the call's permission request stated, else, for a call its frame classified as a shell command, KAS's shell tool (`spec_hooks.post_tool_hook_tool_id`), kept beside the call's canonical tool name and trusted MCP server so an `@server/tool` matcher still meets an MCP call (`spec_hooks.PostToolIdentity`, recorded per call in `_ChatTurn._pending_tool_ids` and the run's own map), because KAS's `tool_call` frame names no built-in tool and titles it in prose; a call nothing names keeps title matching. claude's `tool_call` frames carry no tool id either, so on claude, where Crew fires every spec hook event but PreToolUse (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`), a call that asked permission is named by the id its request stated (`claude#Edit` meets an `fs_write` matcher), and a call of kind `execute` that did not ask is named by the same shell fallback and meets an `execute_bash` matcher. Both fire PostToolUse once per call, on its terminal result (`tool_final`, or a status in `TERMINAL_TOOL_STATUSES`): a progress frame that carries partial output, as opencode sends, neither fires it nor retires the call's name. Every event kiro-cli runs a spec hook for (`agentSpawn` on the session's first turn, `userPromptSubmit`, `preToolUse` once per call at its permission request, `postToolUse`, `stop`) is pinned through a real `chat_runner._run_chat` KAS turn by `test_kas_spec_hooks_turn_loop.py`. The approval card adds no PreToolUse fire, for spec hooks and Hooks-page hooks alike: a call the gate (`HookManager.on_tool_call`) passes to the card had its PreToolUse fire at the gate, before the card, and approving the card does not fire it again (`_ChatTurn._pre_tool_hooks_fired`, set by that fire and reset at the start of every permission request's decision). On a backend in `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` that leaves one fire per call. On any other backend, kiro-cli among them, a Hooks-page hook also gets the informational fire on the call's `tool_call` frame (`dashboard/chat_turn/tool_rows.py`), so a call there that asks permission meets it twice, at the frame and at the gate. A deny-rules override card is drawn before the gate's fire and a host with no context builder never runs the gate, so those calls fire PreToolUse once, on the approval. The shells:
+a hook is therefore **not portable across platforms**. A stored PreToolUse hook's tool matcher is compared with every name the call is known by (`hook_dispatch.pre_tool_match_names`): its title, its trusted identity and the kiro-cli names the harness's own id for the call stands for, so `execute_bash` meets KAS's `run_command`, goose's `shell`, opencode's `bash` and claude's `Bash` (`acp/harness_tool_names.py`; on claude the id is the name the adapter stamps in `_meta.claudeCode.toolName`). `ScriptHookStore.fire` also runs a caller's never-persisted `extra_hooks` (an agent spec's own `hooks` on a backend that cannot run them, `agent_sdk/spec_hooks.py`) after the stored ones, through the same matcher, gate and spawn, in `extra_hooks_cwd` (the session's workspace), and their payload's `cwd` says so. An object-form spec hook's `max_output_size` rides on the in-memory `ScriptHook.max_output_size` (never saved, like `spec_origin`), and `run_script_hook` cuts that hook's stdout to that many UTF-8 bytes after redaction, with the truncation marker; `0`, the value for every other hook, leaves only the 64 KiB stream cap, which also clamps a larger value. Its `cache_ttl_seconds` is not honoured, and the conversion logs that once. Their tool matcher is written in kiro-cli's tool names, so the caller passes `extra_hooks_tool_names`, the names the harness's own id for the call stands for. An agent spec's own hook (`spec_origin` `user` or `project`) reads the stdin names kiro-cli's V2 engine, the one Crew runs on, gives every spec hook (`spec_hooks.kiro_cli_hook_payload`): a camelCase `hook_event_name`, `tool_name` as kiro-cli's full name (`shell`, `read`, `write`, `subagent`, or `@server/tool`), `tool_tags`, and `assistant_response` beside `assistant_text` on Stop. A `~/.kiro/hooks` file hook (`user_file`) was written for KAS and keeps the PascalCase event and the first `extra_hooks_tool_names` name; stored hooks keep their names too. `run_script_hook` asks the `events` governance check about the event in the store's PascalCase either way. A dashboard turn, a subagent run and a channel bot's turn (`messaging/tool_hooks.py`) pass them on PostToolUse as on PreToolUse (#25320): the id the call's permission request stated, else, for a call its frame classified as a shell command, KAS's shell tool (`spec_hooks.post_tool_hook_tool_id`), kept beside the call's canonical tool name and trusted MCP server so an `@server/tool` matcher still meets an MCP call (`spec_hooks.PostToolIdentity`, recorded per call in `_ChatTurn._pending_tool_ids` and the run's own map), because KAS's `tool_call` frame names no built-in tool and titles it in prose; a call nothing names keeps title matching. claude's `tool_call` frames carry no tool id either, so on claude, where Crew fires every spec hook event but PreToolUse (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`), a call that asked permission is named by the id its request stated (`claude#Edit` meets an `fs_write` matcher), and a call of kind `execute` that did not ask is named by the same shell fallback and meets an `execute_bash` matcher. Both fire PostToolUse once per call, on its terminal result (`tool_final`, or a status in `TERMINAL_TOOL_STATUSES`): a progress frame that carries partial output, as opencode sends, neither fires it nor retires the call's name. Every event kiro-cli runs a spec hook for (`agentSpawn` on the session's first turn, `userPromptSubmit`, `preToolUse` once per call at its permission request, `postToolUse`, `stop`) is pinned through a real `chat_runner._run_chat` KAS turn by `test_kas_spec_hooks_turn_loop.py`. The approval card adds no PreToolUse fire, for spec hooks and Hooks-page hooks alike: a call the gate (`HookManager.on_tool_call`) passes to the card had its PreToolUse fire at the gate, before the card, and approving the card does not fire it again (`_ChatTurn._pre_tool_hooks_fired`, set by that fire and reset at the start of every permission request's decision). On a backend in `ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS` that leaves one fire per call. On any other backend, kiro-cli among them, a Hooks-page hook also gets the informational fire on the call's `tool_call` frame (`dashboard/chat_turn/tool_rows.py`), so a call there that asks permission meets it twice, at the frame and at the gate. A deny-rules override card is drawn before the gate's fire and a host with no context builder never runs the gate, so those calls fire PreToolUse once, on the approval. The shells:
 
 | | Shell | Env var in a command | Quote grouping |
 |---|---|---|---|
@@ -6494,6 +6538,55 @@ moved off, as `begin_prompt` restores it. `auto`, and no model reported yet,
 leave the variable unset. Channel
 turns, subagent runs and the other `fire_tool_hooks` callers pass none. The name
 is Kiro Crew's own: kiro-cli defines no model variable, unlike `KIRO_SESSION_ID`.
+
+**`prompt` is the turn's message, not the prompt built for the model, on a dashboard
+turn and on a channel turn that runs the Hooks page's hooks.** The dashboard turn
+fires `UserPromptSubmit` on `turn.message`
+(`src/kiro_crew/dashboard/chat_turn/turn_dispatch_gates.py`): the user's text plus
+any Kiro Crew text `_turn_build_prompt`
+(`src/kiro_crew/dashboard/chat_turn/prompt_assembly.py`) put before it, which can
+be long, such as `take_turn_context`'s background context, the `[from: ...]` line
+of `shared_crew/attribution.sender_line`, `build_cancelled_turn_preamble`'s
+cancelled turn or a subagent delivery-failure notice. It reads `turn.message`, not
+`full_message`, so the context build's output (the agent prompt, rules, memory and
+session context) never reaches it, nor do the `[Hook context]` block and the
+prefixes added after the fire. A spec `userPromptSubmit` Kiro Crew fires on a
+backend in `ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS` reads the same text. A
+channel turn that runs the Hooks page's hooks (the operator's own conversation,
+such as a Slack 1:1 DM, `slack/script_hooks.runs_script_hooks`) hands its
+`ScriptHookTurn` the sender's message, so there too both read that message, never
+the prompt built for the model. A channel turn those hooks do not run for (a Slack
+channel or group DM, a room or guest turn under `minimal_context`, an autonudge or
+monitor wake) has no `ScriptHookTurn` of its own: `TurnDriver` fires the agent
+spec's hooks alone through
+`ScriptHookTurn(self.audit_session_key, message, store_hooks=False)`
+(`messaging/driver.py`), where `message` is the prompt the backend receives, which
+`messaging/script_hooks.py` documents as deliberate. On those turns the spec hook
+reads Kiro Crew's context on every backend that fires it.
+
+A spec hook kiro-cli runs itself is outside both fires. On kiro-cli's v2 engine (the
+Kiro CLI harness, `ACP_BACKEND_KIRO`, which is in neither spec-hook set) kiro-cli
+runs the spec's `userPromptSubmit` on the text block Kiro Crew sends
+(`acp.prompt_blocks.build_prompt_blocks`), on every turn, so that hook's `prompt` is
+the turn message Kiro Crew built around the typed message, never the typed message
+itself. What that message holds depends on the turn. A session's first turn carries
+the session-start context: `[AGENT SYSTEM PROMPT]` and `build_session_context`'s
+critical rules, memory and session context, which `context_assembly/turn_message.py`
+adds only under `is_new_session`. The first turn after a confirmed compaction gets
+the agent contract, memory index, skills and lessons back
+(`context_assembly/turn.post_compaction_parts`), never the critical rules or the rest
+of `build_session_context`. A `minimal_context` turn (a shared or guest channel turn,
+a minimal cron) gets the minimal session start and, after a compaction, only the
+contract and the reply-style preferences back, so no rules or memory at either
+point. A warm turn carries per-turn lines instead (the runtime refresh, the active
+model, folder steering and the like) and the prefixes above.
+This is documented, not changed, while v2 remains: kiro-cli runs the field itself,
+so it stays out of both sets, and the case ends when kiro-cli removes v2 and the
+Kiro CLI harness goes with it
+([2026-10-28 decision](../../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md)).
+The user-facing statement and its remedies (a Hooks-page hook, or `kiro-cli update`
+so a Kiro CLI choice runs on KAS) are in
+[steering-and-hooks](../../../src/kiro_crew/docs/steering-and-hooks.md#kiro-cli-hooks-that-survive-an-update).
 
 **Attribution keys in the stdin JSON.** Beyond `hook_event_name`, `cwd` and the
 event's own fields (`prompt`, `tool_name`, `tool_input`, `tool_response`,
@@ -6543,6 +6636,25 @@ prompt, and the only form under which both `%VAR%` and a literal `%` behave as
 written. The shell spawn is guarded on `wrap_argv` + `cgroup_scope_argv` having
 been no-ops; if a wrapper ever prepends anything the code falls back to the argv
 path, choosing isolation over quoting fidelity.
+
+**Neither Windows spawn opens a console window.** The shell spawn and the argv
+fall-through both pass `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`
+(`platform_compat._SUBPROCESS_NO_WINDOW`, `0` on POSIX), so cmd.exe, a console
+program, gets a console with no window whatever console the gateway has. Without
+the flag the gateway's start decides it. The desktop shell (Node's `windowsHide`
+with no inherited stdio) and the detached restart (`_spawn_detached_gateway`)
+give the gateway a hidden console, which a hook inherits; a gateway started from
+a terminal shares that terminal's console. A gateway with no console (started by
+`pythonw`, or by a launcher that passes `DETACHED_PROCESS`) makes Windows allocate
+a new console per hook: CPython's `Popen(shell=True)` hides that console's
+window with `STARTF_USESHOWWINDOW` + `SW_HIDE`, and the argv fall-through passes
+no such hint, so its window would show and could take the focus. With the flag the
+hook's own console children share its windowless console; stdin stays the pipe
+the event JSON is written to, and `CREATE_NEW_PROCESS_GROUP` keeps the tree
+`taskkill /T`-reapable. This holds for every hook `run_script_hook` spawns:
+Hooks-page hooks, an agent spec's `extra_hooks` and the dashboard's hook test. A
+spec hook kiro-cli runs itself is spawned by kiro-cli, outside Kiro Crew. Pinned
+on every platform by `test_a_windows_hook_spawn_opens_no_console_window`.
 
 On Windows both wrappers are pass-throughs whenever they return at all — there is
 no sandbox backend and no cgroup v2 — but `wrap_argv` **fail-closes** rather than
@@ -7138,7 +7250,7 @@ importable from `kiro_crew.context`:
 | `store_admission.py` | which store answers each memory and lesson section, the first message's early embed (`embed_startup_query`), the early memory reads (`prefetch_session_memory`), the per-message lessons block, the shown-lesson record |
 | `turn.py` | follow-up turn additions (post-compaction re-injection, Slack thread context, per-turn rails, guidance) and the user's own turn text. The rails include the own `[DASHBOARD]` block of a root session running the conductor template with an adopted page, which `chat_runner` builds from the slot (`dashboard_agentic.root_session_dashboard_block`) and hands over as `session_dashboard` |
 | `output_contract.py` | the output contract a session starts with: the critical-rules block per runtime (`_critical_rules_for`) and the `[UI LANGUAGE]` steer (`ui_language_tag` stays on the facade) |
-| `tool_names.py` | the `[TOOL NAMES]` block: how a model spells an MCP tool call on a harness that resolves only qualified names (KAS), at session start, minimal start and after a compaction |
+| `tool_names.py` | the provider-specific `[TOOL NAMES]` block: qualified-name compatibility for legacy direct calls, exact catalogue IDs for loading, and unchanged returned IDs for executors; the direct-call fallback never rewrites loader or executor IDs; present at session start, minimal start and after compaction |
 | `session_start.py` | `ContextBuilder.build_session_context`: the session-start block's order, its section timings (`_mark`, `_emit_context_section_timings`) and the redaction of replayed thread history |
 | `turn_message.py` | `ContextBuilder.build_message`: what one turn sends and in which order, the trigger-matched skill-body delivery and its audit, the request boundary |
 | `agent_spec.py` | the agent prompt (`_resolve_agent_prompt`, `_load_agent_prompt`, `_read_prompt_file`), its templates and the per-session readings they resolve to (`_session_reading`), and the agent-spec reads (`_read_include_crew_context`, `_load_steering_resources`, `steering_target_admissible`) |

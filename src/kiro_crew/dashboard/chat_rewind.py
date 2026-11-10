@@ -38,7 +38,11 @@ from kiro_crew.dashboard.chat_utils import (
     reject_if_slot_under_construction,
     slot_history_key,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    refuse_rerun_after_signed_out_turn,
+    reject_if_kiro_unverified,
+    rerun_signs_in_via_kiro_cli,
+)
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
@@ -124,12 +128,15 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     """
     # Destructive: this truncates and PERSISTS history before the background
     # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
+    # readiness latch must be honored BEFORE the mutation, when that turn signs
+    # in via kiro-cli.
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
+    kiro_turn = await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name))
+    if kiro_turn:
+        blocked = await reject_if_kiro_unverified(request)
+        if blocked is not None:
+            return blocked
     slot = state._slots.get(name)
     request_app = request.get("app", "")
     # The readiness await above can outlast a close and a same-name create; the
@@ -200,6 +207,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 {"error": "this crew is paused; resume it from the Board", "code": "crew_paused"},
                 status=409,
             )
+        if not kiro_turn:
+            signed_out = refuse_rerun_after_signed_out_turn(slot)
+            if signed_out is not None:
+                return signed_out
 
         msgs = slot.messages
 

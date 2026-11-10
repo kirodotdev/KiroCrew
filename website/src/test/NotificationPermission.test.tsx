@@ -54,6 +54,7 @@ describe('Settings › Notifications › System notifications row', () => {
     installNotification('granted')
     render(<NotificationsPanel />)
     const row = screen.getByTestId('system-notifications-row')
+    expect(row.textContent).toContain('System notifications when this window is in the background')
     expect(row.textContent).toContain('Allowed')
     expect(row.querySelector('button')).toBeNull()
   })
@@ -95,7 +96,7 @@ describe('Settings › Notifications › System notifications row', () => {
   it('has a banner toggle, default ON, persisting OFF to its own key', () => {
     installNotification('granted')
     render(<NotificationsPanel />)
-    const toggle = screen.getByRole('switch', { name: /Show a banner for new notifications/i })
+    const toggle = screen.getByRole('switch', { name: /Show a banner while this window is open/i })
     expect(toggle.getAttribute('aria-checked')).toBe('true')
     fireEvent.click(toggle)
     expect(localStorage.getItem('mc-notification-banner')).toBe('0')

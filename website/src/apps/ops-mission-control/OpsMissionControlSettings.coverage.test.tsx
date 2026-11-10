@@ -22,7 +22,7 @@
  *    `field` helper below picks the input, and `saveIn` scopes the button to its own row.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within, cleanup, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { OpsApiError } from './api'
@@ -87,6 +87,7 @@ const ROTATION: RotationInfo = {
 }
 
 const roster = (over: Partial<RotationRoster> = {}): RotationRoster => ({
+  source: 'schedule-file',
   members: [],
   windows: [],
   timezone: 'UTC',
@@ -494,7 +495,12 @@ describe('a secret field', () => {
     renderPanel()
 
     const input = await findField(/api_key/)
-    expect(commitIn(/api_key/)).toBeDisabled()
+    // `aria-disabled`, not native `disabled`: the button stays focusable, and the
+    // click itself refuses an empty draft, so no request goes out (#33115).
+    expect(commitIn(/api_key/)).toHaveAttribute('aria-disabled', 'true')
+    expect(commitIn(/api_key/)).not.toBeDisabled()
+    fireEvent.click(commitIn(/api_key/))
+    expect(mockApi.putSecret).not.toHaveBeenCalled()
 
     fireEvent.change(input, { target: { value: 'pd-abc123' } })
     fireEvent.click(commitIn(/api_key/))
@@ -565,7 +571,10 @@ describe('the fenced rotation identity', () => {
     renderPanel()
 
     const input = await findField(/Your PagerDuty user ID/)
-    expect(commitIn(/Your PagerDuty user ID/)).toBeDisabled()
+    // `aria-disabled`, not native `disabled`: the Save stays in the tab order so a
+    // keyboard user keeps focus while a save runs and when the row goes clean (#33115).
+    expect(commitIn(/Your PagerDuty user ID/)).toHaveAttribute('aria-disabled', 'true')
+    expect(commitIn(/Your PagerDuty user ID/)).not.toBeDisabled()
 
     fireEvent.change(input, { target: { value: ' PXYZ789 ' } })
     fireEvent.click(commitIn(/Your PagerDuty user ID/))
@@ -704,13 +713,45 @@ describe('the Slack card', () => {
     renderPanel()
 
     const input = await findField(/Channel ID/)
-    expect(commitIn(/Channel ID/)).toBeDisabled()
+    // `aria-disabled`, not native `disabled`: focus holds while the save runs and
+    // when the row goes clean; the click refuses a clean draft (#33115).
+    expect(commitIn(/Channel ID/)).toHaveAttribute('aria-disabled', 'true')
+    expect(commitIn(/Channel ID/)).not.toBeDisabled()
 
     fireEvent.change(input, { target: { value: ' C0123456789 ' } })
     fireEvent.click(commitIn(/Channel ID/))
     await waitFor(() =>
       expect(mockApi.putSettings).toHaveBeenCalledWith({ slack_channel: 'C0123456789' }),
     )
+  })
+
+  it('keeps keyboard focus on a mounted Save while the save runs, and ignores a second press', async () => {
+    // The Channel Save stays mounted across its own request, unlike the signal-row
+    // Claim. `aria-disabled` keeps it in the tab order so a keyboard user holds focus
+    // for the whole save; a native `disabled` dropped it to the page (#33115).
+    mockApi.state.mockResolvedValue(boardState({ slack: slack({ enabled: true }) }))
+    let finish: (v: { ok: true }) => void = () => {}
+    mockApi.putSettings.mockReturnValue(
+      new Promise(resolve => { finish = resolve }) as ReturnType<typeof mockApi.putSettings>,
+    )
+    renderPanel()
+
+    const input = await findField(/Channel ID/)
+    fireEvent.change(input, { target: { value: 'C0123456789' } })
+    const button = commitIn(/Channel ID/)
+    button.focus()
+
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'))
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    // A second press while the save is in flight must not fire a second request.
+    fireEvent.click(button)
+    expect(mockApi.putSettings).toHaveBeenCalledTimes(1)
+
+    await act(async () => finish({ ok: true }))
+    expect(button).toHaveFocus()
   })
 
   it('writes the mirror toggle through the settings route', async () => {
@@ -829,7 +870,9 @@ describe('the shared-memory card', () => {
 
     const remote = await findField(/^Repository/)
     await waitFor(() => expect(remote).toHaveValue('git@github.com:org/ops-memory.git'))
-    expect(commitIn(/^Repository/)).toBeDisabled()
+    // `aria-disabled`, not native `disabled`, so focus holds across a save (#33115).
+    expect(commitIn(/^Repository/)).toHaveAttribute('aria-disabled', 'true')
+    expect(commitIn(/^Repository/)).not.toBeDisabled()
 
     fireEvent.change(remote, { target: { value: ' git@github.com:org/other.git ' } })
     fireEvent.keyDown(remote, { key: 'Enter' })
@@ -847,7 +890,12 @@ describe('the shared-memory card', () => {
     const branch = await findField(/^Branch/)
     await waitFor(() => expect(branch).toHaveValue('release'))
     fireEvent.change(branch, { target: { value: '   ' } })
-    expect(commitIn(/^Branch/)).toBeDisabled()
+    // `aria-disabled`, not native `disabled`: the button keeps focus, and the click
+    // refuses a whitespace-only branch so no empty branch is posted (#33115).
+    expect(commitIn(/^Branch/)).toHaveAttribute('aria-disabled', 'true')
+    expect(commitIn(/^Branch/)).not.toBeDisabled()
+    fireEvent.click(commitIn(/^Branch/))
+    expect(mockApi.putSettings).not.toHaveBeenCalled()
 
     fireEvent.change(branch, { target: { value: 'main' } })
     fireEvent.click(commitIn(/^Branch/))
@@ -1035,6 +1083,22 @@ describe('the on-call schedule card', () => {
     )
   })
 
+  it('never seeds the GitHub login from another rotation\'s roster', async () => {
+    // Any roster but schedule-file carries its own vendor's user id in `me`; seeding this
+    // field with it would store that id as the GitHub login on the first Save.
+    scheduleProvider()
+    mockApi.rotation.mockResolvedValue({
+      ...ROTATION,
+      roster: roster({ source: 'incidentio', me: '01VENDORUSERID' }),
+    })
+    renderPanel()
+
+    const login = await findField(/Your GitHub login/)
+    await waitFor(() => expect(mockApi.rotation).toHaveBeenCalled())
+    expect(login).not.toHaveValue('01VENDORUSERID')
+    expect(screen.queryByText(/No GitHub login resolved for this instance/)).not.toBeInTheDocument()
+  })
+
   it('writes nothing when Enter lands on an unedited login', async () => {
     scheduleProvider()
     mockApi.rotation.mockResolvedValue({ ...ROTATION, roster: roster() })
@@ -1190,7 +1254,11 @@ describe('the heartbeat-pacing card', () => {
     const input = await findField(/Release an investigation after/)
     for (const bad of ['0', '-5', '1.5', 'abc', '']) {
       fireEvent.change(input, { target: { value: bad } })
-      expect(commitIn(/Release an investigation after/)).toBeDisabled()
+      // `aria-disabled`, not native `disabled`: the Save stays focusable, and the
+      // click/Enter refuse an invalid value so nothing reaches the wire (#33115).
+      expect(commitIn(/Release an investigation after/)).toHaveAttribute('aria-disabled', 'true')
+      expect(commitIn(/Release an investigation after/)).not.toBeDisabled()
+      fireEvent.click(commitIn(/Release an investigation after/))
     }
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(mockApi.putSettings).not.toHaveBeenCalled()
@@ -1213,12 +1281,45 @@ describe('the heartbeat-pacing card', () => {
     )
   })
 
+  it('does not pin a derived window when its seeded, untouched Save is pressed', async () => {
+    // Regression for #33115: the heartbeat Saves became focusable-while-clean
+    // (aria-disabled, not native disabled), so the dirty check that native disabled
+    // used to carry had to move into `save`. On a derived install the field is seeded
+    // with a non-null value, so without the guard a single click on the dimmed Save
+    // would PUT that value and silently pin the derived question/investigation window.
+    mockApi.rotation.mockResolvedValue({
+      ...ROTATION,
+      sweep: sweep({ needs_human_derived: true, needs_human_stale_after_secs: 43200 }),
+    })
+    renderPanel()
+
+    // Wait until the field actually shows the seeded value -- that is the state in
+    // which the pressed-while-clean write would fire.
+    await waitFor(() => expect(field(/Release a question after/)).toHaveValue('720'))
+    const save = commitIn(/Release a question after/)
+    expect(save).toHaveAttribute('aria-disabled', 'true')
+    expect(save).not.toBeDisabled()
+
+    fireEvent.click(save)
+    fireEvent.keyDown(field(/Release a question after/), { key: 'Enter' })
+    expect(mockApi.putSettings).not.toHaveBeenCalled()
+
+    // The seeded investigation window is likewise not re-pinned by a clean press.
+    await waitFor(() => expect(field(/Release an investigation after/)).toHaveValue('120'))
+    fireEvent.click(commitIn(/Release an investigation after/))
+    expect(mockApi.putSettings).not.toHaveBeenCalled()
+  })
+
   it('leaves a key alone when its own field is untouched', async () => {
     mockApi.rotation.mockResolvedValue({ ...ROTATION, sweep: sweep() })
     renderPanel()
 
     await findField(/Release an investigation after/)
-    expect(commitIn(/Release a question after/)).toBeDisabled()
+    // `aria-disabled`, not native `disabled`: the Save keeps focus, and the click
+    // refuses an untouched row so the key is left alone (#33115).
+    expect(commitIn(/Release a question after/)).toHaveAttribute('aria-disabled', 'true')
+    expect(commitIn(/Release a question after/)).not.toBeDisabled()
+    fireEvent.click(commitIn(/Release a question after/))
     fireEvent.keyDown(field(/Release a question after/), { key: 'Enter' })
     expect(mockApi.putSettings).not.toHaveBeenCalled()
   })

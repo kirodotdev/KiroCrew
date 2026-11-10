@@ -109,6 +109,8 @@ _HANDLER_SIGNATURE = "(request: 'web.Request') -> 'web.StreamResponse'"
 #: through ``routes`` must keep working unchanged, whichever module owns the body.
 _HISTORIC_SIGNATURES: dict[str, str] = {
     **{name: _HANDLER_SIGNATURE for _method, _path, name in _ROUTE_TABLE},
+    # Not on the router: the route registry serves it (``backend/agent_tool_hook.py``).
+    "_handle_agent_tool": _HANDLER_SIGNATURE,
     "_Authorized": "(signal: 'Signal', action: 'str', reason: 'str') -> 'None'",
     "_audit": "(op: 'str', target: 'str', outcome: 'str', *, error: 'str' = '') -> 'None'",
     "_authorize": "(signal: 'Signal', action: 'str') -> 'tuple[_Authorized | None, str]'",
@@ -129,7 +131,10 @@ _HISTORIC_SIGNATURES: dict[str, str] = {
         " -> 'bool | None'"
     ),
     "_require_enabled": "(handler: 'Handler') -> 'Handler'",
+    "_redact_json_strings": "(value: 'Any') -> 'Any'",
     "_safe_outbound": "(text: 'str') -> 'str'",
+    "_scrub_inbound": "(value: 'Any') -> 'Any'",
+    "_served_call": "(method: 'str', path: 'str') -> 'Handler'",
     "_schedule_verification": (
         "(incident_id: 'str', action: 'str', duration_secs: 'Any') -> 'tuple[str, str]'"
     ),
@@ -152,6 +157,7 @@ _HISTORIC_SIGNATURES: dict[str, str] = {
 _HISTORIC_COROUTINES = frozenset(
     {
         *(name for _method, _path, name in _ROUTE_TABLE),
+        "_handle_agent_tool",
         "_authorize",
         "_execute_authorized",
         "_execute_stored_proposal",
@@ -207,6 +213,8 @@ _SEAMS = (
     "delete_secret",
     "merge_provider_config",
     "_index_ledger_safely",
+    "_scrub_inbound",
+    "_served_call",
 )
 
 _SIGNING_SECRET = "composition-contract-signing-secret"
@@ -714,6 +722,48 @@ class TestEverySeamControlsItsCallSites(_Home):
                     with self.assertRaises(_SeamReached):
                         await asyncio.wait_for(call(), 10)
 
+    # -- _scrub_inbound and _served_call (the agent tool's) -------------------------------
+
+    async def test_the_agent_tool_scrubs_and_dispatches_through_routes(self) -> None:
+        def tool_call(method: str, path: str, body_json: str = "") -> Any:
+            args = {"method": method, "path": path}
+            if body_json:
+                args["body_json"] = body_json
+            request = _request({"tool": "ops_mission_control_api", "arguments": args})
+            request.headers = {}
+            return request
+
+        cases: dict[str, tuple[str, Callable[[], Any]]] = {
+            "scrub": (
+                "_scrub_inbound",
+                lambda: routes._handle_agent_tool(tool_call("POST", "/ledger", '{"fix": "f"}')),
+            ),
+            "dispatch_get": (
+                "_served_call",
+                lambda: routes._handle_agent_tool(tool_call("GET", "/state")),
+            ),
+            "dispatch_post": (
+                "_served_call",
+                lambda: routes._handle_agent_tool(tool_call("POST", "/dispatch")),
+            ),
+        }
+        for label, (seam, call) in cases.items():
+            with self.subTest(site=label):
+                with mock.patch.object(routes, seam, side_effect=_SeamReached(label)):
+                    with self.assertRaises(_SeamReached):
+                        await asyncio.wait_for(call(), 10)
+
+    async def test_an_agent_tool_call_is_answered_by_the_gated_handler_of_its_route(
+        self,
+    ) -> None:
+        """``_served_call`` hands the call to the route's handler behind the enable gate."""
+        self.enterContext(mock.patch.object(routes, "is_app_enabled", return_value=False))
+        reached = mock.AsyncMock()
+        with mock.patch.object(routes, "_handle_state", reached):
+            response = await routes._served_call("GET", "/state")(_request())
+        self.assertEqual((response.status, _payload(response)["code"]), (403, "app_disabled"))
+        reached.assert_not_awaited()
+
     # -- _audit ---------------------------------------------------------------------------
 
     async def test_audit_is_written_through_routes_on_the_refusal_paths(self) -> None:
@@ -1026,6 +1076,7 @@ class TestTheProjectionsStayBehindTheFacade(unittest.TestCase):
                 "ledger",
                 "lifecycle",
                 "webhook",
+                "agent_tool",
             },
         )
 

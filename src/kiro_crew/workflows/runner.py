@@ -42,7 +42,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
 
-from . import BudgetExceeded, WorkflowEvent
+from . import BudgetExceeded, WorkflowEvent, WorkflowStepInterrupted
 from .context import DEFAULT_MAX_AGENTS_PER_RUN, AgentCounter, Budget, build_safe_globals
 from .dsl import _call_stage, _maybe_await
 from .dsl import parallel as _parallel
@@ -299,12 +299,10 @@ class RunResult:
     result: Any
     events: list[WorkflowEvent]
     error: Optional[str] = None
-    # Per-agent-call results (call_index → result), so a resume/restart-subtree
-    # can replay the unchanged prefix. Populated on EVERY terminal path —
-    # success, ceiling, cancel, budget, and script crash — so an interrupted run
-    # still hands back the work it already finished. ``result`` is the script's own
-    # return value and stays None when the script never got to return one; these
-    # are the parts, not the whole.
+    # Per-agent-call results (call_index → result) for resume/restart-subtree.
+    # Populated on EVERY terminal path (success, ceiling, cancel, budget, crash),
+    # so an interrupted run still hands back finished work even when ``result``
+    # stays None.
     agent_results: dict = field(default_factory=dict)
     # call_index → bounded, redacted reason a call failed (see
     # ``describe_agent_error``). Empty for runs where every call succeeded.
@@ -321,16 +319,13 @@ class RunResult:
 # plumbing. ``on_progress(msg)`` lets authoring stream human-readable progress.
 AuthorFn = Callable[..., Awaitable[dict]]
 
-# Signature of the per-call checkpoint hook, mirroring how ``on_source`` publishes
-# the authored script mid-run:
+# Signature of the per-call checkpoint hook:
 #   on_agent_result(call_index: int, *, result: Any, ok: bool, error: str,
 #                   fingerprint: str) -> None
-# Called as soon as EACH agent call settles, so the host can persist that payload
-# before the run reaches a terminal state. Without it, results would live only in
-# process memory until the run finished, and any interruption would throw them away.
-# ``fingerprint`` is the call's identity for replay (see ``_call_fingerprint``, ""
-# when it has none); it lands with the result, so a record that holds a result
-# also holds what a rerun needs to replay it.
+# Called as soon as EACH agent call settles, so the host can persist it before the
+# run ends and an interruption does not lose it. ``fingerprint`` (see
+# ``_call_fingerprint``, "" when it has none) lands with the result, so a record
+# holding a result also holds what a rerun needs to replay it.
 AgentResultFn = Callable[..., None]
 
 
@@ -453,6 +448,10 @@ class _RunContext:
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
         self.agent_errors: dict[int, str] = {}
+        # The first step whose turn was stopped from outside (WorkflowStepInterrupted).
+        # The step still resolves to None so the script runs on, but a run holding
+        # one ends run_failed rather than run_finished.
+        self.interrupted_error = ""
         # Per-call durable checkpoint sink (see ``AgentResultFn``).
         self._on_agent_result = on_agent_result
         self._execution_guard: Optional[Callable[[], Awaitable[None]]] = None
@@ -572,9 +571,11 @@ class _RunContext:
                     error = "agent returned no result"
         except BudgetExceeded:
             raise
-        except Exception as exc:  # noqa: BLE001 - captured per call, never fails the run
+        except Exception as exc:  # noqa: BLE001 - captured per call
             result, ok = None, False
             error = describe_agent_error(exc)
+            if isinstance(exc, WorkflowStepInterrupted) and not self.interrupted_error:
+                self.interrupted_error = error
         # Record this call's result so a future resume can replay the prefix.
         self.agent_results[call_index] = result
         if error:
@@ -1263,6 +1264,20 @@ class WorkflowRunner:
                 result=None,
                 events=events,
                 error="cancelled",
+                agent_results=dict(ctx.agent_results),
+                agent_errors=dict(ctx.agent_errors),
+                source=source,
+            )
+        if ctx.interrupted_error:
+            # A step was cut off from outside: its None came from a stop, not from
+            # the step's own answer, so the script's return value is not a result.
+            emit(stream.run_failed(now, error=ctx.interrupted_error, where="interrupted"))
+            return RunResult(
+                run_id,
+                ok=False,
+                result=None,
+                events=events,
+                error=ctx.interrupted_error,
                 agent_results=dict(ctx.agent_results),
                 agent_errors=dict(ctx.agent_errors),
                 source=source,

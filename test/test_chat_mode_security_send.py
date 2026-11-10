@@ -277,6 +277,8 @@ _TURN_ONLY_BODY_KEYS = frozenset(
         "send_now",
         # A display label for this send's row; the slot keeps nothing.
         "banner",
+        # Read only on a person's send, for a conversation the send begins.
+        "embed_app",
     }
 )
 _SETTINGS_BODY_KEYS: dict[str, object] = {

@@ -109,13 +109,14 @@ def _sync_mcp_to_agent(name: str, enabled: bool, *, remove: bool = False) -> Non
 
 def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = False) -> None:
     """Sync MCP server state to kirocrew.json mcpServers (not tools/allowedTools)."""
+    from kiro_crew.atomic_write import read_bytes_with_retry
     from kiro_crew.dashboard.handlers.agents import (  # noqa: F811 circular: agents imports mcp
         _installed_agent_config,
     )
 
     path = _installed_agent_config()
     try:
-        cfg = loads_mcp_config(path.read_text(encoding="utf-8"))
+        cfg = loads_mcp_config(read_bytes_with_retry(path).decode("utf-8"))
     except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.warning("Cannot read agent config %s, skipping sync: %s", path, exc)
         return
@@ -133,8 +134,9 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
                 spec = gdata.get("mcpServers", {}).get(name, {})
                 if isinstance(spec, dict) and spec:
                     entry = {k: v for k, v in spec.items() if k != "disabled"}
-                    # Strip a governed `autoApprove`: kiro-cli honours it on the
-                    # copied entry and auto-approves the server WITHOUT reaching the
+                    # Strip a governed `autoApprove`: a verb it keeps on the copied
+                    # entry is granted in `allowedTools` (the skill view on kiro-cli,
+                    # the projection on KAS) and runs WITHOUT reaching the
                     # PreToolUse gate — the same exemption `allowedTools` is
                     # withheld for below. Drop it when the ceiling constrains this
                     # server.
@@ -293,13 +295,14 @@ def _sync_mcp_to_agent_batch(names: list[str], enabled: bool) -> None:
 
 def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
     """Batch sync multiple MCP servers to kirocrew.json in a single read-modify-write."""
+    from kiro_crew.atomic_write import read_bytes_with_retry
     from kiro_crew.dashboard.handlers.agents import (  # noqa: F811 circular: agents imports mcp
         _installed_agent_config,
     )
 
     path = _installed_agent_config()
     try:
-        cfg = loads_mcp_config(path.read_text(encoding="utf-8"))
+        cfg = loads_mcp_config(read_bytes_with_retry(path).decode("utf-8"))
     except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.warning("Cannot read agent config %s, skipping batch sync: %s", path, exc)
         return

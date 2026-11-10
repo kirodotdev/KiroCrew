@@ -8,6 +8,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 
 import { ImageViewer, SvgViewer, VIEWER_BACKDROP_KEY } from '../components/FileRenderers'
 import { i18nT } from '../i18n/t'
+import { svgShadow } from './svgShadow'
 
 const LIGHT = () => i18nT('components.fileRenderers.light_background')
 const DARK = () => i18nT('components.fileRenderers.dark_background')
@@ -61,6 +62,6 @@ describe('viewer backdrop toggle', () => {
     first.unmount()
     render(<SvgViewer content={'<svg><rect width="2" height="2" /></svg>'} />)
     expect(screen.getByTestId('viewer-backdrop').className).toContain('bg-white')
-    expect(screen.getByTestId('viewer-backdrop').querySelector('rect')).toBeTruthy()
+    expect(svgShadow(screen.getByTestId('viewer-backdrop'))?.querySelector('rect')).toBeTruthy()
   })
 })

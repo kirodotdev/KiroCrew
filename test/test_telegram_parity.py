@@ -785,6 +785,21 @@ class TestOffsetDurability:
         assert not path.exists(), "an observed-but-undispatched batch must not be acked"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", [None, "x", {"update_id": "8"}, {"update_id": True}])
+    async def test_a_malformed_item_does_not_stop_the_cursor_moving(
+        self, tmp_path: Any, bad: Any
+    ) -> None:
+        # Raising here would leave the cursor short of update 9, so every later
+        # poll would refetch the same batch and the bot would hear nothing new.
+        # The item is dropped, not dispatched: the cursor cannot pass it, so a
+        # dispatched copy would start a new turn on every poll.
+        client = TelegramClient(token="t:1", offset_path=tmp_path / "offset.json")
+        batch = [{"update_id": 7}, bad, {"update_id": 9}]
+        client._api = AsyncMock(return_value=batch)  # type: ignore[method-assign]
+        assert await client._get_updates() == [{"update_id": 7}, {"update_id": 9}]
+        assert client._offset == 10
+
+    @pytest.mark.asyncio
     async def test_an_in_flight_turn_holds_the_cursor_behind_it(self, tmp_path: Any) -> None:
         path = tmp_path / "offset.json"
         client = TelegramClient(token="t:1", offset_path=path)

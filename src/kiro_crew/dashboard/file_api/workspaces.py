@@ -50,6 +50,38 @@ def _resolve_ws_dir(d: str) -> Path:
     return p.resolve() if p.is_absolute() else (data_home() / d).resolve()
 
 
+def _resolved_ws_dirs(dirs) -> list[str]:
+    """Each stored *dirs* string resolved by ``_resolve_ws_dir``, unresolvable ones skipped.
+
+    ``Path.expanduser()``/``resolve()`` raise on a string the host cannot resolve:
+    ``~nouser`` (RuntimeError), an embedded NUL (ValueError), a path the host
+    refuses (OSError) -- the set ``_ws_dir_in_use`` skips. An entry that cannot
+    resolve cannot name the requested folder either, so it must not stop a create
+    or update of an unrelated workspace.
+    """
+    resolved: list[str] = []
+    for d in dirs:
+        try:
+            resolved.append(str(_resolve_ws_dir(str(d))))
+        except (RuntimeError, OSError, ValueError):
+            continue
+    return resolved
+
+
+def _invalid_dir(
+    request: web.Request, operation: str, name: str, error: str = "Invalid directory path"
+) -> web.Response:
+    """The audited 400 for a directory string that cannot be resolved."""
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation=operation,
+        outcome="denied",
+        source="dashboard",
+        resources=name,
+    )
+    return web.json_response({"error": error, "code": "invalid_path"}, status=400)
+
+
 class _WorkspaceConflict(Exception):
     """A workspace precondition failed against FRESH state inside the lock.
 
@@ -138,8 +170,14 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         src_path = data_home() / cfg.workspaces[copy_from].dir
         dst_path = data_home() / ws_dir
         # Resolved once each; both checks below judge these same objects.
-        src_resolved = src_path.resolve()
-        dst_resolved = dst_path.resolve()
+        try:
+            dst_resolved = await asyncio.to_thread(dst_path.resolve)
+        except (RuntimeError, OSError, ValueError):
+            return _invalid_dir(request, "workspace.create", name)
+        try:
+            src_resolved = await asyncio.to_thread(src_path.resolve)
+        except (RuntimeError, OSError, ValueError):
+            return _invalid_dir(request, "workspace.create", name, "Invalid source directory path")
         # Windows' ``\\?\`` prefix folded off all three (lexically), so one resolve
         # keeping it is not read as an escape. A name only the prefixed spelling
         # reaches is refused: its plain spelling names another directory.
@@ -195,7 +233,6 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         if (not_string := string_field_error("dir", ws_dir)) is not None:
             return not_string
     # Guard against path traversal for relative paths; absolute paths are allowed
-    _abs = Path(ws_dir).expanduser().is_absolute()
     # Path constructed for validation only (never opened/read/written); the
     # is_relative_to + is_sensitive_path guards below reject traversals before
     # the value is stored in config. CodeQL's taint tracker does not model the
@@ -204,14 +241,20 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     # below receives this same object: a second resolve after the checks would
     # follow a parent swapped for a link in between, and the pinned create can
     # only refuse a swap that happens AFTER the path it is handed was resolved.
-    unresolved_dir = Path(ws_dir).expanduser() if _abs else data_home() / ws_dir
-    validated_dir = unresolved_dir.resolve()  # lgtm[py/path-injection]
+    try:
+        _abs = Path(ws_dir).expanduser().is_absolute()
+        unresolved_dir = Path(ws_dir).expanduser() if _abs else data_home() / ws_dir
+        validated_dir = await asyncio.to_thread(unresolved_dir.resolve)  # lgtm[py/path-injection]
+    except (RuntimeError, OSError, ValueError):
+        return _invalid_dir(request, "workspace.create", name)
 
     # Check for directory collision with existing workspaces (resolve both sides;
     # on a case-insensitive disk another spelling of a folder in use is the same
     # folder, so _ws_dir_in_use compares disk identity when both exist). This one
     # judges every create, copy_from included, before anything is staged.
-    existing_resolved = (str(_resolve_ws_dir(ws.dir)) for ws in cfg.workspaces.values())
+    existing_resolved = await asyncio.to_thread(
+        _resolved_ws_dirs, [ws.dir for ws in cfg.workspaces.values()]
+    )
     if _ws_dir_in_use(
         platform_compat.strip_extended_length_prefix(validated_dir), existing_resolved
     ):
@@ -300,10 +343,8 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         workspaces = coerce_dict_section(doc, "workspaces")
         if name in workspaces:
             raise _WorkspaceConflict(409, f"Workspace '{name}' already exists", "workspace_exists")
-        raw_dirs = (
-            str(_resolve_ws_dir(str(ws.get("dir", ""))))
-            for ws in workspaces.values()
-            if isinstance(ws, dict)
+        raw_dirs = _resolved_ws_dirs(
+            ws.get("dir", "") for ws in workspaces.values() if isinstance(ws, dict)
         )
         if _ws_dir_in_use(platform_compat.strip_extended_length_prefix(validated_dir), raw_dirs):
             raise _WorkspaceConflict(
@@ -443,12 +484,14 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
 
         if (not_string := string_field_error("dir", new_dir)) is not None:
             return not_string
-        _abs = Path(new_dir).expanduser().is_absolute()
         # Resolved for validation only; is_relative_to + is_sensitive_path guard
         # below reject traversals before the value is stored in config.
-        resolved = (  # lgtm[py/path-injection]
-            Path(new_dir).expanduser().resolve() if _abs else (data_home() / new_dir).resolve()
-        )
+        try:
+            _abs = Path(new_dir).expanduser().is_absolute()
+            unresolved = Path(new_dir).expanduser() if _abs else data_home() / new_dir
+            resolved = await asyncio.to_thread(unresolved.resolve)  # lgtm[py/path-injection]
+        except (RuntimeError, OSError, ValueError):
+            return _invalid_dir(request, "workspace.update", name)
         if is_sensitive_path(str(resolved)):
             _sel().log_api_access(
                 caller=request.get("user", "dashboard"),
@@ -480,14 +523,8 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
             )
         # Disk identity decides when both folders exist (_ws_dir_in_use), so a
         # case variant of another workspace's folder is refused here too.
-        existing_dirs = (
-            str(
-                (data_home() / ws.dir).resolve()
-                if not Path(ws.dir).expanduser().is_absolute()
-                else Path(ws.dir).expanduser().resolve()
-            )
-            for n, ws in cfg.workspaces.items()
-            if n != name
+        existing_dirs = await asyncio.to_thread(
+            _resolved_ws_dirs, [ws.dir for n, ws in cfg.workspaces.items() if n != name]
         )
         if _ws_dir_in_use(platform_compat.strip_extended_length_prefix(resolved), existing_dirs):
             return web.json_response(
@@ -512,8 +549,8 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
             # parent swapped for a link between the screen and this check pass a
             # different directory. Only the OTHER entries resolve fresh -- they are
             # the state re-decided inside the lock.
-            others = (
-                str(_resolve_ws_dir(str(w.get("dir", ""))))
+            others = _resolved_ws_dirs(
+                w.get("dir", "")
                 for n2, w in workspaces.items()
                 if n2 != name and isinstance(w, dict)
             )

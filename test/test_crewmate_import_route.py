@@ -1039,6 +1039,77 @@ def test_skills_land_under_the_workspace_and_a_linked_skills_folder_is_refused(t
         files_route._skills_root(cfg, SimpleNamespace(workspace="nope"))
 
 
+def _on_windows_paths(monkeypatch, real: dict[str, str], fn, *args):
+    """``fn(*args)`` under Windows path rules: its value, its refusal, or its error.
+
+    ``realpath`` answers *real*'s spelling of a path, and ``commonpath`` over those
+    spellings is ``ntpath``'s, which raises ``ValueError`` for two drives, as on
+    Windows. Both patch the one shared ``os.path``, so they forward every other call
+    and end before this returns.
+    """
+    import ntpath
+
+    # Bound before the patch: on Windows ``os.path`` IS ``ntpath``, so a lookup at
+    # call time would find the patched function and recurse.
+    resolve, common, nt_common = os.path.realpath, os.path.commonpath, ntpath.commonpath
+
+    def windows_commonpath(paths):
+        paths = list(paths)
+        owned = all(p in real.values() for p in paths)
+        return (nt_common if owned else common)(paths)
+
+    with monkeypatch.context() as m:
+        m.setattr(files_route.os.path, "commonpath", windows_commonpath)
+        m.setattr(
+            files_route.os.path,
+            "realpath",
+            lambda p, *a, **kw: real.get(os.fspath(p)) or resolve(p, *a, **kw),
+        )
+        try:
+            return fn(*args)
+        except files_route._Refused as exc:
+            return exc.status, exc.code
+        except ValueError as exc:
+            return repr(exc)
+
+
+@pytest.mark.parametrize(
+    "outside", ["C:\\elsewhere\\skills", "D:\\elsewhere\\skills"], ids=["same-drive", "other-drive"]
+)
+def test_a_skills_folder_resolving_outside_the_workspace_is_refused_on_any_drive(
+    tmp_path, monkeypatch, outside
+):
+    """A skills folder on another drive is outside the workspace: a 409, never a raise."""
+    from kiro_crew.config.loader import WorkspaceConfig
+
+    ws = tmp_path / "member-ws"
+    ws.mkdir()
+    cfg = SimpleNamespace(workspaces={"mine": WorkspaceConfig(dir=str(ws))})
+    agent = SimpleNamespace(workspace="mine")
+    root = ws / ".kiro" / "skills"
+    real = {str(ws): "C:\\ws", str(root): "C:\\ws\\.kiro\\skills"}
+    assert _on_windows_paths(monkeypatch, real, files_route._skills_root, cfg, agent) == root
+    real[str(root)] = outside
+    outcome = _on_windows_paths(monkeypatch, real, files_route._skills_root, cfg, agent)
+    assert outcome == (409, "workspace_link")
+
+
+@pytest.mark.parametrize(
+    "outside", ["C:\\elsewhere\\mate", "D:\\elsewhere\\mate"], ids=["same-drive", "other-drive"]
+)
+def test_a_script_folder_resolving_outside_crons_is_refused_on_any_drive(monkeypatch, outside):
+    """The same for ``crons/imported/<slug>``, refused as ``scripts_dir_link``."""
+    from kiro_crew.config.paths import config_dir
+
+    crons = config_dir() / "crons"
+    target = crons / files_route.IMPORTED_SCRIPTS_DIR / "mate"
+    real = {str(crons): "C:\\home\\crons", str(target): "C:\\home\\crons\\imported\\mate"}
+    assert _on_windows_paths(monkeypatch, real, files_route._scripts_dir, "mate") == target
+    real[str(target)] = outside
+    outcome = _on_windows_paths(monkeypatch, real, files_route._scripts_dir, "mate")
+    assert outcome == (409, "scripts_dir_link")
+
+
 def test_the_picture_commits_through_the_editor_avatar_path(monkeypatch):
     from kiro_crew.config import loader
     from kiro_crew.dashboard.handlers.agents import _avatars_dir, _live_avatar_file

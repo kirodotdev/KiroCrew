@@ -265,20 +265,21 @@ async def _run_inner_impl(
         from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
 
         _cfg = await asyncio.to_thread(_Config.load)
+        _crew = crew_for_member_id(_cfg, str(execution.member_id or ""))
         try:
             worker_backend = (
                 resolve_selected_backend(info.backend)
                 if info.backend is not None
-                else crewmate_worker_backend(
-                    _cfg, crew_for_member_id(_cfg, str(execution.member_id or ""))
-                )
+                else crewmate_worker_backend(_cfg, _crew)
             )
         except CrewmateHarnessUnavailable as exc:
             # The crewmate's pinned harness cannot start, so neither can its
             # worker; it never runs on another harness in its place. The
             # message leads with its code, as the kit refusal below does.
             raise RuntimeError(str(exc)) from None
-        backend_reason = worker_kit_backend_refusal(worker_backend)
+        backend_reason = worker_kit_backend_refusal(
+            worker_backend, _cfg, _crew, requested=info.backend is not None
+        )
         if backend_reason is not None:
             raise RuntimeError(f"capability_harness_unsupported: {backend_reason}")
     elif agent and (kind == "member" or (info.conversation_key and not info.agent)):
@@ -523,8 +524,10 @@ async def _run_inner_impl(
     child_escalation_limit = max(turn_limit * 3, 60)
     await _session.persist_spawn_records(self, info, session_key, agent, client)
 
-    _rp = agent_dir_for_display(info.id) / "result.txt"
-    info.result_path = str(_rp)
+    # Off the loop: the display path resolves the run directory, a realpath that
+    # opens every path part on Windows.
+    _run_dir = await asyncio.to_thread(agent_dir_for_display, info.id)
+    info.result_path = str(_run_dir / "result.txt")
     # This attempt's first text chunk starts the live partial and
     # result.txt afresh, so they hold this attempt's text alone, never
     # glued to an earlier attempt's: until then that partial stays
@@ -550,6 +553,19 @@ async def _run_inner_impl(
     # On such a backend PreToolUse hooks gate each permission request below;
     # the KAS projection turns every call they cover into one.
     _spec = await turn_spec_hooks(client, agent)
+    if _spec.lost:
+        # Once per run, for the operator. Not in the result, which callers may
+        # parse. The log counts the keys and does not name them, so no spec text
+        # reaches it; a dashboard chat on the same agent names them.
+        from kiro_crew.agent_sdk.spec_hooks import session_agent
+
+        logger.warning(
+            "Subagent %s: agent %s sets %d spec key(s) this backend does not receive, "
+            "so they have no effect in this run",
+            info.id,
+            session_agent(client, agent),
+            len(_spec.lost),
+        )
     _hook_prefix = await _session.fire_prompt_hooks(
         self,
         info,
@@ -576,6 +592,8 @@ async def _run_inner_impl(
             session_key=session_key,
             agent=info.agent or "",
             app=info.app or "",
+            # The ladder's SpecHooks floor fired the PreToolUse hooks first.
+            pre_tool_hooks_fire=True,
             **hook_gate_kwargs(event),
         )
         return verdict

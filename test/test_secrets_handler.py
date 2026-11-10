@@ -19,6 +19,7 @@ from kiro_crew.dashboard.handlers.secrets import (
     _unused_stored_secrets,
     setup_secrets_routes,
 )
+from kiro_crew.platform_compat import symlink_or_junction
 from kiro_crew.secrets import SecretVault
 
 
@@ -547,8 +548,10 @@ class TestApiSecretsSet:
         data_home.mkdir()
         link_target = tmp_path / "elsewhere"
         link_target.mkdir()
-        # The data home's .vault is a symlink to another folder.
-        (data_home / ".vault").symlink_to(link_target, target_is_directory=True)
+        # The data home's .vault redirects to another folder: a symlink, or on a
+        # Windows host without symlink privilege a junction, which the handler
+        # and ``atomic_write`` treat the same way.
+        symlink_or_junction(link_target, data_home / ".vault")
 
         with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(data_home)):
             async with TestClient(TestServer(app)) as client:

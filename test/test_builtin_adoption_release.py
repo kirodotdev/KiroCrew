@@ -709,10 +709,11 @@ def test_a_tree_that_needs_a_build_step_is_refused(tmp_path, build_input):
 
 
 def test_a_name_a_core_table_keys_on_is_refused(tmp_path):
+    from kiro_crew import webhook_sources
     from kiro_crew.apps.builtin_adoption_checks import core_named_apps, pinned_tree_refusal
-    from kiro_crew.mcp_tools.apps import TOOL_APPS
 
-    keyed = sorted(set(TOOL_APPS.values()))[0]
+    # The webhook source ids are a core table that still keys a capability on an app.
+    keyed = webhook_sources.SOURCE_OPS_MISSION_CONTROL
     assert keyed in core_named_apps()
     pin, manifest, tree = _pin_and_manifest(tmp_path, name=keyed)
     assert pinned_tree_refusal(pin, manifest, tree) == "pinned_feature_unsupported"

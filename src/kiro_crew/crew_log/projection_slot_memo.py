@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import OrderedDict
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
@@ -23,6 +23,7 @@ from kiro_crew.crew_log.projection_kernel import Checkpoint, require_name
 from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.projection_session import _HeldCheckpoints
 from kiro_crew.crew_log.projection_session_log import _log_identity, open_session_log
+from kiro_crew.crew_log.projection_unit_mark_cache import _forget_unit_marks, _older_unit_mark
 from kiro_crew.crew_log.schema import Entry
 from kiro_crew.crew_log.store import CrewLog, ReadCursor, ResumePoint, log_exception_text
 from kiro_crew.projection import ProjectionRegistry
@@ -129,9 +130,11 @@ def _unit_mark(unit_id: str) -> _UnitMark:
         return _UnitMark(None, 0)
 
 
-def _unit_marks(unit_ids: Sequence[str]) -> "tuple[_UnitMark, ...]":
-    """Every unit's mark, in the order they are folded."""
-    return tuple(_unit_mark(unit_id) for unit_id in unit_ids)
+def _unit_marks(unit_ids: Sequence[str], home: str) -> "tuple[_UnitMark, ...]":
+    """Every unit's mark, in fold order: the newest, which grows, always read in full, the
+    older ones through the stat cache (:mod:`.projection_unit_mark_cache`)."""
+    older = tuple(_older_unit_mark(home, unit_id, _unit_mark) for unit_id in unit_ids[:-1])
+    return older + (_unit_mark(unit_ids[-1]),) if unit_ids else ()
 
 
 #: Stands for "every record in the file" when a digest wants no boundary.
@@ -257,6 +260,12 @@ class _SlotFold:
         self._slot = slot
         self.key = fold.name
         self.state_version = fold.state_version
+        #: The private state :meth:`apply_owned` is stepping, so a savepoint written
+        #: DURING a cold prime can serialize it between two entries. The registry holds
+        #: its lock for the whole prime and installs no cell until it ends, so this is
+        #: the only place the state is reachable mid-pass. Cleared when the prime ends
+        #: (:func:`_fold_slot_cold`).
+        self.latest: "dict[str, Any] | None" = None
 
     def init(self) -> dict[str, Any]:
         state = self._fold.start()
@@ -283,10 +292,20 @@ class _SlotFold:
         entry = event.entry
         if self._fold.touched_by(entry):
             self._fold.step(state, entry)
+        self.latest = state
         return state
 
     def view(self, state: dict[str, Any]) -> dict[str, Any]:
         return self._fold.render(state)
+
+
+#: Entries a COLD fold folds between two savepoints it writes on the way, so a restart or
+#: an eviction in the middle of a long fold resumes near where it stopped. A chosen value,
+#: sized from the busy host: its entries average about 610 bytes (94,441,330 bytes over
+#: 154,893 entries), so this is about 2.5 MB of log per write, and a fold in that gateway
+#: under GIL contention ran at about 75 KB/s, so about one write every 30 seconds (38 over
+#: that unit). A write serializes the state, which the store caps at 2 MiB.
+SAVE_DURING_FOLD_ENTRIES: Final[int] = 4_096
 
 
 class _SlotStream:
@@ -332,17 +351,23 @@ class _SlotStream:
         base: int = 0,
         since: int = 0,
         resume: "ResumePoint | None" = None,
+        save: "Callable[[str, int, int, ResumePoint | None], None] | None" = None,
     ) -> None:
         self._unit_ids = tuple(unit_ids)
         self._base = base
         self._since = since
         self._resume = resume if len(self._unit_ids) == 1 else None
+        #: Called every :data:`SAVE_DURING_FOLD_ENTRIES` entries with (unit, that unit's
+        #: base, the seq just folded, its resume point). It runs when the consumer asks
+        #: for the NEXT entry, so the entry it names has already been folded.
+        self._save = save
         self.reached = since
         self.heights: dict[str, int] = {}
         self.points: "dict[str, ResumePoint]" = {}
 
     def __iter__(self) -> "Iterator[_Ordinal]":
         base = self._base
+        folded = 0
         for unit_id in self._unit_ids:
             handle = open_session_log(unit_id)
             if handle is None:
@@ -363,6 +388,9 @@ class _SlotStream:
                 top = max(top, ordinal)
                 reached = max(reached, entry.seq)
                 yield _Ordinal(ordinal, entry)
+                folded += 1
+                if self._save is not None and folded % SAVE_DURING_FOLD_ENTRIES == 0:
+                    self._save(unit_id, base, entry.seq, cursor.at)
             base = top
             self.heights[unit_id] = reached
             self.reached = reached
@@ -554,6 +582,7 @@ def forget_slot_folds(slot: str = "", name: str = "") -> None:
         if not slot and not name:
             _slot_memos.clear()
             _oversize_slot_cells.clear()
+            _forget_unit_marks()
             return
         for table in (_slot_memos, _oversize_slot_cells):
             for key in [
@@ -768,9 +797,11 @@ def _continue_into_new_units(
     held_newest = memo.units[-1]
     base = sum(mark.last_seq for mark in memo.marks[:-1])
     before = _digest_to_carry(units, marks)
+    before_held = _digest_to_carry(memo.units, marks[:count])
     tail = _SlotStream((held_newest,), base=base, since=memo.reached, resume=_resume_from(memo))
     for event in tail:
         memo.registry.drive(memo.store, event)
+    _seal_stopped_unit(name, memo, marks[:count], tail, before_held)
     fresh = _SlotStream(units[count:], base=base + tail.reached)
     for event in fresh:
         memo.registry.drive(memo.store, event)
@@ -798,6 +829,44 @@ def _continue_into_new_units(
     )
 
 
+def _seal_stopped_unit(
+    name: str,
+    memo: "_SlotMemo",
+    sampled: "tuple[_UnitMark, ...]",
+    tail: _SlotStream,
+    before: "_PrefixSeen | None",
+) -> None:
+    """Write *memo*'s savepoint beside the unit that just stopped being newest, at its end.
+
+    Called by :func:`_continue_into_new_units` once the held newest unit is folded to its
+    end and before any new unit is folded, so the cell stands exactly at that unit's last
+    entry. It is :func:`seal_slot_fold`'s write (``final``, owed for any advance), made at
+    the moment a reload, agent switch or reset opens a newer unit, under the lock the
+    caller already holds. The savepoint beside the new newest unit is the one a restart
+    reads first; this one is what :func:`_resume_older_slot_fold` falls back to when that
+    one is missing or refused, and sealed at the end it costs that fallback no read of
+    the old unit at all. *sampled* is the held units' marks read before the pass, and
+    *before* the held newest unit's digest from then (``None`` with a cut counter).
+
+    Never raises: a lost write costs the fallback a tail read, never an answer.
+    """
+    held_newest = memo.units[-1]
+    try:
+        sealed = replace(
+            memo,
+            marks=memo.marks[:-1] + (replace(sampled[-1], last_seq=tail.reached),),
+            reached=tail.reached,
+            prefix=_vouched(held_newest, before),
+            resume=tail.points.get(held_newest, _resume_from(memo)),
+            weight=_cell_weight(name, memo.registry, memo.store),
+        )
+        _persist_slot_fold(name, sealed, slot=memo.store, sampled=sampled[-1], final=True)
+    except Exception:
+        log_exception_text(
+            logger, logging.DEBUG, "crew log slot %s could not seal %s", memo.store, name
+        )
+
+
 def _note_slot_fold_origin(origin: str) -> None:
     """Stamp where this slot pass got its starting state, for the metrics side.
 
@@ -813,6 +882,10 @@ def _note_slot_fold_origin(origin: str) -> None:
     that while holding this lock would stall a reader waiting on the same cell.
     No ``exc_info``: this module's frames bind open ``CrewLog`` handles.
     """
+    from kiro_crew.crew_log import read_budget
+
+    # The read budget's own mark: a ``cold`` pass has no position, so its delta is 0.
+    read_budget.note_origin(origin)
     try:
         from kiro_crew.metrics.crew_log_health import SCOPE_SLOT, note_fold_origin
 
@@ -915,23 +988,27 @@ def fold_slot_warm_revised(
     savepoint exactly as the default does, and raises :class:`SlotFoldNotReady` where
     the default would fold every unit from its first record.
     """
+    from kiro_crew.crew_log import read_budget
+
     require_name(name)
     key = (str(data_home()), slot, name)
     # The whole pass, under this key's own lock. Everything below reads or advances one
     # shared cell and then pairs that cell's state with this pass's own seq, and it is
     # the PAIRING that a second pass would break -- see ``_slot_fold_locks``.
     entry = _acquire_fold_lock(key)
-    try:
-        if cold:
-            entry.lock.acquire()
-        else:
-            _acquire_unless_cold(entry, key, slot, name)
+    # One pass is one call to the read budget: every record it decodes counts.
+    with read_budget.fold_scope(slot, name):
         try:
-            return _fold_slot_warm_locked(name, key, unit_ids, slot=slot, allow_cold=cold)
+            if cold:
+                entry.lock.acquire()
+            else:
+                _acquire_unless_cold(entry, key, slot, name)
+            try:
+                return _fold_slot_warm_locked(name, key, unit_ids, slot=slot, allow_cold=cold)
+            finally:
+                entry.lock.release()
         finally:
-            entry.lock.release()
-    finally:
-        _release_fold_lock(key, entry)
+            _release_fold_lock(key, entry)
 
 
 #: Keys whose COLD fold is running right now, on any thread (a background prime from
@@ -986,7 +1063,7 @@ def _fold_slot_warm_locked(
     """
     with _slot_memo_guard:
         memo = _slot_memos.get(key)
-    marks = _unit_marks(unit_ids)
+    marks = _unit_marks(unit_ids, key[0])
     units = tuple(unit_ids)
     known = all(mark.origin is not None for mark in marks)
     if memo is not None and memo.units == units:
@@ -1054,6 +1131,9 @@ def _fold_slot_warm_locked(
         resumed = _resume_slot_fold(name, units, marks, slot=slot)
         if resumed is None:
             resumed = _resume_older_slot_fold(name, units, marks, slot=slot)
+        if resumed is None and _admit_backfill(name, units[-1]):
+            # A backfill child's savepoint, moved in under the lease: resumed like any other.
+            resumed = _resume_slot_fold(name, units, marks, slot=slot)
         if resumed is not None:
             _note_slot_fold_origin("savepoint")
             resumed = _persist_slot_fold(name, resumed, slot=slot, sampled=marks[-1])
@@ -1076,6 +1156,13 @@ def _fold_slot_warm_locked(
             _cold_keys.discard(key)
 
 
+def _admit_backfill(name: str, unit_id: str) -> bool:
+    """A backfill child's staged savepoint, moved into *unit_id*'s unit (``slot_backfill_child``)."""
+    from kiro_crew.crew_log import slot_backfill_child
+
+    return slot_backfill_child.admit(name, unit_id)
+
+
 def _fold_slot_cold(
     name: str,
     key: "tuple[str, str, str]",
@@ -1087,11 +1174,18 @@ def _fold_slot_cold(
 ) -> "tuple[Checkpoint, int]":
     """The cold branch of :func:`_fold_slot_warm_locked`: every unit from its first record."""
     _note_slot_fold_origin("cold")
-    cold = _SlotStream(units)
+    fold = _SlotFold(_FOLDS[name], slot)
+    saver = _save_during_fold(name, units, marks, fold, slot=slot) if known else None
+    cold = _SlotStream(units, save=saver)
     registry = ProjectionRegistry(seq_of=_ordinal_seq)
-    registry.register(_SlotFold(_FOLDS[name], slot))
+    registry.register(fold)
     before = _digest_to_carry(units, marks)
-    registry.prime(slot, cold)
+    try:
+        registry.prime(slot, cold)
+    finally:
+        # The registered fold outlives the pass inside the memo, and a warm step later
+        # replaces the cell with a copy, so a kept reference would pin an uncharged state.
+        fold.latest = None
     fresh = _SlotMemo(
         registry=registry,
         store=slot,
@@ -1114,6 +1208,79 @@ def _fold_slot_cold(
         fresh = _persist_slot_fold(name, fresh, slot=slot, sampled=marks[-1] if units else None)
         _remember_slot_fold(key, fresh)
     return _slot_checkpoint(name, fresh)
+
+
+def _save_during_fold(
+    name: str,
+    units: "tuple[str, ...]",
+    marks: "tuple[_UnitMark, ...]",
+    fold: _SlotFold,
+    *,
+    slot: str,
+) -> "Callable[[str, int, int, ResumePoint | None], None]":
+    """A :class:`_SlotStream` hook writing a savepoint part way through a COLD fold.
+
+    The file goes beside the unit being read, for the unit list ending there, which is
+    the shape :func:`_resume_slot_fold` (that unit is the newest) or
+    :func:`_resume_older_slot_fold` (a later one is) already resumes. Cold folds only:
+    their state comes from record 1 of the bytes on disk now, while a resumed or warm
+    tail stands on a seed that is checked only once its pass ends.
+
+    Written under the same evidence as the write at the end of the pass, for exactly the
+    prefix folded so far: the unit's cut count sampled before the pass and re-read now
+    (a cut in between refuses it), and every earlier unit's sampled mark, which is what
+    the stream's base was built from. A unit with no cut counter, an earlier unit that
+    grew before it was read, and a cell too big to keep warm write nothing. The first
+    refused write ends the hook for this pass, so a state over the store's payload cap is
+    serialized once to be refused, not once per cadence. Never raises: a lost write costs
+    a longer resume, never an answer.
+    """
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    refused = [False]
+
+    def save(unit_id: str, base: int, seq: int, point: "ResumePoint | None") -> None:
+        try:
+            index = units.index(unit_id)
+            mark = marks[index]
+            state = fold.latest
+            if (
+                refused[0]
+                or state is None
+                or mark.origin is None
+                or mark.cuts is None
+                or base != sum(held.last_seq for held in marks[:index])
+                or slot_fold_cell_bytes(name, state) > slot_fold_cache_bytes()
+            ):
+                return
+            handle = open_session_log(unit_id)
+            if handle is None:
+                return
+            witness = savepoints.CutWitness(
+                seq=seq,
+                cuts=mark.cuts,
+                resume=point if point is not None and point.seq == seq else None,
+            )
+            if not savepoints.cuts_unchanged(handle, witness):
+                return
+            refused[0] = not savepoints.save_slot(
+                handle,
+                name,
+                slot=slot,
+                units=units[: index + 1],
+                marks=_identity_marks(marks[:index]),
+                ordinal_base=base,
+                state=state,
+                watermark=base + seq,
+                prefix=witness,
+                expect_origin=mark.origin,
+            )
+        except Exception:
+            log_exception_text(
+                logger, logging.DEBUG, "crew log slot %s could not save %s mid-fold", slot, name
+            )
+
+    return save
 
 
 def _slot_cell(name: str, memo: _SlotMemo) -> "tuple[Any, int] | None":
@@ -1378,10 +1545,11 @@ def _persist_slot_fold(
     restart replays the whole gap.
 
     *sampled* is the newest unit's mark read BEFORE the pass. Its ``origin`` is the
-    identity the write must match. Its ``last_seq`` is where the evidence was taken: a
-    pass that ended elsewhere (the file grew under it) writes nothing, because evidence
-    covering fewer bytes than the state is unrecoverable; only the savepoint is lost, the
-    read is already served. Its ``cuts`` picks which witness this unit gets.
+    identity the write must match. Its ``last_seq`` is where the evidence was taken. Its
+    ``cuts`` picks which witness this unit gets, and decides a pass that ended above
+    ``last_seq`` (the file grew under it): a cut count still vouches for every record the
+    pass read, so the savepoint is written at ``reached``; a digest does not, so nothing is
+    written and only the savepoint is lost, the read is already served.
 
     THE EVIDENCE IS RE-CONFIRMED HERE, at the write, so NOTHING writes a savepoint without
     re-reading the evidence its state came from. A digest taken only before the pass would
@@ -1394,7 +1562,17 @@ def _persist_slot_fold(
         return memo
     if sampled.cuts is None and memo.prefix is None:
         return memo
-    if memo.reached != sampled.last_seq:
+    if memo.reached < sampled.last_seq:
+        return memo
+    if memo.reached > sampled.last_seq and sampled.cuts is None:
+        # The file grew during the pass, and only a cut count can vouch for the entries
+        # appended after the digest was taken: a digest covers the records it hashed,
+        # fewer than this state folded. With a count, growth is no reason to skip. The
+        # count sampled before the pass and re-read at the write (``_slot_witness``)
+        # brackets every record the pass read, so the witness is written at ``reached``.
+        # Skipping here instead meant a long pass over a live unit never wrote at all.
+        # shortcut: a unit with no cut counter still skips a grown pass; it gains a
+        # counter at its first cut, so upgrade only if such units stay hot.
         return memo
     if memo.weight > slot_fold_cache_bytes():
         # A cell too big to keep WARM is one whose savepoint the store would refuse too:

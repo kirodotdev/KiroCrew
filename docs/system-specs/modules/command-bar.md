@@ -380,6 +380,14 @@ debounced query already matches the new ones.
   its row.
 - Escape is owned by the dialog, not the input, so it works from any focusable child. In a
   scope the first Escape pops back to the root and only the second closes.
+- A dismiss (Escape, an outside click, the gesture toggling the bar shut, a pane switch) gives
+  focus back to the control the bar was opened from: the header button, or the composer a
+  Ctrl+K came from. `useCommandPalette` reads that control at the gesture and the host passes it
+  as `opener`, because by the time the bar mounts its loading field or its own `autoFocus` input
+  holds focus; the focus trap runs with `restoreFocus: false` for the same reason. The backdrop's
+  `mousedown` is default-prevented, since the browser's own handling of that press runs after
+  the close and would clear focus again. A row that closes the bar gives nothing back: the
+  action it ran owns focus, as in the legacy palette.
 - The input is `role="combobox"` with `aria-activedescendant`; rows are `role="option"` with
   `aria-selected`. Arrow keys move the active option without moving DOM focus.
 - Because the input is focused for the whole life of the dialog, a `focus-visible` utility on
@@ -454,6 +462,7 @@ debounced query already matches the new ones.
 | that cap still bounds one app's contributions | an app with twenty commands turns the first page into its index |
 | the product's own command list is uncapped | a builtin silently dropped from a page this repository reviews |
 | `aria-modal` and the focus trap travel together | a dialog that traps nothing while claiming modality |
+| a dismiss gives focus back to the opener, a row that closes the bar does not (`CommandBarOverlay.restoreFocus.test.tsx`) | Escape leaves the keyboard user on `<body>` (#29716); a split-view pick of the active session hands focus back to the other pane's composer, where the next Enter sends |
 | a session opened from the bar ends with the caret in its composer, same-key or not | a keyboard-first switch that ends in a mouse click on the composer (#15732) |
 | the caret moves only once the opened session's `switchSlot` has fulfilled; a refused switch gets none from the bar | keystrokes typed during the gateway round trip filed under a slot the 404 unwind then evicts |
 | an older same-key read landing first defers the caret to the newer claim | a stale fulfilment focusing while the live read is still out, then its 404 stranding the typed text |

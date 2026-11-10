@@ -94,6 +94,14 @@ export interface StatusData {
    */
   update_auto_effect?: 'install' | 'notify' | 'mandatory' | 'unknown'
   /**
+   * True when `update_auto_effect` is `notify` only because the security policy
+   * turns unattended installs off: a person's Update still installs here. It
+   * says so for every install shape, where `update_can_apply` is false on a
+   * managed venv whose Update is the arm and approve flow. Absent on older
+   * gateways (reads as false).
+   */
+  update_auto_manual_only?: boolean
+  /**
    * Whether the desktop app bundles and launches this gateway, from the baked
    * packaging stamp. Independent of `update_managed_by`, which reads `command`
    * on that same bundle when a policy `updates` provider is configured. There,
@@ -169,7 +177,7 @@ export interface StatusData {
   yolo_until_shutdown_permitted?: boolean
   /** HTTP reply only: whether this account owns the data home's key entries,
    *  and the gateway's repair line when it does not. Absent on an older gateway. */
-  data_home_access?: { ok: boolean; home: string; foreign: string[]; fix_command: string }
+  data_home_access?: { ok: boolean; home: string; foreign: string[]; owner: string; help_url: string }
   /** Auto-approve modes forbidden by the `approval_modes` policy scope. Today the
    * scope governs `yolo` only, so this is `['yolo']` or empty; `normal`, `trust`
    * and `trust_reads` are non-deniable and never appear. The approval-mode picker
@@ -261,6 +269,10 @@ export interface UpdateCheckResult {
   auto_update?: boolean
   /** Whether config.local.json sets `auto_update`, so the switch cannot change it. */
   overlay_override?: boolean
+  /** Whose entry that is: the person's own (`user`) or a policy an edition enforces (`policy`). */
+  overlay_source?: 'user' | 'policy' | null
+  /** The policy keeping the entry in place, when `overlay_source` is `policy`. */
+  overlay_policy?: { label: string; detail: string } | null
   minimum_version_enforced?: string
   update_required?: boolean
   /** Legacy alias some older payloads carried; `latest_version` is authoritative. */

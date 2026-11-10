@@ -382,7 +382,7 @@ no boot-path module loads a `warm_runtime` owner either.
 |---|---|---|
 | `src/kiro_crew/connections/warm_runtime/spec_plan.py` | `_WarmSpecPlan`; the reuse rules `_plan_is_servable` and `_resident_roster_is_asked_for`; per-provider entry derivation (`_registry_server_entry`, `_operator_oauth_client`, `_auth_shape`, `_warm_mintable_entry`); `_wanted_aliases` | rules over registry and configured entries; `_operator_oauth_client` reads config, env and the vault on every call, so callers reach it only from sync helpers behind `asyncio.to_thread` |
 | `src/kiro_crew/connections/warm_runtime/start_identity.py` | `_process_identity_live` and the start-identity helpers it compares with | the tri-state PID-reuse verdict both generation readers act on |
-| `src/kiro_crew/connections/warm_runtime/shared_rows.py` | the two-axis predicates (`_warm_table_row`, the counts built on it, `_mint_is_cold_held`, `_mint_is_adopted`); the atomic `_claim_shared_mints`, `_dispose_displaced_rows` and `_release_shared_claims` | one claim transaction over the cold engine's table, bound from `mint` exactly as the facade binds it |
+| `src/kiro_crew/connections/warm_runtime/shared_rows.py` | the two-axis predicates (`_warm_table_row`, the counts built on it, `_mint_is_cold_held`, `_mint_is_adopted`); the atomic `_claim_shared_mints`, `_dispose_displaced_rows` and `_release_shared_claims` (shielded whole: it takes every row out of the table with no await, then disposes outside the lock, so a second cancel during a rollback strands no `minting` row) | one claim transaction over the cold engine's table, bound from `mint` exactly as the facade binds it |
 | `src/kiro_crew/connections/warm_runtime/spec_body.py` | the fixed warm names (`_WARM_AGENT_PREFIX`, `_WARM_NAME_RE`, `_WARM_BASE_AGENT`, `_WARM_ALL_AGENT`) and `_WARM_SPEC_SENTINEL`; the sentinel-first body (`_warm_spec_description`, `_warm_spec_body`) with `connections_tool_aliases`; the stale-name predicate `_is_stale_warm_spec` and the ownership marks `_warm_ownership_marks` | the text a plan writes and the ownership judge compares; the judge and its private-scope reader stay in the facade as link-screen sites, and the gated writer stays beside them as a seam tests substitute |
 | `src/kiro_crew/connections/warm_runtime/generation_tree.py` | the generation root and its marker constants; the owner-marker writer (`_warm_generation_owner`, `_write_warm_generation_owner`); `_create_warm_generation_dir`, `_bind_warm_generation` and `_remove_warm_generation_dir`; the proven release (`_spawn_left_no_process`, `_release_runtime_generation`) | one directory's lifetime; the marker reader, the plain-directory screen, the death verdict and the boot scavenger stay in the facade |
 | `src/kiro_crew/connections/warm_runtime/mint_process.py` | `_acp_runtime_factory`, `_warm_session_mcp_servers` and `_runtime_alive`; the `_WarmSession` and `_WarmMintResult` records; `_collect_oauth_requests`; the reporting teardown `_destroy_session_quietly` and `_kill_quietly` | the primitives `_WarmMintRuntime` calls; the timeouts and drain bounds stay in the facade's tunables, some of which tests substitute |
@@ -1059,7 +1059,7 @@ mounts or gates on it.
 | Google Sheets | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `spreadsheets.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-sheets.md)) |
 | Google Docs | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `documents.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-docs.md)) |
 | Google Slides | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `presentations.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-slides.md)) |
-| TickTick | project-management | 2 | yes / yes | none — `tasks:read` and `tasks:write` are the whole `scopes_supported` list and there is no read-only endpoint; the entry's `gotcha_copy` names the delete tools | gated | manual launch-gate check, including a `tools/list` against the 58-tool roster the card copy describes |
+| TickTick | project-management | 2 | yes / yes | none — `tasks:read` and `tasks:write` are the whole `scopes_supported` list and there is no read-only endpoint; the entry's `gotcha_copy` names the delete tools | shown | — |
 | Railway | developer-tools | 2 | yes / yes | none — `workspace:member` is the only scope the resource metadata publishes; the consent screen picks the workspaces, and the entry's `gotcha_copy` names the deploy and delete tools | gated | manual launch-gate check, including a `tools/list` against the hosted tool roster Railway documents and a session held past the access-token expiry (Railway documents refresh tokens only for `offline_access`, which the entry does not request) |
 | Quo | calendar-email | 2 | yes / yes | request `read:account`, `read:conversations` and `read:calls` only | gated | manual launch-gate check, including which tools a read-only grant can still call and whether Quo lists the grant anywhere a user can revoke it (its docs name the client's Disconnect and an RFC 7009 revocation endpoint) |
 
@@ -1199,9 +1199,16 @@ Slides 48111; 48106–48108 are reserved by the Slack, HubSpot and Box runbooks.
 Docs, Slides) are ordinary pre-registered entries, one card and one stored
 client each. Google lets one OAuth client carry many redirect URIs, so one
 user-owned Google client can serve all six: the user registers every card's
-redirect URI on it and pastes the same Client ID and secret into each card
-(the runbook index lists the URIs). Nothing in `oauth_clients.py` links the
-six; a shared Google client card is a separate, not-yet-decided change.
+redirect URI on it and saves it once (`oauth-app-registration/google.md`, with
+`scripts/google-oauth-setup.sh` / `.ps1` doing the gcloud part). All six
+entries point `registration_guide` at that one guide. Storage stays per card:
+nothing in `oauth_clients.py` links the six. The Settings → OAuth Apps Google
+cards carry an **Also save on (the other Google products)** toggle, on by default,
+that, when the Save carries a Client ID and a new secret (a whole pair), makes
+one Save send the same PUT to every other Google card (`isGoogleSlug` in
+`ConnectionsPanel.tsx`: `gmail` or a `google-` slug); a card that fails is
+named in the error and Save stays available to retry. Turned off, a card saves
+alone. Decision record: `rfc-connections-mcp-layout.md` §2.8.
 
 **Where the client lives.** `connections/oauth_clients.py` resolves it with a
 fixed precedence — environment
@@ -1277,10 +1284,93 @@ sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
 copy it names no harness: the line shows only while chats run on KAS, so the
 reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
 
-A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` on KAS) carries
+A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` while chats run
+on a bridged harness, `ACP_BACKENDS_CREW_OAUTH_BRIDGE`) carries
 `crewHeld` instead, and the card offers no Test: Test enumerates through Kiro
 CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
 it with 409 `crew_oauth_test_unsupported`.
+
+The card follows the chat backend; the bridge follows each session. A session on
+a bridged harness reaches the Connection through the gateway bridge whatever the
+chat backend is (`crew_oauth.routed_slug(..., backend)`: the KAS projection, and
+`kas_env_launch.bridge_array` on the claude `session/new` array), and a
+kiro-cli session never does. Under kiro-cli chats the card offers only the native
+Connect, so such a session is bridged only once Crew already holds the pair
+(`crew_oauth.holds_grant`); a warm-pool process is projected with no session key,
+so chats skip the pool while they would be bridged (`bypass_crew_oauth_bridge`). The proxy re-checks the flag alone
+(`crew_oauth.custody_on`). An allow-always answer on a bridged tool goes to the
+harness as allow-once, since the proxy refuses a call no approval was minted for. The agent spec keeps the provider's client
+secret unless chats run on KAS or no kiro-cli session can start
+(`crew_oauth.strips_spec_secret`). goose names the server in
+`_meta.goose.toolCall`, and its `rawInput` is the arguments it sends. DeepSeek
+names an MCP tool only by the name it registers and dispatches by, the `tool_call`
+title; `permission_requests.bridged_title_identity` splits it for a Crew-owned
+Connection only, when exactly one placed server fits, into
+`AcpEvent.connection_mcp_identity`, which only the proxy's approval reads. OpenCode
+stays on the native path: its permission request carries `rawInput` `{}` and the
+call's arguments arrive only after the answer, so no approval can bind them.
+codex, copilot, pi and strands are bridged too. Their child runs under a credential
+mask that withholds `kas-mcp-launch`, so bridge snapshots live in their own leaf,
+`crew-oauth-bridge` (slug, port, per-bridge token; no vendor credential), which that
+child may read. codex's `{server, tool, arguments}` raw input is unwrapped, and the
+proxy strips `annotations` from `tools/list` so a `readOnlyHint` tool still asks. pi
+gets the Connection in its broker-only composition (a same-named server in pi's own
+`mcp.json` is refused and reported by the gate extension's registration receipt);
+its approval binds the server and tool Crew's gate extension names from
+its registration table (`AcpEvent.connection_mcp_identity`).
+
+Its Connect (`crew_oauth.start_mint_row`) runs the consent link through the
+banner gate (`security.oauth_url_contains_credential`) before the row shows it,
+and fails the row `mint_url_rejected` when the gate refuses. The gate reads the
+link with `state` and the PKCE challenge held at one fixed value: both are the
+process's own random draws, and a credential pattern matched one by chance,
+failing an ordinary Connect (#32217). The operator's client ID and the
+registry's redirect are read as they are, so a credential in the client ID still
+fails the row.
+
+Crew can hold GitHub, Asana and the six Google slugs (`crew_oauth.SUPPORTED_SLUGS`,
+one data entry each in `_ENDPOINTS`). Each slug keeps its own grant. Disconnect
+revokes upstream and deletes the vault entry, except a Google card while another
+Google card still holds a pair on the same account and from a client of the same
+Cloud project. The account is the id_token `sub` (Google's consent adds `openid`),
+stored as the pair's `account`; the issuing client id is stored with each pair and
+compared by its leading project number. Google's revoke ends the whole grant
+across that project's clients, so that card deletes only its own entry and the
+last such Google card to disconnect revokes.
+
+Crew can also hold the seven visible DCR cards (Atlassian, Notion, Linear, Stripe,
+Vercel, GitLab, TickTick: `crew_oauth.DCR_SLUGS`), with no operator client
+(`connections/crew_oauth_dcr.py`). Each Connect discovers the card's endpoints
+from its `mcp_url` (401 challenge, then RFC 9728 and RFC 8414 documents), refuses
+an issuer other than the committed `l0_expectations.authorization_server`
+(`issuer_changed`), an AS without S256 or a `registration_endpoint`, and never
+guesses an endpoint. Crew registers its own client (`client_name` "Kiro Crew",
+or the entry's `dcr_client_name`) once per card in the vault entry
+`CONNECTIONS_<SLUG>_OAUTH_CLIENT`, with the token auth method the AS lists
+(`none` first), and registers again when the redirect or issuer differs, the
+secret has expired, or after `invalid_client` (the card then asks to reconnect).
+Every authorize, token and refresh call sends `resource`; `offline_access` is
+asked for when listed; the callback's `iss` is checked. All DCR sign-ins share
+the loopback port `registry.DCR_CALLBACK_PORT` (48100, which no pre-registered
+entry may use) and `state` picks the pending sign-in. A gateway with a public
+HTTPS `dashboard.url` (never the request's `Host`) registers
+`https://<that host>/api/connections/oauth/callback` instead, so a pod's browser lands back on the gateway with no paste
+(`crew_oauth_dcr.gateway_callback`). That route answers `GET` only, without a
+dashboard token (`token_auth_paths.CREW_OAUTH_CALLBACK_PATH`): a `state` matching
+a pending sign-in (constant-time) is the only admission, each `state` answers
+once and is gone after `SIGN_IN_TTL_SECS` (600 s), and the answer is a fixed
+HTML page with `Cache-Control: no-store` and `Referrer-Policy: no-referrer` that
+echoes no input. Each hit is SEL-audited (`connections_crew_oauth_callback`).
+Moving between the loopback and the public redirect re-registers, by the
+redirect rule above. After a sign-in, KAS's own
+grant for that URL (deleted by name) and kiro-cli's files go when the census
+over the open projects finds no other entry naming that URL. Disconnect revokes with RFC 7009 when the AS
+advertises a `revocation_endpoint`, else deletes locally (`upstreamRevoked:
+false`), and keeps the registered client. TickTick issues no refresh token (a
+180-day access token) and its advertised `revocation_endpoint` is the token URL,
+which answers 401: its pair is served up to its recorded expiry (no refresh skew),
+then dropped with `needs_auth` so the card offers Connect again, and Disconnect
+deletes locally, leaving the card's manual revoke link.
 
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until

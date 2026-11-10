@@ -65,9 +65,14 @@ class _LinkedApproval:
     calls ``approve_tool`` / ``reject_tool`` is the dashboard's ``_on_permission_prompt``
     (``chat_turn/permission_prompt.py``), parked on the slot's approval *future*. A Slack
     button click here must therefore ONLY resolve that future (via
-    ``state.resolve_approval``); the dashboard loop then answers the backend
+    ``state.resolve_slot_approval``); the dashboard loop then answers the backend
     exactly once. Calling ``approve_tool`` from here too would answer the
     JSON-RPC request twice.
+
+    ``slot_key`` and ``future`` name the one request the prompt mirrors. A request
+    id is the agent's own per-process counter, so two slots can each hold one under
+    the same id; the click settles this future on this slot, and an entry without a
+    slot settles nothing.
 
     ``trust_grantable`` carries the server-side durable-grant proof that was true
     of the dashboard card when the prompt was mirrored (see
@@ -76,17 +81,21 @@ class _LinkedApproval:
     cannot grant Trust.
     """
 
-    __slots__ = ("request_id", "session_key", "trust_grantable")
+    __slots__ = ("request_id", "session_key", "trust_grantable", "slot_key", "future")
 
     def __init__(
         self,
         request_id: str | int,
         session_key: str,
         trust_grantable: bool = False,
+        slot_key: str = "",
+        future: asyncio.Future[str] | None = None,
     ) -> None:
         self.request_id = request_id
         self.session_key = session_key
         self.trust_grantable = trust_grantable
+        self.slot_key = slot_key
+        self.future = future
 
 
 class _LinkedApprovalEvent:
@@ -249,12 +258,16 @@ async def post_linked_approval(
     mcp_server_name: str = "",
     tool_name: str = "",
     mcp_identity_trusted: bool = False,
+    slot_key: str = "",
+    future: asyncio.Future[str] | None = None,
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
     Posts Approve / Reject buttons threaded under ``thread_ts`` and registers a
     :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
     the dashboard slot's approval future (see :func:`handle_interaction`).
+    *slot_key* and *future* are the slot that asked and the future it parked on:
+    the click settles that future and no other.
     ``thread_ts=None`` posts top-level: a Slack Code channel's own session
     replies in the channel itself, so its prompts go there too.
 
@@ -314,7 +327,7 @@ async def post_linked_approval(
         )
         return None
     _linked_approvals[f"{channel}:{approval_ts}"] = _LinkedApproval(
-        request_id, session_key, trust_grantable
+        request_id, session_key, trust_grantable, slot_key, future
     )
     return approval_ts
 
@@ -456,8 +469,8 @@ def _resolve_linked_click(
 
     The dashboard's ``_on_permission_prompt`` (chat_turn/permission_prompt.py) owns the ACP
     answer (it is parked on the slot's approval future), so this resolves ONLY that future, through
-    ``state.resolve_approval``, and never calls ``approve_tool`` / ``reject_tool``:
-    that would answer the JSON-RPC request twice. Anything that isn't an explicit
+    ``state.resolve_slot_approval`` on the entry's own slot, and never calls ``approve_tool`` /
+    ``reject_tool``: that would answer the JSON-RPC request twice. Anything that isn't an explicit
     reject approves THIS call; a Trust click additionally widens the session, and only
     a widening that actually took counts as an approval.
     """
@@ -494,10 +507,16 @@ def _resolve_linked_click(
             error="" if trusted else "trust_grant_unavailable",
         )
     resolved = False
-    if _dashboard_state is not None and hasattr(_dashboard_state, "resolve_approval"):
+    slot = (getattr(_dashboard_state, "_slots", None) or {}).get(linked_entry.slot_key)
+    if _dashboard_state is not None and slot is not None:
         try:
             resolved = bool(
-                _dashboard_state.resolve_approval(str(linked_entry.request_id), approved)  # type: ignore[attr-defined]
+                _dashboard_state.resolve_slot_approval(  # type: ignore[attr-defined]
+                    slot,
+                    str(linked_entry.request_id),
+                    approved,
+                    expected_future=linked_entry.future,
+                )
             )
         except Exception:
             logger.warning(

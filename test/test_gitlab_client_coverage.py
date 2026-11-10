@@ -338,7 +338,6 @@ def test_glab_run_maps_undecodable_output_to_a_cli_error(monkeypatch):
     assert "\xff" not in str(caught.value)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
 def test_glab_bin_override_is_validated_and_cached(monkeypatch):
     from kiro_crew.dashboard.handlers import source_providers
 
@@ -354,7 +353,6 @@ def test_glab_bin_override_is_validated_and_cached(monkeypatch):
     assert gl._glab_bin() == "/opt/glab"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
 def test_glab_bin_override_failure_is_a_setup_error(monkeypatch):
     from kiro_crew.dashboard.handlers import source_providers
 
@@ -370,7 +368,6 @@ def test_glab_bin_override_failure_is_a_setup_error(monkeypatch):
     assert "KIROCREW_ISSUE_RADAR_GLAB" in str(excinfo.value)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
 def test_glab_bin_skips_untrusted_candidates_and_reports_the_last_check(monkeypatch, tmp_path):
     from kiro_crew.dashboard.handlers import source_providers
 
@@ -394,7 +391,33 @@ def test_glab_bin_skips_untrusted_candidates_and_reports_the_last_check(monkeypa
     assert "glab auth login" in str(excinfo.value)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the POSIX resolution path")
+@pytest.mark.parametrize(
+    ("platform", "wanted", "unwanted"),
+    [
+        ("win32", f"winget install --id {github_runner.PROVIDER_WINGET_ID['glab']}", "brew install"),
+        ("darwin", "brew install glab", "winget"),
+        ("linux", "brew install glab", "winget"),
+    ],
+)
+def test_glab_bin_not_installed_hint_matches_the_platform(
+    monkeypatch, platform, wanted, unwanted
+):
+    """Windows is told the winget id from the shared map, never brew."""
+    from kiro_crew.dashboard.handlers import source_providers
+
+    monkeypatch.delenv("KIROCREW_ISSUE_RADAR_GLAB", raising=False)
+    monkeypatch.setattr(source_providers, "provider_executable_candidates", lambda name: ())
+    monkeypatch.setattr(sys, "platform", platform)
+    with pytest.raises(gl.ProviderSetupError) as excinfo:
+        gl._glab_bin()
+    message = str(excinfo.value)
+    assert excinfo.value.reason == "not_installed"
+    assert wanted in message
+    assert unwanted not in message
+    assert "glab auth login" in message
+    assert "KIROCREW_ISSUE_RADAR_GLAB" in message
+
+
 def test_glab_bin_accepts_the_first_trusted_candidate(monkeypatch, tmp_path):
     from kiro_crew.dashboard.handlers import source_providers
 

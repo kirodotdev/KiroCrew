@@ -1208,7 +1208,7 @@ class TestRefreshRegistries:
         assert result["ok"] is False
         assert result["refreshed"] == []
         assert result["failed"] == ["acme"]
-        assert result["results"] == [{"name": "acme", "ok": False}]
+        assert result["results"] == [{"name": "acme", "ok": False, "cached": True}]
 
     @pytest.mark.asyncio
     async def test_refused_ssh_sign_in_is_reported_as_auth(self, cache_dir, monkeypatch):
@@ -1254,7 +1254,13 @@ class TestRefreshRegistries:
         assert mock_exec.called
         assert result["failed"] == ["acme"]
         assert result["results"] == [
-            {"name": "acme", "ok": False, "reason": "auth", "host": "git.example.com"}
+            {
+                "name": "acme",
+                "ok": False,
+                "cached": False,
+                "reason": "auth",
+                "host": "git.example.com",
+            }
         ]
 
     @pytest.mark.asyncio
@@ -1578,41 +1584,41 @@ class TestRecordedCloneFailure:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("stderr", "refused"),
+        ("stderr", "cause"),
         [
-            (b"git@git.example.com: Permission denied (publickey).\n", True),
-            (b"fatal: Authentication failed for 'https://git.example.com/r'\n", True),
-            (b"ssh: Could not resolve hostname git.example.com: nodename\n", False),
-            (b"fatal: could not create work tree dir 'x': Permission denied\n", False),
+            (b"git@git.example.com: Permission denied (publickey).\n", "auth"),
+            (b"fatal: Authentication failed for 'https://git.example.com/r'\n", "auth"),
+            (b"ssh: Could not resolve hostname git.example.com: nodename\n", "dns"),
+            (b"Host key verification failed.\r\nfatal: Could not read from remote\n", "host_key"),
+            (b"ssh: connect to host git.example.com port 22: Connection refused\n", "network"),
+            (b"fatal: could not create work tree dir 'x': Permission denied\n", "other"),
         ],
     )
-    async def test_only_a_refused_sign_in_is_recorded(self, monkeypatch, stderr, refused):
+    async def test_every_failure_records_its_cause(self, monkeypatch, stderr, cause):
         from kiro_crew.apps.registry_pipeline import indexes
 
         assert await self._fetch_with_stderr(monkeypatch, stderr) is None
-        assert (
-            indexes._registry_sign_in_refused("ssh://git.example.com/acme/apps", "main") is refused
-        )
+        assert indexes._registry_fetch_failure("ssh://git.example.com/acme/apps", "main") == cause
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("stderr", "label", "refused"),
+        ("stderr", "label", "cause"),
         [
             (
                 "git@git.example.com: Permission denied (publickey).",
                 "git refused the sign-in",
-                True,
+                "auth",
             ),
             (
                 "ssh: Could not resolve hostname git.example.com: x",
                 "host could not be resolved",
-                False,
+                "dns",
             ),
-            ("fatal: something new from git.example.com", "unclassified git failure", False),
+            ("fatal: something new from git.example.com", "unclassified git failure", "other"),
         ],
     )
     async def test_a_credentialed_clone_logs_a_fixed_label_only(
-        self, monkeypatch, caplog, stderr, label, refused
+        self, monkeypatch, caplog, stderr, label, cause
     ):
         """A credentialed remote's git output never reaches the log; a fixed label does."""
         from kiro_crew.apps.registry_pipeline import indexes
@@ -1630,20 +1636,25 @@ class TestRecordedCloneFailure:
             assert await indexes._fetch_external_registry_index(repo, "main") is None
         warning = [r.getMessage() for r in caplog.records if "clone failed" in r.getMessage()]
         assert warning == [f"external registry clone failed: {label}"]
-        assert indexes._registry_sign_in_refused(repo, "main") is refused
+        assert indexes._registry_fetch_failure(repo, "main") == cause
 
     @pytest.mark.asyncio
     async def test_a_plain_clone_failure_logs_one_line(self, monkeypatch, caplog):
-        """The plain clone keeps its single redacted-tail line; recording adds none."""
+        """The plain clone keeps its single redacted-tail line; recording adds none.
+
+        The line names git's exit code: a silent ssh failure leaves only git's
+        generic fatal line in the tail.
+        """
         with caplog.at_level("WARNING"):
             await self._fetch_with_stderr(
                 monkeypatch, b"git@git.example.com: Permission denied (publickey).\n"
             )
         warning = [r.getMessage() for r in caplog.records if "clone failed" in r.getMessage()]
         assert len(warning) == 1
+        assert "(git exit 128)" in warning[0]
 
     @pytest.mark.asyncio
-    async def test_a_later_fetch_clears_the_refused_sign_in(self, monkeypatch):
+    async def test_a_later_fetch_replaces_the_recorded_cause(self, monkeypatch):
         """The record describes the latest fetch only, not any earlier one."""
         from kiro_crew.apps.registry_pipeline import indexes
 
@@ -1651,8 +1662,8 @@ class TestRecordedCloneFailure:
         await self._fetch_with_stderr(
             monkeypatch, b"git@git.example.com: Permission denied (publickey).\n"
         )
-        assert indexes._registry_sign_in_refused(repo, "main") is True
+        assert indexes._registry_fetch_failure(repo, "main") == "auth"
         await self._fetch_with_stderr(
             monkeypatch, b"ssh: Could not resolve hostname git.example.com: x\n"
         )
-        assert indexes._registry_sign_in_refused(repo, "main") is False
+        assert indexes._registry_fetch_failure(repo, "main") == "dns"

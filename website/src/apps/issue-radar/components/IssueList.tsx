@@ -116,6 +116,9 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
         </div>
       </div>
 
+      {/* A list read; the search box above is a filter, not a draft. Outside the
+          list region, whose absolute scrollers would cover it over cached rows. */}
+      <ErrorNotice message={issuesError?.message} askAgent className="mx-4 my-2 flex-shrink-0" />
       {/* Card list — a bottom gradient fades the last cards out. */}
       <div className="relative flex-1 min-h-0">
         {issuesLoading && (
@@ -123,8 +126,6 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
             <ListSkeleton />
           </div>
         )}
-        {/* A list read; the search box above is a filter, not a draft. */}
-        <ErrorNotice message={issuesError?.message} askAgent className="mx-4 my-2" />
         {!issuesLoading && filteredIssues.length === 0 && (
           <div className="px-4 pb-2">
             <ListEmptyState searching={Boolean(query.trim())} label={i18nT(terms.trackedItemPluralTitleKey)} />

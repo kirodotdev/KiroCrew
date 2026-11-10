@@ -17,6 +17,10 @@ the deadline, or when the spawn's role is not armed, the spawn goes ahead at onc
 
 A caller that builds its provider on its own thread and event loop calls
 :func:`wait_kas_floor_verdict_blocking` instead, off the gateway loop.
+
+The warm pool's other kiro-cli gate lives here too, so the pool reaches the ACP
+layer through this boundary: :func:`kas_extract_held` holds a KAS relay pool while
+kiro-cli's unpacked engine is recorded broken (:mod:`kiro_crew.acp.kas_extract_repair`).
 """
 
 from __future__ import annotations
@@ -123,3 +127,13 @@ def wait_kas_floor_verdict_blocking() -> None:
         waiter.result(timeout=KAS_FLOOR_WAIT_SECS)
     except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
         waiter.cancel()
+
+
+async def kas_extract_held(provider: object) -> bool:
+    """Whether the warm pool should not start *provider* on a recorded broken KAS extract.
+
+    No filesystem call unless one was recorded (``kas_extract_repair.warm_pool_held``).
+    """
+    from kiro_crew.acp.kas_extract_repair import warm_pool_held
+
+    return await warm_pool_held(provider)

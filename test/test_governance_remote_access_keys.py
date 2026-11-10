@@ -1,8 +1,8 @@
 """Remote-access governance keys: ``bind_address``, ``dashboard_origins`` and
 ``computer_use``, and tailnet access following ``capabilities.tailnet_origin``.
 
-RFC ``rfc-crew-enterprise-edition``, appendix rows "Bind address and tunnel",
-"Dashboard origins" and "Desktop control". In an enterprise build each is at its
+RFC ``rfc-crew-lts-edition``, appendix rows "Bind address and tunnel",
+"Dashboard origins" and "Desktop control". In an LTS build each is at its
 minimal set until a policy names it (D3). In an ``oss`` build with no policy naming
 the key, behaviour is unchanged.
 """
@@ -26,8 +26,8 @@ _NAME = f"desk.{_SUFFIX}"
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ def test_catalog_rows() -> None:
 
 
 class TestBindAddress:
-    def test_loopback_is_never_asked(self, enterprise, monkeypatch) -> None:
+    def test_loopback_is_never_asked(self, lts, monkeypatch) -> None:
         monkeypatch.delenv("KIROCREW_BIND", raising=False)
         monkeypatch.setattr(
             "kiro_crew.edition_locks.policy_permits",
@@ -85,14 +85,14 @@ class TestBindAddress:
         monkeypatch.setenv("KIROCREW_BIND", "0.0.0.0")
         assert urls.bind_address_for(local_only=True) == "127.0.0.1"
 
-    def test_enterprise_unnamed_binds_loopback(self, enterprise, install_policy, monkeypatch):
+    def test_lts_unnamed_binds_loopback(self, lts, install_policy, monkeypatch):
         monkeypatch.setenv("KIROCREW_BIND", "0.0.0.0")
         assert urls.bind_address_for(local_only=True) == "127.0.0.1"
         install_policy({})
         assert urls.bind_address_for(local_only=True) == "127.0.0.1"
         assert urls.bind_address_for(local_only=False) == "127.0.0.1"
 
-    def test_enterprise_policy_widens(self, enterprise, install_policy, monkeypatch) -> None:
+    def test_lts_policy_widens(self, lts, install_policy, monkeypatch) -> None:
         install_policy({"bind_address": _allow("0.0.0.0", "::")})
         monkeypatch.setenv("KIROCREW_BIND", "0.0.0.0")
         assert urls.bind_address_for(local_only=True) == "0.0.0.0"
@@ -104,7 +104,7 @@ class TestBindAddress:
         monkeypatch.setenv("KIROCREW_BIND", "0:0:0:0:0:0:0:0")
         assert urls.bind_address_for(local_only=True) == "0:0:0:0:0:0:0:0"
 
-    def test_the_bind_decision_is_audited(self, enterprise, install_policy, monkeypatch) -> None:
+    def test_the_bind_decision_is_audited(self, lts, install_policy, monkeypatch) -> None:
         import kiro_crew.sel as sel_mod
 
         records: list[dict] = []
@@ -131,7 +131,7 @@ class TestBindAddress:
         ]
 
     def test_a_profile_deny_does_not_narrow_the_bind(
-        self, enterprise, install_policy, monkeypatch
+        self, lts, install_policy, monkeypatch
     ) -> None:
         install_policy({"bind_address": _allow("0.0.0.0")})
         profile = governance_profiles.deny_all_profile("test")
@@ -177,7 +177,7 @@ class TestDashboardOrigins:
         assert {"https://crew.example.com", "https://other.example.com"} <= got
         assert (got) >= {"http://localhost:8777"}
 
-    def test_no_extras_asks_nothing(self, enterprise, monkeypatch) -> None:
+    def test_no_extras_asks_nothing(self, lts, monkeypatch) -> None:
         monkeypatch.delenv("KIROCREW_CORS_ORIGINS", raising=False)
         monkeypatch.delenv("KIROCREW_ALLOWED_LOOPBACK_PORTS", raising=False)
         monkeypatch.delenv("KIROCREW_HOME", raising=False)
@@ -187,9 +187,7 @@ class TestDashboardOrigins:
         )
         assert urls.build_allowed_origins(5476, True) == _FLOOR
 
-    def test_enterprise_unnamed_keeps_this_machine_only(
-        self, enterprise, install_policy, monkeypatch
-    ) -> None:
+    def test_lts_unnamed_keeps_this_machine_only(self, lts, install_policy, monkeypatch) -> None:
         got = _origins(monkeypatch, tailnet_host=_NAME)
         assert got == _FLOOR | {f"https://{_NAME}"}
         assert urls.build_allowed_hosts(got) == {
@@ -200,7 +198,7 @@ class TestDashboardOrigins:
             _NAME,
         }
 
-    def test_enterprise_policy_names_one(self, enterprise, install_policy, monkeypatch) -> None:
+    def test_lts_policy_names_one(self, lts, install_policy, monkeypatch) -> None:
         install_policy({"dashboard_origins": _allow("https://crew.example.com")})
         assert _origins(monkeypatch) == _FLOOR | {"https://crew.example.com"}
 
@@ -260,7 +258,7 @@ class TestDashboardOrigins:
         install_policy({"dashboard_origins": {"mode": "deny", "deny": [entry]}})
         assert (urls.build_allowed_origins(5476, True)).isdisjoint({"https://evil.example.com"})
 
-    def test_port_80_loopback_stays_trusted(self, enterprise, install_policy) -> None:
+    def test_port_80_loopback_stays_trusted(self, lts, install_policy) -> None:
         from kiro_crew.dashboard.origin import check_origin
 
         install_policy({})
@@ -290,7 +288,7 @@ class TestDashboardOrigins:
         )
         assert check_origin(_origin_request("http://[::1]:8777", "[::1]:8777")) is False
 
-    def test_enterprise_refuses_a_deny_list_at_load(self, enterprise) -> None:
+    def test_lts_refuses_a_deny_list_at_load(self, lts) -> None:
         from kiro_crew.platform.context import PlatformCompositionError
 
         with pytest.raises(PlatformCompositionError, match="dashboard_origins.*allow list"):
@@ -318,7 +316,7 @@ class TestDashboardOrigins:
             "https://crew.example.com:0",
         ],
     )
-    def test_enterprise_refuses_an_inexact_entry_at_load(self, enterprise, entry) -> None:
+    def test_lts_refuses_an_inexact_entry_at_load(self, lts, entry) -> None:
         from kiro_crew.platform.context import PlatformCompositionError
 
         with pytest.raises(PlatformCompositionError, match="dashboard_origins.*not an exact"):
@@ -334,9 +332,7 @@ class TestDashboardOrigins:
             ("https://[1:0:0:2:0:0:0:3]", "https://[1:0:0:2::3]"),
         ],
     )
-    def test_enterprise_refuses_a_non_browser_spelling_and_names_it(
-        self, enterprise, entry, canonical
-    ) -> None:
+    def test_lts_refuses_a_non_browser_spelling_and_names_it(self, lts, entry, canonical) -> None:
         from kiro_crew.platform.context import PlatformCompositionError
 
         with pytest.raises(PlatformCompositionError, match="not in the form a browser") as exc:
@@ -346,7 +342,7 @@ class TestDashboardOrigins:
     @pytest.mark.parametrize(
         "entry", ["https://256.1.1.1", "http://127.0.0.1:99999", "https://a.0x"]
     )
-    def test_enterprise_refuses_an_invalid_ip_or_port(self, enterprise, entry) -> None:
+    def test_lts_refuses_an_invalid_ip_or_port(self, lts, entry) -> None:
         from kiro_crew.platform.context import PlatformCompositionError
 
         with pytest.raises(PlatformCompositionError, match="not a valid origin"):
@@ -365,8 +361,8 @@ class TestDashboardOrigins:
             "https://foo.0xbar",
         ],
     )
-    def test_enterprise_accepts_the_browser_spelling(
-        self, enterprise, install_policy, monkeypatch, entry
+    def test_lts_accepts_the_browser_spelling(
+        self, lts, install_policy, monkeypatch, entry
     ) -> None:
         from kiro_crew.dashboard.origin import check_origin
 
@@ -392,8 +388,8 @@ class TestDashboardOrigins:
             ("https://crew.example.com:8443", "https://crew.example.com:8443"),
         ],
     )
-    def test_enterprise_exact_entry_is_allowed(
-        self, enterprise, install_policy, monkeypatch, configured, entry
+    def test_lts_exact_entry_is_allowed(
+        self, lts, install_policy, monkeypatch, configured, entry
     ) -> None:
         monkeypatch.setenv("KIROCREW_CORS_ORIGINS", configured)
         install_policy({"dashboard_origins": _allow(entry)})
@@ -411,8 +407,8 @@ class TestDashboardOrigins:
             ("https://crew.example.com:8443", "https://crew.example.com"),
         ],
     )
-    def test_enterprise_near_miss_is_refused(
-        self, enterprise, install_policy, monkeypatch, configured, entry
+    def test_lts_near_miss_is_refused(
+        self, lts, install_policy, monkeypatch, configured, entry
     ) -> None:
         monkeypatch.setenv("KIROCREW_CORS_ORIGINS", configured)
         install_policy({"dashboard_origins": _allow(entry)})
@@ -432,8 +428,8 @@ class TestDashboardOrigins:
             "https://evil.com/crew.example.com",
         ],
     )
-    def test_enterprise_odd_spellings_outside_the_list_are_refused(
-        self, enterprise, install_policy, monkeypatch, odd
+    def test_lts_odd_spellings_outside_the_list_are_refused(
+        self, lts, install_policy, monkeypatch, odd
     ) -> None:
         monkeypatch.setenv("KIROCREW_CORS_ORIGINS", odd)
         install_policy({"dashboard_origins": _allow("https://crew.example.com")})
@@ -441,9 +437,7 @@ class TestDashboardOrigins:
         assert (got).isdisjoint({odd})
         assert got == _FLOOR
 
-    def test_enterprise_check_origin_refuses_another_spelling(
-        self, enterprise, install_policy
-    ) -> None:
+    def test_lts_check_origin_refuses_another_spelling(self, lts, install_policy) -> None:
         from kiro_crew.dashboard.origin import check_origin
 
         install_policy({"dashboard_origins": _allow("https://crew.example.com")})
@@ -488,7 +482,7 @@ class TestDashboardOrigins:
         assert (_origins(monkeypatch)).isdisjoint({"https://other.example.com"})
 
     def test_a_live_refresh_withdraws_a_refused_origin(
-        self, enterprise, install_policy, monkeypatch
+        self, lts, install_policy, monkeypatch
     ) -> None:
         """A narrowed policy takes an origin out of the running server's set, and
         so out of the ``Host`` barrier, with no restart. The floor and both tailnet origins
@@ -532,7 +526,7 @@ class TestDashboardOrigins:
 
     @pytest.mark.asyncio
     async def test_a_live_refresh_withdraws_the_ssm_origins_and_routes_but_keeps_the_gate(
-        self, enterprise, install_policy
+        self, lts, install_policy
     ) -> None:
         """The SSM origins are not in the shared set, so the set withdrawal cannot reach them.
 
@@ -580,7 +574,7 @@ class TestDashboardOrigins:
         with pytest.raises(web.HTTPNotFound):
             await guarded(req)
 
-    def test_a_tailnet_origin_recovered_mid_poll_is_kept(self, enterprise, install_policy):
+    def test_a_tailnet_origin_recovered_mid_poll_is_kept(self, lts, install_policy):
         """Recovery adds its origin on the loop one step before it records the host, so
         the removal reads the tailnet origin again there."""
         from kiro_crew.dashboard.origin import withdraw_refused_origins
@@ -622,16 +616,12 @@ class TestApprovedOriginSpelling:
         req.remote = "10.0.0.5"
         return req
 
-    def test_enterprise_stores_the_browser_form(
-        self, enterprise, install_policy, monkeypatch
-    ) -> None:
+    def test_lts_stores_the_browser_form(self, lts, install_policy, monkeypatch) -> None:
         install_policy({"dashboard_origins": _allow("https://crew.example.com")})
         got = self._request(monkeypatch, "https://crew.example.com").app["allowed_origins"]
         assert got == _FLOOR | {"https://crew.example.com"}
 
-    def test_enterprise_accepts_the_approved_origin(
-        self, enterprise, install_policy, monkeypatch
-    ) -> None:
+    def test_lts_accepts_the_approved_origin(self, lts, install_policy, monkeypatch) -> None:
         from kiro_crew.dashboard.origin import check_origin
 
         install_policy({"dashboard_origins": _allow("https://crew.example.com")})
@@ -647,9 +637,7 @@ class TestApprovedOriginSpelling:
             "https://crew.example.co",
         ],
     )
-    def test_enterprise_refuses_a_near_spelling(
-        self, enterprise, install_policy, monkeypatch, near
-    ) -> None:
+    def test_lts_refuses_a_near_spelling(self, lts, install_policy, monkeypatch, near) -> None:
         from kiro_crew.dashboard.origin import check_origin
 
         install_policy({"dashboard_origins": _allow("https://crew.example.com")})
@@ -689,13 +677,13 @@ class TestLoopbackFallback:
         # The bound port is the floor and stays trusted.
         assert check_origin(_origin_request("http://localhost:5476", "localhost:5476"))
 
-    def test_the_bound_port_ipv6_loopback_stays_trusted(self, enterprise, install_policy):
+    def test_the_bound_port_ipv6_loopback_stays_trusted(self, lts, install_policy):
         from kiro_crew.dashboard.origin import check_origin
 
         install_policy({})
         assert check_origin(_origin_request("http://[::1]:5476", "[::1]:5476")) is True
 
-    def test_a_long_form_bound_port_ipv6_is_the_floor(self, enterprise, install_policy):
+    def test_a_long_form_bound_port_ipv6_is_the_floor(self, lts, install_policy):
         from kiro_crew.dashboard.origin import check_origin
 
         install_policy({})
@@ -717,7 +705,7 @@ class TestLoopbackFallback:
             ("http://localhost:8777", "allowed")
         ]
 
-    def test_enterprise_unnamed_refuses_it(self, enterprise, install_policy) -> None:
+    def test_lts_unnamed_refuses_it(self, lts, install_policy) -> None:
         from kiro_crew.dashboard.origin import check_origin
 
         install_policy({})
@@ -763,9 +751,7 @@ class TestTunnelOrigin:
     def test_oss_trusts_the_tunnel(self, install_policy, monkeypatch) -> None:
         assert (_connect_tunnel(monkeypatch)) >= {_TUNNEL_URL}
 
-    def test_enterprise_unnamed_does_not_trust_it(
-        self, enterprise, install_policy, monkeypatch
-    ) -> None:
+    def test_lts_unnamed_does_not_trust_it(self, lts, install_policy, monkeypatch) -> None:
         install_policy({})
         assert _connect_tunnel(monkeypatch) == _FLOOR
 
@@ -773,22 +759,20 @@ class TestTunnelOrigin:
         install_policy({"dashboard_origins": _allow("https://other.example.com")})
         assert _connect_tunnel(monkeypatch) == _FLOOR
 
-    def test_enterprise_stores_it_in_the_browser_form(
-        self, enterprise, install_policy, monkeypatch
-    ) -> None:
+    def test_lts_stores_it_in_the_browser_form(self, lts, install_policy, monkeypatch) -> None:
         install_policy({"dashboard_origins": _allow(_TUNNEL_URL)})
         got = _connect_tunnel(monkeypatch, "https://Crew-1.Tunnel.Example:443")
         assert got == _FLOOR | {_TUNNEL_URL}
 
 
-# ── tailnet: one policy boolean in an enterprise build ──────────────────
+# ── tailnet: one policy boolean in an LTS build ──────────────────
 
 _TAILNET_ON = {"capabilities": {"tailnet_origin": {"enabled": True}}}
 _TAILNET_OFF = {"capabilities": {"tailnet_origin": {"enabled": False}}}
 
 
 class TestTailnetPolicy:
-    """In an enterprise build tailnet follows ``capabilities.tailnet_origin`` alone."""
+    """In an LTS build tailnet follows ``capabilities.tailnet_origin`` alone."""
 
     @pytest.fixture
     def serve_cli(self, monkeypatch):
@@ -842,23 +826,21 @@ class TestTailnetPolicy:
 
     # ── the decision ──
 
-    def test_permit_turns_it_on(self, enterprise, install_policy) -> None:
+    def test_permit_turns_it_on(self, lts, install_policy) -> None:
         install_policy(_TAILNET_ON)
         assert tailnet.policy_off() is False
 
     @pytest.mark.parametrize("doc", [None, {}, _TAILNET_OFF], ids=["none", "silent", "deny"])
-    def test_silent_or_deny_leaves_it_off(self, enterprise, install_policy, doc) -> None:
+    def test_silent_or_deny_leaves_it_off(self, lts, install_policy, doc) -> None:
         install_policy(doc)
         assert tailnet.policy_off() is True
 
     @pytest.mark.parametrize("central", [None, {}], ids=["no-central", "silent-central"])
-    def test_a_local_tier_cannot_turn_it_on(self, enterprise, install_policy, central) -> None:
+    def test_a_local_tier_cannot_turn_it_on(self, lts, install_policy, central) -> None:
         install_policy(central, local=_TAILNET_ON)
         assert tailnet.policy_off() is True
 
-    def test_local_config_and_env_cannot_turn_it_on(
-        self, enterprise, install_policy, monkeypatch
-    ) -> None:
+    def test_local_config_and_env_cannot_turn_it_on(self, lts, install_policy, monkeypatch) -> None:
         monkeypatch.setenv("KIROCREW_CORS_ORIGINS", f"https://{_NAME}")
         monkeypatch.setattr(tailnet, "self_dns_name", lambda: _NAME)
         install_policy({})
@@ -878,7 +860,7 @@ class TestTailnetPolicy:
     @pytest.mark.parametrize("doc", [{}, _TAILNET_OFF], ids=["silent", "deny"])
     @pytest.mark.parametrize("tool", ["tailnet_publish", "tailnet_mobile_publish"])
     def test_publish_is_refused_and_audited(
-        self, enterprise, install_policy, serve_cli, no_daemon, records, doc, tool
+        self, lts, install_policy, serve_cli, no_daemon, records, doc, tool
     ) -> None:
         from kiro_crew.dashboard import tailnet_serve
 
@@ -889,7 +871,7 @@ class TestTailnetPolicy:
         assert serve_cli == []
         assert self._rows(records) == [(tool, "denied")]
 
-    def test_permit_publishes(self, enterprise, install_policy, serve_cli, records) -> None:
+    def test_permit_publishes(self, lts, install_policy, serve_cli, records) -> None:
         from kiro_crew.dashboard import tailnet_serve
 
         install_policy(_TAILNET_ON)
@@ -907,7 +889,7 @@ class TestTailnetPolicy:
         assert len(serve_cli) == 1
 
     def test_cli_up_refuses_first_and_audits_once(
-        self, enterprise, install_policy, no_daemon, records, monkeypatch, tmp_path, capsys
+        self, lts, install_policy, no_daemon, records, monkeypatch, tmp_path, capsys
     ) -> None:
         import argparse
 
@@ -923,7 +905,7 @@ class TestTailnetPolicy:
         assert self._rows(records) == [("tailnet_cli_up", "denied")]
 
     def test_cli_status_reads_no_daemon(
-        self, enterprise, install_policy, no_daemon, monkeypatch, tmp_path, capsys
+        self, lts, install_policy, no_daemon, monkeypatch, tmp_path, capsys
     ) -> None:
         import argparse
 
@@ -938,7 +920,7 @@ class TestTailnetPolicy:
     # ── the mobile card ──
 
     def test_mobile_configure_is_refused_first(
-        self, enterprise, install_policy, no_daemon, records, monkeypatch
+        self, lts, install_policy, no_daemon, records, monkeypatch
     ) -> None:
         from kiro_crew.dashboard.handlers import tailnet_mobile
 
@@ -956,7 +938,7 @@ class TestTailnetPolicy:
         assert self._rows(records) == [("tailnet_mobile_configure", "denied")]
 
     def test_the_card_says_off_by_policy_before_install_or_daemon(
-        self, enterprise, install_policy, no_daemon
+        self, lts, install_policy, no_daemon
     ) -> None:
         from kiro_crew.dashboard.handlers import tailnet_mobile
 
@@ -970,7 +952,7 @@ class TestTailnetPolicy:
 
     @pytest.mark.parametrize("doc", [{}, _TAILNET_OFF], ids=["silent", "deny"])
     def test_startup_refusal_is_audited(
-        self, enterprise, install_policy, no_daemon, records, caplog, doc
+        self, lts, install_policy, no_daemon, records, caplog, doc
     ) -> None:
         # ``server.py`` and ``server_runtime/api_entrypoint.py`` both derive the
         # origin through ``resolve_tailnet_host``, so this covers both entry points.
@@ -987,13 +969,13 @@ class TestTailnetPolicy:
         for rel in ("server.py", "server_runtime/api_entrypoint.py"):
             assert "tailnet.resolve_tailnet_host(" in (src / rel).read_text(encoding="utf-8")
 
-    def test_permit_derives_the_name(self, enterprise, install_policy, monkeypatch) -> None:
+    def test_permit_derives_the_name(self, lts, install_policy, monkeypatch) -> None:
         monkeypatch.setattr(tailnet, "self_dns_name", lambda: _NAME)
         install_policy(_TAILNET_ON)
         assert asyncio.run(tailnet.resolve_tailnet_host(True)) == _NAME
 
     def test_recovery_adds_no_origin_while_off(
-        self, enterprise, install_policy, records, monkeypatch
+        self, lts, install_policy, records, monkeypatch
     ) -> None:
         monkeypatch.setattr(tailnet, "_ORIGIN_RECOVERY_INITIAL_SECS", 0)
         monkeypatch.setattr(tailnet, "_ORIGIN_RECOVERY_MAX_SECS", 0)
@@ -1034,21 +1016,19 @@ class TestComputerUse:
         assert enable_state.is_enabled(_ON) is False
         assert enable_state.locked_by_policy() is True
 
-    def test_enterprise_unnamed_is_off(self, enterprise, install_policy) -> None:
+    def test_lts_unnamed_is_off(self, lts, install_policy) -> None:
         assert enable_state.is_enabled(_ON) is False
         install_policy({})
         assert enable_state.is_enabled(_ON) is False
         assert enable_state.locked_by_policy() is True
 
-    def test_enterprise_policy_turns_it_on(self, enterprise, install_policy) -> None:
+    def test_lts_policy_turns_it_on(self, lts, install_policy) -> None:
         install_policy({"capabilities": {"computer_use": {"enabled": True}}})
         assert enable_state.is_enabled(_ON) is True
         # The operator's own opt-in still has to say yes.
         assert enable_state.is_enabled({}) is False
 
-    def test_a_profile_deny_is_not_a_policy_lock(
-        self, enterprise, install_policy, monkeypatch
-    ) -> None:
+    def test_a_profile_deny_is_not_a_policy_lock(self, lts, install_policy, monkeypatch) -> None:
         install_policy({"capabilities": {"computer_use": {"enabled": True}}})
         profile = governance_profiles.deny_all_profile("test")
         monkeypatch.setattr(governance_profiles, "resolve_active_scope", lambda *a, **k: profile)

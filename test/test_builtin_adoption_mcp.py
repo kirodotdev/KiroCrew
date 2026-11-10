@@ -296,28 +296,3 @@ async def test_an_adopted_record_registers_its_server_from_the_adopted_tree(tmp_
     assert after["command"] == before["command"], "the gateway's own interpreter, as before"
     assert after.get("autoApprove") == before.get("autoApprove")
     assert after.get("env") == before.get("env")
-
-
-def test_no_shipped_pin_names_a_built_in_that_ships_an_mcp_server():
-    """Deferral pin: the tool gate's own-server auto-approve does not follow adoption.
-
-    ``execution.builtin_app_mcp_servers`` keeps only builtin-owned installs, so an
-    adopted record's server loses the gate grant the wheel copy had and its calls
-    start asking for approval where kiro-cli's local ``autoApprove`` does not apply
-    (a governed host, a harness that relies on the PreToolUse gate). Until the gate
-    trust follows an adopted record, a pin for a built-in whose wheel manifest
-    declares ``mcpServers`` would change behaviour for its current users, so none
-    may ship. Remove this test in the change that carries that trust.
-    """
-    from kiro_crew.apps import builtin_adoption_pins as pins_mod
-    from kiro_crew.apps import execution
-
-    shipped = json.loads(pins_mod._PINS_PATH.read_text(encoding="utf-8"))
-    pinned = {row["name"] for row in shipped["pins"]}
-    serving = set()
-    for root, name in execution._shipped_builtin_apps():
-        manifest = json.loads((root / "app.json").read_text(encoding="utf-8"))
-        if manifest.get("mcpServers"):
-            serving.add(name)
-    assert serving, "the scan found no built-in with mcpServers, so it checks nothing"
-    assert pinned and not pinned & serving

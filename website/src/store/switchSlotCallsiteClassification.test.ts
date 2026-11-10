@@ -50,6 +50,7 @@ const PINNED: Record<string, Counts> = {
   'src/hooks/useKeyboardShortcuts.ts': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'keyboard session jump announces' },
   'src/hooks/useSceneInteraction.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'worlds-scene click announces' },
   'src/hooks/useSessionActions.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot (data.key)' },
+  'src/lib/crewDeepLink.ts': { gesture: 0, announced: 1, keepTarget: 0, plain: 0, reason: 'a crew deep link the hub forwarded opens its session in this pane: a gone chat is announced, and a link from outside is not a gesture in this window' },
   'src/pages/ChatPage.tsx': { gesture: 2, announced: 2, keepTarget: 1, plain: 1, reason: 'flyout row + split-collapse announce; the split-collapse site is a gesture only for a pane\'s open-full click, not the grid collapsing itself; create path keeps target; the plain site is the comment-batch send moving to the tab it targets, which reports its own verdict' },
   'src/pages/ChatSidebar.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'both sites open a LISTED row the way that row\'s own click does, so they announce: the broadcast panel\'s "Not confirmed · open" and a row picked from the creator filter' },
   'src/pages/chat-sidebar/CrewGroups.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'the crew header\'s attention button opens a LISTED row the way that row\'s own click does, so it announces' },
@@ -65,7 +66,7 @@ const PINNED: Record<string, Counts> = {
   'src/pages/chat/usePromoteSlot.ts': { gesture: 0, announced: 1, keepTarget: 0, plain: 0, reason: 'opening the kept copy announces; the copy is a slot the keep just created, not a session the user picked, so it is not a gesture' },
   'src/pages/overview/PromptsTab.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },
   'src/pages/useArtifactDetailPageCompanion.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'in-page nav intent + just-created slot; both self-handle within the page' },
-  'src/pages/useChatPageSlotSwitches.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 5, reason: 'the page\'s own slot-switching flows, each awaited with in-page error UI or on a slot it just created or found: fork, the signed chat link (reconnect + just-linked slot), the follow-up session and the split pane\'s side chat' },
+  'src/pages/useChatPageSlotSwitches.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 6, reason: 'the page\'s own slot-switching flows, each awaited with in-page error UI or on a slot it just created or found: fork, the signed chat link (reconnect + just-linked slot), the follow-up session (its pre-fill and one-click send paths, both on the slot it just created) and the split pane\'s side chat' },
   'src/store/chat/openCreatedSlot.ts': { gesture: 0, announced: 0, keepTarget: 1, plain: 0, reason: 'opens a slot a server route just created, so a 404 is a create/fetch race' },
   'src/store/chatSlice.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'deleteSlot internal fallback navigation; self-handles via unwrap().catch' },
 }

@@ -83,6 +83,12 @@ class ReviewTarget:
 # URLs.
 _GITHUB_HOST = "github.com"
 _WWW_GITHUB_HOST = "www.github.com"
+# GitLab's own hostnames, named for the same reason. They only choose the wording
+# of a refusal: this build has no GitLab adapter, so no GitLab host is accepted.
+_GITLAB_HOSTS = frozenset({"gitlab.com", "www.gitlab.com"})
+# The characters of one label of a domain-shaped SCP remote host.
+_SCP_HOST_LABEL_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
 
 
 def canonical_host(host: str) -> str:
@@ -227,20 +233,76 @@ def link_names_a_host(link: str) -> bool:
     return "." in text.split("/", 1)[0]
 
 
+def _scp_remote_as_url(text: str) -> str:
+    """``git@host:group/repo.git`` -> ``https://host/group/repo.git``; any other
+    text is returned unchanged.
+
+    That is what ``git remote -v`` prints for an SSH remote, and ``urlparse``
+    finds no host in it, so without this a github.com remote is refused like an
+    unknown host. Git reads the SCP form only when no ``/`` comes before the
+    first ``:``; the host must also be domain-shaped (two or more labels of
+    letters, digits and ``-``), so a bare word or a drive letter is never taken
+    for a host. The rewritten URL then goes through the same PARSED-hostname
+    exact match as a typed URL."""
+    if "://" in text or any(ch.isspace() for ch in text):
+        return text
+    prefix, colon, path = text.partition(":")
+    if not colon or not path or "/" in prefix:
+        return text
+    user, at, host = prefix.rpartition("@")
+    if at and (not user or "@" in user):
+        return text
+    labels = host.split(".")
+    if len(labels) < 2 or not all(
+        label and set(label) <= _SCP_HOST_LABEL_CHARS for label in labels
+    ):
+        return text
+    return f"https://{host}/{path.lstrip('/')}"
+
+
+def _is_gitlab_host(host: str) -> bool:
+    """Whether ``host`` is gitlab.com or a self-managed GitLab instance the
+    operator listed in the dashboard's ``dashboard.gitlab_hosts``.
+
+    Only picks a refusal's wording, never admits a host. Reads ``config.json``,
+    so a caller on the event loop offloads the parse that reaches it. The import
+    is lazy and guarded because this module also loads standalone, where
+    ``kiro_crew`` is not importable; there, and on an unreadable config, only
+    gitlab.com is known."""
+    if host in _GITLAB_HOSTS:
+        return True
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        listed = KiroCrewConfig.load().dashboard.gitlab_hosts
+    except Exception:  # standalone, or config unreadable: wording only
+        return False
+    # An entry may carry a port (``host:8443``); a parsed hostname never does.
+    return host in {str(entry).lower().split(":", 1)[0] for entry in listed}
+
+
 def parse_repo_ref(link: str, *, config: dict | None = None) -> tuple[str, str, str]:
     """Parse ``(host, owner, repo)`` from a GitHub REPO URL (no ``/pull/``).
 
     Mirrors ``detect_platform``'s PARSED-hostname allowlist (default-deny,
     SSRF/allowlist guidance) but accepts a bare repo URL like
     ``https://github.com/<owner>/<repo>`` so a batch of that repo's open PRs can
-    be enumerated. Raises ``UnsupportedPlatform`` for a host outside the
-    allowlist (including a malformed URL, which parses to no host) and
-    ``AdapterParseError`` when the owner/repo path segments are missing."""
+    be enumerated. An SCP-style remote (``git@github.com:<owner>/<repo>.git``)
+    is read as its https URL first. Raises ``UnsupportedPlatform`` for a host
+    outside the allowlist (including a malformed URL, which parses to no host),
+    saying so when the host is a known GitLab one, and ``AdapterParseError``
+    when the owner/repo path segments are missing."""
     if not link or not isinstance(link, str):
         raise UnsupportedPlatform("empty or non-string repo link")
-    host, path = _urlparse_host_path(link)
+    host, path = _urlparse_host_path(_scp_remote_as_url(link))
     hosts = allowed_hosts(config)
     if host not in hosts:
+        if host and _is_gitlab_host(host):
+            # Naming the GitHub host list here would point the user at
+            # github_hosts, which can never make a GitLab repo reviewable.
+            raise UnsupportedPlatform(
+                f"{host} is a GitLab host. Code Review Sage reviews GitHub pull "
+                "requests only.")
         raise UnsupportedPlatform(
             f"unsupported repo host: {link!r} "
             f"(expected a repo URL on one of: {', '.join(sorted(hosts))})")

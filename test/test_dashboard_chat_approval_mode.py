@@ -453,7 +453,7 @@ class TestApiChatModeGlobalOverrideScope:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/mode", json={"mode": {}, "slot": "s1"})
 
-        # Not a mode id Crew knows, so it is refused as bad input (RFC enterprise D9).
+        # Not a mode id Crew knows, so it is refused as bad input (RFC LTS D9).
         assert resp.status == 400
 
 

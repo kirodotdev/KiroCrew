@@ -126,7 +126,7 @@ def _derive_step(
     Ordered by what blocks what, so the operator is never sent to a switch that
     cannot help yet. Each branch is a different remedy:
 
-    0. ``policy_off`` — an enterprise build whose policy does not turn tailnet
+    0. ``policy_off`` — an LTS build whose policy does not turn tailnet
        access on (``tailnet.policy_off``). Dead end, ahead of every daemon step.
     1. ``pinned`` — an administrator's ceiling forbids tailnet access. Dead end;
        nothing below is actionable, and offering a toggle would be a lie.

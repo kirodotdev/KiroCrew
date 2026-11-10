@@ -375,7 +375,7 @@ def test_the_shared_state_keeps_its_identity() -> None:
 #: gateway's boot path or close an import cycle, so each stays where the one-module
 #: file had it: inside the function that needs it.
 _LAZY_IMPORTS = {
-    "kiro_crew": "_hist_mod _rs crew_pause model_registry stt",
+    "kiro_crew": "_hist_mod _rs crew_pause crewmate_harness_notice model_registry stt",
     "kiro_crew.agent": "rebuild_agent_config rebuild_agent_config_reporting",
     "kiro_crew.change_card_catalog": "HOOKED_ROUTES",
     "kiro_crew.apps.bridges": "reconcile_enabled_app_resources",
@@ -384,6 +384,7 @@ _LAZY_IMPORTS = {
     ),
     "kiro_crew.apps.builtins": "BUILTIN_NAMES",
     "kiro_crew.apps.manager": "sweep_interrupted_updates",
+    "kiro_crew.apps.builtin_adoption_gate": "adopted_app_own_mcp_servers",
     "kiro_crew.apps.builtin_adoption_pins": "adoption_pin_names",
     "kiro_crew.apps.default_installs": "reconcile_default_installs",
     "kiro_crew.apps.dev_mode": "init_dev_mode_watcher stop_dev_mode_watcher",
@@ -398,16 +399,22 @@ _LAZY_IMPORTS = {
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
     "kiro_crew.connections.endpoint_migration": "migrate_retired_endpoints",
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
-    "kiro_crew.crew_log": "crew_log_emit",
+    "kiro_crew.crew_log": "crew_log_emit _read_budget",
     "kiro_crew.edition_locks": "local_enable_locked relay_selected",
-    "kiro_crew.dashboard": "crew_mode_migration display_verdicts handlers_instances tailnet_direct_listener",
+    "kiro_crew.dashboard": (
+        "chat_trust_restart crew_mode_migration display_verdicts handlers_instances stale_wake "
+        "tailnet_direct_listener"
+    ),
+    "kiro_crew.dashboard.card_send": "card_turn_arrival_middleware card_turn_delegation_middleware",
     "kiro_crew.dashboard.chat": "_run_chat",
+    "kiro_crew.dashboard.chat_utils_injected_rows": "WORKFLOW_FOLLOWUP_KIND",
     "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
     "kiro_crew.relay_client.provider": "publish_gateway_ingress",
-    "kiro_crew.dashboard.enterprise_gate_middleware": (
-        "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
+    "kiro_crew.remote_control.guard": "_uninstall_guard install_for_relay",
+    "kiro_crew.dashboard.lts_gate_middleware": (
+        "lts_gate_middleware_for lts_login_source install_lts_gate"
     ),
-    "kiro_crew.enterprise_boot": "require_kiro_login",
+    "kiro_crew.lts_boot": "require_kiro_login",
     "kiro_crew.dashboard.handlers": "config_pending remote_puller wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.agents": "_remove_member_leftovers",
     "kiro_crew.dashboard.handlers.artifact_download": "register_artifact_download_routes",
@@ -431,8 +438,8 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
     "kiro_crew.dashboard.handlers.webapp_preview": "register_webapp_preview_routes",
     "kiro_crew.dashboard.handlers.workflows": (
-        "api_workflow_author api_workflow_definition_get api_workflow_definition_run "
-        "api_workflow_definition_update api_workflow_definitions "
+        "api_workflow_author api_workflow_definition_get api_workflow_definition_remove "
+        "api_workflow_definition_run api_workflow_definition_update api_workflow_definitions "
         "api_workflow_definitions_create api_workflow_run api_workflow_run_cancel "
         "api_workflow_run_get api_workflow_run_intent api_workflow_run_promote "
         "api_workflow_run_rerun api_workflow_run_update_definition "
@@ -487,7 +494,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 138
+    assert len(expected) == 149
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

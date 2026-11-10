@@ -124,6 +124,25 @@ class TestPlan:
         out = json.loads(_call("get_plan"))
         assert out.get("mood") == "curious"
 
+    @pytest.mark.parametrize("key", ["mood", "narrative", "planner_notes", "needs_replan"])
+    def test_a_null_metadata_field_clears_only_that_field(self, data_dir: Path, key: str) -> None:
+        """The description says "pass null to clear it". The schema refused null
+        for every metadata field, so none of them could be cleared that way."""
+        values = {
+            "mood": "curious",
+            "narrative": "old narrative",
+            "planner_notes": {"silent_until": "2026-08-02T21:00:00Z"},
+            "needs_replan": True,
+        }
+        _call("update_plan", values)
+        out = _call("update_plan", {key: None})
+        assert "update_plan failed" not in out, out
+        plan = json.loads(_call("get_plan"))
+        assert key not in plan
+        assert {k: plan.get(k) for k in values if k != key} == {
+            k: v for k, v in values.items() if k != key
+        }
+
     def test_pet_action_is_queued_for_the_runtime(self, data_dir: Path) -> None:
         """Actions are queued, not executed here — the runtime animates."""
         res = json.loads(_call("perform_pet_action", {"action": "notify", "summary": "hi"}))

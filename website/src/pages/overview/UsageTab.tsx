@@ -148,7 +148,17 @@ export default function UsageTab() {
           <div data-testid="usage-session-refreshing" className="skeleton h-32 rounded" />
         ) : (
           <>
-            {s.refusedTranscripts > 0 && (
+            {/* A session directory that did not load hides an unknown number of
+                chats, so that warning states no count and takes precedence. */}
+            {s.unreadableSessionDirs > 0 ? (
+              <ErrorNotice
+                variant="inline"
+                askAgent
+                className="mb-4"
+                testId="usage-unreadable-session-dirs"
+                message={i18nT('pages.overview.usageTab.unreadable_session_dirs_warning')}
+              />
+            ) : s.refusedTranscripts > 0 && (
               <ErrorNotice
                 variant="inline"
                 askAgent

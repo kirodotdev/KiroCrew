@@ -1729,6 +1729,7 @@ class TestMerge:
                 "session": effective_session_key(chats.fork),
                 "slot": "fork",
                 "title": "",
+                "createdAt": chats.fork._disk_meta_created_at,
                 "after": chats.fork.messages[1]["meta"]["mid"],
                 "through": first["through"],
                 "digest": first["digest"],

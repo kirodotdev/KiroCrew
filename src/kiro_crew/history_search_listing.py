@@ -10,9 +10,10 @@ for the files whose stamp moved.
 :mod:`kiro_crew.history_search` re-exports every name defined here and is the import path
 callers use. A patch of a name defined here through the facade reaches the readers here,
 because the facade forwards the write to every member that binds the name
-(:mod:`kiro_crew._facade_mirror`). ``open`` is not such a name: a patch of it through the
-facade reaches the head scan, which the facade passes in as *scan_head*, and not the
-metadata read here.
+(:mod:`kiro_crew._facade_mirror`). A patch of ``open`` through the facade creates the
+name here too, so it reaches the metadata read here, which also reads a cold untitled
+transcript's head from its own handle, and the path head scan the facade passes in as
+*scan_head*.
 """
 
 from __future__ import annotations
@@ -22,9 +23,14 @@ import os
 import threading
 from collections.abc import Callable
 from datetime import datetime
-from typing import TYPE_CHECKING, NamedTuple
+from typing import IO, TYPE_CHECKING, NamedTuple
 
 from kiro_crew.history_search_query import logger
+from kiro_crew.mrkdwn_title import (
+    is_slack_session_key,
+    slack_title_text,
+    stored_title_is_mrkdwn,
+)
 from kiro_crew.shared_crew.attribution import public_attribution_from_meta
 
 if TYPE_CHECKING:
@@ -35,6 +41,32 @@ _UNREADABLE = object()
 #: ``scan_head`` title for a head whose read raised anything else, such as a JSON line
 #: that is not an object; never cached. It reads the same until the file changes.
 _MALFORMED = object()
+#: :func:`listing_row`'s marker for a head-cache lookup it has not made yet.
+_NOT_LOOKED_UP = object()
+
+#: Longest title the catalog derives from a session's first user message.
+_FALLBACK_TITLE_CHARS = 80
+#: How much of a Slack first message is read to make that title.
+_FALLBACK_SCAN_CHARS = 2000
+
+
+def _catalog_title(key: str, title: str, *, cut: bool) -> str:
+    """*title* as the catalog lists it for session *key*.
+
+    A Slack conversation's text is Slack mrkdwn, so its title is read as plain
+    text first (``mrkdwn_title``) and only then, when *cut*, bounded: cutting
+    first splits a ``<url|label>`` and leaves a raw half-link. Read on every
+    listing rather than rewritten on disk, so a title persisted raw by an earlier
+    build lists cleanly with no migration. Every other session's title is its
+    own words and is only bounded.
+    """
+    if is_slack_session_key(key):
+        # A first message can be long and is read on every listing: only a
+        # bounded head can reach the cut, and a construct the bound opens is
+        # read like any other cut-open one.
+        title = slack_title_text(title[:_FALLBACK_SCAN_CHARS] if cut else title)
+    return title[:_FALLBACK_TITLE_CHARS] if cut else title
+
 
 #: Session files whose stat failed with something other than ENOENT, already
 #: warned about. One such file marks every listing incomplete, which keeps the
@@ -106,8 +138,53 @@ def _apply_metadata(meta: dict, line: dict, key: str) -> None:
     meta["memory_mode"] = line.get("memory_mode", "persistent")
     if line.get("folder_id"):
         meta["folder_id"] = line["folder_id"]
+    if isinstance(line.get("cron_run"), str) and line["cron_run"]:
+        meta["cron_run"] = line["cron_run"]
     _project_crew_fields(meta, line)
     meta["attribution"] = public_attribution_from_meta(line, key=key)
+
+
+def _parse_metadata_line(meta: dict, first_line: str, key: str) -> dict | None:
+    """Apply metadata line *first_line* to *meta*; the ``_meta_cache`` value, else None; may raise."""
+    if not first_line:
+        return None
+    d = json.loads(first_line)
+    if d.get("_type") == "metadata":
+        _apply_metadata(meta, d, key)
+        return d
+    if isinstance(d, dict):
+        # A first line that is an object but not metadata reads as no metadata, the
+        # same ``{}`` that ``_read_metadata`` caches for it, so the next listing
+        # answers from the cache instead of the file.
+        return {}
+    return None
+
+
+def _cached_head(
+    log: "ConversationLog", key: str, identity: object, stat: os.stat_result
+) -> tuple[object, bool | None] | None:
+    """``(title, has_messages)`` for an untitled row from a current cache, else None.
+
+    ``_msg_cache`` answers first, then ``_title_scan_cache``; a miss means the head
+    must be read.
+    """
+    msg_cached = log._msg_cache.get(key)
+    if msg_cached and msg_cached[0] == identity and msg_cached[1] == log._cache_gen(key):
+        # Every parsed message is a non-metadata record; an empty parse does not
+        # prove an empty file, since an unparseable line is content too.
+        for m in msg_cached[2]:
+            if m.get("role") == "user" and m.get("content"):
+                return _catalog_title(key, m["content"], cut=True), True
+        return None, (True if msg_cached[2] else None)
+    scanned = log._title_scan_cache.get(key)
+    if (
+        scanned is not None
+        and scanned[0] == (identity, stat.st_size)
+        and scanned[1] == log._cache_gen(key)
+    ):
+        title, has_messages = scanned[2]
+        return title, has_messages
+    return None
 
 
 def listing_row(
@@ -116,13 +193,18 @@ def listing_row(
     key: str,
     entry: "os.DirEntry[str] | None",
     scan_head: Callable[[str], tuple[object, bool | None]],
+    scan_head_lines: Callable[[IO[str]], tuple[object, bool | None]],
 ) -> ListingRow:
     """The :meth:`ConversationLog.list_sessions` row for the transcript at *path*.
 
     *entry* is the directory entry the caller already holds, or None. *scan_head*
     reads the head of an untitled transcript and returns ``(title, has_messages)``,
     the title being ``_UNREADABLE`` when the read raised an I/O error and
-    ``_MALFORMED`` when it raised anything else.
+    ``_MALFORMED`` when it raised anything else. *scan_head_lines* answers the same
+    from an open handle: when this call reads the metadata line from disk, it reads
+    the head from that handle, so a cold read of an untitled transcript opens the
+    file once. *scan_head* reads the head when the metadata came from the cache or
+    the metadata open raised.
     """
     volatile = False
     reusable = True
@@ -150,40 +232,55 @@ def listing_row(
         "modified": stat.st_mtime,
         "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
     }
+    # The head scan's answer when it was read from the metadata line's open handle.
+    head: tuple[object, bool | None] | None = None
+    # The cached head answer, once looked up; _NOT_LOOKED_UP until then.
+    cached_head: object = _NOT_LOOKED_UP
     cached_meta = log._meta_cache.get(key)
+    # The metadata line the title came from, read for its ``title_origin``.
+    title_line: dict = {}
     if cached_meta and cached_meta[0] == identity and cached_meta[1] == log._cache_gen(key):
         _apply_metadata(meta, cached_meta[2], key)
+        title_line = cached_meta[2]
     else:
-        # Read only the first line for metadata.
+        # Read the first line for metadata and, for an untitled session whose head no
+        # cache answers, the head from the same open handle.
+        fill: dict | None = None
         try:
             with open(path, encoding="utf-8") as f:
-                first_line = f.readline().strip()
-            if first_line:
-                d = json.loads(first_line)
-                if d.get("_type") == "metadata":
-                    _apply_metadata(meta, d, key)
-                    cached = d
-                elif isinstance(d, dict):
-                    # A first line that is an object but not metadata reads as no
-                    # metadata, the same ``{}`` that ``_read_metadata`` caches for it,
-                    # so the next listing answers from the cache instead of the file.
-                    cached = {}
-                else:
-                    cached = None
-                if cached is not None:
-                    # Guarded publish: discard the fill if a write invalidated this
-                    # key inside the stat -> read window (see the generation above).
-                    log._publish_if_current(
-                        log._meta_cache, key, (identity, gen, cached), key=key, gen=gen
-                    )
+                try:
+                    fill = _parse_metadata_line(meta, f.readline().strip(), key)
+                    # The metadata line the title came from, read for its ``title_origin``.
+                    title_line = fill or {}
+                except Exception as exc:
+                    reusable = False
+                    volatile = isinstance(exc, OSError)
+                if "title" not in meta:
+                    cached_head = _cached_head(log, key, identity, stat)
+                    if cached_head is None:
+                        head = scan_head_lines(f)
+            if fill is not None:
+                # After the handle closes: on Windows a writer cannot replace an open file.
+                log._publish_if_current(
+                    log._meta_cache, key, (identity, gen, fill), key=key, gen=gen
+                )
         except Exception as exc:
             # Any failure keeps the scan's listing out of its memo. Only an I/O error
             # is retried by the next indexed listing: a line that does not parse reads
             # the same until the file changes, and a change moves its stamp or, from
             # this process, its generation.
             reusable = False
-            volatile = isinstance(exc, OSError)
+            volatile = volatile or isinstance(exc, OSError)
     meta.setdefault("memory_mode", "persistent")
+    if (
+        "title" in meta
+        and is_slack_session_key(key)
+        and stored_title_is_mrkdwn(meta["title"], title_line.get("title_origin"))
+    ):
+        # A stored title may be one an earlier build wrote raw (often a
+        # cut-open link): listed as plain text, nothing rewritten on disk. A
+        # person's rename and a non-string title are listed as stored.
+        meta["title"] = _catalog_title(key, meta["title"], cut=False)
     # A session with no readable metadata line predates attribution: it reads as the
     # owner's, unless its key is a messaging channel's (Unattributed).
     if "attribution" not in meta:
@@ -191,43 +288,29 @@ def listing_row(
     has_messages: bool | None = None
     if "title" not in meta:
         # The first user message titles an untitled session.
-        msg_cached = log._msg_cache.get(key)
-        if msg_cached and msg_cached[0] == identity and msg_cached[1] == log._cache_gen(key):
-            # Every parsed message is a non-metadata record; an empty parse does not
-            # prove an empty file, since an unparseable line is content too.
-            if msg_cached[2]:
-                has_messages = True
-            for m in msg_cached[2]:
-                if m.get("role") == "user" and m.get("content"):
-                    meta["title"] = m["content"][:80]
-                    break
+        if cached_head is _NOT_LOOKED_UP:
+            cached_head = _cached_head(log, key, identity, stat)
+        if isinstance(cached_head, tuple):
+            title, has_messages = cached_head
         else:
-            scanned = log._title_scan_cache.get(key)
-            if (
-                scanned is not None
-                and scanned[0] == (identity, stat.st_size)
-                and scanned[1] == log._cache_gen(key)
-            ):
-                title, has_messages = scanned[2]
+            title, has_messages = head if head is not None else scan_head(path)
+            if title is _UNREADABLE or title is _MALFORMED:
+                # As for the metadata read above: kept out of the scan's memo, and
+                # retried by the next indexed listing only after an I/O error.
+                reusable = False
+                volatile = volatile or title is _UNREADABLE
+                title = None
             else:
-                title, has_messages = scan_head(path)
-                if title is _UNREADABLE or title is _MALFORMED:
-                    # As for the metadata read above: kept out of the scan's memo, and
-                    # retried by the next indexed listing only after an I/O error.
-                    reusable = False
-                    volatile = volatile or title is _UNREADABLE
-                    title = None
-                else:
-                    # Guarded like the metadata fill above.
-                    log._publish_if_current(
-                        log._title_scan_cache,
-                        key,
-                        ((identity, stat.st_size), gen, (title, has_messages)),
-                        key=key,
-                        gen=gen,
-                    )
-            if title is not None:
-                meta["title"] = title
+                # Guarded like the metadata fill above.
+                log._publish_if_current(
+                    log._title_scan_cache,
+                    key,
+                    ((identity, stat.st_size), gen, (title, has_messages)),
+                    key=key,
+                    gen=gen,
+                )
+        if title is not None:
+            meta["title"] = title
     if "title" not in meta:
         meta["title"] = key
     return ListingRow("row", meta, volatile, stat, has_messages, reusable)

@@ -576,6 +576,7 @@ class TestHookGateKwargs:
             "classifier_only",
             "trust_reads",
             "deny_waivers",
+            "pre_tool_hooks_fire",
         }
     )
 
@@ -592,8 +593,10 @@ class TestHookGateKwargs:
         "mcp_tool_name": "tool_name",
         "mcp_identity_trusted": "mcp_identity_trusted",
         "mcp_identity_unreadable": "mcp_identity_unreadable",
+        "mcp_identity_unreadable_reason": "mcp_identity_unreadable_reason",
         "kas_builtin_ids": "kas_builtin_ids",
         "spec_granted_builtins": "spec_granted_builtins",
+        "spec_hook_held": "spec_hook_held",
         "spec_granted_commands": "spec_granted_commands",
         "spec_shell_allowlist": "spec_shell_allowlist",
         "spec_write_allowlist": "spec_write_allowlist",
@@ -601,6 +604,7 @@ class TestHookGateKwargs:
         "spec_denied_grant": "spec_denied_grant",
         "spec_shell_readonly": "spec_shell_readonly",
         "spec_granted_paths": "spec_granted_paths",
+        "spec_granted_read_paths": "spec_granted_read_paths",
         "harness_builtin_tool": "harness_builtin_tool",
         "deepseek_tool_name": "deepseek_tool_name",
         "spawn_target": "spawn_target",
@@ -625,8 +629,10 @@ class TestHookGateKwargs:
             tool_name="execute_bash",
             mcp_identity_trusted=True,
             mcp_identity_unreadable=True,
+            mcp_identity_unreadable_reason="server_mismatch",
             kas_builtin_ids=True,
             spec_granted_builtins=frozenset({"execute_bash"}),
+            spec_hook_held=frozenset({"@ops/execute_bash"}),
             spec_granted_commands=("git status",),
             spec_shell_allowlist=("git log",),
             spec_write_allowlist=("/w/out",),
@@ -634,6 +640,7 @@ class TestHookGateKwargs:
             spec_denied_grant=_denied_grant(),
             spec_shell_readonly=True,
             spec_granted_paths=("/w/out/**",),
+            spec_granted_read_paths=("/w/docs/**",),
             harness_builtin_tool="web_fetch",
             deepseek_tool_name="read",
             spawn_target="helper",
@@ -649,8 +656,10 @@ class TestHookGateKwargs:
             "mcp_tool_name": "execute_bash",
             "mcp_identity_trusted": True,
             "mcp_identity_unreadable": True,
+            "mcp_identity_unreadable_reason": "server_mismatch",
             "kas_builtin_ids": True,
             "spec_granted_builtins": frozenset({"execute_bash"}),
+            "spec_hook_held": frozenset({"@ops/execute_bash"}),
             "spec_granted_commands": ("git status",),
             "spec_shell_allowlist": ("git log",),
             "spec_write_allowlist": ("/w/out",),
@@ -658,6 +667,7 @@ class TestHookGateKwargs:
             "spec_denied_grant": _denied_grant(),
             "spec_shell_readonly": True,
             "spec_granted_paths": ("/w/out/**",),
+            "spec_granted_read_paths": ("/w/docs/**",),
             "harness_builtin_tool": "web_fetch",
             "deepseek_tool_name": "read",
             "spawn_target": "helper",
@@ -686,8 +696,10 @@ class TestHookGateKwargs:
             "mcp_tool_name": "",
             "mcp_identity_trusted": False,
             "mcp_identity_unreadable": False,
+            "mcp_identity_unreadable_reason": "",
             "kas_builtin_ids": False,
             "spec_granted_builtins": frozenset(),
+            "spec_hook_held": frozenset(),
             "spec_granted_commands": (),
             "spec_shell_allowlist": None,
             "spec_write_allowlist": None,
@@ -695,6 +707,7 @@ class TestHookGateKwargs:
             "spec_denied_grant": None,
             "spec_shell_readonly": False,
             "spec_granted_paths": (),
+            "spec_granted_read_paths": (),
             "harness_builtin_tool": "",
             "deepseek_tool_name": "",
             "spawn_target": "",
@@ -792,6 +805,7 @@ class TestHookGateKwargs:
         probe.mcp_identity_unreadable = True
         probe.kas_builtin_ids = True
         probe.spec_granted_builtins = frozenset({"<spec_granted_builtins>"})
+        probe.spec_hook_held = frozenset({"<spec_hook_held>"})
         probe.spec_granted_commands = ("<spec_granted_commands>",)
         probe.spec_shell_allowlist = ("<spec_shell_allowlist>",)
         probe.spec_write_allowlist = ("<spec_write_allowlist>",)
@@ -799,6 +813,7 @@ class TestHookGateKwargs:
         probe.spec_denied_grant = _denied_grant()
         probe.spec_shell_readonly = True
         probe.spec_granted_paths = ("<spec_granted_paths>",)
+        probe.spec_granted_read_paths = ("<spec_granted_read_paths>",)
         call = ToolCall.from_event(probe)
         blank = ToolCall(title="")
         unfilled = [
@@ -827,13 +842,14 @@ class TestHookGateKwargs:
                 "spec_shell_readonly",
             ):
                 assert got[kwarg] is True
-            elif kwarg == "spec_granted_builtins":
+            elif kwarg in ("spec_granted_builtins", "spec_hook_held"):
                 assert got[kwarg] == frozenset({f"<{attr}>"})
             elif kwarg in (
                 "spec_granted_commands",
                 "spec_shell_allowlist",
                 "spec_write_allowlist",
                 "spec_granted_paths",
+                "spec_granted_read_paths",
             ):
                 assert got[kwarg] == (f"<{attr}>",)
             elif kwarg == "spec_denied_grant":
@@ -874,6 +890,7 @@ class TestHookGateKwargs:
             "classifier_only": True,
             "trust_reads": True,
             "deny_waivers": frozenset({"<key>"}),
+            "pre_tool_hooks_fire": True,
         }
         HookManager().on_tool_call(
             probe.title, resolved_agent="kirocrew", **surface, **hook_gate_kwargs(probe)

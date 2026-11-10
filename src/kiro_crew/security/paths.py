@@ -831,6 +831,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         host_auth,
         native_allow_stores,
     )
+    from kiro_crew.apps import credential_masks  # noqa: F401
     from kiro_crew.executors import (  # noqa: F401
         path_resolve_executor,
     )

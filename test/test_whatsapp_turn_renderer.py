@@ -149,6 +149,32 @@ class TestSilenceSentinel:
         assert len(transport.sent) == 1
         assert not r.suppressed
 
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            f"<thinking>the rules say stay quiet</thinking>{SILENCE_SENTINEL}",
+            f"`{SILENCE_SENTINEL}`",
+            f"**{SILENCE_SENTINEL}**",
+            f"~~{SILENCE_SENTINEL}~~",
+            f"{SILENCE_SENTINEL}.",
+        ],
+    )
+    async def test_a_wrapped_sentinel_is_still_silence(self, reply):
+        r, transport, _ = make(unprompted=True)
+        await r.on_turn_start()
+        await r.on_text_chunk(reply)
+        await r.on_done()
+        assert transport.sent == []
+        assert r.suppressed is True
+
+    async def test_an_answer_that_mentions_the_sentinel_is_delivered(self):
+        r, transport, _ = make(unprompted=True)
+        await r.on_turn_start()
+        await r.on_text_chunk(f"I would normally say {SILENCE_SENTINEL} here, but: 42.")
+        await r.on_done()
+        assert len(transport.sent) == 1
+        assert not r.suppressed
+
     async def test_prompted_turn_never_suppresses_sentinel_text(self):
         r, transport, _ = make(unprompted=False)
         await r.on_turn_start()
@@ -339,6 +365,36 @@ class TestDisplaySafety:
         await r.on_done()
         assert transport.images, "the picture should have been sent"
         assert KEY not in shown(transport.images[-1][2])
+
+    async def test_a_failed_image_upload_is_named_with_a_reason(self, monkeypatch):
+        """The "Not sent" line must say why, not end on a bare colon."""
+        from kiro_crew.messaging.outbound_files import OutboundFile
+        from kiro_crew.whatsapp import turn_renderer as module
+        from kiro_crew.whatsapp.files import UploadPlan
+
+        async def fake_plan(text, *, within_root, scratch_root=""):
+            return UploadPlan(
+                text="",
+                files=[OutboundFile(path="/tmp/c.png", data=b"x", alt="", mime="image/png")],
+            )
+
+        monkeypatch.setattr(module, "plan_uploads_off_loop", fake_plan)
+        caps = TransportCapabilities(max_message_chars=4096, max_buttons=0, files_outbound=True)
+        transport, client = FakeTransport(), FakeClient()
+
+        async def failed_upload(*_args, **_kwargs):
+            raise RuntimeError("wire error")
+
+        transport.send_image = failed_upload
+        r = WhatsAppRenderer(
+            transport, client, "c@s.whatsapp.net", caps, upload_root=lambda: host_abs("tmp")
+        )
+        await r.on_turn_start()
+        await r.on_text_chunk("here is the chart")
+        await r.on_done()
+        note = transport.sent[-1][1]
+        assert "c.png" in note
+        assert "the upload to WhatsApp failed" in note
 
     async def test_the_prompt_names_the_tool_the_request_asks_about(self):
         """A permission is not always preceded by its own titled tool call, so a

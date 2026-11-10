@@ -7,7 +7,7 @@ triggers: kirocrew worktree, kirocrew main clone sync, kirocrew build gate, kiro
 # Kiro Crew worktree development
 
 This skill applies ONLY to the Kiro Crew source repository or a worktree of it.
-Ignore it for other projects. One feature uses one dedicated worktree containing
+One feature uses one dedicated worktree containing
 both `src/kiro_crew/` and `website/`, including backend-only changes.
 Never edit the live checkout or start/stop the live gateway from a feature session.
 
@@ -17,6 +17,7 @@ Never edit the live checkout or start/stop the live gateway from a feature sessi
 # From the main clone; skip creation when already in the assigned worktree.
 git fetch origin main
 git worktree add ../kirocrew-wt-<name> -b feat/<name> origin/main
+# A pod worktree never goes under $KIROCREW_SCRATCH: pod_up can't see it.
 cd ../kirocrew-wt-<name>
 python3 -m venv .venv
 .venv/bin/pip install -e ".[voice]" --group dev
@@ -109,7 +110,7 @@ cd ..
 - A bare `python -m pytest` (the full suite, for a human who wants it) uses
   `setup.cfg`'s `-n auto --dist loadgroup` and `--max-worker-restart=2`. Keep
   grouping for `xdist_group` serialization. The root conftest budgets workers by
-  free memory and concurrent runs; explicit `-n <N>` bypasses it. Check host
+  free memory and concurrent runs; explicit `-n <N>` only shares slots. Check host
   headroom before a full suite. The gate scripts pass their own bounded `-n`.
   A scoped subagent may use serial targeted tests; the parent owns aggregate gates.
 - Coverage is off by default (`setup.cfg` addopts carries no `--cov`), so no

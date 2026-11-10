@@ -253,6 +253,20 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("remoteCrewSetupAPI", {
   start: () => ipcRenderer.invoke("first-run:use-remote-crew"),
 });
 
+// Remote Crew panes reached through the app's managed SSH forward. Each pane
+// loads a port the crew's gateway opened on its own machine, so in client-only
+// mode the app's keeper must carry that port too. `forwardPorts` names the
+// pane ports this window shows and resolves {port: "up" | "down"} once each
+// has been tried, or null where the app keeps no forward. Exposed to a remote
+// gateway's window too, which is the one that needs it; the main process
+// admits only the launch port's dashboard. Absent in plain browsers.
+contextBridge.exposeInMainWorld("remoteCrewPaneAPI", {
+  forwardPorts: (ports) => ipcRenderer.invoke(
+    "remote-crew:forward-pane-ports",
+    Array.isArray(ports) ? ports.slice(0, 64).map(Number) : [],
+  ),
+});
+
 // Crash-artifact notice for the dashboard banner (CrashReportNotice).
 //
 // The app already captures a minidump and, on macOS, the OS writes an .ips

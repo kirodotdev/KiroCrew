@@ -177,7 +177,7 @@ When all true: agent posts the DoD checklist with ticks, calls `autonudge_stop(r
 
 | Failure | Mitigation (REQUIRED) |
 |---|---|
-| **Context-window overflow after ~100 cycles** (each nudge+reply adds ~170 B; session SIGTERMs at `ContentWindowOverflow`) | `max_cycles: 30` per arming. Re-arm manually for more. |
+| **Context-window overflow after ~100 cycles** (each nudge+reply adds ~170 B; session SIGTERMs at `ContentWindowOverflow`) | A loop that wakes every interval (`gate=false`, UI or REST timer): `max_cycles: 30` per arming; re-arm manually for more. A gated `monitor_start` loop takes no cap: a quiet tick adds no turn. |
 | **STOP file does not stop before delivery** when no service sentinel was configured | UI arming has no stop-file input, but the service gives the loop its own default stop file; put `{{STOP_FILE}}` in the nudge so the loop knows that path, and still check it in the nudge and call `autonudge_stop`. Raw REST callers may set `stop_sentinel_path` to a custom path. |
 | **Credential-file leak** via urllib `ValueError` echoing raw cookie-jar contents (e.g. `~/.config/<app>/credentials`) into transcripts | Use `http.cookiejar.MozillaCookieJar(path).load()` + urllib opener, OR `curl -b <cookie-jar>`. Scrub auth-path exceptions to `type(e).__name__` only. |
 
@@ -242,7 +242,7 @@ Before clicking 🎯 "Set a goal" → the Play icon button ("Start loop"):
 - [ ] Anchor doc (`LOOP.md`) exists with a Definition of Done section. (Run `scaffold.sh` in this skill dir to generate a hardened template in one command.)
 - [ ] STOP sentinel absent: `ls <STOP_PATH>` says "No such file".
 - [ ] Popover fields: Goal description (the nudge, from the template), Seconds between nudges `60`, and a finite Max cycles such as 30. The popover has no stop-file input; the service assigns a default stop file, which `{{STOP_FILE}}` in the nudge names. The nudge itself must still check its stop path and call `autonudge_stop`.
-- [ ] If arming with `monitor_start`, set positive finite `max_cycles` and `max_runtime_secs`; use `monitor_update` rather than a second arm when the instruction changes.
+- [ ] If arming a gated `monitor_start` loop, leave `max_cycles` and `max_runtime_secs` unset (no cycle cap; the runtime defaults to the 7-day `monitoring.max_runtime_secs` ceiling). With `gate=false`, keep a finite `max_cycles`. Use `monitor_update` rather than a second arm when the instruction changes.
 - [ ] If a human is arming via REST, keep the dashboard token in their private terminal and optionally set `stop_sentinel_path`; agents must not read local-secret or cookie files.
 - [ ] If the loop touches authenticated APIs, the user must establish or refresh access through the supported client; never copy credential contents into the nudge or transcript.
 
@@ -256,5 +256,5 @@ Before clicking 🎯 "Set a goal" → the Play icon button ("Start loop"):
 6. Test execution lives in a sandbox — never in the local workspace for ops that touch live systems.
 7. One cycle, one step. Compound cycles build features.
 8. Human approval required for Done. Loop only moves cards to Review.
-9. `max_cycles: 30` cap every arming — this recipe's own recommendation, not a code default (`monitor_start` defaults to 24, the raw surface to 0 = unlimited). Re-arm manually for more.
-10. Every nudge checks an explicit halt condition and calls `autonudge_stop`; UI and REST arming get a default `stop_sentinel_path`, and only raw REST arming can set a custom one.
+9. `max_cycles: 30` cap every arming that wakes every interval — this recipe's own recommendation, not a code default (`monitor_start` sets no cap on a gated loop and 24 otherwise; the raw surface defaults to 0 = unlimited). Re-arm manually for more.
+10. Every nudge checks an explicit halt condition against live state; when it holds, the loop first sends ONE final report, then calls `autonudge_stop` in a later step; UI and REST arming get a default `stop_sentinel_path`, and only raw REST arming can set a custom one.

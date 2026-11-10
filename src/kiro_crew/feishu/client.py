@@ -219,6 +219,15 @@ def _post_body(content: dict[str, Any]) -> tuple[str, list[tuple[Attachment, str
     ``@_user_N`` placeholder, so mentions and commands read as in a plain
     message. ``img`` and ``media`` nodes become resource references; emoji and
     rules carry nothing to read.
+
+    A file attached alongside the text does NOT ride in ``content`` -- Feishu
+    puts it in a top-level ``files`` array that the published content reference
+    omits. Each entry that is a dict with a key becomes the same ``file``
+    resource a single-file message does, so it runs the identical gates, limits
+    and download path; a folder entry has no key the resource API can fetch, so
+    it is named as unreadable in the same ``[Attachment <name> — <reason>]``
+    line ``ingest_attachments`` uses for a rejection rather than dropped in
+    silence.
     """
     lines = [str(content.get("title") or "")]
     files: list[tuple[Attachment, str]] = []
@@ -241,6 +250,14 @@ def _post_body(content: dict[str, Any]) -> tuple[str, list[tuple[Attachment, str
             elif tag == "media":
                 files += _resource("media", node)
         lines.append("".join(parts))
+    for entry in content.get("files") or ():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("is_folder"):
+            name = str(entry.get("file_name") or "folder")
+            lines.append(f"[Attachment {name} — a folder cannot be fetched here]")
+        else:
+            files += _resource("file", entry)
     return "\n".join(lines).strip(), files
 
 

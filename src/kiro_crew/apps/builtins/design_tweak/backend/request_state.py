@@ -410,6 +410,10 @@ def project_for_preview(runtime: Any, preview_url: str) -> tuple[JsonObject | No
         relative = url[marker_at + len(marker) :]
 
     relative = relative.split("?")[0].split("#")[0]
+    # The static handler serves the URL-decoded path, so the source file must be
+    # decoded the same way or `my%20page.html` names a file that does not exist.
+    # Encoded traversal still reaches `_contained_source`, which refuses it.
+    relative = runtime.unquote(relative)
     project_id = relative.split("/", 1)[0] if relative else ""
     rest = relative.split("/", 1)[1] if "/" in relative else ""
     project = next(

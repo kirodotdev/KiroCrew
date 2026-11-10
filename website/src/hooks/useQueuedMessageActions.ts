@@ -4,6 +4,7 @@ import { useAppDispatch } from '../store'
 import { cancelQueuedMessage, editQueuedMessage, queueEntryAttachments } from '../store/chatSlice'
 import { restoreQueuedContent } from '../utils/fileTokens'
 import { quoteBlock, readMessageQuote, stripQuoteBlock, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { markDictated } from '../chat-core/composer/dictationProvenance'
 import type { ChatMessage } from '../types'
 import type { PasteBlock } from '../utils/pasteTokens'
 
@@ -28,6 +29,9 @@ export interface QueuedSendRecord {
    *  so a cancel puts it back as a staged card rather than leaving its `>` block
    *  in the restored text -- or, without a stash hit, losing it (fork GPT review). */
   quote?: MessageQuote
+  /** The composer text held dictated words (`dictationProvenance`), so a cancel
+   *  that restores `raw` puts the record back with it. */
+  dictated?: boolean
 }
 
 /** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
@@ -101,6 +105,9 @@ export interface QueuedMessageActionsOptions {
    *  composer revives a chip for when the mention is deleted and undone.
    *  Omitted, the parser uses the shortest unambiguous suffix. */
   project?: () => string | undefined
+  /** The host composer's dictation scope (`dictationProvenance`), so a
+   *  cancelled dictated card marks the composer it goes back into. */
+  dictationScope?: string
 }
 
 const queueIdOf = (m: ChatMessage): string | undefined => m.meta?.queueId as string | undefined
@@ -134,6 +141,7 @@ export function useQueuedMessageActions({
   restoreDraft,
   stagedFiles,
   project,
+  dictationScope,
 }: QueuedMessageActionsOptions): QueuedMessageActions {
   const dispatch = useAppDispatch()
   const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set())
@@ -151,6 +159,8 @@ export function useQueuedMessageActions({
   stagedFilesRef.current = stagedFiles
   const projectRef = useRef(project)
   projectRef.current = project
+  const dictationScopeRef = useRef(dictationScope)
+  dictationScopeRef.current = dictationScope
 
   const markPending = useCallback((queueId: string, pending: boolean) => {
     setPendingIds(prev => {
@@ -241,20 +251,27 @@ export function useQueuedMessageActions({
       const stashed = queuedSendStash.get(queueId)
       if (stashed) queuedSendStash.delete(queueId)
       const hit = stashed && stashed.sent === msg.content
+      // A stash hit restores `raw`, which never carried the dictation note, and
+      // says whether its words were dictated, so the provenance goes back with
+      // it. Without a stash nothing records that, and the card's text is
+      // restored as it stands: a dictation note in it stays visible rather than
+      // being guessed at, since the same words could be ones the user typed.
+      if (hit && stashed.dictated) markDictated(slot, dictationScopeRef.current)
+      const content = msg.content
       // Without a stash hit the row's own `meta.quote` (the gateway carries
       // it on the entry) is the quote, and its block comes off the head of
       // the parsed text so the host restages a card, not raw `>` lines.
       // Accepted only while its block still opens the text: a record the
       // row kept past an edit that deleted the block is not restaged.
       const rowMetaQuote = hit ? null : readMessageQuote(msg.meta as Record<string, unknown> | undefined)
-      const rowQuote = rowMetaQuote && msg.content.startsWith(quoteBlock(rowMetaQuote)) ? rowMetaQuote : undefined
+      const rowQuote = rowMetaQuote && content.startsWith(quoteBlock(rowMetaQuote)) ? rowMetaQuote : undefined
       // The block comes off BEFORE the parse: the parser's producer-block
       // patterns are anchored at offset 0, so a quote on the head would hide
       // an image block behind it and the file would restore as literal text.
       const parsed = hit
         ? { text: stashed.raw, files: stashed.files, aliases: stashed.aliases }
         : restoreQueuedContent(
-          rowQuote ? stripQuoteBlock(msg.content, rowQuote) : msg.content,
+          rowQuote ? stripQuoteBlock(content, rowQuote) : content,
           queueEntryAttachments(msg.meta).files,
           stagedFilesRef.current?.(),
           projectRef.current?.(),

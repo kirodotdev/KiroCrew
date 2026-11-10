@@ -14,7 +14,10 @@ The gateway process has no such wall: it is the process the sandbox launcher is 
 CHILD of, so it holds the host namespace and the host bus. These routes are the
 gateway doing the systemd part on the agent's behalf. The agent reaches them the
 way it reaches every other tool -- an MCP call over the stdio pipe, then loopback
-HTTP to the gateway -- and no D-Bus passthrough into the sandbox is needed.
+HTTP to the gateway -- and no D-Bus passthrough into the sandbox is needed. The pod
+tools this app declares in ``app.json`` run each verb's ``pod_*_response`` through
+the one gateway route ``agent_tools.py`` registers; the routes below serve the same
+verbs over HTTP.
 
 WHY THESE ROUTES AND NOT THE APP BACKEND'S EXISTING ONES
 --------------------------------------------------------
@@ -148,23 +151,31 @@ def _require_enabled(
 
     @wraps(handler)
     async def _wrapped(request: web.Request) -> web.Response:
-        if not await asyncio.to_thread(host_exec_granted, APP_NAME):
-            return web.json_response(
-                {
-                    "ok": False,
-                    "code": "app_not_enabled",
-                    "error": (
-                        "dev-fleet is not enabled. Turn the Dev Fleet app on in the "
-                        "dashboard App Store before using the pod tools. (If it was "
-                        "enabled before this version, re-enable it once so the "
-                        "host-exec grant is recorded.)"
-                    ),
-                },
-                status=403,
-            )
+        refusal = await enabled_refusal()
+        if refusal is not None:
+            return refusal
         return await handler(request)
 
     return _wrapped
+
+
+async def enabled_refusal() -> web.Response | None:
+    """The 403 :func:`_require_enabled` answers without a host-exec grant, or None."""
+    if await asyncio.to_thread(host_exec_granted, APP_NAME):
+        return None
+    return web.json_response(
+        {
+            "ok": False,
+            "code": "app_not_enabled",
+            "error": (
+                "dev-fleet is not enabled. Turn the Dev Fleet app on in the "
+                "dashboard App Store before using the pod tools. (If it was "
+                "enabled before this version, re-enable it once so the "
+                "host-exec grant is recorded.)"
+            ),
+        },
+        status=403,
+    )
 
 
 def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
@@ -348,6 +359,11 @@ async def handle_pod_up(request: web.Request) -> web.Response:
     body, err = await _body(request)
     if err is not None:
         return err
+    return await pod_up_response(body)
+
+
+async def pod_up_response(body: dict[str, Any]) -> web.Response:
+    """What ``POST pod/up`` answers for *body*, past its caller and enablement gates."""
     name, err = _clean_name(body.get("worktree"))
     if err is not None:
         return err
@@ -383,6 +399,11 @@ async def handle_pod_restart(request: web.Request) -> web.Response:
     body, err = await _body(request)
     if err is not None:
         return err
+    return await pod_restart_response(body)
+
+
+async def pod_restart_response(body: dict[str, Any]) -> web.Response:
+    """What ``POST pod/restart`` answers for *body*, past its caller and enablement gates."""
     name, err = _clean_name(body.get("worktree"))
     if err is not None:
         return err
@@ -430,6 +451,11 @@ async def handle_pod_down(request: web.Request) -> web.Response:
     body, err = await _body(request)
     if err is not None:
         return err
+    return await pod_down_response(body)
+
+
+async def pod_down_response(body: dict[str, Any]) -> web.Response:
+    """What ``POST pod/down`` answers for *body*, past its caller and enablement gates."""
     name, err = _clean_name(body.get("worktree"))
     if err is not None:
         return err
@@ -454,7 +480,12 @@ async def handle_pod_down(request: web.Request) -> web.Response:
 @_require_enabled
 async def handle_pod_status(request: web.Request) -> web.Response:
     """GET /api/apps/dev-fleet/pod/status?worktree=<name> -- one pod's state."""
-    name, err = _clean_name(request.query.get("worktree"))
+    return await pod_status_response(request.query.get("worktree"))
+
+
+async def pod_status_response(worktree: Any) -> web.Response:
+    """What ``GET pod/status`` answers for *worktree*, past its caller and enablement gates."""
+    name, err = _clean_name(worktree)
     if err is not None:
         return err
     result = await _run_op(functools.partial(_ops()._pod_status, name))
@@ -472,6 +503,11 @@ async def handle_pod_status(request: web.Request) -> web.Response:
 @_require_enabled
 async def handle_pod_list(request: web.Request) -> web.Response:
     """GET /api/apps/dev-fleet/pod/list -- every pod active on this host."""
+    return await pod_list_response()
+
+
+async def pod_list_response() -> web.Response:
+    """What ``GET pod/list`` answers, past its caller and enablement gates."""
     result = await _run_op(_ops()._pod_ls)
     refusal = _repo_refusal(result)
     if refusal is not None:

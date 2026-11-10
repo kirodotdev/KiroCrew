@@ -114,9 +114,7 @@ def can_inherit_skills(spec: dict[str, Any]) -> bool:
 #: Whether a mapped crewmate conductor's skills ADD the user's ``~/.kiro/skills`` and
 #: workspace ``.kiro/skills``. A one-release deprecation: the intended scope is the
 #: mapping alone (``docs/decisions/``, "conductors stay simple"), and the next
-#: release sets this to ``False`` and removes it. While it is on, a new crewmate
-#: chat that inherits a skill shows one notice naming the change
-#: (``mate_conductor_inherited_skills``).
+#: release sets this to ``False`` and removes it.
 MATE_CONDUCTOR_INHERITS_USER_SKILLS = True
 
 
@@ -146,24 +144,6 @@ def mate_conductor_scope(
     ):
         return globs
     return list(dict.fromkeys([*globs, *inherited_skill_globs(project_dir)]))
-
-
-def mate_conductor_inherited_skills(project_dir: str | Path | None) -> list[str]:
-    """The skill names the crewmate conductor takes from the user's trees, or ``[]``.
-
-    Read through :func:`agent_skill_globs`, so it is empty whenever the conductor
-    inherits nothing: the flag above is off, its spec maps no skill, or it may not
-    inherit. A name is the folder that holds a ``SKILL.md`` in an inherited tree.
-    """
-    import glob
-
-    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
-
-    if not MATE_CONDUCTOR_INHERITS_USER_SKILLS:
-        return []
-    scope = agent_skill_globs(MATE_CONDUCTOR_AGENT, project_dir=project_dir)
-    inherited = [g for g in inherited_skill_globs(project_dir) if g in scope]
-    return sorted({Path(m).parent.name for g in inherited for m in glob.glob(g)})
 
 
 def inherited_skill_globs(

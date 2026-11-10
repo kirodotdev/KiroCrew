@@ -82,6 +82,17 @@ describe('OverviewView', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
   })
 
+  it('shows a failed refresh in an error notice, above the cached numbers', () => {
+    const { rerender } = render(<OverviewView />)
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    setContext({ issuesError: new Error('GitHub API returned 502') })
+    rerender(<OverviewView />)
+    expect(screen.getByRole('alert')).toHaveTextContent('GitHub API returned 502')
+    // The cached tiles stay, so the notice is what says they may be old.
+    expect(screen.getByText('Open issues')).toBeInTheDocument()
+  })
+
   it('names the disabled refresh button for the refresh in flight, then restores it', () => {
     // A disabled "Refresh issues" reads as unavailable; while a refresh runs the
     // name and tooltip say it is busy instead.

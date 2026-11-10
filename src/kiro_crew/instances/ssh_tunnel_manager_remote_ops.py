@@ -124,6 +124,7 @@ async def diagnose(self: SshTunnelManager, instance_id: str) -> dict | None:
             aws_profile=inst.aws_profile,
             aws_region=inst.aws_region,
             ssm_run_as=inst.ssm_run_as,
+            remote_bin=inst.remote_bin,
         )
     elif method not in CONNECTION_METHODS:
         # Nothing to probe: this build has no transport for the method, and
@@ -367,7 +368,8 @@ async def _update_then_restart(
     after its restart, so the outcome is read from the crew's own
     ``/api/version`` once it is back: a different version than before is
     ``succeeded``, the same one is ``unchanged``, and no answer within
-    :data:`REMOTE_UPDATE_VERIFY_SECS` is ``unverified``.
+    :data:`REMOTE_UPDATE_VERIFY_SECS` is ``unverified``. So is any answer
+    when the version before the update could not be read.
     """
     iid = inst.id
     job.version_before = await self._peer_version(iid)
@@ -396,7 +398,9 @@ async def _update_then_restart(
         return
     job.advance(PHASE_VERIFYING)
     after = await self._await_peer_version_change(iid, job.version_before)
-    if not after:
+    # No version from before the update: any answer differs from "", so it
+    # cannot show the crew changed. That is unverified, not a success.
+    if not after or not job.version_before:
         outcome = STATE_UNVERIFIED
     elif job.version_before and after == job.version_before:
         outcome = STATE_UNCHANGED

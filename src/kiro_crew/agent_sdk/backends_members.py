@@ -497,3 +497,33 @@ ACP_BACKENDS_MEMBER_PANEL = frozenset(
         ACP_BACKEND_PI,
     }
 )
+
+
+def crewmate_inherited_backend(main_backend: str) -> tuple[str, bool]:
+    """The backend a Crew bot inherits from ``agent.acp_backend``, and whether it fell back.
+
+    *main_backend* is the resolved ``agent.acp_backend`` runtime id. A Crew bot with no
+    pin of its own and no stored ``agent.member_acp_backend`` runs on it when it can:
+    a Crew bot needs a saved spec (``ACP_BACKENDS_MEMBER_CAPABILITIES``), its
+    per-session dispatch tools (``ACP_BACKENDS_MEMBER_DISPATCH``), and, because its
+    workers run on the same backend, the worker kit (``ACP_BACKENDS_MATE_WORKER_KIT``,
+    which ``mate_worker.worker_kit_backend_refusal`` enforces). A backend outside any
+    of them cannot carry one, so the Crew bot runs on KAS instead, with the second
+    value ``True`` so the caller logs and shows why (harness-parity H3). The
+    worker-kit check is what keeps an inherited pi or deepseek from refusing
+    every worker the Crew bot opens. Kiro CLI reads as KAS, as a
+    stored ``member_acp_backend`` of ``kiro`` does: KAS is the Kiro backend that
+    carries the dispatch tools. That is a remap, not a fallback.
+
+    No new grant: membership is the existing sets, unchanged. An explicit pick
+    (a pin, a stored ``member_acp_backend``) is never judged here.
+    """
+    if main_backend == ACP_BACKEND_KIRO:
+        return ACP_BACKEND_KAS, False
+    if (
+        main_backend in ACP_BACKENDS_MEMBER_CAPABILITIES
+        and main_backend in ACP_BACKENDS_MEMBER_DISPATCH
+        and main_backend in ACP_BACKENDS_MATE_WORKER_KIT
+    ):
+        return main_backend, False
+    return ACP_BACKEND_KAS, True

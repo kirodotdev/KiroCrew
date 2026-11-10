@@ -108,6 +108,20 @@ describe('AboutPanel gateway channel switcher', () => {
     expect(within(switcher).queryByTitle('Nightly')).toBeNull()
   })
 
+  it('shows the LTS lane read-only, with no switcher', async () => {
+    // RFC LTS edition D11: the backend holds an LTS build on lts
+    // and refuses every switch, so a control offering stable or insider would
+    // only fail.
+    stubFetch()
+    seedStatus({ update_channel: 'lts' })
+    mountWeb()
+
+    const row = await screen.findByTestId('gateway-channel-locked')
+    // A translated label, not the raw id.
+    expect(row.textContent).toContain('LTS (long-term support)')
+    expect(screen.queryByTestId('gateway-channel-switcher')).toBeNull()
+  })
+
   it('keeps nightly on screen for an install already following it, as an exit', async () => {
     // A two-segment control whose value is `nightly` matches nothing and shows
     // no indicator at all -- the user could not tell which lane they are on.

@@ -26,6 +26,7 @@ import socket
 import subprocess
 import sys
 import urllib.parse
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -876,3 +877,61 @@ class TestRepoUrlSegmentsAreBoundedInWidth:
         assert pattern.match(widest) is not None
         assert pattern.match(f"{widest}\n") is None
         assert pattern.fullmatch(f"{widest}\n") is None
+
+
+# ── agent-writable containment vs Windows' extended-length prefix ────────────
+
+_EXT = "\\\\?\\"
+_REAL_AGENT_WRITABLE_ROOTS = runner.agent_writable_roots
+
+
+def _strip(path) -> str:
+    text = str(path)
+    return text[len(_EXT) :] if text.startswith(_EXT) else text
+
+
+def _serve_prefixed_spelling(monkeypatch, *, resolve_adds_prefix: bool = False):
+    """Let the filesystem calls read a ``\\\\?\\``-spelled path the way Windows
+    does. POSIX has no such prefix, so stat/access drop it before reading; the
+    containment compare under test still sees the prefixed spelling."""
+    real_stat, real_resolve, real_access = Path.stat, Path.resolve, os.access
+    monkeypatch.setattr(Path, "stat", lambda self, **kw: real_stat(Path(_strip(self)), **kw))
+    monkeypatch.setattr(runner.os, "access", lambda p, m: real_access(_strip(p), m))
+    if resolve_adds_prefix:
+        monkeypatch.setattr(
+            Path,
+            "resolve",
+            lambda self, strict=False: Path(_EXT + str(real_resolve(Path(_strip(self)), strict))),
+        )
+
+
+class TestExtendedPrefixContainment:
+    def test_prefixed_handoff_inside_the_agent_tree_is_refused(self, monkeypatch, tmp_path):
+        gh = _fake_gh(tmp_path / "ws" / "bin")
+        monkeypatch.setattr(runner, "agent_writable_roots", lambda: (tmp_path / "ws",))
+        _serve_prefixed_spelling(monkeypatch)
+        for spelling in (gh, _EXT + gh):
+            with pytest.raises(runner.SetupError, match="agent-writable"):
+                runner._consume_prevalidated(f"{spelling}|{_prevalidated_value(gh).split('|')[1]}")
+
+    def test_prefixed_handoff_outside_every_agent_tree_still_validates(self, monkeypatch, tmp_path):
+        gh = _fake_gh(tmp_path / "tools" / "bin")
+        monkeypatch.setattr(runner, "agent_writable_roots", lambda: (tmp_path / "ws",))
+        _serve_prefixed_spelling(monkeypatch)
+        value = f"{_EXT}{gh}|{_prevalidated_value(gh).split('|')[1]}"
+        assert runner._consume_prevalidated(value) == _EXT + gh
+
+    def test_executable_resolving_to_a_prefixed_spelling_inside_the_tree_is_refused(
+        self, monkeypatch, tmp_path
+    ):
+        gh = _fake_gh(tmp_path / "ws" / "bin")
+        monkeypatch.setattr(runner, "agent_writable_roots", lambda: (tmp_path / "ws",))
+        _serve_prefixed_spelling(monkeypatch, resolve_adds_prefix=True)
+        with pytest.raises(ValueError, match="agent-writable"):
+            runner.validate_provider_executable(gh)
+
+    def test_roots_are_spelled_without_the_prefix(self, monkeypatch, tmp_path):
+        plain = tmp_path.resolve()
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        _serve_prefixed_spelling(monkeypatch, resolve_adds_prefix=True)
+        assert plain in _REAL_AGENT_WRITABLE_ROOTS()

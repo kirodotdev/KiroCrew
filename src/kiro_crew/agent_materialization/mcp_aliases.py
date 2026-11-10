@@ -27,23 +27,16 @@ from kiro_crew.mcp_utils import mcp_server_alias
 def _norm_mcp_spec(spec: Any) -> Any:
     """Return the comparison form of an ``mcpServers`` spec for dedup.
 
-    Setup / re-installs re-emit the same server across runs with slightly
-    different optional-key *shapes*: a bare ``{"command": ...}`` one run, then
-    ``"env": {}`` or ``"args": []`` the next. Comparing raw dicts treats those
-    as distinct servers, so ``_normalize_mcp_server_keys`` mints an ever-growing
-    ``-2``/``-3``... suffix on every build / reinstall / update.
-    Dropping empty optional collections makes semantically identical re-merges
-    collapse onto the canonical alias. An empty ``env``/``args`` is a launch
-    no-op for kiro-cli (missing == empty), so this is also the cleaner spec to
-    persist.
+    Re-installs re-emit the same server with different optional-key shapes: a bare
+    ``{"command": ...}`` one run, ``"env": {}`` or ``"args": []`` the next. Comparing
+    raw dicts treats those as distinct, so ``_normalize_mcp_server_keys`` would mint a
+    new ``-2``/``-3`` suffix on every build. An empty ``env``/``args`` is a launch
+    no-op for kiro-cli (missing == empty), so dropping them collapses identical
+    re-merges onto the canonical alias and is also the cleaner spec to persist.
 
-    :data:`~kiro_crew.mcp_provenance.DERIVED_KEY` is excluded for the same reason,
-    and it is load-bearing: the record is our bookkeeping about which field this
-    rebuild computed, not part of how the server launches, so an entry carrying one
-    and an otherwise-identical re-merged copy without one ARE the same server.
-    Comparing it would make them differ and mint the ever-growing suffix this
-    function exists to prevent -- and it would do so asymmetrically, since only the
-    population with no other config source is ever recorded.
+    :data:`~kiro_crew.mcp_provenance.DERIVED_KEY` is excluded for the same reason: it
+    records which field this rebuild computed, not how the server launches, and only
+    some entries carry it, so comparing it would mint the same growing suffix.
     """
     if not isinstance(spec, dict):
         return spec
@@ -95,30 +88,23 @@ def _apply_connection_tool_aliases(
     is written into a spec that a user also edits:
 
     * **Flag off => byte-identical emission.** The key is neither created nor
-      cleared, so a spec built with the gate off is indistinguishable from one
-      built before this pass existed. Nothing else here reads ``toolAliases``,
-      so leaving a stale key alone cannot mislead a later pass -- and clearing it
-      would make "off" a distinct third behaviour instead of a no-op. A no
-      collision resolution likewise writes nothing, so the common install (zero
-      or one exposed provider) gains no empty object.
+      cleared, so "off" is a no-op rather than a third behaviour. Nothing else here
+      reads ``toolAliases``, so a stale key cannot mislead a later pass. A resolution
+      with no collisions also writes nothing, so the common install (zero or one
+      exposed provider) gains no empty object.
 
     * **The generated subset is read from a PERSISTED record, not inferred from a
-      pair's shape.** Cleanup deletes entries out of a file the user also edits, so
-      it needs proof of authorship, and no property of the NAME supplies one: a
-      ``<slug>_`` prefix test claims a hand-written ``linear_issues``, and
-      re-deriving ``<slug>_<tool>`` claims a hand-written ``notion_search`` for a
-      provider that declares nothing. So the pass records exactly what it emitted
-      and, on the next run, strips only pairs that record claims (whole triple,
-      so a user-edited generated alias does not match and survives). Merging
-      onto the previous output instead would make "user-authored wins" preserve
-      the LAST rebuild's generated refs: the merge is idempotent, so a rename
-      would survive the mount that justified it going away. Every pair the record
-      does not claim is by definition the user's and still wins over the registry
-      default. See :mod:`kiro_crew.connections.alias_record` for the generation
-      binding that stops the record ever describing a spec it does not match: this
-      function OPENS the transaction, so an interrupted rebuild is recoverable from
-      whichever side actually reached disk, and the CALLER commits it once the spec
-      is durable.
+      pair's shape.** Cleanup deletes entries from a file the user also edits, so it
+      needs proof of authorship, and the NAME gives none: a ``<slug>_`` prefix test
+      claims a hand-written ``linear_issues``, and re-deriving ``<slug>_<tool>``
+      claims a hand-written ``notion_search``. So the pass records exactly what it
+      emitted and next run strips only pairs that record claims (whole triple, so a
+      user-edited generated alias survives). Merging onto the previous output
+      instead would keep a rename after the mount that justified it is gone. Every
+      unclaimed pair is the user's and wins over the registry default.
+      :mod:`kiro_crew.connections.alias_record` binds the record to the spec
+      generation it describes; the CALLER opens the transaction before the spec
+      write and commits it once the spec is durable.
 
     * **A generated alias never lands on a name already in use.** The destination
       is checked against surviving alias targets, the declared natural names of
@@ -128,7 +114,8 @@ def _apply_connection_tool_aliases(
       occupied name would recreate the shadowing this pass exists to remove, so it
       fails safe to shadowing rather than to a silent overwrite. A custom server
       mounted WHOLE publishes its names only at runtime and is out of scope by
-      construction -- see the module docstring's OUT OF SCOPE note.
+      construction -- see the OUT OF SCOPE note in
+      :mod:`kiro_crew.connections.tool_aliases`.
 
     Mutates *config* in place. Idempotent: the resolution is a pure function of
     the exposed provider set, so a rebuild that changes no mounts rewrites the
@@ -161,14 +148,10 @@ def _apply_connection_tool_aliases(
     tool_refs = tools if isinstance(tools, list) else []
 
     try:
-        # Imported here, not at module scope: kiro_crew.connections.registry
-        # validates the committed registry at MODULE level, so a missing or
-        # malformed registry.json would raise on `import kiro_crew.agent` --
-        # before the guard below can run -- and take down the very module that
-        # installs and repairs the agent spec. Deferring the import keeps a data
-        # file from breaking the recovery path, and keeps a registry read off
-        # agent.py's import cost for every install that never enables this.
-        # Guarded by test_importing_agent_does_not_eagerly_load_the_registry.
+        # Imported here: kiro_crew.connections.registry validates registry.json at
+        # module level, so a bad file would raise on `import kiro_crew.agent` and
+        # take down the module that repairs the agent spec. Guarded by
+        # test_importing_agent_does_not_eagerly_load_the_registry.
         from kiro_crew.connections.alias_record import (  # noqa: PLC0415
             emitted_from_alias_map,
             is_recorded_emission,
@@ -305,10 +288,10 @@ def _normalize_mcp_server_keys(
 
     Dedup is by *normalized* spec (:func:`_norm_mcp_spec`), so a re-added key
     that differs only by an empty ``env``/``args`` reuses the existing alias
-    instead of accumulating a fresh ``-N`` suffix on every build / reinstall /
-    update. Convergence: any already-suffixed sibling that is an
-    equivalent duplicate is folded back onto the surviving alias (its ``@ref``
-    is redirected), so a config already polluted by the pre-fix bug self-heals.
+    instead of accumulating a fresh ``-N`` suffix on every build. Any
+    already-suffixed sibling that is an equivalent duplicate is folded back onto
+    the surviving alias (its ``@ref`` is redirected), so a config that already
+    accumulated suffixes self-heals.
 
     Collision: if the alias is held by a *genuinely different* spec, the server
     is preserved under the lowest free numeric-suffixed alias (``-2``, ``-3``)
@@ -560,31 +543,23 @@ def _set_tool_aliases(config: dict, aliases: object) -> None:
 def _reconcile_tool_aliases_from_disk(path: Path, config: dict) -> bool:
     """Align ``config['toolAliases']`` with the generation the spec ON DISK carries.
 
-    ``config`` is assembled from a spec read taken BEFORE the write lock, so its
-    alias map can be a stale generation by the time the write happens. Two
-    overlapping rebuilds serialize their spec writes but not that read: the second
-    would otherwise write its pre-lock snapshot back, resurrecting aliases the
-    first had removed, and would fingerprint a generation that is gone.
+    ``config`` is assembled from a spec read taken BEFORE the write lock. Two
+    overlapping rebuilds serialize their writes but not that read, so the second
+    would write its pre-lock snapshot back, resurrecting aliases the first removed,
+    and fingerprint a generation that is gone. So the map is re-read here, inside
+    the critical section that writes it (alias_record invariant 7). It runs whether
+    or not the alias pass will, because a gate-off or fail-closed rebuild writes the
+    stale snapshot just the same. A CLEAN rebuild is exempt (the caller decides):
+    importing the old map would defeat the reset.
 
-    So the map is re-read here, inside the critical section that writes it, and
-    that value is what the alias pass resolves against (alias_record invariant 7).
-    It runs whether or not the alias pass will: a gate-off or fail-closed rebuild
-    would write the stale snapshot just the same. A CLEAN rebuild is the one
-    exemption and the caller makes it -- clean regenerates from defaults, so
-    importing the old spec's map would defeat the reset (see the call site).
+    A MISSING spec is not an invalid one: with no file the assembled map stands, so
+    a first install keeps a hand-written ``toolAliases`` from ``agent.json``. A spec
+    that EXISTS decides the map: a dict is imported, and an absent or non-dict value
+    clears the key, because kiro-cli rejects the whole spec over a non-dict
+    ``toolAliases``.
 
-    A MISSING spec is not an invalid one. With no file there is no durable
-    generation to reconcile against, so the assembled map stands: a first install
-    whose ``agent.json`` carries a hand-written ``toolAliases`` would otherwise
-    have it erased before it was ever written. Only a spec that EXISTS decides the
-    map -- a dict is imported, and an absent or non-dict value clears the key,
-    because kiro-cli rejects the whole spec over a non-dict ``toolAliases`` and
-    re-importing one would carry the broken file forward and cost the user every
-    tool. Dropping it here repairs it even when the alias pass never runs.
-
-    Uses the file being written rather than a fixed path, so it is correct on the
-    canonical spec (where the caller holds the lock) and on any other spec the
-    rebuild targets.
+    Reads the file being written rather than a fixed path, so it is correct on the
+    canonical spec (where the caller holds the lock) and on any other target.
 
     A spec that exists but cannot be read raises the rebuild's unreadable-spec
     error, so nothing is written over it.

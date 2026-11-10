@@ -352,8 +352,11 @@ def test_a_clear_pick_clicks_the_chosen_ref_and_says_which(seam, tmp_path):
         "Noul",
     ]
     choice = pick["questions"][0]
-    # Identical buttons differ by the heading above them.
-    assert choice.criteria["e1"] != choice.criteria["e2"]
+    # Identical buttons differ by the heading above them; page words stay in the state.
+    words = pick["state"]["pick_options"]
+    assert words["e1"] != words["e2"]
+    assert not choice.criteria
+    assert "Add to cart" not in choice.prompt
     assert pick["assets"] is None
 
 

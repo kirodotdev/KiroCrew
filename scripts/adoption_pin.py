@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Release-captain tool for ``src/kiro_crew/apps/adoption-pins.json``.
 
-    adoption_pin.py compute <repository-url> <commit>   print the pin row for that commit
+    adoption_pin.py compute <repository-url> <commit> [--min-sdk-level N]
+                                                        print the pin row for that commit
     adoption_pin.py verify                              re-check every row of the shipped file
 
 ``compute`` clones the repository at the commit AND downloads its codeload archive,
@@ -9,6 +10,12 @@ computes ``treeSha256`` on both (they must match) and ``archiveSha256``, and run
 the adoption tree checks against the shipped built-in of the same name. The
 ``legacyNav`` route and icon are read from the shipped built-in's first page.
 ``verify`` does the same for every row and fails on any difference.
+
+``minAppSdkLevel`` is ``--min-sdk-level`` (default 1); the tool never raises it on
+its own. The tree is scanned for the App Kit seams above level 1 it uses
+(``_seam_level_uses``), and a level below the highest one found is refused by both
+``compute`` and ``verify``, so a tree that uses a level-2 seam needs
+``--min-sdk-level 2`` or higher.
 
 Networked: run by hand or in a network-allowed release job, never in the offline
 test suite. The digest and the checks are the gateway's own
@@ -19,9 +26,11 @@ tool and the runtime cannot disagree.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -33,6 +42,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
 from kiro_crew.apps import builtin_adoption_fetch as fetch  # noqa: E402
+from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL  # noqa: E402
 from kiro_crew.apps.builtin_adoption_checks import pinned_tree_refusal  # noqa: E402
 from kiro_crew.apps.builtin_adoption_pins import (  # noqa: E402
     _COMMIT_RE,
@@ -41,6 +51,105 @@ from kiro_crew.apps.builtin_adoption_pins import (  # noqa: E402
     AdoptionPin,
     parse_adoption_pins,
 )
+
+#: ``AppContext`` attributes above seam level 1, with the level that publishes each
+#: (app-kit-platform.md §32a, §32b, §36). An app reads them as ``ctx.<seam>`` or
+#: feature-detects them with ``getattr(<context>, "<seam>", None)``.
+_CONTEXT_SEAMS = {"turns": 2, "untrusted": 2, "lifecycle": 2, "auto_approve": 2}
+
+#: A receiver whose last name says it is the app's context (``ctx``, ``self._ctx``,
+#: ``context``, ``app_ctx``). ``getattr``/``hasattr`` of a seam name counts on any
+#: receiver, since an app reaches its context through helpers (``getattr(bound(), ...)``).
+_CONTEXT_NAME = re.compile(r"ctx|context", re.IGNORECASE)
+
+#: The text form, for a source file this interpreter cannot parse.
+_SEAM_TEXT = re.compile(r"[.\"'](%s)\b" % "|".join(_CONTEXT_SEAMS))
+
+#: Directories a backend never imports from, so a test fake's ``ctx.turns`` is no use.
+_UNSCANNED_DIRS = frozenset({"tests", "test", "node_modules", ".git"})
+
+
+def _receiver_name(node: ast.expr) -> str:
+    """The last name in *node*: ``ctx``, ``self._ctx`` and ``_bound_ctx()`` give a ctx name."""
+    if isinstance(node, ast.Call):
+        return _receiver_name(node.func)
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _source_seams(source: str) -> set[str]:
+    """The context seams *source* reaches, by attribute or by ``getattr``/``hasattr``."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return {match.group(1) for match in _SEAM_TEXT.finditer(source)}
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in _CONTEXT_SEAMS
+            and _CONTEXT_NAME.search(_receiver_name(node.value))
+        ):
+            found.add(node.attr)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"getattr", "hasattr"}
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in _CONTEXT_SEAMS
+        ):
+            found.add(node.args[1].value)
+    return found
+
+
+def _seam_level_uses(tree: Path) -> dict[str, int]:
+    """Every App Kit seam above level 1 that the app tree at *tree* uses, with its level.
+
+    The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
+    ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3) and the
+    context seams any non-test ``.py`` file reaches. A miss lets a pin adopt on a
+    host without the seam, so the scan errs wide: a false hit only asks for a
+    higher ``--min-sdk-level``.
+    """
+    raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
+    permissions = raw.get("permissions")
+    permissions = permissions if isinstance(permissions, dict) else {}
+    uses: dict[str, int] = {}
+    if "agentTools" in raw:
+        uses["app.json agentTools"] = 2
+    for flag in ("agentTurns", "workerAutoApprove"):
+        if permissions.get(flag) is True:
+            uses[f"app.json permissions.{flag}"] = 2
+    if raw.get("credentialMasks"):
+        uses["app.json credentialMasks"] = 3
+    for dirpath, dirnames, filenames in os.walk(tree):
+        dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
+        for filename in sorted(filenames):
+            path = Path(dirpath) / filename
+            if path.suffix != ".py" or path.is_symlink():
+                continue
+            if filename.startswith("test_") or filename == "conftest.py":
+                continue
+            source = path.read_text(encoding="utf-8", errors="replace")
+            for seam in _source_seams(source):
+                uses.setdefault(f"ctx.{seam}", _CONTEXT_SEAMS[seam])
+    return uses
+
+
+def _sdk_level_refusal(name: str, level: int, uses: dict[str, int]) -> str | None:
+    """Why *level* cannot be the pin's ``minAppSdkLevel`` for a tree with *uses*."""
+    needed = max(uses.values(), default=1)
+    if level >= needed:
+        return None
+    evidence = ", ".join(sorted(seam for seam, seam_level in uses.items() if seam_level > level))
+    return (
+        f"{name}: minAppSdkLevel {level} is below App Kit seam level {needed}, which the "
+        f"pinned tree uses ({evidence}); compute it with --min-sdk-level {needed} or higher"
+    )
 
 
 def _shipped(name: str) -> tuple[Path, dict[str, Any]] | None:
@@ -122,6 +231,9 @@ def _measure(pin: AdoptionPin, work: Path) -> dict[str, Any]:
     )
     if refusal:
         raise SystemExit(f"{pin.name}: the pinned tree is refused: {refusal}")
+    sdk_refusal = _sdk_level_refusal(pin.name, pin.min_app_sdk_level, _seam_level_uses(extracted))
+    if sdk_refusal:
+        raise SystemExit(sdk_refusal)
     page = (shipped_raw.get("ui", {}).get("pages") or [{}])[0]
     return {
         "name": pin.name,
@@ -135,7 +247,9 @@ def _measure(pin: AdoptionPin, work: Path) -> dict[str, Any]:
     }
 
 
-def _draft_pin(repository: str, commit: str, name: str, version: str) -> AdoptionPin:
+def _draft_pin(
+    repository: str, commit: str, name: str, version: str, min_sdk_level: int
+) -> AdoptionPin:
     row = {
         "name": name,
         "repository": repository,
@@ -143,7 +257,7 @@ def _draft_pin(repository: str, commit: str, name: str, version: str) -> Adoptio
         "version": version,
         "treeSha256": "0" * 64,
         "archiveSha256": "0" * 64,
-        "minAppSdkLevel": 1,
+        "minAppSdkLevel": min_sdk_level,
         "legacyNav": {"route": "/x", "icon": "X"},
     }
     pins = parse_adoption_pins({"schemaVersion": 1, "pins": [row]})
@@ -154,7 +268,11 @@ def _draft_pin(repository: str, commit: str, name: str, version: str) -> Adoptio
     return pins[name]
 
 
-def _compute(repository: str, commit: str) -> int:
+def _compute(repository: str, commit: str, min_sdk_level: int = 1) -> int:
+    if not 1 <= min_sdk_level <= APP_SDK_LEVEL:
+        raise SystemExit(
+            f"--min-sdk-level must be between 1 and this build's App Kit level {APP_SDK_LEVEL}"
+        )
     if not _REPOSITORY_RE.fullmatch(repository) or repository.endswith(".git"):
         raise SystemExit("repository must be https://github.com/<owner>/<repo>, without .git")
     if not _COMMIT_RE.fullmatch(commit):
@@ -166,7 +284,8 @@ def _compute(repository: str, commit: str) -> int:
         raw = json.loads((probe / "app.json").read_text(encoding="utf-8"))
         # The probe stays for the TemporaryDirectory cleanup, which clears the
         # read-only bit git sets on its objects (a bare rmtree fails on Windows).
-        row = _measure(_draft_pin(repository, commit, raw["name"], raw["version"]), work)
+        draft = _draft_pin(repository, commit, raw["name"], raw["version"], min_sdk_level)
+        row = _measure(draft, work)
     print(json.dumps(row, indent=2))
     return 0
 
@@ -202,10 +321,17 @@ def main(argv: list[str] | None = None) -> int:
     compute = sub.add_parser("compute")
     compute.add_argument("repository")
     compute.add_argument("commit")
+    compute.add_argument(
+        "--min-sdk-level",
+        type=int,
+        default=1,
+        metavar="N",
+        help="the row's minAppSdkLevel; required at or above the highest seam level the tree uses",
+    )
     sub.add_parser("verify")
     args = parser.parse_args(argv)
     if args.command == "compute":
-        return _compute(args.repository, args.commit)
+        return _compute(args.repository, args.commit, args.min_sdk_level)
     return _verify()
 
 

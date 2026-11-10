@@ -170,9 +170,10 @@ function flowFloor(el: HTMLElement): number | undefined {
 }
 
 /** Hover-intent window. Long enough that a pointer merely crossing the anchor
- *  paints nothing, short enough to read as instant. A module constant, not a
- *  hook parameter: both consumers want the same feel, and a per-site knob was
- *  surface with zero callers. Exported so tests advance exactly this. */
+ *  paints nothing, short enough to read as instant. The default for every
+ *  control's hint; `useInstantTip({ openDelayMs })` asks for a longer one where
+ *  the pointer crosses anchors far more often than it means to read them (a
+ *  link's address in running text). Exported so tests advance exactly this. */
 export const OPEN_DELAY_MS = 100
 
 /** How long after a touch pointer event on the anchor a `mouseenter` or
@@ -243,8 +244,10 @@ function resumeYieldedHints() {
  * and on iOS the action may then take a second tap, which is the pre-gate
  * behaviour that anchor had. Every other anchor keeps the default: its bubble
  * is a hint the click does not need, and the tap must land first time.
+ * `openDelayMs`: the pointer's intent window before the bubble opens
+ * (`OPEN_DELAY_MS` unless asked). Keyboard focus still shows at once.
  */
-export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false }: { hold?: boolean | number; placement?: TipPlacementOption; openOnTap?: boolean } = {}) {
+export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false, openDelayMs = OPEN_DELAY_MS }: { hold?: boolean | number; placement?: TipPlacementOption; openOnTap?: boolean; openDelayMs?: number } = {}) {
   const [tip, setTip] = useState<TipPos | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const anchorRef = useRef<HTMLElement | null>(null)
@@ -439,7 +442,7 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
       timerRef.current = setTimeout(() => {
         timerRef.current = null
         if (anchorRef.current === el && el.isConnected) showFor(el)
-      }, OPEN_DELAY_MS)
+      }, openDelayMs)
     },
     onMouseLeave: () => {
       pointerInRef.current = false
@@ -469,11 +472,14 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
 /** The bubble. Shared chrome here; the caller passes only content and a
  *  variant class for width/wrap (`whitespace-nowrap` for a short two-liner,
  *  `max-w-[26rem] whitespace-pre-wrap break-words` for prose). Pass the
- *  hook's `tipId` so the anchor's `aria-describedby` resolves. */
-export function InstantTip({ tip, tipId, className = '', children }: {
+ *  hook's `tipId` so the anchor's `aria-describedby` resolves. `arrow` draws
+ *  the flow bubble's pointer for any anchor: in a stacked list a bubble with
+ *  none reads as the row it covers. */
+export function InstantTip({ tip, tipId, className = '', arrow = false, children }: {
   tip: TipPos | null
   tipId?: string
   className?: string
+  arrow?: boolean
   children: React.ReactNode
 }) {
   const trustRoot = useGuideTrustRootAttrs()
@@ -497,7 +503,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   // its prose-aware placement. Vertically for `below`: a chip on the last line
   // of a full-height pane would open the bubble off the bottom; a flow anchor
   // goes above after all (its `flip`), an explicit `below` is clamped to the bottom edge.
-  // A flow bubble's arrow (`nub`, its offset from the bubble's left) moves the
+  // The arrow (`nub`, its offset from the bubble's left) moves the
   // other way when the clamp moves the bubble, so it stays on the anchor.
   useLayoutEffect(() => {
     setFit(null)
@@ -551,7 +557,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
       {children}
       {/* A rotated square astride the edge that faces the anchor, painted in
           the bubble's own border and fill so it reads as part of it. */}
-      {tip.flow && <span
+      {(tip.flow || arrow) && <span
         aria-hidden="true"
         data-testid="instant-tip-arrow"
         className={`absolute h-2 w-2 rotate-45 border-border-strong bg-bg-elevated ${placement === 'below' ? '-top-[5px] border-l border-t' : '-bottom-[5px] border-b border-r'}`}
@@ -576,7 +582,7 @@ type LabelTipHandlers = {
  *  pick. A hint painted on that returned focus would float over a button the
  *  mouse user already left. Where the selector is unsupported, every focus
  *  counts. */
-function keyboardFocused(el: Element): boolean {
+export function keyboardFocused(el: Element): boolean {
   try { return el.matches(':focus-visible') } catch { return true }
 }
 

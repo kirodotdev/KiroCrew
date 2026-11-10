@@ -81,6 +81,10 @@ export function stopRefusalCopy(r: StopRefusal): { message: string; detail: stri
   if (r.code === 'slot_not_found' || r.status === 404) {
     return { message: i18nT('components.chatPane.stop_failed_not_found'), detail: '' }
   }
+  // Pressing again cannot help: only the owner may end this run (a cron tab's run).
+  if (r.code === 'owner_only') {
+    return { message: i18nT('components.chatPane.stop_failed_owner_only'), detail: '' }
+  }
   if (typeof r.status === 'number' && r.status >= 500) {
     return { message: i18nT('components.chatPane.stop_failed_server'), detail: r.error }
   }

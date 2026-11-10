@@ -726,10 +726,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Auto-Improvement PR prose",
-        "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py",
-        "The pull-request TITLE and BODY are agent-authored prose published by `gh pr "
-        "create`, and a PR description cannot be un-published. Redacted in place because "
-        "prose survives rewriting; the DIFF beside it is instead detected-and-refused by "
+        "apps/builtins/auto_improvement/profiles/pr_recipe_base.py",
+        "The pull/merge-request TITLE and BODY are agent-authored prose published by "
+        "`gh pr create` or `glab mr create`, and a published description cannot be "
+        "un-published. Redacted in place because prose survives rewriting; the DIFF "
+        "beside it is instead detected-and-refused by "
         "`spine/push_policy.py:scan_content_for_secrets`, since rewriting a patch would "
         "corrupt the fix the gate proved.",
     ),
@@ -842,6 +843,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacting it would overwrite the user's own file with markers.",
     ),
     (
+        "Per-chat steering list",
+        "dashboard/handlers/chat_steering.py",
+        "Display paths in the /api/chat/slots/{slot}/steering listing, through the "
+        "Steering tab's _redact_meta. No document body leaves this route.",
+    ),
+    (
         "Telemetry spend ranking",
         "dashboard/handlers/telemetry.py",
         "Session titles attached to the conversations-by-spend rows of "
@@ -903,5 +910,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "only, as a test: a string it would alter is withheld from the diff and "
         "the row is marked redacted, as is any value under a credential-like key, "
         "an env or headers section, an over-long string or a nested value.",
+    ),
+    (
+        "Session reload failure notice",
+        "dashboard/system_notices.py",
+        "The error a reload's failed respawn raised, as `session_reload_failed_notice` "
+        "writes it into the chat row that closes the reload's notice. That row is kept "
+        "in the slot's transcript and broadcast to every connected browser, so the "
+        "whole error passes `redact_and_truncate` before it is cut to the row's bound.",
     ),
 )

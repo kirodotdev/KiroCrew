@@ -43,8 +43,16 @@ from kiro_crew.apps.registry_pipeline.caches import (
     _read_external_registry_cache,
 )
 from kiro_crew.apps.registry_pipeline.catalog import _version_newer, is_registry_source
-from kiro_crew.apps.registry_pipeline.git_targets import _entry_git_url, _same_git_target
-from kiro_crew.apps.registry_pipeline.sources import _effective_registries, _load_registry_file
+from kiro_crew.apps.registry_pipeline.git_targets import (
+    _entry_git_url,
+    _public_registry_name,
+    _same_git_target,
+)
+from kiro_crew.apps.registry_pipeline.sources import (
+    _effective_registries,
+    _is_pinned_registry_move,
+    _load_registry_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +163,12 @@ def _claims() -> dict[str, list[_Claim]]:
                 found = _manifest_version(entry)
                 if found is not None:
                     version, seen = found
-            registry = entry.get("_registry")
+            # The registry is the index this row was read out of, not a tag in
+            # the cache file, so the badge and ``_pinned_registry_entry`` agree.
             _add(
                 entry.get("name"),
                 _Claim(
-                    registry if isinstance(registry, str) else "",
+                    _public_registry_name(reg),
                     _entry_git_url(entry),
                     (publishable_version(version), seen),
                 ),
@@ -198,13 +207,23 @@ def _recorded_source(record: dict[str, Any]) -> tuple[str, str] | None:
 
 
 def _pinned_claim(claims: list[_Claim], url: str, registry: str) -> _Claim | None:
-    """The row ``_pinned_registry_entry`` would update from: same URL AND same registry."""
+    """The row ``_pinned_registry_entry`` would update from.
+
+    Same URL and same registry first; failing that, the same URL in another
+    build-pinned registry when the recorded one is pinned too, the move
+    ``_pinned_registry_entry`` follows.
+    """
     for claim in claims:
         if not _same_git_target(claim.git_url, url):
             continue
         if claim.registry != registry and not _same_git_target(claim.registry, registry):
             continue
         return claim
+    for claim in claims:
+        if _same_git_target(claim.git_url, url) and _is_pinned_registry_move(
+            registry, claim.registry
+        ):
+            return claim
     return None
 
 

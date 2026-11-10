@@ -233,7 +233,7 @@ async def test_scoped_search_escalates_until_retrieval_is_exhausted(seeded):
     retriever = MagicMock()
     # Full windows until the pool exceeds 400, then a short read.
 
-    def _search(_q, limit):
+    def _search(_q, limit, status):
         return [{"id": "x", "score": 1.0, "match_type": "fts"}] * (
             limit if limit <= 400 else limit - 1
         )
@@ -256,7 +256,7 @@ async def test_scoped_search_stops_at_the_escalation_cap(seeded):
     """A corpus that never short-reads must not escalate without bound."""
     store, _alpha, beta = seeded
     retriever = MagicMock()
-    retriever.search.side_effect = lambda _q, limit: [
+    retriever.search.side_effect = lambda _q, limit, status: [
         {"id": "x", "score": 1.0, "match_type": "fts"}
     ] * limit
     req = _request(store, {"q": "content", "source_id": beta, "limit": "20"})
@@ -286,7 +286,7 @@ async def test_filtered_search_widens_the_window_while_the_page_is_short(seeded,
     store, _alpha, _beta = seeded
     retriever = MagicMock()
 
-    def _search(_q, limit):
+    def _search(_q, limit, status):
         return [{"id": "x", "score": 1.0, "match_type": "fts"}] * (
             limit if limit <= 400 else limit - 1
         )
@@ -312,7 +312,7 @@ async def test_default_status_search_keeps_one_narrow_call(seeded):
     store, _alpha, _beta = seeded
     real_ids = [r["id"] for r in store.db.execute("SELECT id FROM items").fetchall()]
     retriever = MagicMock()
-    retriever.search.side_effect = lambda _q, limit: [
+    retriever.search.side_effect = lambda _q, limit, status: [
         {"id": real_ids[i % len(real_ids)], "score": 1.0, "match_type": "fts"}
         for i in range(limit)
     ]

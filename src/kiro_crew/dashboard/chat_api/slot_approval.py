@@ -1123,6 +1123,22 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "no pending approval", "code": "approval_not_pending"}, status=404
             )
+    # ``reason``: what the person typed with a rejection, for the model to read.
+    # Taken only with a one-shot rejection of this slot's own card (the native
+    # route above), and refused, before any side effect, when it is not text or
+    # is too long, rather than cut. The runner passes it on only to a backend
+    # whose request takes one (``AcpEvent.takes_rejection_reason``).
+    rejection_reason = ""
+    if "reason" in body:
+        from kiro_crew.rejection_reason import rejection_reason_text
+
+        cleaned = rejection_reason_text(body["reason"])
+        if not strict_native or action not in ("rejected", "rejected_once") or cleaned is None:
+            return web.json_response(
+                {"error": "invalid rejection reason", "code": "invalid_rejection_reason"},
+                status=400,
+            )
+        rejection_reason = cleaned
     # A timed grant names its lifetime in ``ttl_seconds``. Only the two
     # command-scoped tiers carry one, and an unreadable lifetime refuses the
     # whole decision BEFORE any side effect: it never falls back to a grant
@@ -1405,9 +1421,16 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             return shared_decisions.respond(settled)
         return web.json_response({"error": "no pending approval"}, status=404)
     if request_id:
+        if rejection_reason:
+            # Kept before the future settles (nothing awaits in between), so the
+            # runner the settlement wakes finds it; dropped again if this click
+            # did not settle the request.
+            owner.set_rejection_reason(request_id, fut, rejection_reason)
         resolution = shared_decisions.resolve_slot_approval(
             state, request, owner, request_id, fut, resolved, response_id
         )
+        if rejection_reason and not resolution.applied:
+            owner.take_rejection_reason(request_id, fut)
         if not resolution.applied:
             lost = shared_decisions.lost_race_reply(resolution, response_id)
             if lost is not None:

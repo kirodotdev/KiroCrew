@@ -97,6 +97,8 @@ function openSettingsWindow(baseUrl, token = "") {
   });
   settingsWindow = win;
   win.setAlwaysOnTop(true, "modal-panel");
+  // Windows and Linux give every framed window the app menu unless told not to.
+  win.setMenu(null);
 
   // Both events, because ready-to-show has proved unreliable on these Mochi
   // windows and a settings window that never appears reads as a dead menu item.

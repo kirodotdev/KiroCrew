@@ -243,7 +243,7 @@ class TestUpdateApp:
 
         def _register(name: str) -> SimpleNamespace:
             calls.append("register")
-            return SimpleNamespace(to_dict=dict)
+            return SimpleNamespace(to_dict=dict, mcp_servers=[])
 
         monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
         monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)

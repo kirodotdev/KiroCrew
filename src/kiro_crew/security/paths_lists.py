@@ -16,6 +16,7 @@ gates read these lists, and this module imports no other part of the path floor.
 from __future__ import annotations
 
 from kiro_crew.agent_sdk import host_auth, native_allow_stores
+from kiro_crew.apps import credential_masks
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES, fenced_home_dirs
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 
@@ -765,6 +766,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # KAS MCP launch snapshots hold servers' env values (``acp.kas_env_launch``); the
     # ``pi-gate`` split: readable in the sandbox for the launcher, fenced from file tools.
     "kas-mcp-launch",
+    # Connection bridge snapshots (per-bridge tokens): the same split, and readable by
+    # an enforced harness's child too (``sandbox_leaves._CREW_CHILD_READABLE_LEAVES``).
+    "crew-oauth-bridge",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
     # unreadable to the agent through any Kiro Crew-mediated channel.
@@ -826,13 +830,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # services open their captured store directly. Global V1 retains its existing
     # file access behavior. See docs/system-specs/modules/security.md.
     MEMORY_STORES_DIR_NAME,
+    *credential_masks.declared_crew_leaves(installed=False),  # built-ins' credentialMasks
 ]
-
 
 _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES
 ]
-
 
 # ── Publish artifacts of a keystone leaf ──
 # Every leaf above is published through ``atomic_write``, which writes a
@@ -870,7 +873,6 @@ _SENSITIVE_HOME_DIRS += [
 # Not included: ``deploy/pending-deploys.lock``. Its directory holds no keystone leaf, so
 # there is no keystone payload beside it for the fence to protect.
 _KEYSTONE_ARTIFACT_SUFFIXES: tuple[str, ...] = (".tmp", ".lock")
-
 
 _KEYSTONE_ARTIFACT_PARENTS: list[str] = sorted(
     {
@@ -1319,9 +1321,9 @@ _WRITE_PROTECTED_HOME_PATHS += list(_KIRO_MATE_STATE_LEAVES)
 # ── kiro-cli global MCP registry (~/.kiro/settings/mcp.json) ──
 # The sibling of the agents dir above, and an INPUT TO A SECURITY DECISION by the
 # same route: an ``autoApprove`` on an entry here is honoured by default
-# (``mcp.honour_auto_approve``), and kiro-cli approves an autoApproved MCP tool
-# LOCALLY and emits no permission request -- so those verbs skip
-# ``hooks.on_tool_call`` and the tool gate never runs for them.
+# (``mcp.honour_auto_approve``), and each kept verb is granted in the skill view's
+# ``allowedTools``, which kiro-cli approves LOCALLY with no permission request -- so
+# those verbs skip ``hooks.on_tool_call`` and the tool gate never runs for them.
 # ``governance._is_owner_written`` admits an entry on its NAME SHAPE (no ``:``, no
 # provenance marker), never on who wrote the file, so a plainly-named entry an agent
 # appended is indistinguishable from one the owner typed. The opt-in's own wording is

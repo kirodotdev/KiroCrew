@@ -1436,6 +1436,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _app_api_allowlist,
         _app_owns_path,
         _app_perms_cache,
+        _app_perms_denied,
         _app_perms_lock,
         app_token_path_allowed,
     )
@@ -1467,6 +1468,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SELF_AUTH_WEBHOOK_METHODS,
         AGENT_HOOK_PATH,
         AGENT_HOOK_STATUS_PATH,
+        CREW_OAUTH_CALLBACK_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
         RELAY_VIEWER_TOKEN_PATH,
         SPA_FALLBACK_EXCLUDED_PREFIXES,
@@ -1513,6 +1515,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import (  # noqa: F401
         platform_compat,
+    )
+    from kiro_crew.atomic_write import (  # noqa: F401
+        retry_read_sharing_window,
     )
     from kiro_crew.dashboard.boot_id import (  # noqa: F401
         current_boot_id,

@@ -28,6 +28,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from kiro_crew.appearance_packs.ids import pack_id_key
 from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, read_sound
 from kiro_crew.appearance_packs.store import (
     DEFAULT_PACK,
@@ -458,6 +459,38 @@ def _sound_reference_problem(manifest: Any, carried: dict[str, str]) -> str:
     return ""
 
 
+#: The manifest maps that name art files, the three ``pack_detail`` reads.
+ART_CATEGORIES = ("states", "moods", "random")
+
+
+def _art_reference_problem(manifest: Any, carried: dict[str, str]) -> str:
+    """Why a manifest names art the bundle does not carry, or ``""``.
+
+    The art side of ``_sound_reference_problem``. The carried-file loop judges the
+    files a bundle SHIPS, never the ones its manifest POINTS AT, so a bundle naming
+    ``states.idle = missing.svg`` installed with a 200 and drew nothing in that
+    slot. Crew Companion's import calls ``import_bundle`` with nothing in front of
+    it, so the reference is met here; the dashboard's wrapper
+    (``bundle_reference_error``) additionally judges whether each file decodes.
+    """
+    for category in ART_CATEGORIES:
+        section = manifest.get(category)
+        if section is None:
+            continue
+        if not isinstance(section, dict):
+            return f"That bundle's {category} section is not a map of slots to files"
+        for slot, name in section.items():
+            if (
+                not isinstance(name, str)
+                or _safe_filename(name) != name
+                or not name.lower().endswith(ALLOWED_SUFFIXES)
+            ):
+                return f"That bundle names {category}.{slot} = {name!r}, which is not an art file"
+            if name not in carried:
+                return f"That bundle names {category}.{slot} = {name!r} but does not carry it"
+    return ""
+
+
 def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
     """Install a pack from an exported bundle.
 
@@ -485,12 +518,25 @@ def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
         return {"ok": False, "error": "That bundle is missing its manifest or art"}
 
     clean: dict[str, str] = {}
+    # Carried names by the key on which macOS and Windows count two names as ONE
+    # file (NFC, then casefold). ``save_pack`` refuses a casefold-only collision,
+    # but the NFC and NFD spellings of one name differ under casefold, so the
+    # second was written over the first and that slot drew the other's art.
+    seen_keys: dict[str, str] = {}
     art = 0
     warnings: list[str] = []
     for name, content in files.items():
         safe = _safe_filename(name)
         if safe is None or not isinstance(content, str):
             return {"ok": False, "error": "That bundle contains an unsupported file"}
+        key = pack_id_key(safe)
+        if key in seen_keys:
+            return {
+                "ok": False,
+                "error": f"That bundle carries {safe!r} and {seen_keys[key]!r}, "
+                "which are one file on some filesystems",
+            }
+        seen_keys[key] = safe
         lower = safe.lower()
         if lower.endswith(SOUND_SUFFIXES):
             # A cue that will not play is INSTALLED and NAMED, not refused. Two
@@ -525,7 +571,7 @@ def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
     if not art:
         return {"ok": False, "error": "That bundle has no art in it"}
 
-    problem = _sound_reference_problem(manifest, clean)
+    problem = _art_reference_problem(manifest, clean) or _sound_reference_problem(manifest, clean)
     if problem:
         return {"ok": False, "error": problem}
 

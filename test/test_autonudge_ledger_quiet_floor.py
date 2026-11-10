@@ -287,3 +287,68 @@ def test_unreadable_stored_revisions_resolve_toward_delivering():
     )
     assert monitor.ledger_revision == ""
     assert monitor.ledger_delivered_revision == ""
+
+
+def _review_wait_facts(**overrides) -> dict:
+    """A whole pull-request reading that only waits on a reviewer."""
+    facts = {
+        "kind": "gh-pr",
+        "target": "acme/widgets#42",
+        "observation_status": "ok",
+        "state": "OPEN",
+        "draft": False,
+        "mergeability": "MERGEABLE",
+        "review_decision": "REVIEW_REQUIRED",
+        "checks": {"passed": ["lint", "tests"], "failed": [], "pending": [], "unknown": []},
+        "checks_complete": True,
+    }
+    facts.update(overrides)
+    return facts
+
+
+def _pr_monitor(facts: dict) -> MonitorState:
+    return MonitorState(
+        kind="gh-pr",
+        target="acme/widgets#42",
+        objective="review_ready",
+        created_ts=1_000.0,
+        last_observation=facts,
+    )
+
+
+def _plain_loop() -> NudgeLoop:
+    return NudgeLoop(id="monitor-pr", slot_key=_SLOT, message="watch", idle_secs=30, gate=True)
+
+
+def test_a_pull_request_waiting_only_on_review_gets_the_longer_floor():
+    assert _gate._quiet_floor(_plain_loop(), _pr_monitor(_review_wait_facts())) == _IDLE_FLOOR
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"checks": {"passed": ["lint"], "failed": ["tests"]}},
+        {"checks": {"passed": ["lint"], "pending": ["tests"]}},
+        {"checks": {"passed": []}},
+        {"checks_complete": False},
+        {"review_decision": "APPROVED"},
+        {"review_decision": "CHANGES_REQUESTED"},
+        {"mergeability": "CONFLICTING"},
+        {"draft": True},
+        {"observation_status": "partial"},
+    ],
+)
+def test_a_pull_request_with_anything_else_to_do_keeps_the_shipped_floor(overrides):
+    monitor = _pr_monitor(_review_wait_facts(**overrides))
+    assert _gate._quiet_floor(_plain_loop(), monitor) == _FLOOR
+
+
+def test_an_unchanged_review_wait_still_skips_the_judge(monkeypatch):
+    # The longer floor must not turn every unchanged tick into a judge call that
+    # then delivers at the judge's own ten-tick floor.
+    service = AutoNudgeService.__new__(AutoNudgeService)
+    monkeypatch.setattr(service, "_judge_quiet_streak_floor", lambda: _FLOOR, raising=False)
+    monkeypatch.setattr(_gate, "_judge_reads_only_the_watched_pr", lambda _l, _m: True)
+    loop = _plain_loop()
+    monitor = _pr_monitor(_review_wait_facts())
+    assert _gate._unchanged_reading_skips_judge(service, loop, monitor, True) is True

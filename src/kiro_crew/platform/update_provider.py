@@ -625,8 +625,8 @@ def resolve_provider() -> CommandProvider | None:
     :class:`CommandProvider` is returned; otherwise ``None`` — the ungoverned
     default, where the gateway keeps its built-in update behaviour.
 
-    Always ``None`` in an enterprise build: managed update commands are off there
-    whatever the policy pins (RFC enterprise edition, Red "Managed update
+    Always ``None`` in an LTS build: managed update commands are off there
+    whatever the policy pins (RFC LTS edition, Red "Managed update
     commands").
     """
     if locked_off():

@@ -963,6 +963,195 @@ class TestChainedToken:
         ), "the caller already holds it; taking it again deadlocks"
 
 
+class TestOwnPageMint:
+    """A browser on THIS gateway's dashboard, reached through a port forward that
+    listens on another number (the desktop app's managed tunnel, 5477 -> 5476),
+    asks for a pane token naming the port its page is on. Our own token for the
+    crew names our bound port, so the crew's CSP would refuse the frame.
+
+    The asker is our own page, not a hub one hop further, so the depth refusal
+    does not apply, and a crew we reach through a parent is minted by the parent
+    with that port. Everything that pairs a parent's credential with our forward
+    applies as it does to a store.
+    """
+
+    #: What a parent agreeing with the row answers; each case changes one field.
+    _AGREEING = {"hop": 53999, "ttl": "30m", "hop_id": VIA_ID, "hop_gen": 1}
+
+    def _parent_mint(self, token, changes=None):
+        from kiro_crew.instances.ssh_tunnel_manager import _Mint
+
+        return _Mint(token=token, **{**self._AGREEING, **(changes or {})})
+
+    def _connected_chain(self, tmp_path, monkeypatch, *, page_mint):
+        """C reached through B and connected, with *page_mint* answering every
+        mint that names an explicit port and the row's own answer otherwise."""
+        reg, mgr = _mgr(tmp_path, monkeypatch)
+        reg.add(name="B", ssh_host="b-host", instance_id="b")
+        reg.add(
+            name="C",
+            ssh_host="c-host",
+            instance_id="c",
+            via_instance_id="b",
+            via_remote_port=53999,
+            via_remote_id=VIA_ID,
+        )
+        asked: list[int | None] = []
+
+        async def through_parent(inst, _params, *, embed_parent_port=None):
+            asked.append(embed_parent_port)
+            if embed_parent_port is None:
+                return self._parent_mint("OWN")
+            return page_mint(embed_parent_port)
+
+        monkeypatch.setattr(mgr, "_mint_through_parent", through_parent)
+        assert asyncio.run(mgr.connect("c")).state.value == "connected"
+        return reg, mgr, asked
+
+    def test_a_crew_behind_a_parent_is_minted_by_the_parent_for_the_pages_port(
+        self, tmp_path, monkeypatch
+    ):
+        _reg, mgr, asked = self._connected_chain(
+            tmp_path,
+            monkeypatch,
+            page_mint=lambda port: self._parent_mint(f"PAGE_epp{port}", {"ttl": "1h"}),
+        )
+        ok, payload = asyncio.run(mgr.mint_embed_token("c", 5477, own_page=True))
+
+        assert ok is True, payload
+        assert asked == [None, 5477], "the parent was not asked with the page's port"
+        assert payload["token"] == "PAGE_epp5477"
+        assert payload["port"] == mgr.status("c").local_port, "named a hop it did not verify"
+        # The parent issued it, so the parent's lifetime is the one the lease and the
+        # answer carry: our own cap would free the port under a live credential.
+        assert payload["ttl"] == "1h"
+        assert payload["port"] in mgr._lent_hops, "lent our forward's port without a lease"
+        assert mgr.get_token("c") == "OWN", "overwrote our own credential for the crew"
+
+    def test_without_the_flag_the_depth_refusal_stands_and_nothing_is_asked(
+        self, tmp_path, monkeypatch
+    ):
+        """A gateway asking would ride one hop further than its own registry counts."""
+        _reg, mgr, asked = self._connected_chain(
+            tmp_path, monkeypatch, page_mint=lambda _port: pytest.fail("asked the parent")
+        )
+        ok, payload = asyncio.run(mgr.mint_embed_token("c", 5477))
+        assert ok is False
+        assert payload["code"] == "chain_too_deep"
+        assert asked == [None], "asked the parent for a hub one hop further"
+        assert not mgr._lent_hops
+
+    def test_a_parent_answering_for_a_rebuilt_hop_is_refused_and_retires_the_forward(
+        self, tmp_path, monkeypatch
+    ):
+        """Same port, another generation: the parent rebuilt its forward to the crew,
+        possibly handing the old port to another crew in between, so ours rides a hop
+        that changed hands. Refusing the new token alone would leave that forward."""
+        _reg, mgr, _asked = self._connected_chain(
+            tmp_path,
+            monkeypatch,
+            page_mint=lambda port: self._parent_mint(f"PAGE_epp{port}", {"hop_gen": 2}),
+        )
+        retired: list[str] = []
+        monkeypatch.setattr(
+            mgr, "_schedule_chained_retirement", lambda iid, reason: retired.append(iid)
+        )
+        ok, payload = asyncio.run(mgr.mint_embed_token("c", 5477, own_page=True))
+
+        assert ok is False
+        assert payload["code"] == "instance_hop_changed"
+        assert "token" not in payload
+        assert retired == ["c"], "kept a forward riding a hop that changed hands"
+        assert not mgr._lent_hops, "lent a hop it refused to hand over"
+
+    def test_a_parent_disowning_the_hop_is_refused_and_retires_the_forward(
+        self, tmp_path, monkeypatch
+    ):
+        """The parent answers that the crew is not one it holds: terminal for our
+        forward, exactly as on the refresh, so it is retired rather than left
+        dialling a port the parent may give to another crew."""
+        from kiro_crew.instances.token_mint import HopRetiredError
+
+        def disowned(_port):
+            raise HopRetiredError("crew 'b' does not hold the hop (instance_not_found)")
+
+        _reg, mgr, _asked = self._connected_chain(tmp_path, monkeypatch, page_mint=disowned)
+        retired: list[str] = []
+        monkeypatch.setattr(
+            mgr, "_schedule_chained_retirement", lambda iid, reason: retired.append(iid)
+        )
+        ok, payload = asyncio.run(mgr.mint_embed_token("c", 5477, own_page=True))
+
+        assert ok is False
+        assert payload["code"] == "instance_mint_failed"
+        assert retired == ["c"], "kept a forward riding a hop the parent disowned"
+        assert not mgr._lent_hops
+
+    def test_our_forward_answering_as_another_crew_than_the_parent_named_gets_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        _reg, mgr, _asked = self._connected_chain(
+            tmp_path,
+            monkeypatch,
+            page_mint=lambda port: self._parent_mint(
+                f"PAGE_epp{port}", {"crew_gateway_id": "gw-crew-c"}
+            ),
+        )
+
+        async def squatter(_port):
+            return "gw-somebody-else"
+
+        monkeypatch.setattr(mgr, "_peer_identity", squatter)
+        ok, payload = asyncio.run(mgr.mint_embed_token("c", 5477, own_page=True))
+
+        assert ok is False
+        assert payload["code"] == "instance_hop_changed"
+        assert "token" not in payload
+        assert not mgr._lent_hops
+
+    def test_the_flag_changes_nothing_for_a_crew_we_reach_directly(self, tmp_path, monkeypatch):
+        reg, mgr = _mgr(tmp_path, monkeypatch)
+        reg.add(name="C", ssh_host="c-host", instance_id="c")
+        asyncio.run(mgr.connect("c"))
+        ok, payload = asyncio.run(mgr.mint_embed_token("c", 5477, own_page=True))
+        assert ok is True
+        assert payload["token"] == "SSH_TOKEN_FOR_c-host_epp5477"
+        assert payload["ttl"] == "30m", "a token we issue escaped our own cap"
+
+    def test_the_parent_is_asked_by_its_one_field_with_the_named_port(self, tmp_path, monkeypatch):
+        """Over the real carrier: the page's port replaces ours in the only body
+        field, so the parent's own depth refusal still sees us as the hub asking."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        reg, mgr = _mgr(tmp_path, monkeypatch)
+        reg.add(name="B", ssh_host="b-host", instance_id="b")
+        inst = reg.add(
+            name="C",
+            ssh_host="c-host",
+            instance_id="c",
+            via_instance_id="b",
+            via_remote_port=53999,
+            via_remote_id=VIA_ID,
+        )
+        bodies: list[dict] = []
+
+        class _Recording(_FakeMintSession):
+            def post(self, url, **kw):
+                bodies.append(json.loads(kw["data"]))
+                return super().post(url, **kw)
+
+        monkeypatch.setattr(stm.aiohttp, "ClientSession", _Recording)
+        monkeypatch.setattr(
+            mgr, "_peer_target", lambda _pid, path: (f"http://127.0.0.1:1{path}", "kc")
+        )
+        monkeypatch.setattr(mgr, "_peer_cookie_header", _no_cookie_header)
+        params = mgr._resolve_chained_transport(inst, reg.get("b"))
+
+        asyncio.run(mgr._mint_through_parent(inst, params))
+        asyncio.run(mgr._mint_through_parent(inst, params, embed_parent_port=5477))
+        assert bodies == [{"embed_parent_port": 4242}, {"embed_parent_port": 5477}]
+
+
 class TestCycleGuard:
     def _chained(self, tmp_path, monkeypatch):
         reg, mgr = _mgr(tmp_path, monkeypatch)

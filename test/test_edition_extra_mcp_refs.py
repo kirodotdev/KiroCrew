@@ -3,7 +3,8 @@
 ``McpToolingProvider.extra_mcp_servers()`` can start returning a server after the
 first install (its program is installed later, or a newer edition adds one). The
 rebuild seeds the entry into ``mcpServers``; these tests pin that its ``@name``
-ref follows once, and that a ref the user then removes stays removed.
+ref follows once, and that a ref the user then removes stays removed. The last test
+pins that a same-named Kiro-global entry cannot replace the edition's args/env.
 """
 
 from __future__ import annotations
@@ -180,3 +181,34 @@ def test_a_server_narrowed_to_tool_refs_keeps_them_without_a_record(
     assert ref not in tools
     assert tools.count(narrowed) == 1
     assert json.loads(marker_path.read_text(encoding="utf-8"))["servers"] == [extra]
+
+
+_EDITION_ARGS = ["mcp-late", "--include-tool-tags", "default,code-review"]
+_EDITION_ENV = {"TOOL_PERSONALIZATION_ENABLED": "true"}
+
+
+@pytest.mark.parametrize(
+    "global_extra",
+    [
+        pytest.param({}, id="bare-command"),
+        pytest.param({"args": ["--include-tools", "OnlyRead"]}, id="narrowing-args"),
+    ],
+)
+def test_a_kiro_global_entry_does_not_replace_an_edition_servers_invocation(
+    rebuildable: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, global_extra: dict
+) -> None:
+    edition = {"command": agent._KIROCREW_BIN, "args": _EDITION_ARGS, "env": _EDITION_ENV}
+    _supply(monkeypatch, {EXTRA: edition})
+    shared = {EXTRA: {"command": agent._KIROCREW_BIN, "timeout": 5000, **global_extra}}
+    (tmp_path / "kiro-global-mcp.json").write_text(
+        json.dumps({"mcpServers": shared}), encoding="utf-8"
+    )
+
+    # The first pass builds fresh; the second starts from the spec on disk.
+    for _ in range(2):
+        agent.rebuild_agent_config()
+        entry = _spec(rebuildable)["mcpServers"][EXTRA]
+        assert entry["args"] == _EDITION_ARGS
+        assert entry.get("env", {}).get("TOOL_PERSONALIZATION_ENABLED") == "true"
+        # Only the invocation is the edition's: the global's timeout still lands.
+        assert entry["timeout"] == 5000

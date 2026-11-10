@@ -182,7 +182,10 @@ def _cloud_status(args: argparse.Namespace) -> int:
         return 0
     ui.note(f"{ui.BOLD}{tag}{ui.RESET}")
     ui.detail(f"stack:    {st.get('stack_name', '')} ({st.get('stack_status', '')})")
-    ui.detail(f"instance: {st.get('instance_id', '')} [{st.get('instance_state', '?')}]")
+    instance_id = st.get("instance_id", "")
+    # No InstanceId output yet (still creating, or rolled back): the stack status says why.
+    state = (st.get("instance_state") or "gone") if instance_id else st.get("stack_status", "")
+    ui.detail(f"instance: {instance_id or '(id unknown)'} [{state}]")
     ui.detail(f"region:   {st.get('region', region)}")
     return 0
 
@@ -388,20 +391,22 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
     profile, region = _resolve(args)
     tag = _resolve_tag(args)
 
+    # Before the dry run too, so it never offers to delete a stack the real run cannot find.
+    st = ec2.describe(tag, profile, region)
+    if not st.get("exists"):
+        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
+        return 0
+
     if getattr(args, "dry_run", False):
         res = ec2.destroy(tag, profile, region, dry_run=True)
         ui.info("Dry run — would run:")
         ui.detail("aws " + " ".join(res["argv"]))
         return 0
 
-    st = ec2.describe(tag, profile, region)
-    if not st.get("exists"):
-        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
-        return 0
-
     ui.warn(f"This will PERMANENTLY delete the '{tag}' stack and everything in it:")
     ui.detail(
-        f"instance {st.get('instance_id', '')}, its IAM role, security group, and EBS volume."
+        f"instance {st.get('instance_id') or '(id unknown)'}, its IAM role, security group, "
+        "and EBS volume."
     )
     ui.detail("Any data on the instance is lost. This cannot be undone.")
     if not getattr(args, "yes", False):
@@ -472,7 +477,10 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
         ui.warn(f"Removed the stack, but could not clear the saved pointer to it: {exc}")
         ui.detail("The pointer is stale, not harmful: `kirocrew cloud list` shows what exists.")
 
-    ui.ok(f"Removed '{tag}' — all AWS resources deleted. You won't be billed for it.")
+    if src.get("removed"):
+        ui.ok(f"Removed '{tag}' — all AWS resources deleted. You won't be billed for it.")
+    else:
+        ui.ok(f"Removed the '{tag}' stack. Only the source object above may remain.")
     return 0
 
 
@@ -481,7 +489,9 @@ def _cloud_iam_policy(args: argparse.Namespace) -> int:
 
     stdout stays one JSON document either way, so it can be piped straight into
     ``aws iam create-policy``. When the edition adds host policies, the plain form
-    says on stderr that a second policy is needed and how to print it.
+    says on stderr that a second policy is needed and how to print it, and the
+    ``--host-policies`` form says there when the addendum had no room for the read
+    a launch uses to check that the account holds them.
     """
     want_addendum = getattr(args, "host_policies", False)
     if not want_addendum:
@@ -499,6 +509,15 @@ def _cloud_iam_policy(args: argparse.Namespace) -> int:
             ui.fail("This build adds no host policies, so there is no second policy to apply.")
             return 1
         print(json.dumps(addendum, indent=2))
+        if not iam.grants_host_policy_read(addendum):
+            print(
+                "This build's host policy ARNs are too long for this policy to also let "
+                "the launcher read them within IAM's policy size limit, so it grants only "
+                "the attach. A launch therefore cannot check first that the account holds "
+                "them, and CloudFormation's attach still fails if one is missing. To get "
+                "that check, grant iam:GetPolicy on exactly these ARNs in a separate policy.",
+                file=sys.stderr,
+            )
         return 0
     if addendum is not None:
         print(

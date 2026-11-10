@@ -31,7 +31,13 @@ from kiro_crew.service.linux_systemctl import (
     _unit_state,
     _UnitState,
 )
-from kiro_crew.service.linux_unit import ENV_DIR, ENV_FILE_PATH, UNIT_PATH, user_unit_file_path
+from kiro_crew.service.linux_unit import (
+    _SYSTEMD_BOOTED_DIR,
+    ENV_DIR,
+    ENV_FILE_PATH,
+    UNIT_PATH,
+    user_unit_file_path,
+)
 
 
 @dataclass(frozen=True)
@@ -166,13 +172,6 @@ def _teardown_refusal(state: _UnitState) -> str | None:
             f"{how}, then run `kirocrew service uninstall` again)"
         )
     return None
-
-
-# systemd as the init system leaves this directory behind for exactly this
-# question (sd_booted(3) checks nothing else). A host without it runs no system
-# manager, so no unit can be running there — the one case in which a unit file
-# is removed without the manager's word that it is stopped.
-_SYSTEMD_BOOTED_DIR = Path("/run/systemd/system")
 
 
 # The one line every unit this module renders carries (``render_unit``, both

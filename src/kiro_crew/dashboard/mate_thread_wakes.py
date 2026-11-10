@@ -18,8 +18,10 @@ envelope ``[Worker report]``).
   wakes nobody.
 
 The same flush delivers a moved crewmate's one upgrade notice first
-(:mod:`kiro_crew.mate_upgrade_notice`). Per-gateway state lives on the dashboard
-state object, never in module globals.
+(:mod:`kiro_crew.mate_upgrade_notice`), and the notice a thread owes once its
+crewmate is set to another agent than the thread runs
+(:func:`offer_rebind_notice`). Per-gateway state lives on the dashboard state
+object, never in module globals.
 """
 
 from __future__ import annotations
@@ -209,15 +211,23 @@ def _excerpt(text: str) -> tuple[str, bool]:
 
 
 def report_prompt(
-    reports: list[dict[str, Any]], member: str = "", *, manual: bool | None = None
+    reports: list[dict[str, Any]],
+    member: str = "",
+    *,
+    manual: bool | None = None,
+    worker_spec: dict[str, Any] | None = None,
 ) -> str:
     """The hidden turn that hands crewmate *member* its workers' latest replies.
 
     *manual* is *member*'s Dynamic capabilities preview being off
     (``crewmate_dynamic_capabilities.restricted_for``), which picks the gap line;
     when not given it is read here (a config read), and no crewmate named reads
-    as off. The wake loop reads it off the event loop and passes it in.
+    as off. The wake loop reads it off the event loop and passes it in, and with
+    it *member*'s *worker_spec*, which picks the servers a report names as ones
+    its worker could not use (``mate_capability_catalog.unusable_line``).
     """
+    from kiro_crew.mate_capability_catalog import unusable_line
+
     if manual is None:
         from kiro_crew import crewmate_dynamic_capabilities
 
@@ -247,9 +257,23 @@ def report_prompt(
             missing = missing_capability(text)
             if missing:
                 lines.append(_missing_capability_line(missing, manual))
+        unusable = unusable_line(worker_spec or {}, report.get("unusable") or {})
+        if unusable:
+            lines.append(unusable)
         lines.append("")
     lines.append(_GUIDANCE)
     return "\n".join(lines)
+
+
+def _worker_spec(member: str) -> dict[str, Any]:
+    """*member*'s worker spec, or ``{}`` when it cannot be read. Blocking."""
+    from kiro_crew.mate_capability_catalog import worker_spec
+
+    try:
+        return worker_spec(member)
+    except Exception:  # noqa: BLE001 - an unreadable spec names no server; the report still goes
+        logger.debug("worker report for %s: worker spec unreadable", member, exc_info=True)
+        return {}
 
 
 def _pending(state: Any) -> dict[str, dict[str, dict[str, Any]]]:
@@ -293,6 +317,36 @@ def _kept_notices(state: Any) -> dict[str, str]:
         kept = {}
         state._mate_kept_notices = kept
     return kept
+
+
+#: The envelope the hidden rebind-notice turn opens with.
+REBIND_NOTICE_PREFIX = "[Agent change]"
+
+
+def _rebind_notices(state: Any) -> dict[str, str]:
+    """Threads whose rebind notice (its prompt) is still to be delivered."""
+    rebind = getattr(state, "_mate_rebind_notices", None)
+    if not isinstance(rebind, dict):
+        rebind = {}
+        state._mate_rebind_notices = rebind
+    return rebind
+
+
+def offer_rebind_notice(state: Any, slot: Any, agent: str, recorded_agent: str) -> None:
+    """Have crewmate thread *slot* tell its user it keeps running *recorded_agent*.
+
+    Its crewmate is now set to *agent*, which a new chat runs
+    (:mod:`kiro_crew.dashboard.member_rebind_notice`). Offered from inside the
+    thread's turn; the flush scheduled here waits for that turn to end and then
+    runs one hidden turn, and a thread whose turn has no task to wait on gets it
+    at a later turn end (:func:`note_turn_end`). A later offer replaces one not
+    yet delivered. Held in memory only: a restart before the delivery loses it,
+    and the thread's notice row stays.
+    """
+    _rebind_notices(state)[slot.key] = REBIND_NOTICE_PREFIX + crewmate_prompts.fill(
+        "rebind_notice", agent=agent, recorded=recorded_agent
+    )
+    schedule_flush(state, slot.key)
 
 
 def _notice_checked(state: Any) -> set[str]:
@@ -355,7 +409,9 @@ async def _flush(state: Any, key: str) -> None:
     while True:
         slot = state.get_slot(key)
         reports = _pending(state).get(key)
-        owed = key in _notices(state) or key in _kept_notices(state)
+        owed = (
+            key in _notices(state) or key in _kept_notices(state) or key in _rebind_notices(state)
+        )
         if not (reports or owed) or slot is None or not is_crewmate_thread(slot):
             # Nothing to say, or the thread is gone: what is pending stays, and
             # the thread's next turn end schedules this again.
@@ -379,6 +435,10 @@ async def _flush(state: Any, key: str) -> None:
             dispatch_hidden_turn(state, slot, _kept_notices(state).pop(key), human_seen=False)
             logger.info("kept notice started on %s", key)
             continue
+        if _idle(slot) and key in _rebind_notices(state):
+            dispatch_hidden_turn(state, slot, _rebind_notices(state).pop(key), human_seen=False)
+            logger.info("rebind notice started on %s", key)
+            continue
         # The Dashboard line reads the page store: off the loop, before the idle check.
         slug = (members_mod.slug_from_dm_slot_key(key) or "") if reports else ""
         page = await asyncio.to_thread(page_line, slug) if slug else ""
@@ -395,7 +455,12 @@ async def _flush(state: Any, key: str) -> None:
             manual = await asyncio.to_thread(
                 crewmate_dynamic_capabilities.restricted_for, slot.agent
             )
-        if (slug or gap) and (
+        # A report naming servers its worker session could not use is matched
+        # against the worker's spec, a file read, so that runs off the loop too.
+        worker_spec = None
+        if reports and any(r.get("unusable") for r in reports.values()):
+            worker_spec = await asyncio.to_thread(_worker_spec, slot.agent)
+        if (slug or gap or worker_spec is not None) and (
             state.get_slot(key) is not slot
             or not is_crewmate_thread(slot)
             or getattr(slot, "is_closing", False)
@@ -403,14 +468,22 @@ async def _flush(state: Any, key: str) -> None:
             # The thread was closed or replaced during the read: no wake on it, and
             # what is pending stays for the thread's next turn end.
             return
-        if not reports:
+        # A rebind notice is offered from inside the thread's own turn, so its
+        # flush waits for that turn to end; the other notices wait for a later
+        # turn end to schedule them again.
+        if not reports and key not in _rebind_notices(state):
             return
-        if _idle(slot):
+        if reports and _idle(slot):
             _pending(state).pop(key, None)
             dispatch_hidden_turn(
                 state,
                 slot,
-                with_page(report_prompt(list(reports.values()), slot.agent, manual=manual), page),
+                with_page(
+                    report_prompt(
+                        list(reports.values()), slot.agent, manual=manual, worker_spec=worker_spec
+                    ),
+                    page,
+                ),
                 human_seen=False,
             )
             logger.info("worker report woke %s (%d worker(s))", key, len(reports))
@@ -451,12 +524,23 @@ def schedule_flush(state: Any, key: str) -> None:
     tasks[key] = task
 
 
-def _record_report(state: Any, thread_key: str, key: str, title: str, reply: str) -> None:
+def _record_report(
+    state: Any,
+    thread_key: str,
+    key: str,
+    title: str,
+    reply: str,
+    mcp_report: dict[str, Any] | None = None,
+) -> None:
     """Hold worker *key*'s latest reply for crewmate thread *thread_key* and schedule the wake.
 
     One entry per worker, replaced and counted by its later turn ends. The reply
-    is held as its excerpt (at most :data:`MAX_REPORT_CHARS`) with a cut flag.
+    is held as its excerpt (at most :data:`MAX_REPORT_CHARS`) with a cut flag, and
+    beside it the servers the worker session's *mcp_report* says it cannot use
+    (``mate_capability_catalog.session_unusable``).
     """
+    from kiro_crew.mate_capability_catalog import session_unusable
+
     reports = _pending(state).setdefault(thread_key, {})
     prior = reports.get(key)
     text, cut = _excerpt(reply)
@@ -466,6 +550,7 @@ def _record_report(state: Any, thread_key: str, key: str, title: str, reply: str
         "reply": text,
         "cut": cut,
         "turns": (prior["turns"] + 1) if prior else 1,
+        "unusable": session_unusable(mcp_report),
     }
     schedule_flush(state, thread_key)
 
@@ -542,12 +627,14 @@ def note_turn_end(
                 slot.key,
                 slot.display_title,
                 reply_text if isinstance(reply_text, str) else "",
+                slot.mcp_report_payload(),
             )
         elif is_crewmate_thread(slot):
             if (
                 _pending(state).get(slot.key)
                 or slot.key in _notices(state)
                 or slot.key in _kept_notices(state)
+                or slot.key in _rebind_notices(state)
             ):
                 schedule_flush(state, slot.key)
             if slot.key not in _notice_checked(state):

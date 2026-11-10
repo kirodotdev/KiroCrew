@@ -4,8 +4,9 @@ Issue Radar is to leave this repository whole. That is only possible while nothi
 outside ``src/kiro_crew/apps/builtins/`` imports it, and while every core string that
 still names it is one somebody decided to keep. What the app needs from the core it
 imports from the core. The app's pins of core parity (the shared ``gh`` runner's URL
-parser and error class, its MCP tools' app id, its config lock's mode, its crew-log-off
-refusal) run in the app's own ``tests/``.
+parser and error class, its config lock's mode, its crew-log-off refusal) run in the
+app's own ``tests/``. Its three agent tools are declared in its ``app.json``
+(``agentTools``) and served by its own route, so no core table names them.
 
 Two properties are pinned:
 
@@ -46,10 +47,6 @@ APP_PACKAGE = "kiro_crew.apps.builtins.issue_radar"
 #: The package directory name and the app id: every spelling that addresses the app.
 APP_NAMES = ("issue_radar", "issue-radar")
 
-_TOOLS = ("issue_radar_record_investigation", "issue_radar_crew_read", "issue_radar_crew_record")
-_CREW_ROUTES = ("/api/apps/issue-radar/crew", "/api/apps/issue-radar/crew/work")
-_INVESTIGATION_ROUTE = "/api/apps/issue-radar/investigation"
-
 #: The ``radar/recorded`` entry's note, which names the tool that writes the entry.
 _RADAR_ENTRY_NOTE = next(
     t.note for t in entry_types_ledgers.TYPES if t.type == entry_types_ledgers.RADAR_ENTRY_TYPE
@@ -66,26 +63,9 @@ _CLI_STDERR_REASON = next(
 #: the tool, the route, the file or the doc it names.
 KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
     {
-        # The app's three agent tools still run in the ``kirocrew-core`` MCP server,
-        # which holds the gateway's internal secret, and the gateway admits exactly
-        # their three routes to internal-secret callers. The seam they move onto is
-        # the manifest ``agentTools`` block (``apps.app_agent_tools``): the app serves
-        # each call from its own routes and the core only lists and forwards it. Moving
-        # them is app-side work this table cannot do for the app: a route that serves
-        # the three tools over its own handlers, the strictly-identified crew session
-        # the crew tools resolve, and the ``radar`` crew-log fold below. Until then the
-        # descriptors, handlers, ``TOOL_APPS`` rows, validation schemas and
-        # internal-secret path rows stay, unchanged.
-        *(("mcp_tools/apps.py", tool) for tool in _TOOLS),
-        ("mcp_tools/apps.py", "issue-radar"),
-        ("mcp_tools/apps.py", _INVESTIGATION_ROUTE),
-        *(("validation_parts/app_schemas.py", tool) for tool in _TOOLS),
-        *(("validation_parts/server_registries.py", tool) for tool in _TOOLS),
-        ("dashboard/server_internal_paths.py", _INVESTIGATION_ROUTE),
-        *(("dashboard/server_internal_paths.py", route) for route in _CREW_ROUTES),
-        *(("mcp_core.py", route) for route in _CREW_ROUTES),
         # The ``radar/recorded`` crew-log entry type is the crew ledger's storage, and
-        # its note names the tool above that writes it. It goes with the ``radar`` fold.
+        # its note names the app's agent tool that writes it. It goes with the
+        # ``radar`` fold, which has no app-keyed fold seam yet.
         ("crew_log/entry_types_ledgers.py", _RADAR_ENTRY_NOTE),
         # The work-dir sweep's own table of the one-run session-key shapes whose
         # derived directories it may delete. An app may not declare what the core
@@ -100,6 +80,7 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
         # The security-posture tables classify named files of the package, built-in
         # apps included: the core's audit of the app's code, not a reach into it.
         ("security_posture.py", "apps/builtins/issue_radar/backend/crew_runtime_session.py"),
+        ("security_posture.py", "apps/builtins/issue_radar/backend/agent_tools.py"),
         ("security_posture.py", "apps/builtins/issue_radar/backend/http_routes/ai.py"),
         (
             "security_posture.py",

@@ -254,7 +254,9 @@ def _append_lines_locked(
         try:
             platform_compat.restrict_to_owner(self._path)
         except OSError:
-            logger.warning("Failed to make SEL audit log %s owner-only", self._path, exc_info=True)
+            logger.warning(
+                "SECURITY: Failed to make SEL audit log %s owner-only", self._path, exc_info=True
+            )
     with os.fdopen(fd, "a", encoding="utf-8") as f:
         actual = os.fstat(f.fileno())
         if expect is not None and _identity_changed(expect, actual):

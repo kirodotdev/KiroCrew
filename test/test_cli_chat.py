@@ -14,6 +14,9 @@ from kiro_crew.config.sections import KiroCrewAgentConfig
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.shell_audit_log import SHELL_AUDIT_LOG_MAX_BYTES, SHELL_AUDIT_LOG_NAME
 
+#: ``_chat`` builds a ``SkillsLoader``, whose index and catalog worker outlive the test.
+pytestmark = pytest.mark.usefixtures("close_skills_loaders")
+
 
 def _patch_provider(monkeypatch) -> MagicMock:
     provider = MagicMock()
@@ -300,3 +303,44 @@ async def test_send_and_print_prints_a_finished_or_cancelled_turn(stop_reason, c
     out, err = capsys.readouterr()
     assert "partial answ" in out
     assert "timed out" not in err
+
+
+@pytest.mark.asyncio
+async def test_send_and_print_names_kas_login_first_when_kiro_is_signed_out(capsys):
+    """A signed-out KAS turn names ``kirocrew kas login`` before the dashboard card:
+    a host reached by ssh may have no browser to open the dashboard in."""
+    from kiro_crew.acp.client import AcpError
+    from kiro_crew.agent_sdk import host_auth
+
+    async def stream(message, **_kw):
+        raise AcpError(host_auth.signed_out_message("kas"))
+        yield  # pragma: no cover - makes this an async generator
+
+    with pytest.raises(SystemExit) as excinfo:
+        await cli_chat._send_and_print(SimpleNamespace(stream=stream), "question")
+    err = capsys.readouterr().err
+    assert excinfo.value.code == 1
+    assert (
+        "Not signed in to Kiro. Sign in with `kirocrew kas login` (or in the dashboard: "
+        "Settings → Agent Harness → Kiro sign-in), then send your message again." in err
+    )
+
+
+def test_run_chat_names_kas_login_first_when_the_start_is_signed_out(monkeypatch, capsys):
+    """A sign-in failure before any turn, while the backend starts, prints the same
+    one line as a failed turn, not a traceback."""
+    from kiro_crew.acp.client import AcpAuthRequired
+    from kiro_crew.agent_sdk import host_auth
+
+    def signed_out(coro) -> None:
+        coro.close()
+        raise AcpAuthRequired(host_auth.signed_out_message("kas"), backend="kas")
+
+    monkeypatch.setattr(cli_chat.asyncio, "run", signed_out)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli_chat._run_chat("hello", None)
+    err = capsys.readouterr().err
+    assert excinfo.value.code == 1
+    assert "Sign in with `kirocrew kas login` (or in the dashboard:" in err
+    assert "Traceback" not in err

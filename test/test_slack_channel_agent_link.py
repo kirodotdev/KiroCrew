@@ -17,6 +17,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from real_session_manager import real_sessions
 
 PINNED = "C0PINNED"
 OPEN = "C0OPEN"
@@ -123,8 +124,7 @@ def _linkable_state(tmp_path, monkeypatch, agent: str = ""):
     state.slack_client.open_dm = AsyncMock(return_value="C123")
     state.slack_client.post_message = AsyncMock(return_value="newts")
     state.owner_id = "U123"
-    state.sessions.get_slack_link = MagicMock(return_value=(None, None))
-    state.sessions.set_slack_link = MagicMock()
+    state.sessions = real_sessions()
     state.push_slots_update = MagicMock()
     return state
 
@@ -145,7 +145,7 @@ class TestSlackLinkRefusesMismatchedAgent:
                 assert resp.status == 409
                 data = await resp.json()
                 assert data["code"] == "channel_agent_mismatch"
-        state.sessions.set_slack_link.assert_not_called()
+        assert state.sessions.get_slack_link("dashboard:s1") == (None, None)
         assert state.slack_client.post_message.await_count == 0
 
     @pytest.mark.asyncio
@@ -159,7 +159,7 @@ class TestSlackLinkRefusesMismatchedAgent:
                     json={"channel": PINNED, "thread_ts": "1700.42"},
                 )
                 assert resp.status == 200
-        state.sessions.set_slack_link.assert_called_once()
+        assert state.sessions.get_slack_link("dashboard:s1") == ("1700.42", PINNED)
 
     @pytest.mark.asyncio
     async def test_unpinned_channel_thread_still_links(self, tmp_path, monkeypatch):
@@ -172,7 +172,7 @@ class TestSlackLinkRefusesMismatchedAgent:
                     json={"channel": OPEN, "thread_ts": "1700.42"},
                 )
                 assert resp.status == 200
-        state.sessions.set_slack_link.assert_called_once()
+        assert state.sessions.get_slack_link("dashboard:s1") == ("1700.42", OPEN)
 
     @pytest.mark.asyncio
     async def test_new_anchor_in_pinned_channel_is_refused_and_names_the_agent(
@@ -190,7 +190,7 @@ class TestSlackLinkRefusesMismatchedAgent:
                 assert data["code"] == "channel_agent_mismatch"
                 assert data["agent"] == "restricted-agent"
                 assert "restricted-agent" in data["error"]
-        state.sessions.set_slack_link.assert_not_called()
+        assert state.sessions.get_slack_link("dashboard:s1") == (None, None)
         assert any(
             c.kwargs.get("source") == "channel_agent_pinned"
             for c in audit.log_api_access.call_args_list
@@ -410,7 +410,7 @@ class TestResumeInPinnedChannelThread:
         o = MagicMock()
         o.slack.post_message = AsyncMock(return_value="ts1")
         o.slack.post_ephemeral = AsyncMock()
-        o.sessions.get_slack_link = MagicMock(return_value=("", ""))
+        o.sessions = real_sessions()
         o.dashboard_state = MagicMock()
         o.dashboard_state.slot_exists = MagicMock(return_value=True)
         o.dashboard_state.get_slot = MagicMock(
@@ -444,7 +444,7 @@ class TestResumeInPinnedChannelThread:
         with a, b:
             await self._resume()
         o.slack.post_message.assert_not_awaited()
-        o.sessions.set_slack_link.assert_not_called()
+        assert o.sessions.get_slack_link("dashboard:s1") == (None, None)
         o.dashboard_state.link_slack.assert_not_called()
         o.slack.post_ephemeral.assert_awaited_once()
         assert "DM" in o.slack.post_ephemeral.await_args.args[2]
@@ -462,7 +462,7 @@ class TestResumeInPinnedChannelThread:
         with a, b:
             await self._resume()
         o.slack.post_message.assert_not_awaited()
-        o.sessions.set_slack_link.assert_not_called()
+        assert o.sessions.get_slack_link("dashboard:s1") == (None, None)
         o.slack.post_ephemeral.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -479,7 +479,7 @@ class TestResumeInPinnedChannelThread:
         a, b = _patches()
         with a, b:
             await self._resume()
-        o.sessions.set_slack_link.assert_not_called()
+        assert o.sessions.get_slack_link("dashboard:s1") == (None, None)
         o.dashboard_state.link_slack.assert_not_called()
 
     @pytest.mark.asyncio
@@ -488,7 +488,7 @@ class TestResumeInPinnedChannelThread:
         a, b = _patches()
         with a, b, patch("aiohttp.ClientSession"):
             await self._resume()
-        o.sessions.set_slack_link.assert_called_once_with("dashboard:s1", "ts1", PINNED)
+        assert o.sessions.get_slack_link("dashboard:s1") == ("ts1", PINNED)
 
 
 class TestLinkedSessionKeepsTheChannelAgent:
@@ -698,7 +698,7 @@ class TestCheckThenCommitWindow:
                 resp = await client.post("/api/chat/slots/s1/slack-link", json={"channel": PINNED})
                 assert resp.status == 409
                 assert (await resp.json())["code"] == "channel_agent_mismatch"
-        state.sessions.set_slack_link.assert_not_called()
+        assert state.sessions.get_slack_link("dashboard:s1") == (None, None)
 
 
 class TestLateLinkDuringProviderSwitch:
@@ -1747,7 +1747,7 @@ class TestLinkWritersJudgeTheRecordedAgent:
                 )
                 assert resp.status == 409
                 assert (await resp.json())["code"] == "channel_agent_mismatch"
-        state.sessions.set_slack_link.assert_not_called()
+        assert state.sessions.get_slack_link("dashboard:s1") == (None, None)
         assert state.slack_client.post_message.await_count == 0
 
     @pytest.mark.asyncio
@@ -1798,6 +1798,7 @@ class TestLinkWritersJudgeTheRecordedAgent:
         o.slack.post_message.assert_not_awaited()
         o.dashboard_state.link_slack.assert_not_called()
         o.slack.post_ephemeral.assert_awaited_once()
+        assert o.sessions.get_slack_link("dashboard:s1") == (None, None)
 
     @pytest.mark.asyncio
     async def test_an_unreadable_record_fails_closed(self, monkeypatch):
@@ -1839,7 +1840,7 @@ class TestLateLinkCheckSeesASwitchDuringThePost:
             async with TestClient(TestServer(_make_slack_app(state))) as client:
                 resp = await client.post("/api/chat/slots/s1/slack-link", json={"channel": PINNED})
                 assert resp.status == 409
-        state.sessions.set_slack_link.assert_not_called()
+        assert state.sessions.get_slack_link("dashboard:s1") == (None, None)
 
     @pytest.mark.asyncio
     async def test_thread_resume_refused_after_a_switch_during_the_post(
@@ -1863,7 +1864,7 @@ class TestLateLinkCheckSeesASwitchDuringThePost:
         with a, b:
             await TestResumeInPinnedChannelThread._resume()
         o.dashboard_state.link_slack.assert_not_called()
-        o.sessions.set_slack_link.assert_not_called()
+        assert o.sessions.get_slack_link("dashboard:s1") == (None, None)
 
 
 class TestLinkRefusedDuringAHalfCommittedSwitch:
@@ -1888,7 +1889,7 @@ class TestLinkRefusedDuringAHalfCommittedSwitch:
                     json={"channel": PINNED, "thread_ts": "1700.42"},
                 )
                 assert resp.status == 409
-        state.sessions.set_slack_link.assert_not_called()
+        assert state.sessions.get_slack_link("dashboard:s1") == (None, None)
         assert state.slack_client.post_message.await_count == 0
 
     def test_record_and_field_both_on_the_channel_agent_link(self):

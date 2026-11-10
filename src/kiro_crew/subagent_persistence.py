@@ -60,6 +60,7 @@ from kiro_crew.subagent_persistence_layout import (
     _LIVE_CLEANUP_IDENTITIES,
     SUBAGENT_CONVERSATION_PREFIX,
     _agent_dir,
+    _CleanupIdentitySweepReader,
     _delete_cleanup_identities_file,
     _live_cleanup_identities,
     _merge_cleanup_identity_records,
@@ -222,28 +223,18 @@ def _record_app(state: dict) -> str:
 def classify_persisted_ending(agent_dir: Path) -> tuple[str, str, bool]:
     """How a run on disk ended, as ``(outcome, error, stopped)``.
 
-    The ONE classification site for a persisted run, shared by the panel list
-    and the single-card read, so one folder cannot read "completed" in a list
-    and "Orphaned: delivered" when it is opened.
+    The ONE classification site, shared by the panel list and the single-card
+    read, so one folder cannot read "completed" in a list and "Orphaned:
+    delivered" when opened. Takes the resolved folder so callers resolve it once.
 
-    Takes the run's resolved folder rather than its id, so a caller that already
-    resolved it -- every caller does, to reach ``result.txt`` -- resolves it once
-    for the whole response instead of once per field.
-
-    The tombstone's own ``outcome`` is preferred over its ``cause``, because the
-    writer records the outcome directly: a user stop is ``stopped`` there, while
-    deriving from ``cause`` alone reports that routine stop as a failure.
+    The tombstone's ``outcome`` wins over its ``cause``: a user stop is
+    ``stopped`` there, while ``cause`` alone would report it as a failure.
     ``detail`` carries the specific reason where ``cause`` is a coarse bucket.
 
-    An absent tombstone means NOTHING recorded an ending, which is not an outcome
-    and must not be reported as one: calling it ``completed`` would show a green
-    terminal card for a run the restart killed, contradicting the orphan notice
-    injected for that same run. It answers ``""`` instead, and a caller that
-    needs an outcome skips the folder until an ending is on disk. The orphan
-    reconciler writes one, but it yields between folders, so a tab reconnecting
-    mid-scan observes this state rather than racing past it. A tombstone that is
-    PRESENT but unreadable is the opposite case: an ending was recorded and
-    cannot be read, which is reported as an unknown cause.
+    An absent tombstone means NOTHING recorded an ending, so this answers ``""``
+    and callers skip the folder until the orphan reconciler writes one; calling it
+    ``completed`` would show a green card for a run the restart killed. A
+    tombstone PRESENT but unreadable is reported as an unknown cause.
     """
     tombstone, present = _read_tombstone_at(agent_dir / "tombstone.json")
     if tombstone is None:
@@ -287,14 +278,10 @@ def _panel_result_text(agent_dir: Path) -> str:
 def _result_written_at(agent_dir: Path) -> float:
     """When the run's own output last reached disk, or ``0.0`` when it never did.
 
-    The run writes ``result.txt`` itself as its output streams, and its ending
-    may rewrite it once more just before recording ``result_complete`` (whole
-    from memory, or capped in place when it outgrew the cap), so its last write
-    is when the run stopped producing, give or take the ending's
-    post-processing, which this may include. Delivery and retention only read it
-    or remove it, which is what makes the timestamp the run's and not a later
-    caller's. A run that produced no output has no file, and the caller falls
-    back to the tombstone.
+    Only the run writes ``result.txt`` (as output streams, and once more at its
+    ending before ``result_complete``); delivery and retention only read or
+    remove it, so its mtime is when the run stopped producing. A run with no
+    output has no file, and the caller falls back to the tombstone.
     """
     try:
         return _finite_time((agent_dir / "result.txt").stat().st_mtime)
@@ -326,17 +313,11 @@ def _panel_record(agent_id: str, *, cutoff: float, include_result: bool) -> dict
     started = _finite_time(state.get("started"))
     tombstone, _present = _read_tombstone_at(agent_dir / "tombstone.json")
     ended = _finite_time((tombstone or {}).get("died")) or _finite_time(state.get("updated_at"))
-    # The end of the RUN, not of the bookkeeping about it. A tombstone's ``died``
-    # is carried across writes, so where a write happened at the ending it is the
-    # ending. The queued and digest-held paths have no write at completion at all
-    # -- the delivery acknowledgement is their FIRST tombstone -- and it lands
-    # whenever the parent got round to the result, so on those the stamp is a wait
-    # this panel would otherwise show as runtime. The run's own output file is the
-    # completion evidence that exists on every path that produced output, and the
-    # earlier of the two is the one the run itself wrote. Only the reported
-    # duration uses it: the retention window below stays on the latest timestamp,
-    # because a run whose result reached its parent moments ago belongs in the
-    # panel whenever it happens to have finished.
+    # The end of the RUN, not of its bookkeeping. On the queued and digest-held
+    # paths the first tombstone is the delivery acknowledgement, so its ``died``
+    # includes the wait for the parent. The earlier of it and the result file's
+    # mtime is the one the run wrote. Only the duration uses it: the age cutoff
+    # stays on the latest timestamp, so a just-delivered run stays in the panel.
     written = _result_written_at(agent_dir)
     ran_until = min(ended, written) if (ended and written) else (ended or written)
     if max(started, ended) < cutoff:
@@ -367,10 +348,8 @@ def _panel_record(agent_id: str, *, cutoff: float, include_result: bool) -> dict
 class PanelRecords(NamedTuple):
     """One panel rebuild's records, plus what the count bound left out.
 
-    The overflow is carried out with the records rather than dropped, because a
-    truncated tail is otherwise indistinguishable from a population that never
-    held those runs -- a panel showing 50 of 51 looks exactly like a panel showing
-    all 50 there were. Every consumer surfaces it once per rebuild.
+    The overflow is returned so a panel showing 50 of 51 does not look like one
+    showing all 50; every consumer surfaces it once per rebuild.
 
     ``overflow_is_lower_bound`` says the scan's own candidate window filled up, so
     more admissible folders may exist past it and the count is a floor.
@@ -391,17 +370,14 @@ def read_panel_records(
 ) -> PanelRecords:
     """Bounded, newest-first run records for rebuilding a subagent panel.
 
-    A panel's live source is gateway memory, so a replacement gateway process
-    has nothing to show for the runs it never tracked. These records are the
-    durable half of that answer: one entry per run folder, carrying the fields a
-    terminal panel frame needs.
+    The durable half of a panel: a replacement gateway has nothing in memory for
+    runs it never tracked, so this reads one entry per run folder with the
+    fields a terminal panel frame needs.
 
-    ``exclude_ids`` carries the ids the caller's live manager already holds.
-    Those folders are skipped, never merged: a live entry is the authority on its
-    own run, and a record here describes only a run nobody is tracking. Runs the
-    user DISMISSED are skipped on the same terms, from the durable record the
-    delete route leaves -- without it, dropping a run from the manager hid its
-    card only until this reader found the folder again.
+    ``exclude_ids`` are the ids the caller's live manager holds; those folders
+    are skipped, never merged, since a live entry is the authority on its run.
+    Runs the user DISMISSED are skipped too, from the durable record the delete
+    route leaves, so a dismissed card does not come back.
 
     ``admit`` is the caller's OWN visibility filter, and it runs before the cap
     rather than after it. Filtering afterwards lets a record the caller may not
@@ -409,17 +385,13 @@ def read_panel_records(
     population that is not the caller's -- which discloses how many foreign runs
     exist. Applied here, both the cap and the count are the caller's own.
 
-    ``keep`` and ``max_age_secs`` bound different things -- the size of the burst
-    a caller must deliver at once, and how far back a rebuild reaches. Ages are
-    measured against the times the run itself recorded. Because a row count is
-    not a memory bound, every retained string is clamped to its own named cap and
-    the three equality keys refuse an oversized record outright. What ``keep``
-    cut is COUNTED and returned, never silently dropped.
+    ``keep`` bounds the burst a caller delivers at once; ``max_age_secs`` bounds
+    how far back a rebuild reaches, measured against the run's own times. A row
+    count is not a memory bound, so every retained string has its own cap and an
+    oversized equality key refuses the record. What ``keep`` cut is COUNTED.
 
-    A run whose memory mode is not ``persistent`` keeps its state in memory and
-    writes no folder, so it cannot be discovered here; a folder whose record
-    spells a non-persistent mode is skipped explicitly too, so the exclusion
-    holds whichever way the folder came to exist.
+    A non-``persistent`` run writes no folder; a folder whose record spells a
+    non-persistent mode is skipped too, however it came to exist.
 
     Blocking. A caller on the event loop must wrap this in
     :func:`asyncio.to_thread`.
@@ -427,21 +399,14 @@ def read_panel_records(
     if keep <= 0:
         return PanelRecords([], 0, False)
     cutoff = time.time() - max_age_secs if max_age_secs > 0 else float("-inf")
-    # The caller's own exclusions. Dismissals are NOT unioned in here: that read
-    # retains one entry per dismissal record, so the registry's size would set this
-    # function's memory -- inside the one function whose contract is a bounded
-    # working set. They are probed per scanned candidate instead, below, which is
-    # still BEFORE the heap: a dismissed folder must not spend a candidate slot a
-    # visible run needs, which a filter after the walk would let it do.
+    # Dismissals are NOT unioned in: that set would grow with the registry and
+    # break the bounded working set. They are probed per candidate below, still
+    # BEFORE the heap, so a dismissed folder never takes a visible run's slot.
     skip = set(exclude_ids)
-    # At least one candidate BEYOND ``keep`` has to fit, or the window could not
-    # see the very overflow it has to report: a heap sized exactly ``keep``
-    # admits every entry as a record and truncates in silence.
+    # One candidate BEYOND ``keep`` must fit, or the overflow could not be seen.
     candidate_cap = max(keep + 1, keep * _PANEL_CANDIDATE_MULTIPLE)
-    # A bounded min-heap on mtime, so the walk's own working set is capped
-    # whatever the registry holds. Folders outside the age window and ids the
-    # caller already knows are dropped HERE, before they can occupy the heap or
-    # cost a state read.
+    # A bounded min-heap on mtime caps the walk's working set. Old folders and
+    # known ids are dropped before they occupy the heap or cost a state read.
     newest: list[tuple[float, str]] = []
     saturated = False
     try:
@@ -458,8 +423,7 @@ def read_panel_records(
                 continue
             if mtime < cutoff or entry.name in skip:
                 continue
-            # Ordered after the cheap tests on purpose: this one costs a stat, and
-            # the two above reject most entries without it.
+            # After the cheap tests: this one costs a stat.
             if panel_dismissal_recorded(entry.name):
                 continue
             if len(newest) < candidate_cap:
@@ -489,12 +453,9 @@ def read_panel_records(
             overflow += 1
             continue
         records.append(record)
-    # ``saturated`` stands on its own, NOT ANDed with the count. The candidate
-    # window is a second bound and it closes on mtime BEFORE validity and
-    # ``admit`` run, so a window filled entirely by records that are then
-    # rejected yields a zero count while admissible older folders were never
-    # inspected. ANDing the two would report that case as "nothing was cut",
-    # which is the silence this bound is required not to keep.
+    # ``saturated`` is NOT ANDed with the count: the window closes on mtime
+    # before validity and ``admit`` run, so a window of rejected records gives a
+    # zero count while older admissible folders were never inspected.
     return PanelRecords(records, overflow, saturated)
 
 
@@ -539,14 +500,20 @@ def _should_defer_tombstone_cleanup(
     return retention_state.get("keep") is True
 
 
+def _trusted_cleanup_records(
+    agent_id: str, durable: list[dict[str, object]] | None
+) -> list[dict[str, object]]:
+    """*durable* (read here when None) merged with a fresh live snapshot."""
+    if durable is None:
+        durable = _read_cleanup_identities_file(agent_id)
+    return _merge_cleanup_identity_records(durable, _live_cleanup_identities(agent_id))
+
+
 def _cleanup_identity_fallback_record(
-    agent_id: str, session_id: object
+    agent_id: str, session_id: object, durable: list[dict[str, object]] | None = None
 ) -> dict[str, object] | None:
     """Return the matching generation, or latest when top-level SID is absent."""
-    records = _merge_cleanup_identity_records(
-        _read_cleanup_identities_file(agent_id),
-        _live_cleanup_identities(agent_id),
-    )
+    records = _trusted_cleanup_records(agent_id, durable)
     if not records:
         return None
     if isinstance(session_id, str) and session_id:
@@ -559,9 +526,11 @@ def _cleanup_identity_fallback_record(
     return records[-1]
 
 
-def _cleanup_retention_fallback(agent_id: str, session_id: object) -> tuple[bool | None, str, str]:
+def _cleanup_retention_fallback(
+    agent_id: str, session_id: object, durable: list[dict[str, object]] | None = None
+) -> tuple[bool | None, str, str]:
     """Return trusted fallback retention, owner, and SID."""
-    record = _cleanup_identity_fallback_record(agent_id, session_id)
+    record = _cleanup_identity_fallback_record(agent_id, session_id, durable)
     if record is None:
         return None, "", ""
     keep = record.get("keep")
@@ -574,7 +543,9 @@ def _cleanup_retention_fallback(agent_id: str, session_id: object) -> tuple[bool
     )
 
 
-def _tombstone_cleanup_identities(agent_id: str) -> list[tuple[str, str, str]]:
+def _tombstone_cleanup_identities(
+    agent_id: str, durable: list[dict[str, object]] | None = None
+) -> list[tuple[str, str, str]]:
     """Return gateway-authorized cleanup generations only.
 
     Tombstone and state identity fields live in the agent-writable run folder.
@@ -582,10 +553,7 @@ def _tombstone_cleanup_identities(agent_id: str) -> list[tuple[str, str, str]]:
     transcripts prune may delete. Durable protected records and synchronous live
     gateway publication are the only deletion authorities.
     """
-    records = _merge_cleanup_identity_records(
-        _read_cleanup_identities_file(agent_id),
-        _live_cleanup_identities(agent_id),
-    )
+    records = _trusted_cleanup_records(agent_id, durable)
     identities: list[tuple[str, str, str]] = []
     for identity_record in records:
         sid = identity_record.get("session_id")
@@ -633,7 +601,11 @@ def prune_stale_tombstones(
     # it. Not added to ``pruned``, which counts folders.
     prune_orphan_panel_dismissals()
     try:
-        dirs = sorted(_subagents_dir().iterdir())
+        subagents_root = _subagents_dir()
+        dirs = sorted(subagents_root.iterdir())
+        # One registry and trust root for the whole sweep, so each folder does
+        # not re-resolve the data home or re-lock the shared trust parents.
+        identity_reader = _CleanupIdentitySweepReader(subagents_root)
     except (FileNotFoundError, OSError):
         return 0
     for d in dirs:
@@ -657,6 +629,8 @@ def prune_stale_tombstones(
             died = _tombstone_died(ts, ts_path, now)
             if died <= cutoff:
                 tombstone_session_id = ts.get("session_id", "")
+                # One read serves every decision below; an invalid record raises.
+                durable = identity_reader.read(d.name)
                 state_hint = read_state(d.name)
                 claim_hint = d.name
                 hinted_key = ""
@@ -665,6 +639,7 @@ def prune_stale_tombstones(
                     _, fallback_key, fallback_sid = _cleanup_retention_fallback(
                         d.name,
                         hinted_session_id,
+                        durable,
                     )
                     # Protected acquisition-time ownership outranks all
                     # agent-writable state, including an empty or conflicting
@@ -676,13 +651,13 @@ def prune_stale_tombstones(
                         else str(state_hint.get("conversation_key") or "")
                     )
                 else:
-                    hinted_record = _cleanup_identity_fallback_record(d.name, "")
+                    hinted_record = _cleanup_identity_fallback_record(d.name, "", durable)
                     if hinted_record is not None:
                         hinted_key = str(hinted_record.get("conversation_key") or "")
                 hinted_owner = subagent_id_from_conversation_key(hinted_key)
                 if hinted_owner:
                     try:
-                        _agent_dir(hinted_owner)
+                        identity_reader.agent_dir(hinted_owner)
                     except ValueError:
                         pass
                     else:
@@ -709,6 +684,7 @@ def prune_stale_tombstones(
                         ) = _cleanup_retention_fallback(
                             d.name,
                             session_id,
+                            durable,
                         )
                         if fallback_sid:
                             # State is agent-writable. Once gateway-published
@@ -725,7 +701,7 @@ def prune_stale_tombstones(
                         owner_id = subagent_id_from_conversation_key(conversation_key)
                         if owner_id and owner_id != d.name:
                             try:
-                                _agent_dir(owner_id)
+                                identity_reader.agent_dir(owner_id)
                             except ValueError:
                                 retention_unknown = True
                             else:
@@ -736,7 +712,7 @@ def prune_stale_tombstones(
                                 else:
                                     retention_unknown = True
                     else:
-                        fallback_record = _cleanup_identity_fallback_record(d.name, "")
+                        fallback_record = _cleanup_identity_fallback_record(d.name, "", durable)
                         retention_state = {}
                         retention_unknown = True
                         session_id = ""
@@ -757,7 +733,7 @@ def prune_stale_tombstones(
                         owner_id = subagent_id_from_conversation_key(conversation_key)
                         if owner_id and owner_id != d.name:
                             try:
-                                _agent_dir(owner_id)
+                                identity_reader.agent_dir(owner_id)
                             except ValueError:
                                 retention_unknown = True
                             else:
@@ -780,10 +756,13 @@ def prune_stale_tombstones(
                     )
                     if defer_cleanup:
                         continue
+                    if not d.exists():
+                        # Deleted since the read, with its record: the read is stale.
+                        continue
                     # Hold arbitration through cleanup and rmtree. A promotion
                     # arriving after the keep=False decision returns retryable
                     # instead of writing keep=True just before deletion.
-                    cleanup_identities = _tombstone_cleanup_identities(d.name)
+                    cleanup_identities = _tombstone_cleanup_identities(d.name, durable)
                     within_retry_window = died >= now - _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS
                     # Legacy/pre-upgrade runs can carry a SID only in the
                     # agent-writable state/tombstone. It is not safe deletion
@@ -935,9 +914,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CLEANUP_IDENTITIES_FILE,
         _CLEANUP_IDENTITIES_TRUST_DIR,
         _SUBAGENTS_DIR,
+        _agent_dir_under,
         _atomic_write,
         _cleanup_identities_path,
         _cleanup_identity_record,
+        _lock_down_cleanup_dir,
+        _lock_down_cleanup_file,
+        _parse_cleanup_identities_file,
         _protect_cleanup_identities_path,
     )
     from kiro_crew.subagent_persistence_state import (  # noqa: F401

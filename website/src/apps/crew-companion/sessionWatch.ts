@@ -38,6 +38,8 @@ import {
   confirmAssumedStart,
   type GateDecision,
 } from './completionGate'
+import { SilenceWatchdog } from '../../utils/socketSilenceWatchdog'
+import { jittered, provedHealthy } from '../../utils/reconnectBackoff'
 
 /** What the caller needs in order to raise a bubble. */
 export interface SessionDone {
@@ -128,6 +130,8 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
 
   /** slot -> when we SAW it start. Absent means we never saw this turn begin. */
   const startedAt = new Map<string, number>()
+  /** slot -> turn identity from its latest running snapshot, when known. */
+  const turnIdentities = new Map<string, string>()
   /**
    * Slots whose start we only assumed — they were already running the first time we
    * heard about them, so their real start is unknown and the duration rule cannot be
@@ -170,6 +174,50 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
   let stopped = false
   let retryMs = RECONNECT_MIN_MS
   let retryTimer: number | null = null
+  /** When the live socket opened; null while none is open. */
+  let openedAt: number | null = null
+
+  /**
+   * True from a watchdog replacement until the fresh socket's first `slots` frame.
+   *
+   * A silent socket means the SOCKET died, not the gateway, so the turns in flight
+   * are usually still running. Failing them at the replacement would raise a
+   * "failed" bubble (never silenced) and then, when the turn really finishes on the
+   * new socket, a second "done" bubble for the same turn. Instead the first `slots`
+   * frame after the reopen keeps a running slot's start and flags unless both turn
+   * identities are known and differ; a successor starts fresh as an assumed start.
+   * An absent or replaced turn is reported as failed exactly as a dropped socket
+   * reports it. A close before that frame arrives falls back to `failInFlight`.
+   */
+  let settleOnSlots = false
+
+  /**
+   * Replace a socket that stays OPEN but has stopped delivering frames -- a phone
+   * off-network, an OS-frozen tab. Same silence rule as the dashboard socket,
+   * through the one shared helper so the three cannot drift. `isOpen` reads this
+   * watcher's live socket; `onDead` drops the approval dedupe, leaves the in-flight
+   * turns for the fresh socket's first `slots` frame to settle (`settleOnSlots`),
+   * and reopens at once. Uses the injected clock so tests drive the window.
+   */
+  const silence = new SilenceWatchdog({
+    now: opts.now,
+    isOpen: () => socket?.readyState === WebSocket.OPEN,
+    onDead: () => {
+      const dead = socket
+      socket = null
+      if (provedHealthy(openedAt, now())) retryMs = RECONNECT_MIN_MS
+      openedAt = null
+      if (dead) {
+        // Drop the handler so its onclose cannot schedule a backed-off reconnect
+        // that would race the immediate reopen below.
+        dead.onclose = null
+        try { dead.close() } catch { /* already closing */ }
+      }
+      surfacedApprovals.clear()
+      settleOnSlots = true
+      open()
+    },
+  })
 
   const markStart = (slot: string, wasAssumed: boolean) => {
     if (startedAt.has(slot)) return
@@ -183,6 +231,7 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     const failed = failedSlots.has(slot)
     const userStopped = stoppedSlots.has(slot)
     startedAt.delete(slot)
+    turnIdentities.delete(slot)
     assumed.delete(slot)
     failedSlots.delete(slot)
     stoppedSlots.delete(slot)
@@ -257,10 +306,22 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
         // running is an ASSUMED start: we joined mid-turn.
         const list = Array.isArray(data) ? data : (data.slots as unknown[]) ?? []
         for (const entry of list) {
-          const s = entry as { key?: unknown; running?: unknown; title?: unknown; stopping?: unknown; pending_approval?: unknown }
+          const s = entry as { key?: unknown; running?: unknown; title?: unknown; stopping?: unknown; pending_approval?: unknown; turn?: unknown; turn_gen?: unknown }
           if (typeof s.key !== 'string') continue
           if (typeof s.title === 'string') titles.set(s.key, s.title)
-          if (s.running === true) markStart(s.key, true)
+          if (s.running === true) {
+            const identity = typeof s.turn === 'number' && typeof s.turn_gen === 'string'
+              ? `${s.turn_gen}:${s.turn}` : undefined
+            const previous = turnIdentities.get(s.key)
+            if (settleOnSlots && previous !== undefined && identity !== undefined && previous !== identity) {
+              // End the predecessor before recording the successor's start or stop.
+              failedSlots.add(s.key)
+              finish(s.key)
+            }
+            markStart(s.key, true)
+            if (identity !== undefined) turnIdentities.set(s.key, identity)
+            else turnIdentities.delete(s.key)
+          }
           /*
            * `stopping: true` is the only signal this socket gets that the user
            * pressed Stop — the stop card itself is appended to the transcript
@@ -285,6 +346,19 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
             }
           } else if (s.pending_approval === false) {
             surfacedApprovals.delete(s.key)
+          }
+        }
+        if (settleOnSlots) {
+          settleOnSlots = false
+          const running = new Set<string>()
+          for (const entry of list) {
+            const s = entry as { key?: unknown; running?: unknown }
+            if (typeof s.key === 'string' && s.running === true) running.add(s.key)
+          }
+          for (const slot of [...startedAt.keys()]) {
+            if (running.has(slot)) continue
+            failedSlots.add(slot)
+            finish(slot)
           }
         }
         break
@@ -379,10 +453,12 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
     }
     socket = ws
     ws.onopen = () => {
-      retryMs = RECONNECT_MIN_MS
+      openedAt = now()
       ws.send(JSON.stringify({ type: 'chunk_watch', slots: [] }))
+      silence.markOpen()
+      silence.start()
     }
-    ws.onmessage = (ev) => handle(String(ev.data))
+    ws.onmessage = (ev) => { silence.markFrame(); handle(String(ev.data)) }
     // Both paths reconnect: a gateway restart closes cleanly, a network drop errors.
     ws.onclose = () => {
       socket = null
@@ -393,7 +469,10 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
       // live pending_approval; a still-pending approval's re-raise is absorbed by the
       // sticky-hold guard in onApproval.
       surfacedApprovals.clear()
+      settleOnSlots = false
       failInFlight()
+      if (provedHealthy(openedAt, now())) retryMs = RECONNECT_MIN_MS
+      openedAt = null
       schedule()
     }
     ws.onerror = () => { try { ws.close() } catch { /* already closing */ } }
@@ -405,13 +484,14 @@ export function watchSessions(opts: SessionWatchOptions): () => void {
       retryTimer = null
       retryMs = Math.min(retryMs * 2, RECONNECT_MAX_MS)
       open()
-    }, retryMs)
+    }, jittered(retryMs))
   }
 
   open()
 
   return () => {
     stopped = true
+    silence.stop()
     if (retryTimer !== null) window.clearTimeout(retryTimer)
     retryTimer = null
     if (socket) {

@@ -26,6 +26,7 @@ import {
 import { parseErrorCode } from '../utils/errorReport'
 import { fmtList, fmtNumber } from '../i18n/format'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
+import { useReducedMotion } from '../hooks/useReducedMotion'
 import { useLocalCrewHidden } from './overlayRoot'
 import { Btn, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -189,16 +190,19 @@ function completionErrorMessage(error: unknown): string {
 
 // Animated "Importing…" label — cycles the trailing dots between ".", ".." and
 // "..." while an import is in flight. The dots span reserves width so the
-// button doesn't jitter as they grow.
+// button doesn't jitter as they grow. Ticking text is motion too: under reduced
+// motion the label holds still, and the disabled button still says it is busy.
 function ImportingLabel() {
   const [dots, setDots] = useState('.')
+  const reduceMotion = useReducedMotion()
   useEffect(() => {
+    if (reduceMotion) return
     const id = setInterval(() => setDots(d => (d.length >= 3 ? '.' : `${d}.`)), 400)
     return () => clearInterval(id)
-  }, [])
+  }, [reduceMotion])
   return (
     <>
-      {i18nT('components.agentImportFlow.importing')}<span className="inline-block w-3 text-left">{dots}</span>
+      {i18nT('components.agentImportFlow.importing')}<span className="inline-block w-3 text-left">{reduceMotion ? '' : dots}</span>
     </>
   )
 }

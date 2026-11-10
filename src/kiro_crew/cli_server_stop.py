@@ -546,7 +546,21 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
         _stop_expected_pid(resolve_client_port(cli_port), expect_pid)
         return
     port = resolve_client_port(cli_port)
-    if cli_port is None and service_controller.stop_service():
+    try:
+        stopped_by_service = cli_port is None and service_controller.stop_service()
+    except service_controller.ServiceStopRefused as exc:
+        sel().log_api_access(
+            caller="cli",
+            operation="gateway_stop",
+            outcome="denied",
+            source="cli",
+            resources=f"port={port} via=service reason=service_stop_refused",
+        )
+        print("❌ The service manager refused to stop kirocrew. Run it by hand:")
+        for hint in exc.hints:
+            print(f"   {hint}")
+        sys.exit(1)
+    if stopped_by_service:
         sel().log_api_access(
             caller="cli",
             operation="gateway_stop",
@@ -554,6 +568,7 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             source="cli",
             resources=f"port={port} via=service",
         )
+        _refuse_if_gateway_outlived_service_stop()
         print("✅ Stopped kirocrew service. To remove it: kirocrew service uninstall")
         _stop_mcp_gateway_daemon()
         return
@@ -814,6 +829,33 @@ def _refuse_if_lock_held(operation: str, port: int) -> None:
         sys.exit(1)
     if holder.pid is not None and holder.alive:
         _refuse_lock_holder(operation, port, holder.pid)
+
+
+def _refuse_if_gateway_outlived_service_stop() -> None:
+    """Exit 1 when a live process still holds ``gateway.lock`` after the service
+    stop, leaving it and the MCP gateway daemon running.
+
+    The lock, not the unit, keeps a home to one gateway, so a gateway started by
+    hand can hold it while the unit crash-loops in its restart backoff, and the
+    daemon is that gateway's. Checked on systemd, where ``systemctl stop``
+    returns once the unit's processes are gone; ``launchctl bootout`` returns
+    before its job exits, so a holder read then may be the agent's own gateway.
+    An indeterminate probe makes no claim.
+    """
+    if service_controller.current_platform() == service_controller.Platform.SYSTEMD:
+        try:
+            holder = lock_holder(config_dir())
+        except LockProbeError:
+            return
+        if holder.pid is not None and holder.alive:
+            print(
+                f"⚠️  Stopped kirocrew service, but pid {holder.pid} still holds "
+                f"{config_dir() / 'gateway.lock'}: the service stop did not end it, so it "
+                f"and the MCP gateway daemon were left running.\n"
+                f"   To stop it, run `kirocrew stop` again, or: "
+                f"{_manual_stop_command(holder.pid)}"
+            )
+            sys.exit(1)
 
 
 def _refuse_lock_holder(operation: str, port: int, pid: int) -> NoReturn:

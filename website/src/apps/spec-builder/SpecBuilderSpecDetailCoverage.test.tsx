@@ -26,13 +26,17 @@ vi.mock('./components/ChatColumn', () => ({
   default: ({ name, slotKey, onSend }: {
     name: string
     slotKey?: string
-    onSend: (msg: string, meta?: { pastes?: unknown[] }) => Promise<unknown>
+    onSend: (msg: string, meta?: { pastes?: unknown[]; sendId?: string }) => Promise<unknown>
   }) => (
     <div data-testid="chat-column" data-name={name} data-slot={slotKey ?? ''}>
-      <button type="button" data-testid="chat-send" onClick={() => { void onSend('typed in the chat') }}>
+      <button type="button" data-testid="chat-send" onClick={() => { void onSend('typed in the chat', { sendId: 'spec-send-1' }) }}>
         send
       </button>
-      <button type="button" data-testid="chat-send-paste" onClick={() => { void onSend(`look:\n${PASTED}`, { pastes: [PASTE_BLOCK] }) }}>
+      <button
+        type="button"
+        data-testid="chat-send-paste"
+        onClick={() => { void onSend(`look:\n${PASTED}`, { pastes: [PASTE_BLOCK], sendId: 'spec-paste-1' }) }}
+      >
         send paste
       </button>
     </div>
@@ -647,20 +651,26 @@ describe('SpecDetail phase actions', () => {
 
     fireEvent.click(await screen.findByTestId('chat-send'))
     await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(1))
-    expect(JSON.parse(calls[0].body).text).toBe('typed in the chat')
-    expect(JSON.parse(calls[0].body).meta).toBeUndefined()
+    expect(JSON.parse(calls[0].body)).toEqual({
+      text: 'typed in the chat',
+      spec_dir: BASE.spec_dir,
+      slot_key: BASE.slot_key,
+      meta: { sendId: 'spec-send-1' },
+    })
   })
 
-  it('forwards a chat send\'s collapsed pastes as meta.pastes, so the stored row keeps the chip', async () => {
+  it('forwards a chat send\'s collapsed pastes and delivery identity', async () => {
     installFetch(BASE)
     renderDetail()
 
     fireEvent.click(await screen.findByTestId('chat-send-paste'))
     await waitFor(() => expect(calls.filter((c) => c.url.includes('/message'))).toHaveLength(1))
-    const body = JSON.parse(calls[0].body)
-    expect(body.text).toBe(`look:\n${PASTED}`)
-    expect(body.meta).toEqual({ pastes: [PASTE_BLOCK] })
-    expect(body.slot_key).toBe('spec-builder-checkout-99')
+    expect(JSON.parse(calls[0].body)).toEqual({
+      text: `look:\n${PASTED}`,
+      spec_dir: BASE.spec_dir,
+      slot_key: BASE.slot_key,
+      meta: { pastes: [PASTE_BLOCK], sendId: 'spec-paste-1' },
+    })
   })
 
   it('hands the task list off to a build agent', async () => {

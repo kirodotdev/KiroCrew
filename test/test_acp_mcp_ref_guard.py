@@ -966,9 +966,11 @@ class TestTheRuntimeCallSitesAreWired:
             assert (
                 "self._guard_unresolved_mcp_refs(" in guard
             ), f"line {i} hands over a final roster and never reaches the guard: {guard!r}"
-            # The guard's LAST argument is the roster; it must be the one reported.
+            # The guard's FOURTH argument (``wire_servers``) is the roster; it must be
+            # the one reported. The mcp.json names the spec mounts follow it.
+            args = guard.split("_guard_unresolved_mcp_refs(", 1)[1].rstrip(")").split(",")
             assert (
-                guard.rstrip(")").split(",")[-1].strip() == roster.strip()
+                args[3].strip() == roster.strip()
             ), f"line {i}: report and guard read different rosters: {roster!r} vs {guard!r}"
 
     def test_the_runtime_guard_never_raises_out_of_the_call_site(self, monkeypatch):
@@ -1052,11 +1054,12 @@ class TestTheRuntimeCallSitesAreWired:
             return ["s"]
 
         monkeypatch.setattr(runtime_mod, "pooled_session_servers", _pooled)
-        servers, spec = _pooled_session_servers_and_ref_spec(
+        servers, spec, mcp_json = _pooled_session_servers_and_ref_spec(
             None, "kirocrew-worker", "kiro", "/tmp"
         )
         assert servers == ["s"]
         assert spec is None
+        assert mcp_json == ()
         # The overlay lookup was scoped by the ONE decider, at this call: kiro-cli
         # resolves ``--agent`` from the checkout itself, so its scope names it.
         assert seen == overlay_project_scope("kiro", "/tmp")
@@ -1233,3 +1236,87 @@ class TestGateWithheldServers:
 
         src = inspect.getsource(acp_driver.agent_spec_mcp_refs)
         assert "drop_gate_withheld(unresolved_server_refs(" in src
+
+
+class TestServersTheSpecMountsFromMcpJson:
+    """A ref to a server the spec's ``includeMcpJson`` mounts names something.
+
+    kiro-cli loads the user's ``mcp.json`` servers into an agent that opts in, so a
+    ``tools`` ref to one of them is served. Reported as "declared by the agent spec
+    but not configured", it reached a sub-agent's first prompt as "MCP servers are
+    NOT available", which the model believes.
+    """
+
+    _SPEC = {"tools": ["@local-chorus-mcp"], "includeMcpJson": True, "mcpServers": {}}
+
+    def _global(self, tmp_path, monkeypatch) -> None:
+        home = tmp_path / "kiro-home"
+        (home / "settings").mkdir(parents=True)
+        (home / "settings" / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"local-chorus-mcp": {"command": "chorus"}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", home / "settings" / "mcp.json")
+
+    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE))
+    def test_a_named_mcp_json_server_satisfies_the_ref_off_the_wire(self, backend):
+        names = frozenset({"local-chorus-mcp"})
+
+        assert unresolved_server_refs(self._SPEC, [], backend=backend, mcp_json=names) == []
+        assert unresolved_server_refs(self._SPEC, [], backend=backend) == ["@local-chorus-mcp"]
+
+    def test_a_host_reached_only_by_the_array_is_judged_on_the_array(self):
+        """The names never stand in for the wire where the wire is the only channel."""
+        names = frozenset({"local-chorus-mcp"})
+
+        assert unresolved_server_refs(
+            self._SPEC, [], backend=ACP_BACKEND_CODEX, mcp_json=names
+        ) == ["@local-chorus-mcp"]
+
+    def test_the_client_hop_reads_the_names_and_the_guard_finds_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        self._global(tmp_path, monkeypatch)
+        monkeypatch.setattr(client_mod, "agent_spec_snapshot", lambda _a, **_k: dict(self._SPEC))
+        client = AcpClient(work_dir=tmp_path / "w", agent="kirocrew", acp_backend=ACP_BACKEND_KIRO)
+
+        client._prepare_spawn_workspace()
+        client._mcp_report.begin_session([])
+        client._guard_unresolved_mcp_refs([])
+
+        assert client._mcp_report.unresolved_refs == ()
+        assert "not configured" not in client._mcp_report.problem_summary()
+
+    def test_with_the_opt_in_off_the_ref_is_still_reported(self, tmp_path, monkeypatch):
+        self._global(tmp_path, monkeypatch)
+        spec = {**self._SPEC, "includeMcpJson": False}
+        monkeypatch.setattr(client_mod, "agent_spec_snapshot", lambda _a, **_k: dict(spec))
+        client = AcpClient(work_dir=tmp_path / "w", agent="kirocrew", acp_backend=ACP_BACKEND_KIRO)
+
+        client._prepare_spawn_workspace()
+        client._mcp_report.begin_session([])
+        client._guard_unresolved_mcp_refs([])
+
+        assert client._mcp_report.unresolved_refs == ("@local-chorus-mcp",)
+
+    def test_the_runtime_hop_reads_the_names_and_the_guard_finds_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        from unittest.mock import MagicMock
+
+        from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.acp.runtime import AcpRuntime
+
+        self._global(tmp_path, monkeypatch)
+        monkeypatch.setattr(runtime_mod, "agent_spec_snapshot", lambda _a, **_k: dict(self._SPEC))
+        monkeypatch.setattr(runtime_mod, "pooled_session_servers", lambda *_a, **_k: [])
+        servers, spec, mcp_json = runtime_mod._pooled_session_servers_and_ref_spec(
+            None, "kirocrew", ACP_BACKEND_KIRO, tmp_path / "w"
+        )
+        rt = AcpRuntime(work_dir="/tmp", acp_backend=ACP_BACKEND_KIRO, expect_mcp_reports=False)
+        handle = MagicMock()
+
+        rt._guard_unresolved_mcp_refs(handle, spec, "kirocrew", servers, mcp_json)
+
+        assert mcp_json == ("local-chorus-mcp",)
+        assert handle.mcp_session_report.return_value.record_unresolved_refs.call_count == 0

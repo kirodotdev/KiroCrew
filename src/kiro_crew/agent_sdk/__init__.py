@@ -210,6 +210,15 @@ def batch_guard_refusal_outcome(reason: str | None) -> tuple[str, dict[str, str]
     return refusal_outcome(reason)
 
 
+def mcp_call_arguments(event: Any, server: str, tool: str) -> dict[str, Any]:
+    """The arguments of an MCP call to *server*/*tool*, read through the harness
+    envelopes (``{tool_id, arguments}``, Codex's ``{server, tool, arguments}``) only
+    when the envelope names that same tool. Imported lazily, as above."""
+    from kiro_crew.acp.batch_guard import _mcp_arguments
+
+    return _mcp_arguments(event, server, tool)
+
+
 def watch_agent_turns(provider: object, callback: Callable[[], None] | None) -> bool:
     """Call *callback* when *provider*'s agent starts a turn between prompts; ``None`` stops it.
 
@@ -243,6 +252,7 @@ __all__ = [
     "session_start_concurrency",
     "take_batch_guard_refusal",
     "batch_guard_refusal_outcome",
+    "mcp_call_arguments",
     "watch_agent_turns",
     "tool_row_text",
     "agents_dir_competing_claim",

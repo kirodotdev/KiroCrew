@@ -180,6 +180,7 @@ export default function TaskSidebar({ tasks, onClose, onAdd, onUpdate, onDelete 
       <div className="flex-none border-t border-border px-4 py-3 flex items-center gap-2">
         <Input
           ref={quickAddRef}
+          data-unsent
           type="text"
           className="flex-1"
           placeholder={i18nT('apps.meetings.taskSidebar.quickAddPlaceholder')}

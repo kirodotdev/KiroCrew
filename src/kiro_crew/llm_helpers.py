@@ -64,6 +64,7 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.llm_helpers_parts.backend_errors import (  # noqa: F401
         _CONNECTION_MARKERS,
+        _EXPIRED_TOKEN_CODES,
         _FRAME_DATA_TAIL_RE,
         _JITTER_RNG,
         _PROMPT_BUSY_DELAY,
@@ -91,6 +92,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         acp_error_is_throttle,
         acp_error_is_transient,
         acp_error_needs_fresh_credentials,
+        acp_error_needs_sign_in,
         connection_recovery_open,
         connection_retry_delay,
         credential_give_up_text,
@@ -216,6 +218,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         EVENT_TEXT_CHUNK,
         EVENT_TOOL_CALL,
         EVENT_TOOL_RESULT,
+        AcpAuthRequired,
         AcpError,
         AcpPromptBusy,
         LLMEvent,
@@ -240,12 +243,14 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         DENY_CAUSE_INVALID_NAME,
         DENY_CAUSE_POLICY,
         DENY_CAUSE_SURFACE_POLICY,
+        DENY_CAUSE_UNREADABLE_IDENTITY,
     )
     from kiro_crew.credential_errors import (  # noqa: F401
         is_credential_propagation_delay,
     )
     from kiro_crew.deny_notice import (  # noqa: F401
         steer_refusal_notice,
+        unreadable_identity_clause,
     )
     from kiro_crew.executors import (  # noqa: F401
         run_in_tool_gate_pool,

@@ -684,6 +684,18 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     expect(title()).toBe('Paused')
   })
 
+  it.each([
+    ['consecutive_failures', 'Paused · several cycles in a row failed. Check this chat for the error, then press Play.'],
+    ['model_refused', 'Paused · the model declined the last cycle. Change the goal or the model, then press Play.'],
+  ])('a paused loop the service stood down on %s says why, as an error notice', (reason, expected) => {
+    renderWith(paused({ stopped_reason: reason }))
+    expect(screen.getByRole('alert')).toBe(status())
+    expect(status()!.textContent).toBe(expected)
+    expect(status()!.className).not.toMatch(/\bbg-warn-subtle\b/)
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).toBeNull()
+    expect(title()).toBe('Paused')
+  })
+
   it('an active loop held for approval reads paused: warn box, Play resumes, Pause still stops it, no Clear', () => {
     renderWith(running({ approval_stalled: true, next_due_ts: Math.floor(Date.now() / 1000) - 5 }))
     expect(status()!.textContent).toBe('Paused · an approval in this chat timed out. Press Play or send a message to resume.')

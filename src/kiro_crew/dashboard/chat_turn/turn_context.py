@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+from kiro_crew.context_assembly.markers import neutralize_background_context_frame
 from kiro_crew.dashboard.chat_utils import slot_history_key, transcripts_share_file
 from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
 
@@ -428,7 +429,8 @@ def _drain_pending_frames(
         frame = (
             f'[Background context from "{source}"]\n'
             f"{_CONTEXT_FRAME_CONTRACT}\n"
-            f'{entry["content"]}\n'
+            # A copy of the frame inside the content cannot end this frame early.
+            f'{neutralize_background_context_frame(entry["content"])}\n'
             f"[End of background context]\n"
         )
         frames.append((entry, frame))

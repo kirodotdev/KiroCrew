@@ -62,13 +62,15 @@ _TRANSCRIPT_COUNTS: dict[str, tuple[int, int, str | None, int, int]] = {}
 
 
 def _kas_transcripts(kas_root: Path, cli_dir: Path) -> tuple[list[Path], int]:
-    """The KAS ``messages.jsonl`` paths under ``kas_root`` and the unlisted directory count.
+    """The KAS ``messages.jsonl`` paths under ``kas_root`` and the unread directory count.
 
     The KAS harness writes one record per session as
     ``<kas_root>/<id>/sess_<uuid>/messages.jsonl``, beside kiro-cli's flat ``cli``
     directory, and deletes the record when it tears the session down. A directory
     that disappears during the listing is skipped. One that exists but cannot be
-    listed leaves its sessions out of the totals and is therefore counted.
+    listed, or a root the path check refuses, leaves its sessions out of the totals
+    and is therefore counted as a directory that did not load. How many transcripts
+    it holds is unknown, so it is not counted as a transcript.
 
     Each record directory is opened through the pin that :func:`_pin_listing_dir`
     takes on the root. A link at the name fails that open and is skipped without a
@@ -81,9 +83,11 @@ def _kas_transcripts(kas_root: Path, cli_dir: Path) -> tuple[list[Path], int]:
     except OSError:
         return [], 1
     if root is None:
-        return [], 0
+        # Refused by the path check, as a home on an untrusted network share is:
+        # its sessions did not load, so it counts like an unreadable root.
+        return [], 1
     found: list[Path] = []
-    unlisted = 0
+    unread_dirs = 0
     with root:
         try:
             names = root.names()
@@ -103,12 +107,12 @@ def _kas_transcripts(kas_root: Path, cli_dir: Path) -> tuple[list[Path], int]:
             except (FileNotFoundError, NotADirectoryError):
                 continue
             except OSError:
-                unlisted += 1
+                unread_dirs += 1
                 continue
             found.extend(
                 Path(child.path) / r / "messages.jsonl" for r in records if r.startswith("sess_")
             )
-    return found, unlisted
+    return found, unread_dirs
 
 
 def _pin_listing_dir(path: Path) -> platform_compat.PinnedDirectory | None:
@@ -197,12 +201,16 @@ def _parse_sessions() -> dict:
     total_msgs = 0
     total_tools = 0
     all_time_sessions = 0
-    # Count of transcripts that did NOT load for any reason (validator refusal,
-    # stat failure, read failure) -- surfaced so the page can say the totals are
-    # incomplete instead of rendering a silent under-count. The name matches the
-    # payload/frontend contract; it is the did-not-load total. A KAS directory
-    # that cannot be listed counts once.
+    # Count of transcript FILES that did not load for any reason (validator
+    # refusal, stat failure, read failure) -- surfaced so the page can say the
+    # totals are incomplete instead of rendering a silent under-count. The name
+    # matches the payload/frontend contract; it is the did-not-load total.
     refused_transcripts = 0
+    # Count of session DIRECTORIES that did not load: the refused sessions/cli
+    # directory, and a KAS root or record directory that was refused or could not
+    # be listed. The number of transcripts inside such a directory is unknown, so
+    # it is reported apart from ``refused_transcripts`` rather than added to it.
+    unreadable_session_dirs = 0
     now_dt = datetime.now()
     today_str = now_dt.strftime("%Y-%m-%d")
 
@@ -214,9 +222,15 @@ def _parse_sessions() -> dict:
     try:
         pinned = _pin_listing_dir(sessions_dir)
         if pinned is None:
-            raise PermissionError("sessions directory refused by the path check")
-        with pinned:
-            entries = [Path(pinned.path) / name for name in pinned.names()]
+            # The path check refuses the directory itself when the home is on a
+            # network share the UNC gate does not trust. Its transcripts did not
+            # load, which the warning reports; an ``error`` here would make the
+            # frontend drop the billing that does not depend on transcripts.
+            entries = []
+            unreadable_session_dirs += 1
+        else:
+            with pinned:
+                entries = [Path(pinned.path) / name for name in pinned.names()]
     except FileNotFoundError:
         # First-run homes have no transcript directory yet; use the same
         # complete zero statistics as an existing, empty directory.
@@ -232,7 +246,8 @@ def _parse_sessions() -> dict:
         }
 
     transcripts = [(f, False) for f in entries if f.suffix == ".jsonl"]
-    kas_paths, refused_transcripts = _kas_transcripts(sessions_dir.parent, sessions_dir)
+    kas_paths, unread_kas_dirs = _kas_transcripts(sessions_dir.parent, sessions_dir)
+    unreadable_session_dirs += unread_kas_dirs
     transcripts += [(f, True) for f in kas_paths]
 
     global _TRANSCRIPT_COUNTS
@@ -244,14 +259,10 @@ def _parse_sessions() -> dict:
         resolved_str = validate_file_path(str(f))
         if resolved_str is None:
             # Counted, not swallowed: a refusal here is indistinguishable
-            # from an idle account in the rendered numbers, and on a
-            # roaming-profile (UNC) home EVERY transcript lands in this branch --
-            # so the page reports a confident zero with nothing anywhere to say
-            # why. Aggregated after the loop rather than logged per file, because
-            # that failure mode refuses all of them. Admitting the transcript dir
-            # to the UNC gate -- which is what would make the count correct
-            # rather than merely explained -- is deferred; it needs a resolution
-            # that refuses links atomically first.
+            # from an idle account in the rendered numbers. Aggregated after the
+            # loop rather than logged per file. A roaming-profile (UNC) home is
+            # refused one level up, at the directory listing, and counted in
+            # ``unreadable_session_dirs``.
             refused_transcripts += 1
             continue
         resolved = Path(resolved_str)
@@ -308,14 +319,21 @@ def _parse_sessions() -> dict:
 
     if refused_transcripts:
         # Server-side only: %s of a Path is a filesystem path, which the
-        # returned payload deliberately never carries (see the iterdir handler
-        # above). Counts every did-not-load branch (validator refusal, stat
-        # failure, read failure), not just the UNC refusal.
+        # returned payload deliberately never carries (see the listing handler
+        # above). Counts every transcript did-not-load branch (validator
+        # refusal, stat failure, read failure).
         logger.warning(
             "usage: %d transcript(s) could not be loaded in %s; "
             "the reported session counts exclude them",
             refused_transcripts,
             sessions_dir,
+        )
+    if unreadable_session_dirs:
+        logger.warning(
+            "usage: %d session dir(s) under %s could not be read; "
+            "the reported session counts exclude their transcripts",
+            unreadable_session_dirs,
+            sessions_dir.parent,
         )
 
     # Build daily history sorted by date. Credits come from the per-turn usage
@@ -368,13 +386,16 @@ def _parse_sessions() -> dict:
         },
         "avg_msgs_per_session": round(total_msgs / max(total_sessions, 1), 1),
         "avg_tools_per_session": round(total_tools / max(total_sessions, 1), 1),
-        # How many transcripts the path validator refused. Carried in
-        # the payload -- not just the server log -- so the page can say the
-        # count is incomplete instead of rendering a confident zero. On a
-        # roaming-profile (UNC) home this is every transcript, so a zero
-        # session count with a positive refusal count is the exact silent
-        # failure this field makes visible.
+        # How many transcript files did not load. Carried in the payload -- not
+        # just the server log -- so the page can say the count is incomplete
+        # instead of rendering a confident zero.
         "refused_transcripts": refused_transcripts,
+        # How many session directories did not load. On a roaming-profile (UNC)
+        # home the path check refuses both session directories, so a zero
+        # session count with a positive count here is the silent failure this
+        # field makes visible. The page reports it without a number, because the
+        # transcripts inside those directories were never counted.
+        "unreadable_session_dirs": unreadable_session_dirs,
         # Present only when the directory read itself failed. ``api_kiro_usage``
         # keys its no-cache decision on this, and the zeros above are then a
         # SHAPE, not a measurement -- which is why the message has to travel with
@@ -437,6 +458,7 @@ def _empty_session_summary() -> dict[str, Any]:
         "avg_msgs_per_session": 0.0,
         "avg_tools_per_session": 0.0,
         "refused_transcripts": 0,
+        "unreadable_session_dirs": 0,
     }
 
 

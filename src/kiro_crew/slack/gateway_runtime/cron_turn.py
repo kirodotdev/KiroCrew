@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _annotate_model_fallback,
         _annotate_partial_block,
         _apply_gate_verdict,
+        _cron_auth_expiry,
         _cron_failure_attribution,
         _cron_stream_with_posttoken_resume,
         _CronCapture,
@@ -266,6 +267,22 @@ async def _cron_run_sequence(
                     minimal_context=job.minimal_context,
                     request_prefix_context=cap.prior_result or None,
                 )
+                # The step agent's own spec hooks on a backend that never runs
+                # them (KAS): AgentSpawn and UserPromptSubmit before the prompt,
+                # PreToolUse on each permission request, Stop once it lands.
+                from kiro_crew.cron_service.turn_hooks import CronTurnHooks
+                from kiro_crew.messaging.script_hooks import with_hook_context
+
+                _seq_hooks = await CronTurnHooks.prepare(
+                    client,
+                    step.dispatch_agent,
+                    agent_session_key,
+                    msg,
+                    fresh_session=is_new and not _resumed,
+                )
+                full_message = await with_hook_context(
+                    full_message, await _seq_hooks.prompt_context()
+                )
                 # Wall clock for the cron agent turn: acp never assigns
                 # TurnUsage.duration_ms, so the row falls back to this.
                 # Brackets only the model turn — session acquisition and
@@ -310,6 +327,7 @@ async def _cron_run_sequence(
                     on_complete=_seq_note_complete,
                     on_compaction=_seq_note_compaction,
                     fallback_models=configured_fallback_chain(),
+                    spec_hooks=_seq_hooks,
                 )
                 # The prompt reached the model and the turn completed, so
                 # the finally must NOT restore the re-injection flag --
@@ -318,6 +336,7 @@ async def _cron_run_sequence(
                 if _seq_landed:
                     # This step's release confirms what it received inline.
                     note_turn_landed(self.sessions, agent_session_key)
+                    await _seq_hooks.stop(result_text)
                 if not result_text:
                     result_text = _gate.empty_reply_placeholder()
                 result_text = _annotate_model_fallback(
@@ -326,6 +345,10 @@ async def _cron_run_sequence(
                 _seq_missing = declared_mcp_not_ready_note(client)
                 if _seq_missing:
                     _seq_mcp_notes.append(f"⚠ {agent}: {_seq_missing}.")
+                # The spec notices for this step's session, once per agent.
+                _seq_notices = _seq_hooks.notices()
+                if _seq_notices and _seq_notices not in _seq_mcp_notes:
+                    _seq_mcp_notes.append(_seq_notices)
                 logger.info("Cron '%s': agent '%s' completed", job.name, agent)
 
                 # ── Per-turn usage row: background spend. ──
@@ -740,6 +763,20 @@ async def _cron_run_single(
             request_prefix_context=cap.prior_result or None,
             skill_trigger_text=trigger_text,
         )
+        # The agent spec's own hooks on a backend that never runs them (KAS), as
+        # on the sequence site: AgentSpawn and UserPromptSubmit on the job's own
+        # prompt, PreToolUse on each permission request, Stop once the turn lands.
+        from kiro_crew.cron_service.turn_hooks import CronTurnHooks
+        from kiro_crew.messaging.script_hooks import with_hook_context
+
+        _hook_turn = await CronTurnHooks.prepare(
+            client,
+            _dispatch_agent or "",
+            session_key,
+            trigger_text,
+            fresh_session=is_new and not _resumed,
+        )
+        full_message = await with_hook_context(full_message, await _hook_turn.prompt_context())
 
         # Wall clock for the cron agent turn — see the sequential site
         # above. acp reports no duration, so this is the row's fallback.
@@ -790,6 +827,7 @@ async def _cron_run_single(
             on_complete=_note_complete,
             on_compaction=_note_compaction,
             fallback_models=configured_fallback_chain(),
+            spec_hooks=_hook_turn,
         )
 
         # The prompt reached the model and the turn completed, so the
@@ -800,6 +838,7 @@ async def _cron_run_single(
             # This turn's release confirms what it received inline; a turn the
             # deadline, a stop or a reap ends first never gets here.
             note_turn_landed(self.sessions, session_key)
+            await _hook_turn.stop(result_text)
 
         # Recorded, not inferred from the text: the dedup hash below
         # swaps the placeholder for its count-free twin only when the
@@ -823,6 +862,12 @@ async def _cron_run_single(
         # refusal, and a run that lost a call never hashes equal to
         # one that did not.
         result_text = _annotate_partial_block(result_text, _gate)
+        # The spec notices for this run's session, as a dashboard chat says them.
+        # The same notices lead every run, so the dedup key is taken without them.
+        _dedup_source = result_text
+        _notices = _hook_turn.notices()
+        if _notices:
+            result_text = f"{_notices}\n\n{result_text}"
 
         job.set_run_result(result_text)
 
@@ -890,7 +935,7 @@ async def _cron_run_single(
         # unnoticed. An empty reply is hashed over its count-free
         # placeholder: the approved-call count the user sees is per-run,
         # and a key that moves with it never suppresses.
-        rh = _result_hash(_dedup_text(result_text, _gate, empty_reply=_empty_reply))
+        rh = _result_hash(_dedup_text(_dedup_source, _gate, empty_reply=_empty_reply))
 
         _gate_counted = _apply_gate_verdict(job, _gate)
 
@@ -912,6 +957,7 @@ async def _cron_run_single(
         # attempt fails it may have dispatched, so the transient ladder
         # must not run again. A failed reset leaves it unset.
         _acp_retry_attempted = False
+        _retry_exc_for_auth: Exception | None = None  # set when the retry ran and failed
         if (
             # Match the death by type: the pipe-broken raise sites in
             # acp/client.py word it "pipe broken", which no substring
@@ -963,8 +1009,13 @@ async def _cron_run_single(
                 _turn_compaction["completed"] = False
                 _acp_retry_attempted = True
                 return await retry(job)
-            except Exception:
-                pass  # retry failed — fall through to dedup + alert
+            except Exception as _retry_exc:
+                # Keep the retry's exception for the auth-expiry decision only
+                # (``_cron_auth_expiry`` below). The outer raise stays bare so the
+                # original process-death exception is reported and stored, and
+                # the transient-retry ladder can still read it.
+                if _acp_retry_attempted:
+                    _retry_exc_for_auth = _retry_exc
             finally:
                 job._acp_retried = False  # type: ignore[attr-defined]
         # ── Transient backend errors: retry the whole callback with ──
@@ -1050,9 +1101,20 @@ async def _cron_run_single(
         # and advances dedup state, duplicating the outer handler.
         if getattr(job, "_acp_retried", False):
             raise
+        # Classify from the retry's exception when the ACP retry ran and failed,
+        # since that is what ended the turn; else from the original one.
+        _exc_for_auth = _retry_exc_for_auth if _retry_exc_for_auth is not None else exc
+        # From typed data only (``acp_error_needs_sign_in``), never the error's text.
+        _auth_expiry = _cron_auth_expiry(job, _exc_for_auth)
         _job_owns_failure, _hand_over_streak = _cron_failure_attribution(job, _run_provider)
         await self._cron_single_failure(
-            job, exc, session_key, _gate_counted, _job_owns_failure, _hand_over_streak
+            job,
+            exc,
+            session_key,
+            _gate_counted,
+            _job_owns_failure,
+            _hand_over_streak,
+            _auth_expiry=_auth_expiry,
         )
         raise
     finally:

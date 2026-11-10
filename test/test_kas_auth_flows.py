@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -228,15 +227,15 @@ async def test_builder_id_start_device_authorization_ok_and_failure():
 
 
 @pytest.mark.parametrize(
-    "description, advice",
+    "description, advice, names_start_url",
     [
         # Both bodies are what SSO-OIDC answered when probed: an unknown host or
         # path, and a well-formed portal looked up in the wrong region.
-        ("Invalid start url provided", "access portal URL"),
-        ("Invalid request", "in region eu-west-1"),
+        ("Invalid start url provided", "access portal URL", True),
+        ("Invalid request", "in region eu-west-1", False),
     ],
 )
-async def test_idc_start_url_refusal_says_what_to_change(description, advice):
+async def test_idc_start_url_refusal_says_what_to_change(description, advice, names_start_url):
     body = json.dumps({"error": "invalid_request", "error_description": description})
     session = _FakeSession([_FakeResp(400, body)])
     with pytest.raises(builder_id.StartUrlRejectedError) as raised:
@@ -250,6 +249,7 @@ async def test_idc_start_url_refusal_says_what_to_change(description, advice):
     assert advice in message
     assert "https://acme.awsapps.com/start" in message
     assert f"(AWS: {description})" in message
+    assert getattr(raised.value, "names_start_url", None) is names_start_url
 
 
 async def test_builder_id_400_is_not_blamed_on_a_start_url():
@@ -498,7 +498,6 @@ async def test_logout_before_refresh_does_not_resurrect_the_token(tmp_path: Path
     assert session.calls == []
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="contention timing assumes POSIX flock")
 async def test_logout_during_refresh_leaves_no_token_behind(tmp_path: Path):
     """The refresh-then-delete half: a logout that arrives while a refresh holds
     the lock across its HTTP round-trip waits for the save, then deletes it, so
@@ -545,7 +544,6 @@ async def test_logout_during_refresh_leaves_no_token_behind(tmp_path: Path):
     assert store.load("social") is None
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="contention timing assumes POSIX flock")
 async def test_account_switch_during_refresh_is_not_overwritten(tmp_path: Path):
     """A sign-in that lands a different account in the slot while a refresh of the
     old one is in flight waits for the refresher's save and then replaces it, so

@@ -378,7 +378,15 @@ def _logout(port: int) -> None:
         print(f"❌ Failed to revoke sessions: gateway ownership not verified: {e}", file=sys.stderr)
         sys.exit(1)
     except urllib.error.HTTPError as e:
-        print(f"❌ Failed to revoke sessions: HTTP {e.code}", file=sys.stderr)
+        # The gateway answered, and its body says why (an invalid secret, or a
+        # revocation it could not persist, which means the logout did not happen).
+        from kiro_crew.loopback_http import http_error_reason
+
+        reason = http_error_reason(e)
+        print(
+            f"❌ Failed to revoke sessions: HTTP {e.code}" + (f": {reason}" if reason else ""),
+            file=sys.stderr,
+        )
         sys.exit(1)
     except (urllib.error.URLError, OSError) as e:
         # A timeout means the gateway took the request and is still working, so

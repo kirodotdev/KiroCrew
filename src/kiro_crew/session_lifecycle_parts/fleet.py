@@ -263,8 +263,8 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
     try:
         await owner.drain_active_turns(timeout=drain_timeout)
     except Exception:
-        # CancelledError is intentionally not caught: callers use an outer
-        # wait_for deadline as the hard restart cap.
+        # CancelledError is intentionally not caught: the caller's outer
+        # deadline is the hard restart cap (``restart_session_close``).
         logger.debug("close_all: drain_active_turns failed", exc_info=True)
 
     if owner._cleanup_task:
@@ -281,7 +281,9 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
         # return_exceptions=True absorbs the task's own CancelledError without
         # swallowing a cancellation aimed at close_all itself (CancelledError
         # propagates from gather when the *caller* cancels, not the gathered
-        # task).  This keeps close_all cancellable by its wait_for deadline.
+        # task).  This keeps close_all cancellable by its caller's deadline. A
+        # gathered task that outlives its cancel still holds this await, so a
+        # restart waits on close_all as a task it can leave at the deadline.
         await asyncio.gather(owner._cleanup_task, return_exceptions=True)
 
     # Pool-health and spawn tasks are registered in the same owned-task set.
@@ -345,7 +347,7 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
             # discarded_sid. Do not map the live child's sid back at shutdown.
             if sess.retire_on_identity_change:
                 continue
-            cwd_str = sess.provider.cwd
+            cwd_str = "" if sess.cwd_retracted else sess.provider.cwd
             if isinstance(sess.provider, acp_provider_type):
                 sid = sess.provider.client._session_id
                 # A replay-pending fresh child is not yet the durable

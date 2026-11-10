@@ -11,6 +11,7 @@ import { screen, waitFor, fireEvent } from '@testing-library/react'
 import DesignTweak from './DesignTweakPage'
 import { renderWithProviders } from '../../test/helpers'
 import { i18nT } from '../../i18n/t'
+import { i18next } from '../../i18n/all'
 
 vi.mock('./api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./api')>()),
@@ -196,6 +197,52 @@ describe('DesignTweak — request rail', () => {
       ].join(', ')
       expect(screen.getByText(chipText)).toBeInTheDocument()
     })
+  })
+
+  it('joins the mixed-status chip parts the reader\'s way, not with an English comma', async () => {
+    // The parts were glued with ', ', so Japanese read "1 件進行中, 1 件完了".
+    await i18next.changeLanguage('ja')
+    try {
+      const req = makeRequest({
+        status: 'sent',
+        state: 'sent',
+        comments: [
+          makeComment({ status: 'sent', cid: 'c-1', index: 1 }),
+          makeComment({ status: 'done', cid: 'c-2', index: 2 }),
+        ],
+      })
+      mockFetchQueue.mockResolvedValue({ pending: [req] })
+      renderWithProviders(<DesignTweak />)
+      await waitFor(() => {
+        expect(screen.getByText('1 件進行中、1 件完了')).toBeInTheDocument()
+      })
+      expect(screen.queryByText(/件進行中, /)).toBeNull()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
+  it('keeps a separator between the chip counts in Chinese', async () => {
+    // A unit list has no separator in zh, so the chip read "1 项进行中1 项已完成".
+    await i18next.changeLanguage('zh-CN')
+    try {
+      const req = makeRequest({
+        status: 'sent',
+        state: 'sent',
+        comments: [
+          makeComment({ status: 'sent', cid: 'c-1', index: 1 }),
+          makeComment({ status: 'done', cid: 'c-2', index: 2 }),
+        ],
+      })
+      mockFetchQueue.mockResolvedValue({ pending: [req] })
+      renderWithProviders(<DesignTweak />)
+      await waitFor(() => {
+        expect(screen.getByText('1 项进行中、1 项已完成')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('1 项进行中1 项已完成')).toBeNull()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('shows follow-up label when a comment references another', async () => {

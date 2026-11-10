@@ -85,10 +85,10 @@ def test_stop_accepts_a_never_started_empty_plane(model, monkeypatch):
     def scheduler(*args):
         state.events.append(args[0])
         # A reachable Scheduler with no such task: the per-task `/Query /TN` and
-        # `/Delete` are non-zero (no task), but a bare `/Query` answers rc 0.
+        # `/Delete` are non-zero (no task), but the plane-folder query answers rc 0.
         # That reachability is what lets `stop` treat the plane as proven-empty;
         # without it a failed `/Delete` could not be distinguished from residue.
-        rc = 0 if args == ("/Query",) else 1
+        rc = 0 if args == ("/Query", "/TN", win.TASK_FOLDER_ROOT + "\\") else 1
         return subprocess.CompletedProcess([], rc, "", "")
 
     monkeypatch.setattr(win, "schtasks", scheduler)

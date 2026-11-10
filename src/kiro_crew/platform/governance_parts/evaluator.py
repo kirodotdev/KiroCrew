@@ -33,6 +33,7 @@ from kiro_crew.platform.governance_parts.parsing import baseline_controls, with_
 from kiro_crew.platform.governance_parts.tool_calls import (
     _NO_TARGET_ITEM,
     _governed_targets,
+    classify_image_reads,
     classify_tool_args,
     classify_tool_title,
 )
@@ -70,8 +71,8 @@ def _every_operation_names_a_path(raw_params: object) -> bool:
 
     Each entry (each of a batch's ``operations``, or the params themselves)
     must name a ``TARGET_PATH_KEYS`` path and carry no Image target: an Image
-    read's ``image_paths`` is not scanned, decoy ``path`` or not, so its title's
-    read pair cannot be replaced.
+    entry keeps its title's read pair, decoy ``path`` or not, and a batched one's
+    ``image_paths`` / ``paths`` are judged beside it (:func:`classify_image_reads`).
     shortcut: knows the Image shape only; widen it when another read shape
     carries its target under a key ``TARGET_PATH_KEYS`` lacks.
     """
@@ -97,10 +98,10 @@ def _every_operation_names_a_path(raw_params: object) -> bool:
 
 _PERMIT_NOT_GOVERNED = Decision(True, "not governed", rule="default", layer="default")
 
-_BASELINE_REASON = "enterprise baseline"
+_BASELINE_REASON = "LTS baseline"
 
 # A scope with neither a baseline row nor an ungated reason (one registered at run
-# time) is refused in an enterprise build: an empty allow-set denies every item.
+# time) is refused in an LTS build: an empty allow-set denies every item.
 _DENY_UNLISTED = ScopedRuleset(mode="allow", allow=())
 
 
@@ -109,7 +110,7 @@ def _policy_level(
 ) -> Tuple[object, bool]:
     """The policy level's control for *scope*, and whether the baseline supplied it.
 
-    The remote policy answers a scope it names. In an enterprise build a scope it
+    The remote policy answers a scope it names. In an LTS build a scope it
     does not name is answered by the built-in baseline (RFC D3), never left
     ungoverned. Only the POLICY level is filled in this way: a profile narrows the
     policy beneath it, so an unnamed profile scope stays ``None`` and cannot
@@ -119,7 +120,7 @@ def _policy_level(
     (``baseline=False``) get no baseline.
     """
     control = ceiling.get(scope) if ceiling is not None else None
-    if not baseline or isinstance(ceiling, Profile) or not edition.is_enterprise():
+    if not baseline or isinstance(ceiling, Profile) or not edition.is_lts():
         return control, False
     # A policy's ``folders.*`` rule is stored under its ``filesystem.*`` scope at
     # parse time, so an alias query must find it there before the baseline answers.
@@ -142,7 +143,7 @@ def policy_level_control(ceiling: Optional[GovernanceCeiling], scope: str) -> Op
     For readers that inspect a ceiling's control directly instead of calling
     :func:`resolve`, such as ``governance.may_skip_gate``; reading
     ``ceiling.get`` there would treat an unnamed scope as ungoverned in an
-    enterprise build and skip the gate the baseline is enforced at.
+    LTS build and skip the gate the baseline is enforced at.
     """
     return _policy_level(ceiling, scope)[0]
 
@@ -151,7 +152,7 @@ def _query_level(control: object, scope: str, item: str) -> Decision:
     """Query ONE level's control for *item* in *scope* (Rule 1).
 
     A ``None`` control means the level does not govern this scope → permit
-    (truth-table "not-governed" rows).  In an enterprise build the POLICY level
+    (truth-table "not-governed" rows).  In an LTS build the POLICY level
     is never ``None`` here for a gated scope: :func:`_policy_level` supplies the
     built-in baseline first, so only a profile reaches this permit.  Dispatch is by archetype, not scope
     name.  ``scope`` is used only to locate the sub-leaf for the structured
@@ -200,7 +201,7 @@ def resolve(
     level being ``None`` (or not governing the scope) contributes a permit, so
     ``resolve(None, None, …)`` permits everything (the ungoverned standalone
     default) and a policy-deny is final regardless of the profile. In an
-    enterprise build a scope the policy does not name is answered by the built-in
+    LTS build a scope the policy does not name is answered by the built-in
     baseline instead (:func:`_policy_level`); ``baseline=False`` asks the profile
     layer alone, for a caller that judges each layer separately.
     """
@@ -377,9 +378,13 @@ def gate_decision(
             )
         ]
     arg_pairs = classify_tool_args(tool_kind, raw_params, diff_path)
+    # An Image read's files are judged beside what the argument scan yields,
+    # never in its place: they join after the marker and the title are decided.
+    image_pairs = classify_image_reads(raw_params)
     if builtin:
-        off_scope.extend(p for p in arg_pairs if p[0] not in own_scopes)
+        off_scope.extend(p for p in (*arg_pairs, *image_pairs) if p[0] not in own_scopes)
         arg_pairs = tuple(p for p in arg_pairs if p[0] in own_scopes)
+        image_pairs = tuple(p for p in image_pairs if p[0] in own_scopes)
         named = {scope for scope, _ in arg_pairs}
         arg_pairs += tuple(
             (scope, _NO_TARGET_ITEM)
@@ -392,9 +397,8 @@ def gate_decision(
     # when EVERY argument read target is anchored, though: a relative local
     # path is anchored at the gateway's working directory too, not where the
     # session reads it, and a marker (no target, truncated scan) names no file,
-    # so in those cases the title's pair is kept beside them. A batch entry
-    # that names no path (an Image read's ``image_paths``) has a target the
-    # scan does not list, so the title's pair is kept for it too.
+    # so in those cases the title's pair is kept beside them. An Image entry
+    # keeps the title's pair too; a batched one's images are judged beside it.
     arg_reads = [item for scope, item in arg_pairs if scope == "filesystem.read"]
     if (
         arg_reads
@@ -403,6 +407,7 @@ def gate_decision(
     ):
         pairs = [pair for pair in pairs if pair[0] != "filesystem.read"]
     pairs.extend(arg_pairs)
+    pairs.extend(image_pairs)
     if mcp_ref:
         pairs.append(("mcp", mcp_ref))
     # Order-preserving dedupe -- a caller whose title already equals its trusted

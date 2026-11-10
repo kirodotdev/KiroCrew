@@ -148,7 +148,8 @@ async def test_creation_refuses_a_data_home_another_account_owns(monkeypatch):
         assert response.status == 409, await response.text()
         body = await response.json()
     assert body["code"] == "data_home_not_owned"
-    assert body["fix_command"].startswith("sudo find ")
+    assert body["help_url"] == data_home_owner.HELP_URL
+    assert "fix_command" not in body
     assert "config.json" in body["error"]
     assert await asyncio.to_thread(_snapshot) == before
 

@@ -30,6 +30,7 @@
  * `shoot` step in `scripts/capture-feature-previews.mjs` — the media is the
  * heaviest thing a flag ships, so it must not outlive the flag.
  */
+import { LOCKED_FEATURE_PREVIEWS, controlLocked } from './editionLocks'
 import { safeGetItem, safeSetItem } from './safeStorage'
 
 /**
@@ -77,6 +78,14 @@ export const PREVIEW_WEBHOOKS = `${PREVIEW_FLAG_PREFIX}webhooks`
  * for a surface still settling.
  */
 export const PREVIEW_ARTIFACT_DEPLOY = `${PREVIEW_FLAG_PREFIX}artifact-deploy`
+
+/**
+ * Send a pending tool approval to the notification bridge: when an approval card
+ * opens, the gateway hands the bridge one note naming the request
+ * (`notifications/bridge_approval_note.py`), so a connected chat app hears about
+ * it. The dashboard bell is not rung for it. Server-only, default OFF.
+ */
+export const PREVIEW_BRIDGE_APPROVALS = `${PREVIEW_FLAG_PREFIX}bridge-approvals`
 
 /**
  * Creating a chat that RUNS ON a connected remote crew — the "New chat on crew"
@@ -209,6 +218,36 @@ export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
 export const PREVIEW_CREW_OAUTH = `${PREVIEW_FLAG_PREFIX}crew-oauth`
 
 /**
+ * Out-of-date Bot-written Dashboard fields: the page marks each bound field a
+ * Bot wrote and has not rewritten within its limit (24 hours unless the field
+ * says otherwise) "may be out of date", and the Bot's turn names those fields
+ * so it rewrites them (`dashboard_agentic.stale_line`). Server-only: the
+ * gateway reads `dashboard.feature_previews.dashboard_stale_fields` per read,
+ * so nothing in the dashboard reads this key. Default OFF, and OFF is every
+ * page and every turn as before.
+ */
+export const PREVIEW_DASHBOARD_STALE_FIELDS = `${PREVIEW_FLAG_PREFIX}dashboard-stale-fields`
+
+/**
+ * Agent Harness for worker chats: lets a conductor start a session on a harness it names
+ * (`session_create(backend=...)`, `work_dispatch(backend=...)`). Server-only:
+ * the gateway reads `dashboard.feature_previews.session_harness` per call
+ * (`session_harness_preview.py`), so nothing in the dashboard reads this key.
+ * Default OFF: the tools do not offer `backend` and refuse one. A Bot's own
+ * harness setting and `spawn_run(backend=...)` work either way.
+ */
+export const PREVIEW_SESSION_HARNESS = `${PREVIEW_FLAG_PREFIX}session-harness`
+
+/**
+ * Wake a Bot for its out-of-date fields: when a field the Bot writes passes its
+ * limit, the gateway starts one short turn in the Bot's own chat asking it to
+ * write those fields again (`dashboard/stale_wake.py`), even with no check-in
+ * on. Needs {@link PREVIEW_DASHBOARD_STALE_FIELDS}; its switch is shown only
+ * while that one is on. Server-only, default OFF.
+ */
+export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-stale-wake`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -227,6 +266,10 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_MATE_SESSIONS,
   PREVIEW_EXPLORE,
   PREVIEW_CREW_OAUTH,
+  PREVIEW_DASHBOARD_STALE_FIELDS,
+  PREVIEW_SESSION_HARNESS,
+  PREVIEW_DASHBOARD_STALE_WAKE,
+  PREVIEW_BRIDGE_APPROVALS,
 ]
 
 /**
@@ -262,9 +305,18 @@ export function setPreviewFlagPersister(next: PreviewFlagPersister | null): void
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
  * the whole point of the gate is that a surface stays hidden unless someone
  * deliberately turned it on, so it fails closed.
+ *
+ * An LTS build reads every flag as OFF whatever the browser holds (RFC D12), so
+ * a key flipped through Developer > Storage or devtools turns nothing on.
  */
 export function readPreviewFlag(flag: string): boolean {
+  if (previewFlagsLocked()) return false
   return safeGetItem(flag) === '1'
+}
+
+/** Whether this build turns every Feature Preview off (the LTS edition). */
+export function previewFlagsLocked(): boolean {
+  return controlLocked(LOCKED_FEATURE_PREVIEWS)
 }
 
 /**
@@ -292,7 +344,8 @@ export function setRemoteCrewChat(on: boolean): boolean {
  * exhausted quota survives `safeSetItem`'s reclaim attempts.
  *
  * On failure the toggle simply stays where it was, which is the truthful
- * outcome: nothing was saved, and nothing is sent to the gateway.
+ * outcome: nothing was saved, and nothing is sent to the gateway. An LTS build
+ * refuses every write the same way.
  */
 export function setPreviewFlag(flag: string, on: boolean): boolean {
   if (!cachePreviewFlag(flag, on)) return false
@@ -307,6 +360,7 @@ export function setPreviewFlag(flag: string, on: boolean): boolean {
  * write landed, for the reason given there.
  */
 export function cachePreviewFlag(flag: string, on: boolean): boolean {
+  if (previewFlagsLocked()) return false
   if (!safeSetItem(flag, on ? '1' : '0')) return false
   const detail: PreviewFlagChange = { key: flag, on }
   window.dispatchEvent(new CustomEvent<PreviewFlagChange>(PREVIEW_FLAG_EVENT, { detail }))

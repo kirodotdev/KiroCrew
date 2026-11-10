@@ -616,6 +616,33 @@ describe('OpsMissionControlPage', () => {
     )
   })
 
+  it('keeps keyboard focus on Mark resolved while the transition runs, and ignores more presses', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a keyboard
+    // press dropped focus to the page while the transition ran. The row itself leaves
+    // `/state` only once the transition resolves; focus must hold during the request.
+    const incident = mkIncident()
+    stubRoutes(mkState({ incidents: [incident] }))
+    let finish: (v: { incident: Incident; slack_thread_replyable: boolean }) => void = () => {}
+    vi.mocked(opsApi.transition).mockReturnValue(
+      new Promise(resolve => { finish = resolve }) as ReturnType<typeof opsApi.transition>,
+    )
+    renderWithProviders(<OpsMissionControlPage />)
+    await expandFirstRow()
+    const button = screen.getByRole('button', { name: 'Mark resolved' })
+
+    button.focus()
+    // Two presses in one tick, before the pending state has re-rendered.
+    fireEvent.click(button)
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'))
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+
+    await act(async () => finish({ incident, slack_thread_replyable: true }))
+    expect(opsApi.transition).toHaveBeenCalledTimes(1)
+  })
+
   it('offers no resolve button for a status that cannot be resolved from the board', async () => {
     stubRoutes(mkState({ incidents: [mkIncident({ status: 'dispatched' })] }))
     renderWithProviders(<OpsMissionControlPage />)
@@ -662,6 +689,68 @@ describe('OpsMissionControlPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
     await waitFor(() =>
       expect(opsApi.decideProposal).toHaveBeenCalledWith('omc-0001', false, undefined),
+    )
+  })
+
+  it('dims every pending proposal\'s Approve/Deny while one decision runs, so none looks pressable under the page-wide lock', async () => {
+    // Regression for #33115: Approve/Deny share ONE page-wide `decideClaimed` ref, so
+    // while incident A's decision runs, pressing B's Approve/Deny is silently dropped.
+    // The dim must therefore track the page-wide `decideMutation.isPending`, not the
+    // per-incident `deciding`; otherwise B's buttons look pressable while the shared
+    // lock swallows the press with no feedback.
+    stubRoutes(
+      mkState({
+        incidents: [
+          mkIncident({
+            incident_id: 'omc-0001',
+            slot_key: 'ops-mission-control-omc-0001',
+            signal: mkSignal({ id: 'sig-a', fingerprint: 'fp-a' }),
+            proposed_action: mkProposal(),
+          }),
+          mkIncident({
+            incident_id: 'omc-0002',
+            slot_key: 'ops-mission-control-omc-0002',
+            signal: mkSignal({ id: 'sig-b', fingerprint: 'fp-b' }),
+            proposed_action: mkProposal(),
+          }),
+        ],
+      }),
+    )
+    let finish: (v: { ok: true; proposal: PendingProposal; executed: boolean }) => void = () => {}
+    vi.mocked(opsApi.decideProposal).mockReturnValue(
+      new Promise(resolve => { finish = resolve }) as ReturnType<typeof opsApi.decideProposal>,
+    )
+    renderWithProviders(<OpsMissionControlPage />)
+
+    // The board expands one incident at a time. Expand A, start its decision and hold
+    // it pending, then switch to B -- the operator's path in the finding.
+    const rows = await waitFor(() => {
+      const r = screen.getAllByTestId('omc-incident-row')
+      expect(r).toHaveLength(2)
+      return r
+    })
+    fireEvent.click(rows[0])
+    const approveA = await screen.findByRole('button', { name: 'Approve and run' })
+    fireEvent.click(approveA)
+    await waitFor(() => expect(opsApi.decideProposal).toHaveBeenCalledTimes(1))
+
+    // Switch to incident B while A's decision is still running.
+    fireEvent.click(rows[1])
+    const approveB = await screen.findByRole('button', { name: 'Approve and run' })
+    const rejectB = screen.getByRole('button', { name: 'Reject' })
+
+    // B's buttons are dimmed by the page-wide pending state, matching the shared lock,
+    // so the operator is not shown a pressable control whose press is silently dropped.
+    expect(approveB).toHaveAttribute('aria-disabled', 'true')
+    expect(rejectB).toHaveAttribute('aria-disabled', 'true')
+
+    // And pressing B sends no request under the lock.
+    fireEvent.click(approveB)
+    fireEvent.click(rejectB)
+    expect(opsApi.decideProposal).toHaveBeenCalledTimes(1)
+
+    await act(async () =>
+      finish({ ok: true, proposal: mkProposal({ state: 'approved' }), executed: true }),
     )
   })
 
@@ -891,6 +980,62 @@ describe('OpsMissionControlPage', () => {
     )
   })
 
+  const idleCycle = {
+    claimed: [],
+    released: [],
+    polled: 1,
+    unclaimed_remaining: 0,
+    errors: {},
+    changed: false,
+    skipped_reason: '',
+    briefs: {},
+    suppressed: 0,
+    verifications: {},
+  }
+
+  it('keeps keyboard focus on Poll & claim while it runs, and ignores more presses', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press would drop focus to the page for the whole cycle.
+    stubRoutes()
+    let finish: (v: typeof idleCycle) => void = () => {}
+    vi.mocked(opsApi.dispatch).mockReturnValue(
+      new Promise(resolve => { finish = resolve }) as ReturnType<typeof opsApi.dispatch>,
+    )
+    renderWithProviders(<OpsMissionControlPage />)
+    const button = await screen.findByRole('button', { name: 'Poll & claim' })
+
+    button.focus()
+    // Two presses in one tick, before the pending state has re-rendered.
+    fireEvent.click(button)
+    fireEvent.click(button)
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'))
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+
+    await act(async () => finish(idleCycle))
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'))
+    // Counted after the cycle settles, so a second cycle started by a later
+    // press would already show here.
+    expect(opsApi.dispatch).toHaveBeenCalledTimes(1)
+    expect(button).toHaveFocus()
+  })
+
+  it('lets Poll & claim run again after a failed cycle', async () => {
+    stubRoutes()
+    vi.mocked(opsApi.dispatch).mockRejectedValue(new Error('provider timed out'))
+    renderWithProviders(<OpsMissionControlPage />)
+    const button = await screen.findByRole('button', { name: 'Poll & claim' })
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.getByText('provider timed out')).toBeInTheDocument())
+    vi.mocked(opsApi.dispatch).mockResolvedValue(idleCycle)
+    fireEvent.click(button)
+    await waitFor(() =>
+      expect(screen.getByText('Polled 1 firing signal; nothing new to claim.')).toBeInTheDocument(),
+    )
+    expect(opsApi.dispatch).toHaveBeenCalledTimes(2)
+  })
+
   it('switches to each sibling tab and hides the board action button', async () => {
     stubRoutes()
     renderWithProviders(<OpsMissionControlPage />)
@@ -980,6 +1125,7 @@ describe('OpsMissionControlPage', () => {
           on_shift: true,
           who: 'octocat',
           roster: {
+            source: 'schedule-file',
             members: [
               { login: 'octocat', shifts: 2, on_call_now: true },
               { login: 'hubot', shifts: 1, on_call_now: false },

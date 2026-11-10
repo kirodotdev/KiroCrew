@@ -13,7 +13,7 @@ further down, then `office` in "A desk that ships decks and mail", two in
 | id | folds it reads | what it answers |
 |---|---|---|
 | `project-report` | `workstreams`, `panel` | what this Bot did, what each thing cost, what came of it, what needs the reader |
-| `goal-board` | `work` | the work ledger it conducts: items, states, verdicts |
+| `goal-board` | `work`, `workstreams` | the work ledger it conducts: items, states, verdicts, and under an item run by a conductor of its own, that conductor's board and its tasks |
 | `work-kanban` | `work` | that same board as columns, including the one waiting on the conductor's own verdict |
 | `session-ledger` | `ledger` | what a long-running session is carrying, and what it would resume from |
 
@@ -50,7 +50,9 @@ The host fills every `data-dashboard-field` element by `textContent` and sets
 `window.kirocrew = {fields, agentic, seq, missing}`. `missing` names the cells whose
 value did not resolve; the host dims them and draws no band, and tells the Bot
 instead. A page draws no freshness or staleness message of its own either: no quiet
-band from a fold stamp and no live indicator. A field whose type is `array` or
+band from a fold stamp and no live indicator. (With the `dashboard_stale_fields`
+preview on, the host itself labels a Bot-written field the Bot has not rewritten in
+time; a page still draws nothing of its own.) A field whose type is `array` or
 `object` therefore reaches its bound element as JSON, which is unreadable in a cell, so
 each page overwrites that one cell with a count and draws the real thing from
 `window.kirocrew.fields` in its own script. Every page renders on load and again on each
@@ -127,8 +129,23 @@ redacts again and masks `crew_key`.
 `work-kanban` declares none, because every number it shows has a fold. `goal-board`
 declares one, `asks`: the answers the conductor offers for an item waiting on the reader,
 keyed by item id. Its numbers are all folded; the options are a judgment no fold holds.
-Each needs-you row gets a Reply button whether or not `asks` has an entry, and every
-button posts `kirocrew-dashboard:act`, which only fills the reader's chat box.
+Each needs-you row gets a Reply button whether or not `asks` has an entry. Reply posts
+`kirocrew-dashboard:act`, which only fills the reader's chat box with a starter they
+finish. An option button is a finished answer and posts `kirocrew-dashboard:send`: the
+host sends it only when the reader turned "Send replies in one click" on, and otherwise
+fills the chat box exactly as `act` does.
+
+`goal-board` reads `workstreams` for one thing the `work` fold cannot hold: a worker that
+is itself a conductor records its own workers on its own ledger, so the `work` fold of
+the board above never lists them. Each sub-board in `workstreams.items` names the task it
+hangs under (`parent.board`, `parent.item_id`), and the page draws it inside that task's
+card, nested again for a board under one of its tasks (depth 4, an id already drawn on
+the path is not drawn again). The page finds its own board as the one with no parent
+that holds an item the `work` fold lists, because board ids there are per-read aliases.
+A sub-board's tasks show their RECORDED state (an open one that asked or is blocked
+reads "waiting on conductor"), the worker's last status and summary, never a runtime
+guess: `workstreams` carries no runtime facts. Their sessions are opened from the
+Board tab, since `workstreams` withholds session keys.
 
 ## Checking and rendering them
 
@@ -256,9 +273,10 @@ same epic-row progress bar -- so the family reads as one product. Every colour o
 theme variable: it draws no chart and no sunburst, so a literal here would paint a colour
 the product never serves.
 
-The two buttons on a review row put a line in the person's chat box and never send it:
-the page posts `kirocrew-dashboard:act`, the host fills the composer, and the person
-presses send.
+The two buttons on a review row are finished answers: the page posts
+`kirocrew-dashboard:send`, and the host sends the line only when the person turned "Send
+replies in one click" on. Otherwise, or on any refusal, the host fills the composer and
+the person presses send.
 
 `scripts/render_dashboard_builtin.py --no-head` drops the harness's own caption band
 (template, fold seq, theme, width) for a shot whose subject is how the page itself looks.

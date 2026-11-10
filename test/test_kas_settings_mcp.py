@@ -15,12 +15,19 @@ from kas_agents_helpers import _spec
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
-from kiro_crew.acp.kas_agents import to_client_custom_agent
+from kiro_crew.acp.kas_agents import KasAgentTranslationError, to_client_custom_agent
 from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_settings_mcp import (
     finish_settings_mcp,
+    include_mcp_json,
     stamp_settings_mcp,
     without_excluded_stubs,
+)
+from kiro_crew.acp.kas_tool_limits import (
+    kas_globs,
+    unmatched_disabled_globs,
+    unmatched_globs_notice,
+    with_switched_off_tools,
 )
 from kiro_crew.agent_materialization.auto_approve import govern_spec
 
@@ -52,16 +59,23 @@ def _agent(**over):
     return base
 
 
-def _finish(agent, work, session=(), declared=()):
-    (stamped,) = stamp_settings_mcp([agent], "a", work, declared=declared)
+def _finish(agent, work, session=(), declared=(), opted_in=False):
+    (stamped,) = stamp_settings_mcp([agent], "a", work, declared=declared, opted_in=opted_in)
     return finish_settings_mcp(stamped)
 
 
 class TestLegacySpelling:
     def test_use_legacy_mcp_json_travels_as_include_mcp_json(self):
+        spec = _spec(useLegacyMcpJson=False)
+        del spec["includeMcpJson"]
+        assert to_client_custom_agent("a", spec, "p")["includeMcpJson"] is False
+
+    def test_a_true_opt_in_under_the_alias_is_read_but_never_sent(self):
+        """KAS's ``true`` mounts every MCP tool past ``tools``, whichever key said it."""
         spec = _spec(useLegacyMcpJson=True)
         del spec["includeMcpJson"]
-        assert to_client_custom_agent("a", spec, "p")["includeMcpJson"] is True
+        assert include_mcp_json(spec) is True
+        assert "includeMcpJson" not in to_client_custom_agent("a", spec, "p")
 
     def test_include_mcp_json_wins_over_the_alias(self):
         out = to_client_custom_agent("a", _spec(includeMcpJson=False, useLegacyMcpJson=True), "p")
@@ -95,8 +109,22 @@ class TestUndeclaredFileServers:
             home / "mcp.json",
             {"mcpServers": {"extra": {"disabledTools": ["write_*", "exact", "de?"]}}},
         )
-        out = _finish(_agent(includeMcpJson=True), work)
+        out = _finish(_agent(), work, opted_in=True)
         assert out["excludedTools"] == ["@extra/write_*", "@extra/de?"]
+
+    def test_a_wire_flag_is_not_the_opt_in(self, home, work):
+        """The opt-in is the stamp's: the projected entry never carries ``true``."""
+        _write(home / "mcp.json", {"mcpServers": {"extra": {}}})
+        assert _finish(_agent(includeMcpJson=True), work)["excludedTools"] == ["@extra"]
+
+    def test_an_opted_in_spec_keeps_the_server_its_tools_names(self, home, work):
+        """Leaving ``true`` off the wire does not cost the agent its ``tools`` refs."""
+        _write(home / "mcp.json", {"mcpServers": {"notes-mcp": {}, "extra": {}}})
+        spec = _spec(includeMcpJson=True, tools=["fs_read", "@notes-mcp"])
+        entry = {**to_client_custom_agent("a", spec, "p"), "id": "a"}
+        assert "includeMcpJson" not in entry
+        out = _finish(entry, work, opted_in=include_mcp_json(spec) is True)
+        assert "@notes-mcp" not in out.get("excludedTools", [])
 
     def test_declared_and_session_level_servers_get_no_file_globs(self, home, work):
         _write(
@@ -127,7 +155,7 @@ class TestUndeclaredFileServers:
             work / ".kiro" / "settings" / "mcp.json",
             {"mcpServers": {"pooled": {"disabledTools": ["write_*"]}}},
         )
-        out = _finish(_agent(includeMcpJson=True), work, [{"name": "pooled"}])
+        out = _finish(_agent(), work, [{"name": "pooled"}], opted_in=True)
         assert out["excludedTools"] == ["@pooled/write_*"]
 
     def test_an_unreadable_workspace_file_keeps_the_global_exclusions(
@@ -172,7 +200,7 @@ class TestUndeclaredFileServers:
             work / ".kiro" / "settings" / "mcp.json",
             {"mcpServers": {"extra": {"disabledTools": ["b*"]}}},
         )
-        out = _finish(_agent(includeMcpJson=True), work)
+        out = _finish(_agent(), work, opted_in=True)
         assert out["excludedTools"] == ["@extra/b*"]
 
     def test_only_the_active_entry_is_stamped_and_an_unstamped_one_passes(self, home, work):
@@ -210,7 +238,7 @@ class TestUndeclaredFileServers:
     def test_an_opted_in_agent_keeps_its_pooled_stubs(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"pooled": {}}})
         session = [{"name": "pooled"}]
-        stamped = stamp_settings_mcp([_agent(includeMcpJson=True)], "a", work)
+        stamped = stamp_settings_mcp([_agent()], "a", work, opted_in=True)
         assert without_excluded_stubs(session, stamped) is session
 
 
@@ -265,3 +293,103 @@ class TestTimeout:
         _write(home / "cli.json", {"mcp.initTimeout": 300_000})
         _write(work / ".kiro" / "settings" / "cli.json", {"mcp.initTimeout": 200_000})
         assert _finish(_agent(), work)["mcpServers"]["own"]["timeout"] == 200_000
+
+
+class TestBraceGlobs:
+    @pytest.mark.parametrize(
+        ("pattern", "want"),
+        [
+            ("write_file", ["write_file"]),
+            ("x_{a,b}", ["x_{a,b}"]),  # no wildcard: exact on kiro-cli and KAS alike
+            ("{read,write}_*", ["read_*", "write_*"]),
+            ("{a,b}?{c,d}*", ["a?c*", "a?d*", "b?c*", "b?d*"]),
+            ("{a*,b}", ["a*", "b"]),
+            ("{x,x}*", ["x*"]),
+        ],
+    )
+    def test_braces_expand_into_one_glob_per_branch(self, pattern, want):
+        assert kas_globs(pattern) == want
+
+    @pytest.mark.parametrize(
+        "pattern",
+        ["fs_[rw]*", "a]*", r"a\**", "**", "a**b", "{a,{b,c}}*", "{a,}*", "{}*", "{a*", "a}*"]
+        + ["{a,b}{c,d}{e,f}{g,h}{i,j}{k,l}{m,n}*"]
+        + ["{a,b}" * 6 + "{" + ",".join(f"x{i}" for i in range(150_000)) + "}*"]
+        + ["{a}" * 100_000 + "*", "a" * 513 + "*"]
+        + ["{a,b}" * 6 + "{c,d,e}*"],  # 192 branches, refused before it is built
+        ids=lambda pattern: pattern[:40],
+    )
+    def test_what_kas_cannot_match_is_none(self, pattern):
+        assert kas_globs(pattern) is None
+
+    def test_a_spec_server_brace_glob_is_carried_per_branch(self):
+        spec = _spec(mcpServers={"s": {"command": "x", "disabledTools": ["{read,write}_*"]}})
+        out = to_client_custom_agent("a", spec, "p")
+        assert "@s/read_*" in out["excludedTools"]
+        assert "@s/write_*" in out["excludedTools"]
+
+    def test_a_spec_server_glob_kas_cannot_match_keeps_the_agent_and_is_named(self, caplog):
+        servers = {"s": {"command": "x", "disabledTools": ["fs_[rw]*", "{a,b}_*"]}}
+        out = to_client_custom_agent("a", _spec(mcpServers=servers), "p")
+        assert {"@s/fs_[rw]*", "@s/a_*", "@s/b_*"} <= set(out["excludedTools"])
+        with caplog.at_level(logging.WARNING):
+            notice = unmatched_globs_notice(unmatched_disabled_globs(servers))
+        assert notice == (
+            "⚠ disabledTools pattern `fs_[rw]*` for `s` can't be applied on KAS,"
+            " so that tool stays on."
+        )
+        assert "fs_[rw]*" in caplog.text
+
+    def test_a_non_list_disabled_tools_still_refuses_the_agent(self):
+        spec = _spec(mcpServers={"s": {"command": "x", "disabledTools": "fs_write"}})
+        with pytest.raises(KasAgentTranslationError, match="list of tool names"):
+            to_client_custom_agent("a", spec, "p")
+
+    def test_the_notice_cannot_be_forged_and_names_every_server(self, caplog):
+        servers = {"x\nERROR forged`": {"disabledTools": [f"p{i}[a]*" for i in range(9)]}}
+        servers["last"] = {"disabledTools": ["q[a]*"]}
+        with caplog.at_level(logging.WARNING):
+            notice = unmatched_globs_notice(unmatched_disabled_globs(servers))
+        lines = notice.split("\n")
+        assert len(lines) == 9
+        assert lines[-1] == "…and 2 more such patterns, for `x ERROR forged'`, `last`."
+        assert all("`x ERROR forged'`" in line for line in lines[:8])
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 10 and all("\n" not in w for w in warnings)
+
+    def test_a_global_switch_brace_glob_is_carried_per_branch(self):
+        pairs = frozenset({("own", "fs_{read,write}*"), ("own", "x_[ab]*")})
+        (out,) = with_switched_off_tools([{"id": "a"}], pairs)
+        assert out["excludedTools"] == ["@own/fs_read*", "@own/fs_write*", "@own/x_[ab]*"]
+
+    def test_a_file_server_brace_glob_is_carried_per_branch(self, home, work):
+        _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["{a,b}_*"]}}})
+        out = _finish(_agent(), work, opted_in=True)
+        assert out["excludedTools"] == ["@extra/a_*", "@extra/b_*"]
+
+    def test_a_file_server_glob_kas_cannot_match_keeps_it_running_with_a_notice(
+        self, home, work, caplog
+    ):
+        _write(
+            home / "mcp.json",
+            {"mcpServers": {"extra": {"disabledTools": ["ok_*", "fs_[rw]*"]}, "fine": {}}},
+        )
+        unmatched: set[tuple[str, str]] = set()
+        (stamped,) = stamp_settings_mcp([_agent()], "a", work, unmatched=unmatched, opted_in=True)
+        out = finish_settings_mcp(stamped)
+        assert "@extra" not in out["excludedTools"]
+        assert out["excludedTools"] == ["@extra/ok_*", "@extra/fs_[rw]*"]
+        assert unmatched == {("extra", "fs_[rw]*")}
+        with caplog.at_level(logging.WARNING):
+            notice = unmatched_globs_notice(sorted(unmatched))
+        assert notice == (
+            "⚠ disabledTools pattern `fs_[rw]*` for `extra` can't be applied on KAS,"
+            " so that tool stays on."
+        )
+        assert "fs_[rw]*" in caplog.text and "extra" in caplog.text
+
+    def test_nothing_reported_for_a_server_kas_does_not_start(self, home, work):
+        _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["fs_[rw]*"]}}})
+        unmatched: set[tuple[str, str]] = set()
+        stamp_settings_mcp([_agent()], "a", work, unmatched=unmatched)
+        assert unmatched == set()

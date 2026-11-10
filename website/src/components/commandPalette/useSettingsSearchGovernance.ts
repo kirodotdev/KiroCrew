@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { useUpdateSwitchesShown } from '../../utils/updateSwitches'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { configuredAcpBackend, type AcpBackendConfig } from '../../api/acpBackend'
 import { KIRO_SIGN_IN_BACKEND } from '../../pages/developer/kiroSignInLink'
 import type { SettingsSearchGovernance } from './settingsSearchCore'
@@ -57,8 +58,14 @@ export function useSettingsSearchGovernance(
     ...CACHED_ONLY,
   })
   const kiroSignInOffered = !cfgQ.isSuccess || configuredAcpBackend(cfgQ.data) === KIRO_SIGN_IN_BACKEND
+  // The `['instances']` read RemoteCrewPanel picks its branch by, from cache only:
+  // the shell's tab bar already reads it at boot.
+  const instancesQ = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), ...CACHED_ONLY })
+  const remoteCrewsEnabled = instancesQ.isSuccess
+    ? true
+    : isInstancesDisabledError(instancesQ.error) ? false : undefined
   return useMemo(
-    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered }),
-    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered],
+    () => ({ decisionsEnabled, tipsEnabled, updateSwitches: { app, gateway }, kiroSignInOffered, remoteCrewsEnabled }),
+    [decisionsEnabled, tipsEnabled, app, gateway, kiroSignInOffered, remoteCrewsEnabled],
   )
 }

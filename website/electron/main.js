@@ -42,9 +42,11 @@ const {
 } = require("./host-config");
 const { isLocalGatewayEnabled } = require("./local-gateway");
 const { seedRenamedStore } = require("./store-rename");
+const { STORE_FILE_MODE, tightenStoreFileMode } = require("./store-file-mode");
 const { resolveHome } = require("./home-dir");
 const { internalSecretFor } = require("./local-token");
 const { identityFamily } = require("./instance-guard");
+const { EDITION_LTS, readBakedEdition } = require("./edition");
 const { describeSingletonLock } = require("./singleton-lock");
 const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
 const { resolveLinuxInstall } = require("./auto-update");
@@ -127,6 +129,8 @@ const renameSeedCarriedSettings = seedRenamedStore(app.getPath("userData"), {
 const isFreshInstall = !storeFileExistedBeforeBoot && !renameSeedCarriedSettings;
 
 const store = new Store({
+  // Owner-only on every save; see store-file-mode.js.
+  configFileMode: STORE_FILE_MODE,
   defaults: {
     remoteHost: "",
     kirocrewBinPath: DEFAULT_REMOTE_BIN,
@@ -149,6 +153,7 @@ const store = new Store({
     gpuSoftwareFallback: null,
   },
 });
+tightenStoreFileMode(store.path, { log: (message) => glog("store mode: " + message) });
 
 // Opt the summon hotkey OUT for FRESH installs only. Before this, a null/unset
 // globalHotkey auto-bound the platform default (Cmd+Shift+K on macOS, which is
@@ -219,17 +224,23 @@ function resolvePort() {
 const PORT = resolvePort();
 const BACKEND_URL = "http://localhost:" + PORT;
 
+// The LTS edition is a side-by-side app like nightly (packaging/build-desktop.sh
+// "KiroCrew LTS"), so its own name and app ID keep it apart from production. // brand-ok
+const IS_LTS_BUILD = readBakedEdition() === EDITION_LTS;
 app.name = identityFamily(app.getVersion()) === "nightly"
   ? "Kiro Crew Nightly"
-  : "Kiro Crew";
+  : IS_LTS_BUILD ? "Kiro Crew LTS" : "Kiro Crew";
 
-// Windows groups and pins the live window by this ID. Nightly must remain
-// side-by-side with stable, matching the packaged app IDs.
+// Windows groups and pins the live window by this ID. Nightly and LTS must
+// remain side-by-side with stable, matching the packaged app IDs.
 if (process.platform === "win32") {
   const appUserModelId = identityFamily(app.getVersion()) === "nightly"
     ? "com.amazon.kiro.crew.nightly"
     : "com.amazon.kiro.crew";
-  app.setAppUserModelId(appUserModelId);
+  // LTS: the production ID plus ".lts", the packaged win.appId build-desktop.sh
+  // derives from package.json build.appId (electron-builder strips `build` from
+  // the packaged package.json, so it cannot be read here).
+  app.setAppUserModelId(IS_LTS_BUILD ? `${appUserModelId}.lts` : appUserModelId);
 }
 
 function gatewayLogPath() {

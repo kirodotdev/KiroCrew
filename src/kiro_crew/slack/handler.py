@@ -149,6 +149,7 @@ from kiro_crew.messaging.dispatch import (
     stop_reason_landed,
 )
 from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.driver import _SteeringMarkerFilter  # noqa: F401 - read by the owners
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
@@ -167,6 +168,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
     trust_permitted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.mrkdwn_title import slack_title_text  # noqa: F401 - read by the owners
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context

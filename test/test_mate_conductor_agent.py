@@ -295,7 +295,7 @@ def test_the_installed_conductor_mounts_the_ledger_and_maps_goal_conductor(insta
     assert spec_has_ledger_tools(installed)
 
 
-def test_with_the_ledger_the_conductor_maps_goal_conductor_for_patrol_budget(tmp_path, monkeypatch):
+def test_with_the_ledger_the_conductor_maps_goal_conductor(tmp_path, monkeypatch):
     from kiro_crew.member_mate_tools import spec_has_ledger_tools
 
     spec = _install_with_work(tmp_path, monkeypatch)
@@ -366,18 +366,9 @@ def scoped(monkeypatch):
 
 def test_by_default_the_mapped_conductor_still_inherits_the_users_skills(user_skills):
     """The one-release deprecation: the default keeps the user's trees beside the mapping."""
-    from kiro_crew.agent_discovery_parts.skill_scope import mate_conductor_inherited_skills
-
     _spec, project, goal, user, workspace = user_skills
     scope = _scope_via("agent_skill_globs_inheriting", project)
     assert {goal, user, workspace} <= set(scope)
-    assert mate_conductor_inherited_skills(project) == ["my-own", "team-skill"]
-
-
-def test_scoped_the_conductor_reports_no_inherited_skill(user_skills, scoped):
-    from kiro_crew.agent_discovery_parts.skill_scope import mate_conductor_inherited_skills
-
-    assert mate_conductor_inherited_skills(user_skills[1]) == []
 
 
 # -- scoped: the mapping is the whole scope, for every caller, as on Ultra Mode ---- #
@@ -475,42 +466,3 @@ def test_kas_deny_rule_denies_the_users_skills_to_the_mapped_conductor(user_skil
     assert rules, "a mapped scope must deny the skills outside it"
     kept = {name for rule in rules for name in rule.get("exclude", [])}
     assert not {"my-own", "team-skill"} & kept
-
-
-def _notice_rows(monkeypatch, project, agent: str) -> tuple[list, list]:
-    """``(notice rows, pending-context entries)`` the helper writes for *agent*."""
-    import asyncio
-    from types import SimpleNamespace
-
-    from kiro_crew.dashboard import chat_runner
-
-    rows: list = []
-    queued: list = []
-    slot = SimpleNamespace(append_pending_context=lambda e: queued.append(e) or True)
-    monkeypatch.setattr(chat_runner, "append_and_surface", lambda *args, **kw: rows.append(args))
-    asyncio.run(
-        chat_runner._notice_inherited_conductor_skills(
-            object(), slot, SimpleNamespace(cwd=str(project)), agent
-        )
-    )
-    return rows, queued
-
-
-def test_a_session_that_loads_an_inherited_skill_is_told_and_one_that_loads_none_is_not(
-    user_skills, monkeypatch
-):
-    """Per new session: the Bot is asked to say it in its reply (its chat draws no
-    ``notice`` row; the row is for the Sessions page). A session whose conductor
-    loads no inherited skill gets neither."""
-    from kiro_crew.agent_discovery_parts import skill_scope
-    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
-
-    rows, queued = _notice_rows(monkeypatch, user_skills[1], MATE_CONDUCTOR_AGENT)
-    assert len(rows) == 1 and len(queued) == 1
-    for text in (rows[0][3], queued[0]["content"]):
-        assert "my-own" in text and "team-skill" in text
-        assert "Abilities" in text and "Bot" in text
-    assert queued[0]["ephemeral"] is True
-
-    monkeypatch.setattr(skill_scope, "MATE_CONDUCTOR_INHERITS_USER_SKILLS", False)
-    assert _notice_rows(monkeypatch, user_skills[1], MATE_CONDUCTOR_AGENT) == ([], [])

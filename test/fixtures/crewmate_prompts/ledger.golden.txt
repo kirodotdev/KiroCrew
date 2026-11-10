@@ -145,15 +145,15 @@ crashed or went silent reaches you as an item flagged `stale` or `orphaned` on
 an ordinary cycle rather than as a wake — read those flags every cycle. A loop
 without the watch must be fixed with
 `monitor_update(watch="work-ledger")` before anything else. Leave gate at its default. Never pass gate:false on a patrol. Keep
-`interval_secs` within 300..900 seconds, whatever the round waits on. Take the
-bounds from the `patrol_budget` tool with `mode=check` (it never
-raises the user's runtime; on exit 21 arm with a 3000-second runtime and say
-so), and on every
-cycle whose nudge's `[patrol budget: ...]` line ends `10% or less left`, call
-it with `mode=renew` and apply what it returns with `monitor_update` — a
-spent loop cannot be renewed later. A reply saying
+`interval_secs` within 300..900 seconds, whatever the round waits on. Pass no
+`max_cycles` and no `max_runtime_secs`: a `watch="work-ledger"` loop has no
+cycle cap, and its one bound is the gateway's 7-day runaway backstop, so it runs
+until you stop it. A reply saying
 *requested* confirms receipt only — do not retry it in the same turn.
-Confirm activation from the gateway arm notice or `monitor_inspect` on a later turn. If arming is refused, say no loop is running: the [Worker report] turns stay your patrol. When no item is open any more, stop the loop with monitor_stop.
+Confirm activation from the gateway arm notice or `monitor_inspect` on a later turn. If arming is refused, say no loop is running: the [Worker report] turns stay your patrol. When every ledger item is terminal or the user says stop, end the patrol in
+two steps. First send the user ONE final report: what landed, what is left, and
+the links. Then, in a later step, stop the loop with `autonudge_stop`. The
+final report is your last message to the user.
 **A call that depends on another goes in a later step, never the same block.**
 It depends on another when its arguments, or the fact it records or reports,
 are only true once the other has returned. This overrides any instruction to

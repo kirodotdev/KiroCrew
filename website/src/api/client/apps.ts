@@ -8,7 +8,7 @@
 import { normalizeInstalledApps, normalizeInstalledApp } from '../../components/appstore/types'
 import { i18nT } from '../../i18n/t'
 import { SESSION_CONTROL_STATUS_PATH_RE } from '../../lib/sessionControlStatusPath'
-import { ApiError, isRelayAppsRefusal, toApiError } from '../apiError'
+import { ApiError, toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
 /** Final payload resolved by installFromRegistryStream's SSE `done` event. */
@@ -74,20 +74,10 @@ export interface FileMenuContext {
 }
 
 export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fetch, sessionKeyHeader: _sk, checkSessionExpired, removeAuthBanner }: ClientTransport) {
-  // The relay refuses the app surface to a teammate (`relay_apps_teammate`), and
-  // nothing this document does can change who its caller is. Once that answer
-  // arrives it is kept and handed back without a request, so the shell's retry
-  // ladder, a tab-return re-read and every newly mounted `['apps']` observer stop
-  // asking `/api/apps` the same question (#32031). Only that one code is kept: any
-  // other failure, an `owner_only` 403 included, still reaches the gateway next time.
-  let appsRefusedForTeammate: unknown = null
-  const listApps = (): Promise<ReturnType<typeof normalizeInstalledApps>> => {
-    if (appsRefusedForTeammate) return Promise.reject(appsRefusedForTeammate)
-    return fetch('/api/apps').then(jApps).then(normalizeInstalledApps).catch((e: unknown) => {
-      if (isRelayAppsRefusal(e)) appsRefusedForTeammate = e
-      throw e
-    })
-  }
+  // A `relay_apps_teammate` refusal is kept by the transport (`refusedReads` in
+  // `api/client.ts`), so a later ask of `/api/apps` makes no request (#32031).
+  const listApps = (): Promise<ReturnType<typeof normalizeInstalledApps>> =>
+    fetch('/api/apps').then(jApps).then(normalizeInstalledApps)
   const platform = {
     // --- Apps ---
     // Installed-app payloads are normalized HERE rather than in a queryFn. The
@@ -137,7 +127,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     // narrows it to its own local RegistryApp shape at the call site. Typing it as
     // unknown[] here would break those structural assignments across files.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; catalogUnavailable?: boolean; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
+    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; catalogUnavailable?: boolean; registryStatus?: unknown[]; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
     listRegistries: () => fetch('/api/apps/registries').then(j) as Promise<{ registries: ExternalRegistryRow[]; pinned?: ExternalRegistryRow[] }>,
     updateRegistries: (registries: { name: string; repo: string; branch: string; trust?: string }[]) => put('/api/apps/registries', { registries }).then(j) as Promise<{ ok: boolean; registries: ExternalRegistryRow[]; newlyTrustedHosts: string[] }>,
     // Drops the server's on-disk caches of the published documents (catalog /
@@ -148,7 +138,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     // /api/apps/: that namespace grants an app named `registry` implicit
     // path ownership (token_auth._app_owns_path).
     refreshAppStore: () => post('/api/app-store/refresh').then(j) as Promise<{ ok: boolean }>,
-    refreshRegistries: (repo?: string) => post('/api/apps/registries/refresh', repo ? { repo } : {}).then(j) as Promise<{ ok: boolean; refreshed: string[]; failed: string[]; results: { name: string; ok: boolean; reason?: 'auth'; host?: string }[]; apps: number; lastSyncedAt: string }>,
+    refreshRegistries: (repo?: string) => post('/api/apps/registries/refresh', repo ? { repo } : {}).then(j) as Promise<{ ok: boolean; refreshed: string[]; failed: string[]; results: { name: string; ok: boolean; reason?: string; host?: string; cached?: boolean }[]; apps: number; lastSyncedAt: string }>,
     installFromRegistry: (name: string) => post('/api/apps/registry/install', { name }).then(j),
     /**
      * Stream install logs via SSE.  Calls `onLog` for each line and resolves

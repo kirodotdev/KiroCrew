@@ -193,6 +193,9 @@ with no row here.
    * - ``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``
      - driver-internal (whether an unpinned session serves a pseudo-model the
        registry cannot name, so the advertised effort option answers there)
+   * - ``ACP_BACKENDS_ULTRACODE_CONFIG_OPTION``
+     - driver-internal (whether the session's advertised ``ultracode`` switch is
+       read and written, by ``AcpProvider.ultracode_enabled`` / ``set_ultracode``)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
@@ -312,6 +315,10 @@ with no row here.
      - semantic question (``SessionCapabilities.acp_client_spawnable``)
    * - ``ACP_BACKENDS_REMOTE_MCP_OAUTH``
      - semantic question (``SessionCapabilities.honors_remote_mcp_oauth``)
+   * - ``ACP_BACKENDS_CREW_OAUTH_BRIDGE``
+     - pre-session registry query (whether a session on this backend reaches a
+       Crew-owned Connection through the gateway bridge; read by
+       ``connections.crew_oauth`` while the session's MCP array is composed)
 
 The two non-set tables ``SessionCapabilities`` also translates are
 :func:`model_registry_namespace` (the model-id namespace) and
@@ -404,8 +411,9 @@ ACP_BACKEND_COPILOT = "copilot"
 # Strands interrupt, so Crew loads the project through its own gate module, which
 # raises one for every tool call -- see :data:`Routing.VERIFIED_GATE_EXTENSION`.
 #
-# VERIFIED RANGE: @strands-agents/cli 0.2.3 over strands-harness 0.3.3 /
-# strands-agents 1.63.0 (``test/fixtures/acp_frames/strands/``).
+# VERIFIED RANGE: @strands-agents/cli 0.2.4 over strands-harness 0.3.3 /
+# strands-agents 1.63.0. The captures (``test/fixtures/acp_frames/strands/``) were
+# taken on 0.2.3; the published 0.2.4 package differs from it only in its version.
 ACP_BACKEND_STRANDS = "strands"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
@@ -643,21 +651,21 @@ POLICY_ID_BY_BACKEND: dict = {
 #: Revisit if KAS ever ships a binary of its own.
 GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KIRO
 
-#: The floor in an ENTERPRISE build: KAS (RFC ``rfc-crew-enterprise-edition.md``, D6).
+#: The floor in an LTS build: KAS (RFC ``rfc-crew-lts-edition.md``, D6).
 #:
-#: The owner made KAS the one harness an enterprise build keeps, because KAS is the
+#: The owner made KAS the one harness an LTS build keeps, because KAS is the
 #: forward harness and kiro-cli is being retired. The precondition argument above
 #: does not apply there: KAS has a second route that needs no kiro-cli (Crew's own
-#: engine bundle, ``acp/kas_bundle.py``), and an enterprise start whose KAS cannot run
-#: on either route is refused (``enterprise_boot.require_kas_harness``) instead of
+#: engine bundle, ``acp/kas_bundle.py``), and an LTS start whose KAS cannot run
+#: on either route is refused (``lts_boot.require_kas_harness``) instead of
 #: falling back to the Kiro CLI harness.
-ENTERPRISE_GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KAS  # harness-ok: RFC D6 enterprise floor
+LTS_GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KAS  # harness-ok: RFC D6 LTS floor
 
 
 def governance_floor_backend() -> str:
     """The backend no policy can remove in THIS build.
 
-    :data:`ENTERPRISE_GOVERNANCE_FLOOR_BACKEND` in an enterprise build, else
+    :data:`LTS_GOVERNANCE_FLOOR_BACKEND` in an LTS build, else
     :data:`GOVERNANCE_FLOOR_BACKEND`. Read at call time from the build-time edition
     (``kiro_crew.edition``), which is stdlib-only and never reads the platform
     context or config, so the config-load gate below stays safe (harness-parity H3).
@@ -665,8 +673,8 @@ def governance_floor_backend() -> str:
     """
     from kiro_crew import edition
 
-    if edition.is_enterprise():
-        return ENTERPRISE_GOVERNANCE_FLOOR_BACKEND
+    if edition.is_lts():
+        return LTS_GOVERNANCE_FLOOR_BACKEND
     return GOVERNANCE_FLOOR_BACKEND
 
 
@@ -1138,6 +1146,7 @@ from kiro_crew.agent_sdk.backends_launch import (  # noqa: E402,F401 - re-export
 )
 from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_CLIENT_META_SETTINGS,
+    ACP_BACKENDS_CREW_OAUTH_BRIDGE,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -1163,6 +1172,7 @@ from kiro_crew.agent_sdk.backends_members import (  # noqa: E402,F401 - re-expor
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
+    crewmate_inherited_backend,
 )
 from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-exported vocabulary
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
@@ -1176,6 +1186,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_ULTRACODE_CONFIG_OPTION,
     CC_PERMISSION_MODE_ENV,
     CC_PIN_INHERITED_MODE_ENV,
     DEFAULT_EFFORT_CONFIG_OPTION_ID,
@@ -1185,6 +1196,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
     EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND,
+    ULTRACODE_CONFIG_OPTION_ID,
     effort_config_option_clear_value,
     effort_config_option_id,
     effort_config_option_levels,

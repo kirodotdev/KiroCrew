@@ -54,6 +54,14 @@ _STORE_VERSION = LOCAL_DEFAULT_STORE_VERSION
 #: top-level key came from a newer build and is written back unchanged.
 _STORE_DOCUMENT_KEYS = frozenset({"version", "jobs"})
 
+#: The deepest a job record the store keeps may nest: two levels inside the store
+#: document (``{"jobs": [record]}``), so the saved store stays within
+#: ``MAX_DOCUMENT_NESTING``, the bound a snapshot restore applies. ``_save`` encodes
+#: with ``indent=2``, whose pure-Python encoder recurses once per level and raises
+#: ``RecursionError`` about a thousand levels down, so nothing the store keeps may
+#: nest deeper, whatever ``json.loads`` accepted.
+_MAX_RECORD_NESTING = MAX_DOCUMENT_NESTING - 2
+
 # Bounded non-blocking acquire for the cron-store advisory lock (see
 # CronService._file_lock). The spin never parks the event loop in an
 # uninterruptible kernel wait; it fails fast after the timeout instead.
@@ -189,8 +197,9 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
     """Build one :class:`CronJob` from its serialized record.
 
     Raises ``KeyError``/``TypeError`` when the record is malformed (missing
-    required keys, not shaped like a job object at all, or carrying a
-    non-string where the field decides WHAT the job executes). The caller
+    required keys, not shaped like a job object at all, carrying a
+    non-string where the field decides WHAT the job executes, or a field it
+    keeps nested past ``_MAX_RECORD_NESTING``). The caller
     (:meth:`CronService._load`) isolates that failure to THIS entry — one bad
     record must never discard the rest of the store.
 
@@ -389,6 +398,11 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         secret_env_pending_pin=_guard_str("secret_env_pending_pin"),
         secret_env_pending_ts=_guard_num("secret_env_pending_ts", 0.0),
     )
+    # Measured on what the save writes back, so a coerced field does not count.
+    # Skipping the record rather than clearing the field keeps a too-deep
+    # execution_context or env from running the job under one it was not given.
+    if exceeds_nesting(job_record(job), _MAX_RECORD_NESTING):
+        raise TypeError(f"cron record nests deeper than {_MAX_RECORD_NESTING} levels")
     if coerced and warn_on_coercion:
         logger.warning(
             "Coercing non-string value(s) in cron job entry (id=%r) field(s) %s to unset; "
@@ -636,7 +650,17 @@ MAX_UNKNOWN_FIELDS_STORE_BYTES = 1024 * 1024
 
 
 def _kept_size(what: str, *parts: Mapping[str, Any]) -> int | None:
-    """The JSON size of the unknown keys in *parts*, or None (logged) past the per-item cap."""
+    """The JSON size of the unknown keys in *parts*, or None (logged) past the per-item cap
+    or nested deeper than ``_MAX_RECORD_NESTING - 1``: a schedule's keys are written back
+    one level inside a record, the deepest place any of them goes."""
+    if any(exceeds_nesting(part, _MAX_RECORD_NESTING - 1) for part in parts):
+        logger.warning(
+            "Cron store: %s has key(s) from a newer build nested deeper than %d levels; "
+            "they are not kept, so the next save writes it without them",
+            what,
+            _MAX_RECORD_NESTING - 1,
+        )
+        return None
     try:
         size = sum(len(json.dumps(part)) for part in parts if part)
     except (TypeError, ValueError, RecursionError):
@@ -803,7 +827,7 @@ def decode_store(raw: bytes) -> StoreDocument | None:
             kept = (
                 isinstance(name, str)
                 and not any("\ud800" <= ch <= "\udfff" for ch in name)
-                and not exceeds_nesting(j, MAX_DOCUMENT_NESTING - 2)
+                and not exceeds_nesting(j, _MAX_RECORD_NESTING)
             )
             if kept:
                 # The whole record counts, an empty object included: it was decoded
@@ -833,7 +857,7 @@ def decode_store(raw: bytes) -> StoreDocument | None:
                     if kept
                     else "the store keeps only an object with a plain-text name (or none), "
                     "nested at most "
-                    f"{MAX_DOCUMENT_NESTING - 2} levels within the "
+                    f"{_MAX_RECORD_NESTING} levels within the "
                     f"{MAX_UNKNOWN_FIELDS_BYTES}-byte per-record and "
                     f"{MAX_UNKNOWN_FIELDS_STORE_BYTES}-byte total size caps, so the entry "
                     "will be dropped from the store on the next write"

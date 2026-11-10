@@ -36,10 +36,10 @@ beforeEach(() => {
 describe('WeixinPanel — DM policy picker', () => {
   it('labels the trigger from the field caption and shows the saved policy', async () => {
     renderWithProviders(<WeixinPanel />)
-    const trigger = await screen.findByRole('combobox', { name: 'Who can message the bot' })
+    const trigger = await screen.findByRole('combobox', { name: 'Who can message the agent' })
     // The trigger renders before the config query settles (falling back to the
     // 'allowlist' default), so the saved value is an async assertion.
-    await waitFor(() => expect(trigger).toHaveTextContent('Anyone who messages the bot'))
+    await waitFor(() => expect(trigger).toHaveTextContent('Anyone who messages the agent'))
   })
 
   it('selecting a policy PUTs the new value', async () => {
@@ -48,7 +48,7 @@ describe('WeixinPanel — DM policy picker', () => {
       .mockResolvedValue({ ok: true, restart_required: false })
     renderWithProviders(<WeixinPanel />)
 
-    fireEvent.click(await screen.findByRole('combobox', { name: 'Who can message the bot' }))
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Who can message the agent' }))
     fireEvent.click(await screen.findByRole('option', { name: 'Only allowed user IDs' }))
 
     await waitFor(() => expect(save).toHaveBeenCalledWith({ dm_policy: 'allowlist' }))
@@ -57,15 +57,15 @@ describe('WeixinPanel — DM policy picker', () => {
   it('disables the picker when the config is read-only', async () => {
     vi.spyOn(api, 'getWeixinConfig').mockResolvedValue({ ...CONFIG, read_only: true })
     renderWithProviders(<WeixinPanel />)
-    const trigger = await screen.findByRole('combobox', { name: 'Who can message the bot' })
+    const trigger = await screen.findByRole('combobox', { name: 'Who can message the agent' })
     await waitFor(() => expect(trigger).toBeDisabled())
   })
 
   it('lists every policy in the popup', async () => {
     renderWithProviders(<WeixinPanel />)
-    fireEvent.click(await screen.findByRole('combobox', { name: 'Who can message the bot' }))
+    fireEvent.click(await screen.findByRole('combobox', { name: 'Who can message the agent' }))
     expect((await screen.findAllByRole('option')).map(o => o.textContent)).toEqual([
-      'Anyone who messages the bot',
+      'Anyone who messages the agent',
       'Only allowed user IDs',
       'Nobody (ignore all messages)',
     ])

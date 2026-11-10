@@ -202,8 +202,9 @@ class PullRequestFacts:
     checks_complete: bool = True
     #: A stable digest over the pull request's comment bodies, or "" when there
     #: are none or the read was incomplete. Set by the GitHub adapter (PR-level
-    #: issue comments) and the Azure DevOps adapter (the comments nested inside
-    #: its PR threads); other adapters leave it "". This is the surface a review
+    #: issue comments), the Azure DevOps adapter (the comments nested inside
+    #: its PR threads) and the Bitbucket adapter (``/pullrequests/{id}/comments``);
+    #: other adapters leave it "". This is the surface a review
     #: bot's verdict comment actually lives on -- created_at frozen at PR open,
     #: body rewritten in place -- so it is the digest that catches a verdict a
     #: thread or status digest cannot see.

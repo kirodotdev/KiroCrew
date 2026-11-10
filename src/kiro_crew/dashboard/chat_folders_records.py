@@ -131,7 +131,7 @@ def _folder_history_counts(state: DashboardState) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not state.conversation_log:
         return counts
-    for session in state.conversation_log.list_sessions():
+    for session in state.conversation_log.list_sessions_indexed():
         fid = session.get("folder_id")
         if fid:
             counts[fid] = counts.get(fid, 0) + 1
@@ -193,7 +193,7 @@ def archived_session_names_in_folders(
     if not folder_ids or not log:
         return set()
     names: set[str] = set()
-    for session in log.list_sessions():
+    for session in log.list_sessions_indexed():
         if session.get("folder_id") not in folder_ids:
             continue
         key = ledger_key(str(session.get("key") or ""))

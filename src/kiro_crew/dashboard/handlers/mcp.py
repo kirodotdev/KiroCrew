@@ -75,11 +75,13 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
     _is_valid_mcp_name,
     _kirocrew_mcp_json,
     _load_config_or_refusal,
+    _mcp_config_busy,
     _mcp_config_corrupt,
     _mcp_server_not_found,
     _mcp_spec_invalid,
     _mcp_write_failed,
     _offload_config_write,
+    _read_global_mcp_text,
     _refuse_commented_config,
     _string_identifier,
     _user_mcp_config_paths,
@@ -542,10 +544,12 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
         # 1. Update global mcp.json. Read with comments allowed: a commented file
         # is refused below only when this toggle is about to rewrite it.
         try:
-            text = await asyncio.to_thread(_GLOBAL_MCP_JSON.read_text, encoding="utf-8")
+            text = await asyncio.to_thread(_read_global_mcp_text)
             data = loads_mcp_config(text, jsonc=True)
         except FileNotFoundError:
             data = {"mcpServers": {}}
+        except PermissionError:
+            return _mcp_config_busy("mcp toggle")
         except json.JSONDecodeError:
             return _mcp_config_corrupt()
 
@@ -646,6 +650,8 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
                 # Ownership flipped after the preflight, so the flag above
                 # landed in a registry whose spec will not follow it.
                 return _agent_home_not_owned_response(name)
+            except PermissionError:
+                return _mcp_config_busy("mcp toggle")
 
     return web.json_response({"ok": True, "name": name, "enabled": enabled, "applied": True})
 
@@ -684,9 +690,11 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
     async with _get_mcp_lock():
         _refuse_commented_config(_GLOBAL_MCP_JSON)
         try:
-            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_mcp_config(await asyncio.to_thread(_read_global_mcp_text))
         except FileNotFoundError:
             data = {"mcpServers": {}}
+        except PermissionError:
+            return _mcp_config_busy("mcp toggle-tool")
         except json.JSONDecodeError:
             return _mcp_config_corrupt()
 
@@ -755,9 +763,11 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
     async with _get_mcp_lock():
         _refuse_commented_config(_GLOBAL_MCP_JSON)
         try:
-            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_mcp_config(await asyncio.to_thread(_read_global_mcp_text))
         except FileNotFoundError:
             data = {"mcpServers": {}}
+        except PermissionError:
+            return _mcp_config_busy("mcp toggle-all")
         except json.JSONDecodeError:
             return _mcp_config_corrupt()
 
@@ -787,6 +797,8 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
                 # Ownership flipped after the preflight, so the registry
                 # change above landed with no spec change to match it.
                 return _agent_home_not_owned_response(", ".join(toggled) or "servers")
+            except PermissionError:
+                return _mcp_config_busy("mcp toggle-all")
 
     return web.json_response({"ok": True, "enabled": enabled, "count": len(servers)})
 
@@ -857,9 +869,11 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     # removed:false. ``removed`` is true when EITHER store held the entry.
     async with _get_mcp_lock():
         try:
-            data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_user_json(await asyncio.to_thread(_read_global_mcp_text))
         except (FileNotFoundError, json.JSONDecodeError):
             data = {"mcpServers": {}}
+        except PermissionError:
+            return _mcp_config_busy("mcp remove")
         removed_global = data.get("mcpServers", {}).pop(name, None) is not None
         if removed_global:
             _write_mcp_json(data)
@@ -884,6 +898,8 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
                 # the specs between that check and this write. Answered as the
                 # refusal it is, like every other write failure in this handler.
                 return _agent_home_not_owned_response(name)
+            except PermissionError:
+                return _mcp_config_busy("mcp remove")
 
     await _forget_owner_servers([name])
     return web.json_response({"ok": True, "name": name, "removed": removed})
@@ -955,9 +971,11 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
         async with _get_mcp_lock():
             _refuse_commented_config(_GLOBAL_MCP_JSON)
             try:
-                data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+                data = loads_user_json(await asyncio.to_thread(_read_global_mcp_text))
             except (FileNotFoundError, json.JSONDecodeError):
                 data = {"mcpServers": {}}
+            except PermissionError:
+                return _mcp_config_busy("mcp server delete")
             removed = data.get("mcpServers", {}).pop(name, None) is not None
             if removed:
                 _write_mcp_json(data)
@@ -972,6 +990,8 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
                     await asyncio.to_thread(lambda: _sync_mcp_to_agent(name, False, remove=True))
                 except SharedAgentHomeRefused:
                     return _agent_home_not_owned_response(name)
+                except PermissionError:
+                    return _mcp_config_busy("mcp server delete")
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_server_remove",

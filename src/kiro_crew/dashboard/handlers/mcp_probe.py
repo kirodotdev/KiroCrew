@@ -637,11 +637,17 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
 
 
 def _agent_mcp_server_names(agent: str) -> list[str] | None:
-    """The sorted ``mcpServers`` names of the user-level spec declaring *agent*.
+    """The sorted names of the servers kiro-cli mounts for the user-level spec *agent*.
 
-    ``None`` when no spec declares that name. A thread-side read: it walks the
-    agents directory and parses specs (both forms) until the first match.
+    The spec's own ``mcpServers``, and the enabled servers of the global
+    ``mcp.json`` that its ``includeMcpJson`` opt-in mounts beside them
+    (``agent_sdk.mcp_json_reach``). ``None`` when no spec declares that name. A
+    thread-side read: it walks the agents directory and parses specs (both forms)
+    until the first match, then reads the global file when the spec opts in.
     """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+    from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
+
     for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
         spec = _read_agent_spec(
             f,
@@ -654,7 +660,8 @@ def _agent_mcp_server_names(agent: str) -> list[str] | None:
             # ``mcpServers: null`` (or any non-mapping) declares no servers; it
             # must answer an empty list, not a 500 from ``sorted(None)``.
             servers = spec.get("mcpServers")
-            return sorted(servers) if isinstance(servers, dict) else []
+            names = set(servers) if isinstance(servers, dict) else set()
+            return sorted(names.union(mcp_json_server_names(spec, ACP_BACKEND_KIRO)))
     return None
 
 
@@ -662,9 +669,10 @@ async def api_mcp_active(request: web.Request) -> web.Response:
     """GET /api/mcp/active — return MCP servers for the current agent.
 
     For non-kirocrew agents, reads ``mcpServers`` from the agent's config
-    in ``~/.kiro/agents/`` — these are the only servers kiro-cli loads
-    when ``--agent <name>`` is passed.  For kirocrew (or no agent),
-    reads from global ``~/.kiro/settings/mcp.json`` as before.
+    in ``~/.kiro/agents/``, plus the global ``~/.kiro/settings/mcp.json``
+    servers when that config opts in with ``includeMcpJson``: the servers
+    kiro-cli loads when ``--agent <name>`` is passed. For kirocrew (or no
+    agent), reads every scope through the one launch predicate.
     """
     agent = request.query.get("agent", "")
 

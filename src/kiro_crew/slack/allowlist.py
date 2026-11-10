@@ -229,7 +229,7 @@ async def send_dashboard_link(
 
     # Tunnel URL is only used when explicitly opted in via slack.use_tunnel_url
     # (default false until tunnel mechanism is scaled for general use). An
-    # enterprise build reads the opt-in as off, so neither door below opens.
+    # LTS build reads the opt-in as off, so neither door below opens.
     use_tunnel = slack_tunnel_opt_in(cfg.slack.use_tunnel_url)
     tunnel_url = tunnel_origin_if_opted_in(use_tunnel)
     # Set when the link is knowingly loopback-only and cannot ever become

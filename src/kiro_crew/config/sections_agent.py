@@ -257,9 +257,11 @@ class AgentConfig:
         default="kas",
         metadata=_meta(
             "Bot ACP backend",
-            "Backend for crew-member DM sessions: 'kas' (default when omitted or '') "
-            "or another dispatch-capable backend (claude, codex, opencode, goose). "
-            "Bots run on KAS as their Kiro backend, so 'kiro' here also "
+            "Legacy backend for bot DM sessions and their workers. Omitted or '': "
+            "Bots follow agent.acp_backend, or run on 'kas' when that is a harness "
+            "bots cannot run on. A stored value (claude, codex, kas, ...) still wins "
+            "over agent.acp_backend; a bot's own agents.<name>.acp_backend wins over "
+            "both. Bots run on KAS as their Kiro backend, so 'kiro' here also "
             "selects KAS. Members dispatch work into worker sessions through "
             "session-control tools mounted per session over the wire.",
             # Same no-enum reasoning as acp_backend above: the live selectable
@@ -301,7 +303,13 @@ class AgentConfig:
             "(the dashboard's Sign in), never from kiro-cli's store. With nothing "
             "installed the gateway installs the pinned engine at the first spawn. "
             "With false, KAS still takes this route when kiro-cli's relay cannot "
-            "run on the host (no kiro-cli, or one that is not signed in).",
+            "run on the host (no kiro-cli, or one that is not signed in). "
+            "When unset, a Nightly build turns it on and every other build leaves "
+            "it off (config.loader_document.kas_bundle_build_default(), read from "
+            "the build's own stamp, not the update channel). A saved value always "
+            "wins, and save() leaves the key off disk until it is set. This "
+            "dataclass default stays false so the committed config-schema snapshot "
+            "is the same for every build.",
             # The running KAS runtime keeps its process across the switch, so
             # sessions move routes only once that process is replaced.
             restart=True,
@@ -324,6 +332,21 @@ class AgentConfig:
             # Declared in the engine's initialize, so a running KAS process keeps
             # what it declared until it is replaced.
             restart=True,
+        ),
+    )
+    kas_repair_kiro_cli_extract: bool = field(
+        default=True,
+        metadata=_meta(
+            "KAS: repair kiro-cli's broken engine copy",
+            "When true (the default) and a KAS start through kiro-cli's relay exits with "
+            "'failed to canonicalize KAS server path', Kiro Crew moves kiro-cli's "
+            "incomplete unpacked engine (kas/<version> under kiro-cli's data directory, "
+            "never anything else) out of kas/ to '<version>.kas-broken-<UTC time>' beside "
+            "it, and starts once more, "
+            "so kiro-cli unpacks a fresh copy. Nothing is deleted. When false, or when "
+            "the second start fails the same way, the start fails with one message "
+            "naming the directory and the mv command, and the warm pool stops "
+            "respawning until the directory is moved.",
         ),
     )
     kas_refuse_plain_http_mcp_headers: bool = field(
@@ -1336,6 +1359,17 @@ class AgentConfig:
             "disabling them. When on, their reach is still bounded to sessions "
             "they created themselves (creator ownership), the same fence that "
             "binds a member when Session Control is on.",
+        ),
+    )
+    conductor_own_child_verbs: bool = field(
+        default=True,
+        metadata=_meta(
+            "Conductor Own-Child Sends",
+            "Let the Conductor and the Ultra Mode team lead send to and close a "
+            "session they created themselves without an approval prompt, the way a "
+            "Bot already does. A send or close aimed at any other session still "
+            "prompts, and the child keeps its own approval mode. Turn this off to "
+            "read every send before it runs.",
         ),
     )
     crew_panel: bool = field(

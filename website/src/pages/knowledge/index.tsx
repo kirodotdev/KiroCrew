@@ -8,6 +8,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 import { knowledgeApi } from './api'
+import { usePagerFocus } from '../../hooks/usePagerFocus'
 import { useCopy, ITEM_TYPES, STATUSES, DEFAULT_STATUS_FILTER, ONBOARDING, FALLBACK_SUPPORTED_FORMATS, formatSupportedFormats } from './helpers'
 import DetailView from './DetailView'
 import SourcesList from './SourcesList'
@@ -255,6 +256,8 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   const [typeFilter, setTypeFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState(DEFAULT_STATUS_FILTER)
   const [page, setPage] = useState(1)
+  const pager = usePagerFocus()
+  const { pressedPrev, pressedNext } = pager
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null)
   const ingestion = useIngestionJobs()
@@ -501,10 +504,10 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         // claims the arrows for itself (preventDefault before this window
         // listener sees the event), so the same press never also turns a page.
         if (e.defaultPrevented) return
-        if (!sourceFirst && !selectedId && page < Math.ceil(total / limit)) { setPage(p => p + 1); e.preventDefault() }
+        if (!sourceFirst && !selectedId && page < Math.ceil(total / limit)) { setPage(p => p + 1); pressedNext(); e.preventDefault() }
       } else if (e.key === 'ArrowLeft' && !e.altKey && !e.ctrlKey) {
         if (e.defaultPrevented) return
-        if (!sourceFirst && !selectedId && page > 1) { setPage(p => p - 1); e.preventDefault() }
+        if (!sourceFirst && !selectedId && page > 1) { setPage(p => p - 1); pressedPrev(); e.preventDefault() }
       } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && tab === 'list' && !selectedId) {
         if (listContainerRef.current?.contains(document.activeElement || target)) {
           e.preventDefault()
@@ -515,7 +518,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [selectedId, page, total, limit, tab, selectedItems.size, showHelp, sourceFirst, visibleItems])
+  }, [selectedId, page, total, limit, tab, selectedItems.size, showHelp, sourceFirst, visibleItems, pressedPrev, pressedNext])
 
   useEffect(() => {
     setSelectedItems(new Set())
@@ -802,10 +805,10 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
                   source-first mode each group owns its own pager. */}
               {!sourceFirst && totalPages > 1 && (
                 <div className="flex items-center justify-center gap-3 mt-4 py-3 border-t border-border">
-                  <Btn disabled={page <= 1} onClick={() => setPage(p => p - 1)}>{i18nT('pages.knowledge.index.prev')}</Btn>
+                  <Btn ref={pager.prevRef} disabled={page <= 1} onClick={() => { setPage(p => p - 1); pressedPrev() }}>{i18nT('pages.knowledge.index.prev')}</Btn>
                   <span className="text-[13px] text-text font-medium">{i18nT('pages.knowledge.index.page_of', { page: fmtNumber(page), pages: fmtNumber(totalPages) })}</span>
                   <span className="text-[11px] text-muted">{i18nT('pages.knowledge.index.items_count', { count: total })}</span>
-                  <Btn disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>{i18nT('pages.knowledge.index.next')}</Btn>
+                  <Btn ref={pager.nextRef} disabled={page >= totalPages} onClick={() => { setPage(p => p + 1); pressedNext() }}>{i18nT('pages.knowledge.index.next')}</Btn>
                 </div>
               )}
             </>

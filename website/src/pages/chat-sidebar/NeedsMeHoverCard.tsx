@@ -25,6 +25,7 @@ import { api, ApiError } from '../../api/client'
 import { OverlayPortal, useCloseWhenCrewHidden } from '../../components/overlayRoot'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
+import MarkdownRenderer from '../../components/MarkdownRenderer'
 import { mintSendId, sendTurn } from '../../chat-core/transport/sendTurn'
 import { adoptSendRaceRevision, baseRevisionFor, isSendRaceConflict, sendIdempotencyKey } from '../../api/sendRace'
 import { baseRevisionForPress } from '../../hooks/sharedCrew/sendRevisionSeed'
@@ -35,6 +36,7 @@ import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { ChatSlot } from '../../types'
 import { crewApprovalDecidableHere } from '../../lib/crewMode'
 import { replyOptions } from '../chat/command-center/model'
+import { parseOptions } from '../../app-sdk/protocol'
 import { approvalKey, collectAsks, lastAssistantText, pickRecap, slotNeedsMe, type CardQuestion, type NeedsMeAsk } from './needsMeCard'
 
 /** The pointer must rest this long on a row before the card opens. */
@@ -118,6 +120,9 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
     }
     const onLeave = (e: PointerEvent) => {
       if (e.pointerType === 'touch') return
+      // Leaving the sidebar straight onto the card: React has already run the card's
+      // own pointer-enter for this move, so a close scheduled here would never be cancelled.
+      if (e.relatedTarget instanceof Node && cardRef.current?.contains(e.relatedTarget)) return
       scheduleClose()
     }
     // A click opens the session: the card has done its job.
@@ -169,7 +174,8 @@ export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTML
             focusReply={target.focusReply}
             cardRef={cardRef}
             draftRef={draftRef}
-            onPointerEnter={() => { if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null } }}
+            // Resting on the card also cancels a swap armed by a row the pointer crossed on the way.
+            onPointerEnter={clearTimers}
             onPointerLeave={scheduleClose}
             onClose={close}
           />
@@ -215,7 +221,8 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
 
   const [outcomes, setOutcomes] = useState<Record<string, Outcome>>({})
   const settled = useMemo(() => new Set(Object.keys(outcomes)), [outcomes])
-  const reply = useMemo(() => options.length ? { text: lastAssistantText(detail.data?.messages ?? []), options } : undefined, [options, detail.data])
+  // The options list is drawn under the text, so the marker line is stripped as the chat bubble strips it.
+  const reply = useMemo(() => options.length ? { text: parseOptions(lastAssistantText(detail.data?.messages ?? [])).text, options } : undefined, [options, detail.data])
   // The one crew rule: a Crew Mode worker's approval is decided on its conductor's card only.
   const decidable = crewApprovalDecidableHere(slot, 'sidebar_hover_card')
   const asks = useMemo(
@@ -332,6 +339,13 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
   )
 }
 
+/** An agent-written ask body, drawn by the chat's own markdown renderer so a
+ *  table, bold text or a link reads as it does in the session. `softBreaks`
+ *  keeps a single line break, as the plain text this replaced did. */
+function AskMarkdown({ text, className = '' }: { text: string; className?: string }) {
+  return <div className={`text-text-strong break-words min-w-0 ${className}`} data-testid="needs-me-ask-body"><MarkdownRenderer content={text} softBreaks /></div>
+}
+
 const PILL_CLS = 'inline-flex items-center gap-1 shrink-0 rounded-full px-1.5 text-[10px] leading-[14px] font-semibold'
 
 function KindPill({ kind, muted = false }: { kind: NeedsMeAsk['kind']; muted?: boolean }) {
@@ -388,7 +402,7 @@ function AskRow({ ask, outcome, decidable, onDecide }: {
         <KindPill kind="question" />
         {ask.questions.map((q, i) => (
           <div key={i} className="mt-1.5">
-            <div className="text-text-strong whitespace-pre-wrap break-words">{q.question}</div>
+            <AskMarkdown text={q.question} />
             {q.options.length > 0 && (
               <ul className="mt-1 mb-0 pl-4 text-[11px] text-muted list-disc">
                 {q.options.map((o, j) => <li key={j}>{o.label}{o.description ? ` · ${o.description}` : ''}</li>)}
@@ -404,7 +418,7 @@ function AskRow({ ask, outcome, decidable, onDecide }: {
     return (
       <li className={box} data-testid="needs-me-ask" data-kind="form">
         <div className="flex items-center gap-2 min-w-0"><KindPill kind="form" />{ask.asker && <span className="font-medium text-text-strong truncate">{ask.asker}</span>}</div>
-        {ask.message && <div className="mt-1.5 text-text-strong whitespace-pre-wrap break-words">{ask.message}</div>}
+        {ask.message && <AskMarkdown text={ask.message} className="mt-1.5" />}
         {ask.fields.length > 0 && (
           <ul className="mt-1 mb-0 pl-4 text-[11px] text-muted list-disc">
             {ask.fields.map(f => (
@@ -424,7 +438,7 @@ function AskRow({ ask, outcome, decidable, onDecide }: {
   return (
     <li className={box} data-testid="needs-me-ask" data-kind="reply">
       <KindPill kind="reply" />
-      {ask.text && <div className="mt-1.5 text-text-strong whitespace-pre-wrap break-words">{ask.text}</div>}
+      {ask.text && <AskMarkdown text={ask.text} className="mt-1.5" />}
       {ask.options.length > 0 && (
         <ul className="mt-1 mb-0 pl-4 text-[11px] text-muted list-disc">
           {ask.options.map((o, j) => <li key={j}>{o}</li>)}

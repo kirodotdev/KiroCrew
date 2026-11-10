@@ -280,6 +280,14 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   // blocked until the page reloads. Re-fetch it so the new vocabulary installs
   // and the existing re-seed re-normalizes the affected records.
   queryClient.invalidateQueries({ queryKey: ['monitor-contract'] })
+  // Remote crew management turned on takes effect at the next gateway start,
+  // and the crew list's `active` flag is the only sign that it has. No frame
+  // announces it and the list is otherwise re-read once a minute, so this
+  // re-read clears Remote Crew's "not active yet" banner as soon as a gateway
+  // restarted from a terminal is back (a dashboard restart reloads the page
+  // instead). Exact: the versions and update-job reads under the same prefix
+  // ask every connected crew.
+  queryClient.invalidateQueries({ queryKey: ['instances'], exact: true })
   // `credential_redaction_changed` is pushed to CONNECTED owner sockets
   // with no replay, so a flip made from another window while this socket
   // was down never reached this document. Re-read the switch and, ONLY if

@@ -382,6 +382,32 @@ def test_a_worker_that_lands_on_kiro_cli_is_refused(
     assert set(state._slots) == before  # nothing was allocated
 
 
+def test_a_worker_its_pin_cannot_carry_is_refused_naming_the_pin(
+    crewmate, tmp_path, no_known_workers
+):
+    """The pin outranks ``agent.member_acp_backend``, so a hand-off its ``kiro`` pin
+    put on the kiro-cli v2 launch is refused naming the pin, never the setting that
+    cannot move it. (A pin to a harness Bots cannot run on, such as deepseek, runs
+    on KAS instead and is not refused.)"""
+    _set_backends(tmp_path, default="kiro", member="kas")
+    path = tmp_path / "config.json"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    config["agents"]["pixel"]["acp_backend"] = "kiro"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    loader._invalidate_config_cache()
+    state, caller, _execution = crewmate
+    before = set(state._slots)
+
+    with pytest.raises(sc.SessionControlError) as refused:
+        _create(state, caller)
+
+    assert refused.value.code == "capability_harness_unsupported"
+    assert "(kiro)" in str(refused.value)
+    assert "pixel is pinned to" in str(refused.value)
+    assert "agent.member_acp_backend" not in str(refused.value)
+    assert set(state._slots) == before  # nothing was allocated
+
+
 def test_only_the_crewmates_worker_record_routes_to_its_backend(no_known_workers):
     from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 

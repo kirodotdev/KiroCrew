@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
-import { isTerminalApprovalRefusal } from '../../api/apiError'
+import { isBenignSupersededRetry, isTerminalApprovalRefusal } from '../../api/apiError'
 import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -1157,7 +1157,9 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     setBatchError(null)
     Promise.allSettled(failedRetryableIds.map(id => api.spawnRetry(id)))
       .then(results => {
-        const rejected = results.filter(r => r.status === 'rejected').length
+        // A `409 retry_superseded` means the run already has a successor, so it
+        // is not a failure to report; an all-benign batch shows no notice.
+        const rejected = results.filter(r => r.status === 'rejected' && !isBenignSupersededRetry(r.reason)).length
         if (rejected > 0) setBatchError(i18nT('pages.chat.activityViewer.retry_failed_error', { count: rejected }))
       })
       .finally(() => setRetryingFailed(false))

@@ -3,7 +3,8 @@
 The bounded prune walk with its reclaim, work and time budgets, run per spawn, at
 projection end (the eager prune and the lease finalizer) and at boot; the
 ownership-proved per-candidate reclaim; the orphan sidecar and alias-lock sweeps; the
-gateway-boot drain that prunes in batches; and the read-only, bounded censuses
+gateway-boot drain that prunes in batches and the one prune a stopping gateway awaits;
+and the read-only, bounded censuses
 ``kirocrew doctor`` reports, counted by the prune's own rules.
 
 :mod:`kiro_crew.acp.skill_projection` stays the import path and the patch surface; see
@@ -855,6 +856,34 @@ def drain_stale_aliases() -> int:
             sidecars,
         )
     return total
+
+
+def prune_stale_aliases_at_stop() -> int:
+    """One prune of the unused views this data home owns, as its gateway stops; never raises.
+
+    A projection that ends prunes on a daemon thread (:func:`_end_projection`),
+    which the gateway's hard exit can cut, and a home that is stopped and then
+    deleted has no next boot drain. The gateway runs this once, awaited, after
+    every session has ended. It waits behind this process's other prunes for at
+    most the lock's own ceiling and is capped like any prune, so a backlog past
+    one pass is left for the next boot drain. Returns how many aliases it removed.
+    """
+    try:
+        directory = kiro_agents_dir()
+        crew_home_id = data_home().absolute().as_posix()
+    except (OSError, ValueError, RuntimeError):
+        logger.debug("skill projection: cannot resolve directories to prune", exc_info=True)
+        return 0
+    if pinned_fs.lstat_by_name(directory) is None:
+        return 0
+    try:
+        with _projection_alias_lock(directory, in_process_wait=_PROJECTION_LOCK_TIMEOUT_SECS):
+            return _prune_stale_managed_aliases(directory, crew_home_id, keep=set())
+    except OSError as exc:
+        logger.debug("skill projection: stop prune skipped; lock or I/O error: %s", exc)
+    except Exception:
+        logger.warning("skill projection: stop prune failed", exc_info=True)
+    return 0
 
 
 def _reclaim_prune_candidate(

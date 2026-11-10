@@ -134,7 +134,10 @@ def _file_changes_keep_turns() -> int:
 
 
 def _file_change_prefix_bound(
-    state: DashboardState, history_key: str, window_entries: list[dict[str, Any]]
+    state: DashboardState,
+    history_key: str,
+    window_entries: list[dict[str, Any]],
+    archived: list[Path | None],
 ) -> Callable[[list[str]], list[str]]:
     """The bound a save applies to its frozen prefix when it reads it from disk.
 
@@ -148,7 +151,7 @@ def _file_change_prefix_bound(
     the compacted lines only once the originals are in the session archive, and
     the prefix as read when that write fails, so a failed archive costs a larger
     file and never a row's only copy. Retried on the next save that re-reads the
-    prefix.
+    prefix. The archive written goes on *archived*.
     """
 
     def bound(lines: list[str]) -> list[str]:
@@ -163,7 +166,11 @@ def _file_change_prefix_bound(
             return lines
         base = state.conversation_log._dir if state.conversation_log else None
         try:
-            _archive_lines(history_key, originals, reason=FILE_CHANGES_ARCHIVE_REASON, base=base)
+            archived.append(
+                _archive_lines(
+                    history_key, originals, reason=FILE_CHANGES_ARCHIVE_REASON, base=base
+                )
+            )
         except Exception:
             logger.warning(
                 "Keeping the file-change copies of %d older row(s) of %s: archiving them failed",
@@ -219,19 +226,20 @@ def _diff_dropped_message_lines(old_lines: list[str], new_lines: list[str]) -> l
 
 def _archive_dropped_lines(
     state: DashboardState, history_key: str, old_lines: list[str], new_lines: list[str]
-) -> None:
+) -> Path | None:
     """Archive on-disk message lines that *new_lines* (full file) would drop.
 
     Used only by the rewrite path (rewind/regenerate/fork), which intentionally
     truncates the in-memory window. The frozen prefix is present unchanged in
     both *old_lines* and *new_lines*, so it is never archived — only the dropped
-    window tail is. No-op in the steady-state superset case.
+    window tail is. No-op in the steady-state superset case. Returns the archive
+    written, or ``None``.
     """
     dropped = _diff_dropped_message_lines(old_lines, new_lines)
     if not dropped:
-        return
+        return None
     base = state.conversation_log._dir if state.conversation_log else None
-    _archive_lines(history_key, dropped, reason="compact", base=base)
+    return _archive_lines(history_key, dropped, reason="compact", base=base)
 
 
 def _foreign_tail_ts(foreign_lines: list[str]) -> str | None:
@@ -782,17 +790,28 @@ def compose_payload(
     *,
     rewrite: bool,
     retired_rows: list[dict] | None = None,
-) -> tuple[str, str, list[str]]:
-    """The file a full save writes: ``(payload, frozen_prefix, foreign_lines)``.
+) -> tuple[str, str, list[str], Callable[[], None]]:
+    """The file a full save writes: ``(payload, frozen_prefix, foreign_lines, drop_archives)``.
 
-    Called under the transcript lock. Archives the ambiguous dedup drops and, for a
-    rewrite, the dropped window tail before the caller's atomic replace.
+    Called under the transcript lock. Archives the ambiguous dedup drops, the rows
+    the file-change bound rewrote and, for a rewrite, the dropped window tail before
+    the caller's atomic replace.
+
+    The caller calls ``drop_archives`` when that replace raises. While the file is
+    unchanged each archive is a second copy of rows it still holds, so it is removed,
+    as compaction and rotation do. The cached prefix goes too: a retry served from it
+    would write the bound's output and leave out the dedup drops without archiving
+    either again.
 
     ``retired_rows`` names the rows a rewrite removes. With it, the rewrite keeps
     the foreign-append scan, so a row another writer appended after the caller's
     snapshot survives the rewrite instead of being dropped with the retired rows.
     """
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+    from kiro_crew.history_rewrite import _drop_unlanded_archive, _file_identity
+
+    before = _file_identity(path)
+    archived: list[Path | None] = []
 
     # ── Frozen prefix (never rewritten) + freshly serialized window ──
     # Read the verbatim bytes of the on-disk lines OLDER than the
@@ -846,13 +865,17 @@ def compose_payload(
         collect_foreign=not rewrite or retired_entries is not None,
         retired_entries=retired_entries,
         bound_prefix=(
-            None if rewrite else _file_change_prefix_bound(state, history_key, window_entries)
+            None
+            if rewrite
+            else _file_change_prefix_bound(state, history_key, window_entries, archived)
         ),
-        archive_dedup=lambda lines: _archive_lines(
-            history_key,
-            lines,
-            reason="foreign-dedup",
-            base=state.conversation_log._dir if state.conversation_log else None,
+        archive_dedup=lambda lines: archived.append(
+            _archive_lines(
+                history_key,
+                lines,
+                reason="foreign-dedup",
+                base=state.conversation_log._dir if state.conversation_log else None,
+            )
         ),
     )
     # A fresh-``ts`` disk copy folded into the window by the bounded
@@ -897,5 +920,13 @@ def compose_payload(
 
         old_lines = _split_transcript_bytes(path.read_bytes())
         new_lines = payload.splitlines(keepends=True)
-        _archive_dropped_lines(state, history_key, old_lines, new_lines)
-    return payload, frozen_prefix, foreign_lines
+        archived.append(_archive_dropped_lines(state, history_key, old_lines, new_lines))
+
+    def drop_archives() -> None:
+        if not any(archived):
+            return
+        for archive in archived:
+            _drop_unlanded_archive(archive, path, before)
+        slot._frozen_prefix_cache = None
+
+    return payload, frozen_prefix, foreign_lines, drop_archives

@@ -116,7 +116,7 @@ class TestSettingsInjection:
         source_dir = tmp_path / "agents"
         source_dir.mkdir()
         (source_dir / "kirocrew.json").write_text(
-            json.dumps({"name": "kirocrew", "mcpServers": {}}), encoding="utf-8"
+            json.dumps({"name": "kirocrew", "mcpServers": {}, "tools": ["*"]}), encoding="utf-8"
         )
         settings_dir = tmp_path / "settings"
         settings_dir.mkdir()
@@ -143,14 +143,16 @@ class TestSettingsInjection:
         assert not (overlay_dir.parent / "settings").exists()
         assert (settings_dir / "mcp.json").read_bytes() == settings_before
 
+    @pytest.mark.parametrize("opt_out_key", ["includeMcpJson", "useLegacyMcpJson"])
     def test_an_agent_that_opts_out_of_the_global_file_gets_only_its_own_servers(
-        self, tmp_path: Path
+        self, tmp_path: Path, opt_out_key: str
     ) -> None:
         """``includeMcpJson: false`` means the overlay must not add global servers as stubs.
 
         Every wrapped entry is sent at ACP ``session/new``, so an injected stub would
         reach the session anyway and could clash with the agent's own tool names. The
         agent's own servers are kept; an agent without the opt-out still gets the stub.
+        kiro-cli reads ``useLegacyMcpJson`` as the deprecated alias of the same flag.
         """
         from kiro_crew.mcp_gateway.rewriter import rewrite_agents
 
@@ -162,7 +164,7 @@ class TestSettingsInjection:
             json.dumps(
                 {
                     "name": "solo",
-                    "includeMcpJson": False,
+                    opt_out_key: False,
                     "mcpServers": {"remote": remote, "own-mcp": own},
                     "tools": ["@remote", "@own-mcp"],
                 }
@@ -170,7 +172,7 @@ class TestSettingsInjection:
             encoding="utf-8",
         )
         (source_dir / "kirocrew.json").write_text(
-            json.dumps({"name": "kirocrew", "mcpServers": {}}), encoding="utf-8"
+            json.dumps({"name": "kirocrew", "mcpServers": {}, "tools": ["*"]}), encoding="utf-8"
         )
         settings_dir = tmp_path / "settings"
         settings_dir.mkdir()
@@ -189,23 +191,30 @@ class TestSettingsInjection:
         assert set(solo["mcpServers"]) == {"remote", "own-mcp"}
         assert solo["mcpServers"]["remote"] == remote
         assert solo["mcpServers"]["own-mcp"].get(_WRAPPER_MARKER) is True
-        assert solo["includeMcpJson"] is False
+        assert solo[opt_out_key] is False
         other = json.loads((overlay_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert other["mcpServers"]["beta-mcp"].get(_WRAPPER_MARKER) is True
 
     @pytest.mark.parametrize(
-        ("flag", "injected"),
-        [(None, True), (True, True), (False, False)],
-        ids=["absent", "true", "false"],
+        ("key", "flag", "injected"),
+        [
+            ("includeMcpJson", None, True),
+            ("includeMcpJson", True, True),
+            ("includeMcpJson", False, False),
+            ("useLegacyMcpJson", True, True),
+            ("useLegacyMcpJson", False, False),
+        ],
+        ids=["absent", "true", "false", "legacy-true", "legacy-false"],
     )
     def test_injection_follows_the_include_mcp_json_flag(
-        self, tmp_path: Path, flag: bool | None, injected: bool
+        self, tmp_path: Path, key: str, flag: bool | None, injected: bool
     ) -> None:
         """kiro-cli reads an absent ``includeMcpJson`` as true, so only a literal
-        ``false`` opts the agent out of the injected globals."""
-        spec: dict = {"name": "agent-a", "mcpServers": {}}
+        ``false`` opts the agent out of the injected globals. ``useLegacyMcpJson``
+        is the deprecated alias kiro-cli reads in its place."""
+        spec: dict = {"name": "agent-a", "mcpServers": {}, "tools": ["*"]}
         if flag is not None:
-            spec["includeMcpJson"] = flag
+            spec[key] = flag
         inject = _injectable_settings_servers(self._spec(), frozenset(["beta-mcp"]))
         new_spec, wrapped = _rewrite_single_spec(
             spec,
@@ -219,6 +228,51 @@ class TestSettingsInjection:
         )
         assert ("beta-mcp" in new_spec["mcpServers"]) is injected
         assert wrapped == (1 if injected else 0)
+
+    @pytest.mark.parametrize(
+        ("flags", "injected"),
+        [
+            ({"includeMcpJson": "x", "useLegacyMcpJson": False}, False),
+            ({"includeMcpJson": None, "useLegacyMcpJson": False}, False),
+            ({"includeMcpJson": "x", "useLegacyMcpJson": True}, True),
+            ({"includeMcpJson": False, "useLegacyMcpJson": True}, False),
+            ({"includeMcpJson": True, "useLegacyMcpJson": False}, True),
+            ({"includeMcpJson": "x"}, True),
+        ],
+        ids=[
+            "junk-then-false",
+            "null-then-false",
+            "junk-then-true",
+            "false-wins",
+            "true-wins",
+            "junk",
+        ],
+    )
+    def test_injection_reads_the_opt_in_the_kas_projection_reads(
+        self, tmp_path: Path, flags: dict, injected: bool
+    ) -> None:
+        """The rewriter and the KAS projection read one opt-in, so they agree on it.
+
+        ``kas_settings_mcp.include_mcp_json`` reads a non-bool ``includeMcpJson`` as
+        unstated and lets ``useLegacyMcpJson`` decide; the rewriter opts out exactly
+        when that reader answers ``False``.
+        """
+        from kiro_crew.acp.kas_settings_mcp import include_mcp_json
+
+        spec: dict = {"name": "agent-a", "mcpServers": {}, "tools": ["*"], **flags}
+        inject = _injectable_settings_servers(self._spec(), frozenset(["beta-mcp"]))
+        new_spec, _wrapped = _rewrite_single_spec(
+            spec,
+            stubs_dir=tmp_path / "stubs",
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            sandbox_mode="auto",
+            approval_mode="interactive",
+            stub_servers=frozenset(["beta-mcp"]),
+            inject_servers=inject,
+        )
+        assert ("beta-mcp" in new_spec["mcpServers"]) is injected
+        assert injected is (include_mcp_json(spec) is not False)
 
 
 def _rewrite(
@@ -1140,6 +1194,50 @@ def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) ->
     written = json.loads(sidecar.read_text(encoding="utf-8"))
     assert written["AUTH"] == "s3cr3t-token"  # resolved
     assert written["OTHER"] == "${MISSING}"  # unresolved stays literal
+
+
+def _configure_agent_env(monkeypatch, mapping: dict[str, str]) -> None:
+    """Serve *mapping* as the configured ``agent.env``."""
+    from types import SimpleNamespace
+
+    loaded = SimpleNamespace(agent=SimpleNamespace(env=dict(mapping)))
+    monkeypatch.setattr(
+        "kiro_crew.config.KiroCrewConfig.load", staticmethod(lambda: loaded), raising=True
+    )
+
+
+def test_the_sidecar_resolves_a_variable_set_only_in_agent_env(tmp_path: Path, monkeypatch) -> None:
+    """kiro-cli fills ``${VAR}`` from its child env, which ``agent.env`` feeds; so does the sidecar.
+
+    A secret-named ``agent.env`` key stays a literal, as it does from ``os.environ``.
+    """
+    monkeypatch.delenv("KC33089_URL", raising=False)
+    monkeypatch.delenv("OAUTH_KC33089", raising=False)
+    _configure_agent_env(
+        monkeypatch, {"KC33089_URL": "https://jira.example/rest", "OAUTH_KC33089": "k-1"}
+    )
+    spec = {
+        "name": "agent-a",
+        "mcpServers": {
+            "srv": {
+                "command": sys.executable,
+                "env": {"BASE": "${KC33089_URL}", "KEY": "${env:OAUTH_KC33089}"},
+            },
+        },
+    }
+    _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
+
+    sidecar = env_sidecar_dir_for_stubs(tmp_path / "stubs") / env_sidecar_name("agent-a", "srv")
+    written = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert written["BASE"] == "https://jira.example/rest"
+    assert written["KEY"] == "${OAUTH_KC33089}"
+    assert "k-1" not in sidecar.read_text(encoding="utf-8")
+
+
+def test_agent_env_wins_over_the_gateway_env_as_in_the_kiro_cli_child(monkeypatch) -> None:
+    monkeypatch.setenv("KC33089_URL", "https://gateway.example")
+    _configure_agent_env(monkeypatch, {"KC33089_URL": "https://agent-env.example"})
+    assert _expand_env_placeholders("${KC33089_URL}") == "https://agent-env.example"
 
 
 def test_two_agents_declaring_one_server_alike_share_its_sidecar(

@@ -32,6 +32,9 @@ from kiro_crew.crew_log.store import CrewLog
 SLOT = "chat-cache"
 _DAY_NS = 86_400 * 1_000_000_000
 
+# ``pytester`` is not registered by default; a test module may request it by name.
+pytest_plugins = ("pytester",)
+
 
 class _Clock:
     """The elapsed-time clock a test moves by hand."""
@@ -65,7 +68,18 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
 
 
 def _confirm(clock: _Clock) -> "dict[str, tuple[str, ...]]":
-    """List the root, then list it again a window later, which confirms the listing."""
+    """List the root, then list it again a window later, which confirms the listing.
+
+    The clock moves a window by hand but the filesystem's does not, so the root's
+    stamps are first set back past a window, as a real one would leave them. Without
+    that, a create right after confirming can land in the tick the listed state holds,
+    and on NTFS, where a directory's link count and ctime never move and its size only
+    when its index grows, every stat field then stays equal.
+    """
+    root = _root()
+    stat = root.stat()
+    aged = stat.st_mtime_ns - store_units._RACY_WINDOW_NS - 1_000_000_000
+    os.utime(root, ns=(stat.st_atime_ns, aged))
     store.session_units_by_slot()
     clock.advance()
     return store.session_units_by_slot()
@@ -376,3 +390,57 @@ def test_eager_passes_after_appends_do_not_list_the_unit_root_again(
     assert slot_prime.drain(), "a pass after an append left a prime running"
 
     assert len(listings) == warm_listings, "an eager pass listed the unit root again"
+
+
+def _rootdir_teardown(config: pytest.Config) -> object:
+    """The rootdir conftest's teardown hook, as a plugin for an inner session."""
+    here = Path(__file__).resolve().parent.parent / "conftest.py"
+    conftest = next(
+        p
+        for p in config.pluginmanager.get_plugins()
+        if getattr(p, "__file__", None) and Path(p.__file__).resolve() == here
+    )
+    hooks = {"pytest_runtest_teardown": staticmethod(conftest.pytest_runtest_teardown)}
+    return type("RootdirTeardown", (), hooks)()
+
+
+def test_the_suite_teardown_forgets_the_index_between_tests(
+    pytester: pytest.Pytester, request: pytest.FixtureRequest
+) -> None:
+    """A passing test's home is removed and the next test reuses its path, and ext4
+    reuses its inodes, so a root this process listed before can read as the same root.
+    The suite's teardown must drop the index between tests, or a unit of the same id
+    is filed under the slot the earlier test's header named."""
+    pytester.makepyfile(f"""
+        from kiro_crew.crew_log import store_units
+        from kiro_crew.crew_log.schema import KIND_SESSION
+        from kiro_crew.crew_log.store import CrewLog
+
+        def _create(slot):
+            CrewLog.create(KIND_SESSION, "reused", owner="owner", agent="kirocrew", slot=slot)
+
+        def test_fills_the_index(monkeypatch, tmp_path):
+            monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+            _create("earlier-test")
+            assert store_units.session_units_by_slot() == {{"earlier-test": ("reused",)}}
+            assert store_units._PROVED_ROWS[0] is not None
+
+        def test_starts_with_the_index_forgotten(monkeypatch, tmp_path):
+            assert store_units._slot_index is None
+            assert store_units._PROVED_ROWS[0] is None
+            assert store_units._SLOT_INDEX_TRUST[0] is None
+            monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+            _create({SLOT!r})
+            assert store_units.session_units_by_slot() == {{{SLOT!r}: ("reused",)}}
+        """)
+    # Root the inner session in its own directory, not at this checkout's setup.cfg.
+    pytester.makeini("[pytest]\n")
+    result = pytester.runpytest_inprocess(
+        "-p",
+        "no:cacheprovider",
+        "-n0",
+        "-o",
+        "addopts=",
+        plugins=[_rootdir_teardown(request.config)],
+    )
+    result.assert_outcomes(passed=2)

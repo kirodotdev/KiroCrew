@@ -86,6 +86,11 @@ def _wire_tunnel_shutdown(app: web.Application, state: DashboardState) -> None:
             logger.warning("%s failed during shutdown", what, exc_info=True)
 
     async def _tunnel_shutdown(_app: web.Application) -> None:
+        # Remote Control's guard goes first, so it cannot restart the relay this
+        # hook stops. A no-op when the relay never installed one.
+        from kiro_crew.remote_control.guard import uninstall as _uninstall_guard
+
+        await _stop_bounded(_uninstall_guard, "Remote Control guard stop")
         mgr = getattr(state, "tunnel_manager", None)
         if mgr is not None:
             await _stop_bounded(mgr.stop, "Tunnel stop")
@@ -110,7 +115,7 @@ async def _start_aea_tunnel(
         # Import and publish only when selected; non-relay boots load no client.
         publish_gateway_ingress(app.get(RELAY_INGRESS_APP_KEY))
 
-    # An enterprise build ignores the local switch (RFC D3); a tunnel the edition's
+    # An LTS build ignores the local switch (RFC D3); a tunnel the edition's
     # own provider enables below is not a local source.
     _tunnel_enabled = cfg.tunnel.enabled and not local_enable_locked("tunnel")
     # The enable gate is also routed through the active PlatformContext's
@@ -135,3 +140,7 @@ async def _start_aea_tunnel(
         )
         if tunnel_mgr:
             state.tunnel_manager = tunnel_mgr
+            if relay_selected(cfg):
+                from kiro_crew.remote_control.guard import install_for_relay
+
+                install_for_relay(tunnel_mgr, current_context().tunnel)

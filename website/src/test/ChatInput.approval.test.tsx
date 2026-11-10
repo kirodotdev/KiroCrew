@@ -165,6 +165,49 @@ describe('ChatInput approval flow', () => {
     expect(api.resolveApproval).not.toHaveBeenCalled()
   })
 
+  it('a reason typed in the reject menu travels with the rejection only where the server takes one', async () => {
+    const state = stateWithApproval()
+    const card = (state.chat!.messages as { meta?: Record<string, unknown> }[])[1]
+    card.meta = { ...card.meta, mid: 'mid-7', rejection_reason_accepted: '1' }
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    const box = screen.getByRole('textbox', { name: i18nT('components.rejectDropdown.reason_placeholder') })
+    fireEvent.change(box, { target: { value: '  edit b.py instead ' } })
+    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Reject once'))!)
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith('slot-1', 'rejected_once', {
+        request_id: 'ap-123', response_id: expect.stringMatching(/^r_/), origin: 'native', request_mid: 'mid-7',
+        reason: 'edit b.py instead',
+      })
+    })
+  })
+
+  it('a reason typed for one card row does not reach a replacement row reusing its id', async () => {
+    const state = stateWithApproval()
+    const card = (state.chat!.messages as { meta?: Record<string, unknown> }[])[1]
+    card.meta = { ...card.meta, mid: 'mid-1', rejection_reason_accepted: '1' }
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    const name = i18nT('components.rejectDropdown.reason_placeholder')
+    fireEvent.change(screen.getByRole('textbox', { name }), { target: { value: 'for the first row' } })
+    // A replacement request reuses the id with a new card row while the menu is open.
+    const first = store.getState().chat.messages.find(m => m.meta?.mid === 'mid-1')!
+    act(() => {
+      store.dispatch(sseChatMessage({ slot: 'slot-1', role: 'permission', content: first.content, meta: { ...first.meta, mid: 'mid-2' } }))
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    expect(await screen.findByRole('textbox', { name })).toHaveValue('')
+  })
+
+  it('the reject menu asks for no reason when the server takes none', () => {
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    expect(screen.queryByRole('textbox', { name: i18nT('components.rejectDropdown.reason_placeholder') })).not.toBeInTheDocument()
+  })
+
   it('a coordinator card keeps the id route even with a card row', async () => {
     const state = stateWithApproval()
     const card = (state.chat!.messages as { meta?: Record<string, unknown> }[])[1]

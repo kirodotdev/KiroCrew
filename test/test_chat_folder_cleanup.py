@@ -147,7 +147,7 @@ def _state(
     state._slots = {s.key: s for s in slots}
     state.push_slots_update = MagicMock()
     state.conversation_log = MagicMock()
-    state.conversation_log.list_sessions.return_value = archived or []
+    state.conversation_log.list_sessions_indexed.return_value = archived or []
     repo = FolderRepository(lambda: MagicMock())
     lock = LoopBoundLock()
 

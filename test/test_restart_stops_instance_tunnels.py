@@ -450,7 +450,7 @@ class TestTheRestartClaimSpansTheWholeSequence:
 
         await GatewayOrchestrator._restart_after_update(orch, lambda: _executable(tmp_path))
 
-        assert [label for label, _ in readings] == ["drain", "seam", "drain", "exec"]
+        assert [label for label, _ in readings] == ["drain", "seam", "drain", "drain", "exec"]
         assert all(held for _, held in readings), readings
         assert state._gateway_restart_in_progress is False
 

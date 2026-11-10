@@ -74,6 +74,15 @@ _MONITOR_RETRY_MAX_BACKOFF_SECS = 300
 _OVERDUE_REARM_SECS = 10
 
 
+# Gap between the loops that are overdue when the service starts. After a
+# restart every overdue loop would otherwise wake in the same few seconds, each
+# cold-starting its session and that session's MCP servers together, which is
+# how a host short of memory crash-loops. The n-th such loop is held n gaps
+# (``_boot_holds``) before its normal countdown, so their sessions start one at
+# a time. A work-ledger loop's boot replay is not held (``start()``).
+_BOOT_WAKE_STAGGER_SECS = 30
+
+
 # How often the reconciler walks the store looking for an active loop with no
 # live timer task. A stranded loop (fire delivered but the slot's stop hook
 # never arrived, a dropped deferred re-arm) is rescued after two consecutive
@@ -1016,6 +1025,8 @@ def _cancel_timer(self: AutoNudgeService, loop_id: str, *, drop_claims: bool = T
     callers where ``asyncio.current_task()`` would raise, hence
     :func:`_current_task_or_none`.
     """
+    # A boot hold belongs to the timer it was set for; a re-arm starts without it.
+    self._boot_holds.pop(loop_id, None)
     t = self._timers.pop(loop_id, None)
     if t is None or t.done():
         return

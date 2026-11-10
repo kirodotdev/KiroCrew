@@ -654,7 +654,10 @@ describe('private member memory lifecycle', () => {
     renderWithProviders(<MemoryTab refreshTrigger={0} />)
     await loaded()
     fireEvent.change(screen.getByRole('textbox', { name: 'Search memory' }), { target: { value: 'review' } })
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Recall for this task' })).toBeEnabled())
+    // The Recall button draws its searching state as `busy` (aria-disabled),
+    // not native `disabled`, so toBeEnabled() no longer gates on it: wait for
+    // the busy signal to clear, or a press lands while busy and is swallowed.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Recall for this task' })).not.toHaveAttribute('aria-disabled'))
     fireEvent.click(screen.getByRole('button', { name: 'Recall for this task' }))
     expect(await screen.findByText('Selected member evidence')).toBeVisible()
     expect(api.memoryRecall).toHaveBeenCalledWith('review', MEMBER_STORE)

@@ -619,7 +619,6 @@ def _conductor_payload(record: Any) -> dict[str, Any] | None:
         "goal_version": record.goal_version,
         "created_at": record.created_at,
         "created_total": record.created_total,
-        "item_cap": record.item_cap,
         "concurrency_cap": record.concurrency_cap,
     }
 

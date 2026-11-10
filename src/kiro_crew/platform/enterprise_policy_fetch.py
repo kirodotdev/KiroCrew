@@ -1,7 +1,7 @@
-"""The enterprise build's policy transport: the Kiro control plane, as the signed-in user.
+"""The LTS build's policy transport: the Kiro control plane, as the signed-in user.
 
 Registered for :data:`~kiro_crew.platform.policy_distribution_source.ENTERPRISE_POLICY_SCHEME`
-(RFC rfc-crew-enterprise-edition, D2 and the Enterprise gate). One fetch:
+(RFC rfc-crew-lts-edition, D2 and the LTS gate). One fetch:
 
   POST <control-plane host for the profile's region>/
     X-Amz-Target: KiroControlPlaneBearerService.GetEffectiveEnterpriseManagementResourceWithToken
@@ -11,7 +11,7 @@ Registered for :data:`~kiro_crew.platform.policy_distribution_source.ENTERPRISE_
       "manifest": {"hash", "versionId", ...},
       "body": {"policy": <Trust V2 YAML>, "configuration": [...]}}
 
-**Who is asking.** The one enterprise sign-in (:func:`kiro_crew.enterprise_sign_in.resolve`,
+**Who is asking.** The one enterprise sign-in (:func:`kiro_crew.lts_sign_in.resolve`,
 RFC D4): Crew's own vault (``kirocrew kas login``), refreshed through
 :class:`~kiro_crew.auth.provider.KasAuthProvider` with the ``KIRO_API_KEY`` bypass off,
 or, when the vault holds no entry, kiro-cli's own stored token (never renewed by Crew).
@@ -28,11 +28,11 @@ refuses redirects), the pinned host, and, when the reply carries ``manifest.hash
 SHA-256 of the body it came with. There is no signature to verify.
 
 **Failure.** Every failure raises with a message naming what failed. The core turns that
-into a refused boot in an enterprise build (``enterprise_boot.refuse_policy_boot``), or
+into a refused boot in an LTS build (``lts_boot.refuse_policy_boot``), or
 keeps the installed ceiling on a live refresh.
 
 ``NOT_ELIGIBLE`` (an account with no enterprise management, such as Builder ID) is a
-failure: an enterprise build requires an organisation's policy. ``DISABLED`` (enterprise
+failure: an LTS build requires an organisation's policy. ``DISABLED`` (enterprise
 management with no policy published) answers a document that governs nothing, so every
 control stays at the build's own locked default.
 """
@@ -50,7 +50,7 @@ import urllib.request
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from kiro_crew import __version__, edition
-from kiro_crew import enterprise_sign_in as _sign_in
+from kiro_crew import lts_sign_in as _sign_in
 from kiro_crew.auth.login.control_plane import (
     ControlPlaneError,
     control_plane_url,
@@ -94,7 +94,8 @@ _CONFIG_FIELDS = ("key", "value", "source", "composeBehavior")
 #: turn the same reply into a different document. ``t1``: the reply's settings are read
 #: (RFC D7); an etag from before has no revision. ``t2``: the existing terms ``shell``,
 #: ``fs_*``, ``network_egress``, ``mcp``, ``subagent`` and three switches are read (D8).
-TRANSLATION_REVISION = "t2"
+#: ``t3``: the boot block does not carry ``allow_terminal``.
+TRANSLATION_REVISION = "t3"
 
 
 def _sign_in_remedy() -> str:
@@ -104,7 +105,7 @@ def _sign_in_remedy() -> str:
 class EnterprisePolicyError(RuntimeError):
     """The organisation's policy could not be read. Its message is safe to print.
 
-    ``cause`` is one of :mod:`kiro_crew.enterprise_sign_in`'s ``CAUSE_*`` values, or
+    ``cause`` is one of :mod:`kiro_crew.lts_sign_in`'s ``CAUSE_*`` values, or
     ``""`` when none applies. It is also recorded for :func:`last_failure_cause`.
     """
 
@@ -156,10 +157,10 @@ def fetch(request: pd.FetchRequest) -> pd.FetchedPolicy:
     *request.url* and *request.headers* are not used: the address is the build's, and
     the credential is the sign-in's.
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         raise PlatformCompositionError(
             f"policy source scheme {request.url.partition(':')[0]!r} is available only in "
-            "an enterprise build"
+            "an LTS build"
         )
     if _pinned:
         # Before the credential read, so a sign-out is refused as an account change
@@ -349,7 +350,7 @@ def cache_only_process() -> bool:
 def signed_in_scope() -> str:
     """The digest of the profile the one enterprise sign-in names now, or ``""``.
 
-    :func:`kiro_crew.enterprise_sign_in.select`, the same selection the start check,
+    :func:`kiro_crew.lts_sign_in.select`, the same selection the start check,
     the gate and the fetch read: which account is stored, so a lapsed sign-in still
     names its account and reaches the fetch as ``sign_in_unusable``, never as an
     account change. No sign-in, or anything unreadable answers

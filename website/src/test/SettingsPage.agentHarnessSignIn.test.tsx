@@ -122,9 +122,11 @@ describe('Settings > Agent Harness sign-in deep link, through the real tab', () 
     const anchor = await screen.findByTestId('kiro-sign-in-card')
     expect(anchor).toHaveAttribute('data-setting-key', KIRO_SIGN_IN_HIGHLIGHT_ANCHOR)
     expect(screen.getByTestId('agent-harness-detail').contains(anchor)).toBe(true)
-    // The compact, in-detail form: a section with its own heading, not a Card.
-    expect(anchor.tagName).toBe('SECTION')
+    // The compact, in-detail form: a fold with the heading as its summary, not a
+    // Card -- and the deep link opens it, whatever the sign-in state.
+    expect(anchor.tagName).toBe('DETAILS')
     expect(anchor).toHaveTextContent('Kiro sign-in')
+    await waitFor(() => expect(anchor).toHaveAttribute('open'))
 
     // Rung by the Settings highlight hook, and the parameter consumed.
     await waitFor(() => expect(anchor.scrollIntoView).toHaveBeenCalledTimes(1))

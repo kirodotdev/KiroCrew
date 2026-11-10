@@ -41,13 +41,18 @@ _SAFE_ENV_KEYS = frozenset(
         "LC_CTYPE",
         "TERM",
         "TMPDIR",
-        # Windows equivalents of the above. `ProgramFiles` is spelled both ways
-        # because Windows env lookups are case-insensitive while `os.environ` on
-        # other platforms is not, and this set is matched literally.
+        # Windows equivalents of the above. `ProgramData` and `ProgramFiles` are
+        # spelled both ways because Windows env lookups are case-insensitive while
+        # `os.environ` on other platforms is not, and this set is matched literally.
+        # `ProgramData` is a path, not a credential: Win32-OpenSSH resolves its
+        # system config under `%ProgramData%\ssh` and exits 255 with no output when
+        # the variable is unset, so every ssh:// clone needs it.
         "APPDATA",
         "COMSPEC",
         "LOCALAPPDATA",
         "PATHEXT",
+        "ProgramData",
+        "PROGRAMDATA",
         "ProgramFiles",
         "PROGRAMFILES",
         "SystemRoot",

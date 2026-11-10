@@ -78,12 +78,16 @@ const PAUSED_STATUS_KEY: Record<string, string> = {
   session_start_failures: 'components.autoNudgePopover.paused_last_cycle_failed',
   interrupted_cycle: 'components.autoNudgePopover.paused_interrupted_cycle',
   claim_unsaved: 'components.autoNudgePopover.paused_claim_unsaved',
+  consecutive_failures: 'components.autoNudgePopover.paused_consecutive_failures',
+  model_refused: 'components.autoNudgePopover.paused_model_refused',
 }
 
-/** The paused reasons whose line says the last cycle could not run, or that its
- *  progress could not be saved. That is a failure, so it renders through
- *  `ErrorNotice` instead of the status line. */
-const FAILED_CYCLE_REASONS = new Set(['structural_terminal', 'session_start_failures', 'claim_unsaved'])
+/** The paused reasons whose line says a cycle could not run, kept failing or was
+ *  declined by the model, or that its progress could not be saved. That is a
+ *  failure, so it renders through `ErrorNotice` instead of the status line. */
+const FAILED_CYCLE_REASONS = new Set([
+  'structural_terminal', 'session_start_failures', 'claim_unsaved', 'consecutive_failures', 'model_refused',
+])
 
 /** The three editable fields, as every write of the form sends them. */
 type LoopFields = { message: string; idle_secs: number; max_cycles: number }

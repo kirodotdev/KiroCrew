@@ -177,7 +177,7 @@ def _install_mate_conductor_agent() -> None:
     _mount_work_ledger(config, agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS)
     _exclude(config, MATE_CONDUCTOR_EXCLUDED_TOOLS)
     # The patrol text (``crewmate_prompts.json`` ``conductor.patrol``) names the
-    # goal-conductor skill's ``patrol_budget.py``, and is rendered only where this
+    # goal-conductor skill's ``accept_eval`` tool, and is rendered only where this
     # spec mounts the work ledger (``member_mate_tools.binding_has_ledger_tools``).
     # The mapping follows the text: a spec without the ledger names no skill, and a
     # mapping there would only narrow the skills an unmapped spec inherits.
@@ -668,7 +668,9 @@ def _install_team_lead_agent() -> None:
     (:func:`_without_guide_server`) exactly as research does. On top of that surface
     it mounts the two opt-in servers dispatch needs, ``kirocrew-dashboard`` and
     ``kirocrew-work`` (:func:`_mount_team_lead_dispatch`), granting the goal
-    conductor's existing verb tuples through the governance ceiling.
+    conductor's existing verb tuples through the governance ceiling. Each edition
+    server it mounts gets its ``@<server>`` ref in ``tools`` (:func:`_register_edition_refs`),
+    never a grant.
 
     Rewritten on every boot, like ``kirocrew-research`` and ``kirocrew-knowledge``:
     a spec this installer wrote is replaced in place with no ceremony -- no ownership
@@ -693,6 +695,9 @@ def _install_team_lead_agent() -> None:
     skill_resources.map_prompt_skills(
         config, "team-lead", "goal-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
     )
+    # Ultra Mode chats run on this spec: expose the edition servers it mounts, as the
+    # default spec does, with every call still behind the approval prompt.
+    _register_edition_refs(config)
     _mount_team_lead_dispatch(config)
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _TEAM_LEAD_AGENT_FILENAME

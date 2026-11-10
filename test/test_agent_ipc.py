@@ -12,6 +12,7 @@ import gc
 import json
 import os
 import sys
+import threading
 import urllib.error
 import urllib.request
 
@@ -115,6 +116,33 @@ def test_pickups_die_with_their_owner() -> None:
     gc.collect()
     assert store.verify(cap, 502) == (None, agent_ipc.REFUSE_CAPABILITY)
     assert store.redeem(pickup, 502) == ("", agent_ipc.REFUSE_PICKUP_UNKNOWN)
+
+
+def test_an_owner_collected_while_the_store_lock_is_held_does_not_hang() -> None:
+    # The cyclic GC can run the owner's finalizer on a thread that already holds the
+    # store's lock (inside issue, or redeem's locked liveness check). The finalizer
+    # must not take that lock, and the next locked call drops the pickup.
+    store = _store()
+    issued: dict[str, str] = {}
+
+    def collect_under_the_lock() -> None:
+        owner = _Owner()
+        issued["pickup"] = store.issue(
+            server="kirocrew-core", session_token="tok", runtime_pid=lambda: 500, owner=owner
+        )
+        issued["cap"] = store.redeem(issued["pickup"], 502)[0]
+        with store._lock:
+            del owner
+            gc.collect()
+
+    worker = threading.Thread(target=collect_under_the_lock, daemon=True)
+    worker.start()
+    worker.join(timeout=default_timeout())
+    if worker.is_alive():
+        store._lock.release()  # unwind the hung finalizer so the thread can exit
+        pytest.fail("the owner's finalizer blocked on the store lock its own thread held")
+    assert store.verify(issued["cap"], 502) == (None, agent_ipc.REFUSE_CAPABILITY)
+    assert store.redeem(issued["pickup"], 502) == ("", agent_ipc.REFUSE_PICKUP_UNKNOWN)
 
 
 def test_the_store_keeps_digests_not_values() -> None:
@@ -234,6 +262,26 @@ async def test_gate_redeems_then_admits_the_capability_for_its_own_session(gate_
     assert no_route[0] == 403 and no_route[1]["code"] == agent_ipc.REFUSE_ROUTE
     assert no_cap[0] == 403 and no_cap[1]["code"] == agent_ipc.REFUSE_CAPABILITY
     assert secret[0] == 403 and secret[1]["code"] == agent_ipc.REFUSE_SECRET
+
+
+@pytest.mark.asyncio
+async def test_a_connection_bridge_capability_serves_its_proxy_route_only(gate_app):
+    """A bridge's capability is no key to the gateway's other internal routes."""
+    from kiro_crew.agent_ipc_wire import BRIDGE_PICKUP_PREFIX
+
+    app, sock = gate_app
+    pickup = agent_ipc.issue_pickup(
+        server=f"{BRIDGE_PICKUP_PREFIX}github", session_token="tok", runtime_pid=os.getppid
+    )
+
+    def call():
+        cap = _post(REDEEM_PATH, sock, body={"pickup": pickup})[1]["capability"]
+        return _post(
+            "/api/internal/thing", sock, headers={CAPABILITY_HEADER: cap, "X-Session-Key": "chat-1"}
+        )
+
+    status, body = await _serve(app, call)
+    assert status == 403 and body["code"] == agent_ipc.REFUSE_ROUTE
 
 
 @pytest.mark.asyncio
@@ -442,3 +490,25 @@ async def test_the_session_query_names_only_the_holders_own_session(gate_app):
     assert no_cap[0] == 403 and no_cap[1]["code"] == agent_ipc.REFUSE_CAPABILITY
     assert wrong_cap[0] == 403 and wrong_cap[1]["code"] == agent_ipc.REFUSE_CAPABILITY
     assert post[0] == 403 and post[1]["code"] == agent_ipc.REFUSE_ROUTE
+
+
+@pytest.mark.asyncio
+async def test_a_granted_session_query_writes_one_granted_sel_row(gate_app, monkeypatch):
+    """The session query is a capability grant, so the operator's SEL records it."""
+    from kiro_crew.agent_ipc_wire import SESSION_PATH
+
+    app, sock = gate_app
+    rows: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        agent_ipc,
+        "_log_auth",
+        lambda request, user_id, outcome, error: rows.append((request.path, user_id, outcome)),
+    )
+    pickup = _issue(os.getppid())
+
+    def call():
+        _status, body = _post(REDEEM_PATH, sock, body={"pickup": pickup})
+        return _post(SESSION_PATH, sock, headers={CAPABILITY_HEADER: body["capability"]})
+
+    assert (await _serve(app, call))[0] == 200
+    assert rows == [(SESSION_PATH, "agent-ipc", "granted")]

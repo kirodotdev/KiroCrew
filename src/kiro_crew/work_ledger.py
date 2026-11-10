@@ -22,8 +22,8 @@ than one update function with a field allowlist:
 
   * :func:`apply_conductor_action` writes ``title``, ``acceptance``, ``state``,
     ``verdict``, ``decision``, ``worker_session_key``, ``round`` and ``fails``.
-  * :func:`apply_worker_report` writes ``status``, ``reason``, ``summary``,
-    ``artifacts``, ``pr`` and ``last_report_at``.
+  * :func:`apply_worker_report` writes ``status``, ``reason``, ``wake_at``,
+    ``summary``, ``artifacts``, ``pr`` and ``last_report_at``.
 
 The two field sets are disjoint. Phase 2 mounts one tool on each, so a worker cannot
 reach a conductor field because the function it can call takes no parameter that
@@ -544,15 +544,14 @@ def _rebuild_locked(
             record = dataclasses.replace(record, generation=existing.generation)
         if existing.recorded_at:
             record = dataclasses.replace(record, recorded_at=existing.recorded_at)
-        # The goal's two caps and where its count starts ride no crew-log entry,
-        # so they are the cache's to keep -- but only while the cache holds no
-        # goal write the record lacks. A dirty cache, or one a goal write ahead
-        # of the record, may carry a refused write's caps and count start; those
+        # The goal's concurrency cap and where its count starts ride no crew-log
+        # entry, so they are the cache's to keep -- but only while the cache holds
+        # no goal write the record lacks. A dirty cache, or one a goal write ahead
+        # of the record, may carry a refused write's cap and count start; those
         # are dropped for the defaults below, as for a board with no cache header.
         if not cache_dirty(slot_key) and existing.goal_version == record.goal_version:
             record = dataclasses.replace(
                 record,
-                item_cap=existing.item_cap,
                 concurrency_cap=existing.concurrency_cap,
                 goal_items_base=existing.goal_items_base,
             )
@@ -1011,9 +1010,12 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     CODE_LEDGER_NOT_FINISHED,
     CODE_NO_LEDGER,
     CODE_UNKNOWN_ITEM,
+    CODE_WAKE_AT_IN_PAST,
+    CODE_WAKE_AT_INVALID,
+    CODE_WAKE_AT_REQUIRES_PROGRESS,
+    CODE_WAKE_AT_TOO_FAR,
     CONDUCTOR_ACTIONS,
     DEFAULT_GOAL_CONCURRENCY_CAP,
-    DEFAULT_GOAL_ITEM_CAP,
     DEFAULT_STALE_WINDOW_SECS,
     EVENT_KINDS,
     ITEM_STATES,
@@ -1027,12 +1029,12 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     MAX_EVENTS_PER_ITEM,
     MAX_GOAL_CHARS,
     MAX_GOAL_CONCURRENCY_CAP,
-    MAX_GOAL_ITEM_CAP,
     MAX_ITEMS_PER_CONDUCTOR,
     MAX_PR,
     MAX_RECORD_BYTES,
     MAX_SUMMARY_CHARS,
     MAX_TITLE_CHARS,
+    MAX_WAKE_AT_SECS,
     MIN_PR,
     PENDING_BUDGET_SECS,
     SCHEMA_VERSION,
@@ -1052,7 +1054,6 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     _now_iso,
     _settle_goal_base,
     _stored_concurrency_cap,
-    _stored_item_cap,
     logger,
 )
 from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
@@ -1099,6 +1100,7 @@ from kiro_crew.work_ledger_rules import (  # noqa: E402, F401
     _require_count,
     _require_pr,
     _require_text,
+    _require_wake_at,
     _warn_depth_fallback,
     _worker_owns_next_move,
     child_depth,
@@ -1120,6 +1122,9 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _ITEMS_DIR,
     _KEY_FILE,
     _LOCK_FILE,
+    _READ_MEMO,
+    _READ_MEMO_LOCK,
+    _READ_MEMO_MAX,
     _REMOTE_DIR,
     _UNDELIVERED_DIR,
     CHANGE_MARKS_KEPT,
@@ -1135,6 +1140,7 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _item_lock_path,
     _last_mark,
     _mark_changed,
+    _memo_read_bytes,
     _open_lock,
     _read_events_unlocked,
     _read_json_record,

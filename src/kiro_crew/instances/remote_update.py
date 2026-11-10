@@ -42,7 +42,8 @@ STATE_SUCCEEDED = "succeeded"
 #: version it had: its updater installed nothing (already on its channel's
 #: newest build, or an install it does not update itself).
 STATE_UNCHANGED = "unchanged"
-#: Both commands exited 0, but the crew did not answer with a version in time.
+#: Both commands exited 0, but the crew did not answer with a version in time,
+#: or its version from before the update could not be read to compare with.
 STATE_UNVERIFIED = "unverified"
 STATE_FAILED = "failed"
 

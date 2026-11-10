@@ -113,6 +113,10 @@ Other shared modules:
 - `InfoTip.tsx` (the one help-tip pattern: hover or focus reveals, click or tap
   pins, Escape dismisses, and the tip text is the glyph's accessible
   description — see [below](#help-text-description-or-infotip)),
+  `TruncatedText.tsx` (one line cut off with an ellipsis whose full text shows
+  in an `InstantTip` on hover and on keyboard focus; use it instead of
+  `truncate` plus a native `title`, which the macOS desktop app often does not
+  paint and no browser shows on focus),
   `MarkdownRenderer.tsx` (the markdown renderer, with highlight.js
   syntax highlighting; its owners are mapped [below](#the-markdown-renderer)),
   `TypewriterText.tsx`
@@ -223,6 +227,7 @@ and every other concern has one owner under `components/markdown/`.
 | `MarkdownRenderer.tsx` | the ordered remark and rehype chains, and the parser built from them that the source repairs read (`AUTOLINK_PARSER`); `MD_COMPONENTS`, the element-to-renderer map, with the fence `code` override and the link overrides `MdAnchor` / `MdParagraph`; the per-block source passes and their order (`MarkdownBlock`); fence dispatch (`BlockRenderer`); the root component and its providers |
 | `markdown/contexts.ts` | every context the pipeline's modules share, each created once; the facade re-exports the six public ones (`MediaApprovedCtx` stays private to `markdown/remoteMedia.tsx`, which both provides and reads it) |
 | `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions, sidebar folder paths (folder-chip resolution); path candidates, `file:line` suffixes, probe resolution and activation |
+| `markdown/linkAddressTip.tsx` | a link's address bubble: which links show their address (`linkAddress`), the hover pause, and stepping aside for an app's link-preview card |
 | `markdown/sanitize.ts` | the tag and attribute allowlist (`rehypeSanitize`) and `remarkVerbatimUnknownTags` |
 | `markdown/treeTransforms.ts` | fenced-code marking, block unwrapping, soft breaks, source positions, position-stable root keys |
 | `markdown/streamingEffects.ts` | the streaming tail's glow, reveal and caret |
@@ -385,12 +390,14 @@ component moved whole, so each one registers its hooks in its BASE order.
 | `remoteCrewPanelModel.ts` | launch-job predicates, the remembered launch-form keys, the size tiers, the sign-in failure sentences |
 | `RemoteCrewPanelLaunch.tsx` | the setup tab's size, provisioner and prerequisite cards, the launch progress card, the sign-in block |
 | `RemoteCrewPanelCrewRow.tsx` | one crew row (badges, lifecycle actions, inline edit) and the fargate turn-API URL field |
+| `RemoteCrewPanelRestartBanner.tsx` | the "on, but not active yet" banner and its gateway restart button |
 
 The edges between owners are `SecurityPanelTailnet.tsx` to `SecurityPanelPosture.tsx`,
 `SecurityPanelGovernance.tsx` to `SecurityPanelDeniedCommands.tsx`,
 `SecurityPanelDeniedCommands.tsx` to `SecurityPanelTrust.tsx`, and the two Remote Crew
 component owners to `remoteCrewPanelModel.ts` (with `RemoteCrewPanelCrewRow.tsx` to
-`RemoteCrewPanelLaunch.tsx` for the sign-in block). Unlike the panels above, these
+`RemoteCrewPanelLaunch.tsx` for the sign-in block, and `RemoteCrewPanelRestartBanner.tsx`
+to `RemoteCrewPanelCrewRow.tsx` for the banner id Connect names). Unlike the panels above, these
 owners keep their own Settings* primitives and settings-search anchors: each `.tsx`
 owner is mapped to its facade's tab in `PANEL_TAB_MAP`
 (`website/scripts/settingsExtract.ts`), so the extractor and the manual-anchor check

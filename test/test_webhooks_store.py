@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import stat
+import threading
 import time
 from pathlib import Path
 
@@ -290,6 +291,33 @@ class TestFreshness:
         monkeypatch.setattr(hooks_handlers, "_HOOK_STORE_PATH", Path(tmp_path) / "nope.json")
         assert hooks_handlers._load_hook_context("x") == ""
 
+    def test_restored_context_carries_its_guidance_ahead_of_the_payload(self):
+        """The webhook-session rules travel with the banner, not the base prompt."""
+        from kiro_crew.dashboard.handlers import hooks as hooks_handlers
+
+        payload = "PAYLOAD-SENTINEL"
+        text = hooks_handlers._with_restored_context("SAVED-SENTINEL", payload)
+
+        # The banner stays the first line: session-summary extraction keys on it.
+        assert text.startswith("=== Restored Context (from prior session) ===\n")
+        end = text.index("=== End Restored Context ===")
+        guidance = text.index("webhook-triggered session")
+        assert text.index("SAVED-SENTINEL") < end < guidance < text.index(payload)
+        assert text.endswith(payload)
+        between = text[guidance : text.index(payload)]
+        for clause in ("staleness warning", "`register_hook`", "untrusted third-party"):
+            assert clause in between, clause
+
+    def test_webhook_guidance_left_the_base_prompt(self):
+        prompt = (
+            Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "config" / "prompt.md"
+        ).read_text(encoding="utf-8")
+        assert "Webhook-Triggered Sessions" not in prompt
+        assert "=== Restored Context" not in prompt
+        # Hook-injected context is a separate envelope every agent can receive,
+        # so the base prompt still names it.
+        assert "`[Hook context:]` block is context a configured hook rule added" in prompt
+
 
 class TestRunRing:
     def test_bounded_at_fifty_newest_first(self, runs):
@@ -452,10 +480,13 @@ class TestCrossOsPermissions:
         mode, which ``mkstemp`` already sets to 0600).
         """
         sizes: list[int] = []
+        test_thread = threading.get_ident()
         real_restrict = webhooks.platform_compat.restrict_to_owner
 
         def _measuring_restrict(target):
-            sizes.append(Path(target).stat().st_size)
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                sizes.append(Path(target).stat().st_size)
             return real_restrict(target)
 
         monkeypatch.setattr(

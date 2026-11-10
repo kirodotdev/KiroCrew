@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_sdk.drivers.acp_turn_vocab import (
@@ -124,6 +124,7 @@ async def stream_and_collect(
     allow_image: bool = True,
     undelivered_watch_key: str = "",
     on_event: Callable[[LLMEvent], Awaitable[None]] | None = None,
+    spec_hooks: Any = None,
 ) -> str:
     """Stream a message through an LLM provider and collect the full response.
 
@@ -217,6 +218,12 @@ async def stream_and_collect(
             ``messaging.directive_tracker.DirectiveTracker.observe``. Raising
             from it is logged and swallowed, so observation cannot fail the
             turn.
+        spec_hooks: The turn's agent spec hooks on a backend that never runs
+            them (KAS; ``cron_service.turn_hooks.CronTurnHooks``). Every event
+            is shown to it first. On a gated turn its PreToolUse hooks are asked
+            first on each permission request and refuse it on a block. The
+            Hooks page's informational tool-call fire is unchanged. The caller
+            fires the prompt and Stop events itself.
 
     Returns:
         The complete response text.
@@ -302,6 +309,8 @@ async def stream_and_collect(
                         logger.warning(
                             "stream_and_collect: on_event observer failed", exc_info=True
                         )
+                if spec_hooks is not None:
+                    await spec_hooks.observe(event)
                 if event.kind == EVENT_TEXT_CHUNK:
                     result_text += event.text
                     if on_chunk:
@@ -324,6 +333,11 @@ async def stream_and_collect(
                             app=app,
                             on_decision=lambda outcome, mech, why: _decision.append(
                                 (outcome, mech, why)
+                            ),
+                            **(
+                                {"spec_floor": spec_hooks.refusal}
+                                if spec_hooks is not None and spec_hooks.gated
+                                else {}
                             ),
                         )
                     if on_tool_gate:
@@ -389,7 +403,10 @@ async def stream_and_collect(
                     if unfinished is not None:
                         raise unfinished
                     break
-            return result_text
+            # kiro-cli's [STEERING steer-…] ack is protocol, not the answer.
+            from kiro_crew.messaging.driver import strip_steering_markers
+
+            return strip_steering_markers(result_text)
         except AcpError as exc:
             msg = str(exc)
             if is_context_overflow_error(exc):

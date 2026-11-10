@@ -746,7 +746,7 @@ class TestRuntimeProjectedLaunchDocuments:
         monkeypatch.setattr(
             runtime_mod,
             "_pooled_session_servers_and_ref_spec",
-            lambda *_args, **_kwargs: ([], None),
+            lambda *_args, **_kwargs: ([], None, ()),
         )
         monkeypatch.setattr(runtime, "_unpooled_control_planes", AsyncMock(return_value=[]))
         monkeypatch.setattr(runtime, "_own_stub_session", AsyncMock(return_value=([], "")))

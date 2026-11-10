@@ -333,6 +333,10 @@ def render_prompt(state: dict | str, questions: list[Question]) -> str:
         '"probabilities": {"<option>": <number 0..1>, ...}}',
         "The probabilities must include your chosen option. If you give a number "
         "for every option, they must add up to 1.",
+        # Observed live: a confident model answers with the bare option names
+        # (``{"outcome": "nothing_new", ...}``), which the parser rightly refuses.
+        'Never answer with a bare option name: a value such as "quiet" on its own '
+        "is an invalid answer.",
         "",
         "For a question that lists exactly two options you may instead answer with "
         "a bare number from 0 to 1: the probability of the FIRST option listed.",
@@ -607,7 +611,7 @@ class LlmProvider:
 
     A ``decisions.provider.DecisionProvider``, registered as ``session-llm``: one
     ``ask``, every answer or an exception, no retries. The gate supplies the
-    timeout and the fallback.
+    timeout, its one retry and the fallback.
     """
 
     def __init__(self, runner: Runner | None = None, *, model: str = "") -> None:

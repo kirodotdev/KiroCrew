@@ -959,7 +959,11 @@ Examples:
     app_enable.add_argument("name", help="App name to enable")
     app_update = app_sub.add_parser(
         "update",
-        help="Update an installed app to its newest published version (needs a running gateway)",
+        help="Update an installed app to its newest published version (needs a running "
+        "gateway; not on native Windows)",
+        description="Update an installed app in place, as the Update (or Sync) button on "
+        "its page does. It needs a running gateway, and it is not available on native "
+        "Windows, which has no dashboard Unix socket; there, use that button instead.",
     )
     app_update.add_argument("name", help="App name")
     app_update.add_argument(

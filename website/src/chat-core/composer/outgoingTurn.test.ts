@@ -5,6 +5,7 @@ import { quoteBlock, type MessageQuote } from './messageQuote'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { KnowledgeBlock } from '../../pages/chat/useKnowledgeFetch'
 import { formatSessionRefLink } from '../../utils/sessionRefs'
+import { DICTATION_NOTE } from './dictationProvenance'
 
 const P1: PasteBlock = { id: 'p1', seq: 1, lines: 3, content: 'one\ntwo\nthree' }
 const P2: PasteBlock = { id: 'p2', seq: 2, lines: 3, content: 'x\ny\nz' }
@@ -64,6 +65,13 @@ const ROWS: Row[] = [
   { name: 'a quote alone is a whole message', mode: 'send', input: { text: '', quote: QUOTE }, wire: Q, bubble: Q, meta: { quote: QUOTE }, typedOnly: true },
   { name: 'steer quote opens the one text', mode: 'steer', input: { text: 'go', quote: QUOTE, files: ['/r/a.txt'] }, wire: `${Q}\n\ngo\n[attached_file 1] /r/a.txt`, bubble: `${Q}\n\ngo\n[attached_file 1] /r/a.txt`, meta: { files: ['/r/a.txt'], quote: QUOTE }, typedOnly: true },
   { name: 'keepFolderTokens leaves @rel/ as typed with no meta.dirs; files and pastes keep the send shape', mode: 'send', input: { text: `@a.txt @src/ ${T1}`, files: ['/r/a.txt'], pastes: [P1], keepFolderTokens: true }, wire: '[attached_file 1] /r/a.txt @src/ one\ntwo\nthree', bubble: `@a.txt @src/ ${T1}`, meta: { files: ['/r/a.txt'], pastes: [P1] }, pastes: [P1], stored: true, typedOnly: false, inlined: `[attached_file 1] /r/a.txt @src/ ${T1}` },
+  { name: 'the dictation note ends both texts and leaves typedOnly to the typed text', mode: 'send', input: { text: 'hello there', dictationNote: true }, wire: `hello there\n\n${DICTATION_NOTE}`, bubble: `hello there\n\n${DICTATION_NOTE}`, meta: {}, typedOnly: true, inlined: 'hello there' },
+  { name: 'the dictation note comes after the session links, so it is the last thing the agent reads', mode: 'send', input: { text: 'about this', sessionRefs: [REF], dictationNote: true }, wire: `about this\n\n${LINK}\n\n${DICTATION_NOTE}`, bubble: `about this\n\n${LINK}\n\n${DICTATION_NOTE}`, meta: {}, typedOnly: false, inlined: 'about this' },
+  { name: 'the dictation note follows the quote-opened, paste-expanded wire', mode: 'send', input: { text: `see ${T1}`, pastes: [P1], quote: QUOTE, dictationNote: true }, wire: `${Q}\n\nsee one\ntwo\nthree\n\n${DICTATION_NOTE}`, bubble: `${Q}\n\nsee ${T1}\n\n${DICTATION_NOTE}`, meta: { pastes: [P1], quote: QUOTE }, pastes: [P1], stored: true, typedOnly: false },
+  { name: 'steer ends its one text with the dictation note', mode: 'steer', input: { text: 'stop that', dictationNote: true }, wire: `stop that\n\n${DICTATION_NOTE}`, bubble: `stop that\n\n${DICTATION_NOTE}`, meta: {}, typedOnly: true },
+  { name: 'a command gets no dictation note, so its arguments stay as typed', mode: 'send', input: { text: '/goal clear', dictationNote: true }, wire: '/goal clear', bubble: '/goal clear', meta: {}, typedOnly: true },
+  { name: 'a quoted message whose own text starts with a slash is a message, so it gets the note', mode: 'send', input: { text: '/tmp is full', quote: QUOTE, dictationNote: true }, wire: `${Q}\n\n/tmp is full\n\n${DICTATION_NOTE}`, bubble: `${Q}\n\n/tmp is full\n\n${DICTATION_NOTE}`, meta: { quote: QUOTE }, typedOnly: true },
+  { name: 'text that already ends with the note gets no second one', mode: 'send', input: { text: `fix it\n\n${DICTATION_NOTE}`, dictationNote: true }, wire: `fix it\n\n${DICTATION_NOTE}`, bubble: `fix it\n\n${DICTATION_NOTE}`, meta: {}, typedOnly: true },
   { name: 'meta keys keep wire order: files, dirs, pastes, quote, knowledge', mode: 'send', input: { text: `@a.txt @src/ ${T1}`, files: ['/r/a.txt'], pastes: [P1], quote: QUOTE, knowledge: KB, project: '/p' }, wire: `${Q}\n\n${KB_TEXT}\n[attached_file 1] /r/a.txt [attached_dir 1] /p/src one\ntwo\nthree`, bubble: `${Q}\n\n@a.txt @src/ ${T1}`, meta: { files: ['/r/a.txt'], dirs: ['/p/src'], pastes: [P1], quote: QUOTE, knowledge: { items: 1, tokens: 7, titles: ['Doc'], content: [{ title: 'Doc', text: 'kb text' }], envelope: KB_MARK } }, pastes: [P1], stored: true, typedOnly: false, inlined: `[attached_file 1] /r/a.txt @src/ ${T1}` },
 ]
 

@@ -25,6 +25,7 @@ from kiro_crew.autonudge import AutoNudgeService
 from kiro_crew.crew_log import emit as _emit_module
 from kiro_crew.dashboard import chat_handlers as handlers
 from kiro_crew.monitoring.models import MonitorBudgets, MonitorOutcome
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 NAME = "chat-1-1785"
 
@@ -40,6 +41,10 @@ class _Req:
     def __init__(self, state, slot: str) -> None:
         self.app = {"state": state}
         self.match_info = {"slot": slot}
+        # Read at CONSTRUCTION, not at call time: a replacement minted later in the
+        # test must not retroactively change what this request asked to archive.
+        live = getattr(state, "_slots", {}).get(slot)
+        self.query = {"incarnation": getattr(live, "_dashboard_card_identity", "")} if live else {}
 
     def get(self, key: str, default: str = "") -> str:
         del key
@@ -591,6 +596,143 @@ async def test_app_close_retires_the_latest_queued_arm_generation(tmp_path, monk
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+        svc.stop()
+
+
+async def _replace_and_arm(state, svc):
+    """Another close pops the slot, a send recreates the key, and a monitor is armed on it."""
+    state._slots.pop(NAME)
+    replacement = state.get_or_create_slot(NAME)
+    monitor = await svc.add_monitor(
+        slot_key=NAME,
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/7",
+        objective="review_ready",
+        cadence_secs=60,
+        budgets=MonitorBudgets(),
+        admission_check=lambda: state.get_slot(NAME) is replacement,
+    )
+    return replacement, monitor
+
+
+@pytest.mark.parametrize("caller", ["tab_close", "idle_sweep", "session_close"])
+@pytest.mark.asyncio
+async def test_a_replacement_armed_during_the_history_write_wait_keeps_its_monitor(
+    tmp_path, monkeypatch, caller
+) -> None:
+    """A close whose slot lost its name during the guarded-write wait retires nothing by key."""
+    from kiro_crew.dashboard import session_control as sc
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+    from kiro_crew.dashboard.slot_retention import _still_idle_check
+
+    # The arm below writes the registry; the wait's ceiling must not end the scenario first.
+    monkeypatch.setattr(handlers, "_GUARDED_WRITE_WAIT_SECS", default_timeout())
+    state = _state_with_slot(tmp_path)
+    original = state._slots[NAME]
+    svc = await _service(tmp_path, monkeypatch)
+    write = asyncio.get_running_loop().create_future()
+    original._guarded_history_writes.add(write)
+    if caller == "tab_close":
+        closing = handlers.api_chat_slot_delete(_Req(state, NAME))
+    elif caller == "idle_sweep":
+        check = _still_idle_check(state, original, NAME, time.time())
+        closing = handlers.close_slot(state, original, NAME, pre_pop_check=check, hand_back=False)
+    else:
+        monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+        peer = state.get_or_create_slot("chat-1")
+        closing = sc.close_target(state, caller_session_key=slot_history_key(peer), target=NAME)
+    close = asyncio.ensure_future(closing)
+    try:
+        await async_wait_until(lambda: original.is_closing or close.done())
+        assert not close.done(), close
+        replacement, monitor = await _replace_and_arm(state, svc)
+        write.set_result(None)
+        await async_wait_until(close.done)
+        outcome = close.exception() or close.result()
+
+        assert monitor.active, "the close retired the replacement's monitor"
+        assert state.get_slot(NAME) is replacement
+        assert not original.is_closing, "the refused close kept its own fence on the original"
+        code = json.loads(outcome.body).get("code") if caller == "tab_close" else outcome.code
+        expected = "target_replaced" if caller == "session_close" else "slot_replaced"
+        assert (outcome.status, code) == (409, expected)
+    finally:
+        close.cancel()
+        await asyncio.gather(close, return_exceptions=True)
+        svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_armed_during_the_app_close_hook_keeps_its_monitor(
+    tmp_path, monkeypatch
+) -> None:
+    """The late retirement after the app hook resolves by key too, so it stops the same way."""
+    state = _state_with_slot(tmp_path)
+    state._slots[NAME]._app = "issue-radar"
+    svc = await _service(tmp_path, monkeypatch)
+    hook_entered = asyncio.Event()
+    release_hook = asyncio.Event()
+    undone: list[str] = []
+
+    async def _hook(_app: str, _slot_key: str) -> bool:
+        hook_entered.set()
+        await release_hook.wait()
+        return True
+
+    async def _undo(_app: str, slot_key: str) -> bool:
+        undone.append(slot_key)
+        return True
+
+    monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_closed", _hook)
+    monkeypatch.setattr("kiro_crew.apps.teardown.notify_slot_close_undone", _undo)
+    close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
+    try:
+        await async_wait_until(hook_entered.is_set)
+        replacement, monitor = await _replace_and_arm(state, svc)
+        release_hook.set()
+        await async_wait_until(close.done)
+        response = close.result()
+
+        assert response.status == 409
+        assert json.loads(response.body)["code"] == "slot_replaced"
+        assert monitor.active, "the late retirement stopped the replacement's monitor"
+        assert state.get_slot(NAME) is replacement
+        assert undone == [], "the closed original's dismissal was taken back"
+    finally:
+        release_hook.set()
+        close.cancel()
+        await asyncio.gather(close, return_exceptions=True)
+        svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_slot_replaced_during_the_nudge_lock_wait_is_not_popped(
+    tmp_path, monkeypatch
+) -> None:
+    """The retirement waits on the AutoNudge lock, and the pop after it is by key too."""
+    state = _state_with_slot(tmp_path)
+    original = state._slots[NAME]
+    svc = await _service(tmp_path, monkeypatch)
+    lock = autonudge._maintenance_lock(svc._base_dir)
+    await lock.acquire()
+    close = asyncio.create_task(handlers.api_chat_slot_delete(_Req(state, NAME)))
+    try:
+        await async_wait_until(lambda: original.is_closing or close.done())
+        assert not close.done(), close
+        state._slots.pop(NAME)
+        replacement = state.get_or_create_slot(NAME)
+        lock.release()
+        await async_wait_until(close.done)
+        response = close.result()
+
+        assert state.get_slot(NAME) is replacement, "the close popped the replacement"
+        assert response.status == 409
+        assert json.loads(response.body)["code"] == "slot_replaced"
+    finally:
+        if lock.locked():
+            lock.release()
+        close.cancel()
+        await asyncio.gather(close, return_exceptions=True)
         svc.stop()
 
 

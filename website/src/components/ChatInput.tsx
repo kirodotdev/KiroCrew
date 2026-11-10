@@ -1,4 +1,4 @@
-import { useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, useState, memo, lazy, Suspense } from 'react'
+import { useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId, useState, memo, Suspense } from 'react'
 import { GUIDE_KEEP_CLEAR } from '../guide/trustRoot'
 import { useGuidePredicate } from '../guide/guidePredicates'
 import { markComposerResize } from '../utils/composerResize'
@@ -61,6 +61,7 @@ import SessionRefStrip from './SessionRefStrip'
 import { Glass } from './Glass'
 import type { ChatInputProps } from './chat-input/props'
 import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from './chat-input/engine'
+import { SessionAutomationPopover, SessionEnvironmentChip } from './chat-input/lazyChips'
 import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
 import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
@@ -98,11 +99,6 @@ import { afterSlide, forgetAfterSlide, slideHeld } from '../utils/panelSlide'
    (in the order their effects must run) and the controls it renders -- and none
    of them imports this module. What stays here is the wiring, the layout
    skeleton, and the constructs other gates read in this file by path. */
-
-const SessionAutomationPopover = lazy(() => import('./SessionAutomationPopover'))
-// Only gateways with Session Environments profiles render it (it returns null
-// otherwise), so it stays out of the chat bundle.
-const SessionEnvironmentChip = lazy(() => import('./SessionEnvironmentChip'))
 
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
@@ -201,6 +197,7 @@ function ChatInput({
   modelIsInheritedDefault,
   modelIsAutoChosen,
   modelIsJevRouted,
+  harnessBackend,
   agentSource,
   modelName,
   onAgentClick,
@@ -377,7 +374,7 @@ function ChatInput({
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
-    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
+    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
@@ -513,7 +510,7 @@ function ChatInput({
       : i18nT('components.chatInput.project')
     return `${i18nT('components.chatInput.project_switch_applies_next_turn', { project: name })}\n${i18nT('components.chatInput.project_switch_links_follow_pick')}`
   }, [isRunning, turnStartProject])
-  const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()
+  const { ctxPopoverOpen, setCtxPopoverOpen } = useContextPopover()
   // The project chip opens its picker on the mouse press (usePressActivation);
   // keyboard and touch stay on click. ProjectPicker's outside-press dismiss
   // skips the anchor rect, so a press on the chip while open is a toggle.
@@ -1198,10 +1195,12 @@ function ChatInput({
                         />
                       )}
                       </>}
+                      {/* Keyed per card row: a typed reason never reaches another card. */}
                       <RejectDropdown
-                          disabled={approvalSubmitting}
+                          key={`${activeSlot}:${approvalId}:${approvalMid ?? ''}`}
+                          disabled={approvalSubmitting} takesReason={approvalTakesReason}
                           className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
-                          onAction={(action) => { handleApprovalAction(action) }}
+                          onAction={(action, reason) => { handleApprovalAction(action, undefined, undefined, reason) }}
                       />
                   </div>
               </div>
@@ -1419,7 +1418,7 @@ function ChatInput({
         {/* The overlay itself lets taps through; only the pill's Cancel takes
             them. Without Cancel a mis-tap on Optimize (it sits beside Send on
             a phone) leaves the draft read-only until the request settles. */}
-        {optimizing && <span className="optimize-overlay absolute inset-0 flex items-center justify-center backdrop-blur-md pointer-events-none z-10 rounded-2xl"><span className="optimize-overlay-pill inline-flex items-center gap-2 pl-4 pr-1.5 py-1.5 rounded-full text-sm font-medium text-text"><Sparkles size={15} className="text-accent animate-pulse shrink-0" /> {i18nT('components.chatInput.optimizing_prompt')}<button
+        {optimizing && <span className="optimize-overlay absolute inset-0 flex items-center justify-center backdrop-blur-md pointer-events-none z-10 rounded-2xl"><span className="optimize-overlay-pill inline-flex items-center gap-2 pl-4 pr-1.5 py-1.5 rounded-full text-sm font-medium text-text"><Loader2 size={15} className="text-accent animate-spin shrink-0" aria-hidden="true" /> {i18nT('components.chatInput.optimizing_prompt')}<button
           type="button"
           className="optimize-overlay-cancel pointer-events-auto w-7 h-7 shrink-0 rounded-full border-none flex items-center justify-center cursor-pointer bg-transparent text-muted hover:text-text hover:bg-text/10 focus-visible:outline-2 focus-visible:outline-accent"
           onClick={(e) => { e.stopPropagation(); e.preventDefault(); cancelOptimize() }}
@@ -1714,22 +1713,20 @@ function ChatInput({
               <div ref={attachControlRow} data-testid="composer-control-row" data-fade-left={controlRowEdges.left ? 'true' : undefined} data-fade-right={controlRowEdges.right ? 'true' : undefined} className="edge-fade-x flex items-center gap-0.5 overflow-x-auto">
 
               {onAutomationClick && (
-                <Suspense fallback={null}>
-                  <SessionAutomationPopover
-                    slotKey={slotId || ''}
-                    automation={automation || null}
-                    open={automationOpen || false}
-                    onOpenChange={v => onAutomationClick(v)}
-                    onChange={onAutomationChange || (() => {})}
-                    creationReady={automationCreationReady}
-                    snapshotFailed={automationSnapshotFailed}
-                    sessionMode={sessionMode}
-                    // Same condition as the Resume placeholder (`resumeOffered`):
-                    // whenever the composer says "press Resume", the loop chip
-                    // must not pulse as if a cycle were executing.
-                    interrupted={resumeOffered}
-                  />
-                </Suspense>
+                <SessionAutomationPopover
+                  slotKey={slotId || ''}
+                  automation={automation || null}
+                  open={automationOpen || false}
+                  onOpenChange={v => onAutomationClick(v)}
+                  onChange={onAutomationChange || (() => {})}
+                  creationReady={automationCreationReady}
+                  snapshotFailed={automationSnapshotFailed}
+                  sessionMode={sessionMode}
+                  // Same condition as the Resume placeholder (`resumeOffered`):
+                  // whenever the composer says "press Resume", the loop chip
+                  // must not pulse as if a cycle were executing.
+                  interrupted={resumeOffered}
+                />
               )}
               {!isMobile && approvalMode && (
                 <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
@@ -1876,9 +1873,7 @@ function ChatInput({
               group, like the app session controls below, so neither crowds the
               agent/project chip group past `max-two-buttons-per-row`. */}
           {environmentSlot && (
-            <Suspense fallback={null}>
-              <SessionEnvironmentChip slot={environmentSlot} disabled={isRunning} compact={shelfCompact} />
-            </Suspense>
+            <SessionEnvironmentChip slot={environmentSlot} disabled={isRunning} compact={shelfCompact} />
           )}
           {/* App-contributed session controls live in their OWN group, not
               beside the agent/project chips. `max-two-buttons-per-row`
@@ -1982,10 +1977,10 @@ function ChatInput({
           <div className="flex items-center gap-2 min-w-0">
           {presence}
           {contextPct != null && (
-            <ContextUsageControl contextPct={contextPct} contextUnknown={contextUnknown} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} cacheSlot={sessionOnPeer ? null : activeSlot} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} ctxWrapRef={ctxWrapRef} autoCompactThreshold={autoCompactThreshold} />
+            <ContextUsageControl contextPct={contextPct} contextUnknown={contextUnknown} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} cacheSlot={sessionOnPeer ? null : activeSlot} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} autoCompactThreshold={autoCompactThreshold} />
           )}
           {onModelClick && modelName && (
-            <ModelChip modelName={modelName} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />
+            <ModelChip modelName={modelName} harnessBackend={harnessBackend} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />
           )}
           </div>
         </div>

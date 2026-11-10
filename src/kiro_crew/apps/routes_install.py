@@ -35,6 +35,7 @@ from kiro_crew.apps.registry import (
     registry_name_from_source,
 )
 from kiro_crew.apps.routes_lifecycle import (
+    _announce_app_ui_changed,
     _app_may_run_after_install,
     _backend_platform_refusal,
     _check_min_version,
@@ -42,6 +43,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _refuse_while_startup_hook_runs,
     _register_app_off_loop,
     _reinstall_from_registry,
+    _rerun_on_enable_after_update,
     _restore_app_after_failed_update,
     _snapshot_agent_configs_off_loop,
     _start_backend_after_install,
@@ -222,12 +224,14 @@ async def handle_update_app(request: web.Request) -> web.Response:
             # ``enabled`` when the new version adds ``permissions.sessionApproval``,
             # and a backend started here would run an app the UI shows as disabled.
             still_enabled = await _app_may_run_after_install(name)
+            registered_mcp_servers: list[str] = []
             if not still_enabled:
                 # The take-down kept the agent specs for the re-registration; an app
                 # that may not run gets none (as on the registry install routes).
                 await _suspend_app_for_session_approval_reconsent(name)
             else:
                 reg_result = await _register_app_off_loop(name)
+                registered_mcp_servers = reg_result.mcp_servers
                 # Same promotion as the local-source branch: the re-install
                 # rewrote app-crons.json, and only this call carries a changed
                 # cron field into the RUNNING scheduler before the next start.
@@ -239,9 +243,22 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 backend_refused = await _backend_platform_refusal(name, backend)
                 if backend_refused:
                     reg_install["backend_refused"] = backend_refused
+                reg_install.update(await _rerun_on_enable_after_update(request, name))
+        # The take-down removed an enabled app's MCP servers from the agent spec and
+        # the registration wrote the new version's: end as an MCP page write does, so
+        # a chat already open sees the change (app-kit-platform §1).
+        held = info.get("enabled") and (info.get("manifest") or {}).get("mcpServers")
+        if registered_mcp_servers or held:
+            from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+            try:
+                await _reach_sessions(request)
+            except Exception:  # noqa: BLE001 - the update has committed
+                logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
         sel().log_api_access(
             caller="dashboard", operation="app_update", outcome="completed", resources=name
         )
+        _announce_app_ui_changed(request, name)
         return web.json_response(reg_install)
 
     if not source:
@@ -297,6 +314,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         # would start a backend the user has not re-consented to.
         up_reg = None
         backend_refused = None
+        on_enable: dict[str, Any] = {}
         still_enabled = await _app_may_run_after_install(name)
         if still_enabled:
             up_reg = await _register_app_off_loop(name, prior_agents)
@@ -315,7 +333,18 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 subprocess_executor(), start_app_backend, name
             )
             backend_refused = await _backend_platform_refusal(name, backend)
+            on_enable = await _rerun_on_enable_after_update(request, name)
 
+    # As on the registry branch: the old MCP servers are out of the agent spec and the
+    # new ones in, so end as an MCP page write does (app-kit-platform §1).
+    held = info.get("enabled") and (info.get("manifest") or {}).get("mcpServers")
+    if (up_reg and up_reg.mcp_servers) or held:
+        from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+        try:
+            await _reach_sessions(request)
+        except Exception:  # noqa: BLE001 - the update has committed
+            logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
     sel().log_api_access(
         caller="dashboard", operation="app_update", outcome="completed", resources=name
     )
@@ -324,6 +353,8 @@ async def handle_update_app(request: web.Request) -> web.Response:
         resp["registration"] = up_reg.to_dict()
     if backend_refused:
         resp["backend_refused"] = backend_refused
+    resp.update(on_enable)
+    _announce_app_ui_changed(request, name)
     return web.json_response(resp)
 
 
@@ -601,4 +632,5 @@ async def handle_install_app(request: web.Request) -> web.Response:
     install_body: dict[str, Any] = {**result.to_dict(), "registration": reg.to_dict()}
     if backend_refused:
         install_body["backend_refused"] = backend_refused
+    _announce_app_ui_changed(request, result.name)
     return web.json_response(install_body, status=201)

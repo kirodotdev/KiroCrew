@@ -11,7 +11,11 @@ import { i18nT } from '../i18n/t'
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 
 export default function WorldsPopout() {
-  const [scene, setScene] = useState<SceneKey>(() => (localStorage.getItem(SCENE_STORAGE_KEY) as SceneKey) || 'office')
+  const [scene, setScene] = useState<SceneKey>(() => {
+    const saved = localStorage.getItem(SCENE_STORAGE_KEY)
+    // A key another build saved names no scene here, and would hide them all.
+    return SCENES.find(s => s.key === saved)?.key ?? 'office'
+  })
   const [collapsed, setCollapsed] = useState(false)
   // The toggle renders only a ▼/▲ glyph, so it needs an explicit accessible
   // name: `title` alone is an unreliable accessible-name source across screen

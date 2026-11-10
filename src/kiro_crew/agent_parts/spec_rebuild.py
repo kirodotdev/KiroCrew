@@ -68,6 +68,7 @@ if TYPE_CHECKING:
         mcp_sources,
         migrate_agent_specs,
         migrate_relocated_skill_uris,
+        one_spec_lock_wait,
         project_agent_names,
         resolved_command_casing,
         saved_command_casing,
@@ -545,7 +546,10 @@ def _tracks_rebuild_outcome(fn: Any) -> Any:
     def tracked(*args: Any, **kwargs: Any) -> Any:
         global _projected_ceiling_generation, _rebuild_incomplete
         try:
-            return fn(*args, **kwargs)
+            # One scope per rebuild: a stuck agent-spec lock is waited out once,
+            # not once per install site (see one_spec_lock_wait).
+            with one_spec_lock_wait():
+                return fn(*args, **kwargs)
         except BaseException:
             # The rebuild may have written grants derived under an older answer before it
             # raised, so the recorded projection is cleared here, under the lock, rather

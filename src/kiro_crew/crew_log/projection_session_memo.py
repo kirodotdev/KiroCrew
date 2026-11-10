@@ -15,7 +15,11 @@ from kiro_crew.crew_log.projection_budget import _UNMEASURED_ROW_BYTES
 from kiro_crew.crew_log.projection_catalogue import Projection, logger
 from kiro_crew.crew_log.projection_kernel import projection_of, require_name
 from kiro_crew.crew_log.projection_registry import EAGER_SESSION_FOLD_NAMES
-from kiro_crew.crew_log.projection_session import SessionProjections, fold_session
+from kiro_crew.crew_log.projection_session import (
+    SessionProjections,
+    fold_session,
+    seal_session_bundle,
+)
 from kiro_crew.crew_log.projection_slot_memo import (
     _acquire_fold_lock,
     _minted_revision,
@@ -259,6 +263,33 @@ def _remember_session_fold(key: "tuple[str, str]", memo: _SessionMemo) -> None:
             oldest, evicted = next(iter(_session_memos.items()))
             _session_memos.pop(oldest)
             held -= evicted.weight
+
+
+def seal_session_folds(session_id: str) -> None:
+    """Write *session_id*'s warm bundle to its savepoint, however few entries it advanced.
+
+    Called when the session closes, just before :func:`forget_session_folds`. The unit
+    will not grow again, so the usual 256-entry threshold would leave its savepoint up to
+    255 entries short for the life of the unit, and every later read would pay them.
+    Under the session's fold lock, from the bundle the closing pass left, with a cut
+    witness at the bundle's seq that is re-read here. A bundle with no cut-count custody
+    (a unit with no counter) is left as it is: only a pass that folds its prefix can
+    vouch for it. A no-op without a warm bundle. Never raises.
+    """
+    home = str(data_home())
+    key = (home, session_id)
+    lock_key = (home, session_id, _SESSION_LOCK_TAG)
+    entry = _acquire_fold_lock(lock_key)
+    try:
+        with entry.lock:
+            with _session_memo_guard:
+                held = _session_memos.get(key)
+            if held is not None:
+                seal_session_bundle(held.bundle)
+    except Exception:
+        logger.debug("crew log session %s could not seal its savepoint", session_id)
+    finally:
+        _release_fold_lock(lock_key, entry)
 
 
 def forget_session_folds(session_id: str = "") -> None:

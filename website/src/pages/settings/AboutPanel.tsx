@@ -17,7 +17,7 @@ import { ARM_POLL_FAILURE_THRESHOLD, AGENT_REQUEST_POLL_MS, AgentUpdateRequestCa
 import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
 import { api } from '../../api/client'
 import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
-import { useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
+import { autoUpdatePinNote, useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
 import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
 import { fmtSpeed } from '../../api/helpers'
@@ -32,7 +32,7 @@ import { feedbackTracker } from '../../feedbackTracker'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
 import { useInstallDispatch } from '../../hooks/useInstallDispatch'
-import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
+import { editionBuildVersion, foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
 /** Transfer rate for the progress label, in the active locale (`fmtSpeed`). */
@@ -146,12 +146,12 @@ const reportIssueUrl = (): string => feedbackTracker().issueUrl
  * broken — the user most likely to have something worth reporting.
  *
  * Mirrors auto-update.js channelForVersion's rule as far as it needs to: a bare
- * semver is stable, ANY prerelease suffix (-insider.N, -nightly.<stamp>, -rc.N)
- * is not. It deliberately does not try to name WHICH lane, because the copy no
- * longer interpolates the channel.
+ * semver and an edition's `-N` build (`editionBuildVersion`) are stable, ANY
+ * other prerelease suffix (-insider.N, -nightly.<stamp>, -rc.N) is not. It
+ * deliberately does not name WHICH lane: the copy no longer interpolates it.
  */
 function versionLooksPrerelease(version: string | undefined): boolean {
-  return !!version && version.includes('-')
+  return !!version && version.includes('-') && editionBuildVersion(version) === null
 }
 
 /** Row: label on the left, value on the right. */
@@ -240,8 +240,8 @@ export function AppAutoDownloadSwitch({ unreadable, anchor = true, onHandoff }: 
  * (`gatewayAutoUpdateCopy`), so a verdict that arrives while the row is on
  * screen never swaps it for another element. Held at the schema default, on,
  * until the saved value has been read. Where config.local.json sets the key,
- * a note says so (the Privacy tab's pin note); the switch stays usable, since
- * a click is how a removed override is noticed.
+ * the switch is held and its note says why (`autoUpdatePinNote`): the policy
+ * that keeps it there when an edition owns the entry, else how to remove it.
  */
 export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, onHandoff, contextNote, sectionHeading }: {
   /** `false` for a copy outside Settings, so deep links land on About's row. */
@@ -257,7 +257,10 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
   contextNote?: string
 
 }) {
-  const canApply = useAppSelector(s => s.dashboard.status?.update_can_apply) === true
+  // `update_can_apply` answers for `POST /api/update` alone; a managed venv whose
+  // policy turns unattended installs off still installs through its own Update.
+  const canApply = useAppSelector(s =>
+    s.dashboard.status?.update_can_apply === true || s.dashboard.status?.update_auto_manual_only === true)
   const copy = gatewayAutoUpdateCopy(useGatewayAutoUpdateEffect(), { canApply })
   const gw = useGatewayAutoUpdate({ readOnMount })
   const reduceMotion = useReducedMotion()
@@ -301,7 +304,7 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
       </AnimatePresence>
       {showPinNote && (
         <p id={pinNoteId} className="text-[12px] text-muted mt-1" data-testid="auto-update-pin-note">
-          {i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned')}
+          {autoUpdatePinNote(gw.overlayPolicy)}
         </p>
       )}
       <SwitchNotices state={gw} testIdPrefix="auto-update" onHandoff={onHandoff}
@@ -422,6 +425,17 @@ export function AboutPanel() {
   // Query-cache listeners run for every updater payload, before React Query
   // batches observer renders. The refs preserve the event order for one armed
   // click even when `downloading` and its cancellation share a render.
+  //
+  // Read in that order, a payload also says when a click's request ended
+  // before any download started. For a click made with nothing found, the
+  // main process checks first: `not-available` and a failed check end the
+  // request there, and so does `found` on the feed lane with auto-download
+  // off, where it waits for a Download click. The managed lane follows its
+  // `found` with `downloaded` at once, and with auto-download on the download
+  // starts; the feed lane says which on the `found` itself, and a shell too old
+  // to say leaves the cached preference to answer. Left armed, the click keeps both request actions disabled and
+  // installs whatever a later download brings, with nobody clicking. The
+  // rendered state cannot say this: a click is also made FROM each of them.
   useEffect(() => queryClient.getQueryCache().subscribe(event => {
     if (event.type !== 'updated'
       || event.query.queryKey.length !== 1
@@ -431,13 +445,19 @@ export function AboutPanel() {
     if (pushed?.state === 'downloading') {
       agentArmSawDownloadRef.current = true
       setAgentArmSawDownload(true)
-    } else if (agentArmSawDownloadRef.current
-      && (pushed?.state === 'not-available' || pushed?.state === 'checking')) {
-      agentInstallArmedRef.current = false
-      agentArmSawDownloadRef.current = false
-      setAgentInstallArmed(false)
-      setAgentArmSawDownload(false)
+      return
     }
+    const info = queryClient.getQueryData<UpdateInfo | null>(updateInfoQuery.queryKey)
+    const ended = agentArmSawDownloadRef.current
+      ? pushed?.state === 'not-available' || pushed?.state === 'checking'
+      : pushed?.state === 'not-available'
+        || (pushed?.state === 'error' && pushed.phase === 'check')
+        || (pushed?.state === 'found' && (pushed.autoDownload ?? info?.autoDownload) === false && !info?.updateCommand)
+    if (!ended) return
+    agentInstallArmedRef.current = false
+    agentArmSawDownloadRef.current = false
+    setAgentInstallArmed(false)
+    setAgentArmSawDownload(false)
   }), [queryClient])
   const agentDownloadLanded = agentInstallArmed && updateState?.state === 'downloaded'
   useEffect(() => {
@@ -634,6 +654,9 @@ export function AboutPanel() {
   // promoted stable release keeps its candidate's `rc` stamp, that comparison
   // reported "mid-switch" permanently for every promoted-stable install.
   const gwChannelMovePending = useAppSelector(s => s.dashboard.status?.update_channel_move_pending) === true
+  // The read-only channel rows print the channel id; `lts` (the LTS
+  // edition's own lane, RFC D11) gets a translated label like the switcher's.
+  const channelLabel = (c: string | undefined) => (c === 'lts' ? i18nT('pages.settings.aboutPanel.lts') : c)
   // Running prerelease bytes? See `isPrerelease` below — computed after the
   // gateway check state it consults, and rendered from JSX, so the ordering is
   // free.
@@ -924,7 +947,10 @@ export function AboutPanel() {
   // A manual check's / switch's answer wins; otherwise the background check's,
   // shipped in status. Empty means this layout has no channel to switch.
   const effectiveGwChannel = gwChannel || statusUpdateChannel
-  const showGwChannelSwitcher = !isDesktop && !!effectiveGwChannel
+  // `lts` is the LTS edition's own lane (RFC D11): the backend holds it
+  // there and refuses every switch, and no segment names it. Show it read-only.
+  const gwLtsLane = !isDesktop && effectiveGwChannel === 'lts'
+  const showGwChannelSwitcher = !isDesktop && !!effectiveGwChannel && !gwLtsLane
   // Nightly is not an OFFERABLE destination on any surface. Its builds are
   // untested `main` HEAD, so following that lane is a deliberate install
   // (`cli.sh --channel nightly`), never a one-click flip from a control that
@@ -1178,7 +1204,7 @@ export function AboutPanel() {
             <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
               {info?.channelLockedByPolicy ? (
                 <span className="inline-flex items-center gap-2">
-                  {channel}
+                  {channelLabel(channel)}
                   {/* A build that cannot follow the required channel names both:
                       the lane it is on, and the one the policy requires. */}
                   {info.requiredChannel && info.requiredChannel !== channel && (
@@ -1191,6 +1217,16 @@ export function AboutPanel() {
               ) : channel}
             </Row>
           )
+        )}
+        {gwLtsLane && (
+          <div data-testid="gateway-channel-locked">
+            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              <span className="inline-flex items-center gap-2">
+                {channelLabel(effectiveGwChannel)}
+                <LockedByPolicyBadge />
+              </span>
+            </Row>
+          </div>
         )}
         {showGwChannelSwitcher && (
           // Gateway (CLI / wheel / cloud source) channel switcher: the same two

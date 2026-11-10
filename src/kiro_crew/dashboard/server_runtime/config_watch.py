@@ -251,6 +251,16 @@ def _register_config_watch(
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
 
+    async def _sync_stale_wake(change: ConfigChange) -> None:
+        # The `dashboard_stale_wake` preview's one cron job exists only while the
+        # preview is on, from whichever writer flipped it (dashboard, CLI, $EDITOR).
+        if not change.touched("dashboard.feature_previews"):
+            return
+        from kiro_crew.dashboard import stale_wake
+
+        # A failure propagates so the watcher retries the apply.
+        await stale_wake.sync_job(getattr(state, "crons", None))
+
     def _push_app_settings(change: ConfigChange) -> None:
         # The app session mute and the per-app model picker read ``apps`` off the
         # ``kirocrewConfig`` query, which only a refresh frame invalidates.
@@ -271,7 +281,23 @@ def _register_config_watch(
             return
         state.push_refresh("config")
 
+    async def _alarm_crewmate_harness_fallback(change: ConfigChange) -> None:
+        # A new Settings harness Crew bots cannot run on moves them onto KAS, and so
+        # does a cleared pin on a Crew bot whose worker tool limits that harness
+        # cannot apply; the bell says so, from whichever writer changed it
+        # (dashboard, CLI, $EDITOR).
+        from kiro_crew import crewmate_harness_notice
+
+        await crewmate_harness_notice.deliver(state, change.new)
+
     subs = [
+        live.subscribe(
+            "agent.acp_backend",
+            "agent.member_acp_backend",
+            "agents",
+            callback=_alarm_crewmate_harness_fallback,
+            name="crewmate.harness_fallback",
+        ),
         live.subscribe(
             "dashboard.browser_local_origins",
             "browser",
@@ -298,6 +324,11 @@ def _register_config_watch(
             callback=_push_feature_previews,
             name="dashboard.feature_previews",
         ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_sync_stale_wake,
+            name="dashboard.stale_wake",
+        ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
         live.subscribe(
             "dashboard.terminal.enabled",
@@ -318,12 +349,18 @@ def _register_config_watch(
     app["config_watch_initial"] = initial
 
     async def _config_watch_shutdown(app_: web.Application) -> None:
-        await live.watch().stop()
+        try:
+            await live.watch().stop()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Config watcher stop failed during shutdown", exc_info=True)
         lifecycle = getattr(state, "_dynamic_cards", None)
         if lifecycle is not None:
-            # One call rather than reaching for a worker attribute: the producer owns two
-            # tasks, the model queue and the number refresher, and both must settle.
-            await lifecycle.shutdown()
+            try:
+                # One call rather than reaching for a worker attribute: the producer owns
+                # two tasks, the model queue and the number refresher, and both must settle.
+                await lifecycle.shutdown()
+            except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+                logger.warning("Dynamic cards shutdown failed", exc_info=True)
 
     app.on_cleanup.append(_config_watch_shutdown)
 

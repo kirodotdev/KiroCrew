@@ -713,6 +713,16 @@ class ConversationLog:
         """
         return self._listing_index.list_sessions()
 
+    def warm_listing_index(self, should_stop: Callable[[], bool] | None = None) -> bool:
+        """Build the :meth:`list_sessions_indexed` index now; True when it is built.
+
+        Blocking; the gateway runs it on a worker thread at boot. False without
+        waiting when a listing holds the index, and False when *should_stop* answered
+        True. A build that stops or raises leaves the index for the next listing to
+        build (``SessionListingIndex.warm``).
+        """
+        return self._listing_index.warm(should_stop)
+
     def list_sessions_status(self) -> tuple[list[dict], bool]:
         return self._catalog_projection.list_sessions_status()
 

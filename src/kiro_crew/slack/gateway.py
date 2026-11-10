@@ -285,6 +285,7 @@ from kiro_crew.llm_helpers import (
     acp_error_after_tool_activity,
     acp_error_is_session_not_found,
     acp_error_is_transient,
+    acp_error_needs_sign_in,
     annotate_model_fallback,
     append_fallback_story,
     configured_fallback_chain,
@@ -416,6 +417,7 @@ from kiro_crew.platform.update_governance import (
 from kiro_crew.pre_exec_stops import run_pre_exec_stops
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER
+from kiro_crew.restart_session_close import close_sessions_for_restart
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -567,6 +569,7 @@ from kiro_crew.slack.gateway_runtime.result_egress import (
 from kiro_crew.slack.gateway_runtime.runtime_charge import (
     _apply_gate_verdict,
     _charge_failure,
+    _cron_auth_expiry,
     _cron_failure_attribution,
     _streak_after_charge,
 )
@@ -668,6 +671,7 @@ if TYPE_CHECKING:
     from kiro_crew.memory_startup import MemoryStartup
     from kiro_crew.messaging.registry import ChannelDescriptor
     from kiro_crew.providers.base import LLMProvider
+    from kiro_crew.slack.events import SeenCache
     from kiro_crew.subagent_scale import SubagentEventCoalescer
     from kiro_crew.task_models import Task
     from kiro_crew.teams.client import TeamsClient
@@ -741,6 +745,14 @@ class GatewayOrchestrator:
     _tracking_channels: set[str]
     _open_channels: set[str]
     _slack_enabled: bool
+    _slack_seen: SeenCache | None
+    _slack_team_id: str
+    _slack_workspace_pinned: bool
+    _slack_pin_token: str
+    _slack_reconnect_task: asyncio.Task[dict[str, Any]] | None
+    _slack_reconnecting: bool
+    _slack_client_lost: bool
+    _slack_give_up_task: asyncio.Task[None] | None
     slack_command: str
     _channel_restart_lock: asyncio.Lock
     _channel_transports_started: bool
@@ -1134,6 +1146,7 @@ class GatewayOrchestrator:
     _finish_auto_update_apply = _upd_sched._finish_auto_update_apply
     _RESTART_GATE_HOLD_SECS = _upd_sched._RESTART_GATE_HOLD_SECS
     _restart_gate_when_idle = _upd_sched._restart_gate_when_idle
+    _restart_gate_held = _upd_sched._restart_gate_held
     _release_restart_gate_hold = _upd_sched._release_restart_gate_hold
     _wheel_apply_module = staticmethod(_upd_sched._wheel_apply_module)
     _dashboard_policy_applies = staticmethod(_upd_sched._dashboard_policy_applies)

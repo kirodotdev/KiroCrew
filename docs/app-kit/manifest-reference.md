@@ -245,7 +245,8 @@ MCP server. Needs App Kit seam level 2 (`ctx.sdk_level >= 2`); an older host ign
 the block and installs the app without the tools.
 
 Today the gateway lists the tools of first-party apps only (the apps that ship with
-Kiro Crew). `kirocrew-core` is auto-approved as a whole server, and a third-party
+Kiro Crew, including one that moved to its own repository, up to the tools its shipped
+copy declares). `kirocrew-core` is auto-approved as a whole server, and a third-party
 app's tools do not get that approval, so an installed or registry app's block
 validates and installs but lists nothing yet. Until it does, ship an MCP server of your
 own (`mcpServers`); the user approves each of its calls.
@@ -280,6 +281,7 @@ own (`mcpServers`); the user approves each of its calls.
 | `tools[].title` | string | Optional one-line display title, up to 80 characters |
 | `tools[].inputSchema` | object | An object schema using only `string` (`enum`, `maxLength`), `integer` and `number` (`minimum`, `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, item `maxLength`). A string with no `maxLength` is capped at 65,536 characters and an array with no `maxItems` at 256 items; a bool is refused where an integer is declared; `additionalProperties` may only be `false` |
 | `tools[].maxResultChars` | number | Where your answer is cut after redaction, 1 to 60,000; default 20,000 |
+| `tools[].strictSession` | boolean | `true`: the call is forwarded only from a directly identified session, whose key your route reads from `X-Session-Key`. Only for `backend.routes`; refused on an app with a process backend, whose proxy strips that header. Default `false` |
 
 Your route receives `{"tool": "<name>", "arguments": {...}}` holding only arguments your
 schema allows, and its JSON answer goes back to the agent, redacted. At most 16 tools per
@@ -2022,15 +2024,18 @@ the endpoint; it does not import provider code.
 |-------|------|---------|-------------|
 | `setup.onInstall` | string | `""` | Shell command run during a registry install **and again on every registry update** (an update re-enters the install transaction), after clone/build and before the installed copy is created. Not run for a local-path install. Make it idempotent |
 | `setup.onUninstall` | string | `""` | Shell command run before uninstall |
-| `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed** — no code path dispatches it. Put update-time work in an idempotent `onInstall`, which a registry update re-runs |
-| `setup.onEnable` | string | `""` | Shell command run when app is enabled |
+| `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed**: no code path dispatches it. Put dependency installs into the installed folder in `onEnable`, which an update of an enabled app re-runs, and build steps in an idempotent `onInstall`, which a registry update re-runs |
+| `setup.onEnable` | string | `""` | Shell command run when app is enabled, and again after every update of an enabled app (an update replaces the installed folder, and the fresh copy never carries `node_modules` or `.venv`) |
 | `setup.onDisable` | string | `""` | Shell command run when app is disabled |
 | `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script, 1 to 300. A numeric string such as `"60"` is read as its number and a fraction is truncated. A value below 1 (including `false`) runs at the 30s default; `true` is read as 1 second and one above 300 runs at 300, with a warning logged each time the script runs; the manifest still installs and its signature is unaffected. A value that is not a number (`"abc"`, `null`) fails validation |
 | `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script, 1 to 300, clamped the same way as `onEnableTimeout` |
 | `setup.configSchema` | object | `{}` | JSON Schema for app configuration |
 
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app
-stays disabled and any registered resources are deregistered. `onDisable`
+stays disabled and any registered resources are deregistered. If it fails when
+an update re-runs it, the app stays enabled on the new version: the update
+succeeds with an `onEnableFailed` reason, the user gets a notification, and the
+next enable or update runs the script again. `onDisable`
 failures are logged as warnings but do not block the disable operation. Local-path
 installs do not run `onInstall`; build first, then install. The `onEnable`,
 `onDisable` and `onUninstall` hooks always invoke `/bin/bash`, so they are
@@ -2146,7 +2151,8 @@ Control how Kiro Crew manages the app:
 For a **server-mode** app (every builtin), `platform.os` is a user-facing CLAIM,
 not an access control. It is rendered on the App Store detail page
 (`website/src/pages/AppDetailPage.tsx`), and that is its only non-test consumer.
-`apps/routes_enable.py` reads it once, via `_client_install_manifest()`, which returns
+The `onEnable` runner in `apps/routes_lifecycle.py` reads it, via
+`_client_install_manifest()`, which returns
 `None` unless `platform.installMode == "client"`; `handle_enable_app`'s docstring
 states the rest outright — "nothing else on the enable path consults that field".
 So omitting the block does **not** stop the app being enabled anywhere.
@@ -2328,11 +2334,18 @@ hints a desktop launch needs:
 The two user-bus locators, `XDG_RUNTIME_DIR` (from the allowlist) and
 `DBUS_SESSION_BUS_ADDRESS` (from the desktop hints), **reach the child** on this
 path. The sandbox's restore-then-drop of those two variables applies to spawns
-that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Whether
-a standard-mode launcher should hold a live user-bus address at all is under
-review in [#16520](https://github.com/kirodotdev/KiroCrew/issues/16520) — do
-not build a launcher that depends on `DBUS_SESSION_BUS_ADDRESS` being set.
-`XDG_RUNTIME_DIR` is not in question: it is where the Wayland socket lives.
+that go through `sandbox.sandboxed_spawn_argv`; `openCommand` does not. Keeping
+them is the stated policy, decided in
+[#16520](https://github.com/kirodotdev/KiroCrew/issues/16520): the standard tier
+does not keep an app's children off the user session bus. The launcher reaches
+it, and so do the app's backend and its lifecycle and install commands, which is
+the same documented residual the agent's own shell has (see
+[security.md § Sandbox Modes](../system-specs/modules/security.md#sandbox-modes)).
+Withholding the two variables would not change what the child can reach, since
+the bus socket itself stays visible to it. `XDG_RUNTIME_DIR` stays in any case:
+it is where the Wayland socket lives. `DBUS_SESSION_BUS_ADDRESS` is copied only
+when the gateway's own environment has one, so do not build a launcher that
+assumes it is set.
 
 Anything not listed above — the gateway's own model credentials, API keys you
 exported in the gateway's shell, `EDITOR`, `BROWSER`, custom `MYAPP_*`

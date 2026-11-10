@@ -297,6 +297,29 @@ def test_the_column_head_shows_the_whole_state_share_not_just_held_cards() -> No
     assert data["column_3_head"] == "abandoned · 3 of 300"
 
 
+def test_the_column_rows_count_the_forgotten_items_their_head_counts() -> None:
+    """The rows under a head never deny the items that head counts.
+
+    The head reads the state's whole share, but the forgotten closed items have no
+    cards. The rows had said ``no items`` under ``rejected · 5 of 300`` and listed one
+    accepted row under ``accepted · 291 of 300`` with no word about the other 290.
+    """
+    view = _view([_item("it_0", "open"), _item("it_1", "accepted")])
+    view["forgotten"] = {
+        "created": 300,
+        "items": 298,
+        "accepted": 290,
+        "rejected": 5,
+        "abandoned": 3,
+    }
+    data = panel_card_data(_build(view))
+    assert data["column_0_rows"].splitlines()[-1].startswith("item it_0")
+    assert data["column_1_rows"].splitlines()[0].startswith("item it_1")
+    assert data["column_1_rows"].splitlines()[-1] == "    +290 closed earlier, not listed"
+    assert data["column_2_rows"] == "+5 closed earlier, not listed"
+    assert data["column_3_rows"] == "+3 closed earlier, not listed"
+
+
 def test_the_items_tile_and_added_this_round_count_forgotten_items() -> None:
     """The ``items`` tile and ``+N in round`` cover the whole board, like the total.
 

@@ -621,6 +621,55 @@ class TestToolRequestsAreGated:
                 command
             ), f"{command!r} would let a watcher publish to GitHub"
 
+    def test_each_refused_gh_verb_is_refused_in_its_glab_form(self) -> None:
+        """The GitLab watcher reads outsider-written MR comments too, so every `gh` verb the
+        denylist refuses must be refused as its `glab` twin, while the read-only `glab`
+        commands the watcher prompt asks for stay allowed."""
+        from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import (
+            shell_command_refusal,
+        )
+
+        twins = {
+            "gh pr merge 1": "glab mr merge 1",
+            "gh pr ready 1": "glab mr update 1 --ready",
+            "gh pr close 1": "glab mr close 1",
+            "gh pr comment 1 --body hi": "glab mr note 1 -m hi",
+            "gh pr review 1 --approve": "glab mr approve 1",
+            "gh pr edit 1 --title x": "glab mr update 1 --title x",
+            "gh pr create --draft": "glab mr create --draft",
+            "gh issue comment 1 --body hi": "glab issue note 1 -m hi",
+            "gh issue create --title x": "glab issue create --title x",
+            "gh issue edit 1 --title x": "glab issue update 1 --title x",
+            "gh issue close 1": "glab issue close 1",
+            "gh release create v1": "glab release create v1",
+            "gh auth token": "glab auth token",
+            "gh api -X PATCH /repos/o/r": "glab api -X PUT projects/1",
+            "gh secret set X": "glab variable set X",
+            "gh workflow run ci.yml": "glab ci run",
+        }
+        for gh_form, glab_form in twins.items():
+            assert shell_command_refusal(gh_form), f"{gh_form!r} should be refused"
+            assert shell_command_refusal(glab_form), f"{glab_form!r} evaded the denylist"
+        # glab's own aliases of those verbs are the same capability.
+        for command in (
+            "glab mr accept 1",
+            "glab mr comment 1 -m hi",
+            "glab mr new --fill",
+            "glab issue comment 1 -m hi",
+            "glab issue new --title x",
+            "glab ci create",
+            "glab ci push",
+        ):
+            assert shell_command_refusal(command), f"{command!r} evaded the denylist"
+        for command in ("sudo glab mr merge 1", "sh -c 'glab mr note 1 -m hi'"):
+            assert shell_command_refusal(command), f"{command!r} evaded the denylist"
+        for command in (
+            "glab mr view https://gitlab.com/g/p/-/merge_requests/1 --comments",
+            "glab ci view",
+            "glab mr diff 1",
+        ):
+            assert shell_command_refusal(command) == "", f"{command!r} must stay allowed"
+
     def test_the_commands_the_task_actually_needs_are_allowed(self) -> None:
         """A denylist that blocks the build is not a fix — the watcher must still work."""
         from kiro_crew.apps.builtins.auto_improvement.spine.agent_runner import (

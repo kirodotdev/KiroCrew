@@ -151,6 +151,16 @@ const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ 
  */
 type Row = { kind: 'cmd'; cmd: SlashCommand } | { kind: 'workflow'; workflow: PickerWorkflow }
 
+/** The ref `/workflow` reaches a saved workflow by: its slug, else its id,
+ *  skipping any the read listed in `shadowed_refs`, or null when neither does,
+ *  so a picked row never runs another workflow (`library.command_ref`). */
+function pickerRef(w: PickerWorkflow): string | null {
+  for (const ref of [w?.slug, w?.id]) {
+    if (typeof ref === 'string' && ref.trim() && !w.shadowed_refs?.includes(ref)) return ref
+  }
+  return null
+}
+
 const rowKey = (r: Row) => (r.kind === 'cmd' ? r.cmd.name : `/workflow ${r.workflow.slug}`)
 const rowInsert = (r: Row) => rowKey(r) + ' '
 
@@ -251,7 +261,10 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
         // must offer `deploy` before a newer `deploy-prod`. Plain code-point
         // order -- a slug is ASCII -- so the order is the same in every locale.
         ? (workflowData?.definitions ?? [])
-            .filter(w => typeof w?.slug === 'string' && w.slug.startsWith(workflowFilter))
+            .flatMap(w => {
+              const ref = pickerRef(w)
+              return ref && ref.startsWith(workflowFilter) ? [{ ...w, slug: ref }] : []
+            })
             .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0))
             .map(workflow => ({ kind: 'workflow' as const, workflow }))
         : commands.filter(c => c.name.slice(1).startsWith(filter)).map(cmd => ({ kind: 'cmd' as const, cmd }))),

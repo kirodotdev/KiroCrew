@@ -249,7 +249,7 @@ unauthenticated surface beyond the three token-free liveness probes
 A governance policy can narrow both: the `bind_address` list refuses a
 `KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`),
 and the `dashboard_origins` list drops an extra origin it does not name. An
-enterprise build allows neither until a policy names it. Tailnet access there
+LTS build allows neither until a policy names it. Tailnet access there
 follows the policy's `capabilities.tailnet_origin` alone: until a policy turns it
 on, `kirocrew tailnet up` and the dashboard card say "Tailnet is off by policy".
 
@@ -308,7 +308,9 @@ The pane's error then says it cannot reach the port and names it. It also gives
 one `ssh -L` line that forwards every crew's pane port, each with the same
 number on both sides. Run it beside your dashboard forward, with your gateway
 host in place of `<gateway-host>`, or open the dashboard on the gateway host
-itself.
+itself. The desktop app does this for you when it holds the tunnel (**Keep an SSH
+tunnel to this crew open**, above): it forwards each pane's port as the pane
+opens, and again after Retry moves it.
 
 ### Named HTTPS tunnel (phone)
 
@@ -774,6 +776,17 @@ while the browser's own HTTP cache still holds the hashed `/assets/` bundles, wh
 the worker never caches. After a build that changes those hashes, the cached shell
 references bundle URLs nothing has downloaded yet. Sessions, history, and
 notifications are never served from disk.
+
+**The worker's retry covers only a page it already controls.** It registers once
+the page has started loading, so a first visit, a fresh browser profile and the
+load after **Clear cache and reload** reach the network without it. For those the
+shell in `index.html` recovers on its own: when a boot module fails to load on a
+top-level page (a dropped connection, or Chromium's `ERR_NETWORK_CHANGED` while a
+network interface comes or goes), it reloads the page after a short, jittered
+delay, up to three times, counting each reload in `sessionStorage` so it can never
+loop. If the page still does not start, it shows **Kiro Crew did not load** with a
+**Clear cache and reload** button. A dashboard embedded in another page does not
+reload itself; it reports the failure to the page around it.
 
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:

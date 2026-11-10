@@ -23,6 +23,7 @@ working could not pass as an SSH forward.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -429,15 +430,18 @@ def test_cc_extended_to_hide_ssh_needs_consent(_no_consent, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="no SSH_AUTH_SOCK forward on Windows")
+@pytest.mark.parametrize("via_async", [False, True], ids=["wrap_argv", "wrap_argv_async"])
 @pytest.mark.parametrize(("floor", "expected"), [("strict", False), (None, True)])
 def test_wrap_rejudges_forward_against_the_floor_it_applies(
-    _no_consent, monkeypatch, floor, expected
+    _no_consent, monkeypatch, floor, expected, via_async
 ):
     """A floor raised after the launch tail resolved the forward drops the socket.
 
     The tail judged ``standard`` and passed ``forward_ssh_auth_sock=True``; the wrap
     then reads its own floor. The flag handed to the backend builder must follow the
-    tier the wrap APPLIES. Control row: no floor raise keeps the forward.
+    tier the wrap APPLIES, and the same verdict comes back to the caller, through the
+    async entry the launch tail awaits too, so the tail records the wrap's verdict
+    rather than its own. Control row: no floor raise keeps the forward.
     """
 
     class _Stop(Exception):
@@ -455,9 +459,15 @@ def test_wrap_rejudges_forward_against_the_floor_it_applies(
     monkeypatch.setattr(sb, "_inside_kirocrew_sandbox", lambda: False)
     monkeypatch.setattr(sb, "namespace_argv", _builder)
     monkeypatch.setattr(sb, "sandbox_exec_argv", _builder)
+    applied: list[bool] = []
+    call = {"mode": "standard", "forward_ssh_auth_sock": True, "forward_ssh_auth_sock_out": applied}
     with pytest.raises(_Stop):
-        sb.wrap_argv(["/bin/true"], mode="standard", forward_ssh_auth_sock=True)
+        if via_async:
+            asyncio.run(sb.wrap_argv_async(["/bin/true"], **call))
+        else:
+            sb.wrap_argv(["/bin/true"], **call)
     assert seen["forward"] is expected
+    assert applied == [expected]
 
 
 def test_rejudge_never_grants_a_forward_the_caller_refused(_no_consent):

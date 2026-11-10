@@ -1,6 +1,6 @@
 """A ``permission_mode`` deny of ``trust`` / ``trust_reads`` holds at every entry point.
 
-RFC crew-enterprise-edition D9. The verdict is pushed at ceiling install
+RFC crew-lts-edition D9. The verdict is pushed at ceiling install
 (``kiro_crew.approval_mode_policy``); these cases install a real ceiling and check each
 place a session's Trust is set or honoured: the dashboard mode API, the approval card,
 the picker's disabled list, the slot's own flags, the stored ``"auto"`` policy, the
@@ -651,7 +651,7 @@ async def test_a_profile_save_clamps_a_denied_stored_mode_on_the_live_dm(tmp_pat
 
 @pytest.mark.parametrize("rule", [ALL_THREE, {"mode": "deny", "deny": ["yolo"]}])
 def test_a_rule_that_keeps_both_modes_is_not_a_narrowing_rule(rule):
-    """The enterprise baseline (all three) or a YOLO-only deny cannot deny Trust."""
+    """The LTS baseline (all three) or a YOLO-only deny cannot deny Trust."""
     _install(rule)
     amp._on_ceiling_invalidating()
     assert amp.session_mode_permitted("trust") is True

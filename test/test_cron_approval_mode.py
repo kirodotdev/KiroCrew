@@ -113,7 +113,7 @@ class TestCronApprovalModeGateway:
         captured = self._run_cron_callback("auto")
         assert captured["approval_policy"] == ToolApprovalPolicy.AUTO_APPROVE
         # The callback approves while ``auto`` holds; a mid-turn policy deny asks
-        # instead (RFC enterprise edition D9).
+        # instead (RFC LTS edition D9).
         approve = captured["on_tool_approval"]
         assert asyncio.run(approve(MagicMock())) is True
 

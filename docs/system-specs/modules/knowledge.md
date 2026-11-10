@@ -294,8 +294,8 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
   concurrent attended ingest cannot be downgraded by a watcher sweep.
 - Discovered files above `props["max_files"]` (default `DEFAULT_MAX_FILES` = 5000) are capped **newest-first** (sort by mtime desc); the surplus count is reported as `capped`.
 - **AsciiDoc include set.** `_do_scan` builds one `frozenset` of the resolved paths `_walk` itself screened (`is_sensitive_path`, `confine_to_root`) for every file it selected (the full, pre-cap walk; collected through `_walk(..., screened_out=...)`), each passed through `os.path.normcase` once, never a second resolution of the discovered names, so a name re-pointed after the walk cannot admit a file the walk rejected. It passes the include set for every file it ingests, and a fresh `included` set for each file, since the reader is picked by the resolved suffix and a `.md` link to an `.adoc` file inlines too: `_ingest_file(..., include_paths=..., included=...)` → `IngestionPipeline.ingest_file(...)` → `FileReader.read`, where only the AsciiDoc reader uses them. Every other `ingest_file` caller leaves both `None`. See *AsciiDoc includes* above.
-- **AsciiDoc include record.** `folder_include_targets(source_id, file_path, targets)` holds, per includer, the JSON list of targets its indexed text inlined; no row means it inlined nothing, which is true of every row written before the table existed (main read `.adoc` as plain text). It is a side table so the many `INSERT OR REPLACE` writers of `folder_file_state` need not carry it and an older build cannot null it; an older build ignores it, and a record it leaves stale can only cause an extra re-read. The record is replaced, or deleted when empty, only on a successful read: in the commit callback before its `done` update, before the caller's `done` write when that write lands, and inside the gate's transaction by `_record_deduped_state`. `failed`, `scanning`, `skipped` and touched-but-unchanged writes leave it, so it keeps naming what the indexed text still holds. `_handle_deleted` and `delete_source_cascade` delete it with the row. Each sweep (step 4) loads the source's records off the loop and marks an includer **stale** when it has a state row, is still in the walk, and its record does not parse or names a target outside this sweep's walk set. Staleness is recomputed from the record and the walk every sweep, so it survives a pause, a chunk-budget stop, a cancellation or a crash. The stale text leaves in that same step, whatever later stops the sweep (chunk budget, pause, a failed re-read): in one `BEGIN IMMEDIATE` (`_retire_stale_include_text`), a stale row with items has them archived (as `_handle_deleted` does), every stale row gets `item_ids = '[]'` and `text_hash = NULL`, and a `done`/`deduped`/`pending` one also gets `content_hash = ''` (a `scanning` row is re-read anyway and keeps the hash that keys its retry budget), which fails both unchanged checks (the mtime shortcut needs a non-empty stored hash), so an includer with an empty bytes hash is processed first even when its target came back before it was reached. A stale row with no items, whatever its status, first releases its claim on its previous `text_hash`, once per distinct hash, because its expanded text changes without its bytes changing, which `release_stale_claim` cannot see. The release preserves a shared claim when another document in the source has the same text hash; the shared-claim count ignores folder rows the same sweep removes and the other stale rows, each of which is re-read and re-claims through the dedup gate if it is still a duplicate. The record stays, so a sweep stopped before the re-read finds the row stale again, except on a `failed`/`skipped` row, which the scan does not re-read: its record goes and the user's retry reads it again. Every other stale row is processed first in step 5, ahead of and past the `max_files` cap, with both unchanged shortcuts bypassed. So is an includer (a row with a record) left `scanning`, since its newest group may not match its record yet, and one an earlier sweep retired but did not reach (empty `content_hash`); neither is retired in step 4 unless its record also names a target outside the walk.
-- Deletion detection uses the **full** discovered set (pre-cap) so capping never triggers false deletions; a vanished file's items are archived via `_handle_deleted` → `store.delete_items_batch`. **Editing `ignore_patterns` never removes indexed content:** a row whose file the patterns alone exclude and that still holds items (whatever its status: a `failed` re-read keeps the previous version's items) is kept as it is and gets no further updates (no re-read, no `last_seen` bump). A kept AsciiDoc includer keeps the included text it was indexed with, as any frozen copy does. Deleting the file, or any other rule excluding it (`.kiroignore`, a sensitive path, `confine_to_root`, the extension or size filters), still archives it, and removing the pattern again picks the file back up without re-ingesting unchanged content. A row holding no items is dropped as before. Only a tracked file pays for the later rules: `_walk(..., tracked=...)` drops any other pattern-matched file before it is resolved or stat'ed.
+- **AsciiDoc include record.** `folder_include_targets(source_id, file_path, targets)` holds, per includer, the JSON list of targets its indexed text inlined; no row means it inlined nothing, which is true of every row written before the table existed (main read `.adoc` as plain text). It is a side table so the many `INSERT OR REPLACE` writers of `folder_file_state` need not carry it and an older build cannot null it; an older build ignores it, and a record it leaves stale can only cause an extra re-read. The record is replaced, or deleted when empty, only on a successful read: in the commit callback before its `done` update, before the caller's `done` write when that write lands, and inside the gate's transaction by `_record_deduped_state`. `failed`, `scanning`, `skipped` and touched-but-unchanged writes leave it, so it keeps naming what the indexed text still holds. `_handle_deleted` and `delete_source_cascade` delete it with the row. Each sweep (step 4) loads the source's records off the loop and marks an includer **stale** when it has a state row, is still in the walk, and its record does not parse or names a target outside this sweep's walk set that the walk did not merely fail to see (an unseen target, below, counts as present). Staleness is recomputed from the record and the walk every sweep, so it survives a pause, a chunk-budget stop, a cancellation or a crash. The stale text leaves in that same step, whatever later stops the sweep (chunk budget, pause, a failed re-read): in one `BEGIN IMMEDIATE` (`_retire_stale_include_text`), a stale row with items has them archived (as `_handle_deleted` does), every stale row gets `item_ids = '[]'` and `text_hash = NULL`, and a `done`/`deduped`/`pending` one also gets `content_hash = ''` (a `scanning` row is re-read anyway and keeps the hash that keys its retry budget), which fails both unchanged checks (the mtime shortcut needs a non-empty stored hash), so an includer with an empty bytes hash is processed first even when its target came back before it was reached. A stale row with no items, whatever its status, first releases its claim on its previous `text_hash`, once per distinct hash, because its expanded text changes without its bytes changing, which `release_stale_claim` cannot see. The release preserves a shared claim when another document in the source has the same text hash; the shared-claim count ignores folder rows the same sweep removes and the other stale rows, each of which is re-read and re-claims through the dedup gate if it is still a duplicate. The record stays, so a sweep stopped before the re-read finds the row stale again, except on a `failed`/`skipped` row, which the scan does not re-read: its record goes and the user's retry reads it again. Every other stale row is processed first in step 5, ahead of and past the `max_files` cap, with both unchanged shortcuts bypassed. So is an includer (a row with a record) left `scanning`, since its newest group may not match its record yet, and one an earlier sweep retired but did not reach (empty `content_hash`); neither is retired in step 4 unless its record also names a target outside the walk.
+- Deletion detection uses the **full** discovered set (pre-cap) so capping never triggers false deletions; a vanished file's items are archived via `_handle_deleted` → `store.delete_items_batch`. **A file the walk could not see is not a vanished one:** `_walk(..., unlisted=..., unlisted_real=...)` records each directory `os.walk` failed to list (its `onerror`) and each file whose `os.stat` failed, and the scan keeps their rows and items, so a permission change or a network mount that drops out mid-walk costs no indexed content. The resolved, normcased form is computed in the walk's worker thread, never on the loop. A not-found answer still means gone: a directory that vanished after its parent was listed, a file deleted after the listing, and a symlink whose target is gone are removed as before. **Editing `ignore_patterns` never removes indexed content:** a row whose file the patterns alone exclude and that still holds items (whatever its status: a `failed` re-read keeps the previous version's items) is kept as it is and gets no further updates (no re-read, no `last_seen` bump). A kept AsciiDoc includer keeps the included text it was indexed with, as any frozen copy does. Deleting the file, or any other rule excluding it (`.kiroignore`, a sensitive path, `confine_to_root`, the extension or size filters), still archives it, and removing the pattern again picks the file back up without re-ingesting unchanged content. A row holding no items is dropped as before. Only a tracked file pays for the later rules: `_walk(..., tracked=...)` drops any other pattern-matched file before it is resolved or stat'ed.
 - Change detection is mtime-then-content-hash: unchanged mtime with a non-empty stored bytes hash → `last_seen` bump only; changed mtime but identical SHA-256 → state refresh, no re-ingest. A stale includer skips both.
 - Claim release for a stale includer and on deletion uses the text hash, falling back to the bytes hash for legacy rows with a null or empty text hash. Ownership lookups use `COALESCE(NULLIF(text_hash, ''), content_hash)` so a surviving legacy plaintext copy still preserves a shared claim. This fallback cannot reconstruct a missing transformed-text hash.
 - Batched `last_seen` flush/commit and stale-claim release run off the asyncio
@@ -638,6 +638,8 @@ Entity extraction (`EntityExtractor`) acquires workers from **workload-isolated*
 
 `HybridRetriever.search(query, limit)` runs three legs and fuses them with Reciprocal Rank Fusion.
 
+Every leg keeps to one `items.status`, the search's `status` argument: `'active'` by default, so an item archived in the Library is out of agent search (`local_knowledge_search`, `search-for-context`) on all three legs, and `None` searches every status. Unlike the seed-only `source_id` / `namespace` scopes it decides whether an item is in search at all rather than how it ranks, so the graph leg applies it too: its mention count keeps only items of that status, before the leg's cap, through a per-item `HAVING EXISTS` rather than a join, because given a join SQLite drives the count from `idx_items_status` and reads every item of the status. The Library's search branch (`list_items`) passes its `status` filter through (`None` for All statuses) and keeps its post-ranking status check.
+
 **Store (`KnowledgeStore`, `store.py`; FTS writes in `store_parts/fulltext_index.py`, the graph in `store_parts/entity_graph.py`)** — SQLite (prefers `pysqlite3`, falls back to stdlib `sqlite3`), WAL journal, `foreign_keys=ON`. Items live in `items` (with an `embedding BLOB` and `status`), keyword search is served by the FTS5 virtual table `items_fts(title, content, tags, content=items, content_rowid=rowid)`, and the entity graph is an in-memory `SimpleDiGraph` (a minimal networkx-free replacement). The store keeps `items_fts` in sync on every insert/update/delete of the FTS-backed columns.
 
 - **Keyword leg (`_keyword_search`)** — FTS5 `MATCH` over `items_fts`, ordered by `rank`. `_sanitize_fts5_query` double-quotes each token (doubling internal quotes) so user input never contributes FTS5 operators (parameterized quoting), drops `_STOPWORDS`, and OR-joins the remainder so a natural-language query does not require every literal token to match. An all-stopword query falls back to the raw tokens rather than dropping the leg.
@@ -652,7 +654,7 @@ Entity extraction (`EntityExtractor`) acquires workers from **workload-isolated*
   - **The rebuild is triggered after bind, never by the constructor.** `KnowledgeStore.__init__` runs on the gateway's boot path (`start_dashboard` builds the lazy `state.knowledge_store` on a worker thread just before `setup_knowledge_routes` reads it, before the socket binds), while its FTS readers run on other worker threads (`run_in_embed_pool` / `asyncio.to_thread`) — the store's own threading contract, and why it hands each thread its own connection. A data-scaled reindex in `__init__` would therefore stall the gateway at boot for the length of a full reindex: measured at 4,000 CJK items it is ~137 ms of work, and it grows linearly with the corpus. The first trigger is the post-bind knowledge maintenance task (`_kick_knowledge_orphan_reclaim`), which calls `ensure_fts_index_current` on a worker thread inside the store's maintenance window, together with the deferred search indexes, so ingestion waits at the gate instead of on SQLite's writer lock. Each FTS reader still calls it first, as the fallback when that task could not take the writer lock; it is lock-guarded so concurrent callers wait rather than each starting a rebuild, and steady state is a single boolean check (~1 us).
   - **Known limitation:** `add_item` persists tags with `json.dumps` at its default `ensure_ascii=True`, so a CJK tag is stored with its characters backslash-escaped and reaches the index as terms like `u6a21`/`u578b`. A CJK tag is unsearchable for that reason, which no query-side change can reach.
 - **Graph leg (`_graph_search`)** — resolves query words and adjacent word-pairs to entities, expands via graph neighbors (depth 2), and ranks items by mention count. `get_neighbors` walks `entity_relations` through its `source_id` / `target_id` indexes, one statement per hop and chunk of `_NEIGHBOR_CHUNK` ids, so a search never loads the in-memory `SimpleDiGraph`: only the dashboard's graph views (`get_entity_graph`, `get_full_graph`) materialise it. A spaceless CJK run is one whitespace word but several entity names, so an entity named for a word *inside* the run is unreachable by the split alone; `_cjk_subruns` adds the run's own contiguous CJK substrings as extra candidates, longest first (so the most specific entity name is tried before a shorter prefix of it) and bounded by `_CJK_SUBRUN_MAX_LEN` / `_CJK_SUBRUN_MAX_CANDIDATES`, since each candidate costs a `find_entity` query. A query with no CJK gets the plain whitespace-split candidate list. `find_entity` tries the exact name, then `LOWER(name)` (`idx_entities_name_lower`), then the alias fallback, which every missed candidate reaches: it reads `(rowid, aliases)` through the partial index `idx_entities_with_aliases`, whose predicate is the fallback's own, so it visits only the entities that carry aliases instead of every entity, and sorts them by `rowid` so the first match (and the first malformed row to raise) is the one a table scan would meet first. The matched row is re-read by `rowid` AND the aliases just matched: `entities` has no AUTOINCREMENT, so a row deleted between the two reads can hand its rowid to an unrelated entity, which this read skips. Both indexes are in `_SEARCH_INDEXES`, built post-bind for a populated library; without them the answer is the same, only slower.
-- **Vector leg (`_vector_search`)** — brute-force cosine over `items` with `embedding IS NOT NULL AND status='active' AND embedding_sig = ?`; returns `None` when no embedder is wired. Rows are scored `_SCORE_BATCH_ROWS` (1024) at a time by `_score_rows_numpy` when numpy is importable, else by the Python reference path `_score_rows_python`. Items whose stored embedding dimension differs from the query vector are **skipped** (not scored 0.0), with a single per-search WARNING so a stale index surfaces as "re-index needed". `_cosine_similarity` is a one-off helper outside the search loop; it returns 0.0 for differing-length or zero vectors.
+- **Vector leg (`_vector_search`)** — brute-force cosine over `items` with `embedding IS NOT NULL AND status = ? AND embedding_sig = ?` (the search's `status`; no status predicate for `None`); returns `None` when no embedder is wired. Rows are scored `_SCORE_BATCH_ROWS` (1024) at a time by `_score_rows_numpy` when numpy is importable, else by the Python reference path `_score_rows_python`. Items whose stored embedding dimension differs from the query vector are **skipped** (not scored 0.0), with a single per-search WARNING so a stale index surfaces as "re-index needed". `_cosine_similarity` is a one-off helper outside the search loop; it returns 0.0 for differing-length or zero vectors.
   - **Matrix cache (`_cached_matrix`)** — with numpy, the leg scores against a cached float32 matrix plus float64 row norms built from its candidate query, keyed by `(db path, sql, params, query width)`. An entry is valid while the store's `vector_generation()` value matches, read in the same snapshot as the rows. Triggers on `items` and `source_locations` (insert, delete, and an update of a vector-relevant column) set `vector_generation.gen` to a fresh `random()`, so a write to any other table keeps the entry, a write from any connection or process drops it, and a replaced library file does not repeat a value. A store with no generation table (a read-only open of a file no migrating open has touched) returns `None` and is not cached. At most `_MATRIX_CACHE_MAX_ENTRIES` (2) entries, and everything they retain (matrix, norms, ids) shares one `_MATRIX_CACHE_MAX_BYTES` (512 MiB) budget; the oldest entry is evicted first. A result past the budget, or one the cache will not hold (mixed widths, legacy JSON vectors float32 cannot hold exactly), is remembered as an empty entry for that generation and scored by the reference path, so it is read once per search. Builds are serialised per database, so concurrent misses on one library wait for one read and a build never blocks another library. The cache lives for the process; it is not dropped on idle.
   - **One-statement build (`_read_packed`)** — a build reads its candidates in ONE statement: `count(*)`, `json_group_array(id)` and `CAST(group_concat(embedding, '') AS BLOB)` over the candidate query, so SQLite joins the vectors and lists the ids in the same row order, and Python takes one row. Fetching row by row re-took the GIL once per row (~22k times on a 22k-item library), and under agent-turn load each reacquire waited behind busy threads: the first search after start spent seconds there against ~0.15 s idle. The same pass counts the rows that are not a BLOB of the query's width, and any such row, a packed blob that parses as a JSON list, a database not in UTF-8 (`group_concat` reads a BLOB as text in the database encoding) a SQLite without the JSON functions, or a joined result past SQLite's length limit (`SQLITE_TOOBIG`, raised as `DataError`) sends the build to the row path (`_read_snapshot` + `_join_packed`), which admits exactly the same rows. Nothing is built ahead of a search, so a library that is never searched holds no matrix.
   - The `embedding_sig` predicate is the **read-side refusal** that makes an embedding-model change safe, and it is what the dimension guard cannot do: an old-space vector of the SAME WIDTH passes every length check, so without the predicate it is cosine-scored against a new-space query and returned with a confident score. A NULL signature — an item never stamped — reads as unproven and drops out of the leg until the sig-gated rebuild re-stamps it.
@@ -692,8 +694,9 @@ them:
   base has one spelling in the dedupe, the result ids and the audit rows),
   `region`, optional `profile`. `kb_ids` is the one caller-supplied field a
   source retains and re-parses on every search, so it is bounded where it is
-  parsed (`_parse_kb_ids`): at most `_MAX_KB_IDS` entries (also the
-  per-search fan-out cap), each raw entry at most `_MAX_KB_ID_ENTRY_CHARS`,
+  parsed (`_parse_kb_ids`): at most `_MAX_KB_IDS` distinct ids, counted
+  after blank pieces and repeats are dropped (also the per-search fan-out
+  cap), each raw entry at most `_MAX_KB_ID_ENTRY_CHARS`,
   each normalized id exactly the `[0-9A-Za-z]{10}` shape the Retrieve API
   accepts. `validate_config` parses strictly and refuses the first violation
   by name before any probe, and the insert only runs after validation, so
@@ -1348,9 +1351,111 @@ citation format — is
 #### Entities → Nodes
 
 Each extracted entity becomes a node in the graph:
-- Deduplication: exact name matching + case-insensitive alias lookup
+- Deduplication: **conservative lexical resolution** (3-tier, described below)
 - If "DynamoDB" appears in chunk 1 and chunk 5, both map to the same node
+- Multilingual KB: "뮤직뱅크" and "Music Bank" resolve to the same node when a
+  lexical bridge exists (the alias of one matches the canonical name of the other)
 - Stored in SQLite `entities` table + in-memory `SimpleDiGraph`
+
+##### Entity Deduplication: Conservative Lexical Resolution
+
+Retrieval and identity have different contracts. `find_entity` retains broad
+canonical and alias lookup, including abbreviations. Ingestion uses
+`entity_identity_candidates` and `entity_resolution.resolve_entity` instead:
+
+1. **Canonical priority.** Exact name, then SQLite `LOWER(name)`, reuses the
+   existing canonical node without a type guard, retaining canonical matching
+   semantics. Extracted non-string, empty and non-UTF-8 names are dropped before
+   a SQLite lookup. No new Unicode canonical index or matching rule is added.
+2. **Direct alias bridges.** After a canonical miss, consider both incoming
+   name → persisted alias and extracted alias → stored canonical together.
+   The indexed alias route exposes every candidate, and the canonical alias
+   route uses one bounded `LOWER(name)` query. Before the alias index exists,
+   the first route reads the authoritative aliases column. Alias-to-alias
+   matches alone never supply a target.
+3. **Eligibility.** Both canonical names and the actual bridge spelling must
+   pass the same conservative spelling policy, and entity types must agree
+   (missing/empty types become `concept`). Names must have supported, disjoint
+   letter-script profiles. NFKC is used for this decision only; stored spellings
+   and lookup keys are unchanged. Supported scripts are Latin, Hangul, Han,
+   Hiragana, Katakana, Greek, Cyrillic, Arabic, Hebrew and Devanagari. Han with
+   kana is a supported Japanese mixed profile; other mixed profiles abstain.
+   A shared script, including Han shared by Chinese/Japanese names, abstains.
+   The Japanese prolonged sound mark is neutral only after Japanese letters;
+   it cannot establish a meaningful letter profile by itself.
+   Decimal digits, punctuation and spaces are neutral; combining marks follow
+   letters. Controls, format characters, symbols and unknown letters abstain.
+4. **Short abbreviations are lookup-only.** A Latin-only profile with at most
+   four letters/digits after decision normalization and separator removal
+   cannot trigger alias-based reuse, on either canonical endpoint or the bridge.
+   This rejects `CR`, `cr`, `ＣＲ`, `C.R.`, `C R`, `BTS`, `KBS` and `NASA`.
+   It deliberately also rejects genuine short names such as `Go`: a spelling
+   heuristic cannot establish whether a short name is an acronym. Longer
+   abbreviations and non-Latin abbreviations are not perfectly detectable.
+5. **Unique target.** Reuse only when exactly one eligible entity ID remains
+   across both routes. Multiple paths to the same ID are allowed; different
+   IDs abstain and create a new node. An ineligible early candidate cannot hide
+   a later eligible one. No truncated candidate set is treated as complete.
+   Ingestion probes one alias beyond `MAX_ENTITY_ALIASES`. Overflow disables
+   both alias-based routes, including an otherwise unique stored-alias hit;
+   canonical priority remains available and storage keeps its existing cap.
+   A bridge reaching `MAX_ENTITY_ALIAS_LEN` is also lookup-only: it may be
+   a truncated spelling of a different name, and stored aliases carry no
+   truncation provenance. Exact-length legitimate names lose automatic reuse
+   conservatively; the stored/searchable spelling is retained.
+
+| Evidence after a canonical miss | Automatic reuse |
+|---|---|
+| `뮤직뱅크` ↔ `Music Bank`, direct bridge, matching types, one target | yes, either direction |
+| `Code Review` / `Change Request` sharing `CR` | no |
+| A same-script service claiming `Kubernetes` as an alias | no |
+| `방탄소년단` ↔ `BTS`, even with matching types | no; abbreviation stays searchable |
+| Two eligible targets, type conflict, alias-to-alias only, unknown/mixed scripts | no |
+
+**Enrichment is scoped.** Canonical reuse adds incoming aliases. A name matching
+an existing alias adds none. An extracted alias matching a canonical adds only
+its incoming name; its other aliases are not propagated through the bridge.
+When both routes reach the same ID, no enrichment is needed.
+
+These rules reject currently known ambiguity and the forbidden merge classes;
+they do not prove semantic identity or fully prevent poisoning by a fabricated
+cross-script translation. Results are deterministic for the current candidate
+set, not globally independent of ingestion order: a future competing entity
+cannot be anticipated by an online resolver. Canonical enrichment and retained
+aliases can also expose future bridges. Historical splitting, provenance-based
+identity and a backfill sweep are separate work.
+
+`KnowledgeStore.add_entity_aliases` is the only write path for alias enrichment.
+It runs in `BEGIN IMMEDIATE` and enforces the structural invariants the store
+alone can check: casefold dedupe against canonical + existing + accepted →
+cap (MAX_ENTITY_ALIASES).  Length truncation (MAX_ENTITY_ALIAS_LEN), redaction
+of credentials/URLs and whitespace stripping are the caller's responsibility
+(`_coerce_aliases` in ingestion) before calling.  Aliases past the cap are
+discarded and counted, and the call logs ONE warning naming the count when any
+were discarded — including when the entity was already full, so saturation is
+never silent.  The row is written only when an alias was accepted.
+
+**Alias lookup is indexed.**  `entity_aliases(alias_key, entity_id)` holds one
+row per `str.casefold()`ed alias per entity.  SQL cannot compute that key, so
+every writer of `entities.aliases` — `add_entity`, `add_entity_aliases`,
+`import_bundle` — writes the rows through `index_entity_aliases` in the same
+transaction as the entity row; a delete trigger on `entities` drops them with
+the entity, so merges and the orphan sweep need nothing.  `find_entity`'s alias
+leg is then one probe of `idx_entity_aliases_key` that folds Unicode case
+(`MÜNCHEN`, `STRASSE`/`Straße`), instead of a `json.loads` per aliased entity
+on every query term.  A library that predates the table gets it filled by the
+post-bind one-time build (`ensure_search_indexes` → `_ensure_entity_alias_index`),
+which creates the key index in the same transaction as the fill; until that
+index exists `find_entity` keeps the old scan, so results never depend on the build.
+
+**Downgrade limitation.** Index existence proves that the initial fill completed,
+not that a later older binary kept it current. A downgrade can write
+`entities.aliases` without updating `entity_aliases`, leaving incomplete or stale
+lookup rows after re-upgrade. A version marker alone cannot detect those later
+writes. Durable repair requires an initial reconciliation plus per-entity dirty
+tracking maintained by SQL triggers; that migration is separate from the merge
+policy. No automatic downgrade/re-upgrade repair is claimed here.
+
 
 #### Relations → Edges
 

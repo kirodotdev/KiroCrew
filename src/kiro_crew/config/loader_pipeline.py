@@ -36,6 +36,7 @@ from kiro_crew.config.loader_builders import (
     _default_memory_mode_from,
     _read_backend_choice,
     _registry_entry,
+    mark_member_backend_inherited,
     resolve_loop_stall_exit_after,
 )
 from kiro_crew.config.loader_config import KiroCrewConfig
@@ -50,6 +51,7 @@ from kiro_crew.config.loader_document import (
     _invalidate_config_cache,
     _shadowed_base_sections,
     _store_validated_data,
+    kas_bundle_build_default,
 )
 from kiro_crew.config.loader_locations import (
     config_local_path,
@@ -604,15 +606,18 @@ def read_config_document() -> ConfigDocument:
     # build_config agrees by construction.
     if isinstance(data.get("resource_limits"), dict):
         data["resource_limits"] = asdict(ResourceLimitsConfig.from_raw(data["resource_limits"]))
-    # Same fail-closed-before-validation reason for the four agent
+    # Same fail-closed-before-validation reason for the six agent
     # switches whose safe direction is FALSE.
     # `agent.session_control` is the operator's single withdrawal of
     # cross-session control, `agent.member_dispatch` gates whether
     # a crew member bypasses that withdrawal, `agent.crew_panel`
     # gates the member's own webview, and `agent.kas_persist_mcp_sign_in`
-    # decides whether Crew stores remote MCP OAuth tokens. Schema validation pops a
+    # decides whether Crew stores remote MCP OAuth tokens,
+    # `agent.conductor_own_child_verbs` lets a conductor send to its own
+    # children unprompted, and `agent.kas_repair_kiro_cli_extract` lets Crew
+    # move kiro-cli's broken KAS extract aside. Schema validation pops a
     # present-but-malformed value and the missing-field default is TRUE
-    # for all four, so a quoted `"false"` -- a routine operator quoting
+    # for all six, so a quoted `"false"` -- a routine operator quoting
     # mistake -- would silently ride that default back to the
     # capability staying enabled. Coerce a present non-bool to False
     # HERE, so validation sees a valid bool and keeps it; a genuinely
@@ -633,6 +638,8 @@ def read_config_document() -> ConfigDocument:
             "member_dispatch",
             "crew_panel",
             "kas_persist_mcp_sign_in",
+            "conductor_own_child_verbs",
+            "kas_repair_kiro_cli_extract",
         ):
             if _fail_closed_key in _agent_section and not isinstance(
                 _agent_section[_fail_closed_key], bool
@@ -807,8 +814,11 @@ def build_config(
         agent_defaults = _sections.SectionReader(AgentConfig, {})
         cfg.agent.acp_backend = _read_backend_choice(agent_defaults, {}, "acp_backend")
         cfg.agent.member_acp_backend = _read_backend_choice(
-            agent_defaults, {}, "member_acp_backend"
+            agent_defaults, {}, "member_acp_backend", inherit=cfg.agent.acp_backend
         )
+        mark_member_backend_inherited(cfg.agent, True)
+        # An absent key, so a nightly build's default applies to a fresh home too.
+        cfg.agent.kas_bundle = kas_bundle_build_default()
         cfg._base_unreadable = doc.base_unreadable
         cfg._overlay_unreadable = doc.overlay_unreadable
         if (
@@ -1031,6 +1041,9 @@ def build_config(
                     star_order=crew.read("star_order", _safe_int, lo=0, hi=STAR_ORDER_MAX),
                     # Strictly a bool, like ``starred``: a stray string reads as off.
                     dynamic_capabilities=crew.read("dynamic_capabilities", _safe_bool),
+                    # Hand-editable, and a safety switch: only a real bool is
+                    # honoured; anything else reads as the default (off).
+                    dashboard_card_send=crew.read("dashboard_card_send", _safe_bool),
                     # Same guard family as model/triggers: config.json is
                     # hand-editable, so a junk value must collapse to 0
                     # (inherit the global window), never crash the load.

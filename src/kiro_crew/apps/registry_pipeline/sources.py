@@ -431,6 +431,34 @@ def _effective_registries() -> list[Any]:
     ] + kept_configured
 
 
+def _is_pinned_registry_move(recorded: str, listed: str) -> bool:
+    """Whether an install recorded from *recorded* may follow its app to *listed*.
+
+    An edition that pins several registries moves an app between them by removing
+    its entry from one index and adding it to another, with the same clone target.
+    Install provenance pins an app to the registry it came from, so without this
+    every existing install of a moved app stops updating.
+
+    True only when both are build-pinned registries that are being served. Pinned
+    rows come from the edition's code. A name that a pinned row and an operator row
+    both claim is served by neither (``_effective_registries``), so it is not
+    eligible either: an install recorded from the operator's registry of that name
+    must not be re-attributed to a pinned one. Callers still require the same
+    repository; this decides only which pinned index may list it.
+    """
+    if not recorded or not listed:
+        return False
+    served = {_registry_identity_key(reg.name or reg.repo) for reg in _effective_registries()}
+    eligible = {
+        key
+        for key in (_registry_identity_key(reg.name or reg.repo) for reg in _pinned_registries())
+        if key in served
+    }
+    return (
+        _registry_identity_key(recorded) in eligible and _registry_identity_key(listed) in eligible
+    )
+
+
 def _registry_trust_tier(registry_name: str) -> str:
     """The trust tier in force for the registry identified by *registry_name*.
 

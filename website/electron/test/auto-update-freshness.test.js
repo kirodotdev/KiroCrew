@@ -20,6 +20,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 
 const { initAutoUpdate } = require("../auto-update");
+const { FRESHNESS_CHECK_TIMEOUT_MS } = require("../runtime/update/freshness-gate");
 
 /** Let queued microtasks + the async install/quit bodies run to completion. */
 async function flush(times = 8) {
@@ -302,7 +303,7 @@ test("FAIL OPEN: a feed that never answers does not leave the install button dea
   const installPromise = u.install();
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 0, "the install must await the freshness answer first");
-  t.mock.timers.tick(8 * 1000); // the bound elapses
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the bound elapses
   await installPromise;
 
   assert.strictEqual(
@@ -550,7 +551,7 @@ test("FAIL OPEN on quit: a feed that never answers must not hold the app open", 
   h.fireQuit();
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 0, "the quit path must await the freshness answer first");
-  t.mock.timers.tick(8 * 1000); // the bound elapses
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the bound elapses
   await flush();
 
   assert.strictEqual(
@@ -594,7 +595,7 @@ test("an abandoned check FAILING after the dispatch must not fire the gateway re
 
   const installPromise = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await installPromise;
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -632,7 +633,7 @@ test("a GENUINE install failure inside the abandoned window is still reported", 
 
   const installPromise = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await installPromise;
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -661,7 +662,7 @@ test("an abandoned check finding a NEWER build after the dispatch changes nothin
 
   const installPromise = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await installPromise;
   assert.strictEqual(h.calls.quitAndInstall.length, 1);
 
@@ -684,7 +685,7 @@ test("an abandoned check reporting UP TO DATE after the dispatch does not pull t
 
   const installPromise = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await installPromise;
 
   feed.upToDate();
@@ -706,7 +707,7 @@ test("FAIL OPEN on quit: an abandoned check's late discovery does not fetch as t
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "the quit took over the exit; it must still install");
 
@@ -732,7 +733,7 @@ test("a check still running at the freshness bound is abandoned: the install pro
   await flush();
   const click = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "the staged build installs");
@@ -761,7 +762,7 @@ test("a genuine installer failure on the QUIT path inside the abandoned window i
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -866,7 +867,7 @@ test("the abandoned check's own failure stays inert when the rejection lands bef
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -895,7 +896,7 @@ test("an installer refusal and the abandoned check's own failure in one tick are
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -927,7 +928,7 @@ test("a second failure after the abandoned check's own is reported, not sheltere
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -969,7 +970,7 @@ test("a genuine install failure is reported even if the abandoned check answers 
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -1002,7 +1003,7 @@ test("an ordinary check straddling the quit is abandoned at the bound, so the de
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the gate stops waiting for the poll
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the gate stops waiting for the poll
   await flush();
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open installs the deferred stage");
@@ -1030,7 +1031,7 @@ test("a Download click on a feed that never answers still downloads after the bo
   const click = u.download();
   await flush();
   assert.strictEqual(h.calls.downloads, 0, "nothing is fetched while the gate waits");
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   assert.strictEqual(h.calls.downloads, 1, "past the bound the offered build downloads");
 
@@ -1060,7 +1061,7 @@ test("a download that fails while the gate's abandoned check is still running is
 
   const click = u.download();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   await flush();
   t.mock.timers.tick(1);
@@ -1102,7 +1103,7 @@ test("a channel switch during a Download wait that timed out still asks the new 
   const click = u.download();
   await flush();
   channel = "insider";
-  t.mock.timers.tick(8 * 1000); // the gate stops waiting; the old check still runs
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the gate stops waiting; the old check still runs
   await click;
   await flush();
   assert.strictEqual(h.calls.downloads, 0, "the old lane's build is not fetched");
@@ -1153,7 +1154,7 @@ test("an own freshness-check timeout after a channel switch refuses the old stag
   const click = u.install();
   await flush();
   channel = "insider";
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   await flush();
 
@@ -1185,7 +1186,7 @@ test("a joined freshness-check timeout after a channel switch refuses the old st
   const click = u.install();
   await flush();
   channel = "insider";
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   await flush();
 
@@ -1216,7 +1217,7 @@ test("a refused stage reports `checking` at once while the new lane waits on a h
   await flush();
   const before = h.calls.states.length;
   channel = "insider";
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   await flush();
 
@@ -1250,7 +1251,7 @@ test("a refused stage reports `checking` at once while the new lane waits on a h
   await flush();
   const before = h.calls.states.length;
   channel = "insider";
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   await flush();
 
@@ -1300,7 +1301,7 @@ test("an own freshness-check timeout with an unchanged channel still installs fa
 
   const click = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "an unreachable current lane must remain fail-open");
@@ -1806,7 +1807,7 @@ for (const [label, answer] of [
 
     const click = u.download();
     await flush();
-    t.mock.timers.tick(8 * 1000);
+    t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
     await click;
     assert.strictEqual(h.calls.downloads, 1, "precondition: the download proceeded fail-open");
     h.emit("update-downloaded", { version: "1.1.0" });
@@ -1834,7 +1835,7 @@ test("the new-lane re-check after an abandoned Download wait sends a new request
   const click = u.download();
   await flush();
   channel = "insider";
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   feed.upToDate(0); // the abandoned stable check ends
   await flush();
@@ -1862,7 +1863,7 @@ async function abandonThenFailDownload(t, h, u) {
   const feed = h.feedDeferred();
   const click = u.download();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   await flush();
   t.mock.timers.tick(1);
@@ -1923,7 +1924,7 @@ test("a second Download click that wakes behind the new-lane re-check does not f
   const click = u.download();
   await flush();
   channel = "insider";
-  t.mock.timers.tick(8 * 1000); // abandoned; the re-check is queued behind it
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // abandoned; the re-check is queued behind it
   await click;
   await flush();
 

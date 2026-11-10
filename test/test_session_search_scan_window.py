@@ -38,6 +38,7 @@ from kiro_crew.history_search import (
     search_coverage,
     search_coverage_note,
 )
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 _isolated_home = discord_sessions_helpers._isolated_home
 
@@ -130,6 +131,96 @@ class TestTheWindowIsReadAtEachSearch:
         rows = ConversationLog(base_dir=tmp_path).search_sessions("platypus")
         assert _keys(rows) == ["newest"]
         assert search_coverage(rows) == (1, 3)
+
+
+_STATELESS_RUNS = ("cron_0939f281_6226e0c6", "cron_0939f281_1fe84cbf", "cron_0939f281_85db7b2c")
+
+
+def _chats_behind_stateless_runs(base: Path) -> None:
+    """Two chats, then three newer stateless cron runs that also match."""
+    _session(base, "dashboard_chat-1", "release notes", "the platypus plan", 1000)
+    _session(base, "dashboard_chat-2", "notes recap", "the platypus recap", 2000)
+    for offset, key in enumerate(_STATELESS_RUNS):
+        _session(base, key, "poll", "platypus poll found nothing", 3000 + offset)
+
+
+class TestStatelessCronRunsTakeNoWindowSlot:
+    """A stateless job writes a transcript per fire; those must not crowd chats out."""
+
+    def test_newer_runs_do_not_push_chats_out_of_the_window(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _chats_behind_stateless_runs(tmp_path)
+        _configure_window(monkeypatch, 2)
+        rows = ConversationLog(base_dir=tmp_path).search_sessions("platypus")
+        assert sorted(_keys(rows)) == ["dashboard_chat-1", "dashboard_chat-2"]
+        assert search_coverage(rows) is None, "runs are not counted as unsearched sessions"
+
+    def test_persistent_and_agent_sequence_cron_sessions_are_searched(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        _session(tmp_path, "cron_0939f281", "reminder", "the platypus reminder", 1000)
+        _session(tmp_path, "cron_26ee973e_builder-agent", "builder", "platypus build", 2000)
+        _session(tmp_path, _STATELESS_RUNS[0], "poll", "platypus poll", 3000)
+        _configure_window(monkeypatch, 2)
+        rows = ConversationLog(base_dir=tmp_path).search_sessions("platypus")
+        assert sorted(_keys(rows)) == ["cron_0939f281", "cron_26ee973e_builder-agent"]
+
+    def test_a_run_that_opened_its_own_chat_tab_is_searched(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``new_chat_per_run`` re-tags its run ``tab``: a chat the reader keeps."""
+        tab_run, ephemeral_run = _STATELESS_RUNS[:2]
+        for offset, (key, tag) in enumerate(((tab_run, "tab"), (ephemeral_run, "ephemeral"))):
+            path = tmp_path / f"{key}.jsonl"
+            path.write_text(
+                json.dumps({"_type": "metadata", "title": "run", "cron_run": tag})
+                + "\n"
+                + json.dumps({"role": "user", "content": "the platypus reply"})
+                + "\n",
+                encoding="utf-8",
+            )
+            os.utime(path, (1000 + offset, 1000 + offset))
+        _configure_window(monkeypatch, 2)
+        log = ConversationLog(base_dir=tmp_path)
+        for _ in range(2):  # the second search answers from the listing caches
+            assert _keys(log.search_sessions("platypus")) == [tab_run]
+
+    def test_the_backfill_never_indexes_a_run(self, tmp_path: Path, monkeypatch) -> None:
+        _chats_behind_stateless_runs(tmp_path)
+        _configure_window(monkeypatch, 3)
+        monkeypatch.setattr("kiro_crew.history_search._INDEX_QUIET_WINDOW_SECS", 0.0)
+        log = ConversationLog(base_dir=tmp_path)
+        projection = log._catalog_projection
+        if not projection.search_index.available:
+            pytest.skip("no sqlite FTS on this interpreter")
+        log.update_metadata(_STATELESS_RUNS[0].replace("_", ":"), {"cron_run": "tab"})
+        assert projection.backfill_index(budget_secs=FALLBACK_TIMEOUT_SECS)["remaining"] == 0
+        assert projection.search_index.indexed_keys() == {
+            "dashboard_chat-1",
+            "dashboard_chat-2",
+            _STATELESS_RUNS[0],
+        }, "a run with its own chat tab is a conversation and is indexed"
+
+
+class TestStatelessRunKey:
+    def test_matches_what_a_stateless_job_mints_and_nothing_else(self) -> None:
+        from kiro_crew.cron_service.identity import (
+            build_cron_session_context,
+            is_stateless_cron_run_key,
+        )
+
+        def job(persistent: bool) -> SimpleNamespace:
+            return SimpleNamespace(id="0939f281", message="poll", persistent_session=persistent)
+
+        stateless_key, _ = build_cron_session_context(job(persistent=False))  # type: ignore[arg-type]
+        persistent_key, _ = build_cron_session_context(job(persistent=True))  # type: ignore[arg-type]
+        assert is_stateless_cron_run_key(stateless_key)
+        assert is_stateless_cron_run_key(history._safe_key(stateless_key))
+        assert not is_stateless_cron_run_key(persistent_key)
+        assert not is_stateless_cron_run_key(history._safe_key(persistent_key))
+        for other in ("cron:0939f281:builder-agent", "cron_0939f281_6226e0c6x", "dashboard_chat-1"):
+            assert not is_stateless_cron_run_key(other), other
 
 
 class TestCoverage:

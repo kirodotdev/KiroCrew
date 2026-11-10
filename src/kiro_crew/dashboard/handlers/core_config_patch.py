@@ -36,8 +36,8 @@ from kiro_crew.dashboard.handlers.core_config_models import (
 )
 from kiro_crew.dashboard.handlers.core_config_schema import _editable_config_spec
 from kiro_crew.dashboard.handlers.core_config_view import (
+    _config_body,
     _hot_apply_after_write,
-    _masked_config_dict,
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.metrics import provider as _metrics_provider
@@ -316,6 +316,16 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         if path_key in _MOVED_CONFIG_FIELDS:
             return _deny(_MOVED_CONFIG_FIELDS[path_key], f"{path_key}={value}")
         return _deny(f"field not editable: {path_key}", f"{path_key}={value}")
+
+    from kiro_crew.edition_locks import LOCKED_BY_POLICY, config_path_locked
+
+    if config_path_locked(path_key):
+        # An LTS build ignores this value (RFC D3, D12), so saving it would only
+        # show a switch that does nothing.
+        _log_sel("denied", f"{path_key}={value}")
+        return web.json_response(
+            {"error": LOCKED_BY_POLICY, "code": "locked_by_policy"}, status=409
+        )
 
     # Validate value
     if spec["type"] == "enum":
@@ -769,7 +779,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     },
                     status=503,
                 )
-    payload = _masked_config_dict(applied)
+    payload = _config_body(applied)
     if clamp_notice is not None:
         payload["clamp_notice"] = clamp_notice
     return web.json_response(payload)

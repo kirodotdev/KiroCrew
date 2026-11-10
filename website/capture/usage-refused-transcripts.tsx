@@ -9,6 +9,7 @@
  * component's own output, not a mock of it.
  *
  * scene=refused  -> total 0 with refused_transcripts > 0 (the UNC-home shape)
+ * scene=unc-home -> session directories refused, with billing (the count-free warning)
  * scene=clean    -> normal counts, no warning (the control)
  * theme=dark|light
  */
@@ -44,6 +45,15 @@ const refusedPayload = {
   },
   billing: {},
 }
+const uncHomePayload = {
+  username: 'alice',
+  sessions: {
+    ...refusedPayload.sessions,
+    refused_transcripts: 0,
+    unreadable_session_dirs: 2,
+  },
+  billing: { plan: 'Pro', credits_used: 120, credits_plan: 1000, percentage: 12 },
+}
 const cleanPayload = {
   username: 'alice',
   sessions: {
@@ -66,7 +76,7 @@ const realFetch = globalThis.fetch.bind(globalThis)
 globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
   if (url.startsWith('/api/usage/kiro')) {
-    const body = scene === 'clean' ? cleanPayload : refusedPayload
+    const body = scene === 'clean' ? cleanPayload : scene === 'unc-home' ? uncHomePayload : refusedPayload
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
   }
   return realFetch(input, init)

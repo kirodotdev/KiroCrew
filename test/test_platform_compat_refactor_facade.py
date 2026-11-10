@@ -140,13 +140,15 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _DARWIN_PBI_START_TVUSEC_OFFSET ProcessStartIdentity _DARWIN_PROC_PIDTASKINFO
         _DARWIN_PROC_TASKINFO_SIZE _DARWIN_PTI_TOTAL_USER_OFFSET _DARWIN_PTI_TOTAL_SYSTEM_OFFSET
         _DARWIN_RUSAGE_INFO_V2 _DARWIN_RUSAGE_INFO_V2_SIZE _DARWIN_RI_PHYS_FOOTPRINT_OFFSET
+        _DARWIN_RI_PAGEINS_OFFSET
         _darwin_libproc _darwin_libproc_loaded _darwin_libproc_handle _darwin_process_cwd
         _darwin_process_start_identity _darwin_process_phys_footprint_bytes
-        proc_phys_footprint_bytes_for_pid darwin_libproc_available darwin_footprint_tree_mb
+        _darwin_process_pageins
+        proc_phys_footprint_bytes_for_pid proc_pageins_for_pid darwin_libproc_available darwin_footprint_tree_mb
         _darwin_process_start_microtime _darwin_process_cpu_nanos _DARWIN_PBI_STATUS_OFFSET
         _DARWIN_SZOMB _DARWIN_PIDPATH_MAXSIZE _DARWIN_CTL_KERN _DARWIN_KERN_PROCARGS2
         _DARWIN_PROCARGS_BUFSIZE _DARWIN_PROCARGS_ENV_BUFSIZE _DARWIN_KERN_PROC
-        _DARWIN_KERN_PROC_PID _DARWIN_KERN_PROC_PGRP _DARWIN_KINFO_PROC_SIZE
+        _DARWIN_KERN_PROC_ALL _DARWIN_KERN_PROC_PID _DARWIN_KERN_PROC_PGRP _DARWIN_KINFO_PROC_SIZE
         _DARWIN_KP_START_TVSEC_OFFSET _DARWIN_KP_START_TVUSEC_OFFSET _DARWIN_KP_STAT_OFFSET
         _DARWIN_KP_PID_OFFSET _DARWIN_KINFO_PGRP_SLACK _DARWIN_KINFO_PGRP_ATTEMPTS
         _DARWIN_CHILD_LIST_INITIAL DarwinProcessFacts _darwin_libproc_tree_bound
@@ -162,12 +164,14 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _darwin_tb_frequency _DARWIN_PTI_RESIDENT_SIZE_OFFSET darwin_resident_bytes_for_pid
         darwin_process_environ DarwinKinfoProc _darwin_kinfo_proc_parse
         _darwin_kinfo_size_mismatch_logged _darwin_kinfo_query darwin_kinfo_proc
-        darwin_pid_is_zombie darwin_pgroup_members _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
+        darwin_pid_is_zombie darwin_pgroup_members darwin_session_pids _darwin_kinfo_members
+        _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
         _DARWIN_OFF_START_TVUSEC _DarwinLibprocUnavailable _darwin_libproc_start_id
         _file_identity flock_owner_pid _flock_acquirer_row _flock_acquirer_in_proc_locks
         _flock_acquirer_in_fdinfo parent_pid pids_holding_file _descriptors_on
         _proc_status_rss_kb _stat_tokens _STAT_TOKEN_MAX_DIGITS _stat_token_int _parse_ppid
         ProcStat _linux_proc_root read_proc_stat _LINUX_EXITED_STATES linux_pgroup_members
+        linux_session_members _linux_stat_members
         read_proc_status_int proc_child_map proc_cpu_jiffies_for_pids _proc_children
         _parse_cpu_jiffies _proc_cpu_jiffies
         """.split()),
@@ -320,8 +324,10 @@ _MOVED: dict[str, tuple[str, ...]] = {
         HEAP_TRIM_LOG_THRESHOLD_BYTES HEAP_TRIM_TIMEOUT_SECONDS _malloc_trim _M_ARENA_MAX
         GATEWAY_MALLOC_ARENA_MAX MALLOC_ARENA_MAX_ENV _glibc_mallopt MallocArenaCap
         limit_malloc_arenas log_malloc_arena_cap trim_heap_if_needed HeapTrimMaintainer
-        proc_peak_rss_bytes _FD_DIRS count_open_fds proc_rss_bytes_for_pid _SUBTREE_MAX_PROCS
+        proc_peak_rss_bytes _FD_DIRS count_open_fds _windows_handle_count proc_rss_bytes_for_pid
+        _SUBTREE_MAX_PROCS
         proc_cpu_nanos_for_pid SubtreeSample _proc_pss_kb proc_subtree_sample
+        proc_handle_count_for_pid
         proc_rss_tree_mb_for_pid proc_cpu_seconds _prev_win_sys_cpu system_memory
         system_cpu_percent _MIB_BYTES _NATURAL_T _HOST_VM_INFO64 _VMStatistics64
         _EXTERNAL_PAGE_COUNT_ELEMENTS macos_vm_statistics _macos_available_mib

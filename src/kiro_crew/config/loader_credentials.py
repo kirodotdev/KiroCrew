@@ -10,6 +10,7 @@ import locale as _locale
 import logging
 import os
 import re as _re
+import sys as _sys
 import threading
 from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
@@ -852,7 +853,23 @@ def decode_env_bytes(raw: bytes, encoding: str | None = None, errors: str = "str
         # traceback that captures locals, and the rest of the file is secrets.
         reason = f"{_wide_family(codec)} byte-order mark"
         raise EnvFileWideEncodingError(codec, bom, 0, len(bom), reason)
-    return raw.decode(encoding or _locale.getpreferredencoding(False), errors)
+    if encoding:
+        return raw.decode(encoding, errors)
+    preferred = _locale.getpreferredencoding(False)
+    try:
+        return raw.decode(preferred, errors)
+    except UnicodeDecodeError:
+        # Under UTF-8 mode (the Desktop app sets PYTHONUTF8=1) the preferred
+        # encoding is always UTF-8, so a file saved in the real ANSI code page
+        # would fail here every time. ``getencoding`` ignores UTF-8 mode and names
+        # that code page. Tried only after UTF-8 failed, so a file that decodes
+        # today reads exactly as before.
+        if not _sys.flags.utf8_mode:
+            raise
+        actual = _locale.getencoding()
+        if _codecs.lookup(actual) == _codecs.lookup(preferred):
+            raise
+        return raw.decode(actual, errors)
 
 
 def read_env_file(

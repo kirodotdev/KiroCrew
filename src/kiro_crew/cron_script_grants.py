@@ -66,9 +66,30 @@ _SECRET_ENV_VAULT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 #: Names a grant may never use, beyond the always-scrubbed _CRON_ENV_DENY:
 #: process-behavior variables that would let an injected value alter HOW the
 #: child runs (loader hijack, import shadowing, shell startup) rather than
-#: merely being data the script reads.
+#: merely being data the script reads. The Windows names that do the same jobs
+#: are refused on every host, as ``DYLD_`` is.
 _SECRET_ENV_DENIED_EXACT: frozenset[str] = (
-    frozenset({"PATH", "HOME", "SHELL", "TMPDIR", "IFS", "ENV", "BASH_ENV"}) | _CRON_ENV_DENY
+    frozenset(
+        {
+            "PATH",
+            "HOME",
+            "SHELL",
+            "TMPDIR",
+            "IFS",
+            "ENV",
+            "BASH_ENV",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "TEMP",
+            "TMP",
+            "PATHEXT",
+            "COMSPEC",
+            "SYSTEMROOT",
+            "WINDIR",
+        }
+    )
+    | _CRON_ENV_DENY
 )
 
 _SECRET_ENV_DENIED_PREFIXES: tuple[str, ...] = (

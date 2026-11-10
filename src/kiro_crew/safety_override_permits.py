@@ -59,15 +59,15 @@ def _duration_member_permitted(member: str) -> bool:
 def yolo_ttl_cap() -> int:
     """Seconds an auto-approve grant may last under the policy; 0 means no cap.
 
-    The policy's ``yolo_max_seconds`` (RFC crew-enterprise-edition, appendix row
-    "Auto-approval duration"). With none, an enterprise build caps at
-    ``governance_parts.baseline.ENTERPRISE_YOLO_MAX_SECONDS`` and an ``oss`` build
+    The policy's ``yolo_max_seconds`` (RFC crew-lts-edition, appendix row
+    "Auto-approval duration"). With none, an LTS build caps at
+    ``governance_parts.baseline.LTS_YOLO_MAX_SECONDS`` and an ``oss`` build
     does not cap, as before. A memory read of the installed ceiling, so it is safe on the event
-    loop. Unreadable: the enterprise cap there, no cap in ``oss``.
+    loop. Unreadable: the LTS cap there, no cap in ``oss``.
     """
-    from kiro_crew.edition import is_enterprise
+    from kiro_crew.edition import is_lts
 
-    enterprise = is_enterprise()
+    lts = is_lts()
     try:
         from kiro_crew.platform.context import current_context
 
@@ -77,11 +77,11 @@ def yolo_ttl_cap() -> int:
         cap = 0
     if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
         return cap
-    if not enterprise:
+    if not lts:
         return 0
-    from kiro_crew.platform.governance_parts.baseline import ENTERPRISE_YOLO_MAX_SECONDS
+    from kiro_crew.platform.governance_parts.baseline import LTS_YOLO_MAX_SECONDS
 
-    return ENTERPRISE_YOLO_MAX_SECONDS
+    return LTS_YOLO_MAX_SECONDS
 
 
 def declared_grant_permitted() -> bool:

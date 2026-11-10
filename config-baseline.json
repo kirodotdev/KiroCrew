@@ -32,6 +32,7 @@
         "acp_failover": {},
         "kas_bundle": false,
         "kas_persist_mcp_sign_in": true,
+        "kas_repair_kiro_cli_extract": true,
         "kas_refuse_plain_http_mcp_headers": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
@@ -107,6 +108,7 @@
         "session_manager_chain": false,
         "peer_steer_loss_recovery": false,
         "member_dispatch": true,
+        "conductor_own_child_verbs": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
@@ -404,7 +406,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Bot ACP backend",
-      "help": "Backend for crew-member DM sessions: 'kas' (default when omitted or '') or another dispatch-capable backend (claude, codex, opencode, goose). Bots run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire.",
+      "help": "Legacy backend for bot DM sessions and their workers. Omitted or '': Bots follow agent.acp_backend, or run on 'kas' when that is a harness bots cannot run on. A stored value (claude, codex, kas, ...) still wins over agent.acp_backend; a bot's own agents.<name>.acp_backend wins over both. Bots run on KAS as their Kiro backend, so 'kiro' here also selects KAS. Members dispatch work into worker sessions through session-control tools mounted per session over the wire.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kas"
@@ -432,7 +434,7 @@
       "sensitive": false,
       "tags": [],
       "label": "KAS: run Kiro Crew's own engine bundle",
-      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in).",
+      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in). When unset, a Nightly build turns it on and every other build leaves it off (config.loader_document.kas_bundle_build_default(), read from the build's own stamp, not the update channel). A saved value always wins, and save() leaves the key off disk until it is set. This dataclass default stays false so the committed config-schema snapshot is the same for every build.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -452,6 +454,20 @@
       "enumValues": null,
       "defaultValue": true,
       "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_repair_kiro_cli_extract",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: repair kiro-cli's broken engine copy",
+      "help": "When true (the default) and a KAS start through kiro-cli's relay exits with 'failed to canonicalize KAS server path', Kiro Crew moves kiro-cli's incomplete unpacked engine (kas/<version> under kiro-cli's data directory, never anything else) out of kas/ to '<version>.kas-broken-<UTC time>' beside it, and starts once more, so kiro-cli unpacks a fresh copy. Nothing is deleted. When false, or when the second start fails the same way, the start fails with one message naming the directory and the mv command, and the warm pool stops respawning until the directory is moved.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "agent.kas_refuse_plain_http_mcp_headers",
@@ -1703,6 +1719,20 @@
       "defaultValue": true
     },
     {
+      "path": "agent.conductor_own_child_verbs",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Conductor Own-Child Sends",
+      "help": "Let the Conductor and the Ultra Mode team lead send to and close a session they created themselves without an approval prompt, the way a Bot already does. A send or close aimed at any other session still prompts, and the child keeps its own approval mode. Turn this off to read every send before it runs.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "agent.crew_panel",
       "kind": "core",
       "type": "boolean",
@@ -1985,6 +2015,7 @@
         "kas_delete_delay_secs": 0,
         "search_scan_window": 2000,
         "watchdog_rss_max_mb": 4096,
+        "watchdog_end_leftovers_mid_turn": false,
         "harness_background_hold_secs": 3600,
         "reconcile_max_kills": 5
       }
@@ -2255,6 +2286,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4096
+    },
+    {
+      "path": "session.watchdog_end_leftovers_mid_turn",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "End Leftover Processes During a Turn",
+      "help": "When a session is over the Watchdog RSS Limit during a turn and the memory is held by processes its commands left running outside the agent's process tree (for example a job a timed-out shell command started), end those processes at once instead of only reporting them. Off by default: such a process can be work the agent started on purpose. Linux only. Read every cleanup tick, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "session.harness_background_hold_secs",
@@ -4361,6 +4406,7 @@
         "submit_on_release": false,
         "slide_to_send": false,
         "dictation_panel": true,
+        "dictation_note": false,
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
         "transcribe_profile": "",
@@ -4603,6 +4649,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "stt.dictation_note",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tell the agent this was dictated",
+      "help": "Add one line to the end of a message that holds dictated text, telling the agent it may contain transcription errors, odd typos, misplaced words or punctuation. Messages you only typed never get it. The line is part of the message, so it shows in the transcript too. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "stt.timeout_secs",
@@ -5373,7 +5433,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Honour MCP autoApprove",
-      "help": "Keep an ``autoApprove`` list you wrote yourself -- one hand-added to ``mcp.json`` or to an agent file -- in the agent config Kiro Crew writes. On by default: an ``autoApprove`` is a deliberate choice about your own tools and is respected, so those verbs run without an approval card. Know what it costs before writing one: the agent runtime approves such a call locally and emits no permission request, so Kiro Crew's own tool gate never runs for it. Turn this OFF to drop every verb no server spec declares, which puts those tools back through the gate. A governance ceiling strips the key whatever this says, and a verb a spec declares is kept either way. Applies at restart, when the spec is rebuilt, so a change does not retract or restore a grant already in the file.",
+      "help": "Keep an ``autoApprove`` list in ``mcp.json`` or in an agent file when Kiro Crew writes the agent config, so those verbs run without an approval card. On by default. Kiro Crew does not check who wrote a list: one the agent wrote into ``mcp.json`` is honoured the same as yours. An app's own ``autoApprove`` lists are never kept. Know what it costs: the agent runtime approves such a call locally and emits no permission request, so Kiro Crew's own tool gate never runs for it. Turn this OFF to drop every verb no server spec declares, which puts those tools back through the gate. A governance ceiling strips the key whatever this says, and a verb a spec declares is kept either way. Applies at restart, when the spec is rebuilt, so a change does not retract or restore a grant already in the file.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true,
@@ -6397,7 +6457,9 @@
       "defaultValue": {
         "max_open_files": null,
         "max_processes": null,
+        "max_user_processes": null,
         "max_memory_mb": null,
+        "max_address_space_mb": null,
         "max_cpu_seconds": null,
         "cpu_weight": null,
         "max_cpu_percent": null,
@@ -6432,7 +6494,22 @@
       "sensitive": false,
       "tags": [],
       "label": "Max processes",
-      "help": "READ BY TWO MECHANISMS with different meanings for 0. As RLIMIT_NPROC it caps processes for the child's real UID, and 0 leaves the inherited limit unchanged (the default -- see the per-UID caveat in security._RLIMIT_DEFAULTS). As the cgroup TasksMax it counts TASKS (threads) in the scope, where 0 is rejected by systemd, so 0 or unset means the module default.",
+      "help": "Per-scope TASK budget: the cgroup TasksMax on Linux, which counts TASKS (threads), and the Job object ActiveProcessLimit on Windows. 0 is rejected by systemd, so 0 or unset means the module default. It sets no POSIX rlimit; the per-user process cap is the separate max_user_processes.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "resource_limits.max_user_processes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max user processes",
+      "help": "RLIMIT_NPROC on the tool and build processes the gateway spawns, opt-in; the ACP session host and what it starts keep the inherited limit. The kernel counts every process and thread of the gateway's user, not one spawn's tree, so a cap below what that user already runs stops those spawns from forking. 0 or unset leaves the inherited limit unchanged (the default). Set it only when the gateway runs as its own dedicated user. Not used by the cgroup path.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -6447,7 +6524,22 @@
       "sensitive": false,
       "tags": [],
       "label": "Max memory (MB)",
-      "help": "READ BY TWO MECHANISMS with different meanings for 0. As RLIMIT_AS it caps virtual address space, and 0 leaves the inherited limit unchanged (the default -- Node/V8 reserve huge VSZ, see the caveat in security._RLIMIT_DEFAULTS). As the cgroup MemoryMax it is the per-scope resident ceiling, where 0 is rejected by systemd, so 0 or unset means the host-proportional module default.",
+      "help": "Per-scope RESIDENT memory ceiling: the cgroup MemoryMax on Linux and the Job object JobMemoryLimit on Windows. 0 is rejected by systemd, so 0 or unset means the host-proportional module default. It sets no POSIX rlimit; the virtual address-space cap is the separate max_address_space_mb.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "resource_limits.max_address_space_mb",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max address space (MB)",
+      "help": "RLIMIT_AS: VIRTUAL address space per spawned process, opt-in. 0 or unset leaves the inherited limit unchanged (the default). Node/V8 (kiro-cli, npx MCP servers) and GraalVM native binaries reserve far more address space than they touch and can fail to start below about 64 GiB, so use max_memory_mb to cap resident memory. Not used by the cgroup path.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -9124,6 +9216,10 @@
         "terminal": {
           "enabled": true
         },
+        "remote_editor": {
+          "editor": "",
+          "host": ""
+        },
         "default_project": "",
         "session_folder_root": "",
         "default_session_folder": "",
@@ -9140,6 +9236,7 @@
         "onboarded": false,
         "import_onboarded": false,
         "privacy_acked": false,
+        "privacy_ack_version": 0,
         "crewmates_onboarded": false,
         "user_role": "",
         "user_role_other": "",
@@ -9544,6 +9641,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.bridge_approvals",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: bridge_approvals",
+      "help": "Turn on the 'bridge_approvals' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.crew_mode",
       "kind": "core",
       "type": "boolean",
@@ -9567,6 +9678,34 @@
       "tags": [],
       "label": "Feature preview: crew_oauth",
       "help": "Turn on the 'crew_oauth' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.dashboard_stale_fields",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: dashboard_stale_fields",
+      "help": "Turn on the 'dashboard_stale_fields' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.dashboard_stale_wake",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: dashboard_stale_wake",
+      "help": "Turn on the 'dashboard_stale_wake' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -9651,6 +9790,20 @@
       "tags": [],
       "label": "Feature preview: session_environments",
       "help": "Turn on the 'session_environments' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.session_harness",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: session_harness",
+      "help": "Turn on the 'session_harness' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10371,6 +10524,54 @@
       "defaultValue": {}
     },
     {
+      "path": "dashboard.remote_editor",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote editor",
+      "help": "Open a file shown in the side panel in your local editor over your own SSH session, for a gateway on another machine. Off by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "editor": "",
+        "host": ""
+      }
+    },
+    {
+      "path": "dashboard.remote_editor.editor",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Editor",
+      "help": "The local editor to open remote files in. Empty = off.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "vscode"
+      ],
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.remote_editor.host",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "SSH host",
+      "help": "How your machine reaches the gateway over SSH: a hostname or a ~/.ssh/config alias, with no port or path.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "dashboard.default_project",
       "kind": "core",
       "type": "string",
@@ -10614,6 +10815,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.privacy_ack_version",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Privacy Notice Version Acknowledged",
+      "help": "The version of the Privacy chapter text, the one saying local metric recording is on, that the user last acknowledged (0 = none). When the dashboard's notice version is higher, the chapter is shown once more at the next dashboard load, but only while local recording is on. Written by the Privacy chapter and by kirocrew telemetry enable.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0
     },
     {
       "path": "dashboard.crewmates_onboarded",
@@ -11097,9 +11312,11 @@
         "relay_lease_url": "",
         "relay_lease_credential": "",
         "relay_lease_token_type": "",
+        "relay_handle_email_domains": [],
         "relay_viewer_enabled": false,
         "relay_viewer_cps_url": "",
-        "relay_viewer_credential": ""
+        "relay_viewer_credential": "",
+        "relay_viewer_relay_domain": ""
       }
     },
     {
@@ -11211,6 +11428,35 @@
       "requiresRestart": true
     },
     {
+      "path": "tunnel.relay_handle_email_domains",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Handle Email Domains",
+      "help": "Email domains, for example example.com, whose addresses label a relayed person by the part before the @ when the relay sent no name. The whole domain must match, ignoring case, so a subdomain or a longer domain keeps the full address. Empty (the default) labels everyone by their full address. Display only: it never changes who a person is or what they may do.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_handle_email_domains.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "tunnel.relay_viewer_enabled",
       "kind": "core",
       "type": "boolean",
@@ -11219,11 +11465,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Viewer",
-      "help": "Let the desktop app list the remote Crews you can reach through the Kiro relay and open them. Off by default, and nothing reads it yet. This is the viewer side only: a Crew you open still needs Kiro Relay on where it runs.",
+      "help": "Let the desktop app list the remote Crews you can reach through the Kiro relay and open them. Off by default. This is the viewer side only: a Crew you open still needs Kiro Relay on where it runs.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false,
-      "requiresRestart": true
+      "defaultValue": false
     },
     {
       "path": "tunnel.relay_viewer_cps_url",
@@ -11237,8 +11482,7 @@
       "help": "The base URL of the control plane the viewer lists remote Crews from and gets access tokens from. Empty (the default) means not set up. Must be https:// (http:// only for a loopback port-forward). A value that breaks that rule is ignored with a warning.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "",
-      "requiresRestart": true
+      "defaultValue": ""
     },
     {
       "path": "tunnel.relay_viewer_credential",
@@ -11252,8 +11496,21 @@
       "help": "For testing only: where the viewer reads a test credential to use instead of your Kiro sign-in, as secret://NAME for a secret stored under Settings > Secrets or the absolute path of a file holding it. Never the credential itself. Empty (the default) uses your Kiro sign-in. A value that is not a reference is ignored with a warning that does not repeat it.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": "",
-      "requiresRestart": true
+      "defaultValue": ""
+    },
+    {
+      "path": "tunnel.relay_viewer_relay_domain",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer Relay Domain",
+      "help": "The relay's domain, for example us-east-1.relay.example.invalid. When set, the viewer lists a remote Crew, and sends its access token, only when the Crew's address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the default) keeps the check without a domain: the address's host must start with the Crew's endpoint ID. Any other value matches no Crew address, so no Crew is listed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "hooks",
@@ -11293,10 +11550,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Batch write guard",
-      "help": "Off by default. When on, refuse a write-class tool call issued in the same parallel tool batch as a read-class call, so the model cannot write arguments that quote a read it has not seen returned yet. A discipline guard, not a security control: the security floor runs first and is unchanged.",
+      "help": "On by default; set false to turn it off. Refuses a write-class tool call issued in the same parallel tool batch as a read-class call, so the model cannot write arguments that quote a read it has not seen returned yet. A discipline guard, not a security control: the security floor runs first and is unchanged.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "hooks.batch_write_guard_commands",
@@ -11695,6 +11952,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "agents.*.dashboard_card_send",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dashboard card send (preview)",
+      "help": "Preview, off by default. When on, a button on this crewmate's Dashboard tab may send its reply straight into the crewmate's own thread with one click. Off (the default), such a button only puts the reply in the chat box and the person presses send, which is what every card did before. A card-sent turn is tagged '[Dashboard card]', is never an approval, and is refused while the thread has an open approval or question.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",

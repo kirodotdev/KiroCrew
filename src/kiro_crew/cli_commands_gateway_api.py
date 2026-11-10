@@ -145,6 +145,25 @@ def _spawn_row_text(row: dict[str, object]) -> str:
     return f"{row_id}  {task}"
 
 
+def _spawn_done_status(row: dict[str, object]) -> tuple[str, str]:
+    """A finished ``spawn list`` row's icon and note, read from its ``outcome``.
+
+    ``outcome`` is the run's terminal classification; an empty ``error`` does
+    not mean success, since a user-stopped run carries none. The success icon
+    is given to ``completed`` only, or to a row with neither ``outcome`` nor
+    ``error`` (a gateway that does not send ``outcome``); any other value shows
+    as a failure. The error is agent-influenced, so it is confined to one line.
+    """
+    outcome = row.get("outcome")
+    error = row.get("error")
+    if outcome == "completed" or (outcome is None and not error):
+        return "✅", ""
+    if outcome == "stopped":
+        return "⏹", "  (stopped)"
+    reason = safe_terminal_line(str(error or outcome or "failed"))[:80]
+    return "❌", f"  (failed: {reason})"
+
+
 def _client_port(cli_port: int | None) -> int:
     """The gateway port this command calls, found the way ``kirocrew status`` finds it.
 
@@ -214,7 +233,7 @@ def _spawn(args: argparse.Namespace) -> None:
             print("  (the queued list is partial; more spawns may be queued)")
         for a in agents:
             if a.get("done"):
-                status, note = "✅", ""
+                status, note = _spawn_done_status(a)
             elif a.get("awaiting_approval"):
                 # A distinct icon from the executing hourglass, so `spawn list`
                 # answers "is this working or waiting for me?".
@@ -331,8 +350,20 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         except _peer_refusal() as e:
             print(f"Error: gateway ownership not verified: {e}", file=sys.stderr)
             sys.exit(1)
-        except Exception:
-            print("Error: lost connection to gateway", file=sys.stderr)
+        except Exception as e:
+            # A timeout is a busy gateway, not a lost one, and the subagent it
+            # accepted may still be running. Imported in-function for the
+            # cli_commands facade, as in `spawn list`.
+            from kiro_crew.loopback_http import deadline_expired
+
+            if deadline_expired(e):
+                print(
+                    "Error: gateway on port %d is up but did not answer in time (busy); "
+                    "the subagent may still be running -- check `kirocrew spawn list`" % args.port,
+                    file=sys.stderr,
+                )
+            else:
+                print("Error: lost connection to gateway", file=sys.stderr)
             sys.exit(1)
         # Say WHY the wait is not progressing. A spawn with no parent session
         # raises its approval prompt unowned, so it appears only on the global
@@ -381,7 +412,21 @@ def _artifact(args: argparse.Namespace) -> None:
             except Exception:
                 return {"error": str(exc)}
         except Exception as exc:
-            return {"error": str(exc)}
+            # A timeout means the gateway may have taken the request and still be
+            # working: it is up but busy. A write may land after this client gives
+            # up, so its line asks for a check, not a re-run. Imported in-function
+            # for the cli_commands facade, as in `spawn list`.
+            from kiro_crew.loopback_http import deadline_expired
+
+            if not deadline_expired(exc):
+                return {"error": str(exc)}
+            busy = f"gateway on port {port} is up but did not answer in time (busy)"
+            if method == "GET":
+                return {"error": f"{busy}; try again in a moment"}
+            return {
+                "error": f"{busy}; the change may have been applied -- "
+                "check `kirocrew artifact list` before re-running"
+            }
 
     def _read_content(args: argparse.Namespace) -> str:
         if getattr(args, "content_file", None):

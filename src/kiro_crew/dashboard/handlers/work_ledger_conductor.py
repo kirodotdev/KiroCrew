@@ -953,7 +953,6 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
         goal=cleaned.get("goal"),
         round_number=cleaned.get("round"),
         fails=cleaned.get("fails"),
-        item_cap=cleaned.get("item_cap"),
         concurrency_cap=cleaned.get("concurrency_cap"),
         new_goal=cleaned.get("new_goal"),
     )

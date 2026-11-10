@@ -104,10 +104,6 @@ export const isPermissionRefusal = (e: unknown): boolean => {
   return PERMISSION_REFUSAL_CODES.has(errorBodyCode(body))
 }
 
-/** {@link isPermissionRefusal} for the relay's teammate refusal of the app surface alone. */
-export const isRelayAppsRefusal = (e: unknown): boolean =>
-  isPermissionRefusal(e) && errorBodyCode((e as { body: string }).body) === 'relay_apps_teammate'
-
 /**
  * The `code` a raw refusal body names, or `''`. The body-level half of
  * {@link apiErrorCode}, for readers that run before an ApiError exists --
@@ -143,6 +139,19 @@ export const slotAttachedDetail = (body: string): string => {
   if (runs === null || queued_partial) lines.push(i18nT('api.client.subagents_could_not_be_checked'))
   return lines.join('\n')
 }
+
+/**
+ * Is a rejected subagent retry a BENIGN, self-caused no-op rather than a failure
+ * to report? The one such case is the backend's `409 retry_superseded`: the run
+ * was already picked up by another retry or a `spawn_continue` (a double-click,
+ * two tabs), so retrying it again would double-run its task; the refusal is
+ * correct and there is nothing left to retry. Everything else (404 not found,
+ * 429 capacity, 503, an older gateway's codeless 409, a proxy's HTML) is a
+ * genuine failure worth a count. Shared by every "Retry failed" control so they
+ * count the same rejections.
+ */
+export const isBenignSupersededRetry = (reason: unknown): boolean =>
+  reason instanceof ApiError && reason.status === 409 && apiErrorCode(reason) === 'retry_superseded'
 
 /** True when an approval refusal is terminal — the approval itself is gone (404,
  *  or the endpoint's `no pending approval` 400). Duck-typed like {@link isNotFoundError}. */

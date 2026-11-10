@@ -181,6 +181,14 @@ describe('applyPushedRead', () => {
     expect(next.last_user_at).toBe('yesterday')
   })
 
+  it('keeps an in-order patch\'s stale_after, and adds none when the patch has none', () => {
+    // Preview `dashboard_stale_fields`: the bootstrap's mergePatch keeps the patch's map,
+    // so a page saved after a patch still marks its out-of-date fields.
+    const at = { open: '2030-01-01T00:00:00+00:00' }
+    expect(applyPushedRead(HELD, { ...patch(3, { open: 7 }), stale_after: at }).stale_after).toEqual(at)
+    expect('stale_after' in applyPushedRead(HELD, patch(3, { open: 7 }))).toBe(false)
+  })
+
   it('drops a patch that skips a version or comes from another generation', () => {
     expect(applyPushedRead(HELD, patch(4, { open: 7 }))).toBe(HELD)
     expect(applyPushedRead(HELD, patch(3, { open: 7 }, 'g2'))).toBe(HELD)

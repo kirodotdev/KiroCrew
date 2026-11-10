@@ -6,7 +6,7 @@ in the shared system temp dir, where nothing ties it to the session that made
 it and the OS tmp reaper deletes by AGE, killing long-lived in-flight work
 while leaving everything younger to accumulate.
 
-Each spawned agent process gets ``<data home>/scratch/<label>-<token8>/`` and
+Each spawned agent process gets ``<data home>/scratch/<token8>/`` and
 the ``TMPDIR``/``TMP``/``TEMP`` triple plus ``KIROCREW_SCRATCH`` pointing at
 it, so ``tempfile`` users, pytest basetemps, shell ``mktemp``, and
 prompt-guided work products all land somewhere OWNED. On real disk (the data
@@ -23,11 +23,13 @@ Reclamation is keyed on PROCESS liveness, never on file age:
   below covers every death path by construction.
 * The gateway sweeps hourly (first pass an hour after start -- never on the
   boot path). A directory is reclaimed only when its recorded owner's process
-  GROUP is dead AND the whole tree has been idle past the grace window; a
-  directory with a live owner is never touched (agent processes can outlive
-  a gateway restart), an ownerless directory is never deleted, and a garbled
-  owner file is left for a human. A reclaimed directory that holds a git
-  repository is moved into the quarantine (:data:`QUARANTINE_DIRNAME`) rather
+  GROUP is dead AND the whole tree has been idle past the grace window AND,
+  on Linux, no live process outside those groups still uses it
+  (:mod:`kiro_crew.agent_scratch_users`); a directory with a live owner is
+  never touched (agent processes can outlive a gateway restart), an ownerless
+  directory is never deleted, and a garbled owner file is left for a human.
+  A reclaimed directory that holds a git repository is moved into the
+  quarantine (:data:`QUARANTINE_DIRNAME`) rather
   than deleted, stripped there of what tools rebuild (package installs,
   virtual environments, caches, pytest basetemps), and deleted from there only
   after :data:`QUARANTINE_TTL_SECONDS`.
@@ -94,7 +96,7 @@ from collections.abc import Iterable, MutableMapping
 from pathlib import Path
 from typing import Literal
 
-from kiro_crew import platform_compat
+from kiro_crew import agent_scratch_users, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     config_dir,
@@ -131,7 +133,7 @@ _UNOWNED_GRACE_SECONDS = 3600.0
 #: check of a repository the agent wrote can prove that it is. Inside the root,
 #: the move is a rename on one filesystem (no copy that can fail halfway), and
 #: the quarantined tree stays as masked from sandboxed processes as the root is.
-#: No allocated name can collide with it: those all end in ``-<token>``.
+#: No allocated name can collide with it: those are eight hex characters.
 QUARANTINE_DIRNAME = ".quarantine"
 #: How long a quarantined tree is kept, counted from its move. Long enough for a
 #: user to notice the log line and recover the work; bounded so that kept trees
@@ -158,8 +160,6 @@ _VENV_MARKER = "pyvenv.cfg"
 #: the hundred, so it is judged only at the top of a scratch tree, where pytest
 #: puts it, and never as a name deeper down.
 _BASETEMP_PREFIX = "pytest-of-"
-
-_LABEL_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 #: kiro-cli's log directory INSIDE a scratch dir, and the files it writes there.
 #: The chat log MUST keep its default name: kiro-cli places ``mcp.log`` and
@@ -266,7 +266,7 @@ def _refuse_linked(path: Path, what: str) -> None:
     the other two refuse.
 
     *what* is the path SHAPE for the log -- a managed-root or marker name plus
-    the allocation's own ``<label>-<token8>`` basename. Never the target: which
+    the allocation's own ``<token8>`` basename. Never the target: which
     file a planted link names is the attacker's input, and nothing an operator
     can act on.
     """
@@ -440,9 +440,12 @@ def _discard_owner_marker(directory: Path) -> bool:
 def allocate_scratch(label: str) -> Path:
     """Create and return a fresh scratch dir for ONE agent process.
 
-    *label* is a human attribution hint (a session key or ``runtime``); it is
-    sanitized to a filename-safe token and truncated -- the random suffix is
-    what makes the directory unique and its sweep single-owner.
+    *label* is a human attribution hint (a session key or ``runtime``), written
+    to the debug log and never into the name: the directory is named by its
+    random token alone, which makes it unique and its sweep single-owner. The
+    name stays short because the MCP servers an agent starts inherit it as their
+    temp dir, and one that binds a Unix socket below it needs the room
+    (``sun_path`` is 104 bytes on macOS, 108 on Linux and Windows).
 
     A PROVISIONAL owner (the spawning process) is recorded inside the same
     allocation step: deletion is permitted only for owned-and-dead-and-idle
@@ -540,8 +543,7 @@ def allocate_scratch(label: str) -> Path:
                 writer_refusal = scratch_root_writer_refusal(root)
                 if writer_refusal is not None:
                     root = _fall_back_to_default(writer_refusal)
-    safe = _LABEL_SAFE.sub("-", label)[:40].strip("-") or "agent"
-    path = root / f"{safe}-{secrets.token_hex(4)}"
+    path = root / secrets.token_hex(4)
     # No ``exist_ok``: ``mkdir`` never follows the final component, so this
     # already fails on anything sitting at the name, a link included.
     path.mkdir(mode=0o700)
@@ -550,6 +552,7 @@ def allocate_scratch(label: str) -> Path:
     except (OSError, ScratchBoundaryError):
         shutil.rmtree(path, ignore_errors=True)
         raise
+    logger.debug("agent-scratch: allocated %r for %r", path.name, label)
     return path
 
 
@@ -1044,9 +1047,12 @@ def _pgroup_alive(pid: int) -> bool:
     tree-faithful liveness signal: a live child holding an open file
     descriptor produces no directory-mtime evidence at all, while the group
     probe still sees it. A descendant that setsid()s OUT of the group evades
-    this probe -- and equally evades ``kill_process_tree`` -- so it is owned
-    by the escaped-children reaper, not by this sweep; the sweep's liveness
-    boundary deliberately matches the kill path's tree boundary.
+    this probe -- and equally evades ``kill_process_tree`` -- and the
+    escaped-children reaper reaches it only when it was recorded or walked
+    before it was reparented. One that outlives its runtime that way can still
+    hold the runtime's own directory as its ``TMPDIR``, so the sweep asks the
+    process table as well (:func:`agent_scratch_users.scratch_users`) before
+    it reclaims a tree this probe calls dead.
     """
     if pid <= 0:
         return False
@@ -1412,6 +1418,14 @@ def sweep_dead_scratch(now: float | None = None) -> int:
       the recorded owner is the launcher pid, and descendants can outlive
       it while still writing (``tempfile`` creates entries directly under
       ``$TMPDIR``, keeping the dir mtime fresh).
+    * A dead owner over a LIVE USER the marker does not name is kept, however
+      idle: a process outside every named group whose exec-time scratch
+      exports, working directory or an open descriptor name a path inside the
+      tree (:func:`agent_scratch_users.scratch_users`, Linux only). A tool
+      that daemonized out of a runtime and outlived it is such a user, and a
+      runtime swap leaves one holding the dead runtime's own directory as its
+      ``TMPDIR``. Each such tree logs a WARNING naming it and the pid, on every
+      sweep that keeps it.
     * A dir with NO owner record is NEVER deleted. Allocation writes a
       provisional owner atomically-with-creation and fails otherwise, so an
       ownerless dir indicates a state this code did not produce -- deleting
@@ -1449,6 +1463,7 @@ def sweep_dead_scratch(now: float | None = None) -> int:
         return 0
     reference = time.time() if now is None else now
     removed = 0
+    users: dict[str, int] | None = None
     for entry in entries:
         if entry.name == QUARANTINE_DIRNAME:
             continue  # the sweep's own holding area: expired below, never swept
@@ -1485,6 +1500,18 @@ def sweep_dead_scratch(now: float | None = None) -> int:
         if any(_pgroup_alive(pid) for pid in pids):
             # A tree adopted by a successor names its predecessor too; either
             # one alive is a live user.
+            continue
+        if users is None:
+            # One read of the process table per sweep, taken only once some
+            # tree is otherwise reclaimable.
+            users = agent_scratch_users.scratch_users(root, SCRATCH_ENV_KEYS)
+        user = users.get(entry.name)
+        if user is not None:
+            logger.warning(
+                "agent-scratch: keeping %r: its owners are dead, but live pid %d still uses it",
+                entry.name,
+                user,
+            )
             continue
         # Walked before the sweep lock is taken, because a large checkout
         # takes a while to list; a spawn that marks the tree active meanwhile

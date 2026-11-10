@@ -37,7 +37,7 @@ from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.security.exfil import EXFILTRATION_REDACTION_TAG_PREFIX
 from kiro_crew.security.redaction import REDACTED_CREDENTIAL_TAG
 from kiro_crew.testing.links import make_dir_link
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 
 async def _run_member(runner, prompt, deadline=None, **kwargs):
@@ -1197,6 +1197,71 @@ async def test_unrenamed_member_governance_is_unchanged(monkeypatch):
     )
     assert judged == [template]
     assert sessions.providers[0].approved == ["request-1"]
+
+
+@pytest.mark.asyncio
+async def test_member_session_runs_under_the_app_its_gate_judges(monkeypatch):
+    """The provider's ``owning_app`` is the app its KAS projection is judged for, so
+    the allocation names the app the gate judges this member's calls under."""
+    judged = []
+
+    class Hooks:
+        def __init__(self, _config):
+            pass
+
+        def on_tool_call(self, _title, *, app, **_kwargs):
+            judged.append(app)
+            return SimpleNamespace(action="")
+
+    monkeypatch.setattr(agent_runner, "HookManager", Hooks)
+    identities = await asyncio.to_thread(crew.ensure_team)
+    sessions = Sessions(_GovernedProvider)
+    runner = CrewRunner(
+        crew.GatewayRuntime(sessions, Context(), asyncio.get_running_loop()), identities
+    ).for_role("discovery")
+    result = await _run_member(runner, "Read the notes")
+    assert result.ok, result.error
+    assert judged == [store.APP_NAME]
+    assert sessions.acquired[0][1].get("owning_app") == store.APP_NAME
+
+
+@pytest.mark.asyncio
+async def test_a_runner_built_session_runs_under_the_app_its_gate_judges(monkeypatch):
+    """A provider ``SessionAgentRunner`` builds itself, outside session allocation,
+    names the app its gate judges each call under before it starts, so its KAS
+    projection is judged for that app too."""
+    judged = []
+
+    class Hooks:
+        def __init__(self, _config):
+            pass
+
+        def on_tool_call(self, _title, *, app, **_kwargs):
+            judged.append(app)
+            return SimpleNamespace(action="")
+
+    monkeypatch.setattr(agent_runner, "HookManager", Hooks)
+    started = []
+
+    class Built(_GovernedProvider):
+        async def start(self):
+            started.append(getattr(self, "owning_app", None))
+
+    built = Built()
+    runner = agent_runner.SessionAgentRunner(agent_name="auto-improvement-scout")
+    result = await runner._run_async(
+        "Read the notes",
+        factory=lambda _key, **_kw: built,
+        session_key="s1",
+        cwd=None,
+        append_system=None,
+        timeout_s=default_timeout(),
+        t0=time.monotonic(),
+    )
+    assert result.ok, result.error
+    assert judged == ["auto-improvement"]
+    assert started == judged
+    assert built.approved == ["request-1"]
 
 
 @pytest.mark.asyncio

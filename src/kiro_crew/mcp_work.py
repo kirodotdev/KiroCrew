@@ -6,9 +6,9 @@ happened by reading their transcripts. These five tools replace that inference
 with a record: a worker writes a schema-bounded status against the ONE work item
 it was bound to, and the conductor reads that record as data.
 
-Two more tools, ``accept_eval`` and ``patrol_budget`` (:data:`CHECK_TOOLS`), run
-the goal-conductor skill's bundled checks in-process so a verify cycle needs no
-shell; they read nothing from the ledger and write nothing to it.
+One more tool, ``accept_eval`` (:data:`CHECK_TOOLS`), runs the goal-conductor
+skill's bundled acceptance check in-process so a verify cycle needs no shell; it
+reads nothing from the ledger and writes nothing to it.
 
 Why this is a store and not a message. ``session_send`` would let a worker push a
 line into the conductor's session, and it is withheld from workers for a reason
@@ -108,14 +108,13 @@ SUMMARY_CAP: int = next(
     f.max_len for f in MCP_WORK_SCHEMAS["work_report"].fields if f.name == "summary"
 )
 
-#: The conductor's two fixed checks: goal-conductor's bundled ``accept_eval.py``
-#: and ``patrol_budget.py``, IMPORTED and called in-process with typed arguments.
-#: They exist so a verify cycle needs no ``execute_bash``, whose grant cannot be
-#: narrowed to one script. Neither takes a command, a path to run or a shell
-#: string: ``accept_eval`` takes the ``accept_batch`` document (whose kinds build
-#: their own argv, and which refuses ``cmd``), ``patrol_budget`` takes numbers and
-#: the budget line. Neither touches the ledger.
-CHECK_TOOLS: tuple[str, ...] = ("accept_eval", "patrol_budget")
+#: The conductor's fixed check: goal-conductor's bundled ``accept_eval.py``,
+#: IMPORTED and called in-process with typed arguments. It exists so a verify
+#: cycle needs no ``execute_bash``, whose grant cannot be narrowed to one script.
+#: It takes no command, path to run or shell string: only the ``accept_batch``
+#: document (whose kinds build their own argv, and which refuses ``cmd``). It does
+#: not touch the ledger.
+CHECK_TOOLS: tuple[str, ...] = ("accept_eval",)
 
 WORK_TOOLS: tuple[str, ...] = WORKER_TOOLS + CONDUCTOR_TOOLS + CHECK_TOOLS
 
@@ -144,7 +143,6 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "goal",
     "round",
     "fails",
-    "item_cap",
     "concurrency_cap",
     "new_goal",
 )
@@ -402,12 +400,22 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "own decision is needed (the two differ by who must act). THIS IS THE "
                 "ONLY THING THAT WAKES YOUR CONDUCTOR: 'blocked', 'question' and 'done' "
                 "wake it, 'progress' does not, and a turn that ends without a report "
-                "wakes nobody — so before you stop, say why you stopped. A pause you "
-                "expect to be resumed from is a 'progress' report: it records where you "
-                "stopped and spends your conductor no turn. On 'blocked' "
+                "wakes nobody — so before you stop, say why you stopped. A pause on "
+                "something outside your conductor (CI, a time, another PR, a person) is "
+                "a 'progress' report: it records where you stopped and spends your "
+                "conductor no turn. When that pause lasts "
+                "until a known time, set wake_at to it: the item is not flagged stale "
+                "before then; a wait longer than a day is a 'blocked' report. A finished "
+                "step whose next step is your conductor's own command is a 'done' report "
+                "naming what the step produced in artifacts; report 'progress' again "
+                "when the next step arrives. On 'blocked' "
                 "or 'question', set reason when only a person can move it: 'approval' "
-                "when a tool approval timed out or is waiting, 'needs_human' when only "
-                "a person can unblock you; leave it unset for a build or service. A "
+                "when a tool approval timed out or is waiting, 'needs_human' only for "
+                "credentials or a permission only a person can grant, spend, an "
+                "irreversible step or deleting someone else's work, a costly preference "
+                "nobody can infer, or a choice the person said they want to make; leave "
+                "it unset for a build or service. A choice you can recommend is "
+                "'question' without needs_human, naming your recommendation and why. A "
                 "ledger whose open items all wait on a person holds the conductor's "
                 "patrol until something changes. 'done' claims "
                 "the acceptance condition is met — put the evidence in artifacts and any "
@@ -465,6 +473,14 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                         "description": (
                             "On 'blocked' or 'question': the person this waits on. Refused "
                             "with 'progress' or 'done'. Each report replaces it."
+                        ),
+                    },
+                    "wake_at": {
+                        "type": "string",
+                        "description": (
+                            "On 'progress': when you will resume, an ISO-8601 time with a "
+                            "zone, ahead of now by at most 24 hours. Refused with any other "
+                            "status. Each report replaces it."
                         ),
                     },
                 },
@@ -669,17 +685,6 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                         "type": "integer",
                         "description": "verdict: acceptance attempts that came back fail.",
                     },
-                    "item_cap": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 256,
-                        "description": (
-                            "goal: how many items this goal is expected to create in "
-                            "total, every round included; default 20. Advisory: nothing "
-                            "is refused past it; work_ledger_read reports "
-                            "cap_exceeded=true and you tell the user."
-                        ),
-                    },
                     "concurrency_cap": {
                         "type": "integer",
                         "minimum": 1,
@@ -705,9 +710,7 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
-_PATROL_INT = {"type": "integer"}
-
-#: The two fixed checks' definitions, appended after the ledger tools.
+#: The fixed check's definition, appended after the ledger tools.
 _CHECK_TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "accept_eval",
@@ -737,35 +740,6 @@ _CHECK_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 }
             },
             "required": ["items"],
-        },
-    },
-    {
-        "name": "patrol_budget",
-        "description": (
-            "Run the goal-conductor patrol budget check (scripts/patrol_budget.py) "
-            "and return its JSON plus 'exit', the script's exit code. mode=check "
-            "takes interval_secs, max_cycles, max_runtime_secs (run before "
-            "monitor_start / a bound-changing monitor_update; exit 0 ok, 20 use "
-            "'suggest', 21 runtime too short). mode=renew takes line (the "
-            "[patrol budget: ...] line verbatim), base_cycles, base_runtime_secs, "
-            "open_items (run only on a '10% or less left' cycle; exit 0 pass "
-            "'monitor_update' to monitor_update, 10 not yet, 20 no open items, "
-            "30 renewal cap reached, 2 no figures in line). Pure arithmetic: "
-            "runs nothing."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "mode": {"type": "string", "enum": ["check", "renew"]},
-                "interval_secs": _PATROL_INT,
-                "max_cycles": _PATROL_INT,
-                "max_runtime_secs": _PATROL_INT,
-                "line": {"type": "string", "description": "renew: the budget line."},
-                "base_cycles": _PATROL_INT,
-                "base_runtime_secs": _PATROL_INT,
-                "open_items": _PATROL_INT,
-            },
-            "required": ["mode"],
         },
     },
 ]
@@ -841,31 +815,6 @@ def _accept_eval(args: dict[str, Any]) -> str:
     return redact(json.dumps(document, indent=2, ensure_ascii=False))
 
 
-#: What each ``patrol_budget`` mode needs, as the script's argparse requires it.
-_PATROL_MODE_FIELDS: dict[str, tuple[str, ...]] = {
-    "check": ("interval_secs", "max_cycles", "max_runtime_secs"),
-    "renew": ("line", "base_cycles", "base_runtime_secs", "open_items"),
-}
-
-
-def _patrol_budget(args: dict[str, Any]) -> str:
-    missing = [f for f in _PATROL_MODE_FIELDS[args["mode"]] if args.get(f) is None]
-    if missing:
-        return f"Error: patrol_budget mode={args['mode']} needs {', '.join(missing)}"
-    pb = _skill_script("patrol_budget")
-    if args["mode"] == "check":
-        result, code = pb.check(args["interval_secs"], args["max_cycles"], args["max_runtime_secs"])
-    else:
-        budget = pb.parse_line(args["line"])
-        if budget:
-            result, code = pb.renew(
-                budget, args["base_cycles"], args["base_runtime_secs"], args["open_items"]
-            )
-        else:
-            result, code = {"action": "error", "why": "no budget figures found in line"}, 2
-    return json.dumps({"exit": code, **result}, sort_keys=True)
-
-
 def _list_tools() -> list[dict[str, Any]]:
     """The tool surface, unconditionally.
 
@@ -932,9 +881,6 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if name == "accept_eval":
         return _accept_eval(args)
 
-    if name == "patrol_budget":
-        return _patrol_budget(args)
-
     if name == "work_brief":
         resp = _get(_BRIEF_PATH, session_key=caller_key)
         if resp.get("error"):
@@ -947,7 +893,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "work_report":
         payload = {
-            k: v for k, v in args.items() if k in ("status", "summary", "artifacts", "pr", "reason")
+            k: v
+            for k, v in args.items()
+            if k in ("status", "summary", "artifacts", "pr", "reason", "wake_at")
         }
         resp = _post(_REPORT_PATH, payload, session_key=caller_key)
         if resp.get("error"):

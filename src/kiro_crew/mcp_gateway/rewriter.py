@@ -110,7 +110,10 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # 12: a reserved ``crewmate:`` agent gets no overlay; a keep that skips this
 # check is refused by name after the loop.
 # 13: a server a config scope mutes is not wrapped (``scope_muted``).
-_FINGERPRINT_SCHEMA = 13
+# 14: a settings server is injected only into an agent whose ``tools`` names it
+# (one with a ``secret://`` reference gets a refusing stub in any other agent),
+# and ``useLegacyMcpJson: false`` (kiro-cli's alias) also gets none.
+_FINGERPRINT_SCHEMA = 14
 
 # The fingerprint inputs of the latest pass into each overlay directory, kept so
 # a caller can read the settings a pass was built from without a second scan.
@@ -778,8 +781,11 @@ def rewrite_agents(
     # every agent's own overlay, wrapped with THAT agent's name, and the stub is
     # injected at ACP ``session/new``, where it takes precedence over the raw
     # same-named global entry kiro-cli merges (see ``session_servers.py``).
-    # An agent whose spec sets ``includeMcpJson: false`` is skipped, since
-    # kiro-cli merges nothing into it (see ``_rewrite_single_spec``).
+    # An agent whose spec sets ``includeMcpJson: false``, or its deprecated
+    # alias ``useLegacyMcpJson: false``, is skipped, since kiro-cli merges
+    # nothing into it, and any other agent gets a stub only for the servers its
+    # ``tools`` names, plus a refusing one for each other server whose env holds
+    # a ``secret://`` reference (see ``_rewrite_single_spec``).
     # Empty-``mcpServers`` agents get pooled coverage with the right identity,
     # and the duplicate / empty-``--agent`` collision never arises. The real
     # settings file is never modified, and no settings overlay is written:
@@ -1401,10 +1407,12 @@ __all__ = sorted(
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     # The names the unsplit module imported from the rest of kiro_crew and that only
     # an owner reads now, from their home modules.
+    from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs  # noqa: F401
     from kiro_crew.config.paths import config_dir  # noqa: F401
     from kiro_crew.env import saved_command_casing, spec_path_key  # noqa: F401
     from kiro_crew.mcp_cleanup import (  # noqa: F401
         KIROCREW_BIN_MCP_SERVERS,
+        include_mcp_json,
         mcp_entry_is_muted,
         mcp_entry_is_registry_governed,
     )
@@ -1418,14 +1426,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         is_secret_env_key,
     )
     from kiro_crew.mcp_gateway.launch_approval import (  # noqa: F401
+        _MAX_SERVER_LAUNCHES,
+        REFUSED_TOO_MANY,
         env_fingerprint,
         launch_fingerprint,
+        target_stem,
     )
     from kiro_crew.mcp_gateway.manager import is_credential_env_key  # noqa: F401
     from kiro_crew.mcp_gateway.rewriter_env import (  # noqa: F401
         _ENV_VAR_PLACEHOLDER,
         _collision_warn_lock,
         _collision_warned_keys,
+        _configured_agent_env,
         _expand_env_map,
         _expand_env_placeholders,
         _must_stay_wrapped,
@@ -1470,6 +1482,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _admit_launch,
         _build_stub_entry,
         _hashable_args,
+        _named_in_tools,
+        _refusing_stub_entry,
         is_unpoolable,
     )
     from kiro_crew.mcp_gateway.secret_uri import (  # noqa: F401

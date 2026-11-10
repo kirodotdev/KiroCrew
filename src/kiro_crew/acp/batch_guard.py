@@ -38,8 +38,8 @@ A call the agent spec auto-approves never reaches ``approve_tool``, so on KAS
 projected auto-approval while the guard is on; the gate answers it instead
 (``batch-guard-grant``), and only a write batched with a read is refused.
 
-Opt-in: ``hooks.batch_write_guard`` in config.json, default off (see
-:func:`guard_settings`). ``hooks.batch_write_guard_commands`` (empty by default)
+On by default: ``hooks.batch_write_guard`` in config.json, ``false`` turns it
+off (see :func:`guard_settings`). ``hooks.batch_write_guard_commands`` (empty by default)
 lists extra write-command prefixes for tools only a local install knows; the
 call being approved AND its shell peers are classified with them. It is a
 discipline guard, not a security control: the security floor runs first and is
@@ -52,6 +52,7 @@ import asyncio
 import bisect
 import json
 import logging
+import ntpath
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -155,7 +156,6 @@ _READ_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
         ("kirocrew-work", "work_brief"),
         ("kirocrew-work", "work_ledger_read"),
         ("kirocrew-work", "accept_eval"),
-        ("kirocrew-work", "patrol_budget"),
         ("kirocrew-dashboard", "session_status"),
         ("kirocrew-dashboard", "session_read_message"),
         ("kirocrew-dashboard", "chat_folder_tree"),
@@ -342,8 +342,14 @@ def _prefix_words(extra_write_commands: tuple[str, ...]) -> list[list[str]]:
         words = _shell._shell_tokens(prefix.strip()) if isinstance(prefix, str) else []
         if words:
             # Compared with a command's program words, so reduced the same way.
-            prefixes.append([_shell._program_basename(words[0]), *words[1:]])
+            prefixes.append([_program_name(_shell._program_basename(words[0])), *words[1:]])
     return prefixes
+
+
+def _program_name(word: str) -> str:
+    """*word* as the program Windows runs: ``git.exe``, ``Git`` and ``C:\\...\\git.exe`` are ``git``."""
+    name = ntpath.basename(word).casefold()
+    return name[:-4] if name.endswith(".exe") else name
 
 
 #: ``aws <service> <op>`` operations whose result carries a new id.
@@ -367,7 +373,7 @@ def _program_commands(command: str) -> list[list[str]]:
         tokens = _shell._shell_tokens(" ".join(text[w.start : w.end] for w in cmd.argv))
         program = _argv_rules._program_args(tokens)
         if program is not None:
-            out.append([program[0], *program[1]])
+            out.append([_program_name(program[0]), *program[1]])
     return out
 
 
@@ -545,7 +551,9 @@ def _is_time(token: str) -> bool:
 
 def _keys_of(member: Any) -> set[str]:
     """The lookup keys of what *member* printed beyond its own arguments."""
-    return {k for t in member.output - member.tokens for k in _keys(t)}
+    return {k for t in member.output for k in _keys(t)} - {
+        k for t in member.tokens for k in _keys(t)
+    }
 
 
 def _known(token: str, keys: Any) -> bool:
@@ -925,7 +933,7 @@ class BatchWindow:
         # from a plain write: a merge printing back the PR it was given is no
         # source for a comment on that PR.
         sources = [m for m in peers if m.creator or m.class_with(extra_write_commands) != WRITE]
-        returned = {k for m in sources for t in m.output - m.tokens for k in _keys(t)}
+        returned = {k for m in sources for k in _keys_of(m)}
         proven = [t for t in unseen if _known(t, returned)]
         producers = sum(1 for m in peers if m.creator or m.class_with(extra_write_commands) == READ)
         if self.seen.complete and producers:
@@ -1186,15 +1194,24 @@ def note_printed(window: BatchWindow | None, call_id: str, output: Any = "") -> 
 def guard_settings() -> tuple[bool, tuple[str, ...]]:
     """``(enabled, extra write-command prefixes)`` from the ``hooks`` section.
 
-    ``hooks.batch_write_guard`` turns the guard on; ``hooks.batch_write_guard_commands``
+    ``hooks.batch_write_guard`` (on unless ``false``) turns the guard on;
+    ``hooks.batch_write_guard_commands``
     adds the operator's own write-command prefixes to the shell table. Off, with no
-    extras, when config cannot be read.
+    extras, when config cannot be read: a load error, or a ``config.json`` (or its
+    overlay) the load could not read, whose ``hooks`` came back empty and so could
+    not carry an operator's ``false``.
     """
     try:
         from kiro_crew import hooks as hooks_mod
         from kiro_crew.config import KiroCrewConfig
 
-        config = hooks_mod.HooksConfig.from_dict(KiroCrewConfig.load().hooks)
+        loaded = KiroCrewConfig.load()
+        if getattr(loaded, "_base_unreadable", False) or getattr(
+            loaded, "_overlay_unreadable", False
+        ):
+            logger.debug("batch guard: config.json unreadable; guard off")
+            return False, ()
+        config = hooks_mod.HooksConfig.from_dict(loaded.hooks)
         return config.batch_write_guard, tuple(config.batch_write_guard_commands)
     except Exception:
         logger.debug("batch guard: config unreadable; guard off", exc_info=True)
@@ -1209,8 +1226,6 @@ async def screen_approval(transport: Any, event: Any) -> str | None:
     least one other member before config is read; then the call and its peers
     are classified with the operator's extra write commands.
     """
-    import asyncio
-
     window = getattr(transport, "_batch_window", None)
     if window is None or event is None:
         return None
@@ -1307,8 +1322,6 @@ async def reject(
     """Answer a request :func:`screen_approval` refused: drop any mediated-secret
     grant minted for the call, log and audit it as the guard's, and reject it.
     Returns ``False``, what ``approve_tool`` returns for a refusal."""
-    import asyncio
-
     from kiro_crew import mediated_request_capability, permission_floor
 
     mediated_request_capability.invalidate_for_gate_event(session_key, event)

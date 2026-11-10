@@ -587,6 +587,31 @@ async def test_channel_opened_from_slacks_ui_is_adopted_on_first_message(env: En
     assert env.sel.ops("slack.code_channel.adopt")[0]["outcome"] == "allowed"
 
 
+async def test_a_reconnect_mid_route_does_not_lose_the_adopting_message(env: Env) -> None:
+    """A reconnect clears ``orch.slack`` after the gate admitted the message: the
+    dispatch still posts the kickoff, binds and routes with the client the
+    message was read with, instead of losing it to the cleared one."""
+    env.info("C0UI", origin=("C0ORIGIN", "1700000000.000100"), name="ui-task")
+    event = {"type": "message", "user": OWNER, "channel": "C0UI", "ts": "301.0", "text": "start"}
+    result = await _gate(env, event)
+    assert result.gate is Gate.DIRECTED
+    read_with = env.orch.slack
+    env.orch.slack = None
+    assert await routing.dispatch(
+        env.orch,
+        result,
+        event=event,
+        clean_text="start",
+        sender_id=OWNER,
+        was_mention=False,
+        slack=read_with,
+    )
+    binding = env.store.get_binding("C0UI")
+    assert binding is not None and binding.anchor_ts
+    assert [p for p in env.slack.posts if p[0] == "C0UI" and "one Kiro Crew session" in p[1]]
+    assert env.routed == [("C0UI", "start", OWNER)]
+
+
 async def test_another_agents_code_channel_is_not_ours(env: Env) -> None:
     env.info("C0THEIRS", bots=("UOTHERBOT",))
     event = {"type": "message", "user": OWNER, "channel": "C0THEIRS", "ts": "301.0", "text": "hi"}
@@ -953,6 +978,33 @@ async def test_a_stop_declined_by_compaction_says_so_and_a_fresh_press_can_escal
     native = {"type": "agent_session_stopped", "channel": "C0CODE", "user": OWNER}
     assert await routing.handle_session_stopped(env.orch, native, OWNER) == "stopped"
     assert calls == [True, True]
+
+
+async def test_a_typed_stop_with_no_client_stops_the_bound_session_from_a_thread(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client-free stop the gateway uses after a failed reconnect: a typed
+    ``!stop`` in a thread of the channel still stops its one bound session,
+    under the Stop button's sender rule; the button's handler keeps reading a
+    thread as a thread session."""
+    _bind(env)
+    assert env.state is not None
+    env.state.linked["300.000001"].running = True
+    stopped: list[str] = []
+
+    async def stop_slot_turn(state: Any, slot: Any, **kwargs: Any) -> dict[str, Any]:
+        stopped.append(slot.key)
+        return {"info": "stopping"}
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.stop_slot_turn", stop_slot_turn)
+    monkeypatch.setattr("kiro_crew.slack.handler.is_allowed_user", lambda u: u == OWNER)
+    env.orch.slack = None
+    typed = {"type": "message", "channel": "C0CODE", "thread_ts": "1.0", "user": OWNER}
+    assert await routing.handle_session_stopped(env.orch, typed, OWNER) is None
+    assert await routing.stop_from_channel(env.orch, typed, "USTRANGER") == "denied"
+    assert stopped == []
+    assert await routing.stop_from_channel(env.orch, typed, OWNER) == "stopped"
+    assert stopped == ["chat-9-1"]
 
 
 async def test_native_stop_when_idle_clears_the_status(

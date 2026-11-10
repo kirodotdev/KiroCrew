@@ -116,16 +116,3 @@ def _is_relayed_reference(value: Any, relayed: frozenset[str]) -> bool:
         return False
     match = _ENV_REFERENCE.fullmatch(value)
     return match is not None and match.group(1) in relayed
-
-
-def _carries_env_reference(entry: Any) -> bool:
-    """Whether a projected entry's ``env`` holds a ``${NAME}`` reference.
-
-    KAS expands a reference in an agent-block entry but passes a session-level
-    ``mcpServers`` element's env to the child verbatim (measured on the 0.66.33
-    bundle), so such an entry must keep the block path on ``session/load`` too.
-    """
-    env = entry.get("env") if isinstance(entry, dict) else None
-    return isinstance(env, dict) and any(
-        isinstance(v, str) and _ENV_REFERENCE.search(v) for v in env.values()
-    )

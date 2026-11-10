@@ -545,10 +545,12 @@ class TestSandboxEscapeSshSelfOwnHost:
         assert _denied_by("ssh self.attacker.example id") == self._RULE
         assert len(started) == 1, "resolution scheduling must be single-flight"
 
-    def test_negative_dns_verdict_is_revalidated_after_ttl(self, monkeypatch, manual_clock):
-        # a cached ALLOW verdict is not reused unbounded -- a name
-        # that later rebinds to loopback is caught at the next revalidation.
-        # Deny verdicts stay permanent (over-blocking is the safe direction).
+    def test_dns_verdicts_are_revalidated_after_ttl(self, monkeypatch, manual_clock):
+        # A cached verdict is not reused unbounded: a name that later rebinds
+        # to loopback is caught at the next revalidation, and a name refused
+        # on one passing loopback answer is not refused for the rest of the
+        # process.  A refused name stays refused until a successful lookup
+        # says it is remote.
         assert _REAL_RESOLVED_HOST_VERDICT is not None
         monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
         manual_clock.install(monkeypatch, _argv_floor_hosts)
@@ -580,11 +582,31 @@ class TestSandboxEscapeSshSelfOwnHost:
         started.clear()
         assert _argv_floor._resolved_host_verdict("a.example") is False
         assert started == []
-        # Deny verdicts are permanent -- no revalidation however old.
+        # Fresh deny: refused, no revalidation.
         _argv_floor._HOST_VERDICT_CACHE["b.example"] = True
-        _argv_floor._HOST_VERDICT_STAMP["b.example"] = stale
+        _argv_floor._HOST_VERDICT_STAMP["b.example"] = now
         assert _argv_floor._resolved_host_verdict("b.example") is True
         assert started == []
+        answer: "list[str | None]" = []
+
+        def _gai(host, *args, **kwargs):
+            if answer[-1] is None:
+                raise OSError("resolution failure")
+            return [(2, 1, 6, "", (answer[-1], 0))]
+
+        monkeypatch.setattr(security.socket, "getaddrinfo", _gai)
+        # Stale deny: still refused (a cache hit, so a dotless name's open
+        # first-contact answer never applies) while ONE worker re-resolves.
+        # A failed lookup and a self answer both keep it refused.
+        for addr in (None, "127.0.0.1", "198.51.100.7"):
+            manual_clock.advance(_argv_floor._HOST_VERDICT_ALLOW_TTL + 1)
+            started.clear()
+            assert _argv_floor._resolved_host_verdict("b.example", fail_closed=False) is True
+            assert _argv_floor._resolved_host_verdict("b.example", fail_closed=False) is True
+            assert started == ["b.example"]
+            answer.append(addr)
+            _argv_floor._resolve_host_verdict_into_cache("b.example")
+        assert _argv_floor._resolved_host_verdict("b.example") is False
 
     def test_dns_alias_worker_classifies_addresses(self, monkeypatch):
         # The worker resolves off-loop and records whether any address is

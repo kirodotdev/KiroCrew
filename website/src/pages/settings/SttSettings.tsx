@@ -80,6 +80,8 @@ interface SttConfig {
   submit_on_release?: boolean
   slide_to_send?: boolean
   dictation_panel?: boolean
+  /** End a message holding dictated words with a note telling the agent so. Off by default. */
+  dictation_note?: boolean
   transcribe_region?: string
   transcribe_profile?: string
   /** Amazon Transcribe custom vocabulary name; '' for none. */
@@ -222,6 +224,14 @@ interface SttStatus {
 
 const DOWNLOAD_STEP_RUNNING = 'downloading'
 const DOWNLOAD_STEP_FAILED = 'failed'
+
+/**
+ * For an inline notice with the hand-off: below `sm` the hand-off takes its own
+ * line under the message instead of squeezing it into a column. The message's
+ * basis leaves room for the icon only, so the hand-off wraps.
+ */
+const PHONE_WRAP_ROW = 'flex-wrap sm:flex-nowrap'
+const PHONE_WRAP_MESSAGE = 'grow basis-[calc(100%-2rem)] sm:grow-0 sm:basis-auto'
 
 /**
  * Decoder stages, which are the backend's `stage` values verbatim.
@@ -463,7 +473,8 @@ function TranscribeVocabularyPicker({
       {!!listError && (
         <ErrorNotice
           variant="inline"
-          className="-mt-1 mb-1"
+          className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
+          messageClassName={PHONE_WRAP_MESSAGE}
           testId="stt-vocabularies-error"
           report={reportForError(listError)}
           message={accessDenied
@@ -719,7 +730,7 @@ function PushToTalkConfig() {
         onChange={v => patch({ enabled: v })}
       />
       {saveError && (
-        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className="my-1" />
+        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className={`my-1 ${PHONE_WRAP_ROW}`} messageClassName={PHONE_WRAP_MESSAGE} />
       )}
 
       <SettingsSelect
@@ -1249,7 +1260,7 @@ export default function SttSettings({ cardIndex }: {
             disabled state is status text. */}
         {!available && unavailableText && !providerNotice && (
           INSTALLED_BUT_REFUSED_CODES.has(status?.code ?? '')
-            ? <ErrorNotice variant="inline" className="-mt-1 mb-1" message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
+            ? <ErrorNotice variant="inline" className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`} messageClassName={PHONE_WRAP_MESSAGE} message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
             : <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
         )}
         {/* The probe itself failed: the badge above is then showing the config's
@@ -1258,7 +1269,8 @@ export default function SttSettings({ cardIndex }: {
         {statusQ.isError && (
           <ErrorNotice
             variant="inline"
-            className="-mt-1 mb-1"
+            className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
+            messageClassName={PHONE_WRAP_MESSAGE}
             message={errMessage(statusQ.error) || i18nT('pages.settings.sttSettings.status_unavailable')}
             askAgent
           />
@@ -1387,7 +1399,8 @@ export default function SttSettings({ cardIndex }: {
                     {customUnusable && (
                       <ErrorNotice
                         variant="inline"
-                        className="mt-1"
+                        className={`mt-1 ${PHONE_WRAP_ROW}`}
+                        messageClassName={PHONE_WRAP_MESSAGE}
                         message={selectedModel?.error ?? ''}
                         askAgent
                         testId="stt-custom-model-missing"
@@ -1454,7 +1467,8 @@ export default function SttSettings({ cardIndex }: {
                 {customErr && (
                   <ErrorNotice
                     variant="inline"
-                    className="-mt-1 mb-1"
+                    className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
+                    messageClassName={PHONE_WRAP_MESSAGE}
                     id={CUSTOM_MODEL_ERROR_ID}
                     message={customErr}
                     askAgent
@@ -1494,7 +1508,8 @@ export default function SttSettings({ cardIndex }: {
             {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
               <ErrorNotice
                 variant="inline"
-                className="-mt-1 mb-1"
+                className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
+                messageClassName={PHONE_WRAP_MESSAGE}
                 message={download.model === CUSTOM_MODEL
                   ? download.error
                   : i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
@@ -1595,6 +1610,8 @@ export default function SttSettings({ cardIndex }: {
           <SettingsToggle label={i18nT('pages.settings.sttSettings.slide_to_send')} hint={i18nT('pages.settings.sttSettings.slide_to_send_desc')} checked={!!stt.slide_to_send} onChange={v => set({ slide_to_send: v })} disabled={saving || !!stt.submit_on_release} configKey="stt.slide_to_send" />
 
           <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} hint={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
+
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_note')} hint={i18nT('pages.settings.sttSettings.dictation_note_desc')} checked={!!stt.dictation_note} onChange={v => set({ dictation_note: v })} disabled={saving} configKey="stt.dictation_note" />
 
           {/* The thread picker is the local provider's alone: the others run their
               recogniser somewhere this setting cannot reach. Its options come from

@@ -311,6 +311,27 @@ describe('ProjectsPage — planning lifecycle', () => {
     expect(banner.textContent).toBe('Generating execution plan.')
   })
 
+  it('holds the planning banner still under reduced motion', async () => {
+    // The dots are JS-driven text, so the global reduced-motion CSS cut never
+    // reached them and they kept ticking for a user who asked for no motion.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }))
+    try {
+      sessionStorage.setItem('tr-planning', '1')
+      vi.useFakeTimers()
+      renderWithProviders(<ProjectsPage />)
+      const banner = screen.getByText(/Generating execution plan/)
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_500) })
+      expect(banner.textContent).toBe('Generating execution plan')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('recovery poll adopts a planned run and stops planning', async () => {
     resetApi([mkRun({ task_id: 'rec-1', name: 'Recovered', status: 'planned' })])
     sessionStorage.setItem('tr-planning', '1')

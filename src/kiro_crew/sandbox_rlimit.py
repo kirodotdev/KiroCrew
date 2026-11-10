@@ -116,7 +116,7 @@ def extractor_resource_limit_preexec() -> "Callable[[], None] | None":
         _EXTRACTOR_PREEXEC = apply_resource_limits(
             {
                 "resource_limits": {
-                    "max_memory_mb": _EXTRACTOR_MAX_AS_BYTES // (1024 * 1024),
+                    "max_address_space_mb": _EXTRACTOR_MAX_AS_BYTES // (1024 * 1024),
                     "max_cpu_seconds": _EXTRACTOR_MAX_CPU_SECS,
                     "max_open_files": _EXTRACTOR_MAX_NOFILE,
                 }
@@ -286,9 +286,9 @@ RLIMIT_PROFILE_BUILD = "build"
 RLIMIT_PROFILE_SESSION_HOST = "session_host"
 # A first-party document parser fed untrusted bytes (``pdf_extract_child``). Its
 # ceiling is FIXED, not read from ``resource_limits``: the ``tool`` profile only
-# applies RLIMIT_AS when an operator sets ``max_memory_mb`` (default 0), and a
-# parser whose allocation precedes any length check needs a memory bound that
-# is on by default. RLIMIT_AS caps VIRTUAL address space, which is why ``tool``
+# applies RLIMIT_AS when an operator sets ``max_address_space_mb`` (default 0),
+# and a parser whose allocation precedes any length check needs a memory bound
+# that is on by default. RLIMIT_AS caps VIRTUAL address space, which is why ``tool``
 # leaves it opt-in (Node/V8 reserves far more than it touches); this child is
 # pure CPython plus ``pdfplumber``, measured at ~270 MB VmPeak on a one-page
 # document, so 1 GiB is headroom for a large document and a hard stop for a

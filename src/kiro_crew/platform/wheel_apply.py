@@ -332,15 +332,19 @@ def shown_failure_text(text: str, limit: int | None = FAILURE_TEXT_CHARS) -> str
 
 
 def userns_reattach_needed(version: str) -> bool:
-    """Would promoting *version* move the launcher a userns profile applies to?
+    """Would promoting *version* move the launcher out of a userns profile's attachment?
 
     On a host that restricts unprivileged user namespaces, ``kirocrew service
     install`` attaches the ``kirocrew-userns`` AppArmor profile to the RESOLVED
-    launcher path, and promotion makes that path resolve into the new tree. The
-    running gateway keeps its label, but the next fresh service start would run
-    unconfined and the agent sandbox could not be built. True only when the
-    profile applies to the launcher today (the same predicate ``kirocrew doctor``
-    reports) and the promoted one differs.
+    launcher, and promotion makes that path resolve into the new tree. An
+    attachment naming every versioned tree's launcher
+    (``crew-venv-*/bin/kirocrew``, what ``service install`` renders for a
+    managed install, :func:`apparmor.service_attachment`) covers the new tree
+    too. One naming a single tree's exact path does not: the running gateway
+    keeps its label, but the next fresh service start would run unconfined and
+    the agent sandbox could not be built. True only when the profile applies to
+    the launcher today (the same predicate ``kirocrew doctor`` reports) and its
+    attachment does not cover the promoted one.
     """
     if not sys.platform.startswith("linux"):
         return False
@@ -356,7 +360,7 @@ def userns_reattach_needed(version: str) -> bool:
         return False
     layout = wheel_engine.managed_venv_layout()
     promoted = os.path.realpath(layout.versioned_tree(version) / "bin" / "kirocrew")
-    return promoted != attached
+    return not apparmor.attachment_covers(attached, promoted)
 
 
 def userns_reattach_remedy(version: str) -> str:
@@ -366,8 +370,10 @@ def userns_reattach_remedy(version: str) -> str:
         "AppArmor profile is attached to, so the sandbox profile would stop applying at "
         "the next service start. Run `kirocrew update`, then `kirocrew service install` "
         "(which re-attaches the profile and restarts the service onto the new version). "
-        "Both are needed after every update while that profile is in use; `kirocrew "
-        "doctor` reports the attachment under Sandbox."
+        "When the directory holding the install is owned by the service's account and "
+        "writable by no other, that attaches the profile to every version an update "
+        "installs, so later updates apply on their own; `kirocrew doctor` reports the "
+        "attachment under Sandbox."
     )
 
 
@@ -377,8 +383,10 @@ def userns_reattach_after_apply(version: str) -> str:
         f"Kiro Crew {version} is installed, and the kirocrew-userns AppArmor profile is "
         "still attached to the previous launcher, so the sandbox profile stops applying "
         "at the next service start. Run `kirocrew service install`, which re-attaches "
-        "the profile and restarts the service onto the new version. `kirocrew doctor` "
-        "reports the attachment under Sandbox."
+        "the profile and restarts the service onto the new version. When the directory "
+        "holding the install is owned by the service's account and writable by no other, "
+        "that attaches the profile to every version an update installs, so later updates "
+        "keep it applying. `kirocrew doctor` reports the attachment under Sandbox."
     )
 
 

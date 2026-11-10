@@ -479,8 +479,8 @@ class WebhookTokenStore:
 
     def is_switch_on(self) -> bool:
         # The ``webhooks`` governance scope outranks the stored switch: a source the
-        # policy refuses reads as off (in an enterprise build, every source until a
-        # policy names it -- RFC enterprise edition, Red "Webhooks by source").
+        # policy refuses reads as off (in an LTS build, every source until a
+        # policy names it -- RFC LTS edition, Red "Webhooks by source").
         if source_refusal(SOURCE_AGENT):
             return False
         raw = _read_json(self.path, {})

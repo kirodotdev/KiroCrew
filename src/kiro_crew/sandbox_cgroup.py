@@ -556,10 +556,10 @@ def _cgroup_limits_from_config(
     if rl is not None:
         # ``>= 1``, so 0 lands on the default with everything else out of domain:
         # TasksMax=0 / MemoryMax=0M are rejected by systemd and the scope would
-        # never start, so this ceiling is never left unset. The SAME two keys
-        # mean "leave inherited" when 0 reaches the rlimit path in
-        # security.apply_resource_limits — ResourceLimitsConfig carries both
-        # domains so neither side can be tightened without seeing the other.
+        # never start, so this ceiling is never left unset. On the rlimit path
+        # in security.apply_resource_limits 0 means "leave inherited" for its
+        # own keys -- ResourceLimitsConfig carries both domains so neither side
+        # can be tightened without seeing the other.
         if rl.max_processes is not None and rl.max_processes >= 1:
             max_procs = rl.max_processes
         if rl.max_memory_mb is not None and rl.max_memory_mb >= 1:

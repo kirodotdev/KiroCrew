@@ -51,6 +51,7 @@ from . import ledger as L
 from . import pr_description as D  # noqa: F401
 from . import preflight as PF
 from .archive import Archive
+from .candidate_admission import admit_candidate
 from .contracts import TRACK_BUG, TRACK_PERF, BugGateResult, Proposal, TargetProfile
 from .driver_git import _git
 from .gate import Gate
@@ -138,8 +139,10 @@ class Driver:
         canary_advisory: bool = False,
         direct_commit: bool = False,
         prepush_review: bool = False,
+        candidate_admission: tuple[str, ...] | None = None,
     ):
         self.profile = profile
+        self.candidate_admission = candidate_admission
         # F10 DIRECT-COMMIT MODE (ROADMAP F10; operator opt-in per project). When True, a
         # VERIFIED winner is pushed straight to the operator-authorized feature branch
         # instead of filed as a CR. This deliberately relaxes the push-disabled invariant
@@ -863,14 +866,18 @@ class Driver:
     def _apply_verdict(self, cycle, base_sha, verdict, archived, fresh_count, gated_sha) -> int:
         if self._publishing_is_halted():
             return 0
+        winner = verdict.winner if verdict.keep else None
+        # Ask before archiving: /progress trusts the row status, so a refused winner is not kept.
+        refused_id = None if winner is None or admit_candidate(self, winner) else winner.cand_id
         # Archive ALL survivors (the whole population is evolutionary memory). The kept
         # winner's diff_ref is reused as the CR's ``diff-ref`` (06_*.md §3.1/§3.2).
         winner_diff_ref = ""
         for prop, status, meas in archived:
+            row_status = L.STATUS_FAILED_VERIFY if prop.cand_id == refused_id else status
             diff_ref = self.archive.save_candidate(
                 cand_id=prop.cand_id,
                 diff=prop.diff,
-                detail={"proposal": prop, "status": status, "measurement": meas},
+                detail={"proposal": prop, "status": row_status, "measurement": meas},
             )
             if verdict.winner is not None and prop.cand_id == verdict.winner.cand_id:
                 winner_diff_ref = diff_ref
@@ -879,7 +886,7 @@ class Driver:
                     "cycle": cycle,
                     "cand_id": prop.cand_id,
                     "commit": "-",
-                    "status": status,
+                    "status": row_status,
                     "tests_pass": True,
                     "reps": self.measurer.reps,
                     "primary_delta": (meas.primary_delta if meas else ""),
@@ -906,12 +913,12 @@ class Driver:
                 # mislabeled the row AND permanently dedup-blocked a transient RH-probe miss.
                 self._record(prop, L.map_perf_discard_to_status(status), status)
 
-        if not verdict.keep or verdict.winner is None:
+        if winner is None:
             self.stats.not_kept += 1
             self.log.info("cycle %d: no keep (%s)", cycle, verdict.reason)
             return fresh_count
-
-        winner = verdict.winner
+        if refused_id is not None:
+            return fresh_count
         self.stats.kept += 1
         self.log.info(
             "cycle %d: KEPT %s (%s) — running REPRODUCE", cycle, winner.cand_id, verdict.reason
@@ -1087,26 +1094,27 @@ class Driver:
     # ── bug-track keep/draft (M4; 05_improvement_loop_bugfix.md §4) ───────────
 
     def _apply_bug_winner(self, cycle: int, winner: Proposal, bug_res: BugGateResult) -> None:
-        """Accept one bug fix that passed RED ∧ GREEN ∧ STAYGREEN: archive it,
-        commit-on-keep locally, draft a DRAFT-only CR with the correctness narrative,
-        and record ``filed`` in the shared ledger (05_*.md §4.2; 02_arch §3.2).
+        """Archive one bug fix that passed RED ∧ GREEN ∧ STAYGREEN (as ``failed_verify``, and stop,
+        if admission refuses it), commit-on-keep locally, draft a DRAFT-only CR with the correctness
+        narrative, and record ``filed`` in the shared ledger (05_*.md §4.2; 02_arch §3.2).
 
         This is the bug-track analogue of :meth:`_apply_verdict`'s keep path, but the
         CR trigger is the boolean RED/GREEN gate (the doubled-RED flake check is the
         reproduction analogue, §4.1) — there is no second A/B and no noise band."""
         if self._publishing_is_halted():
             return
+        status = KEPT if admit_candidate(self, winner) else L.STATUS_FAILED_VERIFY
         diff_ref = self.archive.save_candidate(
             cand_id=winner.cand_id,
             diff=winner.diff,
-            detail={"proposal": winner, "status": KEPT, "bug_gate": bug_res},
+            detail={"proposal": winner, "status": status, "bug_gate": bug_res},
         )
         self.archive.append_row(
             {
                 "cycle": cycle,
                 "cand_id": winner.cand_id,
                 "commit": "-",
-                "status": KEPT,
+                "status": status,
                 "tests_pass": True,
                 "reps": 0,  # no A/B reps for a bug fix (deterministic boolean gate)
                 "primary_delta": "",  # bug track has no measured delta (§6.1)
@@ -1116,15 +1124,15 @@ class Driver:
                 "metric": f"RED→GREEN→STAYGREEN ({bug_res.reason})",
             }
         )
-        # M5 PIPELINE (bug track): the RED/GREEN gate already verified+reproduced (the
-        # doubled-RED flake check IS the reproduce analogue, 06_*.md §1.1) — so emit the
-        # draft CR with the RED→GREEN correctness narrative (§4.2) via the same pipeline
-        # boundary. The pipeline dedups (defense-in-depth), authors the description, files
-        # the draft, and records the terminal ledger row.
-        # COMMIT first — same reason as the perf track: the recipe pushes this clone's
-        # HEAD, and HEAD is a COMMIT pointer, so a merely-staged fix is invisible to the
-        # draft. Provisional message; amended once the pipeline returns, reset if nothing
-        # was filed.
+        if status != KEPT:
+            return
+        # M5 PIPELINE (bug track): the RED/GREEN gate already verified+reproduced (the doubled-RED
+        # flake check IS the reproduce analogue, 06_*.md §1.1), so emit the draft CR with the
+        # RED→GREEN correctness narrative (§4.2) via the same pipeline boundary. The pipeline dedups
+        # (defense-in-depth), authors the description, files the draft, and records the terminal
+        # ledger row. COMMIT first, as on the perf track: the recipe pushes this clone's
+        # HEAD, and HEAD is a COMMIT pointer, so a merely-staged fix is invisible to the draft.
+        # Provisional message; amended once the pipeline returns, reset if nothing was filed.
         pre_sha = _git(["rev-parse", "HEAD"], self.clone).stdout.strip()
         if not self._commit_bug_winner_provisional(winner):
             self.ledger.record(

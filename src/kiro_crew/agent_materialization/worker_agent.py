@@ -1421,10 +1421,11 @@ def heartbeat_mcp_servers(default_spec: dict[str, Any] | None) -> dict[str, dict
     included, with :data:`_HEARTBEAT_STRIPPED_FLAGS` removed from its ``args``:
     ``--flag=value`` is dropped, and a bare ``--flag`` drops the argument after it too.
     An edition server is copied verbatim, filters included, minus ``autoApprove``:
-    that field makes kiro-cli approve a matching call itself, before the gateway's
-    ``_heartbeat_approval`` and its SEL audit ever see it, and this agent has no
-    approver behind it. Pure given the context, so the installer and the spawn gate
-    derive the same map from the same bytes.
+    a kept verb becomes an auto-approval (an ``allowedTools`` entry of the skill view
+    on kiro-cli, a ``permissions`` allow on KAS) that runs a matching call before the
+    gateway's ``_heartbeat_approval`` and its SEL audit ever see it, and this agent
+    has no approver behind it. Pure given the context, so the installer and the spawn
+    gate derive the same map from the same bytes.
     """
     servers = (default_spec or {}).get("mcpServers")
     if not isinstance(servers, dict):
@@ -1777,7 +1778,19 @@ def _install_dashboard_author_agent() -> None:
         existing = agent_mod._read_spec_capped(path)
         removed_all_skills = False
         if isinstance(existing, dict) and _is_confirmed_managed_dashboard_author(existing):
-            if agent_state.get_model_managed(_MANAGED_OWNED_NAME) is False:
+            # Strict, for the reason ``_worker_model_is_pinned`` gives: an unreadable
+            # sidecar is unknown ownership, so the spec's model (a possible pin) is kept.
+            try:
+                managed = agent_state.get_model_managed(_MANAGED_OWNED_NAME, strict=True)
+                carry_model = managed is False
+            except (OSError, ValueError):
+                agent_mod.logger.warning(
+                    "Agent state sidecar unreadable; keeping the dashboard author spec's own "
+                    "model rather than overwriting a pin whose value is recorded nowhere else",
+                    exc_info=True,
+                )
+                carry_model = True
+            if carry_model:
                 pinned = existing.get("model")
                 if isinstance(pinned, str) and pinned.strip():
                     config["model"] = pinned

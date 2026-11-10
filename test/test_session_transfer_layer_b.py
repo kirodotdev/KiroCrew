@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +30,23 @@ from session_transfer_helpers import (  # noqa: F401 -- the autouse fixture regi
     _valid,
 )
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.dashboard.session_transfer import _validate_bundle
+
+
+def _slots_start_on(monkeypatch, backend):
+    """Make every new slot resolve to *backend* through the provider factory's gate."""
+    from kiro_crew import members
+
+    monkeypatch.setattr(members, "select_provider_backend", lambda *_a, **_k: backend)
+
+
+@pytest.fixture(autouse=True)
+def _slots_start_on_kiro_cli(_floor_monkeypatch):
+    """A kiro-cli pair lands only on a slot that starts on kiro-cli, which is the
+    peer every import here models unless the test names another backend."""
+    _slots_start_on(_floor_monkeypatch, ACP_BACKEND_KIRO)
+
 
 # ── Layer B (kiro-cli context) ──────────────────────────────────────────
 
@@ -254,7 +271,7 @@ async def test_a_kas_session_round_trips_through_the_bundle(monkeypatch, tmp_pat
     assert not {"_meta", "description"} & set(wire["layer_b_kas"]["envelope"])
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "receiver" / "cli")
-    monkeypatch.setattr(st, "_slot_runs_kas", lambda _key: True)
+    _slots_start_on(monkeypatch, ACP_BACKEND_KAS)
     state = _stub_state(st, monkeypatch)
     seeded: dict = {}
     state.sessions.seed_conversation = lambda _k, s, **kw: seeded.update(sid=s, **kw)
@@ -303,7 +320,7 @@ async def test_a_kas_session_sent_to_a_slot_on_another_backend_imports_transcrip
     wire = json.loads(b"".join(chunks))
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path / "receiver" / "cli")
-    monkeypatch.setattr(st, "_slot_runs_kas", lambda _key: False)
+    _slots_start_on(monkeypatch, ACP_BACKEND_KIRO)
     state = _stub_state(st, monkeypatch)
     seeded: dict = {}
     state.sessions.seed_conversation = lambda _k, s, **kw: seeded.update(sid=s, **kw)
@@ -313,6 +330,31 @@ async def test_a_kas_session_sent_to_a_slot_on_another_backend_imports_transcrip
     assert state._imported_slot.title.endswith("transcript only")
     assert seeded == {}
     assert not list(st._kas_sessions_root().glob("*/sess_*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("slot_backend", "landed"), [(ACP_BACKEND_KIRO, True), (ACP_BACKEND_KAS, False)]
+)
+async def test_a_kiro_cli_context_lands_only_on_a_slot_that_starts_on_kiro_cli(
+    monkeypatch, tmp_path, slot_backend, landed
+):
+    """A kiro-cli pair joined to a slot that starts on KAS is dropped at its first
+    turn, so the peer must not install it or report a full resume."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    _slots_start_on(monkeypatch, slot_backend)
+    state = _stub_state(st, monkeypatch)
+    seeded: dict = {}
+    state.sessions.seed_conversation = lambda _k, s, **kw: seeded.update(sid=s, **kw)
+    bundle = _valid(layer_b={"envelope": {"session_id": "s"}, "events": '{"kind":"Prompt"}\n'})
+    resp = await _run_import(st, monkeypatch, bundle, state=state)
+
+    assert json.loads(resp.body)["resume_mode"] == ("session_load" if landed else "prefix")
+    assert state._imported_slot.title.endswith("transcript only") is not landed
+    assert bool(seeded) is landed
+    assert bool(list(tmp_path.glob("*.json*"))) is landed
 
 
 @pytest.mark.asyncio
@@ -1351,10 +1393,13 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
     sizes: list[int] = []
+    test_thread = threading.get_ident()
     real_restrict = platform_compat.restrict_to_owner
 
     def _measuring_restrict(target):
-        sizes.append(os.stat(target).st_size)
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            sizes.append(os.stat(target).st_size)
         return real_restrict(target)
 
     monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)

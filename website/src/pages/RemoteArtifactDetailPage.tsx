@@ -430,11 +430,16 @@ export default function RemoteArtifactDetailPage() {
                 <ExternalLink size={13} /> {i18nT('pages.remoteArtifactDetailPage.open_original')}
               </Btn>
             )}
+            {/* aria-disabled, not disabled: a disabled button leaves the tab
+                order, so a keyboard Fork would drop focus to the page while
+                it runs and stay lost on a refused fork. The classes repeat a
+                disabled primary's look. */}
             <Btn
               type="button"
               primary
-              onClick={handleFork}
-              disabled={forking}
+              onClick={() => { if (!forking) handleFork() }}
+              aria-disabled={forking || undefined}
+              className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
               title={i18nT('pages.remoteArtifactDetailPage.fork_into_your_local_artifacts_editable_copy')}
             >
               {forking ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('pages.remoteArtifactDetailPage.fork')}
@@ -505,7 +510,17 @@ export default function RemoteArtifactDetailPage() {
                 ) : failed ? (
                   <div className="p-6 flex items-center gap-3 text-text">
                     <span>{i18nT('components.artifactBody.could_not_render')}</span>
-                    <Btn onClick={retry} disabled={pending} className="flex items-center gap-1">
+                    {/* aria-disabled + aria-busy, not native disabled: a disabled
+                        button leaves the tab order, so a keyboard Retry would drop
+                        focus to the page while the re-mint runs. The guard ignores
+                        a second press; the classes repeat the default disabled
+                        look so busy looks unchanged. */}
+                    <Btn
+                      onClick={() => { if (!pending) retry() }}
+                      aria-disabled={pending || undefined}
+                      aria-busy={pending || undefined}
+                      className="flex items-center gap-1 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
+                    >
                       <RotateCw className="lucide-inline" />
                       {i18nT('components.artifactBody.retry')}
                     </Btn>
@@ -559,7 +574,15 @@ export default function RemoteArtifactDetailPage() {
                           : 'components.artifactBody.no_longer_showing')}
                       </span>
                     )}
-                    <Btn onClick={retry} disabled={pending} className="flex items-center gap-1">
+                    {/* aria-disabled + aria-busy, not native disabled: see the
+                        in-flow Retry above. Keeps the button focusable while the
+                        re-mint runs and ignores a second press. */}
+                    <Btn
+                      onClick={() => { if (!pending) retry() }}
+                      aria-disabled={pending || undefined}
+                      aria-busy={pending || undefined}
+                      className="flex items-center gap-1 aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
+                    >
                       {failed ? <RotateCw className="lucide-inline" /> : <Eye className="lucide-inline" />}
                       {i18nT(failed
                         ? 'components.artifactBody.retry'

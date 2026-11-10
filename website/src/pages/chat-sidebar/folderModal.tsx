@@ -5,11 +5,17 @@ import type React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import FolderConfigModal from '../../components/FolderConfigModal'
+import { foldByName } from '../../hooks/useAgents'
 import { requestFolderReveal } from '../../store/chatSlice'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { safeSetItem } from '../../utils/safeStorage'
 import { FLAT_VIEW_LS_KEY } from './persistence'
 import type { FolderModalTarget, SidebarScope } from './scope'
+
+/** The folder's own directory's roster, folded to one row per name like the
+ *  sidebar's. Module-level so its identity is stable across renders. */
+const loadProjectAgents = async (projectDir: string) =>
+  foldByName((await api.agentCatalog(undefined, projectDir)).agents ?? [])
 
 /** The modal, fed the crew list *Send a copy to* already reads (same query key,
  *  so no extra request). The gateway's own `instances_disabled` 403 (Instances
@@ -46,6 +52,7 @@ export function renderFolderModal(shell: SidebarScope, folderModal: FolderModalT
           folder={folderModal.mode === 'edit' ? folders.find(f => f.id === folderModal.folderId) : undefined}
           folders={folders}
           installedAgents={installedAgents}
+          loadProjectAgents={loadProjectAgents}
           globalDefaultAgent={defaultAgent}
           availableTags={tagsData}
           availableTagsFailed={tagsQueryFailed}

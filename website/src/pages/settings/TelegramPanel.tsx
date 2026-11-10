@@ -61,6 +61,7 @@ function telegramSpec(): BotChannelSpec {
       label: i18nT('pages.settings.telegramPanel.guide_link_label'),
       href: 'https://t.me/BotFather',
     },
+    tokenLabel: i18nT('pages.settings.telegramPanel.token_label'),
     tokenDescription: i18nT('pages.settings.telegramPanel.token_description'),
     tokenPlaceholder: i18nT('pages.settings.telegramPanel.token_placeholder'),
     allowlistDescription: i18nT('pages.settings.telegramPanel.allowlist_description'),

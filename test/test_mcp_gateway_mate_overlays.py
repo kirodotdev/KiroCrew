@@ -912,7 +912,7 @@ class TestTheSessionStartPathsThreadTheLookup:
 
         def _pooled(overlay, agent, backend, work_dir, ref_spec=None, session_key=""):
             seen["lookup"] = (agent, backend, session_key)
-            return [{"name": SERVER}], None
+            return [{"name": SERVER}], None, ()
 
         async def _same(agent):
             return agent

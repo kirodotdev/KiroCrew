@@ -143,50 +143,50 @@ _SHIPPED_PINS = [
     {
         "name": "personal-shopper",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-personal-shopper",
-        "commit": "e3d71dec00e904c742b9992dbe043b06084c7fac",
-        "version": "0.1.1",
-        "treeSha256": "518e8b06f8ba46738c6a6830d753aa7741a5ff6d81fb5676b0610dd7b9e67f70",
-        "archiveSha256": "9121c38fb76ddfbd89bc208516475b7fd2e56cefa5b558348d7d8175d57724db",
+        "commit": "2de66b467755be0104ec6b23884815c5213db409",
+        "version": "0.1.2",
+        "treeSha256": "b77353e2e427c43191de6d42f45308b6b88b0a97a877395deead6e2e1c38e63b",
+        "archiveSha256": "aaa144450e1cf6b4b3f882717aabfb1b7de6ce717d9de9636f5bc57a62884498",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/personal-shopper", "icon": "ShoppingBag"},
     },
     {
         "name": "papyrus",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-papyrus",
-        "commit": "6ca7bc697f39b78a5a4dba7bdf8d3e5eaa11348f",
-        "version": "0.2.1",
-        "treeSha256": "b1824326e63a22eb8577d24e7f511defaaf14f29bcd1d4acc87ddf35b3b50bbf",
-        "archiveSha256": "7627a4a3ad11134f8838365afff52e68e53f119c7804ad4c1552f320204965d2",
+        "commit": "36e0bc725796e37240fc854eaf905948ab1c4c7a",
+        "version": "0.2.2",
+        "treeSha256": "86a7e60af8e5b6947fe9d4cc062d35a61908feac17a0cebbbc9cea48d79917ba",
+        "archiveSha256": "022184b4062cf639f0380aa339322fdd7be90a4dfc7228bb6701c5958dd533a6",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/papyrus", "icon": "ScrollText"},
     },
     {
         "name": "file-explorer",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-file-explorer",
-        "commit": "e68646984d6825eade82dfbf067879d8b55441ab",
-        "version": "1.0.1",
-        "treeSha256": "3b252a4744f68365370b270125b01c3cf87ec02341c1c52594d6a91feecd1799",
-        "archiveSha256": "8e23a62ec7b608e771968970339f4ddf7cf832c8aad2b76a9cf8281df34f3c2b",
+        "commit": "9ccc81e91d2b86b5d5cde214c0bfdf3a71a570aa",
+        "version": "1.0.2",
+        "treeSha256": "93e6e4b74fecccc7a6eb57f769b186ca866f86dee5af85b55c75a7b8b4535396",
+        "archiveSha256": "f1cee8aacf8b35ca806182fb5b7d31b2824feb942d4eb397cb9b93dc4c454111",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/file-explorer", "icon": "FolderTree"},
     },
     {
         "name": "design-critique",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-design-critique",
-        "commit": "2f57dc551dd8c7c59452bdbde09071dcb3b8123b",
-        "version": "1.0.2",
-        "treeSha256": "b2e1616e3daff837f509a37b211325fc9cd172399afbadda0bae8ffce41ff18d",
-        "archiveSha256": "9bf18cdf9afaed07d1fcfb1e43f362e6a3c4f8dc84e222ef10b9d7d9496abd2a",
+        "commit": "092451a698caad5708379bca5437c58d5cf6f1d9",
+        "version": "1.0.3",
+        "treeSha256": "c1314f219392fe4c3d82a3ee48da44af82a7bf6665193621a06c564b17eb0bc7",
+        "archiveSha256": "a373e0137f23375fca5ad85cdbd8279b956696df9e66803c2f125220c9d20e98",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/design-critique", "icon": "PencilRuler"},
     },
     {
         "name": "pptx-maker",
         "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
-        "commit": "1c47c5099df4302f74de828407f87f193edea758",
-        "version": "0.3.1",
-        "treeSha256": "f0388d8923475bbd5a2b146dae4d39a18feabeda914d6bb7739709765c8fa723",
-        "archiveSha256": "fce718daf223b63a74a8cf43013efe8db7090fb05ad777cea38b6933fdb0f386",
+        "commit": "a622dc0eff74ffe2e927871f07400e7ab21ee5da",
+        "version": "0.3.3",
+        "treeSha256": "bcb5c102fb50df1541d5dab1fb59d186b291479e5b90a890edf681832d0fb976",
+        "archiveSha256": "c9c9525a76c7852613661f7e6016c137e0d7a548069f97abf841515ff56c4677",
         "minAppSdkLevel": 1,
         "legacyNav": {"route": "/pptx-maker", "icon": "Presentation"},
     },
@@ -347,3 +347,135 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
     from kiro_crew.apps.builtin_adoption_fetch import adoption_tree_digest
 
     assert adoption_tree_digest(checkout) == adoption_tree_digest(tree)
+
+
+# --------------------------------------------------------------------------- #
+# scripts/adoption_pin.py: minAppSdkLevel comes from the seams the tree uses
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("manifest", "files", "uses"),
+    [
+        ({}, {}, {}),
+        ({"agentTools": {}}, {}, {"app.json agentTools": 2}),
+        (
+            {"permissions": {"agentTurns": True, "workerAutoApprove": True}},
+            {},
+            {"app.json permissions.agentTurns": 2, "app.json permissions.workerAutoApprove": 2},
+        ),
+        ({"permissions": {"agentTurns": "true"}}, {}, {}),
+        ({"credentialMasks": ["data/token.json"]}, {}, {"app.json credentialMasks": 3}),
+        ({}, {"backend/routes.py": "def f(ctx):\n    return ctx.turns.run\n"}, {"ctx.turns": 2}),
+        ({}, {"backend/_host.py": "x = _bound_ctx().lifecycle\n"}, {"ctx.lifecycle": 2}),
+        (
+            {},
+            {"backend/_host.py": "def f(self):\n    return self._ctx.untrusted\n"},
+            {"ctx.untrusted": 2},
+        ),
+        (
+            {},
+            {
+                "backend/_host.py": "def f(bound):\n    return getattr(bound(), 'auto_approve', None)\n"
+            },
+            {"ctx.auto_approve": 2},
+        ),
+        (
+            {},
+            {
+                "backend/_host.py": "def f(app_context):\n    return hasattr(app_context, 'lifecycle')\n"
+            },
+            {"ctx.lifecycle": 2},
+        ),
+        ({}, {"backend/_host.py": "def f(ctx:\n    ctx.lifecycle\n"}, {"ctx.lifecycle": 2}),
+        ({}, {"backend/manifest.py": "def f(manifest):\n    return manifest.lifecycle\n"}, {}),
+        ({}, {"tests/fakehost.py": "ctx.turns = None\n"}, {}),
+        ({}, {"backend/test_seams.py": "ctx.turns = None\n"}, {}),
+        ({}, {"conftest.py": "ctx.untrusted = None\n"}, {}),
+    ],
+)
+def test_the_pin_tool_finds_every_seam_above_level_one(
+    monkeypatch, tmp_path, manifest, files, uses
+):
+    from builtin_adoption_helpers import repository_manifest, write_tree
+
+    tree = write_tree(tmp_path / "tree", repository_manifest(**manifest), files)
+    assert _pin_tool(monkeypatch)._seam_level_uses(tree) == uses
+
+
+def test_the_pin_tool_never_lets_a_level_fall_below_what_the_tree_uses(monkeypatch):
+    tool = _pin_tool(monkeypatch)
+    uses = {"ctx.turns": 2, "app.json credentialMasks": 3}
+    assert tool._sdk_level_refusal(NAME, 1, {}) is None
+    assert tool._sdk_level_refusal(NAME, 3, uses) is None
+    for level in (1, 2):
+        refusal = tool._sdk_level_refusal(NAME, level, uses)
+        assert refusal is not None and "--min-sdk-level 3" in refusal
+        assert "app.json credentialMasks" in refusal
+    assert "ctx.turns" in tool._sdk_level_refusal(NAME, 1, uses)
+    assert "ctx.turns" not in tool._sdk_level_refusal(NAME, 2, uses)
+
+
+def _measure_tree(monkeypatch, tmp_path, tool, files, level):
+    """``_measure`` end to end on a local tree, with the network and the E-checks stubbed."""
+    import hashlib
+    import shutil
+
+    from builtin_adoption_helpers import make_archive, repository_manifest, write_tree
+
+    tree = write_tree(tmp_path / "tree", repository_manifest(), files)
+    archive = make_archive(tree, COMMIT)
+
+    def fake_download(_url, dest):
+        dest.write_bytes(archive)
+        return hashlib.sha256(archive).hexdigest()
+
+    monkeypatch.setattr(tool, "_clone", lambda _r, _c, dest: shutil.copytree(tree, dest))
+    monkeypatch.setattr(tool, "_download", fake_download)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: (tree, repository_manifest()))
+    monkeypatch.setattr(tool, "pinned_tree_refusal", lambda *_args, **_kwargs: None)
+    work = tmp_path / "work"
+    work.mkdir()
+    pin = _parse([_row(minAppSdkLevel=level)])[NAME]
+    return tool._measure(pin, work)
+
+
+def test_the_pin_tool_refuses_level_one_for_a_tree_that_uses_level_two(monkeypatch, tmp_path):
+    tool = _pin_tool(monkeypatch)
+    files = {"backend/_host.py": "def f(ctx):\n    return getattr(ctx, 'lifecycle', None)\n"}
+    with pytest.raises(SystemExit, match="--min-sdk-level 2"):
+        _measure_tree(monkeypatch, tmp_path / "a", tool, files, 1)
+    row = _measure_tree(monkeypatch, tmp_path / "b", tool, files, 2)
+    assert row["minAppSdkLevel"] == 2
+
+
+def test_the_pin_tool_keeps_level_one_for_a_tree_without_newer_seams(monkeypatch, tmp_path):
+    tool = _pin_tool(monkeypatch)
+    assert _measure_tree(monkeypatch, tmp_path, tool, {}, 1)["minAppSdkLevel"] == 1
+
+
+@pytest.mark.parametrize("level", [0, 99])
+def test_the_pin_tool_refuses_a_level_this_build_cannot_run_before_any_git_call(monkeypatch, level):
+    tool = _pin_tool(monkeypatch)
+    cloned = []
+    monkeypatch.setattr(tool, "_clone", lambda *args: cloned.append(args))
+    with pytest.raises(SystemExit, match="--min-sdk-level"):
+        tool._compute(REPOSITORY, COMMIT, level)
+    assert cloned == []
+
+
+def test_the_pin_tool_passes_the_flag_through_to_the_row(monkeypatch):
+    tool = _pin_tool(monkeypatch)
+    levels = []
+
+    def fake_clone(_repository, _commit, dest):
+        dest.mkdir()
+        (dest / "app.json").write_text(
+            json.dumps({"name": NAME, "version": "1.2.3"}), encoding="utf-8"
+        )
+
+    monkeypatch.setattr(tool, "_clone", fake_clone)
+    monkeypatch.setattr(tool, "_measure", lambda pin, _work: levels.append(pin.min_app_sdk_level))
+    assert tool.main(["compute", REPOSITORY, COMMIT]) == 0
+    assert tool.main(["compute", REPOSITORY, COMMIT, "--min-sdk-level", "2"]) == 0
+    assert levels == [1, 2]

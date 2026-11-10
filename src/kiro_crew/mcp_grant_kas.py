@@ -165,6 +165,27 @@ def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool 
     return kas_tokens_entry_name(mcp_url) in names
 
 
+async def forget_kas_grant(mcp_url: str, *, store_root: Path | None = None) -> None:
+    """Delete the engine's ``tokens`` and ``client`` entries for *mcp_url*.
+
+    By name only, so no entry is decrypted. Refuses a linked store directory, as
+    the store does. For Crew-owned sign-in taking custody of a url (one grant).
+    """
+    if not mcp_url.isascii():
+        return
+    if store_root is None:
+        store_root = grant_store_root(data_home())
+    root = store_root
+    linked = await asyncio.to_thread(
+        lambda: any(is_link_or_junction(p) for p in (root.parent, root, root / ".vault"))
+    )
+    if linked:
+        return
+    vault = SecretVault(store_root)
+    for kind in (_TOKENS_KIND, "client"):
+        await vault.delete(f"{_KEY_PREFIX}.{kas_connection_hash(mcp_url)}.{kind}")
+
+
 async def kas_grant_observed(mcp_url: str) -> bool | None:
     """:func:`kas_grant_presence` off the loop, SEL-audited when persistence is on.
 

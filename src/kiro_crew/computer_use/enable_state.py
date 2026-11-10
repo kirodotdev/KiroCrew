@@ -100,7 +100,7 @@ def is_enabled(state: "dict | None" = None, *, audit_tool: str = "") -> bool:
     inside one dispatch.
 
     The opt-in is ANDed with the ``computer_use`` governance key: a policy that
-    pins it off keeps the feature off, and an enterprise build is off until a
+    pins it off keeps the feature off, and an LTS build is off until a
     policy turns it on (RFC D3; :func:`locked_by_policy`).
     """
     data = load_state() if state is None else state

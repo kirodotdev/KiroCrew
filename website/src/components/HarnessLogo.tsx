@@ -1,4 +1,5 @@
-// Each agent harness's own brand mark, for the Agent Harness settings list.
+// Each agent harness's own brand mark, for the Agent Harness settings list and
+// the composer's model chip (a session on another harness than the install's).
 //
 // The marks are static brand assets imported as plain URLs (no svgr, no inline
 // SVG paths in TSX), the same carve-out from `use-lucide-icons` that the other

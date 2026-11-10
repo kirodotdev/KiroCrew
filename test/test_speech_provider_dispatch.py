@@ -421,6 +421,109 @@ class TestSttDispatch:
         assert transcribe.batch_duration_cap_secs(cfg) == transcribe._MAX_AUDIO_SECS
 
 
+class _WavOnlyStt(_AcmeStt):
+    """Acme with ``needs_pcm_wav``: notes the format of each clip while it still exists."""
+
+    needs_pcm_wav = True
+
+    async def transcribe_file(self, audio_path: str, stt_config: Any) -> Optional[str]:
+        with wave.open(audio_path, "rb") as wav:
+            shape = (wav.getframerate(), wav.getnchannels(), wav.getsampwidth())
+        self.clips.append((audio_path, shape))
+        return "hello from acme"
+
+
+def _fake_decoder(monkeypatch, *, rate: int = 16000, frames: int = 4) -> list:
+    """Stand in for ffmpeg: write a mono 16-bit WAV at *rate* to the requested output."""
+    calls: list = []
+
+    async def extract(audio_path, start_secs, end_secs, out_path, *, timeout_secs):
+        calls.append((audio_path, start_secs, end_secs, out_path))
+        with wave.open(out_path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(b"\x00\x00" * frames)
+        return True
+
+    monkeypatch.setattr(transcribe, "_extract_segment", extract)
+    return calls
+
+
+class TestPcmWavProvider:
+    @pytest.mark.parametrize(
+        "value, needs", [(True, True), (None, False), ("yes", False), (1, False)]
+    )
+    def test_only_exactly_true_asks_for_wav(self, value, needs) -> None:
+        acme = _AcmeStt()
+        if value is not None:
+            acme.needs_pcm_wav = value  # type: ignore[attr-defined]
+        assert speech_providers.needs_pcm_wav(acme) is needs
+
+    def test_a_webm_clip_arrives_as_a_wav_copy_that_is_then_removed(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        acme = _WavOnlyStt()
+        _install(stt=(acme,))
+        calls = _fake_decoder(monkeypatch)
+        clip = tmp_path / "recording.webm"
+        clip.write_bytes(b"\x1a\x45\xdf\xa3 webm bytes")
+        cfg = SttConfig(provider="acme")
+        assert asyncio.run(transcribe.transcribe_audio(str(clip), cfg)) == "hello from acme"
+        [(path, shape)] = acme.clips
+        assert path != str(clip) and shape == (16000, 1, 2)
+        assert calls == [(str(clip), 0.0, transcribe._MAX_AUDIO_SECS + 1, path)]
+        assert not Path(path).exists()
+
+    def test_a_pcm_wav_clip_is_passed_unchanged(self, tmp_path, monkeypatch) -> None:
+        acme = _WavOnlyStt()
+        _install(stt=(acme,))
+        calls = _fake_decoder(monkeypatch)
+        clip = tmp_path / "clip.wav"
+        clip.write_bytes(_wav(b"\x01\x00" * 4))
+        asyncio.run(transcribe.transcribe_audio(str(clip), SttConfig(provider="acme")))
+        assert acme.clips == [(str(clip), (16000, 1, 2))] and calls == []
+
+    @pytest.mark.parametrize("over_length", [False, True])
+    def test_no_usable_copy_fails_without_calling_the_provider(
+        self, over_length, tmp_path, monkeypatch
+    ) -> None:
+        acme = _WavOnlyStt()
+        _install(stt=(acme,))
+        if over_length:
+            # One frame a second: a header just past the hour, in a few bytes.
+            calls = _fake_decoder(monkeypatch, rate=1, frames=transcribe._MAX_AUDIO_SECS + 1)
+        else:
+            calls = []
+
+            async def no_decoder(audio_path, start_secs, end_secs, out_path, *, timeout_secs):
+                calls.append((audio_path, start_secs, end_secs, out_path))
+                return False
+
+            monkeypatch.setattr(transcribe, "_extract_segment", no_decoder)
+        clip = tmp_path / "memo.ogg"
+        clip.write_bytes(b"OggS")
+        assert (
+            asyncio.run(transcribe.transcribe_audio(str(clip), SttConfig(provider="acme"))) is None
+        )
+        assert acme.clips == []
+        assert not Path(calls[0][3]).exists()
+
+    def test_a_container_the_decoder_does_not_pin_is_never_converted(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A sniffed playlist would make ffmpeg open the files it names."""
+        acme = _WavOnlyStt()
+        _install(stt=(acme,))
+        calls = _fake_decoder(monkeypatch)
+        clip = tmp_path / "memo.m3u8"
+        clip.write_bytes(b"#EXTM3U\n#EXTINF:1,\n/elsewhere/private.wav\n")
+        assert (
+            asyncio.run(transcribe.transcribe_audio(str(clip), SttConfig(provider="acme"))) is None
+        )
+        assert calls == [] and acme.clips == []
+
+
 @pytest.mark.parametrize(
     "lookup, builtin",
     [("stt", name) for name in ("local", "apple", "transcribe", "codex", "off")]

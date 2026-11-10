@@ -539,6 +539,8 @@ class TestEveryCeilingFieldHasAComposeClass:
             "agentcore_gateway_url",
             "agentcore_workload_name",
             "mcp_registry_local_control_plane",
+            # A collector metrics go to: a lower tier supplying one adds egress.
+            "telemetry_otlp_endpoint",
             "tier",
             # A lower tier never supplies it; compose_tier_ladder sets it after the fold.
             "lower_tier_folded",
@@ -728,6 +730,21 @@ class TestBootFlagsComposeStrictestWins:
             subordinate={"allow_terminal": True},
         )
         assert boot.allow_terminal is True
+
+    @pytest.mark.parametrize(
+        ("authority", "subordinate", "expected"),
+        [
+            ({}, {}, None),  # neither tier states it: no opinion
+            ({"allow_terminal": False}, {}, False),
+            ({}, {"allow_terminal": False}, False),
+            ({"allow_terminal": True}, {}, True),
+        ],
+    )
+    def test_a_silent_tier_has_no_say_on_the_terminal(
+        self, monkeypatch, tmp_path, central, authority, subordinate, expected
+    ):
+        boot = self._boot(monkeypatch, tmp_path, central, authority, subordinate)
+        assert boot.allow_terminal is expected
 
 
 # ──────────────────────────────────────────────────────────────────────────

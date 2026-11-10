@@ -558,6 +558,8 @@ class WsStream:
         budget: Optional[BufferBudget] = None,
     ) -> None:
         self.id: int = head["id"]
+        #: The relayed caller this viewer belongs to, checked when the frame was read.
+        self.user: str = head["user"]
         self._head = head
         self._send = send
         self._ingress = ingress
@@ -638,8 +640,7 @@ class WsStream:
         self._closed_by_relay = True
         self._relay_close_code = code
         self._relay_close_reason = reason
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
+        self.cancel()
 
     def cancel(self) -> None:
         if self._task is not None and not self._task.done():
@@ -676,9 +677,9 @@ class WsStream:
             logger.warning("relayed WebSocket %d failed", self.id, exc_info=True)
             await _quietly(self._send(build_ws_close(self.id, None, "relay client error")))
         finally:
-            if writer is not None and not writer.done():
-                writer.cancel()
             if writer is not None:
+                if not writer.done():
+                    writer.cancel()
                 # Settled before the stream is released, so its in-flight
                 # message is given back exactly once, by the writer itself.
                 await asyncio.gather(writer, return_exceptions=True)

@@ -154,6 +154,8 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # missing one, so an empty directory means what an absent one does, and the
     # bind is live, so a snapshot the gateway writes later is seen.
     "kas-mcp-launch",
+    # Connection bridge snapshots, for the same reasons.
+    "crew-oauth-bridge",
     # Empty directories are absent-equivalent to the approval and resolution readers.
     # Pre-creation gives Linux concrete bind targets on a fresh install.
     "mcp-launch-approvals",
@@ -206,6 +208,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "host-exec-grants",
     "pi-gate",
     "kas-mcp-launch",
+    "crew-oauth-bridge",
     "mcp-launch-approvals",
     "mcp/resolved",
     "template-mcp-additions",
@@ -295,6 +298,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
     "kas-mcp-launch": (
         "sealed KAS MCP launch snapshots",
         "the agent could choose the command and environment a later MCP server start runs",
+    ),
+    "crew-oauth-bridge": (
+        "sealed Connection bridge snapshots",
+        "the agent could choose the bridge token and port a later Connection bridge uses",
     ),
     "mcp-launch-approvals": (
         "sealed MCP launch approvals",
@@ -613,7 +620,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # The Web Push stores, written lazily on the first subscribe or key fetch; see
     # its entry in ``_CREW_HIDDEN_LEAVES``.
     "web-push",
-    # The governance cache, masked in every tier and lifted READ-ONLY for an enterprise
+    # The governance cache, masked in every tier and lifted READ-ONLY for an LTS
     # sandbox (``sandbox_tiers.enterprise_policy_cache_view``). Written on the first
     # successful fetch, so a sandbox spawned before then would find no name to mask or
     # seal and could create the directory and plant a ceiling there. An empty directory

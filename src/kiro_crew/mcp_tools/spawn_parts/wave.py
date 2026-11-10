@@ -26,7 +26,6 @@ from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.subagent_persistence import agent_dir_for_display
 from kiro_crew.subagent_read_collected import post_mark_collected
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
@@ -243,22 +242,19 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     def _redact_sa(text: str) -> str:
         return redact(text)
 
-    def _inline_result(aid: str, raw: str) -> str:
+    def _inline_result(result_path: str, raw: str) -> str:
         """A finished child's retained output as this reply carries it.
 
         Redacted, and past ``COMPLETION_KEEP_DEFAULT_CHARS`` replaced by the same
         summary plus disk path that ``spawn_run`` gives, so a large transcript
         does not fill the caller's context window. One rule for a child that
-        completed and one that ended in error.
+        completed and one that ended in error. The path is the gateway's, from
+        the status read: this process runs on the resolved data home, so a path
+        built here would not carry the configured ``KIROCREW_HOME`` spelling.
         """
         result_text = _redact_sa(raw)
-        if len(result_text) > COMPLETION_KEEP_DEFAULT_CHARS:
-            try:
-                result_path = str(agent_dir_for_display(aid) / "result.txt")
-            except (ValueError, OSError):
-                result_path = ""
-            if result_path:
-                result_text = mcp_core.summarize_result(result_text, result_path)
+        if result_path and len(result_text) > COMPLETION_KEEP_DEFAULT_CHARS:
+            result_text = mcp_core.summarize_result(result_text, result_path)
         return result_text
 
     # Validate individual agent entries (schema guarantees dict entries)
@@ -621,12 +617,16 @@ class _SubAgentsStep(DeferredTool):
                     "agent": label,
                     "status": "error",
                     "error": redact(sa_st["error"]),
-                    "text": self._inline_result(aid, sa_st.get("result", "")),
+                    "text": self._inline_result(
+                        sa_st.get("result_path", ""), sa_st.get("result", "")
+                    ),
                 }
                 sa_results.append(json.dumps(failure))
             else:
                 completed += 1
-                result_text = self._inline_result(aid, sa_st.get("result", ""))
+                result_text = self._inline_result(
+                    sa_st.get("result_path", ""), sa_st.get("result", "")
+                )
                 record: dict[str, Any] = {
                     "agent": label,
                     "status": "completed",

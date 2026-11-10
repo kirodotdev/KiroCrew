@@ -94,17 +94,20 @@ describe('mate attribution on notifications', () => {
 
 describe('a failed roster read', () => {
   const twoNotes = [fromAda, { ...fromAda, ts: '2026-10-07T10:01:00.000Z' }]
+  // The roster read retries on its own (`retryThroughRestart`); no backoff, so
+  // a read that keeps failing shows its notice at once.
+  const noBackoff = { queryDefaults: { retryDelay: 0 } }
 
   it('is reported once in a feed showing mate notes, and the kind icon stays', async () => {
     members.mockRejectedValue(new Error('503'))
-    renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} />, { store: feedState(twoNotes) })
+    renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} />, { store: feedState(twoNotes), ...noBackoff })
     expect(await screen.findAllByTestId('notification-crewmate-roster-error')).toHaveLength(1)
     expect(screen.queryByTestId('notification-crewmate-face')).toBeNull()
   })
 
   it('is reported in the detail panel of a mate note', async () => {
     members.mockRejectedValue(new Error('503'))
-    renderWithProviders(<NotificationDetailPanel n={fromAda} onClose={() => {}} />)
+    renderWithProviders(<NotificationDetailPanel n={fromAda} onClose={() => {}} />, noBackoff)
     expect(await screen.findByTestId('notification-crewmate-roster-error')).toBeInTheDocument()
   })
 
@@ -115,18 +118,39 @@ describe('a failed roster read', () => {
         <NotificationFeed selectedTs={fromAda.ts} onSelect={() => {}} />
         <NotificationDetailPanel n={fromAda} onClose={() => {}} />
       </>,
-      { store: feedState(twoNotes) },
+      { store: feedState(twoNotes), ...noBackoff },
     )
     expect(await screen.findAllByTestId('notification-crewmate-roster-error')).toHaveLength(1)
   })
 
   it('recovers through Retry', async () => {
     roster([{ name: 'Ada', slug: 'ada' }])
-    members.mockRejectedValueOnce(new Error('503'))
-    renderWithProviders(<NotificationDetailPanel n={fromAda} onClose={() => {}} />)
+    // The read and the one retry an answered failure gets both fail.
+    members.mockRejectedValueOnce(new Error('503')).mockRejectedValueOnce(new Error('503'))
+    renderWithProviders(<NotificationDetailPanel n={fromAda} onClose={() => {}} />, noBackoff)
     fireEvent.click(await screen.findByTestId('notification-crewmate-roster-retry'))
     expect(await screen.findByTestId('notification-crewmate-face')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByTestId('notification-crewmate-roster-error')).toBeNull())
+  })
+
+  it('keeps Retry focusable while the retry runs', async () => {
+    // The error and its Retry stay up while the retry runs, and Retry stays
+    // focusable: unmounting it or a native `disabled` would drop keyboard focus.
+    // The read and the one retry an answered failure gets both fail; the read
+    // Retry starts never settles.
+    members
+      .mockRejectedValueOnce(new Error('503'))
+      .mockRejectedValueOnce(new Error('503'))
+      .mockReturnValueOnce(new Promise(() => {}) as never)
+    renderWithProviders(<NotificationDetailPanel n={fromAda} onClose={() => {}} />, noBackoff)
+    const retry = await screen.findByTestId('notification-crewmate-roster-retry')
+    retry.focus()
+    fireEvent.click(retry)
+    await waitFor(() => expect(retry).toHaveAttribute('aria-disabled', 'true'))
+    expect(retry).not.toBeDisabled()
+    expect(document.activeElement).toBe(retry)
+    fireEvent.click(retry)
+    expect(members).toHaveBeenCalledTimes(3)
   })
 
   it('is not read at all by a feed with no mate notes', async () => {
@@ -145,7 +169,7 @@ describe('a failed roster read', () => {
         <button ref={bellRef}>bell</button>
         <NotificationBanner bellRef={bellRef} popoverOpen={false} onOpenNote={() => {}} />
       </>,
-      { route: '/settings' },
+      { route: '/settings', ...noBackoff },
     )
     act(() => { dispatchLiveNotification(twoNotes[0]) })
     expect(await screen.findAllByTestId('notification-crewmate-roster-error')).toHaveLength(1)

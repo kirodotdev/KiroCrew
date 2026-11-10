@@ -15,6 +15,11 @@ a protocol error) is left alone: re-running it costs a process spawn and cannot
 succeed. A kiro-cli session is not re-attempted: that engine exposes no client
 request that re-initializes one server, so the session's MCP report names the
 server for a restart instead.
+
+A managed server that only ran out of time starting is the other failure a second
+attempt can cure: :func:`is_start_timeout_failure` reads it, and the KAS readiness
+barrier (``session_handle_mcp.wait_mcp_ready``) re-attempts such a server once,
+while the session start is still waiting for it.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from __future__ import annotations
 import re
 
 from kiro_crew.acp.transport_errors import is_auth_failure_output
+from kiro_crew.mcp_gateway.backend_handshake import INITIALIZE_DEADLINE_REASON
 
 #: Re-attempts per server per session. Each is one connect attempt of a server
 #: that is already failed, so a server that never recovers costs at most this
@@ -57,3 +63,23 @@ def is_recoverable_auth_failure(error_message: object) -> bool:
     if _CREDENTIAL_ABSENT.search(error_message) is not None:
         return True
     return is_auth_failure_output(error_message)
+
+
+# A host's own connect timeout ("connection timed out after 60000ms" from KAS).
+# Word-bounded so a config error that merely names a "timeout" does not qualify.
+_TIMED_OUT = re.compile(r"\btimed\s+out\b", re.IGNORECASE)
+
+
+def is_start_timeout_failure(error_message: object) -> bool:
+    """Whether a failed server's error reads as a start that ran out of time.
+
+    True for the gateway's first-``initialize`` deadline
+    (:data:`~kiro_crew.mcp_gateway.backend_handshake.INITIALIZE_DEADLINE_REASON`)
+    and for a host connect timeout. A bad command, a crash or a protocol error
+    is not one: a second spawn of it fails the same way.
+    """
+    if not isinstance(error_message, str) or not error_message:
+        return False
+    if INITIALIZE_DEADLINE_REASON in error_message:
+        return True
+    return _TIMED_OUT.search(error_message) is not None

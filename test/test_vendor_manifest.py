@@ -273,7 +273,7 @@ def test_ci_wires_the_manifest_gate() -> None:
     the property this test protects is not that the script name appears
     somewhere — it is that no ``needs:`` and no ``if:`` can keep the gate from
     running on a given diff. The one condition the job carries, by exact text,
-    skips a push to main only while the merge queue is on, when the merge group
+    skips a push to main only when the merge queue landed it, when the merge group
     already verified this exact tree; the one condition the step carries runs it
     unless the whole run was cancelled. No diff shape enters either.
     """
@@ -286,7 +286,8 @@ def test_ci_wires_the_manifest_gate() -> None:
     job = yaml.safe_load(text)["jobs"]["source-gates"]
     assert "needs" not in job, "source-gates gained a dependency and can now be skipped"
     assert (
-        job.get("if") == "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
+        job.get("if")
+        == "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' || github.actor != 'github-merge-queue[bot]'"
     ), "source-gates's condition is not exactly the merge-queue push skip"
     step = next(
         s for s in job["steps"] if "scripts/verify_vendor_manifest.py" in str(s.get("run", ""))

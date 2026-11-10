@@ -319,6 +319,23 @@ async def test_runner_lane_refuses_a_wait_only_its_own_ancestor_could_end() -> N
 
 
 @pytest.mark.asyncio
+async def test_runner_lane_cancel_after_a_refusal_frees_no_slot() -> None:
+    """A waiter refused while parked, then cancelled before it resumes, never
+    held a slot: its cancel must not give one back for a holder still running."""
+    lane = r.RunnerLane(2, name="refuse-cancel")
+    await lane.acquire("outer")
+    await lane.acquire("unrelated")
+    nested = asyncio.create_task(lane.acquire("inner", ancestors=["outer"]))
+    await asyncio.sleep(0)
+    assert lane.waiting == 1
+    lane.set_effective_cap(1)
+    lane.release("unrelated")  # pump refuses inner: only its ancestor holds now
+    nested.cancel()  # the cancel lands before inner resumes
+    await asyncio.gather(nested, return_exceptions=True)
+    assert lane.running == 1 and lane.holders == frozenset({"outer"})
+
+
+@pytest.mark.asyncio
 async def test_runner_lane_parks_an_ordinary_waiter_however_long_it_waits() -> None:
     """The refusal is for a self-blocking wait ONLY: a root has no ancestor, so
     a legitimately long queue wait is still served rather than turned down."""

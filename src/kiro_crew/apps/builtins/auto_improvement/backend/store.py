@@ -225,7 +225,9 @@ def read_json(path: Path, default: Any = None) -> Any:
 
 
 def _validate_key(key: str) -> str:
-    if not _SAFE_KEY_RE.match(key or ""):
+    # fullmatch, not match: `$` also matches just before a trailing newline, so
+    # `match` admits "key\n", a file name Windows refuses with an OSError.
+    if not _SAFE_KEY_RE.fullmatch(key or ""):
         raise ValueError(f"unsafe session record key: {key!r}")
     return key
 

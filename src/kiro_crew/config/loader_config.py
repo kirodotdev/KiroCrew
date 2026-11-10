@@ -54,7 +54,7 @@ from kiro_crew.config.loader_document import (
     _notify_live_watch,
     read_config_for_update,
     stamp_config_meta,
-    unsandboxed_exec_declared,
+    strip_undeclared_resolved_defaults,
     write_config_atomically,
 )
 from kiro_crew.config.loader_locations import (
@@ -383,12 +383,13 @@ class KiroCrewConfig:
                 },
                 "batch_write_guard": {
                     "type": "boolean",
-                    "default": False,
+                    "default": True,
                     "x-meta": {
                         "label": "Batch write guard",
                         "help": (
-                            "Off by default. When on, refuse a write-class tool call "
-                            "issued in the same parallel tool batch as a read-class "
+                            "On by default; set false to turn it off. Refuses a "
+                            "write-class tool call issued in the same parallel tool "
+                            "batch as a read-class "
                             "call, so the model cannot write arguments that quote a "
                             "read it has not seen returned yet. A discipline guard, not "
                             "a security control: the security floor runs first and is "
@@ -875,10 +876,9 @@ class KiroCrewConfig:
         # reader about one host. On a fresh install there is no file yet, which reads
         # as undeclared and is exactly right: the document this call creates should
         # not contain the key at all.
-        if not unsandboxed_exec_declared():
-            agent_section = d.get("agent")
-            if isinstance(agent_section, dict):
-                agent_section.pop("sandbox_allow_unsandboxed_exec", None)
+        # ``agent.kas_bundle`` is stripped the same way: undeclared, it resolves
+        # through ``kas_bundle_build_default()`` (on in a nightly build only).
+        strip_undeclared_resolved_defaults(d)
         # The harness fields go back to disk exactly as ``config.json`` stores
         # them, never from the in-memory value, which is RESOLVED: "no choice"
         # (absent or "") reads as today's default, and a pick this deployment
@@ -1514,11 +1514,11 @@ class KiroCrewConfig:
                     crewmate_backend_pin(self, session_key) if backend_override is None else None
                 ),
             )
-            # Enterprise (RFC D6): a session on KAS is refused here, before any process
+            # LTS (RFC D6): a session on KAS is refused here, before any process
             # exists, when boot proved KAS cannot start on this host. KAS sessions only:
             # the Kiro CLI path gains nothing (H13), and the gate above never raises (H3).
             if _backend == ACP_BACKEND_KAS:
-                from kiro_crew.enterprise_boot import refuse_unstartable_kas
+                from kiro_crew.lts_boot import refuse_unstartable_kas
 
                 refuse_unstartable_kas()
             # Resolved BEFORE the model, and threaded into the resolution: the

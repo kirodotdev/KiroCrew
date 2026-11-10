@@ -226,10 +226,18 @@ export default function McpCustomServerModal({ open, onClose, editName, askAgent
       <div className="flex flex-col gap-3 p-1" {...maybe(editing ? undefined : 'mcp.custom-form', guideAnchor)}>
         {!editing && (
           <p className="text-xs text-muted m-0">
-            {i18nT('components.mcpCustomServerModal.paste_an')} <code>{i18nT('components.mcpCustomServerModal.mcpservers')}</code> {i18nT('components.mcpCustomServerModal.block_from_a_readme_a')}{' '}
-            <code>{'{name: spec}'}</code> {i18nT('components.mcpCustomServerModal.map_or_a_single_spec_specs_take')}{' '}
-            <code>{i18nT('components.mcpCustomServerModal.command')}</code>/<code>{i18nT('components.mcpCustomServerModal.args')}</code>/<code>{i18nT('components.mcpCustomServerModal.env')}</code> {i18nT('components.mcpCustomServerModal.stdio_or')}{' '}
-            <code>{i18nT('components.mcpCustomServerModal.url')}</code>/<code>{i18nT('components.mcpCustomServerModal.headers')}</code> {i18nT('components.mcpCustomServerModal.remote')}
+            <Trans
+              i18nKey="components.mcpCustomServerModal.paste_config_hint"
+              components={{
+                servers: <code>{i18nT('components.mcpCustomServerModal.mcpservers')}</code>,
+                map: <code>{'{name: spec}'}</code>,
+                command: <code>{i18nT('components.mcpCustomServerModal.command')}</code>,
+                args: <code>{i18nT('components.mcpCustomServerModal.args')}</code>,
+                env: <code>{i18nT('components.mcpCustomServerModal.env')}</code>,
+                url: <code>{i18nT('components.mcpCustomServerModal.url')}</code>,
+                headers: <code>{i18nT('components.mcpCustomServerModal.headers')}</code>,
+              }}
+            />
           </p>
         )}
         {editing && specQuery.isLoading && (

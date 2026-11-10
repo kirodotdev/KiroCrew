@@ -118,7 +118,17 @@ def _dashboard_list_target(key: str, label: str) -> dict[str, Any]:
     return {"store": catalog.STORE_DASHBOARD, "key": key, "label": label, "list": True}
 
 
+def _refuse_locked(path: str) -> None:
+    """Refuse a config path this build ignores; the settings route refuses it too (RFC D12)."""
+    from kiro_crew.edition_locks import LOCKED_REASON, config_path_locked
+
+    if config_path_locked(path):
+        # A card for it would offer a switch that does nothing.
+        raise catalog.CardCatalogError("setting_not_editable", f"'{path}' is {LOCKED_REASON}")
+
+
 def _kirocrew_target(path: str, label: str, spec: dict[str, Any]) -> dict[str, Any]:
+    _refuse_locked(path)
     target: dict[str, Any] = {"store": catalog.STORE_KIROCREW, "key": path, "label": label}
     allowed = spec_allowed_values(spec)
     if allowed is not None:
@@ -638,6 +648,7 @@ def setting_spec(path: str) -> dict[str, Any]:
         raise catalog.CardCatalogError(
             "setting_not_editable", f"'{path}' is not a dashboard setting"
         )
+    _refuse_locked(path)
     return spec
 
 

@@ -2,7 +2,7 @@
  *  toggle, cleanup, model switch, tags, PR status refresh) and the split New
  *  button with its create menu (folders, private chats, import, chat in a folder
  *  or on a crew). */
-import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone, RefreshCw } from 'lucide-react'
+import { Plus, Monitor, FolderPlus, FolderX, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronsDownUp, BrushCleaning, MoreVertical, Tag as TagIcon, Columns3, Loader2, Cpu, Server, Megaphone, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../../components/ui/dropdown-menu'
@@ -22,8 +22,8 @@ import { errMessage } from '../../utils/thunkError'
 
 /** The header row. */
 export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
-  const { cleanupOpen, collapsible, connected, createChatInFolder, createChatMutation, createEphemeralChatMutation,
-    createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderCompare, folders, isMobile,
+  const { boardLaneActive, cleanupOpen, collapseAllFolders, collapsible, connected, createChatInFolder, createChatMutation, createEphemeralChatMutation,
+    createRemoteChatMutation, creatingSlot, folderCleanupOpen, folderCompare, folderRowsDrawn, folders, isMobile,
     missingLanes, navigate, newChatMenuOpen, onMenuCloseAutoFocus, onOpenSlotInNewTab,
     paintedSidebarWidth, rawColumns, refuseCreateOffline, remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId,
     restorePreBoardWidth, seedStateLanesMutation, setCleanupOpen, setFolderCleanupOpen, setFolderModal,
@@ -106,6 +106,13 @@ export function renderSidebarHeader(shell: SidebarScope): React.ReactNode {
                 <FolderX size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.clean_up_empty_folders_menu')}
               </DropdownMenuItem>
+              {/* Tree view only: board columns keep per-column collapse overrides this write does not clear. */}
+              {folderRowsDrawn && !boardLaneActive && folders.some(f => !f.collapsed) && (
+                <DropdownMenuItem data-testid="collapse-all-folders" onClick={collapseAllFolders}>
+                  <ChevronsDownUp size={14} className="text-muted" />
+                  {i18nT('pages.chatSidebar.collapse_all_folders')}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem onClick={() => { setBulkModelOpen(true); setBulkModel(''); setBulkSkipRunning(true); setBulkModelError('') }} {...uiLocation('sessions.list-menu.switch-model')}>
                 <Cpu size={14} className="text-muted" />
                 {i18nT('pages.chatSidebar.switch_all_to_model')}

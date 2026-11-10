@@ -46,7 +46,16 @@ def _client_ns(**over):
 
 @pytest.mark.parametrize(
     ("backend", "expected"),
-    [("kas", True), ("kiro", False), ("claude", False)],
+    [
+        ("kas", True),
+        ("kiro", False),
+        ("", False),
+        ("claude", True),
+        ("strands", True),
+        ("goose", True),
+        ("opencode", False),
+        ("deepseek", True),
+    ],
 )
 def test_the_chat_backend_decides_custody(monkeypatch, backend, expected):
     import kiro_crew.config as config
@@ -58,7 +67,7 @@ def test_the_chat_backend_decides_custody(monkeypatch, backend, expected):
             lambda cls: types.SimpleNamespace(agent=types.SimpleNamespace(acp_backend=backend))
         ),
     )
-    assert crew_oauth._chat_backend_is_kas() is expected
+    assert crew_oauth._chat_backend_bridged() is expected
 
 
 def test_an_unreadable_config_keeps_todays_custody(monkeypatch):
@@ -68,7 +77,7 @@ def test_an_unreadable_config_keeps_todays_custody(monkeypatch):
         raise OSError("unreadable")
 
     monkeypatch.setattr(config.KiroCrewConfig, "load", classmethod(_boom))
-    assert crew_oauth._chat_backend_is_kas() is False
+    assert crew_oauth._chat_backend_bridged() is False
 
     import kiro_crew.config.loader as loader
 
@@ -88,7 +97,7 @@ def test_an_unreadable_vault_is_unknown_not_absent(monkeypatch):
 
     monkeypatch.setattr(crew_oauth, "TokenStore", _Broken)
     assert crew_oauth.holds_grant("github") is None
-    assert crew_oauth.holds_grant("asana") is False
+    assert crew_oauth.holds_grant("slack") is False
 
 
 def test_the_sign_in_uses_the_products_one_pkce_implementation():
@@ -297,6 +306,40 @@ async def test_connect_runs_through_the_mint_row_to_granted(
     await async_wait_until(lambda: mint._mints["github"].get("state") == "granted")
     assert "client" not in mint._mints["github"] and "oauth_url" not in mint._mints["github"]
     assert store.read("github")[0].access == "a1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("draw", ["_state", "_challenge"])
+async def test_a_draw_shaped_like_a_key_id_still_reaches_waiting(
+    monkeypatch, github_on_port_zero, draw
+):
+    """``state`` and the PKCE challenge are random draws; the gate reads the rest of the link."""
+    mint = github_on_port_zero
+    # "akia" + 16 alphanumerics: the key-id shape the gate matches regardless of case.
+    drawn = "akia" + "q" * 16 + "x" * 23
+
+    class _Drawn(crew_oauth.SignIn):
+        def __init__(self, slug, *args):
+            super().__init__(slug, *args)
+            setattr(self, draw, drawn)
+
+    monkeypatch.setattr(crew_oauth, "SignIn", _Drawn)
+    await crew_oauth.start_mint_row("github")
+    row = mint._mints["github"]
+    assert row["state"] == "waiting"
+    assert drawn in row["oauth_url"]
+    await row["client"].shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_client_id_carrying_a_key_id_fails_the_row(monkeypatch, github_on_port_zero):
+    mint = github_on_port_zero
+    key_id = "AKIA" + "IOSFODNN7EXAMPLE"
+    monkeypatch.setattr(crew_oauth, "_client", lambda slug: _client_ns(client_id=key_id))
+    await crew_oauth.start_mint_row("github")
+    row = mint._mints["github"]
+    assert row["state"] == "failed"
+    assert row["reason"] == "mint_url_rejected"
 
 
 @pytest.mark.asyncio
@@ -537,6 +580,7 @@ async def test_an_internal_tcp_caller_is_taken_on_windows_only(monkeypatch, wind
     monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
     monkeypatch.setattr(platform_compat, "process_owner_sid", lambda pid: "S-1-5-21-me")
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: False)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: False)
     monkeypatch.setattr(crew_oauth_proxy, "_bridges", {})
     crew_oauth_proxy.register_bridge(
         version="v1",
@@ -589,6 +633,7 @@ async def test_a_windows_tcp_peer_this_user_does_not_own_is_refused(monkeypatch,
     monkeypatch.setattr(platform_compat, "current_user_sid", lambda: me)
     monkeypatch.setattr(platform_compat, "process_owner_sid", lambda pid: owner)
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
     monkeypatch.setattr(crew_oauth_proxy, "_bridges", {})
     crew_oauth_proxy.register_bridge(
         version="v1",
@@ -643,6 +688,7 @@ async def test_only_a_dead_grant_asks_the_user_to_reconnect(monkeypatch, code, s
     monkeypatch.setattr(origin, "request_is_unix_socket", lambda request: True)
     monkeypatch.setattr(socketsec, "get_peer_pid", lambda sock: os.getpid())
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
 
     async def _token(slug, *, force=False, store=None):
         raise CrewOAuthError(code)
@@ -685,9 +731,9 @@ async def test_disconnect_revokes_a_pair_that_replaced_the_one_it_read(tmp_path,
     store.replace("github", Tokens("a1", "r1", None, ""))
     revoked: list[str] = []
 
-    async def _revoke(slug, access):
-        revoked.append(access)
-        if access == "a1":
+    async def _revoke(slug, tokens):
+        revoked.append(tokens.access)
+        if tokens.access == "a1":
             # A writer that took no part in this Disconnect's lock, e.g. a second
             # gateway on the same data home, rotates the pair mid-revoke.
             store.replace("github", Tokens("a2", "r2", None, ""))
@@ -710,8 +756,8 @@ async def test_disconnect_waits_for_a_refresh_holding_the_lock(tmp_path, monkeyp
     store.replace("github", Tokens("a1", "r1", None, ""))
     order: list[str] = []
 
-    async def _revoke(slug, access):
-        order.append(f"revoke:{access}")
+    async def _revoke(slug, tokens):
+        order.append(f"revoke:{tokens.access}")
         return True
 
     monkeypatch.setattr(crew_oauth, "_revoke", _revoke)
@@ -737,6 +783,7 @@ def test_test_is_refused_only_for_an_entry_routed_through_crew(monkeypatch, head
     from kiro_crew.dashboard.handlers import connections
 
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
     server = types.SimpleNamespace(
         name="github", url="https://api.githubcopilot.com/mcp/", headers=headers
     )
@@ -756,10 +803,11 @@ def test_status_custody_matches_routing(monkeypatch, headers):
     from kiro_crew.connections import registry, status
 
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: True)
     url = "https://api.githubcopilot.com/mcp/"
     server = types.SimpleNamespace(name="github", url=url, headers=headers)
     monkeypatch.setattr(mcp_discovery, "list_servers", lambda: [server])
-    routed = kas_env_launch.crew_connection_slug("github", {"url": url, "headers": headers})
+    routed = kas_env_launch.crew_connection_slug("github", {"url": url, "headers": headers}, "kas")
     crew = status._crew_managed_slugs([registry.get_provider("github")])
     assert ("github" in crew) is bool(routed)
 
@@ -802,6 +850,7 @@ async def test_a_native_grant_is_not_marked_crew_held(tmp_path, monkeypatch):
     data_home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(data_home))
     monkeypatch.setattr(crew_oauth, "manages", lambda slug: False)
+    monkeypatch.setattr(crew_oauth, "custody_on", lambda slug: False)
     monkeypatch.setattr(status, "_provider_grant_presence", lambda url: False)
     monkeypatch.setattr(status, "reconcile_connected_since", lambda statuses, now: {})
     statuses = await status.collect_connection_statuses()

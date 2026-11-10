@@ -55,7 +55,7 @@ async def update(
     The source is read once, before any await, so the bytes written are the bytes
     whose digest was checked.
     """
-    handle = service._reusable_run(run_id)
+    handle = await service._reusable_run(run_id)
     if isinstance(handle, dict):
         return handle
     source, source_format = handle.source, handle.source_format
@@ -82,9 +82,12 @@ async def update(
         }
     out = await asyncio.to_thread(
         service.update_definition,
-        str(current["id"]),
+        # The ref that reached it: a live copy beside its tombstone answers only
+        # to its free slug, never to its reserved id. expected_id pins the write.
+        workflow_ref,
         source=source,
         expected_revision=expected_revision,
+        expected_id=str(current["id"]),
     )
     # Deleted between the read above and the write: the run itself still exists.
     return _definition_not_found() if out.get("not_found") else out
@@ -97,7 +100,7 @@ async def preview(service: Any, run_id: str, workflow_ref: str = "") -> dict[str
     may be ``None``. ``target`` carries only :data:`_TARGET_FIELDS`; the caller
     builds the diff from ``target_source`` and ``run_source``.
     """
-    handle = service._reusable_run(run_id)
+    handle = await service._reusable_run(run_id)
     if isinstance(handle, dict):
         return handle
     source = handle.source

@@ -522,9 +522,12 @@ def test_a_scheduled_cron_run_reads_running_on_its_tab_and_stops_there(
     refused = asyncio.run(stop_slot_turn(state, slot, cron_cancel=True))
     assert refused["ok"] is False and refused["code"] == "cron_pause_not_saved"
     state.sessions.stop_turn.assert_not_awaited()
-    # A caller the cron cancel route refuses leaves the run alone, as on main.
+    # A caller the cron cancel route refuses leaves the run alone and is refused,
+    # never told "not running", which would idle the pane while the run goes on.
     state.crons.cancel = AsyncMock(return_value=False)
-    assert asyncio.run(stop_slot_turn(state, slot))["info"] == "not running"
+    refused = asyncio.run(stop_slot_turn(state, slot))
+    assert refused["ok"] is False and refused["code"] == "owner_only"
+    assert "info" not in refused
     state.crons.cancel.assert_not_awaited()
     state.sessions.stop_turn.assert_not_awaited()
     # An admitted caller with no run of the job going (another path holds the
@@ -567,7 +570,7 @@ def test_only_a_caller_the_cron_cancel_route_admits_cancels_the_run_from_its_tab
 ) -> None:
     """A tab Stop ends the cron run through the cron service only for a caller
     ``POST /api/crons/{id}/cancel`` admits; a non-owner dashboard user's Stop
-    leaves the run alone (``stop_slot_turn`` answers "not running")."""
+    leaves the run alone (``stop_slot_turn`` refuses it with ``owner_only``)."""
     from unittest.mock import MagicMock
 
     from aiohttp import web
@@ -586,3 +589,47 @@ def test_only_a_caller_the_cron_cancel_route_admits_cancels_the_run_from_its_tab
     assert asyncio.run(_may_cancel_cron_run(request, state, "cron:nightly")) is owner
     # Never for a session that is no cron job's own, whoever asks.
     assert asyncio.run(_may_cancel_cron_run(request, state, "cron:nightly:agentA")) is False
+
+
+def test_a_non_owner_stop_on_a_running_cron_tab_is_refused_not_idled(
+    state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the Stop route itself: a dashboard user who is not the owner
+    presses Stop on a cron tab whose run is going. The run is left alone and
+    the answer is a refusal the pane shows, not "not running", which would
+    settle the pane idle and hide Stop while the cron keeps running."""
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aiohttp import web
+
+    from kiro_crew.dashboard.chat_handlers import api_chat_slot_stop
+    from kiro_crew.dashboard.handlers import _shared
+
+    async def _gate(request: Any, operation: str) -> Any:
+        return web.json_response({"code": "owner_only"}, status=403)
+
+    monkeypatch.setattr(_shared, "require_owner_dashboard_request", _gate)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
+    state.sessions.stop_turn = AsyncMock(return_value="soft")
+    state.crons = MagicMock()
+    state.crons.cancel = AsyncMock(return_value=True)
+    slot = state.get_or_create_slot("cron-nightly", linked_session_key="cron:nightly")
+    state._test_busy.add("cron:nightly")
+    assert slot.to_dict()["running"] is True
+
+    app = web.Application()
+    app["state"] = state
+    request = MagicMock()
+    request.app = app
+    request.match_info = {"slot": "cron-nightly"}
+    request.query = {}
+    request.get = lambda key, default="": "" if key == "app" else default
+
+    resp = asyncio.run(api_chat_slot_stop(request))
+    body = json.loads(resp.text)
+    assert body["ok"] is False and body["code"] == "owner_only"
+    assert body.get("info") != "not running"
+    state.crons.cancel.assert_not_awaited()
+    state.sessions.stop_turn.assert_not_awaited()
+    assert slot.to_dict()["running"] is True

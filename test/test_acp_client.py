@@ -504,7 +504,7 @@ class TestFormatAcpError:
             pytest.param(
                 "x",
                 "ExpiredToken: signature expired",
-                "authentication failed",
+                "refused access",
                 id="expired_token_rewrite",
             ),
             # Some backends put the trigger word in `message` rather than `data`.
@@ -521,7 +521,7 @@ class TestFormatAcpError:
             "message": "Internal error",
             "data": "AccessDeniedException: not authorized to invoke",
         }
-        out = _format_acp_error(err)
+        out = _format_acp_error(err, backend="claude")
         assert "authentication failed" in out.lower()
         assert "aws sso login" in out.lower()
 

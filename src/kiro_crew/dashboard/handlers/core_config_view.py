@@ -504,4 +504,31 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "restart_required": restart_required})
 
     cfg = KiroCrewConfig.load()
-    return web.json_response(_masked_config_dict(cfg))
+    return web.json_response(_config_body(cfg))
+
+
+def _config_body(cfg: KiroCrewConfig) -> dict:
+    """The ``/api/config/kirocrew`` body: GET's, and every PATCH reply's.
+
+    Both must carry the same edition view, because the dashboard caches a PATCH
+    reply in place of the GET one. An LTS build (RFC D12) reports every Feature
+    Preview off, and lists in ``locked_controls`` the one browser-only control the
+    dashboard drops, ``debug_tools``. The preview lock itself reaches the dashboard
+    as ``lockedByPolicy`` on each preview path in ``GET /api/config/schema``. On
+    ``oss`` the field is absent and the body is the masked config as before.
+    """
+    from kiro_crew.edition_locks import feature_previews, locked_controls
+
+    body = _masked_config_dict(cfg)
+    dashboard = body.get("dashboard")
+    if isinstance(dashboard, dict) and "feature_previews" in dashboard:
+        # Unchanged on oss; {} in LTS, whatever the Debug tools lock does.
+        dashboard["feature_previews"] = feature_previews(dashboard["feature_previews"])
+    locked = [c for c in locked_controls() if c in _DASHBOARD_LOCKS]
+    if locked:
+        body["locked_controls"] = locked
+    return body
+
+
+#: The locked controls the dashboard enforces in the browser and has no config path for.
+_DASHBOARD_LOCKS = ("debug_tools",)

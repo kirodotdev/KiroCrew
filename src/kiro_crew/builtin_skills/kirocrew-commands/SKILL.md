@@ -43,9 +43,9 @@ which would over-grant.
 | `kirocrew gateway --port 9999` | Override dashboard port |
 | `kirocrew gateway --port auto` | OS-assigned ephemeral port |
 | `kirocrew gateway --no-open` | Don't auto-open dashboard URL in browser |
-| `kirocrew gateway --approval reads` | Auto-approve read-only tools |
+| `kirocrew gateway --approval reads` | Auto-approve read-only tools on background turns (cron, task runner, subagents); a channel turn still asks about every tool |
 | `kirocrew gateway --approval yolo` | Auto-approve all tools (requires isolated KIROCREW_HOME) |
-| `kirocrew gateway --approval interactive` | Prompt for every tool (default) |
+| `kirocrew gateway --approval interactive` | Prompt for every tool. Without `--approval`, `agent.approval_mode` decides (default `auto`: no prompt) |
 | `kirocrew gateway --seed FIXTURE` | Seed $KIROCREW_HOME from fixture before starting (dev) |
 | `kirocrew gateway --seed-replace` | Wipe a non-empty target home and re-seed it (paired with `--seed`) |
 | `kirocrew gateway --no-tunnel` | Never publish a tunnel for this process's whole life, whatever `tunnel.enabled` says. Scoped to TUNNELS: it does not change where the dashboard binds |

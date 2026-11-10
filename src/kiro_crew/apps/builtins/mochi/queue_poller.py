@@ -669,45 +669,52 @@ class QueuePoller:
         for task in queue.get("tasks", []):
             if task.get("done"):
                 pending.setdefault(_task_identity(task), task.get("executed_at") or "")
-        with qf.queue_mutation(self._queue_path):
-            fresh_queue = qf.read_queue(self._queue_path)
-            if fresh_queue is None:
-                # The queue was reset/deleted concurrently (a full_replace or a
-                # reset cleared it between our poll snapshot and this locked
-                # write). Merging done-markers onto — and writing back — our STALE
-                # pre-reset snapshot would RESURRECT exactly the tasks the reset
-                # just removed. Honour the reset: write nothing. The unsaved
-                # markers go with a confirmed deletion only; a file that exists
-                # but did not read keeps them for the next write.
-                self._unwritten_done = {} if not os.path.exists(self._queue_path) else pending
-                return
-            for stale_task in queue.get("tasks", []):
-                if stale_task.get("done"):
-                    fresh = next(
-                        (
-                            t
-                            for t in fresh_queue.get("tasks", [])
-                            if t.get("id") == stale_task.get("id")
-                        ),
-                        None,
-                    )
-                    if fresh is not None and not fresh.get("done"):
-                        fresh["done"] = True
-                        fresh["executed_at"] = stale_task.get("executed_at")
-            if self._unwritten_done:
-                for fresh in fresh_queue.get("tasks", []):
-                    ran_at = self._unwritten_done.get(_task_identity(fresh))
-                    if ran_at is not None and not fresh.get("done"):
-                        fresh["done"] = True
-                        fresh["executed_at"] = ran_at
-            queue = qf.cleanup_done_tasks(fresh_queue, now_ms=self._clock())
-            try:
-                qf.write_queue_atomic(self._queue_path, queue)
-            except OSError:
-                logger.exception("[QueuePoller] failed to write queue")
-                self._unwritten_done = pending
-            else:
-                self._unwritten_done.clear()
+        try:
+            with qf.queue_mutation(self._queue_path):
+                fresh_queue = qf.read_queue(self._queue_path)
+                if fresh_queue is None:
+                    # The queue was reset/deleted concurrently (a full_replace or a
+                    # reset cleared it between our poll snapshot and this locked
+                    # write). Merging done-markers onto — and writing back — our STALE
+                    # pre-reset snapshot would RESURRECT exactly the tasks the reset
+                    # just removed. Honour the reset: write nothing. The unsaved
+                    # markers go with a confirmed deletion only; a file that exists
+                    # but did not read keeps them for the next write.
+                    self._unwritten_done = {} if not os.path.exists(self._queue_path) else pending
+                    return
+                for stale_task in queue.get("tasks", []):
+                    if stale_task.get("done"):
+                        fresh = next(
+                            (
+                                t
+                                for t in fresh_queue.get("tasks", [])
+                                if t.get("id") == stale_task.get("id")
+                            ),
+                            None,
+                        )
+                        if fresh is not None and not fresh.get("done"):
+                            fresh["done"] = True
+                            fresh["executed_at"] = stale_task.get("executed_at")
+                if self._unwritten_done:
+                    for fresh in fresh_queue.get("tasks", []):
+                        ran_at = self._unwritten_done.get(_task_identity(fresh))
+                        if ran_at is not None and not fresh.get("done"):
+                            fresh["done"] = True
+                            fresh["executed_at"] = ran_at
+                queue = qf.cleanup_done_tasks(fresh_queue, now_ms=self._clock())
+                try:
+                    qf.write_queue_atomic(self._queue_path, queue)
+                except OSError:
+                    logger.exception("[QueuePoller] failed to write queue")
+                    self._unwritten_done = pending
+                else:
+                    self._unwritten_done.clear()
+        except OSError:
+            # The lock itself failed: its file did not open, or another holder
+            # kept it past the ceiling and the lock failed closed. Nothing was
+            # written, so keep what ran; the callers still see the error.
+            self._unwritten_done = pending
+            raise
 
     # ── Task execution ─────────────────────────────────────────────────────
 

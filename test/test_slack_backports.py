@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import stat
+import tempfile
 import threading
 from dataclasses import replace
 from types import SimpleNamespace
@@ -39,6 +41,7 @@ from kiro_crew.slack.format import SLACK_MSG_LIMIT, TRUNCATION_NOTICE
 from kiro_crew.slack.handler import _THINKING
 from kiro_crew.slack.renderer import SlackRenderer
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
+from kiro_crew.testing.wait import await_until, default_timeout
 
 #: A one-pixel PNG: real leading bytes, so the extractor's magic-byte allowlist
 #: accepts it the way it would accept a chart the agent rendered.
@@ -222,6 +225,63 @@ class TestOutboundUploads:
         assert not os.path.exists(staged), "the staged bytes outlived the upload"
         if os.name == "posix":
             assert slack.uploads[0]["dir_mode"] == 0o700
+
+    @pytest.mark.asyncio
+    async def test_cancels_during_the_staging_mkdtemp_still_remove_the_dir(
+        self, monkeypatch
+    ) -> None:
+        """Two cancels land while the mkdtemp thread is held, and the thread makes the
+        dir only after both were delivered. Each step is queued on the loop behind
+        the one before it, so the order is fixed rather than raced against a timer."""
+        loop = asyncio.get_running_loop()
+        ceiling = default_timeout()
+        entered = asyncio.Event()
+        finished = asyncio.Event()
+        release = threading.Event()
+        made: list[str] = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def _held_mkdtemp(*args, **kwargs):
+            if kwargs.get("prefix") != "kirocrew-slack-upload-":
+                return real_mkdtemp(*args, **kwargs)
+            try:
+                loop.call_soon_threadsafe(entered.set)
+                assert release.wait(timeout=ceiling), "never released"
+                path = real_mkdtemp(*args, **kwargs)
+                made.append(path)
+                return path
+            finally:
+                loop.call_soon_threadsafe(finished.set)
+
+        monkeypatch.setattr(tempfile, "mkdtemp", _held_mkdtemp)
+
+        def _second_cancel_then_release() -> None:
+            # Runs after the first cancel was delivered; the release is queued
+            # behind the second one, so the thread returns only after both.
+            task.cancel()
+            loop.call_soon(release.set)
+
+        file = OutboundFile(path="/tmp/chart.png", data=PNG, alt="", mime="image/png")
+        task = asyncio.ensure_future(upload_outbound_files(_FakeSlack(), "C1", "t1", [file]))
+        try:
+            try:
+                await await_until(entered, what="the staging mkdtemp thread")
+            finally:
+                task.cancel()
+                loop.call_soon(_second_cancel_then_release)
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled upload")
+            # Without the settle the thread outlives the task; wait for it to return.
+            await await_until(finished, what="the staging mkdtemp thread's return")
+
+            assert made, "the mkdtemp thread never made the staging dir"
+            leaked = [p for p in made if os.path.exists(p)]
+            assert not leaked, f"a cancel during mkdtemp leaked the staging dir: {leaked}"
+        finally:
+            release.set()
+            for path in made:
+                with contextlib.suppress(OSError):
+                    os.rmdir(path)
 
     @pytest.mark.asyncio
     async def test_the_filename_comes_from_the_sniffed_type(self, tmp_path) -> None:

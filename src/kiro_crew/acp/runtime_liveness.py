@@ -1,7 +1,8 @@
 """Whether this runtime is alive, busy, dead or due to recycle.
 
 The exit watch, the stderr drain and its latches, death attribution and its summary, reap
-tracking, the session occupancy checks and the age and RSS staleness checks.
+tracking, the session occupancy checks and the age, handle-count and RSS staleness
+checks.
 
 Each function here whose first parameter is ``self`` is an ``AcpRuntime`` method: the class
 binds it by name, so it reads and writes the runtime's own state on the instance, and a patch
@@ -9,12 +10,12 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_pending_init_notifications``,
-``_pending_requests``, ``_routed_requests``, ``_saw_auth_failure``,
+``_kas_extract_server_path``, ``_pending_requests``, ``_routed_requests``, ``_saw_auth_failure``,
 ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
 ``_stall_turn_sessions``, ``_stderr_lines``,
 ``_stdin_stall_death``.
 
-Instance fields read: ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
+Instance fields read: ``_acp_backend``, ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_pid``, ``_process``, ``_session_inits_in_flight``,
 ``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_start_collectors``,
 ``_stderr_task``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
@@ -30,7 +31,7 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat, runtime_death
-from kiro_crew.acp import runtime_process_tree
+from kiro_crew.acp import kas_extract_repair, runtime_process_tree
 from kiro_crew.acp.session_handle import AcpRuntimeDead
 from kiro_crew.acp.transport_errors import (
     is_auth_failure_output,
@@ -39,6 +40,7 @@ from kiro_crew.acp.transport_errors import (
     registration_throttle_line,
 )
 from kiro_crew.acp.transport_framing import settle_drain
+from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.runtime_ownership import outstanding_leases
 from kiro_crew.session_pid import (
@@ -150,6 +152,11 @@ _DEFAULT_MAX_RSS_MB = 500.0  # 500 MiB
 # runtime has lived long enough to plausibly have ballooned.
 _RSS_PROBE_MIN_AGE_SECS = 300.0  # 5 minutes
 
+# Windows HANDLE ceiling for a runtime's root process (see _is_stale()). A healthy
+# kiro-cli holds about 600; its per-directory handle leak reaches 900,000 with a
+# working set small enough for the RSS probe to miss it.
+_MAX_HANDLES = 50_000
+
 
 def is_alive(self: AcpRuntime) -> bool:
     """True if the underlying process exists and has not exited."""
@@ -211,7 +218,7 @@ def _stale_by_age(self: AcpRuntime) -> bool:
 
 
 async def _is_stale(self: AcpRuntime) -> str | None:
-    """Return the recycle reason ('age' or 'rss'), or None if not stale.
+    """Return the recycle reason ('age', 'handles' or 'rss'), or None if not stale.
 
     Distinct from is_alive(): a runtime can be perfectly healthy (process
     running, protocol responsive) yet still be "stale" — e.g. the
@@ -237,6 +244,10 @@ async def _is_stale(self: AcpRuntime) -> str | None:
     young runtimes. The lock IS deliberately held across the probe for older
     runtimes, busy or idle; the age gate bounds how often that happens, and a
     runtime that answers "stale" is displaced rather than re-probed.
+
+    'handles' is Windows only: the root's kernel HANDLE count past _MAX_HANDLES.
+    One query-only syscall, so it runs on the loop; elsewhere the probe answers
+    None and the check is skipped.
     """
     if self._pid is None:
         return None
@@ -248,6 +259,12 @@ async def _is_stale(self: AcpRuntime) -> str | None:
         if age < _RSS_PROBE_MIN_AGE_SECS:
             # Too young to have grown — skip the offloaded RSS probe.
             return None
+
+    handles = platform_compat.proc_handle_count_for_pid(
+        self._pid  # pid-owner-ok: the runtime reads its own root
+    )
+    if handles is not None and handles > _MAX_HANDLES:
+        return "handles"
 
     rss_mb = await asyncio.get_running_loop().run_in_executor(
         subprocess_executor(),
@@ -837,9 +854,10 @@ async def _retire_tracking_after_exit(self: AcpRuntime) -> None:
             exc_info=True,
         )
         return
-    # The wait just measured the status ``_mark_dead`` could not know (it ran
-    # on EOF, before the reap): amend the retained summary the same way the
-    # kill path does, so the ``AcpProcessDied`` a turn or a cron records
+    # The wait just measured the status a mark made before the reap could not
+    # know (an EOF mid-oversize-line, an EOF wait that timed out, a reader
+    # crash the watcher then saw exit): amend the retained summary the same
+    # way the kill path does, so the ``AcpProcessDied`` a turn or a cron records
     # carries the real code instead of ``<not reaped>``. Worded as an
     # OBSERVED exit: nothing here issued a kill, and a log line that says
     # "killed" without naming who killed would defeat the attribution the
@@ -946,6 +964,19 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                     and is_delegate_launch_failure_output(text)
                 ):
                     self._saw_delegate_launch_failure = True
+                # kiro-cli's broken-extract line, latched on a KAS runtime only, in the
+                # same window and whatever ``recording_allowed`` says, so a temporary
+                # or incognito session that keeps no stderr ring still reaches the
+                # repair (``runtime_spawn_entry._spawn_admitted_repairing_kas_extract``).
+                # ``getattr``: a runtime built without ``__init__`` (test doubles).
+                if (
+                    getattr(self, "_acp_backend", "") == ACP_BACKEND_KAS
+                    and not self._first_session_ready
+                    and not getattr(self, "_kas_extract_server_path", "")
+                ):
+                    found = kas_extract_repair.server_path_from_stderr(text)
+                    if found:
+                        self._kas_extract_server_path = found
                 if self.recording_allowed and logger.isEnabledFor(logging.DEBUG):
                     # Child stderr can echo a credential (a failed login prints
                     # the header it sent); redact before the cut so a token

@@ -183,6 +183,9 @@ _RESERVED_SEGMENT_STEMS = frozenset(
 _REF_SEGMENT = r"\.?[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_][A-Za-z0-9_-]*)*"
 _REF_RE = re.compile(rf"^{_REF_SEGMENT}(?:/{_REF_SEGMENT})*\Z")
 
+# The files whose presence makes a directory a skill (the bundle's own root test).
+# A pasted blob URL to one of them addresses the directory that holds it.
+_INSTRUCTION_FILES = ("SKILL.md", "AGENTS.md")
 # An owner/repo address, optionally in pasted tree/blob-URL form.
 _ADDRESS_RE = re.compile(
     r"^(?P<owner>[^/@:]+)/(?P<repo>[^/@:]+)(?:/(?P<kind>tree|blob)/(?P<rest>.+))?\Z"
@@ -396,6 +399,14 @@ def parse_repo_spec(raw: Any) -> RepoSpec | None:
         # literal one.
         ref = urllib.parse.unquote(ref)
         path = urllib.parse.unquote(path)
+        # A blob URL names a FILE, and "Copy link" on a skill's own SKILL.md or
+        # AGENTS.md is the natural way to share one skill. That file's directory is
+        # the skill, so the address is the directory: kept as the file, the tree
+        # request would be rooted at a blob and GitHub answers "no directory".
+        # Only the two instruction files are trimmed. Any other file still reads
+        # as a directory and is refused by the listing, as a tree URL to a file is.
+        if matched.group("kind") == "blob" and posixpath.basename(path) in _INSTRUCTION_FILES:
+            path = posixpath.dirname(path)
 
     if repo.endswith(".git"):
         repo = repo[: -len(".git")]

@@ -83,7 +83,6 @@ def test_conductor_actions_are_exactly_six():
 def test_caps_hold_their_rfc_values():
     assert wl.MAX_ITEMS_PER_CONDUCTOR == 32
     assert WORK_CLOSED_WINDOW == 32
-    assert wl.MAX_GOAL_ITEM_CAP == 256
     assert wl.MAX_EVENTS_PER_ITEM == 200
     assert wl.MAX_DEPTH == 2
     assert wl.MAX_GOAL_CHARS == 2000
@@ -535,7 +534,16 @@ def test_apply_worker_report_has_no_conductor_field_parameter():
     import inspect
 
     names = set(inspect.signature(wl.apply_worker_report).parameters)
-    assert names == {"slot_key", "item_id", "status", "summary", "artifacts", "pr", "reason"}
+    assert names == {
+        "slot_key",
+        "item_id",
+        "status",
+        "summary",
+        "artifacts",
+        "pr",
+        "reason",
+        "wake_at",
+    }
     assert not names & {"verdict", "state", "acceptance", "decision", "fails", "round_number"}
 
 
@@ -926,6 +934,49 @@ def test_a_decide_on_a_progress_item_does_not_restart_its_window():
     item.decided_at = "2026-01-01T00:20:00+00:00"
     now = datetime(2026, 1, 1, 0, 25, tzinfo=timezone.utc)
     assert wl.is_stale(item, worker_running=False, now=now, window_secs=900) is True
+
+
+def test_a_progress_item_waiting_until_a_time_is_not_stale_before_it():
+    """``wake_at`` is the wait a worker declared. Before it the item is not
+    stale; after it the window runs from it; the next report without one clears it."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wake = (datetime.now(timezone.utc) + timedelta(hours=6)).replace(microsecond=0)
+    # Given in any zone, stored as the UTC stamp.
+    local = wake.astimezone(timezone(timedelta(hours=5, minutes=30))).isoformat()
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="progress", summary="deploy window", wake_at=local
+    )
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.wake_at == wake.isoformat()
+    window = timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS)
+    assert wl.is_stale(item, worker_running=False, now=wake - window) is False
+    assert wl.is_stale(item, worker_running=False, now=wake + window / 2) is False
+    assert wl.is_stale(item, worker_running=False, now=wake + window * 2) is True
+    # A worker that is gone cannot come back at the time it named.
+    assert wl.is_stale(item, worker_running=False, worker_closed=True, now=wake - window) is True
+    wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="moving again")
+    cleared = wl.read_work_item(CONDUCTOR, item_id)
+    assert cleared is not None and cleared.wake_at is None
+    assert "wake_at" not in cleared.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("status", "offset", "code"),
+    [
+        ("blocked", timedelta(hours=1), "wake_at_requires_progress"),
+        ("progress", None, "wake_at_invalid"),
+        ("progress", -timedelta(minutes=1), "wake_at_in_past"),
+        ("progress", timedelta(hours=25), "wake_at_too_far"),
+    ],
+)
+def test_a_wake_at_that_is_not_a_near_future_time_on_progress_is_refused(status, offset, code):
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    before = _bytes_on_disk(item_id)
+    wake_at = "Monday" if offset is None else (datetime.now(timezone.utc) + offset).isoformat()
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="s", wake_at=wake_at)
+    assert (caught.value.code, caught.value.field) == (code, "wake_at")
+    assert _bytes_on_disk(item_id) == before
 
 
 def test_a_done_item_whose_worker_closed_is_still_not_stale():

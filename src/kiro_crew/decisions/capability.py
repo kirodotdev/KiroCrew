@@ -227,8 +227,8 @@ def _row_denied(surface_key: str, scope: str, item: str = "") -> bool:
 
     try:
         if scope == DECISIONS_SCOPE and not item and locked_off():
-            # Enterprise: content sent to a decision provider follows this hosted
-            # row and is off by default (RFC enterprise edition, Red "Content sent
+            # LTS: content sent to a decision provider follows this hosted
+            # row and is off by default (RFC LTS edition, Red "Content sent
             # to external decisions"). Evaluated without the seam's own audit, so
             # the one row written records the final answer.
             decision = governance_permits(

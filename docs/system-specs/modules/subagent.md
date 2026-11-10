@@ -218,7 +218,7 @@ so) and re-exported by `kiro_crew.subagent`, which stays the place to read and p
 | `_SHARED_START_SAVING_GB` | 0.35 | What a start that shares its parent's runtime does not launch (the kiro-cli process and its first-session warm-up, measured); a shared start is priced at the dedicated projection less this, never below `_SHARED_START_MIN_GB` (0.05). See *Memory guard* |
 | `_RSS_SAMPLES_TO_SETTLE` | 2 | Sweeps before a dedicated worker counts as settled and owes nothing |
 | `_DEDICATED_TOPUP_WAIT_SECS` | 60 | Longest a start admitted at the shared price waits for the floor before launching a dedicated process anyway (polls every `_DEDICATED_TOPUP_POLL_SECS`, 2 s) |
-| `_ON_DONE_TIMEOUT` | 1200 | Outer cap (`subagent._ON_DONE_TIMEOUT`): max total seconds for semaphore wait + injection (20 minutes), enforced by `asyncio.wait_for` around `_on_done` in `subagent_manager/terminal.py`. Inside it, a channel or no-tab parent gets up to `_MAX_INJECT_ATTEMPTS` (2, `slack/gateway_runtime/subagent_injection.py`) injection attempts, the second only after a timeout, before the failure is queued |
+| `_ON_DONE_TIMEOUT` | 1200 | Outer cap (`subagent._ON_DONE_TIMEOUT`): max total seconds for semaphore wait + injection (20 minutes), enforced by `asyncio.wait_for` around `_on_done` in `subagent_manager/terminal.py`. Inside it, a channel or no-tab parent gets up to `_MAX_INJECT_ATTEMPTS` (2, `slack/gateway_runtime/subagent_injection.py`) injection attempts, the second only after a timeout, before the failure is queued. On expiry the parent session is reset unless a turn holds its lease (`sessions.turn_holder`): the cancelled route has released its own claim by then, so a turn still holding it is the parent's own, which keeps running. A permit that release handed to a queued delivery names no holder until that delivery runs, so the reset still clears the stuck provider for it |
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
 | `_TURN_LIMIT` | 1000 | Default tool-call budget per subagent, from `constants.DEFAULT_SUBAGENT_MAX_TURNS` (configurable via `agent.subagent_max_turns`, per-spawn via `max_turns`) |
@@ -522,6 +522,15 @@ so every later admission charges a row at the price it was admitted at:
   horizon keeps its whole window. A stamp that is not a finite number or lies in
   the future never shows a bucket recent. A non-finite learned figure is
   ignored. These are internal admission prices with no config key of their own.
+  The session's MCP roster (`subagent_mcp_roster.session_mcp_roster_gb`:
+  0.35 GiB plus 0.13 GiB for each stdio server the default agent spec starts and
+  the MCP gateway does not route, read at most once a minute) raises both the
+  unlearned price and the cap to that projection when it is larger, because
+  kiro-cli starts every such server in each session (#33355). It is read from the
+  spec, not measured, so bad readings cannot raise it, and a learned figure under
+  it still wins. The default roster projects under 1.0 GiB, so a default install
+  is priced as before; a start it defers is one whose servers would not fit in
+  the memory left.
 - **Shared.** A start that will take a session on its parent's runtime launches
   no kiro-cli process, but it does launch the agent's MCP servers: kiro-cli
   starts a fresh copy of every declared server for each session, shared or not.
@@ -2937,7 +2946,7 @@ so the manager sends the notice to the owner instead.
 | Inner cap | `slack/gateway_runtime/subagent_injection.py` (the channel and cron injections) | 900s (`INJECTION_TIMEOUT`, tunable via `KIROCREW_INJECTION_TIMEOUT`) | Single `stream_and_collect` call |
 
 On timeout (inner or outer):
-1. Kill stuck kiro-cli process via `sessions.reset()`
+1. Kill stuck kiro-cli process via `sessions.reset()`; the outer cap leaves a parent whose own turn holds the session running (see `_ON_DONE_TIMEOUT` above)
 2. Queue failure event into `slot._pending_subagent_failures`
 3. Next `_run_chat` drains the queue into LLM context with `result_path`
 4. LLM reads result from disk if needed
@@ -3782,6 +3791,10 @@ Large waves must not flood the WS socket, the parent LLM's context, or the UI. T
 - **Stall two-sweep confirmation** (`_maybe_flag_stall`): a quiet agent is flagged `stalled` only on the second consecutive idle reaper sweep, so healthy-slow agents do not amber at scale. [Idle-Stall Detection](#idle-stall-detection) owns the verdicts, the activity that resets suspicion and the cases that skip the confirmation.
 
 **Retry endpoint**: `POST /api/spawn/{agent_id}/retry` re-spawns a terminal FAILED agent's original task (never running — would double work; never user-stopped — deliberately killed; native rejected). New id, no batch identity carried (a finished wave's digest is never reopened). Backs the UI's "Retry failed (N)" control. A failed run has at most one successor (`SubagentManager.claim_retry`, taken before the first await): a second retry, or a retry of a run already continued or whose `subagent:<id>` conversation another run holds, answers `409` with `code: "retry_superseded"` naming the run that owns the task. A retry that started nothing releases its claim (`settle_retry(old, None)`); one that started records the new id, and one whose start raised keeps the claim as `SUCCESSOR_UNKNOWN`, because its durable row may already exist. The other direction is symmetric: `spawn_continue` of a retried run answers `conversation_busy: run X was retried as run Y, which owns its task now`.
+Both "Retry failed" controls, the subagent chip and the Activity panel, read
+a `retry_superseded` refusal as already handled (`isBenignSupersededRetry`,
+`website/src/api/apiError.ts`): their error notice counts only the other
+rejections, and a batch refused only that way shows none.
 
 Delivery debt captures the member id, elapsed time, and credits when a completion is queued or held for a digest. Settlement uses that immutable snapshot rather than the live manager entry, which may be evicted before the parent consumes the completion.
 
@@ -3862,7 +3875,12 @@ gateway judges it on shape only, it outranks the member's and the template's pin
 and it is never routed (`subagent_parts/model_choice.py` skips tier routing for
 any run that names a model). A name or model that sanitizes to empty (only
 whitespace or hidden characters) is refused before any request.
-`kirocrew spawn list` lists current runs.
+`kirocrew spawn list` lists current runs. A finished run's icon comes from its
+`outcome`, never from whether `error` is empty: `completed` shows ✅, `stopped`
+shows ⏹ with `(stopped)`, and `failed` or any other value shows ❌ with
+`(failed: <error>)`, the error confined to one terminal line. Only a row with
+neither `outcome` nor `error`, from a gateway that sends no `outcome`, also
+shows ✅.
 
 ### MCP Tool: `spawn_run`
 
@@ -4008,6 +4026,14 @@ the count of members not submitted or spawned, which may be resubmitted.
 Collection steps only build result text. `on_settled` writes the tool's own SEL
 row once the driver accepts that text; cancellation discards a collect result,
 and the audited wrapper writes the tool's terminal invocation row once.
+
+A member's result over `COMPLETION_KEEP_DEFAULT_CHARS` comes back as the
+`spawn_run` summary plus a disk path, and that path is the `result_path` a
+finished run's `GET /api/spawn/{id}` carries, never one the tool builds. The
+gateway spells it with `agent_dir_for_display`; the MCP process runs on the
+resolved data home, so a path built there would name a symlinked
+`KIROCREW_HOME` by its target, not as it was configured. A status read that
+names no `result_path` gets the whole result inline.
 
 **A returned result is delivered once, and a reply that never landed loses nothing.** A
 member the call returns inline still has its completion event, the other way its
@@ -4333,7 +4359,10 @@ is tombstoned either way, so the row is the only place the process's fate is rec
 signal is awaited through `platform_compat.kill_pid_async`: the reconciliation runs on the event
 loop and the Windows kill is a `taskkill` spawn that waits up to five seconds for its target,
 so that wait runs on the subprocess executor while the loop keeps serving (POSIX `os.kill` is
-non-blocking and runs inline).
+non-blocking and runs inline). The run's `result_path` (set in `_run_inner_impl` before the
+stream loop) and the orphan notice's `Result saved at` line come from `agent_dir_for_display`,
+which resolves the run directory (a realpath that opens every path part on Windows), so both
+are built with `asyncio.to_thread` (`test_subagent_result_path_off_loop.py`).
 
 A surviving `result.txt` is not by itself a result. It is appended per streamed
 chunk, so it is non-empty from the agent's first token and a size check cannot
@@ -4474,8 +4503,15 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   triggering dedicated fallback or abandoning the live handle. Event-loop tombstone snapshots are memory-only: they acquire the identity
   lock non-blocking and use already-published in-memory generations, never reading
   the protected durable record. Executor-owned prune independently merges that
-  record after restart before cleanup. The protected record and in-memory fallback
-  are evicted when prune or explicit folder deletion succeeds. Tombstones expose
+  record after restart before cleanup. One sweep reads each run's protected record
+  once, before the retention locks, and locks down the shared `trust` directories
+  once (each run's own record directory and file before every read); every decision
+  for that run merges that read with a fresh in-memory snapshot. The record's writer
+  takes no retention lock and publishes each generation in memory first, so a
+  generation landing after the read is still cleaned, and a folder deleted after
+  the read is skipped rather than cleaned from the stale record. The protected
+  record and in-memory fallback are evicted when prune or explicit folder deletion
+  succeeds. Tombstones expose
   the latest identity in compatibility fields and snapshot the full list for
   diagnostics/restart hints, but those agent-folder fields cannot authorize
   provider deletion. Prune's deletion set comes only from the protected record
@@ -5017,6 +5053,28 @@ tail names. It is opened `O_NONBLOCK`: a FIFO planted at the marker's name
 passes the link check and `O_NOFOLLOW`, and a blocking open with no writer
 would park the sweep or a spawn's adopt forever; non-blocking, the open returns
 and the `fstat` regular-file check rejects it.
+
+A user the marker cannot name keeps the tree too. A process that left every
+named group, such as a tool that daemonized out of a runtime (fork, `setsid`,
+fork) and outlived it, is out of reach of the group probe, and of the kill path
+once it is reparented. A runtime swap leaves one holding the dead runtime's OWN
+directory as its `TMPDIR`, because the successor adopts only the tree's first
+directory. So before the sweep reclaims a tree whose named groups are all dead,
+it reads the process table once per pass (`agent_scratch_users.scratch_users`,
+Linux `/proc`) and keeps any tree that a live process still uses: a
+`SCRATCH_ENV_KEYS` value in its exec-time environment, its working directory or
+an open descriptor names a path inside it. Each pass that keeps such a tree logs
+a WARNING naming the tree and the pid; the first pass after that process is gone
+reclaims it. The exec-time environment of the sweeping process and of each exec
+supervisor above it (`platform_compat.is_exec_supervisor_of_this_process`, such
+as the `toolbox-exec` launcher that runs the gateway as its child) is not read:
+a gateway started from an agent shell keeps that shell's exports there after it
+dropped them (`drop_own_inherited_scratch_env`), a `kirocrew server restart`
+run from an agent shell starts the launcher with them, and reading them would
+keep that shell's tree for the gateway's whole life. Their working directories
+and descriptors still count. On macOS and Windows nothing here lists every
+process's environment, so the named groups stay the only liveness signal there.
+Pinned by `test/test_agent_scratch_live_users.py`.
 
 A ROOT that respawns is still its tree. An `AcpClient` whose process exited and
 is respawned by `ensure_ready`, an `AcpRuntime` respawned on the same object,

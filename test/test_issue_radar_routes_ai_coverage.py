@@ -1144,9 +1144,6 @@ class TestShortRationale(
     def test_it_is_length_clamped(self):
         self.assertLessEqual(len(routes._short_rationale("w " * 400)), routes._RATIONALE_MAX_CHARS)
 
-    def test_a_non_string_does_not_raise(self):
-        self.assertEqual(routes._short_rationale(None), "")
-
 
 class TestValidHex6(unittest.TestCase):
     def test_six_hex_digits_pass(self):

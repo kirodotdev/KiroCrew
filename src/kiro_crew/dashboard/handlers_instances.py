@@ -902,7 +902,10 @@ async def api_instances_embed_token(request: web.Request) -> web.Response:
 
     Refuses a crew we ourselves reach through a further hop. That is the depth cap
     seen from this end and it is the only place it can be seen: the caller counts
-    hops in its own registry and cannot know that ours adds another one.
+    hops in its own registry and cannot know that ours adds another one. The one
+    exception is ``own_page``: the caller is a page of OURS served through a port
+    forward on another number (the desktop app's managed tunnel), whose pane rides
+    no hop past ours, so such a crew is minted by our parent for that port.
     """
     denied = _guard(request, "embed_token")
     if denied is not None:
@@ -933,7 +936,13 @@ async def api_instances_embed_token(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    ok, payload = await mgr.mint_embed_token(instance_id, port)
+    own_page = body.get("own_page", False)
+    if not isinstance(own_page, bool):
+        _audit("embed_token", "denied", request_id=instance_id, error="bad own_page")
+        return web.json_response(
+            {"error": "own_page must be true or false", "code": "invalid_field"}, status=400
+        )
+    ok, payload = await mgr.mint_embed_token(instance_id, port, own_page=own_page)
     if not ok:
         status = int(payload.pop("status", 502))
         _audit("embed_token", "failure", request_id=instance_id, error=str(payload.get("code")))

@@ -4,6 +4,7 @@ import { i18next } from '../i18n/index'
 import '../i18n/all'
 import { fmtUnit } from '../i18n/format'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import McpGatewayCard, { formatKb } from '../pages/McpGatewayCard'
 
 vi.mock('../api/client', () => ({
@@ -48,6 +49,25 @@ describe('McpGatewayCard in the active language', () => {
     const idle = fmtUnit(12.3, 'second', { maximumFractionDigits: 1 })
     expect(idle).toMatch(/^12,3/)
     expect(within(row).getAllByRole('cell').map(c => c.textContent)).toContain(idle)
+  })
+})
+
+describe('McpGatewayCard counts in a language with its own digits', () => {
+  it('writes the backend and stub counts in Bengali digits, like the sizes beside them (#33230)', async () => {
+    await i18next.changeLanguage('bn')
+    renderWithProviders(<McpGatewayCard />)
+    // The size tile is already Bengali (২.৮); the counts must match it. The
+    // metrics query waits on the status query, so this wait spans both.
+    const sizes = await screen.findAllByText(/^২\.৮ GB/, {}, namedCeiling('MCP_STATUS_THEN_METRICS', 5000))
+    expect(sizes.length).toBeGreaterThan(0)
+    const values = screen.getAllByTestId('stat-card-value').map(v => v.textContent)
+    expect(values).toContain('১ / ৮')
+    expect(values).toContain('২')
+    const row = screen.getByRole('row', { name: /slack-mcp/ })
+    const cells = within(row).getAllByRole('cell').map(c => c.textContent)
+    expect(cells[2]).toBe('২')
+    // The pid is an identifier and stays as the gateway reported it.
+    expect(cells[1]).toBe('41')
   })
 })
 

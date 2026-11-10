@@ -8,6 +8,7 @@ import { api } from '../api/client'
 import ErrorNotice from '../components/ErrorNotice'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
+import TruncatedText from '../components/TruncatedText'
 import { SettingRef } from '../components/settingRef/SettingRef'
 import { Card, CardTitle, EmptyState, Input } from '../components/ui'
 import { usePersistedString } from '../hooks/usePersistedString'
@@ -329,9 +330,7 @@ function LatencyTab({ other }: { other: Other[] }) {
               const r = histRow(o)
               return (
               <div key={o.name} className="flex items-center gap-3 text-[11.5px]">
-                <span className="w-[260px] shrink-0 truncate font-mono text-[11px]" title={o.name}>
-                  {o.name}
-                </span>
+                <TruncatedText full={o.name} className="w-[260px] shrink-0 font-mono text-[11px]" />
                 {/* The endpoints flank the bar so each row is visibly its own
                     scale, rather than a position on a shared axis it never had. */}
                 <span className="w-14 shrink-0 text-right font-mono tabular-nums text-muted">
@@ -373,9 +372,7 @@ function LatencyTab({ other }: { other: Other[] }) {
               <div className="flex flex-col gap-1">
                 {counters.map(o => (
                   <div key={o.name} className="flex items-center gap-3 text-[11.5px]">
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={o.name}>
-                      {o.name}
-                    </span>
+                    <TruncatedText full={o.name} className="min-w-0 flex-1 font-mono text-[11px]" />
                     <span className="shrink-0 font-mono tabular-nums">
                       {fmtNumber(o.count ?? o.total ?? 0)}
                     </span>
@@ -400,9 +397,7 @@ function LatencyTab({ other }: { other: Other[] }) {
                 {gauges.map(o => (
                   <div key={o.name}>
                     <div className="flex items-center gap-3 text-[11.5px]">
-                      <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={o.name}>
-                        {o.name}
-                      </span>
+                      <TruncatedText full={o.name} className="min-w-0 flex-1 font-mono text-[11px]" />
                       <span
                         className="shrink-0 font-mono tabular-nums"
                         title={String(o.latest ?? 0)}
@@ -417,9 +412,7 @@ function LatencyTab({ other }: { other: Other[] }) {
                       <div className="ml-4 flex flex-col gap-0.5">
                         {Object.entries(o.by_attr).map(([sig, v]) => (
                           <div key={sig} className="flex items-center gap-3 text-[10.5px] text-muted">
-                            <span className="min-w-0 flex-1 truncate font-mono text-[10px]" title={sig}>
-                              {sig}
-                            </span>
+                            <TruncatedText full={sig} className="min-w-0 flex-1 font-mono text-[10px]" />
                             <span className="shrink-0 font-mono tabular-nums" title={String(v)}>
                               {fmtGaugeValue(o.name, v)}
                             </span>

@@ -37,6 +37,7 @@ from kiro_crew.instances.constants import (
     RECOVER_BACKOFF_MAX_CEILING_SECS as _RECOVER_BACKOFF_CEILING,
 )
 from kiro_crew.instances.constants import WARM_SET_CAP_AUTO as _WARM_SET_CAP_AUTO
+from kiro_crew.remote_control.defaults import REMOTE_CONTROL_ON_BY_DEFAULT
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -812,11 +813,12 @@ class McpConfig:
         default=True,
         metadata=_meta(
             "Honour MCP autoApprove",
-            "Keep an ``autoApprove`` list you wrote yourself -- one hand-added to "
-            "``mcp.json`` or to an agent file -- in the agent config Kiro Crew "
-            "writes. On by default: an ``autoApprove`` is a deliberate choice about "
-            "your own tools and is respected, so those verbs run without an approval "
-            "card. Know what it costs before writing one: the agent runtime approves "
+            "Keep an ``autoApprove`` list in ``mcp.json`` or in an agent file when "
+            "Kiro Crew writes the agent config, so those verbs run without an "
+            "approval card. On by default. Kiro Crew does not check who wrote a "
+            "list: one the agent wrote into ``mcp.json`` is honoured the same as "
+            "yours. An app's own ``autoApprove`` lists are never kept. Know what "
+            "it costs: the agent runtime approves "
             "such a call locally and emits no permission request, so Kiro Crew's "
             "own tool gate never runs for it. Turn this OFF to drop every verb no "
             "server spec declares, which puts those tools back through the gate. A "
@@ -1102,7 +1104,7 @@ class TunnelConfig:
         ),
     )
     relay_enabled: bool = field(
-        default=False,
+        default=REMOTE_CONTROL_ON_BY_DEFAULT,
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
@@ -1155,15 +1157,25 @@ class TunnelConfig:
             restart=True,
         ),
     )
+    relay_handle_email_domains: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Relay Handle Email Domains",
+            "Email domains, for example example.com, whose addresses label a relayed "
+            "person by the part before the @ when the relay sent no name. The whole "
+            "domain must match, ignoring case, so a subdomain or a longer domain keeps "
+            "the full address. Empty (the default) labels everyone by their full "
+            "address. Display only: it never changes who a person is or what they may do.",
+            restart=True,
+        ),
+    )
     relay_viewer_enabled: bool = field(
         default=False,
         metadata=_meta(
             "Relay Viewer",
             "Let the desktop app list the remote Crews you can reach through the Kiro "
-            "relay and open them. Off by default, and nothing reads it yet. This is "
-            "the viewer side only: a Crew you open still needs Kiro Relay on where it "
-            "runs.",
-            restart=True,
+            "relay and open them. Off by default. This is the viewer side only: a Crew "
+            "you open still needs Kiro Relay on where it runs.",
         ),
     )
     relay_viewer_cps_url: str = field(
@@ -1174,7 +1186,6 @@ class TunnelConfig:
             "gets access tokens from. Empty (the default) means not set up. Must be "
             "https:// (http:// only for a loopback port-forward). A value that breaks "
             "that rule is ignored with a warning.",
-            restart=True,
         ),
     )
     relay_viewer_credential: str = field(
@@ -1186,9 +1197,20 @@ class TunnelConfig:
             "> Secrets or the absolute path of a file holding it. Never the credential "
             "itself. Empty (the default) uses your Kiro sign-in. A value that is not a "
             "reference is ignored with a warning that does not repeat it.",
-            restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
             sensitive=True,
+        ),
+    )
+    relay_viewer_relay_domain: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer Relay Domain",
+            "The relay's domain, for example us-east-1.relay.example.invalid. When set, the "
+            "viewer lists a remote Crew, and sends its access token, only when the Crew's "
+            "address is exactly https://<endpoint ID>.<this domain> with no port. Empty (the "
+            "default) keeps the check without a domain: the address's host must start with "
+            "the Crew's endpoint ID. Any other value matches no Crew address, so no Crew "
+            "is listed.",
         ),
     )
 

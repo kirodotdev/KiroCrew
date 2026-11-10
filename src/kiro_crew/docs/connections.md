@@ -23,11 +23,11 @@ a URL: the entry carries the vendor's MCP endpoint, the scopes worth asking for,
 revoke page to send you to later, and a baseline of the vendor's published OAuth
 metadata that a nightly job watches for drift.
 
-Of those, **14** render a card today. Two conditions decide which:
+Of those, **15** render a card today. Two conditions decide which:
 
 | Entry state | Card | Why |
 |---|---|---|
-| Launch gate passed | **Connect** | A human has walked the whole flow on this provider and recorded its revoke surface. Six entries: Notion, Linear, Atlassian, Stripe, Vercel, GitLab |
+| Launch gate passed | **Connect** | A human has walked the whole flow on this provider and recorded its revoke surface. Seven entries: Notion, Linear, Atlassian, Stripe, Vercel, GitLab, TickTick |
 | Needs an operator-registered OAuth app | **Configure OAuth app** | The vendor refuses runtime client registration, so the card is an instruction rather than an offer. One Google OAuth client can serve all six Google cards; paste it into each. Eight entries: GitHub, Asana, Gmail, Google Drive, Google Calendar, Google Sheets, Google Docs and Google Slides |
 | Launch gate not yet walked | hidden | The entry exists so the nightly metadata check covers it; nothing about it is claimed to you yet |
 | Vendor admits clients by allowlist or waitlist | hidden | No per-install app can satisfy it, which is a dead end rather than an instruction. Four entries: Figma, Canva, Dropbox, Square |
@@ -394,6 +394,59 @@ claiming success.
 unreachable for several consecutive checks, so retrying the same call is unlikely to
 help. Say which server is quarantined and what its last error was, and offer the
 reset control — do not edit the user's MCP config to work around it.
+
+## Sharing MCP servers across chats
+
+Each chat normally starts its own copy of every stdio MCP server. **MCP
+Management**, under the server list on **Customize → Connections → MCP Servers**,
+lets all your chats use one copy of a server instead, which saves memory when many
+chats are open. A shared copy runs outside each chat's sandbox, with your access, so
+share a server only if you added it yourself and its command is what you expect.
+
+**Share MCP servers across chats** is the switch at the top of the page
+(`mcp_gateway.enabled`). Turning it on asks first and lists every server it will
+share: the ones you turned on by hand, plus the shareable ones nobody chose for. It
+never turns on a server you turned off by hand, a server that hands out
+credentials, or one that waits for your OK. **Memory now** and **Memory with
+sharing** show what the MCP servers use, to the crew owner only. Chats that are
+already open keep their own copies until you reload them: the banner under the
+switch offers to reload them, and skips a chat that is busy.
+
+When servers wait for your OK, a card counts them. **Review and approve** opens
+them in a dialog, each with **Approve** (one copy runs it for all chats, outside
+their sandbox) and **Skip** (it keeps running inside each chat). There is no
+approve-all.
+
+**Advanced** holds the rest. In **Per-server sharing**, each row has a switch in
+the **Share** column, named **Enable MCP sharing** (`mcp_gateway.stub_servers`,
+which [MCP Apps](mcp-apps.md) calls routing). Turning it on reads the command the
+server runs and approves exactly that launch; the row's **Details** shows it, with
+env names only, never their values. A row's state is one of:
+
+| State | Meaning |
+|---|---|
+| **shared** | All new chats use one copy |
+| **direct** | Each chat starts its own copy. A row with Share on also reads **direct** while the switch at the top is off, when its env names a vault secret, or when it needs a setting each chat keeps |
+| **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here |
+| **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
+| **Paused · not approved yet** | It was added in a config file and never approved here; **Approve** shares it |
+
+A paused row's switch reads off, and pressing it takes you to its approve button
+instead of approving anything. A row that cannot share but still carries a mark has
+**Remove** in place of a switch, which takes the mark off. **Enable all shareable**
+lists the servers it would share by name, and shares them only when you confirm.
+
+**Pre-install npm servers** installs each server started with `npx` (or
+`npm exec`) that has Share on and is not paused, ahead of time, so a chat starts it
+without a download or a registry lookup. A server whose version is not pinned to an
+exact number is checked for a newer one every
+`mcp_gateway.resolve_once_refresh_hours` (24 by default). **Update now** checks all
+of them immediately, pinned or not. A server that fails to pre-install starts the
+way it always did.
+
+**Sharing assessment** is read-only: what Kiro Crew observed about each server, and
+whether that argues for or against sharing it. Nothing on it changes anything; the
+switches are under **Per-server sharing**.
 
 ## Behind enterprise MCP governance
 

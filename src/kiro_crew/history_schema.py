@@ -108,6 +108,11 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
     }
 )
 
+#: The app whose page embed began a conversation through a person's send. Written once,
+#: on that conversation's first line, and owned by no rebuilding writer, so every save
+#: carries it forward; uninstalling the app reads it (``app_conversation_keys``).
+EMBED_APP_META_KEY = "embed_app"
+
 # The subset of :data:`SLOT_OWNED_META_KEYS` a ROWS-ONLY slot save still owns.
 #
 # A save that must persist a slot's messages onto a transcript whose metadata line

@@ -5,14 +5,17 @@
  * The backend half is pinned by `test/test_notification_keys.py`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useNativeNotification } from '../hooks/useNativeNotification'
-import reducer, { ackNotificationByTs, addNotification, dismissNotificationByTs, fetchNotifications } from '../store/notificationsSlice'
+import reducer, {
+  ackNotificationByTs, addNotification, deleteNotification, dismissNotificationByTs, fetchNotifications,
+  NOTIFICATIONS_RING_CAP,
+} from '../store/notificationsSlice'
 import { api } from '../api/client'
 import type { Notification } from '../types'
 
@@ -22,6 +25,7 @@ vi.mock('../api/client', () => ({
     voiceConfig: vi.fn().mockResolvedValue({ autoSpeak: false }),
     approvals: vi.fn().mockResolvedValue([]),
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
+    deleteNotification: vi.fn().mockResolvedValue({ ok: true }),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0, queue: [] }),
   },
 }))
@@ -90,6 +94,8 @@ describe('useWebSocket keyed notes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // Another describe resets this mock, so the boot fetch gets its answer here.
+    vi.mocked(api.notifications).mockReset().mockResolvedValue({ notifications: [], unread: 0 } as never)
     WS_INSTANCES.length = 0
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     vi.stubGlobal('WebSocket', MockWebSocket)
@@ -146,6 +152,33 @@ describe('useWebSocket keyed notes', () => {
     })
     act(() => { ws.simulateMessage({ type: 'notification_dismiss', data: { ts: '1' } }) })
     expect(store.getState().notifications.items.map(n => n.title)).toEqual(['Unrelated'])
+    // Below the cap nothing was evicted, so only the boot fetch went out.
+    expect(api.notifications).toHaveBeenCalledTimes(1)
+  })
+
+  it('refetches after a dismissal at the cap, restoring the evicted note and keeping a local approval row', async () => {
+    const { store, ws } = mount()
+    await waitFor(() => expect(store.getState().notifications.loaded).toBe(true))
+    const stored = Array.from({ length: NOTIFICATIONS_RING_CAP - 1 }, (_, i) =>
+      agentNote({ ts: `n${i}`, ...(i === 1 ? { key: 'poller:ci' } : {}) }))
+    // The server never stores this row, so no response lists it.
+    const approval = agentNote({ ts: 'a1', kind: 'approval', approval_id: 'a1', _local: true })
+    const arrival = agentNote({ ts: 'late' })
+    act(() => {
+      for (const n of stored.slice(0, 100)) ws.simulateMessage({ type: 'notification', data: n })
+      store.dispatch(addNotification(approval))
+      for (const n of stored.slice(100)) ws.simulateMessage({ type: 'notification', data: n })
+      // The server holds this note untrimmed while the dismissal is written,
+      // but this view is full, so it evicts its oldest note, n0.
+      ws.simulateMessage({ type: 'notification', data: arrival })
+    })
+    const served = [...stored.filter(n => n.ts !== 'n1'), arrival]
+    vi.mocked(api.notifications).mockResolvedValueOnce({ notifications: served, unread: served.length } as never)
+    act(() => { ws.simulateMessage({ type: 'notification_dismiss', data: { ts: 'n1' } }) })
+    await waitFor(() => expect(store.getState().notifications.items).toHaveLength(NOTIFICATIONS_RING_CAP))
+    const expected = served.map(n => n.ts)
+    expected.splice(expected.indexOf('n99') + 1, 0, 'a1')
+    expect(store.getState().notifications.items.map(n => n.ts)).toEqual(expected)
   })
 })
 
@@ -258,6 +291,20 @@ describe('fetchNotifications and keyed changes landing mid-flight', () => {
     expect(store.getState().notifications.items).toEqual([])
   })
 
+  it('does not restore a note deleted while the fetch was in flight', async () => {
+    const store = createTestStore()
+    const doomed = agentNote({ ts: '5', title: 'Build failed' })
+    const other = agentNote({ ts: '6', title: 'Unrelated' })
+    store.dispatch(addNotification(doomed))
+    store.dispatch(addNotification(other))
+    const fetch = heldFetch(store)
+    // The server confirms the delete before the older snapshot lands.
+    await store.dispatch(deleteNotification('5'))
+    fetch.release([doomed, other])
+    await fetch.pending
+    expect(store.getState().notifications.items.map(n => n.title)).toEqual(['Unrelated'])
+  })
+
   it('keeps a replacement that arrived while the fetch was in flight', async () => {
     const store = createTestStore()
     store.dispatch(addNotification(stale))
@@ -290,6 +337,17 @@ describe('fetchNotifications and keyed changes landing mid-flight', () => {
     await fetch.pending
     expect(store.getState().notifications.items.map(n => n.title)).toEqual(['Poller down again'])
     expect(api.notifications).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops a held keyed note when a refetch that keeps held rows lists its replacement', () => {
+    // The replacement's own frame has not landed yet, and it would find its ts held.
+    const state = reducer(undefined, addNotification(stale))
+    const fresh = agentNote({ ts: '2', key: 'poller:ci', title: 'Poller up' })
+    const after = reducer(state, {
+      type: fetchNotifications.fulfilled.type,
+      payload: { items: [fresh], seq: 0, ackSeq: 0, membershipSeq: state.membershipSeq, keepHeld: true },
+    })
+    expect(after.items.map(n => n.title)).toEqual(['Poller up'])
   })
 
   /**

@@ -133,11 +133,13 @@ class TestTheLeadReportsToItsParent:
         assert "unless a conductor" in prompt
 
     def test_the_spec_can_reach_both_worker_verbs(self, installed):
-        """The server is mounted whole, so ``work_report`` is served; ``work_brief`` is
-        also auto-approved, ``work_report`` prompts like a nested conductor's."""
+        """The server is mounted whole, so ``work_report`` is served; ``work_brief`` and
+        ``work_report`` are both auto-approved, as for a nested conductor
+        (rfc-conductor-own-child-verbs.md, section 5.5)."""
         assert _reachable(installed, "kirocrew-work", "work_report")
         assert _reachable(installed, "kirocrew-work", "work_brief")
         assert "@kirocrew-work/work_brief" in installed["allowedTools"]
+        assert "@kirocrew-work/work_report" in installed["allowedTools"]
 
 
 class TestTheLeadCanDispatch:

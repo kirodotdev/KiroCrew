@@ -335,6 +335,36 @@ class TestFindServerSpecAnywhere:
 
         assert _find_server_spec_anywhere("real-hr") == {"command": "x"}
 
+    def test_a_copy_of_the_rendered_entry_leaves_its_provenance_records_behind(
+        self, agents_dir_resolver
+    ):
+        from kiro_crew import template_mcp_additions
+        from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY
+
+        _plant(
+            agents_dir_resolver,
+            AGENT_FILENAME,
+            {
+                "name": "kirocrew",
+                "mcpServers": {
+                    "derived-hr": {
+                        "command": "/opt/bin/derived-hr",
+                        "args": [],
+                        DERIVED_KEY: {"from": "derived-hr", "emitted": "/opt/bin/derived-hr"},
+                        WITHHELD_KEY: True,
+                        "disabled": True,
+                    }
+                },
+            },
+        )
+
+        found = _find_server_spec_anywhere("derived-hr")
+
+        assert found == {"command": "/opt/bin/derived-hr", "args": []}
+        # request_server records this copy, and the record refuses any key it does
+        # not know (unknown_key), so a derived server is addable only without them.
+        assert template_mcp_additions.validate_entry(found) == found
+
 
 class TestResolveMcpServer:
     """cron_script._resolve_mcp_server -- the zero-token script-cron path."""
@@ -1046,6 +1076,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/runtime_spawn_launch.py": [("app_agent_launch", "acp")],
     # The pinned spec a session's skill scope is read from (an app launch copy's).
     "kiro_crew/skill_scope_pin.py": [("agent_skill_globs", "unknown")],
+    # The steering files the dashboard's per-chat list says the agent declares.
+    "kiro_crew/steering_plan.py": [("steering_plan", "dashboard")],
     "kiro_crew/acp/session_mcp.py": [
         ("session_mcp_project_agent", "unknown"),
         ("session_mcp_servers", "unknown"),
@@ -1137,6 +1169,13 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("api_agent_template_delete", "dashboard"),
         ("api_agent_template_delete", "dashboard"),
     ],
+    # The delete's lookup of an unreadable file by its exact stem labels
+    # itself as that delete; the roster re-reads only the files that back no
+    # shown row, to tell an unreadable one from a hidden duplicate.
+    "kiro_crew/dashboard/handlers/agent_templates_unlisted.py": [
+        ("api_agent_template_delete", "dashboard"),
+        ("api_agent_templates", "dashboard"),
+    ],
     "kiro_crew/dashboard/handlers/hooks_scripts.py": [("api_kiro_hooks", "dashboard")],
     # One read: the configured-server mint resolves the server's URL from the
     # owner's main spec, so the caller never supplies it.
@@ -1157,6 +1196,8 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("side_readonly_spec", "dashboard"),
         ("side_readonly_spec", "dashboard"),
     ],
+    # The doctor row naming each allowedCommands entry Kiro Crew's own gate cannot read.
+    "kiro_crew/doctor_checks/agents.py": [("doctor", "cli")],
     "kiro_crew/mcp_discovery_config.py": [("mcp_discovery_agent_config", "unknown")],
     # The installed spec as an OAuth discovery trust anchor; any chat interface
     # can raise the banner that triggers it.
@@ -1434,6 +1475,8 @@ _EXPECTED_LINKED_TEMPLATE_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("side_readonly_spec", "dashboard"),
     ],
     "kiro_crew/member_essential_context.py": [("forward:operation", "forward:source")],
+    # Whether a run's background steps keep the chat's template (taskrunner, workflows).
+    "kiro_crew/workflow_memory.py": [("inherited_step_agent", "unknown")],
 }
 _EXPECTED_DECLARED_ENTRY_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent_discovery_parts/spec_reads.py": [("forward:operation", "forward:source")],

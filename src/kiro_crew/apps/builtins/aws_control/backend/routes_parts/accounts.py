@@ -61,6 +61,16 @@ async def _handle_reconnect_plan(request: web.Request) -> web.Response:
 _MAX_REGISTERED = 50
 
 
+def _aws_cli_v1() -> web.Response:
+    """The scan failed because the gateway's ``aws`` is AWS CLI v1, which has no
+    ``configure list-profiles``. 501 rather than 503: every retry fails the same way."""
+    return _unsupported(
+        "the gateway's aws is AWS CLI v1, which cannot list profiles; "
+        "put AWS CLI v2 first on the gateway's PATH",
+        "unsupported_aws_cli_v1",
+    )
+
+
 async def _handle_profiles_available(request: web.Request) -> web.Response:  # noqa: ARG001
     """Profile NAMES the AWS CLI knows, annotated with whether we registered them.
 
@@ -85,6 +95,8 @@ async def _handle_profiles_available(request: web.Request) -> web.Response:  # n
     # not look" into "you have no profiles".
     supported = os.name != "nt"
     if available is None and supported:
+        if await asyncio.to_thread(deploy_profiles.aws_cli_is_v1):
+            return _aws_cli_v1()
         return _unavailable(
             "could not list this machine's AWS profiles",
             "profiles_unavailable",
@@ -158,6 +170,8 @@ async def _handle_profiles_register(request: web.Request) -> web.Response:
                 "profile discovery is not supported on Windows, so no name can be checked",
                 "unsupported_platform",
             )
+        if await asyncio.to_thread(deploy_profiles.aws_cli_is_v1):
+            return _aws_cli_v1()
         return _unavailable(
             "could not list this machine's AWS profiles, so no name can be checked",
             "profiles_unavailable",

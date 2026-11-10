@@ -25,7 +25,11 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     variant_from_row,
 )
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    refuse_rerun_after_signed_out_turn,
+    reject_if_kiro_unverified,
+    rerun_signs_in_via_kiro_cli,
+)
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_ownership import (
     checkpoint_slot_replaced,
@@ -135,12 +139,13 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     ``chat_turn.regenerate_swap``.
     """
     # The readiness latch is honored before the turn is dispatched, as for the
-    # other history actions.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
+    # other history actions, when that turn signs in via kiro-cli.
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
+    if await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name)):
+        blocked = await reject_if_kiro_unverified(request)
+        if blocked is not None:
+            return blocked
     slot = state._slots.get(name)
     # The app claim, recorded on the audit row below. Ownership itself is decided
     # before this handler runs, by the per-slot checkpoint (slot_ownership.py),
@@ -267,16 +272,24 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
-        # The regenerated turn's owner mark is THIS request's: see ``api_chat``.
+        # The regenerated turn's owner mark is THIS request's (see ``api_chat``); and the
+        # row being regenerated may be a Dashboard card's, so its re-run stays a card turn
+        # with the same limits as the first run (no auto-approval, no person's authority
+        # over session directives).
+        from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
         from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 
+        _card_row = (msgs[u_idx].get("meta") or {}).get(CARD_ORIGIN_META_KEY) is True
+        _regen_kwargs: dict = {}
+        if _card_row:
+            _regen_kwargs["_card_origin"] = True
         task = asyncio.create_task(
             _run_chat(
                 state,
                 slot,
                 user_msg,
                 regenerate_hint=hint,
-                _directive_user_origin=not bool(request.get("app", "")),
+                _directive_user_origin=not bool(request.get("app", "")) and not _card_row,
                 # A regenerated row is not new typed text (it may be an API
                 # request's flattened prompt), so it never starts an MCP sign-in.
                 _message_is_typed=False,
@@ -290,6 +303,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 # inject or subagent row can sit after the request, and a cold
                 # start would replay the request as an unanswered turn.
                 _current_message=msgs[u_idx],
+                **_regen_kwargs,
             )
         )
         slot.task = task
@@ -476,12 +490,15 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
 
     # Destructive: this truncates and PERSISTS history before the background
     # turn runs, so a failed turn cannot undo it. Unlike an ordinary send, the
-    # readiness latch must be honored BEFORE the mutation.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return blocked
+    # readiness latch must be honored BEFORE the mutation, when that turn signs
+    # in via kiro-cli.
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
+    kiro_turn = await rerun_signs_in_via_kiro_cli(state.sessions, state._slots.get(name))
+    if kiro_turn:
+        blocked = await reject_if_kiro_unverified(request)
+        if blocked is not None:
+            return blocked
     slot = state._slots.get(name)
     request_app = request.get("app", "")
     if not slot:
@@ -594,6 +611,10 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         # drop the edited turn at dispatch after the history was already cut.
         if _crew_paused(slot):
             return _crew_paused_response()
+        if not kiro_turn:
+            signed_out = refuse_rerun_after_signed_out_turn(slot)
+            if signed_out is not None:
+                return signed_out
 
         msgs = slot.messages
 

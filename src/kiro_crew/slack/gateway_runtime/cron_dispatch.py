@@ -468,35 +468,14 @@ async def _cron_stream_with_posttoken_resume(
     end with only the tool's own "requested" text. Each one this turn completes
     is refused instead, audited as the chat path's refusal is, and its refusal
     is appended to ``directive_refusals`` for the caller to lead the run's
-    result with. The call is named from any of its frames the way the
-    dashboard's out-of-band claim names it (``directive_tool_from_call``), never
-    from the result body, which a harness may reshape (KAS). Nothing is applied,
-    so a forged title buys only a refusal line. Every other directive is left
-    unread.
+    result with (``person_only_directive_refuser``, shared with workflow agent
+    steps).
     """
-    from kiro_crew import session_directive
-    from kiro_crew.agent_sdk.context import CONTEXT_EVENT_TOOL_RESULT as EVENT_TOOL_RESULT
-    from kiro_crew.dashboard.session_directive_apply import refuse_user_origin_directive
-    from kiro_crew.directive_origin import USER_ORIGIN_DIRECTIVES
+    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
 
-    session_key = stream_kwargs.get("session_key", "")
-    person_only_calls: dict[str, str] = {}
-
-    async def _refuse_person_only(event: Any) -> None:
-        call_id = event.tool_call_id
-        if not call_id:
-            return
-        if event.kind != EVENT_TOOL_RESULT:
-            tool = session_directive.directive_tool_from_call(
-                event.mcp_server_name or "", event.tool_name or "", event.wire_title or ""
-            )
-            if tool in USER_ORIGIN_DIRECTIVES:
-                person_only_calls[call_id] = tool
-            return
-        if event.tool_final and call_id in person_only_calls:
-            directive_refusals.append(
-                refuse_user_origin_directive(session_key, person_only_calls.pop(call_id))
-            )
+    _refuse_person_only = person_only_directive_refuser(
+        stream_kwargs.get("session_key", ""), directive_refusals
+    )
 
     parts: list[str] = []
     preserved = ""

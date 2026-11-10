@@ -32,10 +32,11 @@ from kiro_crew.sel import sel
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
+from .entity_resolution import resolve_entity, sqlite_text
 from .extractor import EntityExtractor, _is_harness_refusal, extraction_source
 from .ingestion_budget import ImportChunkBudget, _import_chunk_budget
 from .readers import FileReader
-from .store import AUTO_ADDED_PROP, KnowledgeStore
+from .store import AUTO_ADDED_PROP, MAX_ENTITY_ALIAS_LEN, MAX_ENTITY_ALIASES, KnowledgeStore
 
 #: Per-task depth of :meth:`IngestionPipeline.ingestion_in_flight` holds, so a
 #: nested entry by a current holder is a no-op instead of a second acquisition.
@@ -119,24 +120,24 @@ class EmbedRateLimiter:
 
     async def acquire(self) -> None:
         """Wait until a token is available. No-op when rate_limit is 0."""
-        if self._rate_limit <= 0:
-            return
-        async with self._lock:
-            now = _time.monotonic()
-            elapsed = now - self._last_refill
-            # Refill at rate_limit tokens per 60 seconds.
-            refill = elapsed * (self._rate_limit / 60.0)
-            self._tokens = min(float(self._rate_limit), self._tokens + refill)
-            self._last_refill = now
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
-                return
-        # No token available — wait for one to accrue.
-        wait_secs = (1.0 - self._tokens) / (self._rate_limit / 60.0)
-        await asyncio.sleep(max(0.01, wait_secs))
-        async with self._lock:
-            self._tokens = 0.0
-            self._last_refill = _time.monotonic()
+        while True:
+            async with self._lock:
+                if self._rate_limit <= 0:
+                    return
+                now = _time.monotonic()
+                elapsed = now - self._last_refill
+                # Refill at rate_limit tokens per 60 seconds.
+                refill = elapsed * (self._rate_limit / 60.0)
+                self._tokens = min(float(self._rate_limit), self._tokens + refill)
+                self._last_refill = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait_secs = (1.0 - self._tokens) / (self._rate_limit / 60.0)
+            # No token yet: wait for one to accrue, then take it under the lock
+            # like any other caller. Waiters that slept together each go back
+            # for their own token, so one refill admits one of them, not all.
+            await asyncio.sleep(max(0.01, wait_secs))
 
 
 # Singleton rate limiter — initialized from config on first use.
@@ -267,6 +268,81 @@ def _job_status(processed: int, total: int) -> str:
     if processed < total:
         return 'partial'
     return 'completed'
+
+
+def _coerce_aliases(
+    raw: object, exclude: str, *, limit: int = MAX_ENTITY_ALIASES
+) -> list[str] | None:
+    """Sanitize and bound a raw aliases value from LLM extraction output.
+
+    Returns a non-empty list of redacted alias strings, or ``None`` when the
+    result would be empty (so the caller can pass ``aliases=None`` to
+    ``add_entity`` and leave the column as its ``DEFAULT '[]'``).
+
+    ``exclude`` is the entity's canonical name: the name itself is never
+    stored as its own alias, but the check is a safety net — with bare
+    canonicals the name should not appear in the list anyway.
+
+    Cap is applied to the count of VALID accepted aliases, NOT to the raw
+    input position.  A raw list like ``[None, None, ..., None, "Music Bank"]``
+    with 11 elements correctly keeps ``"Music Bank"`` rather than discarding it
+    because invalid entries consumed the first 10 slots.
+
+    Identity resolution probes one extra valid alias to detect an incomplete
+    evidence set; persisted aliases still use ``MAX_ENTITY_ALIASES``.
+    """
+    if not isinstance(raw, list):
+        return None
+
+    accepted: list[str] = []
+    accepted_cf: set[str] = set()
+    exclude_cf = exclude.casefold()
+    overflow = 0
+
+    for a in raw:
+        if not isinstance(a, str):
+            continue
+        stripped = a.strip()
+        if not stripped:
+            continue
+        # Redact the FULL stripped alias before truncating: a credential URL
+        # cut mid-token (e.g. before the terminating `@host`) would defeat
+        # redaction if truncation preceded it.
+        redacted = _redact(stripped)
+        if not redacted:
+            continue
+        truncated = redacted[:MAX_ENTITY_ALIAS_LEN]
+        if not truncated:
+            continue
+        # A lone surrogate (from a JSON "\ud800" escape in the model output)
+        # cannot be bound by SQLite, so the alias-fallback find_entity(alias)
+        # would raise and drop the whole chunk's entities. Such a spelling can
+        # match nothing stored anyway; leave it out.
+        try:
+            truncated.encode("utf-8")
+        except UnicodeEncodeError:
+            continue
+        cf = truncated.casefold()
+        # Reject if casefold-equivalent to entity's canonical name.
+        if cf == exclude_cf:
+            continue
+        # Casefold dedupe within this call.
+        if cf in accepted_cf:
+            continue
+        if len(accepted) >= limit:
+            overflow += 1
+            continue
+        accepted.append(truncated)
+        accepted_cf.add(cf)
+
+    if overflow > 0:
+        logger.warning(
+            "_coerce_aliases: %d alias(es) discarded (limit %d) for entity %r",
+            overflow,
+            limit,
+            exclude,
+        )
+    return accepted or None
 
 
 def _first_line_title(content: str) -> str:
@@ -554,7 +630,7 @@ class IngestionPipeline:
 
     def _record_harness_refusal(self, job_id: str, source_id: str,
                                 content_hash: str, exc: BaseException) -> None:
-        """Fail *job_id* on the enterprise pool's harness refusal (RFC D6).
+        """Fail *job_id* on the LTS pool's harness refusal (RFC D6).
 
         The job ends ``failed`` with the refusal's remedy in ``error``, and the source
         reads ``error``. The source forgets *content_hash* when it holds it (a source
@@ -567,6 +643,18 @@ class IngestionPipeline:
             "UPDATE ingestion_jobs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
             (str(exc)[:2000], datetime.now().isoformat(), job_id))
         db.commit()
+        self._mark_source_failed(source_id, content_hash)
+
+    def _mark_source_failed(self, source_id: str, content_hash: str) -> None:
+        """Stamp the source ``error`` and forget *content_hash* when it holds it.
+
+        A source an ingest creates stores the document's hash up front, and the
+        unchanged-hash check skips any later ingest of that same text. Kept after
+        a failed or rolled-back ingest, it would make every retry of the same
+        document a no-op, leaving the source with no items until the text
+        changes. A source that already held another hash keeps it. Synchronous:
+        run it inside the caller's off-loop hop.
+        """
 
         # A delta under the store's write lock, never a snapshot rewrite: a
         # concurrent pause or scan stamp on the same row must survive.
@@ -959,9 +1047,8 @@ class IngestionPipeline:
                     self.store.db.execute(
                         "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
                         (datetime.now().isoformat(), job_id))
-                    self.store.db.execute(
-                        "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
                     self.store.db.commit()
+                    self._mark_source_failed(source_id, content_hash)
 
                 await run_to_completion(_mark_failed)
             except Exception:  # noqa: BLE001 - never mask the original error
@@ -1066,8 +1153,9 @@ class IngestionPipeline:
                     return new_id
 
                 item_id = await run_to_completion(_write_chunk)
-                # Entity storage is O(entities): find_entity does a full-table
-                # alias scan and each add_entity/add_mention/add_entity_relation
+                # Entity storage can be O(entities): until the alias index is
+                # built find_entity falls back to a full-table alias scan, and
+                # each add_entity/add_mention/add_entity_relation
                 # commits + mutates the graph. On a many-entity chunk this blocked
                 # the asyncio loop past the 25s watchdog (loop-stall crash dumps,
                 # dashboard "connection lost"). Offloaded: the graph is RLock-guarded
@@ -1149,7 +1237,7 @@ class IngestionPipeline:
                 # empty group, which the doc-state recovery paths treat as "re-
                 # attempt", so the next scan restores a complete copy.
                 self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self._mark_source_failed(source_id, content_hash)
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? WHERE id = ?",
                 (_job_status(processed, total), processed, now, job_id))
@@ -1285,19 +1373,31 @@ class IngestionPipeline:
 
         await run_to_completion(_insert_job)
 
-        chunks = await asyncio.to_thread(self.chunker.chunk, text)
-        total = len(chunks)
-
-        chunk_contents = [chunk['content'] for chunk in chunks]
         try:
+            chunks = await asyncio.to_thread(self.chunker.chunk, text)
+            total = len(chunks)
+            chunk_contents = [chunk['content'] for chunk in chunks]
             with extraction_source(source_id):
                 extractions = await self.extractor.extract_batch(chunk_contents)
         except Exception as exc:
-            # The enterprise harness refusal fails the job (see ingest_file); any
-            # other extraction error keeps its existing path.
+            # Either way the job ends 'failed' and this ingest's hash is
+            # forgotten, as in ingest_file: a job left 'processing' is never
+            # finished, and a kept hash blocks retrying the same text.
             if _is_harness_refusal(exc):
                 await run_to_completion(functools.partial(
                     self._record_harness_refusal, job_id, source_id, content_hash, exc))
+            else:
+                def _mark_failed() -> None:
+                    self.store.db.execute(
+                        "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
+                        (datetime.now().isoformat(), job_id))
+                    self.store.db.commit()
+                    self._mark_source_failed(source_id, content_hash)
+
+                try:
+                    await run_to_completion(_mark_failed)
+                except Exception:  # noqa: BLE001 - never mask the original error
+                    logger.warning("failed to mark ingestion job %s failed", job_id, exc_info=True)
             raise
 
         # What THIS call wrote, collected at the write itself rather than
@@ -1340,8 +1440,9 @@ class IngestionPipeline:
                     return new_id
 
                 item_id = await run_to_completion(_write_chunk)
-                # Entity storage is O(entities): find_entity does a full-table
-                # alias scan and each add_entity/add_mention/add_entity_relation
+                # Entity storage can be O(entities): until the alias index is
+                # built find_entity falls back to a full-table alias scan, and
+                # each add_entity/add_mention/add_entity_relation
                 # commits + mutates the graph. On a many-entity chunk this blocked
                 # the asyncio loop past the 25s watchdog (loop-stall crash dumps,
                 # dashboard "connection lost"). Offloaded: the graph is RLock-guarded
@@ -1381,7 +1482,7 @@ class IngestionPipeline:
                 # duplicate-gate attacher, or that attacher keeps a truncated
                 # document its unchanged hash never lets a rescan repair.
                 self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self._mark_source_failed(source_id, content_hash)
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
                 (_job_status(processed, total), total, processed, now, job_id))
@@ -1418,21 +1519,80 @@ class IngestionPipeline:
         return dict(row) if row else None
 
     def _store_entities(self, extraction: dict, item_id: str):
-        """Deduplicate and store entities, mentions, and relations."""
+        """Resolve identity conservatively, then store mentions and relations.
+
+        Canonical names retain priority. Alias bridges require matching types,
+        supported disjoint scripts, no short Latin abbreviation endpoint, and
+        one unique eligible target across both bridge routes. Retrieval aliases
+        remain broader than identity evidence. Only canonical reuse enriches
+        all aliases; alias-to-canonical reuse teaches the incoming name alone.
+        """
         entity_map: dict[str, str] = {}  # name -> entity_id
         for ent in extraction.get('entities', []):
-            name = ent.get('name', '').strip()
-            if not name:
+            raw_name = ent.get('name', '')
+            if not isinstance(raw_name, str):
                 continue
-            existing = self.store.find_entity(name)
+            name = raw_name.strip()
+            if not sqlite_text(name):
+                continue
+
+            # Probe one beyond the storage cap: a discarded alias may name a
+            # competing target, so a truncated set cannot establish uniqueness.
+            probed_aliases = _coerce_aliases(
+                ent.get('aliases', []), name, limit=MAX_ENTITY_ALIASES + 1
+            ) or []
+            aliases_complete = len(probed_aliases) <= MAX_ENTITY_ALIASES
+            aliases = probed_aliases[:MAX_ENTITY_ALIASES]
+            if not aliases_complete:
+                logger.warning('alias identity reuse skipped for %r: alias evidence exceeds limit', name)
+            existing, resolution_tier = resolve_entity(
+                self.store, name, ent.get('type') or 'concept', aliases,
+                aliases_complete=aliases_complete,
+            )
+
             if existing:
                 eid = existing['id']
+                if resolution_tier == 1:
+                    # Canonical match: enrich with incoming aliases only.
+                    # 'name' is always dropped by add_entity_aliases (it equals
+                    # the canonical name), so including it wastes a lock
+                    # acquisition per entity.
+                    enrich_aliases = aliases
+                elif resolution_tier == 3:
+                    # Pass 2 alias-to-canonical: the incoming entity's own name is
+                    # a new alias for the existing entity.  Route it through
+                    # _coerce_aliases (strip, redact, truncate, in-call dedupe) so
+                    # add_entity_aliases receives a pre-sanitized list and the
+                    # per-call sanitise loop in the store is not duplicating work.
+                    enrich_aliases = _coerce_aliases([name], existing['name']) or []
+                else:
+                    # Alias hit in Pass 1: no enrichment
+                    enrich_aliases = []
+
+                if enrich_aliases:
+                    # Enrichment is best-effort: only the entity row is
+                    # committed at this point (add_mention runs after this
+                    # block).  Any exception here (invariant violation,
+                    # transient lock timeout, DB error) is logged at warning
+                    # and skipped so that alias enrichment never causes the
+                    # containing document to be rolled back or deleted.
+                    try:
+                        self.store.add_entity_aliases(eid, enrich_aliases)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            'add_entity_aliases skipped for entity %r (%s): %s',
+                            name,
+                            eid,
+                            exc,
+                        )
             else:
                 eid = self.store.add_entity(
                     name=name,
-                    entity_type=ent.get('type', 'concept'),
+                    entity_type=ent.get('type') or 'concept',
                     description=ent.get('description'),
+                    aliases=aliases or None,
                 )
+
             entity_map[name] = eid
             self.store.add_mention(item_id, eid, context=ent.get('description'))
 

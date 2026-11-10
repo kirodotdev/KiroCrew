@@ -25,7 +25,7 @@ change.
 
 What remains is detection, and detection alone: every subprocess this module
 spawns is one of the two read-only probes above, sandboxed, with a fixed argv.
-An enterprise build's sign-in check may re-run those two probes through the
+An LTS build's sign-in check may re-run those two probes through the
 sandbox's first-party carve-out on a host with no sandbox backend, for the
 sign-in verdict only.
 No command, argument, URL, or filesystem target is accepted from an HTTP

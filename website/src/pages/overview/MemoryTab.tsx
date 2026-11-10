@@ -481,7 +481,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
         ? i18nT('pages.overview.memoryTab.consolidated_sessions_skipped_mode', tally)
         : i18nT('pages.overview.memoryTab.consolidated_sessions_skipped', tally)}{skipTip}</>); setConsolidateOk(true)
     } else {
-      setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {i18nT('pages.overview.memoryTab.session', { count: succeeded })}</>); setConsolidateOk(true)
+      setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated_count', { count: succeeded })}</>); setConsolidateOk(true)
     }
     setConsolidating(false)
     // Only the plain all-success tally clears itself. A tally with skips is a

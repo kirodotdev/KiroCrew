@@ -551,6 +551,60 @@ async def _on_session_closing(turn: _ChatTurn) -> None:
     turn._crew_log_error = _crew_log_error
 
 
+def _harness_unsupported_text(session_key: str) -> str:
+    """The ``capability_harness_unsupported`` row's text, its remedy taken from how
+    *session_key*'s backend was chosen.
+
+    The bare code names neither the setting nor the saved spec, and changing
+    agent.acp_backend does nothing for a member chat. A crewmate's worker is
+    refused for its kit, which only some member backends carry, so it gets the
+    kit's own refusal (``mate_worker.worker_kit_backend_refusal``). A Bot's chat
+    that its own harness pin put on its backend gets the pin, which outranks
+    agent.member_acp_backend; any other member chat gets that setting.
+    """
+    from kiro_crew.crewmate_harness import crewmate_for_session
+    from kiro_crew.members import is_crewmate_worker_session
+
+    member_text = (
+        "This Bot has saved capabilities, and the backend its chats run on "
+        "(agent.member_acp_backend, not agent.acp_backend) cannot load them. Set "
+        f"agent.member_acp_backend to {_member_capable_backend_names()}, or reset the "
+        "member's Capabilities page, then start a new chat."
+    )
+    if is_crewmate_worker_session(session_key):
+        from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
+
+        try:
+            cfg = KiroCrewConfig.load()
+            crew = crewmate_for_session(cfg, session_key)
+            reason = worker_kit_backend_refusal(crewmate_worker_backend(cfg, crew), cfg, crew)
+        except Exception as exc:  # noqa: BLE001 - the row must still be written
+            reason = str(exc)
+        return reason or member_text
+    from kiro_crew.acp_backends import ACP_BACKENDS_MEMBER_CAPABILITIES, resolve_selected_backend
+    from kiro_crew.crewmate_harness import crewmate_harnesses, crewmate_pin_for, pin_remedy
+
+    try:
+        cfg = KiroCrewConfig.load()
+        pin = crewmate_pin_for(cfg, crewmate_for_session(cfg, session_key))
+        if pin is None:
+            return member_text
+        member_route = resolve_selected_backend(cfg.agent.member_acp_backend)
+        remedy = pin_remedy(
+            pin,
+            crewmate_harnesses(cfg),
+            clearing_helps=member_route in ACP_BACKENDS_MEMBER_CAPABILITIES,
+        )
+    except Exception:  # noqa: BLE001 - the row must still be written
+        logger.debug("Reading %s's harness pin failed", session_key, exc_info=True)
+        return member_text
+    return (
+        "This Bot has saved capabilities, and the harness its chats run on cannot "
+        f"load them; {remedy}, or reset the member's Capabilities page, then start a "
+        "new chat."
+    )
+
+
 async def _on_error(turn: _ChatTurn, exc) -> None:
     """Any other error the turn raised."""
     # As in _on_acp_error_card: a recovery the loop's cycle queued is that cycle.
@@ -597,33 +651,7 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
         if exc.project:
             _err_meta["project"] = exc.project
     elif isinstance(exc, CapabilityStartupError) and str(exc) == "capability_harness_unsupported":
-        # The bare code names neither the setting nor the saved spec, and
-        # changing agent.acp_backend does nothing for a member chat.
-        _err_text = (
-            "capability_harness_unsupported: This Bot has saved "
-            "capabilities, and the backend its chats run on "
-            "(agent.member_acp_backend, not agent.acp_backend) cannot load "
-            "them. Set agent.member_acp_backend to "
-            f"{_member_capable_backend_names()}, or reset the member's "
-            "Capabilities page, then start a new chat."
-        )
-        from kiro_crew.members import is_crewmate_worker_session
-
-        if is_crewmate_worker_session(session_key):
-            # A crewmate's worker is refused for its kit, which only some
-            # member backends carry, so the member card's remedy does not fit.
-            from kiro_crew.crewmate_harness import crewmate_for_session
-            from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
-
-            _cfg = KiroCrewConfig.load()
-            try:
-                _worker_reason = worker_kit_backend_refusal(
-                    crewmate_worker_backend(_cfg, crewmate_for_session(_cfg, session_key))
-                )
-            except Exception as _exc:  # noqa: BLE001 - the row must still be written
-                _worker_reason = str(_exc)
-            if _worker_reason:
-                _err_text = "capability_harness_unsupported: " + _worker_reason
+        _err_text = "capability_harness_unsupported: " + _harness_unsupported_text(session_key)
         _err_meta = _terminal_error_meta(exc)
     elif (
         isinstance(exc, CapabilityStartupError) and str(exc) == "capability_tool_limits_unsupported"

@@ -195,7 +195,7 @@ def assert_security_floor(authority: object) -> None:
     protection of the overlay — it MUST stay verbatim, or a companion could
     override ``is_denied`` to always-allow and pass boot.
 
-    The un-weakenable enterprise floor (governance ``commands``-scope pins) is
+    The un-weakenable LTS floor (governance ``commands``-scope pins) is
     enforced separately by ``governance.py``'s gate + ``assert_governance_floor``,
     not here; git-publish is enforced independently by the always-on
     ``_is_git_publish`` floor inside ``security.is_denied``.

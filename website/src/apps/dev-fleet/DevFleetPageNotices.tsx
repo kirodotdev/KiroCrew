@@ -9,6 +9,7 @@ import { Btn, StatCard } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Server, X, Undo2, Info, AlertTriangle } from 'lucide-react'
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes } from '../../i18n/format'
 import { persistDismissedUndoKey, type Worktree, type UndoTarget, type FleetData } from './devFleetPageModel'
@@ -52,10 +53,15 @@ export function DevFleetPageNotices({
           no rows, and instructions for absent controls read as a broken page. */}
       {!noFleet && (
       <p className="text-[12.5px] text-muted leading-relaxed mt-3 mb-1">
-        {i18nT('pages.devFleetPage.each_row_below_is_a_git_worktree_discovered_from')}{' '}
-        <span className="text-text-strong">{i18nT('pages.devFleetPage.pull_build')}</span> {i18nT('pages.devFleetPage.on_the_main_row_to_fast_forward_it_from_origin_a')} <span className="text-text-strong">{i18nT('pages.devFleetPage.pod_2')}</span> {i18nT('pages.devFleetPage.boots_any_worktree_as_an_isolated_throwaway_gate')}{' '}
-        <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span> {i18nT('pages.devFleetPage.moves_a_feature_branch_onto_the_latest_main_and')}{' '}
-        <span className="text-text-strong">{i18nT('pages.devFleetPage.prune')}</span> {i18nT('pages.devFleetPage.safely_removes_worktrees_whose_pr_has_already_me')}
+        <Trans
+          i18nKey="pages.devFleetPage.row_actions_how_to"
+          components={{
+            pull: <span className="text-text-strong">{i18nT('pages.devFleetPage.pull_build')}</span>,
+            pod: <span className="text-text-strong">{i18nT('pages.devFleetPage.pod_2')}</span>,
+            rebase: <span className="text-text-strong">{i18nT('pages.devFleetPage.rebase')}</span>,
+            prune: <span className="text-text-strong">{i18nT('pages.devFleetPage.prune')}</span>,
+          }}
+        />
       </p>
       )}
       {/* Fleet-level totals: worktree disk, pod-home disk, and orphan

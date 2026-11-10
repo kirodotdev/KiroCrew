@@ -484,7 +484,38 @@ def test_upload_declares_the_content_type(monkeypatch, payload):
     spy = _EngineSpy()
     spy.install(monkeypatch)
     _publish(pd.PersonalDriveProvider(), payload)
-    assert spy.arg("put-object", "--content-type") == "text/html"
+    assert spy.arg("put-object", "--content-type") == "text/html; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    ("given", "sent"),
+    [
+        ("text/plain", "text/plain; charset=utf-8"),
+        ("text/markdown", "text/markdown; charset=utf-8"),
+        ("text/plain; charset=utf-8", "text/plain; charset=utf-8"),
+        ("text/plain; Charset=ISO-8859-1", "text/plain; Charset=ISO-8859-1"),
+        ("image/svg+xml", "image/svg+xml"),
+        ("", "application/octet-stream"),
+    ],
+)
+def test_upload_names_utf8_for_a_text_type_without_a_charset(monkeypatch, payload, given, sent):
+    """The staged body is UTF-8, and S3 serves the header as stored: a text page with no
+    charset is read in the browser's locale encoding, so non-ASCII text arrives garbled."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy()
+    spy.install(monkeypatch)
+    asyncio.run(
+        pd.PersonalDriveProvider().publish(
+            file_path=payload,
+            content_type=given,
+            title="t",
+            summary="",
+            tags=[],
+            visibility="public",
+            shared_with=[],
+        )
+    )
+    assert spy.arg("put-object", "--content-type") == sent
 
 
 def test_upload_stores_the_content_digest_as_metadata(monkeypatch, payload):
@@ -1349,7 +1380,7 @@ def test_push_version_types_the_bytes_it_was_handed_not_the_stale_remote_header(
         )
     )
     assert not out.error
-    assert spy.arg("put-object", "--content-type") == "text/html"
+    assert spy.arg("put-object", "--content-type") == "text/html; charset=utf-8"
 
 
 def test_push_version_keeps_the_stored_type_for_a_suffix_it_cannot_read(monkeypatch, tmp_path):

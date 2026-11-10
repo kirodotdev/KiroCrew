@@ -27,6 +27,14 @@ mapping to get wrong. `test_publish_feed_contract.py` pins the channel set
 against `publish-cli.yml`, and `cli.sh` rejects anything outside it before
 touching the CDN.
 
+Nightly builds also run Kiro Crew's own KAS engine by default: `nightly.yml`
+passes `build_channel: nightly` to `build-wheel.yml`, `build-desktop.yml` and
+`build-windows.yml`, `scripts/stamp-distribution.sh` bakes it into
+`_build_info.BUILD_CHANNEL`, and an unset `agent.kas_bundle` reads that stamp
+(`config.loader_document.kas_bundle_build_default`). `release.yml` passes no
+lane, so insider and stable builds keep the default off. Pinned by
+`test_kas_bundle_nightly_default.py`.
+
 Channel is derived from the tag, and nothing else. `release.yml`'s `version` job
 treats **any** prerelease label as insider and maps it to a PEP 440 `rcN` wheel
 using the label's trailing number. Cutting the branch, numbering the RCs,
@@ -119,10 +127,10 @@ mechanism:
     `update_latest_version` (the arm target `verify_shadow_venv` compares
     byte-for-byte, and the update popup's per-version snooze/skip keys),
     Electron's `info.version` (`versionLooksPrerelease` derives the update lane
-    from the `-` suffix), and every `_is_newer` / floor comparison. Folding one
-    of these in place broke the entire stable in-app apply path once (caught in
-    review); folding the snooze key would make dismissing `0.4.0` swallow the
-    next release's rc candidate.
+    from the `-` suffix, an edition's numeric `-N` build excepted), and every
+    `_is_newer` / floor comparison. Folding one of these in place broke the
+    entire stable in-app apply path once (caught in review); folding the snooze
+    key would make dismissing `0.4.0` swallow the next release's rc candidate.
   - *Display therefore always reads a folded SIBLING field, never the raw one*:
     `version_display` and `update_latest_version_display` on the status frame,
     `latest_version_display` on `/api/update/check` and the channel-switch
@@ -183,8 +191,12 @@ mechanism:
   `publish-cli.yml` run signs a second manifest for insider and, as its last
   step and only when the same guard advances, stages the same wheel under
   `cli/insider/<version>/` and writes that manifest to
-  `feed/insider/latest-cli.json`. The insider PEP 503 index and the `:insider`
-  image tag do not catch up yet (#32646).
+  `feed/insider/latest-cli.json`. The same run also lists the stable wheel in
+  the insider PEP 503 index, with no guard: an index only adds a version and
+  pip installs the newest one listed, so an insider line already ahead still
+  resolves to its own build. `publish-docker.yml` moves `:insider` to a stable
+  release's digest as its last alias write, behind the same guard run against
+  the repo's tags, which are pushed before any run publishes them.
 
 ### Runbook: promoting an RC to stable
 
@@ -324,10 +336,10 @@ concurrency group, and their version derivation.
 | `build-desktop.yml` | reusable build | Matrix `macos-15` (universal macOS app) and `ubuntu-22.04` / `ubuntu-22.04-arm` (AppImage + deb + rpm) via `packaging/build-desktop.sh`, then a `smoke-linux-packages` job that installs the deb and rpm in Ubuntu 24.04 and Amazon Linux 2023 containers. Deliberately credential-free (`contents: read` only, pinned by `test_workflow_permissions.py`), so it builds **unsigned** and hands the `.app` downstream. `nightly.yml` passes `soft_fail_arm64: true`, which marks the arm64 leg alone `continue-on-error` so a failed arm64 build cannot skip the x64 publishers; the smoke never carries it, so a package that will not install still holds both arches. A second macOS job, `build-desktop-mac-single-arch`, builds arm64-only and x86_64-only DMGs behind the `mac_single_arch` input (`nightly.yml` and `release.yml` both pass true). It is `continue-on-error` only under `soft_fail_mac_single_arch: true`, which `nightly.yml` passes and `release.yml` does not: on release both DMGs are required promotion-bundle roles, so a failed single-arch build fails the aggregate before any publisher writes an immutable key. Each DMG is then signed and fed by its own `sign-and-notarize.yml` call (`mac_variant`), and the universal call excludes both artifact names when flattening, so the universal DMG stays the only mac bytes the universal leg signs and feeds. |
 | `build-windows.yml` | reusable build | `kirocrew-windows-4-core` on this repository and `windows-latest` on a fork, an NSIS `Setup.exe`. Separate from `build-desktop.yml` because Authenticode signing has to happen *inside* the build (the installer compresses its own already-signed executable), so this job holds an AWS Signer identity and `build-desktop.yml` can stay credential-free. Callers pass `soft_fail: true`, so a Windows failure cannot skip the mac/Linux lanes. |
 | `publish-windows.yml` | reusable publish | Publishes the signed x64 installer and blockmap, then `feed/<channel>/latest.yml` and the `latest/` installer alias. It probes the soft-failed build artifact and skips when none exists; stable uses the fresh build by default or the optional candidate pair in byte-reuse mode. |
-| `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. A stable release repeats the first two for insider with an insider-signed manifest when the insider guard advances. |
+| `publish-cli.yml` | reusable publish | Wheel + `SHA256SUMS` + KMS-signed `cli-manifest.json` to `cli/<channel>/<version>/`, the same signed manifest to `feed/<channel>/latest-cli.json`, and a PEP 503 index under `feed/<channel>/simple/`. A stable release repeats the first two for insider with an insider-signed manifest when the insider guard advances, and always adds its wheel to the insider index. |
 | `publish-linux.yml` | reusable publish | One Linux artifact to `desktop/<channel>/<version>/`, its channel file under `<feed prefix>/latest-linux[-arm64].yml`, then the `latest/` alias. Invoked ONCE PER (ARCH, FORMAT) PAIR — `arch: x64\|arm64` × `format: appimage\|deb\|rpm`, six callers — each with its own keys and feed, so no two ever share one. |
 | `sign-and-notarize.yml` | reusable publish | Three chained jobs (`sign`, `notarize`, `publish`) covering the whole macOS trust chain and the mac feed write. Called THREE TIMES by each trigger: once for the universal DMG (`feed/<channel>/latest-mac.yml`) and once per single-arch DMG with `mac_variant: arm64 \| x64` + `mac_artifact`, which suffixes every shared key, artifact and in-artifact zip name with the arch and writes `feed/<channel>/<arch>/latest-mac.yml`. All three are required lanes on `release.yml`, and the promotion bundle carries all three zip/DMG pairs (`mac_zip[_<arch>]` / `dmg[_<arch>]` roles). |
-| `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. |
+| `publish-docker.yml` | reusable publish | Multi-arch (`linux/amd64,linux/arm64`) image built from the same wheel, pushed to `ghcr.io/<owner>/kirocrew`. A stable release also moves `:insider` when the insider guard advances. |
 | `publish-installer.yml` | independent publish | Publishes `cli.sh` to the distribution bucket root. Triggered by a push to `main` touching `cli.sh` (path-filtered), plus manual dispatch. **Not** part of a channel release. |
 
 Release-adjacent, deliberately outside the release path:
@@ -591,6 +603,21 @@ literal trailing-slash key `.../simple/kirocrew/` that pip requests, using
 different key). The project page is merged with the live one so prior versions
 stay installable, and a non-200/non-404 fetch aborts the step rather than
 truncating the version history.
+
+Every link carries `data-requires-python`, so pip on an older interpreter refuses
+with "Requires-Python >=3.12" instead of falling back to a release from before the
+floor was raised. A new link takes the wheel's own `Requires-Python`; the merge
+keeps each link's attributes, and stamps any link published before the attribute
+existed with `>=3.12`. That stamp is deliberate even where a pre-0.6 wheel's
+METADATA says `>=3.10`: this index serves only the supported 3.12+ line
+([decision](../decisions/2026-11-09-pip-older-than-3-12-is-refused-not-given-a-pre-0-6-release.md)).
+`pip install --ignore-requires-python` is the escape hatch.
+
+Every branch that can tag a release must merge the page the same way, because a
+tag runs the workflow from its own commit. A release branch whose merge still keeps
+only bare links would publish a page holding just its own link and drop the
+channel's whole version history. So a release branch cut before links carried
+attributes takes the attribute-keeping merge pattern before its next tag.
 
 ## The macOS trust chain
 
@@ -1076,7 +1103,7 @@ explicit install and the deferred install on quit — therefore call
 It drives an ordinary `checkForUpdates`, or waits for the one already in flight,
 and reads the verdict back out of the existing handlers, so the direction gate
 and the retraction path make the decision rather than a second copy of that
-rule. Three outcomes:
+rule. Four outcomes:
 
 - `latest` — the feed still serves the staged version, so the install proceeds.
 - `superseded` — a newer build published, or the release was retracted. The
@@ -1084,6 +1111,15 @@ rule. Three outcomes:
   card moves to what the feed now serves (the newer build's `found` or
   `downloading`, or "up to date" for a retraction) with no separate notice; the
   quit path explains the refusal in a native notification (below).
+- `channel-changed` — the stage came from a channel this install no longer
+  follows, or the check that judged it was sent to one. Every stage and every
+  offer records the channel whose feed served it, so the install is REFUSED
+  whether the switch came before the click or during the wait, and whether or
+  not the feed answered: fail-open never crosses channels. A promoted release
+  the selected channel also serves is the same build, so that channel's check
+  takes the stage over and it installs. On the manual path the card shows
+  `checking` while the selected channel is asked; the quit path explains the
+  refusal in a native notification (below).
 - `unknown` — **fail open.** The feed was unreachable, or answered nothing
   within 8s. Bytes the user already downloaded must not become uninstallable
   because the network went away, so the stage installs, exactly as an install
@@ -1108,8 +1144,9 @@ The wait has the same 8s bound and fails open to the offered build; a check it
 stops waiting for is abandoned, so its late answer cannot redirect the download
 in progress. A later gate that joins that still-running check (an install, or a
 Retry of the download) lifts the abandonment, because no install is running then
-and its verdict needs the answer. If the channel preference changed during the
-wait, nothing downloads and the new lane is checked instead (the card shows
+and its verdict needs the answer. If the offer came from a channel this install
+no longer follows, whether the switch came before the click or during the wait,
+nothing downloads and the selected channel is checked instead (the card shows
 `checking`), once the old check has fully settled; a second click that wakes
 behind that new-lane check stands down and leaves the answer to it. The
 automatic download is exempt: it starts from
@@ -1119,13 +1156,15 @@ Two consequences worth knowing when reading a bug report. The quit path verifies
 `quiet`, so a newer build discovered as the app exits is *not* auto-downloaded —
 that would be a ~350MB fetch seconds before the process ends; it is offered on
 the next launch instead. And a refusal on the quit path still quits, with a
-native notification explaining why — separate copy for a withdrawn stage versus
-one deferred by a check still running at the dispatch (possible only when the
-stage carries no version, so the gate had nothing to wait for), because only the
-first is a retraction and the second re-offers the same build next launch. The
-dashboard's arm endpoint (`api_update_arm` in
-`src/kiro_crew/dashboard/handlers/updates.py`) re-checks the feed the same way,
-and awaits an already-running check rather than arming its cached verdict.
+native notification explaining why — separate copy for a withdrawn stage, a
+stage from a channel the user left, and one deferred by a check still running at
+the dispatch (possible only when the stage carries no version, so the gate had
+nothing to wait for), because only the first is a retraction, the second waits
+for the selected channel's answer, and the third re-offers the same build next
+launch. The dashboard's arm endpoint (`api_update_arm` in
+`src/kiro_crew/dashboard/handlers/updates_step_up.py`) re-checks the feed the
+same way, and awaits an already-running check rather than arming its cached
+verdict.
 
 Turning the preference off keeps bytes already fetched but **disarms the
 install-on-quit for a stage that was downloaded automatically**, so the update a
@@ -1168,7 +1207,7 @@ The consequences to know:
 - **The "you are running prerelease bytes" note still keys on the stamp**
   (`stampedChannel`), not on the followed channel, because that statement is
   about the bytes and stays literally true on a promoted stable install.
-- **An enterprise build has no opt-in.** It follows `stable`, the minimal set of the `updates.channel` control (RFC crew-enterprise-edition, D3), whatever the preference says. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
+- **An LTS build has no opt-in.** It follows `lts`, the edition's own channel (RFC crew-lts-edition, D11), whatever the preference or a policy `updates.channel` pin says. `lts` is not a channel an oss build offers, so neither edition reads the other's feed. `release-lts.yml` publishes `lts` (see "LTS edition releases"), and neither edition falls back to the other's channel. `runtime/update/policy-channel.js` reads the baked edition, `resolveChannel()` lets that channel replace the preference, About shows the channel read-only with the "Locked by policy" badge, and `update:set-channel` refuses with `locked_by_policy`. A build that cannot follow the required channel (a nightly install) gets no update lane (`disabled: "policy-channel"`); About names the required channel and links that channel's build. An oss build is unchanged.
 
 The specific to Kiro Crew part is install ordering: the app supervises a bundled
 Python gateway child, so before `quitAndInstall` the client stops it gracefully
@@ -1558,6 +1597,28 @@ The rules that keep the two from drifting:
   shipped section the only editable one. It tells them apart by the release ref, so
   a fix that deserves a changelog line goes onto the release branch first and is
   then ported as above.
+
+## LTS edition releases
+
+The LTS edition (RFC crew-lts-edition, D11) ships from its own tag, `lts-vX.Y.Z`, on its own `lts` channel. `.github/workflows/release-lts.yml` runs on `lts-v*` tags only; `release.yml` runs on `v*` tags only, so neither tag reaches the other workflow. Both share the `release-publish` concurrency group.
+
+| Step | What runs |
+|---|---|
+| Version | `lts-vX.Y.Z` maps to `X.Y.Z`; any other tag shape fails |
+| Gate | The backend suite on the tagged commit, and the dependency vulnerability gate |
+| Build | `build-wheel.yml`, `build-desktop.yml`, `build-windows.yml` with `edition: lts` |
+| Sign + publish | `sign-and-notarize.yml` (3 legs), `publish-linux.yml` (6), `publish-windows.yml`, `publish-cli.yml`, all with `channel: lts` |
+
+It writes only lts paths: `feed/lts/`, `cli/lts/`, `desktop/lts/` and the signing bucket's `lts/` keys. Every published file uses the LTS stem: `KiroCrew-LTS.dmg`, `KiroCrew-LTS-arm64.dmg`, `KiroCrew-LTS-x86_64.AppImage`, `KiroCrew-LTS-Setup.exe`, and the wheel `kirocrew_lts-X.Y.Z-py3-none-any.whl` of the distribution `kirocrew-lts`. The desktop app is a side-by-side `KiroCrew LTS` app, built like nightly (`packaging/build-desktop.sh`): its own product name, Linux package and executable names, npm name, `nsis.guid` and Windows app ID, with the shared macOS bundle id, so no new signing identifier. There is no Docker image and no GitHub release. `cli.sh --channel lts` installs the LTS wheel.
+
+Every input these workflows gained (`edition`) defaults to `oss`, and every LTS name is chosen only when the channel or edition is `lts`, so a `v*` release is unchanged (`test/test_release_lts_workflow.py`). To try an LTS desktop build without publishing, run `build-desktop.yml` or `build-windows.yml` by hand with `edition: lts`.
+
+Before the first real `lts-v*` tag, two repository settings are needed. Only the owner can change them, and the order matters:
+
+1. The tag ruleset `release-tags-admin-only` covers `refs/tags/lts-v*` as well as `refs/tags/v*`, so only admins can cut an LTS release.
+2. Only then, the `prod` environment's deployment policy allows tag `lts-v*`. Every sign and publish job runs in `prod`, which today admits branch `main` and tag `v*` only.
+
+Done the other way round, there is a window in which `prod` admits `lts-v*` while any user with push access can still create such a tag, and so cut a signed LTS release.
 
 ## Deliberately not built
 

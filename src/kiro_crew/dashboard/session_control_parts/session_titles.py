@@ -268,7 +268,9 @@ async def rename_target(
     )
     # `apply_manual_title` assigns every field before its first await, so the
     # title is on the slot before this coroutine can suspend.
-    if not await apply_manual_title(state, slot, clean_title):
+    if not await apply_manual_title(
+        state, slot, clean_title, route="session_rename", caller=caller_session_key
+    ):
         _audit(
             caller_session_key=caller_session_key,
             operation="rename",

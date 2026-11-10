@@ -13,6 +13,7 @@ import Modal from './Modal'
 import { api, ApiError } from '../api/client'
 
 import { i18nT } from '../i18n/t'
+import { Trans } from 'react-i18next'
 import { fmtNumber } from '../i18n/format'
 
 type CollectResult = Awaited<ReturnType<typeof api.collectDiagnostics>>
@@ -166,7 +167,7 @@ export default function ReportProblemModal({ open, onClose, initialNote = '' }: 
             })}
           </div>
           <div className="text-[12px] text-muted break-all">
-            {i18nT('components.reportProblemModal.saved_to')} <code>{result.zip_path}</code>
+            <Trans i18nKey="components.reportProblemModal.saved_to_path" components={{ path: <code>{result.zip_path}</code> }} />
           </div>
           <div className="flex flex-wrap gap-2">
             <a href={result.download_url} download>

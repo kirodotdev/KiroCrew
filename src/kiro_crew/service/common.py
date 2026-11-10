@@ -9,9 +9,10 @@ import shutil
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from kiro_crew.config import loader
+from kiro_crew.config.paths import CONFIG_DIR_NAME
 
 SERVICE_NAME = "kirocrew"  # systemd unit name (without .service)
 LAUNCHD_LABEL = "dev.kirocrew.gateway"  # launchd Label
@@ -181,6 +182,10 @@ def service_environment(home: str) -> "dict[str, str]":
     * ``KIROCREW_KIRO_BIN`` — only when the installer sets it, made absolute.
       The readiness ``whoami`` probe's real-home fallback keys off it; dropping
       it would leave the gateway not signed in.
+    * ``KIROCREW_NODE_BIN_DIR``: only when the installer sets it to one
+      absolute dir. It puts that Node ahead of nvm's on the MCP search path
+      (:mod:`kiro_crew.env_node_pins`); a relative value or one carrying a
+      ``:`` would add PATH entries nobody named, so it is dropped.
     """
     utf8_locale = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
     env = {
@@ -196,6 +201,13 @@ def service_environment(home: str) -> "dict[str, str]":
     kiro_bin = os.environ.get("KIROCREW_KIRO_BIN", "").strip()
     if kiro_bin:
         env["KIROCREW_KIRO_BIN"] = os.path.abspath(kiro_bin)
+    # Deferred for the reason _mise_shims_dir gives; the one check the MCP search
+    # path applies to the same variable, so the two cannot drift apart.
+    from kiro_crew.env import _validated_bin_dir
+
+    node_bin = _validated_bin_dir(os.environ.get("KIROCREW_NODE_BIN_DIR", ""))
+    if node_bin:
+        env["KIROCREW_NODE_BIN_DIR"] = node_bin
     # KIROCREW_PORT is the only input DASHBOARD_PORT reads, so without it the
     # service can only bind the default 5476. Captured from the installer:
     # `KIROCREW_PORT=5477 kirocrew service install` bakes 5477 into the unit.
@@ -206,6 +218,30 @@ def service_environment(home: str) -> "dict[str, str]":
     if port:
         env["KIROCREW_PORT"] = port
     return env
+
+
+def service_dotenv(
+    environ: "Mapping[str, str] | None" = None, plat: "Platform | None" = None
+) -> "tuple[Path, str]":
+    """The ``.env`` the installed service reads, and the account to edit it as.
+
+    ``sudo kirocrew service install`` on systemd runs the unit as ``SUDO_USER``
+    with that account's passwd home (``linux_unit._current_user`` and
+    ``_home_for_user``), while this process's home is root's under ``sudo -H``,
+    so :func:`loader.env_path` would name a file the service never reads. In
+    every other case it is that file and the account is ``""``: no ``sudo``,
+    launchd (whose plist bakes this process's home), or ``KIROCREW_HOME`` set
+    (its own caveat applies).
+    """
+    source = os.environ if environ is None else environ
+    account = source.get("SUDO_USER", "").strip()
+    if account in ("", "root") or _home_override_is_set(environ):
+        return loader.env_path(), ""
+    if (plat or current_platform()) is not Platform.SYSTEMD:
+        return loader.env_path(), ""
+    from kiro_crew.service import linux  # circular import: linux imports this module at load
+
+    return Path(linux._home_for_user(account), CONFIG_DIR_NAME, ".env"), account
 
 
 def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
@@ -226,7 +262,7 @@ def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
     if not source.get(_AUTH_ENV_VAR, "").strip():
         return False
     try:
-        names = _names_defined_in_env_file(loader.env_path())
+        names = _names_defined_in_env_file(service_dotenv(environ)[0])
     except loader.EnvFileWideEncodingError:
         # The gateway reads a wide file as unset, so the key is dropped.
         return True
@@ -252,13 +288,13 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     """
     if not api_key_will_be_dropped(environ):
         return ""
-    dotenv = loader.env_path()
+    dotenv, account = service_dotenv(environ)
     try:
         _names_defined_in_env_file(dotenv)
     except loader.EnvFileWideEncodingError as exc:
         # Appending UTF-8 after a UTF-16/UTF-32 mark leaves a file the gateway
         # still reads as unset, so the re-save is the only step to give.
-        return _with_home_note(
+        return _with_crew_home_caveat(
             [
                 f"Note: {_AUTH_ENV_VAR} is set in this shell but the service will not",
                 "   inherit it, and the .env it would read the key from cannot be read:",
@@ -269,6 +305,7 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
                 f"     {restart_command_hint()}",
             ],
             environ,
+            account,
         )
     # The append must never CREATE the file: under a 022 umask a fresh .env is
     # 0644 until load_credentials() next tightens it. Pre-create and chmod first,
@@ -277,10 +314,13 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     # shlex.quote because the line is pasted verbatim: an unquoted path with a
     # space word-splits, and the redirect would land the key in a different
     # 0644 file that load_credentials() never tightens.
+    #
+    # One && chain, so nothing is appended when the chmod fails, and the echo ends
+    # a last line written without a newline, which the key would otherwise join.
     target = shlex.quote(str(dotenv))
     remedy = (
-        f"touch {target} && chmod 600 {target}\n"
-        f"     printf '%s\\n' \"{_AUTH_ENV_VAR}=${_AUTH_ENV_VAR}\" >> {target}"
+        f"touch {target} && chmod 600 {target} && echo >> {target} &&\n"
+        f"       printf '%s\\n' \"{_AUTH_ENV_VAR}=${_AUTH_ENV_VAR}\" >> {target}"
     )
     lines = [
         f"Note: {_AUTH_ENV_VAR} is set in this shell but the service will not",
@@ -291,11 +331,27 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
         f"     {remedy}",
         f"     {restart_command_hint()}",
     ]
-    return _with_home_note(lines, environ)
+    return _with_crew_home_caveat(lines, environ, account)
 
 
-def _with_home_note(lines: "list[str]", environ: "Mapping[str, str] | None") -> str:
-    """Join a warning's lines, adding the crew-home caveat when it applies."""
+def _with_crew_home_caveat(
+    lines: "list[str]", environ: "Mapping[str, str] | None", account: str = ""
+) -> str:
+    """Join a warning's lines, adding the caveat on whose ``.env`` it is when one applies.
+
+    *account* is :func:`service_dotenv`'s: the file is in that account's home,
+    so its remedy runs as that account, or root would own a file the service
+    cannot read.
+
+    Not named ``*home_no*``: CodeQL's private-data name heuristic reads that as a
+    home phone number and flags every printed warning built here as sensitive.
+    """
+    if account:
+        lines += [
+            "",
+            f"   Run the lines that write the file as {account}, not under sudo, so",
+            "   the file is owned by the account the service runs as.",
+        ]
     if _home_override_is_set(environ):
         lines.append("")
         lines.append(
@@ -314,9 +370,10 @@ def _home_override_is_set(environ: "Mapping[str, str] | None" = None) -> bool:
 def _names_defined_in_env_file(path: Path) -> "set[str]":
     """Return the variable names a ``.env`` file assigns a NON-BLANK value.
 
-    Mirrors ``load_credentials()``'s parse (strip, skip blanks and ``#``
-    comments, split on the first ``=``), including its skip of a blank value:
-    a bare ``NAME=`` never reaches ``os.environ``, so it counts as absent.
+    Reads the file through ``load_credentials()``'s own parser
+    (``loader.parse_env_lines``: last assignment wins), including its skip of a
+    blank value: a bare ``NAME=`` never reaches ``os.environ``, so it counts as
+    absent, also after an earlier non-blank assignment of the same name.
 
     Values are checked for emptiness and otherwise discarded. An unreadable or
     absent file yields an empty set, so the caller warns (the safe direction).
@@ -330,16 +387,9 @@ def _names_defined_in_env_file(path: Path) -> "set[str]":
         raise
     except (OSError, UnicodeDecodeError):
         return set()
-    names: set[str] = set()
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, value = line.partition("=")
-        if not value.strip():
-            continue
-        names.add(name.strip())
-    return names
+    # The final map, as load_credentials() reads it: a later ``NAME=`` overrides
+    # an earlier value, and that blank value never reaches ``os.environ``.
+    return {name for name, value in loader.parse_env_lines(raw).items() if value}
 
 
 def service_path(home: str) -> str:
@@ -354,16 +404,23 @@ def service_path(home: str) -> str:
     the next install, so a Node mise installs later is found only through the
     shims; without them ``#!/usr/bin/env node`` runs the system Node. That is
     also the order ``mise activate`` gives a shell. launchd's PATH is unchanged.
+
+    nvm bin dirs on the installer's ``$PATH`` (:func:`_nvm_bin_dirs`) follow the
+    shims for the same reason: nvm has no shims, so the versioned bin dir the
+    installing shell resolved ``node`` from is the only way the service finds
+    that Node instead of an older system one in ``/usr/bin``.
     """
+    env_path = [p for p in os.environ.get("PATH", "").split(":") if p]
     required = [f"{home}/.local/bin"]
-    if sys.platform.startswith("linux") and (shims := _mise_shims_dir(home)):
-        required.append(shims)
+    if sys.platform.startswith("linux"):
+        if shims := _mise_shims_dir(home):
+            required.append(shims)
+        required += _nvm_bin_dirs(env_path)
     required += [
         "/usr/local/bin",
         "/usr/bin",
         "/bin",
     ]
-    env_path = [p for p in os.environ.get("PATH", "").split(":") if p]
     # dict.fromkeys dedupes on first occurrence and preserves insertion order,
     # so the required prefixes keep their precedence over the installer's $PATH.
     return ":".join(dict.fromkeys(required + env_path))
@@ -385,6 +442,33 @@ def _mise_shims_dir(home: str) -> str | None:
     if ":" in shims or "\0" in shims or not os.path.isabs(shims):
         return None
     return shims
+
+
+def _nvm_bin_dirs(env_path: list[str]) -> list[str]:
+    """nvm's versioned Node bin dirs among *env_path*, in their PATH order.
+
+    Read from the installer's PATH rather than ``$NVM_BIN``: nvm exports that
+    variable only in shells that source ``nvm.sh``, and ``sudo`` typically drops
+    it, while the PATH entry is what actually resolved ``node`` for the
+    installer. An entry matches only as an absolute
+    ``<root>/versions/node/<version>/bin``, where ``<root>`` is one nvm itself
+    installs to: a dir named ``.nvm`` (the default) or ``nvm`` (the
+    ``$XDG_CONFIG_HOME/nvm`` default), or the installer's ``$NVM_DIR``. So an
+    unrelated dir is never promoted ahead of the system dirs.
+    """
+    nvm_dir = os.environ.get("NVM_DIR", "")
+    nvm_root = PurePosixPath(nvm_dir) if nvm_dir.startswith("/") else None
+    dirs = []
+    for p in env_path:
+        path = PurePosixPath(p)
+        parts = path.parts
+        if not (p.startswith("/") and len(parts) >= 6
+                and parts[-4:-2] == ("versions", "node") and parts[-1] == "bin"):
+            continue
+        root = path.parents[3]
+        if root.name in (".nvm", "nvm") or root == nvm_root:
+            dirs.append(p)
+    return dirs
 
 
 class Platform(enum.Enum):

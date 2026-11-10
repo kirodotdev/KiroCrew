@@ -1,5 +1,5 @@
 import type { NavigateFunction } from 'react-router-dom'
-import { Suspense, lazy, type Dispatch, type SetStateAction } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import type { SessionTabsApi } from '../../../hooks/useSessionTabs'
 import type { ProviderAdapter } from '../../../providers/types'
 import type { AppDispatch } from '../../../store'
@@ -8,17 +8,25 @@ import type { ErrorReport } from '../../../utils/errorReport'
 import type { HistoryDeleteRefusal } from '../../../utils/historyDeleteRefusal'
 import type { ShortNameMatch } from '../../../utils/sessionKeys'
 import SnipOverlay from '../../../components/SnipOverlay'
+import { lazyRetry } from '../../../components/lazyRetry'
 import type { useModelPickerModels } from './sessionPicks'
 import type { useSteerDelivery } from './turnActions'
 import ChatPaneNotices from './ChatPaneNotices'
 import SessionTabStrip from '../../../components/SessionTabStrip'
 import { PanelLeftSolid } from '../../../components/icons/panels'
-// Eager: holds the window's isolation guards until its chunk arrives.
+// Eager: holds the window's isolation guards until the window itself mounts.
 import CrewWindowGuard from '../crew-window/CrewWindowGuard'
+import { closeCrewWindow } from '../crew-window/crewWindowStore'
 import { i18nT } from '../../../i18n/t'
 
-// Only a crew session mounts the window, so its code loads on first open.
-const CrewChatWindow = lazy(() => import('../crew-window/CrewChatWindow'))
+// Only a crew session mounts the window, so its code loads on first open. A
+// chunk that fails to load shows its notice inside the cover, so the sidebar
+// and the page around it stay usable.
+const CrewChatWindow = lazyRetry(() => import('../crew-window/CrewChatWindow'), {
+  layout: 'page',
+  title: () => i18nT('pages.chat.crewWindow.window_load_failed'),
+  scope: 'crew-window',
+})
 
 interface ChatPaneChromeProps {
   embedded?: boolean
@@ -76,14 +84,23 @@ export default function ChatPaneChrome({
   openShortNameMatch, ownsSessionTabs, selectSessionTab, sessionTabs, setSidError, setSidMatches, sidError, sidMatches, splitFeatureEnabled, chipDefault, dismissPinStatus, pinError, pinStatus,
   inlineSidePanelShowing, openSidebar, sidebarOpen, COLLAPSED_SESSION_TABS_INSET,
 }: ChatPaneChromeProps) {
+  // The cover is drawn while the window's chunk loads and after it failed to
+  // load, so the guard holds the window's isolation in both: the window counts
+  // as shown and the covered pane stays inert.
+  const crewWindowGuard = <CrewWindowGuard onClose={embedded ? () => navigate('/embed/sessions') : undefined} />
   return (
     <>
       {crewWindow && (
         <div className="absolute inset-0 z-[48] bg-bg" data-crew-cover>
-          <Suspense fallback={<CrewWindowGuard onClose={embedded ? () => navigate('/embed/sessions') : undefined} />}>
-            <CrewChatWindow key={`${crewWindow.instanceId}:${crewWindow.key}`} target={crewWindow}
-              onClose={embedded ? () => navigate('/embed/sessions') : undefined} />
-          </Suspense>
+          {/* The failure notice's hand-off opens a local chat under this cover,
+              so on the full page it closes the window, as the window's own
+              Close does. An embed window installs no in-app navigator, so its
+              hand-off leaves the document by a full page load, which takes the
+              cover with it; a close that navigates would only race that load. */}
+          <CrewChatWindow key={`${crewWindow.instanceId}:${crewWindow.key}`} target={crewWindow}
+            onClose={embedded ? () => navigate('/embed/sessions') : undefined}
+            onHandoff={embedded ? undefined : closeCrewWindow}
+            loading={crewWindowGuard} keepOnFailure={crewWindowGuard} />
         </div>
       )}
       {snipFrame && (

@@ -142,6 +142,7 @@ def bind_transcript(state: Any, slot: _ChatSlot) -> None:
 
                 if pending == effective_session_key(slot):
                     slot._pending_reset_history_key = pending
+                    slot._pending_reset_clears_cwd = other._pending_reset_clears_cwd
             return
     if any(other._binding is slot._binding for other in live):
         slot._binding = TranscriptBinding(
@@ -199,17 +200,19 @@ def _reset_if_running(state: Any, slot: Any) -> None:
         arm_project_reset(state, slot, key)
 
 
-def arm_project_reset(state: Any, slot: Any, key: str) -> None:
+def arm_project_reset(state: Any, slot: Any, key: str, *, clears_cwd: bool = False) -> None:
     """Arm the deferred session reset on *slot* and on every live alias.
 
     A project change on one alias is the group's change, and the aliases run one
     session. A peer whose own flag stayed clear would reuse the process in the old
     directory while its turn describes the new one. The reset is spent only on a real
     teardown, so a second consume after the first one costs at most a cold start.
+    *clears_cwd* marks a reset armed by a project clear, so whichever alias consumes
+    it retracts the stored cwd again; any other arm sets a project and drops the mark.
     """
-    slot._pending_reset_history_key = key
-    for other in _peers(state, slot):
-        other._pending_reset_history_key = key
+    for target in (slot, *_peers(state, slot)):
+        target._pending_reset_history_key = key
+        target._pending_reset_clears_cwd = clears_cwd
 
 
 def seed_project_from_disk(state: Any, slot: Any, value: str) -> None:

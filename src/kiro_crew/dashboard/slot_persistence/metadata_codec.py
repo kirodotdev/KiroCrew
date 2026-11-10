@@ -498,6 +498,19 @@ def _read_agent_kind(r: _Read) -> None:
         r.slot.agent_kind = r.meta["agent_kind"]
 
 
+def _read_backend(r: _Read) -> None:
+    # The harness the session was created on. Restored as stored and published
+    # to the selection's in-memory pick table, so the first turn after a restart
+    # allocates on it. A value governance has since denied still reads back: the
+    # selection gate degrades it with the reason in the log.
+    value = r.meta.get("backend")
+    if isinstance(value, str) and value and len(value) <= 64:
+        from kiro_crew import members as members_mod  # members imports artifacts: see cp
+
+        r.slot.backend = value
+        members_mod.note_session_backend_pick(r.slot.key, value)
+
+
 def _read_crew_mode_agent(r: _Read) -> None:
     # The conductor the chat runs in Crew Mode: it marks the chat as Crew Mode until
     # the migration moves it onto ``agent.crew_mode_agent`` (``crew_mode.runs_crew_mode``).
@@ -969,6 +982,17 @@ FIELDS: tuple[Field, ...] = (
         read=_read_agent_kind,
     ),
     Field(
+        "backend",
+        _ALL,
+        attr="backend",
+        line=_truthy(lambda s: s.backend),
+        # Truthy in the merge too, and not slot-owned (``SLOT_OWNED_META_KEYS``):
+        # the pick is set once, at creation, and never cleared, so a carried-forward
+        # copy is always current and a line without one stays byte-identical to main's.
+        merge=_truthy(lambda s: s.backend),
+        read=_read_backend,
+    ),
+    Field(
         "crew_mode_agent",
         _ALL,
         attr="crew_mode_agent",
@@ -1394,6 +1418,7 @@ LINE_ORDER: tuple[str, ...] = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "backend",
     "crew_mode_agent",
     "app_agent_owner",
     "project",
@@ -1456,6 +1481,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "backend",
     "crew_mode_agent",
     "app_agent_owner",
     "project",

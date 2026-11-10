@@ -864,7 +864,10 @@ async def test_poll_idc_with_no_profiles_is_error_and_saves_nothing(tmp_path, mo
     begin = await _begin_oidc(
         service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
     )
-    assert await service.poll_device(begin["login_id"]) == {"status": "error"}
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "error",
+        "code": "no_kiro_profile",
+    }
     assert TokenStore(tmp_path).resolve() is None
     # Terminal: the entry is dropped, a re-poll is unknown.
     with pytest.raises(UnknownLoginError):
@@ -884,8 +887,59 @@ async def test_poll_idc_control_plane_failure_is_error(tmp_path, monkeypatch):
     begin = await _begin_oidc(
         service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
     )
-    assert await service.poll_device(begin["login_id"]) == {"status": "error"}
+    # Every host refused, so nothing is known about the account's profiles: the
+    # code must not claim there are none.
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "error",
+        "code": "profile_lookup_failed",
+    }
     assert TokenStore(tmp_path).resolve() is None
+    with pytest.raises(UnknownLoginError):
+        await service.poll_device(begin["login_id"])
+
+
+@pytest.mark.asyncio
+async def test_poll_idc_one_refusal_and_one_empty_list_is_lookup_failed(tmp_path, monkeypatch):
+    # The refusing host may be the one that holds the profile, so an empty list
+    # from the other host must not be reported as "no Kiro profile".
+    service, _ = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-5", "expiresIn": 3600}),
+            _FakeResp(403, {"message": "forbidden"}),
+            _FakeResp(200, {"profiles": []}),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "error",
+        "code": "profile_lookup_failed",
+    }
+    assert TokenStore(tmp_path).resolve() is None
+
+
+@pytest.mark.asyncio
+async def test_poll_idc_one_refusal_and_one_profile_signs_in(tmp_path, monkeypatch):
+    arn = "arn:the-answering-hosts-profile"
+    service, _ = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-6", "expiresIn": 3600}),
+            _FakeResp(403, {"message": "forbidden"}),
+            _FakeResp(200, {"profiles": [{"arn": arn, "profileName": "P"}]}),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "authorized",
+        "provider": "Enterprise",
+    }
+    saved = TokenStore(tmp_path).resolve()
+    assert saved is not None and saved.profile_arn == arn
 
 
 _US_CPS = "https://management.us-east-1.kiro.dev/"

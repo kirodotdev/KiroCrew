@@ -228,7 +228,7 @@ describe('the legacy route follows the 404 the gateway produced for a name with 
     await waitFor(() => expect(getApp).toHaveBeenCalledTimes(1))
     await act(async () => { await getApp.mock.results[0].value.catch(() => undefined) })
     expect(screen.getByTestId('compiled-page')).toBeInTheDocument()
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(await screen.findByRole('alert', undefined, LOAD_TIMEOUT)).toBeInTheDocument()
     first.unmount()
     renderLegacyRoute(wrapper)
     const gone = await screen.findByTestId('app-not-installed', undefined, LOAD_TIMEOUT)

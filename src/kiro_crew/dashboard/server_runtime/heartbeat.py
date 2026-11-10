@@ -14,6 +14,7 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
+        PAGING_GRACE_MAX_SECS_MACOS,
         DashboardState,
         LoopStallWatchdog,
         attribute_dump,
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
         newest_dump_with_stacks,
         open_dump_file,
         platform_compat,
+        read_loop_pageins_under_pressure,
         record_healthy_boot,
         register_pre_exec_stop,
         resolve_loop_stall_exit_after,
@@ -79,7 +81,19 @@ async def _open_loop_watchdog(_launch_environment: dict[str, str]) -> LoopStallW
         # Config failure must not erase the managed-service grace that protects
         # the process while its config filesystem is itself under pressure.
         _exit_after = float(resolve_loop_stall_exit_after(environ=_launch_environment))
-    watchdog = LoopStallWatchdog(dump_file=_dump_file, exit_after=_exit_after)
+    # On macOS the Linux per-thread major-fault reader returns None, so the
+    # paging deferral never fires. Swap in the process-wide page-in reader
+    # (gated on memory pressure) with a shorter grace cap, since that signal
+    # cannot attribute paging to the loop thread specifically.
+    if platform_compat.IS_MACOS:
+        watchdog = LoopStallWatchdog(
+            dump_file=_dump_file,
+            exit_after=_exit_after,
+            loop_major_faults=read_loop_pageins_under_pressure,
+            paging_grace_max=PAGING_GRACE_MAX_SECS_MACOS,
+        )
+    else:
+        watchdog = LoopStallWatchdog(dump_file=_dump_file, exit_after=_exit_after)
 
     async def _stop_before_exec() -> None:
         # An in-place restart can exec right after a recovered stall, before

@@ -156,11 +156,25 @@ class RelayClient:
     def relay_connected(self) -> bool:
         """Whether a host connection is up: past ``ready`` and not yet closing.
 
-        A lease renewal reports this as ``relay.connected``, which the contract
-        (section 4.2) makes true only from ``ready`` until that connection ends.
+        A lease renewal reports this as ``relay.connectionStatus``, which the
+        contract (section 4.2) makes ``CONNECTED`` only from ``ready`` until that
+        connection ends.
         During a move the old and the new connection overlap, and either counts.
         """
         return any(conn.serving for conn in self._live)
+
+    def connected_people(self) -> int:
+        """How many people are connected through the relay now.
+
+        A lease renewal reports this as ``connectedCount``. One person is one
+        relayed caller with a WebSocket open, however many tabs they have open,
+        and during a move a caller on both connections counts once.
+        """
+        people: Set[str] = set()
+        for conn in list(self._live):
+            if conn.serving:
+                people |= conn.viewers()
+        return len(people)
 
     def snapshot(self) -> Dict[str, Any]:
         return {
@@ -180,7 +194,7 @@ class RelayClient:
         self._error = ""
         self._started_at = time.time()
         self._tokens.on_new_token(self._forward_token)
-        self._tokens.track_relay(self.relay_connected)
+        self._tokens.track_relay(self.relay_connected, self.connected_people)
         self._task = asyncio.create_task(self._run(), name="relay-client")
 
     async def stop(self, code: int = CLOSE_GOING_AWAY) -> None:

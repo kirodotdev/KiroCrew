@@ -23,6 +23,7 @@ from kiro_crew.service.common import (
     headless_auth_warning,
     system_restart_command_hint,
 )
+from kiro_crew.service.inherited_env import dropped_host_env_warning
 
 #: First line of the post-install hints. A service never opens a browser, so this
 #: is the only place a new user learns how to reach the dashboard. It names the
@@ -48,6 +49,22 @@ def _print_headless_auth_warning() -> None:
     """
     try:
         warning = headless_auth_warning()
+    except Exception:  # noqa: BLE001 - diagnostic must never fail the install
+        return
+    if warning:
+        print(warning)
+
+
+def _print_dropped_host_env_warning(plat: Platform) -> None:
+    """Name the host variables the service will not inherit, after a successful install.
+
+    The AWS container credential endpoint, the AWS region and (under systemd) the
+    ssh-agent socket of the installing shell, which MCP servers, cron scripts and
+    agent sessions under the service would otherwise go without. Printed and
+    non-fatal for the same reasons as :func:`_print_headless_auth_warning`.
+    """
+    try:
+        warning = dropped_host_env_warning(plat=plat)
     except Exception:  # noqa: BLE001 - diagnostic must never fail the install
         return
     if warning:
@@ -169,6 +186,7 @@ def install_service() -> int:
         if linger_warning:
             print(f"   ⚠️ {linger_warning}")
         _print_headless_auth_warning()
+        _print_dropped_host_env_warning(plat)
         print()
         print(_OPEN_HINT)
         print("   Status: kirocrew service status")
@@ -184,6 +202,7 @@ def install_service() -> int:
         print("✅ kirocrew service installed and started.")
         print(f"   plist: {macos.PLIST_PATH}")
         _print_headless_auth_warning()
+        _print_dropped_host_env_warning(plat)
         print()
         print(_OPEN_HINT)
         print("   Status: kirocrew service status")
@@ -344,12 +363,39 @@ def service_alias_holder() -> "linux.AliasHolder | None":
     return None
 
 
+def stale_unit_notes() -> list[str]:
+    """One line per way an installed systemd unit lags this build's unit, with
+    its remedy (:func:`linux.stale_unit_notes`); empty off systemd."""
+    if current_platform() == Platform.SYSTEMD:
+        return linux.stale_unit_notes()
+    return []
+
+
+class ServiceStopRefused(RuntimeError):
+    """The service manager refused to stop a running unit.
+
+    ``hints`` holds the command to run by hand for each refused scope. Raised
+    rather than answered ``False``: ``False`` sends the CLI to its foreground
+    path, which would signal a process the manager restarts (``Restart=always``).
+    """
+
+    def __init__(self, hints: list[str]) -> None:
+        super().__init__("; ".join(hints))
+        self.hints = list(hints)
+
+
 def stop_service() -> bool:
-    """Stop the platform service if active. Returns True if a service was stopped."""
+    """Stop the platform service if active. Returns True if a service was stopped.
+
+    Raises :class:`ServiceStopRefused` when a systemd unit is running and its
+    manager refused the stop.
+    """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
         if linux.is_active():
-            linux.stop()
+            refused = linux.stop()
+            if refused:
+                raise ServiceStopRefused(refused)
             return True
         return False
     if plat == Platform.LAUNCHD:

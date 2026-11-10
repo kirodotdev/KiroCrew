@@ -7,7 +7,7 @@ files it names:
   descriptor it produced before the list existed (``TestLegacyString``).
 * No setting at all means no destination, so no egress (``TestLegacyString``).
 * Every destination goes through the consent gate, the policy ``otlp_hosts``
-  check and the enterprise lock on local values (``TestGates``).
+  check and the LTS lock on local values (``TestGates``).
 * The Privacy panel and the enable gate answer from the same resolution as the
   build (``TestDisclosure``, and ``test_provider_otlp_destinations.py``).
 
@@ -453,10 +453,10 @@ class TestGates:
             assert pm.get_recorder().enabled is False
         assert built == []
 
-    def test_an_enterprise_build_ignores_the_local_list_but_keeps_the_build_one(self, monkeypatch):
+    def test_an_lts_build_ignores_the_local_list_but_keeps_the_build_one(self, monkeypatch):
         from kiro_crew import edition_locks
 
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         edition_locks.reset_logged()
         from kiro_crew.platform.governance import parse_policy
 
@@ -464,7 +464,7 @@ class TestGates:
         cfg = TelemetryConfig(otlp_endpoint=OPS, otlp_endpoints=[{"name": "mine", "endpoint": OPS}])
         assert [r.destination.name for r in pm.otlp_egress_listing(cfg)] == ["edition-product"]
         assert edition_locks.config_path_locked("telemetry.otlp_endpoints")
-        # The build's destination still needs the policy: with none, the enterprise
+        # The build's destination still needs the policy: with none, the LTS
         # baseline refuses every host; a policy that names it lets it through.
         with patch("kiro_crew.sel.sel"):
             assert pm._otlp_destinations(cfg) == ()

@@ -244,6 +244,27 @@ class TestHasConversation:
         slot.messages.append({"role": "user", "content": "hi"})
         assert ch._has_conversation(slot) is True
 
+    def test_a_heartbeat_prompt_is_a_floor_to_resume_from(self):
+        # A heartbeat prompt delivered to an unused chat is its only request, so a
+        # first turn that fails to start can still be resumed.
+        slot = _ChatSlot("s1")
+        slot.messages.append(
+            {
+                "role": "inject",
+                "content": "💓 Heartbeat\n\nreport",
+                "meta": {"injectKind": "heartbeat"},
+            }
+        )
+        slot.messages.append({"role": "error", "content": "session start timed out"})
+        assert ch._has_conversation(slot) is True
+
+    def test_another_inject_row_is_not_a_floor(self):
+        slot = _ChatSlot("s1")
+        slot.messages.append(
+            {"role": "inject", "content": "resume", "meta": {"injectKind": "recovery"}}
+        )
+        assert ch._has_conversation(slot) is False
+
 
 # ── _wire_model_id ───────────────────────────────────────────────────────────
 

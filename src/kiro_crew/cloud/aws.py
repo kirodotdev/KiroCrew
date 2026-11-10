@@ -43,6 +43,11 @@ _AUTH_DENIED_MARKERS = (
     "is not authorized to perform",
 )
 
+#: What the aws CLI writes before a service error's code, which follows in
+#: parentheses: ``An error occurred (NoSuchEntity) when calling the GetPolicy
+#: operation: ...``.
+_SERVICE_ERROR_PREFIX = "An error occurred ("
+
 
 class CloudActionDenied(Exception):
     """A cloud mutation was attempted from an agent/automation context.
@@ -425,6 +430,22 @@ def is_access_denied(stderr: str) -> bool:
     return any(marker in stderr for marker in _AUTH_DENIED_MARKERS)
 
 
+def service_error_code(stderr: str) -> str:
+    """The AWS error code the aws CLI reports in *stderr*, or ``""`` when it names none.
+
+    Read from the CLI's own ``An error occurred (<Code>)`` prefix, never from the
+    rest of the text: the message after it quotes ARNs and role names a caller
+    chose, and one of those may spell any code. The first such prefix is the
+    CLI's, because neither an ARN nor a role or session name can hold a space or
+    a parenthesis.
+    """
+    _before, found, rest = stderr.partition(_SERVICE_ERROR_PREFIX)
+    if not found:
+        return ""
+    code, closed, _after = rest.partition(")")
+    return code if closed else ""
+
+
 def map_missing_action(stderr: str) -> Optional[str]:
     """Extract the exact ``service:Action`` the user was denied, if present.
 
@@ -464,13 +485,17 @@ def checked(
     rc, out, err = run_aws(args, profile, region, timeout=timeout, **run_extra)
     if rc != 0:
         missing = map_missing_action(err)
-        hint = ""
+        # The remedy leads: the dashboard keeps a launch error's first 400
+        # characters, which a raw denial (role and resource ARNs) can fill.
+        cause = err.strip()[:400]
         if missing:
-            hint = f" — grant `{missing}` in your IAM policy and retry"
+            cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
         elif is_access_denied(err):
-            hint = " — add the missing permission (see `kirocrew cloud iam-policy`) and retry"
+            cause = (
+                f"add the missing permission (see `kirocrew cloud iam-policy`) and retry — {cause}"
+            )
         raise AWSError(
-            f"{action} failed: {err.strip()[:400]}{hint}",
+            f"{action} failed: {cause}",
             action=action,
             missing_action=missing,
             returncode=rc,

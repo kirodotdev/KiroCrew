@@ -619,6 +619,8 @@ export default function TrustAppModal({
   onConfirm: () => void
 }) {
   const name = app ? (app.displayName || app.name) : ''
+  // The badge's own rule (`sourceLabel`): a listing tag outranks the origin.
+  const localInstall = !app?._registry && app?.origin === 'local'
   const state = terminalState({ failed, granted, detail, detailCode })
   const path = trustPath(app)
   // A first install only: an Update re-runs the install over an app that is
@@ -774,7 +776,9 @@ export default function TrustAppModal({
           )}
           <div className="flex flex-wrap items-center gap-2 text-muted">
             <GitBranch size={14} className="shrink-0" />
-            <span className="shrink-0">{i18nT('components.appstore.trustAppModal.source')}</span>
+            <span className="shrink-0">
+              {localInstall ? i18nT('appStoreSources.source') : i18nT('components.appstore.trustAppModal.source')}
+            </span>
             {app.trustRepository && (
               /* Provenance is shown as a LINK only when the URL is one the user can
                  safely be handed: the clone target is remote content, and
@@ -803,9 +807,12 @@ export default function TrustAppModal({
             )}
             <Badge variant="muted">{sourceLabel(app)}</Badge>
           </div>
-          {/* The registry badge above reads as an endorsement. It is not one. */}
+          {/* The registry badge above reads as an endorsement. It is not one. A
+              local install has no listing, so its line claims none. */}
           <p className="text-muted leading-relaxed">
-            {i18nT('components.appstore.trustAppModal.not_reviewed')}
+            {localInstall
+              ? i18nT('components.appstore.trustAppModal.not_reviewed_local')
+              : i18nT('components.appstore.trustAppModal.not_reviewed')}
           </p>
           {/* A community registry's listing was not vetted by the team. Below the
               not-an-endorsement line, so that line stays next to the badge it

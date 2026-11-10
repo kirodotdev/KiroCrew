@@ -559,10 +559,16 @@
       }
 
       //: THE CHAT BOX, never the wire. The host fills the person's composer with this
-      //: text and the person presses send, so the page can offer a reply and can never
-      //: speak as them.
+      //: text and the person presses send.
       function act(text) {
         try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: text }, '*'); }
+        catch (e) { /* no host: the choice simply does nothing */ }
+      }
+      //: A review row's buttons are FINISHED answers, so they ask the host to send in one
+      //: click. The host sends only when the person turned "Send replies in one click"
+      //: on; otherwise, or on any refusal, it fills the composer exactly as `act` does.
+      function send(text) {
+        try { parent.postMessage({ type: 'kirocrew-dashboard:send', text: text }, '*'); }
         catch (e) { /* no host: the choice simply does nothing */ }
       }
       //: Rows the person already picked a choice on, by item id. Kept across refills so a
@@ -728,7 +734,7 @@
             b.type = 'button';
             b.title = c.say;
             b.addEventListener('click', function () {
-              act(c.say);
+              send(c.say);
               picked[id] = c.label;
               card.classList.add('of-going');
               setTimeout(render, 160);

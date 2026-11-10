@@ -99,6 +99,11 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # session it merely has a tab on, bypassing the unix-socket peer check
         # that makes the declared X-Session-Key trustworthy.
         "/api/session-directive",
+        # Slack code-channel tools: the gateway leg of the code_channel_* MCP
+        # tools. STRICT for the session-directive reason above: the caller is an
+        # MCP subprocess, and the channel acted on is derived from the attested
+        # X-Session-Key, which a browser bearer must not be able to assert.
+        "/api/slack/code-channel/tool",
         # In-app update approval (RFC OQ7 step-up). STRICT: its only legitimate
         # caller is `kirocrew update approve` on the gateway host presenting the
         # trust/-fenced nonce plus X-Local-Secret; no browser ever posts to it —
@@ -336,70 +341,6 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         "/api/remote-artifacts",
         "/api/workflows",  # DW engine: MCP tools + Workflows tab polling
         "/api/deploy",  # MCP deploy_artifact tool — server enforces preview-only (confirm/override_scan stripped for internal-secret callers)
-        # Issue Radar investigation record — the ONE app route reachable with the
-        # internal secret, for the ``issue_radar_record_investigation`` MCP tool.
-        # An investigating chat agent has no dashboard token (cookies are
-        # httpOnly, the gateway mints its internal secret in-process and never
-        # puts it in an agent's env, and ``.local_secret`` is on the
-        # ``security.py`` sensitive-path denylist), so the PUT the Investigate
-        # seed prompt asks for would 403 unconditionally and no investigation
-        # could record its findings. Deliberately the FULL path, not the
-        # ``/api/apps/issue-radar`` prefix: prefix-matching here would also admit
-        # the app's GitHub/GitLab WRITE routes (label, close/reopen, comment) to
-        # anything holding the internal secret. This route is local-only triage
-        # state — no forge write, no shared ledger.
-        "/api/apps/issue-radar/investigation",
-        # Ops Mission Control agent surface — the routes the app's SOP-driven
-        # crons and investigation slots call through the ``ops_mission_control_api``
-        # MCP tool (the app's ONLY credentialed agent path; same trust model as
-        # ``/api/apps/issue-radar/investigation`` above: agents hold no cookie,
-        # no gateway IPC secret, and the CLI credential mint is denied by the
-        # builtin ``credential-exfil`` rules — deliberately, see security.py).
-        # Enumerated EXACT paths, never the app prefix: prefix-matching
-        # ``/api/apps/ops-mission-control`` would also admit provider
-        # configuration/secret writes, ``/settings``, the external ``/webhook``
-        # ingest and the human-only ``/incident/proposal/decide`` route to
-        # anything holding the internal secret. Bare ``/incident`` is excluded
-        # for the same reason (this matcher is exact-or-prefix, so admitting it
-        # would admit ``/incident/propose`` and ``/incident/proposal/decide``);
-        # single-incident reads go through ``/incidents?id=`` instead. The
-        # ``/rotation`` and ``/ledger`` entries DO cover their sub-routes
-        # (``/rotation/arm``, ``/ledger/contradictions``, ``/ledger/hygiene``)
-        # — all agent-surface by design.
-        "/api/apps/ops-mission-control/state",
-        "/api/apps/ops-mission-control/signals",
-        "/api/apps/ops-mission-control/incidents",
-        "/api/apps/ops-mission-control/handover",
-        "/api/apps/ops-mission-control/rotation",
-        "/api/apps/ops-mission-control/ledger",
-        "/api/apps/ops-mission-control/dispatch",
-        "/api/apps/ops-mission-control/incident/transition",
-        "/api/apps/ops-mission-control/incident/claim",
-        "/api/apps/ops-mission-control/incident/action",
-        # Issue Radar crew ledger — the read leg and the work-item write leg, for
-        # the ``issue_radar_crew_read`` / ``issue_radar_crew_record`` MCP tools. A
-        # crew agent has no dashboard token (same three reasons as the
-        # investigation entry above), and the ledger is the ONLY thing that
-        # survives its compaction, its per-turn ceiling and a gateway restart, so
-        # without these entries an unattended crew has no memory at all.
-        #
-        # FULL paths, never the ``/api/apps/issue-radar`` prefix — for the reason
-        # spelled out on the investigation entry: prefix-matching there would also
-        # admit the app's GitHub/GitLab WRITE routes (label, close/reopen,
-        # comment) to anything holding the internal secret.
-        #
-        # Read this pair as ONE admission, not two. Matching is
-        # ``path == p or path.startswith(p + "/")``, so the ``/crew`` entry
-        # already covers ``/crew/work`` and EVERY future ``/crew/...`` sub-route:
-        # anything added under that segment becomes agent-reachable the moment it
-        # is routed, with no further edit here. So a forge-write or destructive
-        # route must not live under ``/crew/`` — put it on its own path, or refuse
-        # an internal-secret caller at the handler the way
-        # ``api_skills_discover_install`` does below.
-        "/api/apps/issue-radar/crew",
-        # Redundant under the prefix match above; kept explicit so a reader sees
-        # both routes the crew tools actually call.
-        "/api/apps/issue-radar/crew/work",
         # Registry skill discovery — the READ leg only, for the
         # ``skill_discover`` / ``skill_fetch`` MCP tools. The Skills page calls
         # the same two routes with cookie auth, hence mixed rather than strict.

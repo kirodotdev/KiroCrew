@@ -109,6 +109,7 @@ from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     _spec_builtin_names,
     _spec_command_composed,
     _spec_command_granted,
+    _spec_read_granted,
     _spec_write_granted,
     _tier_app_own_server,
     _tier_batch_guard_grant,
@@ -212,6 +213,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _allowlist_patterns,
     _app_owns_mcp_server,
     _builtin_app_for_agent,
+    _builtin_paths_proven,
     _context_matches,
     _glob_pattern_leaves_root,
     _granted_names,
@@ -223,6 +225,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     _is_first_party_app,
     _is_first_party_read_only_mcp_tool,
     _is_harness_read_only_builtin,
+    _is_host_file_read_builtin_call,
     _is_host_read_only_builtin,
     _is_host_search_builtin_call,
     _normalize_tool_name,
@@ -256,6 +259,7 @@ from kiro_crew.pinned_fs import fd_real_path as _fd_real_path  # noqa: F401
 from kiro_crew.platform import current_context, redact_via_context
 from kiro_crew.platform.governance import (  # noqa: F401  (read by hook_runtime owners)
     CU_CLASS_OBSERVE,
+    _every_operation_names_a_path,
     computer_use_action_classes,
     computer_use_action_from_title,
     mcp_title_to_ref,
@@ -754,6 +758,7 @@ class HookManager:
         classifier_only: bool = False,
         trust_reads: bool = False,
         deny_waivers: frozenset[str] = frozenset(),
+        pre_tool_hooks_fire: bool = False,
     ) -> ToolHookResult:
         """Whether *call* is auto-approved, denied, or handled normally.
 
@@ -814,6 +819,11 @@ class HookManager:
         other tier judges the call exactly as without them. Default empty: only
         the dashboard's override path and the transport floor it approves through
         pass any.
+
+        ``pre_tool_hooks_fire`` says the surface runs the PreToolUse hooks on this
+        request whatever the gate answers (the chat, subagent and task-runner turn
+        loops). Only the ``batch-guard-grant`` row reads it, to answer
+        ``ToolCall.spec_hook_held``; ``False`` keeps those calls asking.
         """
         if _GATE_TABLE_PROBLEMS:
             return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
@@ -826,6 +836,7 @@ class HookManager:
             classifier_only=classifier_only,
             trust_reads=trust_reads,
             deny_waivers=frozenset(deny_waivers),
+            pre_tool_hooks_fire=pre_tool_hooks_fire,
         )
         for tier in GATE_TIERS:
             verdict = tier.judge(facts, tier)
@@ -852,8 +863,10 @@ class HookManager:
         mcp_tool_name: str = "",
         mcp_identity_trusted: bool = False,
         mcp_identity_unreadable: bool = False,
+        mcp_identity_unreadable_reason: str = "",
         kas_builtin_ids: bool = False,
         spec_granted_builtins: frozenset[str] = frozenset(),
+        spec_hook_held: frozenset[str] = frozenset(),
         spec_granted_commands: tuple[str, ...] = (),
         spec_shell_allowlist: tuple[str, ...] | None = None,
         spec_write_allowlist: tuple[str, ...] | None = None,
@@ -861,6 +874,7 @@ class HookManager:
         spec_denied_grant: Any = None,
         spec_shell_readonly: bool = False,
         spec_granted_paths: tuple[str, ...] = (),
+        spec_granted_read_paths: tuple[str, ...] = (),
         harness_builtin_tool: str = "",
         deepseek_tool_name: str = "",
         spawn_target: str = "",
@@ -868,6 +882,7 @@ class HookManager:
         classifier_only: bool = False,
         trust_reads: bool = False,
         deny_waivers: frozenset[str] = frozenset(),
+        pre_tool_hooks_fire: bool = False,
     ) -> ToolHookResult:
         """:meth:`judge`, for a caller that holds the call as keywords.
 
@@ -875,7 +890,8 @@ class HookManager:
         :class:`ToolCall` field of the same meaning (``tool_kind`` -> ``kind``,
         ``mcp_server_name`` -> ``mcp_server``, ``mcp_tool_name`` -> ``mcp_tool``,
         ``mcp_identity_trusted`` -> ``identity_trusted``, ``mcp_identity_unreadable``
-        -> ``identity_unreadable``) or a surface argument of
+        -> ``identity_unreadable``, ``mcp_identity_unreadable_reason`` ->
+        ``identity_unreadable_reason``) or a surface argument of
         :meth:`judge`. A dispatcher holding a permission event passes
         ``**hook_gate_kwargs(event)``, so an enforcement-relevant event field is
         threaded once. Each field's security meaning is documented on
@@ -896,8 +912,10 @@ class HookManager:
                 mcp_tool=mcp_tool_name,
                 identity_trusted=mcp_identity_trusted,
                 identity_unreadable=mcp_identity_unreadable,
+                identity_unreadable_reason=mcp_identity_unreadable_reason,
                 kas_builtin_ids=kas_builtin_ids,
                 spec_granted_builtins=frozenset(spec_granted_builtins),
+                spec_hook_held=frozenset(spec_hook_held),
                 spec_granted_commands=tuple(spec_granted_commands),
                 spec_shell_allowlist=(
                     None if spec_shell_allowlist is None else tuple(spec_shell_allowlist)
@@ -909,6 +927,7 @@ class HookManager:
                 spec_denied_grant=as_spec_denied_grant(spec_denied_grant),
                 spec_shell_readonly=spec_shell_readonly is True,
                 spec_granted_paths=tuple(spec_granted_paths),
+                spec_granted_read_paths=tuple(spec_granted_read_paths),
                 harness_builtin_tool=harness_builtin_tool,
                 deepseek_tool_name=deepseek_tool_name,
                 spawn_target=spawn_target,
@@ -920,6 +939,7 @@ class HookManager:
             classifier_only=classifier_only,
             trust_reads=trust_reads,
             deny_waivers=deny_waivers,
+            pre_tool_hooks_fire=pre_tool_hooks_fire,
         )
 
     def _effective_denied(self, ctx: object) -> list[str]:
@@ -1071,7 +1091,8 @@ _WRITE_TOOL_KINDS: frozenset[str] = frozenset(
 )
 
 
-# Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests,
+# Canonical ``<app>:<server>`` names DECLARED in shipped builtin manifests (a
+# former builtin's adopted record included, ``apps/builtin_adoption_gate.py``),
 # populated ONCE at gateway boot via ``set_builtin_app_mcp_servers`` (see the
 # dashboard startup). Parallel to ``_BUILTIN_APP_NAMES`` and kept as a plain
 # module global for the same reason — the PreToolUse gate does ZERO filesystem
@@ -1524,12 +1545,12 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # no value is returned. The audit is owed regardless, because the file holds
     # live credential material whatever this reader touches.
     "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
-    # Same store, read by ``kiro_crew.enterprise_sign_in`` (the shared sign-in
+    # Same store, read by ``kiro_crew.lts_sign_in`` (the shared sign-in
     # resolver) when Crew's vault holds no sign-in: the token rows and the
-    # ``api.codewhisperer.profile`` row, for the enterprise rules fetch and account
+    # ``api.codewhisperer.profile`` row, for the LTS rules fetch and account
     # lock and for the oss KAS spawn owner. Read-only, never logged; a token is
     # handed back only once its ``success`` audit is recorded.
-    "enterprise_sign_in.kiro_cli_store": ".local/share/kiro-cli/data.sqlite3",
+    "lts_sign_in.kiro_cli_store": ".local/share/kiro-cli/data.sqlite3",
     # Same store, read by ``kiro_crew.kiro_prerequisite.identity_fingerprint`` to
     # answer one question on the turn path: does the account signed in NOW differ
     # from the one the running kiro-cli children loaded? Only stable account
@@ -1752,10 +1773,15 @@ class ScriptHook:
     #: :mod:`kiro_crew.agent_sdk.spec_hooks`; never saved, and ``from_dict`` never
     #: reads it, so a hand-written ``hooks.json`` cannot claim a spec origin.
     spec_origin: str = ""
+    #: An agent spec hook's ``max_output_size``: the most UTF-8 bytes of its
+    #: stdout ``run_script_hook`` returns, cut after redaction and marked. ``0``
+    #: leaves only the stream cap. In memory only, like ``spec_origin``.
+    max_output_size: int = 0
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data.pop("spec_origin", None)
+        data.pop("max_output_size", None)
         return data
 
     @classmethod

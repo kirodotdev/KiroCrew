@@ -422,6 +422,55 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
 # engine; until then the Connections page marks those providers kiro-cli only.
 ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 
+# Backends whose sessions reach a Crew-owned Connection (``crew_oauth`` preview)
+# through the gateway bridge instead of the vendor's own sign-in. A member must
+# raise a permission request for every bridged call that names the server with a
+# trusted identity and the tool's arguments as the MCP server receives them, since
+# the gateway proxy forwards a ``tools/call`` only against the approval minted from
+# that request. KAS (forced ``ask`` rule, ``_meta.kiro`` identity) and claude (placed
+# server adopted from ``_meta.claudeCode``, ``rawInput`` is the tool input) meet that.
+# The bridge's stdio child reads its snapshot from ``crew-oauth-bridge``, the one
+# snapshot leaf an enforced harness's child may read (``kas-mcp-launch`` stays
+# withheld). kiro-cli never joins: it runs the vendor's OAuth itself.
+# goose names the server in ``_meta.goose.toolCall`` and its ``rawInput`` is the
+# ``arguments`` it sends (``confirmation_request`` and ``McpClient::call_tool``).
+# dsh names the tool only by the name it registers and dispatches by, the
+# ``tool_call`` title, split for a bridged server alone
+# (``permission_requests.bridged_title_identity``); its ``rawInput`` is the args
+# object its MCP client sends. opencode stays out: its ask carries ``rawInput`` ``{}``
+# and the arguments arrive only after the answer
+# (``acp_frames/opencode/crew-oauth-bridge-args-live.jsonl``), so no approval binds them.
+# Captured live: kas ``acp_frames/kas/mcp-live-apply-live.jsonl`` (``_meta.kiro.mcpTool``
+# on the request), claude ``acp_frames/claude/mcp-stdio-mount-live.jsonl`` (the placed
+# server on ``_meta.claudeCode.mcpServer``), goose
+# ``acp_frames/goose/crew-oauth-bridge-args-live.jsonl``, deepseek
+# ``acp_frames/deepseek/crew-oauth-bridge-args-live.jsonl``; replayed into an approval by
+# ``test/test_crew_oauth_bridge_harnesses.py``.
+# codex: ``rawInput`` is ``{server, tool, arguments}`` and ``arguments`` is what the
+# server's ``tools/call`` carried, ``acp_frames/codex/crew-oauth-bridge-args-live.jsonl``;
+# a tool marked ``readOnlyHint`` runs unasked, so the proxy strips ``annotations``.
+# copilot: the bridge's stdio element rides the launch file, as the probe server of
+# ``acp_frames/copilot/mcp-stdio-mount-live.jsonl`` did, and allow-always is answered once.
+# pi: the gate envelope's ``input`` is the call's arguments,
+# ``acp_frames/pi/mcp-stdio-mount-live.jsonl``; a Crew-owned Connection is the one spec
+# server its broker-only composition carries (RFC row 3f). The server and tool come
+# from the envelope's ``mcp`` owner, which the extension reads off its own registration
+# table and Crew trusts for the Connection approval only.
+# strands: the gate module's ``owner: mcp:<server>`` names the server and ``input`` the
+# arguments, ``acp_frames/strands/mcp-stdio-mount-live.jsonl``.
+ACP_BACKENDS_CREW_OAUTH_BRIDGE = frozenset(
+    {
+        ACP_BACKEND_KAS,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_COPILOT,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_STRANDS,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
+    }
+)
+
 # Backends whose ``session/new`` array Crew prunes of stdio elements whose command
 # certainly cannot be found (``acp.mcp_startable``), recording each one as a failed
 # server on the session's MCP report. Membership is a MEASURED bad outcome without it:

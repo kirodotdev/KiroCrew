@@ -14,7 +14,7 @@
  *
  * Decision inputs: our own stamped version (identity family derives from it,
  * mirroring auto-update.js channelForVersion), the running gateway's
- * /api/health payload ({ok, app, version}), and who LOCALLY owns the port's
+ * /api/health payload ({ok, app, version, edition}), and who LOCALLY owns the port's
  * LISTEN socket. Legacy gateways (health without identity fields) and
  * source-run dev gateways keep today's reuse behavior. The guard interposes
  * when two positively identified local installs belong to different families,
@@ -83,15 +83,23 @@ const FAMILY_META = {
   // product spelling shown in dialogs and status text.
   prod: { appName: "KiroCrew", displayName: "Kiro Crew" },
   nightly: { appName: "KiroCrew Nightly", displayName: "Kiro Crew Nightly" },
+  // The LTS edition is a third side-by-side install (build-desktop.sh). Its
+  // gateway runs the lts backend, so an LTS shell must never adopt an oss one.
+  lts: { appName: "KiroCrew LTS", displayName: "Kiro Crew LTS" }, // brand-ok
 };
 
 /**
- * Map a stamped version to its identity family.
+ * Map a stamped version and edition to its identity family.
  * @param {string} version
- * @returns {"prod"|"nightly"|null} null only for missing/unparseable versions
+ * @param {string} [edition="oss"] the build edition: the shell's baked one, or
+ *        a gateway's /api/health `edition` (absent on gateways older than the
+ *        LTS edition, which are all oss)
+ * @returns {"prod"|"nightly"|"lts"|null} null only for missing/unparseable versions
  */
-function identityFamily(version) {
+function identityFamily(version, edition = "oss") {
   const ch = channelForVersion(version);
+  if (ch === null) return null;
+  if (edition === "lts") return "lts";
   if (ch === "nightly") return "nightly";
   if (ch === "insider" || ch === "stable") return "prod";
   return null;
@@ -115,14 +123,18 @@ function identityFamily(version) {
  *        folder is named for, when a packager names folders by a build number
  *        that differs from ownVersion. The stale check compares the gateway
  *        against it; the release family still comes from ownVersion.
+ * @param {string} [opts.ownEdition="oss"] this shell's baked edition
+ *        (edition.js readBakedEdition). The remote's comes from its health
+ *        payload's `edition`.
  * @returns {{action:"reuse", reason:string} |
  *           {action:"warn-stale", oldVersion:string, reason:string} |
- *           {action:"takeover-prompt", otherFamily:"prod"|"nightly", otherVersion:string}}
+ *           {action:"takeover-prompt", otherFamily:"prod"|"nightly"|"lts", otherVersion:string,
+ *            holder?:"service"}}
  */
 function decideGatewayAction(ownVersion, remoteHealth, {
-  localOwner = "unknown", bundledGateway = false, bundleVersion = "",
+  localOwner = "unknown", bundledGateway = false, bundleVersion = "", ownEdition = "oss",
 } = {}) {
-  const own = identityFamily(ownVersion);
+  const own = identityFamily(ownVersion, ownEdition);
   // A shell we can't classify never evicts anyone.
   if (own === null) return { action: "reuse", reason: "unclassified-shell" };
   // Legacy (pre-identity health payload) or non-kirocrew responder on the
@@ -131,7 +143,7 @@ function decideGatewayAction(ownVersion, remoteHealth, {
   if (!remoteHealth || remoteHealth.app !== "kirocrew" || !remoteHealth.version) {
     return { action: "reuse", reason: "unidentified-gateway" };
   }
-  const remote = identityFamily(remoteHealth.version);
+  const remote = identityFamily(remoteHealth.version, remoteHealth.edition);
   if (remote === own) {
     // An app replacement can leave a detached gateway running the old bundle.
     // Warn only for that exact local bundled gateway; never warn for a tunnel,
@@ -154,6 +166,15 @@ function decideGatewayAction(ownVersion, remoteHealth, {
   // down the user's forward. This mirrors chooseRecoveryStrategy in
   // gateway-recovery.js, which already refuses to kill a gateway we did not
   // spawn — the boot path simply never got the same rule.
+  // The other edition's background service is local and named by the probe,
+  // but its backend is not this app's: an LTS shell on an oss gateway skips the
+  // LTS gate. Prompt the user to stop it (holder "service"). Never adopt it and
+  // never terminate it: quitting an app does not stop a service.
+  if (localOwner === "service" && (own === "lts" || remote === "lts")) {
+    return {
+      action: "takeover-prompt", otherFamily: remote, otherVersion: remoteHealth.version, holder: "service",
+    };
+  }
   if (localOwner !== "kirocrew") {
     return { action: "reuse", reason: `non-local-holder:${localOwner}` };
   }

@@ -33,6 +33,7 @@ from kiro_crew.acp.kas_agents import (
     to_client_custom_agent,
 )
 from kiro_crew.acp.kas_permissions import CREW_ANSWERED_BUILTINS_KEY
+from kiro_crew.agent import _gated_off_servers
 from kiro_crew.agent_discovery import (
     WELCOME_MESSAGE_MAX_CHARS,
     spec_welcome_message,
@@ -445,6 +446,9 @@ class TestWelcomeMessageProjection:
 class TestInclusionFlagProjection:
     """``includeMcpJson`` / ``includePowers``: forwarded, never defaulted.
 
+    ``includeMcpJson`` travels only as ``false``; see
+    :meth:`test_include_mcp_json_true_never_reaches_the_wire`.
+
     An ABSENT flag is deliberately left absent rather than given a default,
     because absence does not mean the same thing on the two hosts Crew writes
     specs for: kiro-cli reads an absent ``includeMcpJson`` as ``True``, KAS's own
@@ -454,11 +458,26 @@ class TestInclusionFlagProjection:
     ``false``, which is already its disk default.
     """
 
-    @pytest.mark.parametrize("flag", ["includeMcpJson", "includePowers"])
-    @pytest.mark.parametrize("value", [True, False])
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [("includeMcpJson", False), ("includePowers", True), ("includePowers", False)],
+    )
     def test_a_bool_is_forwarded_verbatim(self, flag, value):
         out = to_client_custom_agent("a", _spec(**{flag: value}), "p")
         assert out[flag] is value
+
+    def test_include_mcp_json_true_never_reaches_the_wire(self):
+        """KAS's ``true`` mounts every MCP tool past ``tools``; kiro-cli's does not.
+
+        kiro-cli's flag only lets ``tools`` name the ``mcp.json`` servers, while
+        KAS's adds every MCP-tagged tool on top of the allowlist. The opt-in
+        reaches the exclusion through the harness's stamp instead
+        (``test_kas_settings_mcp``), so a ref in ``tools`` still reaches its server.
+        """
+        spec = _spec(includeMcpJson=True, tools=["fs_read", "@notes-mcp"])
+        out = to_client_custom_agent("a", spec, "p")
+        assert "includeMcpJson" not in out
+        assert "@notes-mcp" in out["tools"]
 
     @pytest.mark.parametrize("flag", ["includeMcpJson", "includePowers"])
     def test_absent_stays_absent_rather_than_defaulted(self, flag):
@@ -962,9 +981,13 @@ class TestAgainstTheRealBundledSpec:
         session actually loads. A ``@server`` ref with no matching entry mounts
         nothing, so before this projection a stock KAS session advertised Crew's
         whole tool surface and could reach none of it.
+
+        A server whose ``spec_gate`` is closed is left out, as rebuild leaves it
+        out: its ``@`` ref stays in ``tools`` but no entry is written for it.
         """
         spec = self._bundled()
-        refs = [t[1:] for t in spec["tools"] if t.startswith("@")]
+        gated_off = _gated_off_servers()
+        refs = [t[1:] for t in spec["tools"] if t.startswith("@") and t[1:] not in gated_off]
         assert refs, "expected the real template to still carry @server refs"
         spec["mcpServers"] = {
             name: {"command": "/opt/kirocrew", "args": [f"mcp-{name.split('-')[-1]}"]}

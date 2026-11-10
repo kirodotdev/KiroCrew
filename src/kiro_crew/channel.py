@@ -26,6 +26,7 @@ from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.channel_account_check import session_after_account_check
 from kiro_crew.channel_shell_base import _offerable_base_binary
+from kiro_crew.channel_spec_hooks import pre_tool_refusal, turn_spec
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.fields import _safe_int
 from kiro_crew.config.loader import config_local_path, config_path, read_endorsed_config_text
@@ -121,27 +122,6 @@ CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS: tuple[str, ...] = (
     "register_hook",
     "pod_up",
     "pod_restart",
-)
-
-# One tool on the same boundary cannot be held by NAME.  ``ops_mission_control_api``
-# is a passthrough: one tool carrying a whole API surface, most of which reads.
-# ``POST /rotation/arm`` is the operation that starts work outliving the turn --
-# it arms the app's crons, which then fire unattended once the confined turn has
-# ended -- so the deny is keyed on the operation and the tool's read surface stays
-# reachable.  Method and path are the two fields that identify an operation; the
-# tool's own schema admits nothing but an exact member of its allowlist in
-# either, so an operation named here cannot be reached under a second spelling.
-#
-# Enforced at MCP dispatch alone, unlike the name list, which is also matched at
-# the permission-request event: that matcher reads the rendered title, where an
-# operation does not appear.  Containment still holds, because the dispatch guard
-# is what refuses the call -- approving the prompt only means the refusal arrives
-# one step later, and the interactive guard's job is to beat an AUTO-approval,
-# which the dispatch guard beats as well.
-CHANNEL_AGENT_BLOCKED_DISPATCH_OPERATION: tuple[str, str, str] = (
-    "ops_mission_control_api",
-    "POST",
-    "/rotation/arm",
 )
 
 # Direct-to-user messaging tools a channel agent may never invoke — channel
@@ -256,14 +236,13 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # The kirocrew-work tools: a channel agent has no dispatch relationship, so it
     # is neither a conductor nor a bound worker. A brief would pull a private bar
     # into a channel others see; a report or record writes a conductor's record.
-    # The two checks conduct, and the evaluator's file kind probes paths.
+    # The check conducts, and the evaluator's file kind probes paths.
     "work_brief",
     "work_report",
     "work_ledger_read",
     "work_ledger_record",
     "work_ledger_rebuild",
     "accept_eval",
-    "patrol_budget",
 ) + CHANNEL_AGENT_BLOCKED_DISPATCH_TOOLS
 
 # Boundary-aware matcher: the tool name must stand alone in the rendered
@@ -519,6 +498,13 @@ class Channel:
         if not agent:
             return False
         agent.state = "done"
+        # Stop its loop as ``ChannelManager.close`` does. Left running, a working
+        # member wrote "listening" back over "done", kept consuming, and held its
+        # session until the gateway exited; close cannot reach it either, since it
+        # cancels only members still in the room. The loop's ``finally`` releases
+        # the session and keeps "done".
+        if agent._task and not agent._task.done():
+            agent._task.cancel()
         self._broadcast(
             "channel_agent_left",
             {
@@ -1410,6 +1396,8 @@ async def _stream_task(
     tool_seen = False
 
     try:
+        # Read before anything streams, as a channel bot's turn reads it.
+        spec = await turn_spec(client, agent.agent_name)
         async for event in client.stream(message):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
@@ -1477,6 +1465,11 @@ async def _stream_task(
                     agent=agent.agent_name,
                     security_only=False,
                 )
+                _gate_outcome = "rejected_hook_deny"
+                if _gate_reason is None:
+                    # Then the agent spec's own PreToolUse hooks, where Crew runs them.
+                    _gate_reason = await pre_tool_refusal(spec, client, event, agent.session_key)
+                    _gate_outcome = "rejected_spec_hook"
                 if _gate_reason is not None:
                     sel().log_tool_invocation(
                         session_key=agent.session_key,
@@ -1484,7 +1477,7 @@ async def _stream_task(
                         source="channel",
                         # Permission events populate ``title``; ``text`` is empty.
                         tool_name=event.text or event.title,
-                        outcome="rejected_hook_deny",
+                        outcome=_gate_outcome,
                         metadata={"reason": _gate_reason},
                     )
                     # The gate judged the call itself: a policy verdict, with
@@ -1903,7 +1896,10 @@ async def _stream_task(
         )
         return _STREAM_OK
 
-    full_text = "".join(chunks).strip()
+    # kiro-cli's [STEERING steer-…] ack is protocol, not the reply.
+    from kiro_crew.messaging.driver import strip_steering_markers
+
+    full_text = strip_steering_markers("".join(chunks)).strip()
     if not full_text:
         return _STREAM_OK
     # Sanitize LLM output before posting

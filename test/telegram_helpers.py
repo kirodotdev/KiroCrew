@@ -73,9 +73,9 @@ def _drop_live_config_snapshot():
 
 
 def _prime_live(cfg: Any) -> None:
-    """Publish *cfg*'s ``telegram`` and ``messaging`` fields as the live snapshot.
+    """Publish *cfg*'s ``telegram``, ``messaging`` and ``agent`` fields as the live snapshot.
 
-    The dispatcher reads those two sections at POINT OF USE from the config
+    The dispatcher reads those sections at POINT OF USE from the config
     watcher rather than from the ``cfg=`` copy it was constructed with, so a
     test that varies one of them has to put the value where the turn actually
     looks for it. Every field the test's SimpleNamespace carries is copied onto
@@ -90,7 +90,7 @@ def _prime_live(cfg: Any) -> None:
 
     base = KiroCrewConfig()
     sections = {}
-    for name in ("telegram", "messaging"):
+    for name in ("telegram", "messaging", "agent"):
         section = getattr(cfg, name, None)
         if section is None:
             continue

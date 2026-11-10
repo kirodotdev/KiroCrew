@@ -416,9 +416,10 @@ def _ceiling_filtered_spec(ref: str, spec: dict[str, Any], *, audit: bool = True
     """An app's MCP spec with a ceiling-governed ``autoApprove`` removed.
 
     ``autoApprove`` is a SECOND way to reach the same exemption ``allowedTools``
-    grants, and a more direct one: kiro-cli approves an autoApproved MCP tool
-    locally and emits no permission request, so ``hooks.on_tool_call`` — the deny
-    floor, the sensitive-path check, the governance ceiling — never runs for it.
+    grants: a kept verb is granted as an ``allowedTools`` entry of the skill view
+    kiro-cli runs (``acp.kas_auto_approve.grant_in_skill_view``), approved locally with
+    no permission request, so ``hooks.on_tool_call`` (the deny floor, the
+    sensitive-path check, the governance ceiling) never runs for it.
     ``agent.py``'s managed-server block states the rule for our own servers
     ("DELIBERATELY NO autoApprove KEY, and none may ever be added"); this applies
     it to app-contributed ones, which were copied verbatim.

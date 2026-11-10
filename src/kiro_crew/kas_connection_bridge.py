@@ -99,23 +99,57 @@ class ConnectionBridge(Bridge):
         return f"was refused by Kiro Crew (HTTP {exc.code})"
 
 
+class _AgentSocketOpener:
+    """``open(request, timeout)`` over the agent socket with this process's capability.
+
+    For a bridge under an enforced harness's credential mask, which hides the
+    internal secret and the gateway record from it: it redeemed the one-time pickup
+    its element carried, and the listener must be the gateway pid that element named
+    (:mod:`kiro_crew.agent_ipc_client`). Never falls back to the dashboard socket.
+    """
+
+    def __init__(self, port: int) -> None:
+        self._port = port
+
+    def open(self, request: urllib.request.Request, timeout: float) -> Any:
+        from kiro_crew import agent_ipc_client
+
+        capability, sock = agent_ipc_client.current_capability(lambda: self._port)
+        if not capability:
+            raise urllib.error.URLError("no agent-socket capability for this Connection bridge")
+        return agent_ipc_client.open_with_capability(
+            request, timeout, capability=capability, socket_path=sock
+        )
+
+
 def build_bridge(doc: dict[str, Any], *, server: str, out: Any, err: Any) -> ConnectionBridge:
     """The bridge a verified ``connection`` snapshot describes."""
-    from kiro_crew.config.loader_locations import read_local_secret
+    from kiro_crew import agent_ipc_client
 
     port = int(doc["port"])
     headers = {
-        "X-Internal-Secret": read_local_secret(port),
         "X-Crew-Bridge": str(doc["version"]),
         "X-Crew-Bridge-Token": str(doc["bridge_token"]),
     }
+    opener: Any
+    if agent_ipc_client.take_pickup():
+        # Under the mask: the capability is the credential, and the gateway holds it
+        # to the session it was issued for.
+        agent_ipc_client.current_capability(lambda: port)
+        headers["X-Session-Key"] = str(doc["session"])
+        opener = _AgentSocketOpener(port)
+    else:
+        from kiro_crew.config.loader_locations import read_local_secret
+
+        headers["X-Internal-Secret"] = read_local_secret(port)
+        opener = _GatewayOpener(port)
     return ConnectionBridge(
         f"http://127.0.0.1:{port}{PROXY_PATH}",
         headers,
         server=server,
         out=out,
         err=err,
-        opener=_GatewayOpener(port),  # type: ignore[arg-type]
+        opener=opener,
     )
 
 

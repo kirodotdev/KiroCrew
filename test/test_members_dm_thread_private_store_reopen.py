@@ -19,7 +19,7 @@ from members_dm_thread_helpers import CREW, OTHER, _make_members_app
 
 from kiro_crew.config.loader import KiroCrewAgentConfig
 from kiro_crew.members import DM_SLOT_MODE, dm_binding_path, read_dm_binding
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, default_timeout
 
 
 async def _finished(coro, what: str, *, timeout: float | None = None):
@@ -153,7 +153,7 @@ async def test_reopen_bound_private_thread_preserves_active_turn(
                     return "member-other"
                 if fault.startswith("race_"):
                     loop.call_soon_threadsafe(change_identity)
-                    assert raced.wait(timeout=5)
+                    assert raced.wait(default_timeout())
             return read_private_session_store(key)
 
         monkeypatch.setattr(
@@ -263,7 +263,7 @@ async def test_running_private_thread_refuses_ownership_changed_during_read(
             assigned = read_private_session_store(key)
             if key == session_key:
                 loop.call_soon_threadsafe(entered.set)
-                assert resume.wait(timeout=5), "reopen read was not released"
+                assert resume.wait(default_timeout()), "reopen read was not released"
             return assigned
 
         def change_ownership():

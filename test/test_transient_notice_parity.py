@@ -219,9 +219,9 @@ def _legacy_token(text: str) -> str | None:
 
 
 def test_token_tables_have_the_pinned_size() -> None:
-    # 3 transient-5xx tokens and 76 gateway tokens; a new row family moves both.
-    assert len(_backend_tokens()) == 79
-    assert len(_frontend_families()) == 79
+    # 3 transient-5xx tokens and 78 gateway tokens; a new row family moves both.
+    assert len(_backend_tokens()) == 81
+    assert len(_frontend_families()) == 81
     assert len(_legacy_entries()) == 81
 
 
@@ -350,7 +350,7 @@ def test_every_cancelled_replay_wording_has_its_own_token() -> None:
 def test_localized_copy_avoids_internal_vocabulary() -> None:
     catalog = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))
     copy = catalog["pages"]["chat"]["gatewayNotice"]
-    assert len(copy) == 92
+    assert len(copy) == 94
     for key, text in copy.items():
         lowered = text.lower()
         assert "hiccup" not in lowered and "backend" not in lowered, (key, text)

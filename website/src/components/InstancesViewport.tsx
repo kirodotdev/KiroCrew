@@ -73,7 +73,10 @@ import { copyImageToClipboard } from '../utils/clipboard'
 import { copyImageWithText } from '../pages/chat/share/shareSupport'
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
+import { usePaneForwardPending } from '../lib/paneForward'
 import { connectInstanceInto, type ConnectVia } from '../lib/connectInstance'
+import { paneCredentialFor } from '../lib/paneCredential'
+import { useDeliverPendingPaneSlot } from '../lib/crewDeepLink'
 import { recallActivePane, rememberActivePane } from '../lib/activePaneMemory'
 import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -333,6 +336,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // an ordinary model broadcast for an ack — see EmbeddedHostBridge.
   const postAckToRef = useRef<(id: string) => void>(() => {})
   const instancesRef = useRef<InstanceView[]>([])
+  // A `kirocrew://chat?crew=` link's session, posted once its pane is ready.
+  useDeliverPendingPaneSlot(iframeRefs, warm, ready)
 
   // Whether `refreshToken` would actually mint for this id right now: no mint
   // already in flight, and outside the rate window. Split out of refreshToken so
@@ -356,8 +361,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         const res = await api.refreshInstanceToken(id)
         const port = res.local_port || warmRef.current[id]?.port
         if (res.token && port) {
-          dispatch(setWarm({ id, conn: { port, token: res.token } }))
-          paneLog('remint', { id, port })
+          // The gateway re-minted for its own port; this page may be on another.
+          const conn = await paneCredentialFor(id, { port, token: res.token })
+          dispatch(setWarm({ id, conn }))
+          paneLog('remint', { id, port: conn.port })
         } else {
           // A mint that returns nothing usable leaves the OLD warm entry standing,
           // so the pane looks unchanged. Journal it: on screen this is
@@ -984,6 +991,12 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const activeWarmPort = activeWarmConn?.port
   const activeReady = activeId ? !!ready[activeId] : true
   const activeSeq = activeId ? reloadSeq[activeId] || 0 : 0
+  // In the desktop app's client-only mode a pane's port is forwarded on
+  // demand, so its frame mounts (and its watchdog arms) only once the forward
+  // has been tried. Never pending elsewhere (lib/paneForward.ts).
+  const warmPorts = useMemo(() => Object.values(warm).map(w => w.port), [warm])
+  const paneForwardPending = usePaneForwardPending(warmPorts)
+  const activeForwardPending = activeWarmPort !== undefined && paneForwardPending(activeWarmPort)
   // The dashboard's own origin cannot embed a loopback pane: the server's CSP
   // `frame-src` permits only a specific loopback (protocol, host) set, so a
   // dashboard served on an HTTPS reverse proxy, a tunnel origin, an [::1]
@@ -1009,7 +1022,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // clears the verdict, because `activeTimedOut` additionally requires
   // `!activeReady`.
   useEffect(() => {
-    if (!activeId || activeWarmPort === undefined || activeReady) return
+    if (!activeId || activeWarmPort === undefined || activeReady || activeForwardPending) return
     // A non-loopback dashboard origin can never embed the pane (CSP frame-src),
     // and no iframe is mounted for it, so there is nothing to time out: arming
     // the watchdog would only journal a load-timeout for a frame that does not
@@ -1037,7 +1050,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       })
     }, PANE_LOAD_TIMEOUT_MS)
     return () => window.clearTimeout(t)
-  }, [activeId, activeWarmPort, activeSeq, activeReady, nonLoopbackOrigin])
+  }, [activeId, activeWarmPort, activeSeq, activeReady, nonLoopbackOrigin, activeForwardPending])
 
   // After a load timeout, ask whether THIS browser can reach the pane's port at
   // all (utils/panePortProbe.ts). The tunnel's `connected` is measured on the
@@ -1205,7 +1218,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // starts empty and opens on Local. Decided once, on the first poll, because
   // only then can the id be checked against the switcher: a crew that is gone
   // (deleted, disconnected, no longer a tab) falls back to Local. A pick the
-  // user made before that poll answered wins over the stored one. The connect
+  // user made before that poll answered wins over the stored one (a crew deep
+  // link arriving first clears the stored id: lib/crewDeepLink.ts). The connect
   // goes through the viewport's own connectMutation (the one Retry and the
   // panel use), with the same condition as a tab click: no warm iframe yet, or
   // the listed status is not connected. Its error and pending state reach the
@@ -1572,7 +1586,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           no iframe at all: a doomed frame would only arm the 15s watchdog and
           end at a "tunnel looks connected" error. The honest card below says
           what to do instead. */}
-      {!nonLoopbackOrigin && warmIds.map(id => (
+      {!nonLoopbackOrigin && warmIds.filter(id => !paneForwardPending(warm[id].port)).map(id => (
         // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onLoad is a document-load lifecycle hook: it posts the model handshake once the pane's document exists. Not a user interaction, and nothing here needs a keyboard path — the pane's own SPA owns focus once loaded.
         <iframe
           // reloadSeq in the key forces a remount (= reload) on Retry even when

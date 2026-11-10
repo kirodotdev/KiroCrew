@@ -476,7 +476,7 @@ class TokenStore:
     def refresh_rejected_strict(self, identity: str) -> datetime | None:
         """Like :meth:`refresh_rejected`, but a marker it cannot read RAISES.
 
-        For a fail-closed reader (the enterprise gate): only a marker that is not
+        For a fail-closed reader (the LTS gate): only a marker that is not
         there is "not refused". A marker that exists but cannot be parsed still
         records a refusal, so it answers now.
         """

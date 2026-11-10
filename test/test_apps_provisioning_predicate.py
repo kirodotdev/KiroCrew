@@ -8,7 +8,9 @@ drifted copy lets the gate waive what the runtime does not provision.
 
 from __future__ import annotations
 
+import errno
 import inspect
+import os
 import sys
 from types import SimpleNamespace
 
@@ -363,6 +365,29 @@ class TestRequirementsInTree:
         req = root / "requirements.txt"
         req.symlink_to(outside / "requirements.txt")
         assert requirements_in_tree(root, req) is None
+
+    @requires_symlinks
+    def test_a_link_swapped_in_after_the_rule_is_refused_by_the_open(self, tmp_path, monkeypatch):
+        """The rule is only the fast refusal; the open of its resolved target is
+        the boundary. A link planted at that name after the rule ran is refused
+        by the open itself, also where the parent chain cannot be pinned."""
+        from kiro_crew import pinned_fs
+        from kiro_crew.apps.backend_runtime import provisioning
+
+        monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("host-secret==1.0\n", encoding="utf-8")
+        root = tmp_path / "app"
+        root.mkdir()
+        req = root / "requirements.txt"
+        req.write_text("fastapi\n", encoding="utf-8")
+        resolved = requirements_in_tree(root, req)
+        assert resolved is not None
+        req.unlink()
+        req.symlink_to(outside)
+        with pytest.raises(OSError) as refused:
+            os.close(provisioning._open_contained_nofollow(*resolved))
+        assert refused.value.errno == errno.ELOOP
 
     @requires_symlinks
     def test_a_dangling_link_is_none(self, tmp_path):

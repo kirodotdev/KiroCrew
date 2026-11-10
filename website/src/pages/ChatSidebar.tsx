@@ -69,6 +69,7 @@ import { useSidebarResize } from './chat-sidebar/resize'
 import { useSidebarScrollPeek, useFullTitlesOnScrollSetting } from './chat-sidebar/scrollPeek'
 import ScrollPeekLayer from './chat-sidebar/ScrollPeekLayer'
 import NeedsMeHoverLayer from './chat-sidebar/NeedsMeHoverCard'
+import { useNeedsMeHoverCardSetting } from './chat-sidebar/needsMeCardSetting'
 import { useSidebarTags } from './chat-sidebar/tags'
 import { useSidebarModels } from './chat-sidebar/models'
 import { useBoardColumns, useColumnPopover, useBoardColumnMutations, useColumnMatches, useBoardFolderCollapse, crewLaneSets } from './chat-sidebar/board'
@@ -412,6 +413,7 @@ function ChatSidebar({
     paintedSidebarWidth, rootStyle, sidebarMax, paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
   } = useSidebarResize({ onWidthChange, onDragChange, fillsHost, boardActive: orderedColumns.length > 0 })
   const fullTitlesOnScroll = useFullTitlesOnScrollSetting()
+  const needsMeHoverCard = useNeedsMeHoverCardSetting()
   // Which edges of the board's lane strip hide lanes. A window too narrow for
   // every lane clips the strip at the sidebar's edge, and an overlay scrollbar
   // leaves no standing sign that more lanes sit past it, so the strip paints an
@@ -664,7 +666,7 @@ function ChatSidebar({
   } = useFolderFilterRows({ folderTree: sidebarRows.folderTree, folders, folderCompare, filterHiddenFolders, filterHiddenSubtree, pinnedFolderSubtree, pinnedFolderAncestors })
 
   const {
-    createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse,
+    createFolderMutation, deleteFolderMutation, updateFolderMutation, toggleCollapse, collapseAllFolders,
   } = useFolderMutations({ queryClient, setFolderActionError, setFolderOfflineNotice, folders, connected })
   // The list view's toggle. Its folder headers are sticky, so a collapse also
   // moves the lane to keep a pinned header where it is painted, in the commit
@@ -938,7 +940,7 @@ function ChatSidebar({
     autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
     broadcastOpen, bulkModel, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
     clearClosedSessionsWithConfirm, clearHiddenFilters, clearModelFilter, clearTagFilter, closeColumnPopover,
-    closeRefused, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
+    closeRefused, collapseAllFolders, collapsedCrews, collapsedHistoryGroups, collapsedSpaces, collapsible, columnEditId,
     columnMatches, columnPopoverImeLatch, columnPopoverRef, columnsError, columnsFailed, commitRecentAmount,
     conductorExpanded, conductorMatching, conductorRows, conductorView, connected, createChatInFolder,
     createChatMutation, createEphemeralChatMutation, createFolderMutation, createRemoteChatMutation,
@@ -996,7 +998,7 @@ function ChatSidebar({
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />
       {/* Hovering a needs-me row opens its recap, asks and quick reply beside it (desktop pointer only). */}
-      <NeedsMeHoverLayer rootRef={sidebarRootRef} />
+      {needsMeHoverCard && <NeedsMeHoverLayer rootRef={sidebarRootRef} />}
       {/* Outside the row list on purpose: a notice under a row adds a line every session
           pays for in above-fold density (AUTOSDE session-row-fixed-height). */}
       {duplicateError ? (

@@ -6,9 +6,9 @@ sites are still pinned there. The app reads the core; the core never reads the a
 - The ``gh`` URL parser and its error class are the shared runner's own objects, so
   a repository URL the dashboard sidebar refuses is refused here too
   (``test/test_github_runner.py``).
-- The ``kirocrew-core`` MCP server gates this app's three tools on the
-  ``installed.json`` of the app id it spells as a literal; that literal must be the
-  id the app's routes read (``test/test_mcp_apps_tool_gate.py``).
+- This app's three agent tools are declared in its ``app.json`` and served from its
+  own ``agent-tools`` route, so the core reads them from the app's manifest under the
+  app's own id, and no core table spells them (``test/test_app_agent_tools.py``).
 - With the crew log off, the crew store's refusal names the env file through
   ``env_file_display()``, as every other crew-log-off refusal does
   (``test/test_crew_log_routes_dispatch_fence.py``).
@@ -22,8 +22,14 @@ import inspect
 import pytest
 
 from kiro_crew import github_runner as runner
-from kiro_crew.apps.builtins.issue_radar.backend import crew_store, errors, github_client, store
-from kiro_crew.mcp_tools import apps as apps_tools
+from kiro_crew.apps.builtins.issue_radar.backend import (
+    agent_tools,
+    crew_store,
+    errors,
+    github_client,
+    store,
+)
+from kiro_crew.mcp_tools import app_tools
 
 _TOOLS = frozenset(
     {"issue_radar_crew_read", "issue_radar_crew_record", "issue_radar_record_investigation"}
@@ -41,10 +47,14 @@ def test_repo_url_error_is_one_class_across_layers():
         runner.parse_github_repo_url("https://evil.example/o/r")
 
 
-def test_the_core_gates_this_apps_tools_on_its_own_app_id():
-    assert {tool: apps_tools.TOOL_APPS.get(tool) for tool in _TOOLS} == {
-        tool: store.APP_NAME for tool in _TOOLS
-    }
+def test_the_core_reads_this_apps_tools_from_its_own_manifest():
+    declared = {t.name: t for t in app_tools._universe() if t.name in _TOOLS}
+    assert set(declared) == _TOOLS
+    assert {t.app for t in declared.values()} == {store.APP_NAME}
+    assert {t.route for t in declared.values()} == {"agent-tools"}
+    # Every declared tool is one the app serves, and no core table keys them.
+    assert set(agent_tools.TOOLS) == _TOOLS
+    assert _TOOLS.isdisjoint(app_tools._core_tool_names())
 
 
 def test_the_crew_log_off_refusal_names_the_env_file_the_gateway_reads():

@@ -115,16 +115,16 @@ _SIGN_IN_ACTIONS = frozenset({"login", "whoami", "logout", "route"})
 
 
 def _is_sign_in_command(args: argparse.Namespace) -> bool:
-    """Is *args* an enterprise build's sign-in verb, which must run before policy loads?
+    """Is *args* an LTS build's sign-in verb, which must run before policy loads?
 
-    An enterprise build's policy fetch authenticates as the vault's sign-in, so with no
+    An LTS build's policy fetch authenticates as the vault's sign-in, so with no
     sign-in the fetch fails; the verb that creates one must not need it. An oss build
     keeps the fail-closed rule for every command.
     """
     from kiro_crew import edition
 
     return (
-        edition.is_enterprise()
+        edition.is_lts()
         and args.command == "kas"
         and getattr(args, "kas_action", None) in _SIGN_IN_ACTIONS
     )
@@ -135,9 +135,9 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
 
     Returns, having done nothing, for any other failure and in an ``oss`` build.
     Otherwise it exits: 0 once a sign-in landed (start again to load the rules),
-    as before on any failure (``kiro_crew.enterprise_signin_gateway``).
+    as before on any failure (``kiro_crew.lts_signin_gateway``).
     """
-    from kiro_crew import enterprise_signin_gateway as signin
+    from kiro_crew import lts_signin_gateway as signin
 
     # A test or scripted start (`--test-mode`, `--json-ready`) waits for a ready
     # line, not a browser sign-in, so it gets the refusal exit as before.
@@ -517,11 +517,14 @@ def main() -> None:
         choices=["reads", "yolo", "interactive"],
         help=(
             "Default approval mode for tool invocations. 'reads' auto-approves "
-            "read-only tools (read/list/get/search/* prefixes); 'yolo' "
-            "auto-approves all tools (refused unless KIROCREW_HOME is "
+            "read-only tools (read/list/get/search/* prefixes) on background "
+            "turns (cron jobs, the task runner, subagents); a channel turn "
+            "under 'reads' asks about every tool, as under 'interactive'. "
+            "'yolo' auto-approves all tools (refused unless KIROCREW_HOME is "
             "explicitly set to a non-default location); 'interactive' uses "
-            "the standard Slack/dashboard prompt flow. When omitted, current "
-            "interactive behavior is preserved."
+            "the standard Slack/dashboard prompt flow. When omitted, config "
+            "agent.approval_mode (default: auto) decides; 'auto' approves "
+            "every channel tool call the tool gate allows, without asking."
         ),
     )
     gw_parser.add_argument(
@@ -546,6 +549,9 @@ def main() -> None:
     cli_parser_admin.register_security_parser(sub)
     cli_parser_admin.register_eval_parser(sub, _jail_opts)
     cli_parser_admin.register_tailnet_parser(sub)
+    from kiro_crew.remote_control.cli import register_parser as _register_remote_control
+
+    _register_remote_control(sub)
     cli_parser_admin.register_telemetry_parser(sub)
     cli_parser_admin.register_policy_parser(sub)
 
@@ -750,6 +756,11 @@ def main() -> None:
         parser.print_help()
         return
 
+    if args.command == "gateway":  # before companion code can repoint SSH_AUTH_SOCK
+        from kiro_crew.mcp_gateway.agent_socket import record_boot_agent_socket
+
+        record_boot_agent_socket()
+
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE, before any subcommand spins up
     # services. Standalone (no companion, no KIROCREW_PROFILE) composes the
@@ -775,17 +786,17 @@ def main() -> None:
         if isinstance(exc, PlatformCompositionError):
             sign_in = _is_sign_in_command(args)
             if args.command == "gateway":
-                # Enterprise build, nobody signed in: the sign-in screen runs and
+                # LTS build, nobody signed in: the sign-in screen runs and
                 # this exits (0 once signed in). Returns for any other failure.
                 _serve_sign_in_first(args, exc)
             if args.command != "doctor" and not sign_in:
-                # Enterprise build: governance rules that did not load stop Crew
+                # LTS build: governance rules that did not load stop Crew
                 # here, before any server binds, with what failed and the fix.
-                from kiro_crew.enterprise_boot import refuse_policy_boot
+                from kiro_crew.lts_boot import refuse_policy_boot
 
                 refuse_policy_boot(exc)
             if args.command == "doctor" or sign_in:
-                # The sign-in verbs are what an enterprise build's policy fetch needs
+                # The sign-in verbs are what an LTS build's policy fetch needs
                 # first, so a missing sign-in must not lock them out. They touch only
                 # the Kiro sign-in in Crew's vault and run no agent.
                 logging.getLogger("kiro_crew").debug(
@@ -867,6 +878,13 @@ def main() -> None:
         # keys off to decide whether to arm itself (see start_dashboard). Cheap
         # and gateway-only — other CLI subcommands are short-lived and skip it.
         faulthandler.enable()
+        # Count crew-log records this process decodes per read (report mode by
+        # default; see crew_log/read_budget.py). Gateway-only for the same reason as
+        # faulthandler: a child or another subcommand never marks itself, so its
+        # reads are not counted. A stdlib-only module and one flag.
+        from kiro_crew.crew_log.read_budget import mark_gateway_process
+
+        mark_gateway_process()
         # An in-app restart reaches this image through os.execv, and execve
         # preserves ITIMER_REAL while resetting a caught SIGALRM to its default
         # disposition: the predecessor cancels its stall alarm before it execs,
@@ -1043,6 +1061,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _tailnet
 
         _tailnet(args)
+    elif args.command == "remote-control":
+        from kiro_crew.remote_control.cli import run as _remote_control
+
+        _remote_control(args)
     elif args.command == "telemetry":
         from kiro_crew.cli_commands import _telemetry
 

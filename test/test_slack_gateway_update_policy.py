@@ -424,6 +424,57 @@ class TestMandatoryUpdateOnWheelInstall:
         assert "user:s3cr3t@cdn.example.invalid" in upgrade.note
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("command", "note"),
+        [('/venv/bin/python -m pip install "k.whl#sha256=0"', ""), (None, "could not verify.")],
+        ids=["command", "note"],
+    )
+    async def test_floor_warning_says_the_upgrade_runs_from_your_own_terminal(
+        self, monkeypatch, caplog, command, note
+    ):
+        """An agent can read this log line, and the plain-pip upgrade and the
+        restart after it are the user's to run, so both branches say where."""
+        import kiro_crew.dashboard.handlers as handlers
+        import kiro_crew.platform.update_governance as gov
+        from kiro_crew.platform.update_layout import PipUpgradeHint
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+
+        async def _noop_check():
+            return None
+
+        handlers._update_info.clear()
+        handlers._update_info.update(
+            {
+                "update_available": False,
+                "can_apply": False,
+                "managed_by": "kirocrew",
+                "remediation": {"kind": "command", "message": "m", "command": "c"},
+            }
+        )
+        monkeypatch.setattr(handlers, "_do_update_check", _noop_check)
+        monkeypatch.setattr(gov, "update_required", lambda _v: True)
+        monkeypatch.setattr(gov, "min_version", lambda: "9.9.9")
+        monkeypatch.setattr(
+            "kiro_crew.platform.wheel_engine.running_from_managed_venv", lambda: False
+        )
+        monkeypatch.setattr("kiro_crew.platform.wheel_engine.running_from_pipx", lambda: False)
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_layout.non_managed_pip_update_hint",
+            lambda _channel=None: (PipUpgradeHint(command=command, note=note), "kirocrew restart"),
+        )
+        monkeypatch.setattr(orch, "_auto_apply_update", AsyncMock())
+        monkeypatch.setattr(orch, "_auto_apply_wheel_update", AsyncMock())
+
+        with caplog.at_level(logging.WARNING):
+            await orch._check_for_updates()
+
+        warning = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+        assert (command or note) in warning
+        assert "from your own terminal" in warning
+
+    @pytest.mark.asyncio
     async def test_mandatory_update_on_pipx_keeps_the_update_pointer(self, monkeypatch, caplog):
         """A pipx install below the floor keeps the `kirocrew update` pointer —
         its installer re-run upgrades the pipx venv in place, so the pip hint

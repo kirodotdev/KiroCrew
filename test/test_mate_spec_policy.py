@@ -299,6 +299,43 @@ def test_a_crewmate_off_kas_is_refused_a_template_with_a_policy(home, monkeypatc
     assert _file(mates) == before
 
 
+def test_a_bot_following_claude_takes_a_template_with_a_policy_on_kas(home, monkeypatch):
+    """Judged on the spec being written: an unpinned Bot that follows claude and gains
+    hooks runs on KAS (``crewmate_harness.worker_backend_for_spec``), so the add
+    succeeds as it did when every Bot ran on KAS."""
+    from kiro_crew.config import loader_builders
+    from kiro_crew.config.loader import KiroCrewAgentConfig
+    from kiro_crew.crewmate_harness import worker_backend_for_spec
+
+    _, mates = home
+    agent = SimpleNamespace(acp_backend="claude", member_acp_backend="claude", kas_bundle=False)
+    loader_builders.mark_member_backend_inherited(agent, True)
+    cfg = SimpleNamespace(
+        agent=agent, agents={"pixel": KiroCrewAgentConfig(member_id="pixel", kiro_agent="pixel")}
+    )
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", staticmethod(lambda: cfg))
+    monkeypatch.setattr(
+        mate_worker_kit,
+        "_crewmate_backend",
+        lambda member, held: worker_backend_for_spec(cfg, member, bool(held)),
+    )
+    assert worker_backend_for_spec(cfg, "pixel", False) == "claude"
+    assert worker_backend_for_spec(cfg, "pixel", True) == ACP_BACKEND_KAS
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["hooks"] == TEMPLATE["hooks"]
+    # A pin to claude keeps the refusal: the person chose that harness.
+    pinned = SimpleNamespace(
+        agent=agent,
+        agents={
+            "pixel": KiroCrewAgentConfig(
+                member_id="pixel", kiro_agent="pixel", acp_backend="claude"
+            )
+        },
+    )
+    assert worker_backend_for_spec(pinned, "pixel", True) == "claude"
+
+
 def test_a_template_setting_the_worker_base_sets_differently_is_refused_by_name(home):
     user, mates = home
     base = {**WORKER_BASE, "toolsSettings": {"execute_bash": {"deniedCommands": ["sudo .*"]}}}
@@ -435,7 +472,6 @@ _UNCARRIED_SETTINGS = {
         ({"fs_write": {"fallbackAction": "deny"}}, "toolsSettings.fs_write.fallbackAction"),
         ({"execute_bash": {"denyByDefault": True}}, "toolsSettings.execute_bash.denyByDefault"),
         ({"web_fetch": {"trusted": ["docs\\.example\\.com"]}}, "toolsSettings.web_fetch.trusted"),
-        ({"subagent": {"availableAgents": []}}, "toolsSettings.subagent.availableAgents"),
         (
             {"use_subagent": {"availableAgents": ["reviewer"]}},
             "toolsSettings.use_subagent.availableAgents",
@@ -465,6 +501,21 @@ def test_a_tools_setting_crew_cannot_carry_is_refused_by_name(settings, named):
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert named in caught.value.fields
+
+
+def test_a_template_with_a_subagent_allowlist_is_added_and_trusted_agents_still_refused(home):
+    user, mates = home
+    allow = {"subagent": {"availableAgents": ["gpu-*"]}}
+    _use(user, {**TEMPLATE, "toolsSettings": allow})
+    preview = mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    mate_worker_kit.apply("pixel", {"template": "release-bot", "revision": preview["revision"]})
+    assert _file(mates)["toolsSettings"] == allow
+    trusted = {"subagent": {"availableAgents": ["gpu-*"], "trustedAgents": ["gpu-*"]}}
+    _use(user, {**TEMPLATE, "toolsSettings": trusted})
+    with pytest.raises(WorkerKitError) as caught:
+        mate_worker_kit.preview("pixel", {"template": "release-bot"})
+    assert "toolsSettings.subagent.trustedAgents" in caught.value.detail
+    assert "toolsSettings.subagent.availableAgents" not in caught.value.detail
 
 
 def test_the_kit_copy_refuses_a_template_whose_deny_kas_cannot_enforce(home):
@@ -543,6 +594,24 @@ def test_each_carried_deny_reaches_the_workers_kas_rules(settings, capability):
     assert any(r["capability"] == capability for r in _deny_rules(spec["toolsSettings"]))
 
 
+@pytest.mark.parametrize("names", [["gpu-*", "reviewer"], []])
+def test_a_subagent_allowlist_is_carried_and_becomes_a_kas_deny(names):
+    """``[]`` is kiro-cli's "spawn nothing" and travels as KAS's deny on every sub-agent."""
+    settings = {"subagent": {"availableAgents": names}}
+    spec: dict = {}
+    mate_spec_policy.layer_policy(spec, {"toolsSettings": settings})
+    assert spec["toolsSettings"] == settings
+    rules = [r for r in _deny_rules(spec["toolsSettings"]) if r["capability"] == "subagent"]
+    assert rules and all(r.get("exclude", []) == names for r in rules)
+
+
+def test_a_subagent_allowlist_kas_cannot_express_is_refused_by_name():
+    settings = {"subagent": {"availableAgents": ["re[v]iewer"]}}
+    with pytest.raises(SpecPolicyUncarried) as caught:
+        mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
+    assert "toolsSettings.subagent.availableAgents" in caught.value.fields
+
+
 def test_a_carried_allowed_command_is_answered_by_crews_gate():
     from kiro_crew.acp.kas_permissions import crew_answered_commands
 
@@ -554,7 +623,7 @@ def test_a_carried_allowed_command_is_answered_by_crews_gate():
 
 def test_an_allowed_command_crews_gate_cannot_answer_is_refused():
     """A listed grant must take effect too: an unusable entry is refused."""
-    settings = {"execute_bash": {"allowedCommands": ["make -j\\D+"]}}
+    settings = {"execute_bash": {"allowedCommands": ["make -j\\p{N}+"]}}
     with pytest.raises(SpecPolicyUncarried) as caught:
         mate_spec_policy.layer_policy({}, {"toolsSettings": settings})
     assert "toolsSettings.execute_bash.allowedCommands" in caught.value.fields

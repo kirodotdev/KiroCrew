@@ -86,7 +86,9 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.model_fallback import (
         _app_allocation_kwargs,
         _inherited_default_model,
+        _live_session_off_slot_backend,
         _settle_session_model,
+        _slot_backend_allocation_kwargs,
     )
     from kiro_crew.dashboard.chat_turn.prompt_assembly import (
         _expand_prompt_mention_off_loop,
@@ -111,7 +113,6 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _steer_segment_cut
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import (
         _fallback_turn_project,
-        _notice_inherited_conductor_skills,
         _notice_seed_declined,
         _notice_steer_upgrade,
         _prepare_spec_hooks,
@@ -694,6 +695,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                     "memory_unavailable: this conversation's member binding changed; "
                     "open a new conversation"
                 )
+            # The record keeps its agent when the Bot is set to another one; the
+            # user is told so once, in this chat (no I/O unless the two differ).
+            from kiro_crew.dashboard.member_rebind_notice import surface_rebind_notice
+
+            await surface_rebind_notice(state, slot, session_key, loaded_cfg, bindings)
         elif bindings.selection_kind == "member":
             execution_context = resolve_member_execution(
                 loaded_cfg,
@@ -792,7 +798,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
 
         seed_for_turn(state, slot, loaded_cfg, execution_context)
         # A crewmate's worker runs in the crewmate's own git worktree of the
-        # repository this turn is about, never in the shared checkout.
+        # repository this turn is about, unless the edition works it in place.
         from kiro_crew.dashboard.crewmate_worktree_scope import scope_worker_turn
 
         if await scope_worker_turn(state, slot, loaded_cfg, execution_context, message):
@@ -891,6 +897,10 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                 _stamped,
             )
             arm_model_switch_reset(state, slot)
+    # A slot created on a harness whose live session runs another one takes the
+    # same reset, and the claim below starts it on its pick.
+    if _live_session_off_slot_backend(state, slot):
+        arm_model_switch_reset(state, slot)
     # A model pick the picker took while a turn ran on this session, not yet
     # landed: normally the end of that turn lands it (``_end_turn_tail``), and
     # this is the backstop for a turn that ended without its tail or ran on a
@@ -957,6 +967,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         reasoning_effort_override=slot.reasoning_effort or None,
         start_priority=_turn_priority,
         **_app_allocation_kwargs(slot),
+        **_slot_backend_allocation_kwargs(slot),
     )
     if _app_launch_agent:
         # An app-owned kiro-cli turn asks kiro-cli for the app's launch copy;
@@ -1335,9 +1346,6 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     if is_new:
         _notice_steer_upgrade(state, slot, client)
         await _notice_seed_declined(state, slot, client)
-        await _notice_inherited_conductor_skills(
-            state, slot, client, kiro_agent or slot.agent or ""
-        )
     # A member DM's first turn carries the four-layer member section as
     # session-start context. Record that it is at stake HERE — the moment
     # the session client exists — not at the context build: every early

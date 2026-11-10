@@ -27,6 +27,7 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import retry_read_sharing_window
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.revocation_gen import (
     bump_revocation_gen,
@@ -67,11 +68,17 @@ class RevokedNonceStore:
     def __init__(self, state_path: Path | None = None) -> None:
         self._lock = threading.Lock()
         self._revoked: dict[str, float] = {}  # nonce -> session_exp (eviction floor)
+        # True while the file exists but could not be read (e.g. a Windows handle without
+        # read sharing). Cookies fail closed and _persist refuses until a re-read works.
         self._state_path = state_path
-        self._load()
+        self._unreadable = not self._load()
 
-    def revoke(self, nonce: str, session_exp: float) -> None:
-        """Record *nonce* as revoked until *session_exp*, evicting expired entries."""
+    def revoke(self, nonce: str, session_exp: float) -> bool:
+        """Record *nonce* as revoked until *session_exp*, evicting expired entries.
+
+        Returns False when the file could not be read, so the record is kept in memory only
+        (the next write after a successful re-read stores it). Callers run it off the loop.
+        """
         now = time.time()
         with self._lock:
             self._revoked[nonce] = session_exp
@@ -79,7 +86,10 @@ class RevokedNonceStore:
             expired = [n for n, exp in self._revoked.items() if exp < now]
             for n in expired:
                 self._revoked.pop(n, None)
+        if not self.readable():
+            return False
         self._persist()
+        return True
 
     def is_revoked(self, nonce: str) -> bool:
         """Return True if *nonce* is on the denylist and not yet past its floor."""
@@ -101,14 +111,25 @@ class RevokedNonceStore:
             self._revoked.clear()
         self._persist()
 
-    def _load(self) -> None:
+    def _load(self) -> bool:
+        """Load the denylist; ``False`` when the file is there but could not be read."""
         if self._state_path is None or not self._state_path.exists():
-            return
+            return True
+        path = self._state_path
         try:
-            data = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            text = retry_read_sharing_window(lambda: path.read_text(encoding="utf-8"), path)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            # The revocations are still on disk; reading them as none would let a logged-out
+            # cookie back in, and the next logout would write the empty set over the file.
+            logger.warning("could not read revoked-nonce store; failing closed", exc_info=True)
+            return False
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
             logger.warning("could not read revoked-nonce store; starting empty", exc_info=True)
-            return
+            return True
         now = time.time()
         with self._lock:
             for entry in data.get("revoked_nonces", []):
@@ -119,9 +140,23 @@ class RevokedNonceStore:
                         continue
                     if exp >= now:  # skip already-expired records on load
                         self._revoked[str(entry["nonce"])] = exp
+        return True
+
+    def readable(self) -> bool:
+        """False while the file is there but could not be read; re-tries the read first.
+
+        Reads only, never writes, so the cookie check can call it on the event loop.
+        Entries recorded meanwhile stay in memory and go out with the next ``revoke``.
+        """
+        # The mark is cleared only after the records are in memory, so a concurrent caller
+        # never sees a half-loaded denylist as trustworthy. Two concurrent re-reads merge the
+        # same records, which is harmless.
+        if self._unreadable and self._load():
+            self._unreadable = False
+        return not self._unreadable
 
     def _persist(self) -> None:
-        if self._state_path is None:
+        if self._state_path is None or self._unreadable:
             return
         with self._lock:
             data = {
@@ -150,7 +185,7 @@ class RevokedNonceStore:
                     # Security-sensitive state (revoked session nonces). A
                     # lockdown failure must be observable, matching token_secret.py.
                     logger.warning(
-                        "could not restrict revoked-nonce store %s to its owner; "
+                        "SECURITY: could not restrict revoked-nonce store %s to its owner; "
                         "file may be readable by other users",
                         tmp,
                         exc_info=True,
@@ -609,6 +644,10 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
         # all live cookies on restart; only the explicit denylist is.)
         if not token_nonce:
             return False, "", "missing nonce"
+        # Fail closed while the denylist file cannot be read, as for an unreadable
+        # revocation counter: an empty reading would let a logged-out cookie back in.
+        if not _get_revoked_store().readable():
+            return False, "", "session revocation state unavailable"
         if _get_revoked_store().is_revoked(token_nonce):
             return False, "", "session revoked"
     else:
@@ -864,20 +903,28 @@ def generate_app_secret() -> str:
 
 
 def validate_app_secret(app_name: str, provided_secret: str) -> bool:
-    """Validate an app secret against the stored secret on disk.
+    """Validate an app secret for an app the owner enabled through the gateway.
 
-    Reads ``~/.kiro/crew/apps/{app_name}/.app_secret`` and performs
-    constant-time comparison via :func:`hmac.compare_digest`.
-    Returns ``False`` if the file doesn't exist or doesn't match.
+    The authority is the owner-enable marker ``<crew-home>/host-exec-grants/{app_name}``
+    (``apps.host_exec_grants``): a sealed, top-level directory only the unsandboxed
+    gateway writes, on an owner-authenticated enable or first owner registration,
+    and every disable and uninstall revokes. Files under the agent-writable
+    ``apps/{app_name}/`` (``installed.json``, ``app.json``) are never enough. With the
+    marker present, the secret is compared in constant time against
+    ``apps/{app_name}/.app_secret``.
     """
+    # circular import: apps.manager imports write_app_secret from token_auth
+    from kiro_crew.apps.host_exec_grants import host_exec_granted
     from kiro_crew.config.loader import config_dir
 
+    if not provided_secret or not host_exec_granted(app_name):
+        return False
     secret_path = config_dir() / "apps" / app_name / ".app_secret"
     try:
         stored = secret_path.read_text(encoding="utf-8").strip()
     except (OSError, FileNotFoundError):
         return False
-    if not stored or not provided_secret:
+    if not stored:
         return False
     return _ct_eq(stored, provided_secret)
 
@@ -902,7 +949,16 @@ def write_app_secret(app_name: str, secret: str) -> None:
     # dashboard/server.py:_write_secret_file) so we don't leave a zero-byte
     # .app_secret under the default DACL that a later successful write
     # (which does not re-inherit on O_TRUNC) could then populate.
-    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # The file is the gateway's own: a link planted at its path is removed, never
+    # written through, and O_NOFOLLOW refuses one planted after that check, so the
+    # unsandboxed gateway cannot be aimed at another file (e.g. a sealed leaf).
+    if secret_path.is_symlink():
+        secret_path.unlink()
+    fd = os.open(
+        str(secret_path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
     try:
         # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
         # OSError, which would defeat the cleanup-and-reraise below for this
@@ -996,6 +1052,9 @@ def try_consume(token: str, session_exp: float = 0.0) -> bool:
 def revoke_access_cookie(token: str) -> bool:
     """Revoke a SINGLE access cookie by adding its nonce to the denylist.
 
+    Raises ``OSError`` when the denylist file could not be read, so the record
+    is in memory only and the caller must not report the logout as stored.
+
     Validates the token (signature + session_exp + gen) first — deny-by-default,
     so attacker-controlled junk is never written into the persisted store. Then
     extracts the per-token ``nonce`` and ``session_exp`` and records the nonce
@@ -1007,7 +1066,10 @@ def revoke_access_cookie(token: str) -> bool:
     global generation bump that would terminate every other active session.
     """
     valid, _uid, _reason = validate_token(token, use_session_exp=True)
-    if not valid:
+    # Both denylist answers come after every claim check, so the token is authentic. Record
+    # (and store) it again: an earlier logout may be held in memory only, after an unreadable
+    # file, and must not be reported as done until it is on disk.
+    if not valid and _reason not in ("session revocation state unavailable", "session revoked"):
         return False
     try:
         data = json.loads(_b64url_decode(token.split(".")[0]))
@@ -1022,7 +1084,9 @@ def revoke_access_cookie(token: str) -> bool:
         return False
     if session_exp <= time.time():
         return False
-    _get_revoked_store().revoke(nonce, session_exp)
+    if not _get_revoked_store().revoke(nonce, session_exp):
+        # Held in memory only: a restart before the file reads again would forget it.
+        raise OSError("revoked-nonce store could not be read; the logout was not stored")
     return True
 
 

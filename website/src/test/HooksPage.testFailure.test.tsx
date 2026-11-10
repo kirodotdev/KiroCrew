@@ -115,23 +115,31 @@ describe('Hooks page — inline test-failure state', () => {
     })
   })
 
-  it('allows only one hook test request at a time', async () => {
+  it('allows only one hook test request at a time, and keeps focus on Test while it runs', async () => {
     let resolveTest!: (value: { result: { exit_code: number; duration_ms: number } }) => void
     testHook.mockImplementationOnce(() => new Promise(resolve => { resolveTest = resolve }))
     renderPage()
 
     const testBtn = await screen.findByRole('button', { name: /^test$/i })
+    testBtn.focus()
     act(() => {
       fireEvent.click(testBtn)
       fireEvent.click(testBtn)
     })
 
     await waitFor(() => expect(testHook).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(testBtn).toBeDisabled())
+    // `aria-disabled`, not `disabled`: a disabled button drops the focus that
+    // started the test to <body>.
+    await waitFor(() => expect(testBtn).toHaveAttribute('aria-disabled', 'true'))
+    expect(testBtn).toHaveAttribute('aria-busy', 'true')
+    expect(testBtn).not.toBeDisabled()
+    expect(testBtn).toHaveFocus()
+    fireEvent.click(testBtn)
+    expect(testHook).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       resolveTest({ result: { exit_code: 0, duration_ms: 5 } })
     })
-    await waitFor(() => expect(testBtn).not.toBeDisabled())
+    await waitFor(() => expect(testBtn).toHaveAttribute('aria-disabled', 'false'))
   })
 })
