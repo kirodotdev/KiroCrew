@@ -225,10 +225,13 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'DecisionsPointPanel.tsx': DEVELOPER_PREVIEWS,
   'AboutPanel.tsx': 'about',
   // AboutPanel.tsx's owners (the in-app update step-up and request card; a gateway
-  // install's Updates card body; the desktop app's Restart gateway row). Mapped
+  // install's Updates card body; the desktop app's Restart gateway row; the two
+  // auto-update switches; the upcoming update notice). Mapped
   // with it so a control any of them gains stays indexed on the About tab.
   'AboutPanelUpdateFlow.tsx': 'about',
   'AboutPanelGatewayUpdate.tsx': 'about',
+  'AboutPanelUpdateSwitches.tsx': 'about',
+  'AboutPanelUpcomingUpdate.tsx': 'about',
   'DesktopGatewayRestartRow.tsx': 'about',
   'SttSettings.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also

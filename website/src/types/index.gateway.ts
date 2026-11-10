@@ -65,6 +65,21 @@ export interface StatusData {
    */
   update_channel?: string
   /**
+   * The advance notice of the next update, shown inline under About > Updates.
+   * `announced` is a published notice for a version the feed does not offer
+   * yet. `date` is `YYYY-MM-DD` or "" when unknown, `highlights` holds at most
+   * three lines taken from that version's notes, and `notes_url` is an `https://`
+   * link or "". `null` when there is no notice. Display only; optional because an
+   * older gateway does not send it.
+   */
+  update_upcoming?: {
+    state: 'announced'
+    version: string
+    date: string
+    highlights: string[]
+    notes_url: string
+  } | null
+  /**
    * Is the running build ahead of everything `update_channel` publishes? True
    * means that lane has never shipped these bytes, so the install is not on it
    * and only re-running the installer moves it — the state a channel switch
