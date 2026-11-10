@@ -136,7 +136,7 @@ _DURABLE_QUEUE_KEYS: tuple[str, ...] = (
 
 
 def _is_durable_queue_entry(item: Any) -> bool:
-    """True when *item* is a plain user prompt a restart may hand back.
+    """True when *item* is a queued prompt a restart may hand back.
 
     The queue holds two populations and only one of them survives its process.
     A plain user prompt is the user's own words, waiting for the running turn
@@ -154,7 +154,17 @@ def _is_durable_queue_entry(item: Any) -> bool:
     - an entry carrying a ``kind`` is an injection whose producer is gone: a
       cron notification, a subagent completion, a plan approval. Its content
       names an event, and a restart is not that event happening again.
+
+    One kind is the exception: a heartbeat prompt (``HEARTBEAT_PROMPT_KIND``)
+    carries a finished task's report, which nothing else delivers into this
+    chat, so it is kept as the plain prompt it would be without the kind. The
+    writer emits no kind (:data:`_DURABLE_QUEUE_KEYS`) and the reader restores
+    none (:func:`sanitize_restored_queue`), so the restored entry is that plain
+    prompt: what a heartbeat prompt queued with no kind restores as.
     """
+    # circular import: chat_utils_injected_rows imports this module.
+    from kiro_crew.dashboard.chat_utils_injected_rows import HEARTBEAT_PROMPT_KIND
+
     if not isinstance(item, dict):
         return False
     content = item.get("content")
@@ -164,7 +174,8 @@ def _is_durable_queue_entry(item: Any) -> bool:
         return False
     if item.get("payload"):
         return False
-    if item.get("kind"):
+    kind = item.get("kind")
+    if kind and kind != HEARTBEAT_PROMPT_KIND:
         return False
     return True
 

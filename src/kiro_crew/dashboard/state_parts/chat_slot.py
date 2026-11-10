@@ -1128,6 +1128,13 @@ class _ChatSlot:
         # An Ultra Mode "Pause all" holds this session: queue, never start.
         from kiro_crew import crew_pause
 
+        # circular import: chat_utils_injected_rows imports through state.
+        from kiro_crew.dashboard.chat_utils_injected_rows import GATEWAY_PROMPT_INJECT_KINDS
+
+        # Checked before either arm, so an unknown kind fails the same way
+        # whether the slot is idle or busy.
+        if gateway_prompt_kind and gateway_prompt_kind not in GATEWAY_PROMPT_INJECT_KINDS:
+            raise ValueError(f"unknown gateway prompt kind: {gateway_prompt_kind!r}")
         if self.running or crew_pause.holds_slot(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
@@ -1165,9 +1172,6 @@ class _ChatSlot:
             start_queue_persist(state, self)
             return False
         if gateway_prompt_kind:
-            # circular import, as above.
-            from kiro_crew.dashboard.chat_utils_injected_rows import GATEWAY_PROMPT_INJECT_KINDS
-
             self.append(
                 "inject",
                 prompt,

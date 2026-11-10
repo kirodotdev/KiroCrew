@@ -232,6 +232,10 @@ export const selectContinuable = (state: RootState, slot?: string | null): boole
       if ((m.meta as { restored?: boolean } | undefined)?.restored && selectTurnInterrupted(state, key)) continue
       return false
     }
+    // A heartbeat prompt delivered to an unused chat is the only request there,
+    // so a first turn that fails to start stays resumable from it. Mirrors
+    // `_has_conversation` (`src/kiro_crew/dashboard/chat_handlers.py`).
+    if (m.role === 'inject' && m.content && (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'heartbeat') return true
     if (CONTINUE_SCAN_SKIP.has(m.role)) continue
     if ((m.role === 'user' || m.role === 'assistant') && m.content) {
       // System notices (compaction, session reload) are assistant-role status

@@ -69,3 +69,48 @@ async def test_the_heartbeat_prompt_is_an_inject_row_on_both_paths(tmp_path, bus
 
     rows = [m for m in slot.messages if m.get("content") == PROMPT]
     assert [(r["role"], r["meta"]["injectKind"]) for r in rows] == [("inject", "heartbeat")]
+
+
+@pytest.mark.parametrize("busy", [False, True], ids=["idle", "queued"])
+def test_an_unknown_gateway_prompt_kind_is_refused_on_both_paths(tmp_path, busy):
+    state, slot = _state(tmp_path), _slot("chat-0")
+    slot._turn_admission_reserved = busy
+
+    with pytest.raises(ValueError, match="unknown gateway prompt kind"):
+        slot.enqueue_or_run_prompt(PROMPT, _no_turn, state, gateway_prompt_kind="nope")
+    assert slot._queue == [] and slot.messages == []
+
+
+@pytest.mark.asyncio
+async def test_a_queued_heartbeat_prompt_survives_a_restart(tmp_path):
+    """A heartbeat prompt queued behind a running turn is written with the slot's
+    durable queue and handed back by the restore, as a plain kindless prompt queued
+    on a busy slot is: a restart before it drains must not lose the task's report.
+    The restore never trusts a kind read from disk, so the restored entry is that
+    plain prompt."""
+    import json
+
+    from kiro_crew.dashboard.slot_queue_repository import sanitize_restored_queue
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    state, slot = _state(tmp_path), _slot("chat-0")
+    state.broadcast_ws = MagicMock()
+    state.notify = MagicMock()
+    state.push_slots_update = MagicMock()
+    slot._turn_admission_reserved = True
+    orch = GatewayOrchestrator.__new__(GatewayOrchestrator)
+    orch.dashboard_state = state
+    orch.slack = None
+    orch._owner_id = None
+    with (
+        patch.object(state, "resolve_slot", return_value=slot),
+        patch.object(chat, "_run_chat", MagicMock(side_effect=_no_turn)),
+    ):
+        await orch._deliver_result(TITLE, "CR check", RESULT, "prompt:dashboard:chat-0")
+
+    [entry] = slot._queue
+    assert entry["kind"] == "heartbeat_prompt"
+    on_disk = json.loads(json.dumps(slot.durable_queue_entries()))
+    assert [e["content"] for e in on_disk] == [PROMPT]
+    [restored] = sanitize_restored_queue(on_disk)
+    assert (restored["content"], restored["kind"]) == (PROMPT, "")
