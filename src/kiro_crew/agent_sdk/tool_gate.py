@@ -262,6 +262,13 @@ ADAPTER_EXPOSED_CREDENTIAL_LEAVES: dict = {
     ACP_BACKEND_CODEX: (".aws/config",),
 }
 
+#: Re-exposed READ-ONLY for EVERY enforced harness, home-relative, beside the table
+#: above: the public host keys the launcher's ``GIT_SSH_COMMAND`` names as
+#: ``UserKnownHostsFile``. Without them ssh cannot verify a host under the ``~/.ssh``
+#: mask, even with the ssh-agent forward consented. The strict tier keeps the same
+#: file inside its own ``~/.ssh`` mask; private keys and ``config`` stay hidden.
+ADAPTER_EXPOSED_HOST_TRUST_LEAVES = (".ssh/known_hosts",)
+
 
 class Verdict(str, Enum):
     """Whether a harness's tool decisions reach Kiro Crew's gate.
@@ -322,11 +329,12 @@ def adapter_hidden_credential_dirs(backend: str) -> tuple:
     file tools from each leaf, so the controls cover different readers rather than
     cancelling each other.
 
-    ``.ssh`` arrives through the floor and it has a cost: git-over-SSH inside such
-    a session stops working, because the private key is unreadable to the child.
-    That is accepted rather than worked around -- leaving private keys readable would
-    not close what this exists to close, and a harness landing new has no
-    established workflow to break.
+    ``.ssh`` arrives through the floor and it has a cost: the private key is
+    unreadable to the child, so git-over-SSH works only through the ssh-agent forward
+    the operator consents to. That is accepted rather than worked around -- leaving
+    private keys readable would not close what this exists to close. ``known_hosts``
+    comes back read-only through :func:`adapter_expose_files`, so a forwarded agent
+    can still verify the host.
 
     Empty for a harness this core does not enforce, so the first-class path and
     every unenforced harness keep byte-identical sandbox arguments. Returns
@@ -393,11 +401,13 @@ def adapter_expose_files(backend: str, hidden: tuple) -> tuple:
     """Absolute files to re-expose READ-ONLY inside *backend*'s masked dirs.
 
     The companion to :func:`adapter_hidden_credential_dirs`: that mask hides a
-    whole credential directory, and this names the one file inside it the
-    adapter must still read to authenticate. Both sandbox backends carry the
-    primitive -- the Linux launcher restores a 0444 copy into the empty bind
-    mount, the Seatbelt profile carves a ``require-not (literal ...)`` out of
-    the subpath deny -- so the posture is the same on every platform:
+    whole credential directory, and this names the files inside it the child
+    must still read: the one the adapter authenticates with, and
+    ``~/.ssh/known_hosts`` (:data:`ADAPTER_EXPOSED_HOST_TRUST_LEAVES`) for every
+    enforced harness. Both sandbox backends carry the primitive -- the Linux
+    launcher restores a 0444 copy into the empty bind mount, the Seatbelt profile
+    carves a ``require-not (literal ...)`` out of the subpath deny -- so the
+    posture is the same on every platform:
     ``~/.aws/config`` readable, ``~/.aws/credentials`` and the SSO cache not.
 
     *hidden* is the mask :func:`adapter_hidden_credential_dirs` already resolved
@@ -423,7 +433,10 @@ def adapter_expose_files(backend: str, hidden: tuple) -> tuple:
     # exposes a file silently.
     home = os.path.expanduser("~")
     exposed = []
-    for leaf in ADAPTER_EXPOSED_CREDENTIAL_LEAVES.get(backend, ()):
+    for leaf in (
+        *ADAPTER_EXPOSED_CREDENTIAL_LEAVES.get(backend, ()),
+        *ADAPTER_EXPOSED_HOST_TRUST_LEAVES,
+    ):
         full = os.path.join(home, *PurePosixPath(leaf).parts)
         if _sits_under_any(full, hidden):
             exposed.append(full)

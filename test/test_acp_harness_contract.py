@@ -1357,6 +1357,20 @@ def test_an_enforced_host_may_not_spawn_without_a_mask():
         )
 
 
+def test_every_enforced_host_module_calls_the_re_exposure_seam():
+    """An enforced host that never calls ``adapter_expose_files`` leaves ``known_hosts`` hidden."""
+    from kiro_crew import acp_tool_gate
+    from kiro_crew.acp.harness import _HARNESSES, _PROCESS_ADAPTERS
+    from kiro_crew.acp_backends import ACP_BACKEND_ROUTING
+
+    hosts = {**_HARNESSES, **_PROCESS_ADAPTERS}
+    enforced = {b for b in ACP_BACKEND_ROUTING if acp_tool_gate.is_enforced(b)}
+    assert enforced <= set(hosts), "every enforced backend has a launch class to read"
+    for backend in sorted(enforced):
+        source = inspect.getsource(inspect.getmodule(hosts[backend]))
+        assert "adapter_expose_files(" in source, backend
+
+
 # ── Seam 1c: the spawn sees the sandbox tier ──
 
 
