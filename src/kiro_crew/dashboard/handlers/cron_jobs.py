@@ -1214,6 +1214,12 @@ async def api_cron_enable(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled", True)
+    # Only a real bool, as on create: the store keeps the raw value, so a
+    # string "false" is truthy and the job would keep running behind an ok.
+    if not isinstance(enabled, bool):
+        return web.json_response(
+            {"error": "enabled must be a boolean", "code": "invalid_enabled"}, status=400
+        )
     try:
         ok = await state.crons.enable_job_async(job_id, enabled=enabled)
     except CronStoreBusy:
