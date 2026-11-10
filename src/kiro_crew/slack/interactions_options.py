@@ -169,7 +169,9 @@ async def _shared_answer_refused(
     whatever Kiro Crew's ``interpret_commands`` says, so such an answer stays the
     owner's. Refused here, not later in dispatch, so the card stays answerable.
     """
-    if not shared_command_refused(user_id, text):
+    # A label is the model's: only its leading "/" is judged (modifiers never run
+    # from a card answer, ``interpret_commands=False``).
+    if not shared_command_refused(user_id, text, modifiers=False):
         return False
     sel().log_tool_invocation(
         session_key=thread_ts,

@@ -235,7 +235,8 @@ an explicit confirm.
   slash command; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
   keywords (the agent's own schedule tools are not narrowed, see below); Slack
   settings and the manifest; and code channels (a shared
-  user's messages and card answers in one are refused, quietly, and they cannot
+  user's messages and card answers in one are refused, quietly in a bound channel
+  and with a private "not authorized" note in one not yet bound, and they cannot
   open one). Other buttons answer a shared user with "Only the bot owner can do
   that."
 - **Changes apply to the next event.** Removing someone, or turning the switch

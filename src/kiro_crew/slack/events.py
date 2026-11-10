@@ -1677,7 +1677,7 @@ async def _route_message(
                     spool_attachments=_spool_attachments,
                     spool_voice_memos=_spool_voice_memos,
                     had_voice_input=_had_voice_input,
-                    **_queue_tags(sender_id, channel),
+                    **_queue_tags(sender_id, channel, shared=_shared_sender),
                 ),
             )
         )

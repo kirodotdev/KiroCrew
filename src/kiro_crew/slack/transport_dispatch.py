@@ -505,7 +505,8 @@ async def handle_message_transport(
     # auth recheck + bang fall-through) instead of spawning a fresh session.
     # A shared user (slack.shared_access) sends no harness `/` command and no
     # privacy modifier; refused before the linked-thread hand-off, as on native.
-    if shared_command_refused(user_id, text):
+    # Judged on what the user typed, not the ingested text (see handle_message).
+    if shared_command_refused(user_id, inbound_text):
         sel().log_api_access(
             caller=user_id,
             operation="slack.owner_command",

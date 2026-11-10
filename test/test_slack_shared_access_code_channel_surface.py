@@ -179,6 +179,84 @@ def test_every_spelling_of_a_code_channel_session_is_refused(env: Any, spelling:
     assert shared_user_refused_for_slot("dashboard:chat-other", "") is False
 
 
+def test_a_quarantined_code_channel_stays_owner_only(env: Any) -> None:
+    # A binding row that does not read back whole (here a number for its title) is
+    # quarantined: no live binding and the store is not "unreadable". Its channel and
+    # its session still refuse a shared user.
+    import json
+
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_in
+    from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+    row = {"channel_id": CH, "team_id": "T1", "session_key": SLOT, "anchor_ts": "1.2", "title": 7}
+    env.store.path.write_text(json.dumps({"bindings": {CH: row}}), encoding="utf-8")
+    loaded = CodeChannelStore(env.store.path)
+    loaded.load()
+    set_store(loaded)
+    assert loaded.is_quarantined(CH) and loaded.get_binding(CH) is None
+    assert loaded.unreadable is False
+    assert shared_user_refused_in(CH) is True
+    assert shared_user_refused_for_slot(SLOT, "") is True
+    assert shared_user_refused_for_slot(f"dashboard:{SLOT}", "") is True
+    assert shared_user_refused_for_slot("dashboard:chat-other", "") is False
+
+
+def test_a_quarantined_row_with_a_damaged_session_key_still_fences_its_session(
+    env: Any,
+) -> None:
+    # The row's session_key does not read back: its session is told by its anchor's
+    # live Slack link, and a row naming neither fences every linked session.
+    import json
+    from types import SimpleNamespace
+
+    from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+    def _load(row: dict[str, Any]) -> None:
+        env.store.path.write_text(json.dumps({"bindings": {CH: row}}), encoding="utf-8")
+        loaded = CodeChannelStore(env.store.path)
+        loaded.load()
+        set_store(loaded)
+        assert loaded.is_quarantined(CH)
+
+    env.state.linked["1.2"] = SimpleNamespace(key=SLOT, running=True)
+    _load({"channel_id": CH, "team_id": "T1", "session_key": 7, "anchor_ts": "1.2"})
+    assert shared_user_refused_for_slot(SLOT, "") is True
+    assert shared_user_refused_for_slot(f"dashboard:{SLOT}", "") is True
+    assert shared_user_refused_for_slot("dashboard:chat-other", "1.2") is True
+    assert shared_user_refused_for_slot("dashboard:chat-other", "") is False
+    _load({"channel_id": CH, "team_id": "T1", "anchor_ts": 7})
+    assert shared_user_refused_for_slot("dashboard:chat-other", "") is True
+
+
+def test_a_quarantined_revoked_row_fences_only_its_own_anchor(env: Any) -> None:
+    # A revoked row names no session: a damaged one fences its channel and its anchor
+    # thread, never every shared user's session everywhere.
+    import json
+
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_in
+    from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
+
+    row = {"at": "not-a-time", "anchor_ts": "1.2"}
+    env.store.path.write_text(json.dumps({"revoked": {CH: row}}), encoding="utf-8")
+    loaded = CodeChannelStore(env.store.path)
+    loaded.load()
+    set_store(loaded)
+    assert loaded.is_quarantined(CH)
+    assert shared_user_refused_in(CH) is True
+    assert shared_user_refused_for_slot("dashboard:chat-other", "1.2") is True
+    assert shared_user_refused_for_slot("dashboard:chat-other", "") is False
+
+
+@pytest.mark.parametrize("spelling", ["chat-worker1", "dashboard:chat-worker1"])
+def test_a_worker_a_code_channels_session_started_is_refused(env: Any, spelling: str) -> None:
+    # A helper agent the channel's conductor started is that channel's work: a
+    # thread the owner links to the worker's tab is refused to a shared user too.
+    _bind(env, anchor="100.000001")
+    env.store.record_worker("chat-worker1", SLOT)
+    assert shared_user_refused_for_slot(spelling, "") is True
+    assert shared_user_refused_for_slot("dashboard:chat-other", "") is False
+
+
 def test_a_refused_answer_to_a_code_channel_session_leaves_the_card_answerable(
     env: Any,
 ) -> None:

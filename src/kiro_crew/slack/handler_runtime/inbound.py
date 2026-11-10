@@ -163,6 +163,11 @@ async def maybe_apply_privacy_modifiers(
     Ordering (temporary, then incognito) and the early return as soon as nothing
     remains match the shipped behaviour.
     """
+    if is_shared_listed(user_id):
+        # The modifiers are the owner's (slack.shared_access): a shared user's typed
+        # one is refused upstream, and one inside an attachment or a transcript is
+        # prompt content, never a mode change.
+        return text, cmd_text, False
     for mode, pattern in (
         (privacy_mode.MODE_TEMPORARY, _TEMPORARY_TOKEN_RE),
         (privacy_mode.MODE_INCOGNITO, _INCOGNITO_TOKEN_RE),

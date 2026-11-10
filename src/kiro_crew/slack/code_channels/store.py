@@ -693,6 +693,28 @@ class CodeChannelStore:
         }
         return frozenset(current | set(self._retired) | named)
 
+    def quarantined_identities(self) -> list[tuple[str | None, str]]:
+        """``(session_key, anchor_ts)`` of each binding or revoked row that did not read
+        back whole. A revoked row names no session, so its key is ``None``.
+
+        A field that is missing or not a string reads as ``""``, so a caller that
+        must keep that channel's session fenced can tell an unrecoverable identity.
+        """
+        self._read()
+
+        def _field(raw: Any, name: str) -> str:
+            value = raw.get(name) if isinstance(raw, dict) else None
+            return value if isinstance(value, str) else ""
+
+        bad_bindings = [
+            (_field(raw, "session_key"), _field(raw, "anchor_ts"))
+            for raw in self._quarantined.values()
+        ]
+        bad_revoked = [
+            (None, _field(raw, "anchor_ts")) for raw in self._quarantined_revoked.values()
+        ]
+        return [*bad_bindings, *bad_revoked]
+
     def worker_conductor(self, worker_key: str) -> str:
         """The code-channel session that created *worker_key*, ``""`` when none.
 

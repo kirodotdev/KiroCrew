@@ -64,6 +64,9 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
 
     # Find the active session in this channel/thread
     thread_ts = payload.get("message", {}).get("thread_ts") or msg_ts
+    if await _shared_stop_refused(user_id, thread_ts, payload, channel):
+        await ack_button(payload, channel, msg_ts)
+        return
     has_session = _orch.sessions.has_session(thread_ts)
     # READ, not popped: removed below only once the cancel went through.
     active_task = _orch._session_tasks.get(thread_ts)
@@ -248,6 +251,8 @@ async def _handle_stop_kill_now(
         return
     session_key = action.get("value", "")
     if not session_key:
+        return
+    if await _shared_stop_refused(user_id, session_key, payload, channel):
         return
 
     response_url = payload.get("response_url", "")
@@ -569,6 +574,16 @@ async def _outside_code_channel(channel: str) -> bool:
     return not await shared_user_refused_unbound(getattr(_orch, "slack", None), channel)
 
 
+async def _shared_stop_refused(user_id: str, session_key: str, payload: dict, channel: str) -> bool:
+    """A shared user's Stop button naming a code channel's session, from any channel:
+    refused and audited (code channels stay the owner's)."""
+    from kiro_crew.slack.handler_runtime.inbound import shared_user_refused_for_session
+
+    message = payload.get("message", {}) or {}
+    thread_ts = str(message.get("thread_ts") or message.get("ts") or "")
+    return await shared_user_refused_for_session(user_id, session_key, thread_ts, channel)
+
+
 async def _handle_inline_stop(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
@@ -601,6 +616,8 @@ async def _handle_inline_stop(
             source="slack",
             resources=session_key,
         )
+        return
+    if await _shared_stop_refused(user_id, session_key, payload, channel):
         return
 
     sel().log_api_access(

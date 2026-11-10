@@ -37,6 +37,7 @@ from kiro_crew.slack.handler import (
     shared_user_refused_for_session,
 )
 from kiro_crew.slack.interactions_context import _orch, register_view_handler
+from kiro_crew.slack.shared_access import SHARED_OWNER_ONLY_TEXT, shared_command_refused
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger("kiro_crew.slack.interactions")
@@ -566,6 +567,23 @@ async def _handle_review_revise_submit(payload: dict) -> None:
     )
     if not feedback:
         return
+    # A shared user's feedback is what they typed, judged before the draft is
+    # consumed; the draft in the synthesized prompt is the model's, never a command.
+    if is_shared_listed(caller) and shared_command_refused(caller, feedback):
+        sel().log_api_access(
+            caller=caller,
+            operation="slack.review_revise_submit",
+            outcome="denied",
+            source="slack",
+            error="shared user command",
+        )
+        try:
+            await _orch.slack.post_ephemeral(
+                channel, caller, SHARED_OWNER_ONLY_TEXT, thread_ts=thread_ts
+            )
+        except Exception:
+            logger.debug("review revise: refusal notice failed", exc_info=True)
+        return
 
     draft, _requester = _review_drafts_pop(draft_key)
     if not draft:
@@ -610,6 +628,7 @@ async def _handle_review_revise_submit(payload: dict) -> None:
                 task_runner=_orch.task_runner,
                 channel_activation=ACTIVATION_REVIEW,
                 start_priority=StartPriority.FOREGROUND,
+                spool_text=feedback if is_shared_listed(caller) else None,
             )
             logger.info("Review revision requested by %s in %s", caller, channel)
         except Exception:

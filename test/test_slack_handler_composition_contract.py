@@ -245,7 +245,7 @@ _SPLIT_HELPERS: dict[str, str] = {
 #: ``slot_key`` / ``future`` (a click settles the slot and future that asked),
 #: its ``channel_trust`` (a code channel's card adds "Trust this channel"), and
 #: ``requester`` on ``_request_approval`` (the one shared Slack user who may answer).
-_BASE_SHAPE_DIGEST = "bf10542b3308fe597a848771a94e29c97e3128464eb0da7fac163295698e8a6e"
+_BASE_SHAPE_DIGEST = "eb870bf59d698394491d22b12e39a4789da783a01b25829d9710144019900109"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in

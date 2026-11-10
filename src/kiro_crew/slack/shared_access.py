@@ -21,6 +21,7 @@ switch-off applies to the next event. A confirmation is kept for
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -59,6 +60,9 @@ class Verdict:
 #: Slack start. ``None`` until then, and in a process without Slack.
 _client: Any = None
 _verdicts: dict[str, Verdict] = {}
+#: Bumped by :func:`install`: an answer to a lookup begun before a reinstall (a
+#: reconnect, maybe to another workspace) is never cached.
+_generation = 0
 #: Every id admitted as a shared user in this process. Kept after a removal or a
 #: switch-off, so a message admitted just before either still meets the owner-only
 #: refusals (:func:`was_shared`). One entry per person ever shared.
@@ -70,8 +74,9 @@ clock: Callable[[], float] = time.monotonic
 
 def install(client: Any) -> None:
     """Remember the bot web client the gateway checks listed ids with."""
-    global _client
+    global _client, _generation
     _client = client
+    _generation += 1
     _verdicts.clear()
 
 
@@ -220,7 +225,14 @@ _SHARED_ACTION_PREFIXES = (
 )
 
 
-def shared_command_refused(user_id: str, text: str) -> bool:
+_FORWARDED_BODY = re.compile(
+    r"--- UNTRUSTED FORWARDED CONTENT BEGIN \[(\w+)\] ---.*?"
+    r"--- UNTRUSTED FORWARDED CONTENT END \[\1\] ---",
+    re.DOTALL,
+)
+
+
+def shared_command_refused(user_id: str, text: str, *, modifiers: bool = True) -> bool:
     """Whether *text* from a shared user is a command they may not send.
 
     A leading ``/`` (after any bot mention) reaches the agent harness's own command
@@ -228,6 +240,10 @@ def shared_command_refused(user_id: str, text: str) -> bool:
     ``/tools trust-all``), and a ``!temporary`` / ``!incognito`` modifier keeps the
     owner's own record from holding the turn. Both are the owner's. False for the
     owner and for anyone who is not a shared user.
+
+    The modifier scan reads only the person's own words: a forwarded message's
+    fenced body is someone else's, and with *modifiers* False (a card's
+    model-authored label) only the leading ``/`` is judged.
     """
     # circular import: slack.handler composes the access module that imports this one.
     from kiro_crew.messaging import privacy_mode
@@ -238,7 +254,9 @@ def shared_command_refused(user_id: str, text: str) -> bool:
     stripped = text.lstrip()
     if stripped.startswith("<@") and ">" in stripped:
         stripped = stripped[stripped.index(">") + 1 :].lstrip()
-    return stripped.startswith("/") or bool(privacy_mode.strip_tokens(text)[1])
+    if stripped.startswith("/"):
+        return True
+    return modifiers and bool(privacy_mode.strip_tokens(_FORWARDED_BODY.sub("", text))[1])
 
 
 def shared_action_permitted(action_id: str) -> bool:
@@ -272,11 +290,12 @@ async def lookup(client: Any, user_id: str, *, owner_id: str, refresh: bool = Fa
     cached = _verdicts.get(user_id)
     if not refresh and not _stale(cached) and cached is not None:
         return cached
+    generation = _generation
     verdict = await check(client, user_id, owner_id=owner_id)
     # Kept for the gate only when *client* is the bot the gateway runs on: an answer
     # from other credentials (a token saved but not yet live) names another
     # workspace, so the gateway checks the id with its own client instead.
-    if _same_bot(client):
+    if _same_bot(client) and generation == _generation:
         _verdicts[user_id] = verdict
     return verdict
 
@@ -302,7 +321,9 @@ async def prime(cfg: Any, user_id: str, *, owner_id: str) -> None:
         return
     if not _stale(_verdicts.get(user_id)):
         return
+    generation = _generation
     verdict = await check(_client, user_id, owner_id=owner_id)
-    # Re-read: the list may have changed while Slack answered.
-    if listed(cfg, user_id):
+    # Re-read: the list may have changed while Slack answered, and a reinstall
+    # (reconnect) since the lookup began voids its answer.
+    if listed(cfg, user_id) and generation == _generation:
         _verdicts[user_id] = verdict
