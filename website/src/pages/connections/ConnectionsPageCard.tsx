@@ -102,6 +102,8 @@ interface ConnectionCardProps {
   /** True on a connected row while chats run on KAS: a KAS chat signs in once
    *  when the user names the server, so the row says which word to type. */
   signInInChat?: boolean
+  /** Crew holds this sign-in: Test, which runs on Kiro CLI's grant, is not offered. */
+  crewHeld?: boolean
   busy?: ConnectionAction
   /** The provider NAME (not slug) of whichever card currently owns the single
    *  in-flight Connections Test, or undefined when none is running. Used only
@@ -287,6 +289,7 @@ function ConnectionCard({
   grantSharedUnconfirmed,
   backendLacksOauth = false,
   signInInChat = false,
+  crewHeld = false,
   busy,
   testingProvider,
   feedbackSlots,
@@ -912,12 +915,15 @@ function ConnectionCard({
                 and label name the Disconnect it qualifies, never the
                 pre-connect "Before you connect" (#26890): the card is already
                 connected. */}
-            <div className="flex items-center justify-between gap-2">
+            <div className={`flex items-center gap-2 ${crewHeld ? 'justify-end' : 'justify-between'}`}>
+              {/* Test runs on Kiro CLI's grant; a Crew-held sign-in has none, and
+                  the gateway refuses it (409 kas_sign_in_test_unsupported for a
+                  Connect on the KAS engine). */}
               {/* Its own test in flight marks it aria-disabled, not disabled:
                   a disabled button leaves the tab order and drops the focus of
                   the keyboard user who just pressed it. Another action or a
                   sibling's test still disables it outright. */}
-              <Btn
+              {!crewHeld && <Btn
                 onClick={() => { if (busy !== 'test') void onTest() }}
                 disabled={(!!busy && busy !== 'test') || !!testingProvider}
                 aria-disabled={busy === 'test' || undefined}
@@ -927,7 +933,7 @@ function ConnectionCard({
               >
                 {busy === 'test' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />}
                 {busy === 'test' ? t('pages.connectionsPage.testing') : t('pages.connectionsPage.test_connection')}
-              </Btn>
+              </Btn>}
               <div className="flex items-center gap-2">
                 {/* ONE tip for the row (connection-card-caveat-tip): the
                     shared-grant fact and the backend caveat merge into a

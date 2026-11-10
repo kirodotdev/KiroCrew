@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 GRANT_STORE_PARTS = ("kas", "mcp-grants")
 _KEY_PREFIX = "kiro.mcp"
 _TOKENS_KIND = "tokens"
+_CLIENT_KIND = "client"
 # The ASCII characters JavaScript's ``String.prototype.trim`` removes. Python's
 # ``str.strip()`` with no argument also removes \x1c-\x1f, which the engine keeps.
 _JS_TRIM_ASCII = " \t\n\v\f\r"
@@ -129,6 +130,16 @@ def kas_connection_hash(mcp_url: str) -> str:
 def kas_tokens_entry_name(mcp_url: str) -> str:
     """The vault entry name the engine stores this server's tokens under."""
     return f"{_KEY_PREFIX}.{kas_connection_hash(mcp_url)}.{_TOKENS_KIND}"
+
+
+def kas_saved_sign_in_names(mcp_url: str) -> tuple[str, str]:
+    """The vault entries one saved sign-in is: its ``tokens`` and its ``client``.
+
+    The two kinds the engine's store persists; a Disconnect removes both, as a
+    kiro-cli Disconnect removes its token and registration pair.
+    """
+    digest = kas_connection_hash(mcp_url)
+    return (f"{_KEY_PREFIX}.{digest}.{_TOKENS_KIND}", f"{_KEY_PREFIX}.{digest}.{_CLIENT_KIND}")
 
 
 def kas_grant_presence(mcp_url: str, *, store_root: Path | None = None) -> bool | None:
