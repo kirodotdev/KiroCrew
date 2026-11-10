@@ -54,8 +54,8 @@ export function useRailBadges(approvalCount: number) {
     setAppBadges(prev => prev.projects === approvalCount ? prev : { ...prev, projects: approvalCount })
   }, [approvalCount])
 
-  // Pending app-update count for the sidebar Discover badge — the SAME count
-  // the Discover Updates sub-tab shows, via the shared `countUpdatables`
+  // Pending app-update count for the sidebar Discover badge — the enabled
+  // rows of the Discover Updates list, via the shared `countUpdatables`
   // derivation. The registry read is an ACTIVE query on the shared
   // `registryQueryFn` boundary (one normalize path, so either observer may
   // fetch and both see the same shape): a passive cache read only ever fires
