@@ -681,6 +681,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_retries": ("value", "{}"),
     "_turn_timeout_hydrated": ("value", "True"),
     "_turn_user_sent": ("value", "False"),
+    "_turn_wrote_text": ("value", "False"),
     "_turns_started": ("value", "0"),
     "_unknown_row_fields_bytes": ("value", "0"),
     "_unstarted_generation": ("value", "-1"),

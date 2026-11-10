@@ -347,6 +347,7 @@ class _ChatSlot:
         "_turn_user_sent",
         "_turn_owner_sent",
         "_turn_agent_started",
+        "_turn_wrote_text",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -669,6 +670,9 @@ class _ChatSlot:
     #: The turn running now is one the agent started on its own between prompts
     #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
     _turn_agent_started: bool
+    #: The turn running now has streamed reply text (``chat_turn.stream_chunks``);
+    #: ``POST /api/session-directive`` reports it to the directive tool.
+    _turn_wrote_text: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
