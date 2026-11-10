@@ -120,7 +120,9 @@ _CREW_ALIAS_CHAIN_DEGRADE_LEAVES: frozenset[str] = frozenset(_MD_NOTEBOOK_RETIRE
 #:   repositories. Reachable from inside the sandbox rather than only by pre-planting: the
 #:   Notes backend is itself a sandboxed spawn holding a legitimate window on this leaf, so
 #:   one agent can create the second name and an ordinary session then reads the token.
-#: * ``ops_mission_control_secrets.json`` -- the app's credential store by name.
+#: * ``ops_mission_control_secrets.json`` -- the app's provider-token store at its retired
+#:   root name. The live store is an app-declared mask, which joins this set through
+#:   :func:`_hardlink_refused_leaves`; the root name stays for the restore reason below.
 #: * ``browser-cookies.txt``, ``playwright-storage-state.json`` and
 #:   ``playwright-extension-token`` -- browser session material: site cookies, the storage
 #:   state that carries them plus localStorage tokens, and the extension's bearer token.

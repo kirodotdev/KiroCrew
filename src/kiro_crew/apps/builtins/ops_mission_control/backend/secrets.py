@@ -12,12 +12,23 @@ ambient credential chain (profile / role / instance role). The app never accepts
 stores, or transmits an AWS access key — "IAM roles over keys" applied directly.
 
 **Third-party tokens live on the keystone floor.** They go in
-``<crew_home>/ops_mission_control_secrets.json``, whose filename is registered in
-``security._CREW_SECRET_LEAVES``. That places it on the shared read+write
-sensitive-path floor, so the AGENT'S OWN file tools and shell cannot read or write
-it — the same mechanism that makes the governance ceiling un-disableable. The
-dashboard PUT handler is the only writer and opens the path directly (it does not
-route through the agent gate), so the operator's Settings UI still works.
+``<crew_home>/apps/ops-mission-control/data/secrets/secrets.json``. The app's ``app.json``
+declares the ``secrets/`` directory in ``credentialMasks``, so every sandboxed process
+sees the whole directory masked (the lock and the temp a write stages beside the store
+included) and the agent's own file tools cannot read or write it either (the declaration
+feeds the tool gate too). The dashboard PUT handler is the only writer and opens the path
+directly (it does not route through the agent gate), so the operator's Settings UI still
+works. The adopted copy of the app (``kirocrew-app-ops-mission-control``) keeps its store at
+the same path under the same declaration.
+
+An install from before this layout kept the store at the data-home root,
+``<crew_home>/ops_mission_control_secrets.json``. Gateway startup moves it, and so does
+the first save or revoke, under the store's lock (:meth:`KeystoneFileBackend._migrate_legacy`),
+but only once no sandbox started by an earlier build is still running: such a sandbox
+masks the root name and not the new directory, so it would read the tokens where they
+land. Until the move, a lookup, a save and a revoke use the root file where it is. The
+core keeps that root name masked as a retired leaf, because a restored backup can bring
+the file back.
 
 Why not ``config.json``? Because Kiro Crew serves an app's ``data/config.json``
 over ``/api/apps/<name>/config`` **without session auth** — a documented behavior
@@ -35,25 +46,37 @@ See ``docs/system-specs/modules/ops-mission-control.md`` (secret storage).
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
 import re
+import stat
 from pathlib import Path
 from typing import Any, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import CorruptDocumentError
+from kiro_crew.apps.manager import app_data_dir
+from kiro_crew.atomic_write import atomic_write, fsync_dir, refuse_linked_parent
 from kiro_crew.config.loader import config_dir
 from kiro_crew.hidden_leaf_staging import publish_through_auth_store_staging
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
-#: Filename on the crew home. MUST stay in sync with the entry added to
-#: ``security._CREW_SECRET_LEAVES`` — the test suite asserts the two agree, so a
-#: rename cannot silently drop the keystone protection.
-SECRETS_FILENAME = "ops_mission_control_secrets.json"
+#: The app's name, which names its data directory.
+APP_NAME = "ops-mission-control"
+
+#: The directory in the app's data directory that holds the store, and the store's name in
+#: it. MUST stay in sync with the ``credentialMasks`` entry (``"secrets/"``) in ``app.json``,
+#: which masks the whole directory and puts it on the agent tool gate: the test suite
+#: asserts they agree, so a rename cannot silently drop the keystone protection.
+STORE_DIR = "secrets"
+SECRETS_FILENAME = "secrets.json"
+
+#: Where an earlier version kept the store: the data-home root. Read once, to move it.
+LEGACY_SECRETS_FILENAME = "ops_mission_control_secrets.json"
 
 #: Value returned to callers in place of a stored secret. Secrets are write-only
 #: over the API: the UI shows whether a field is set, never what it is.
@@ -110,7 +133,12 @@ _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 def secrets_path() -> Path:
     """Absolute path to the keystone secret file (honors ``KIROCREW_HOME``)."""
-    return config_dir() / SECRETS_FILENAME
+    return app_data_dir(APP_NAME) / STORE_DIR / SECRETS_FILENAME
+
+
+def legacy_secrets_path() -> Path:
+    """Where an earlier version kept the secret file, at the data-home root."""
+    return config_dir() / LEGACY_SECRETS_FILENAME
 
 
 def redact_tokens(text: str) -> str:
@@ -198,6 +226,103 @@ class KeystoneFileBackend:
     def _path(self) -> Path:
         return self._pinned_path if self._pinned_path is not None else secrets_path()
 
+    @property
+    def _store_path(self) -> Path:
+        """The file this store reads and rewrites now: the store, or the root store until moved.
+
+        Nothing here moves the store. A lookup runs on the gateway's event loop (the
+        provider catalog reads it synchronously), and the move takes two file locks and
+        two fsyncs, so the gateway moves it at startup (:func:`migrate_legacy_store`) and a
+        save or revoke tries first, off the loop. While the move is held back (see
+        :meth:`_migrate_legacy`) a save or revoke rewrites the root file in place, so a
+        token saved then is never hidden behind a new store that lacks the old ones.
+        """
+        path = self._path
+        if self._pinned_path is not None or os.path.lexists(path):
+            return path
+        legacy = legacy_secrets_path()
+        return legacy if os.path.lexists(legacy) else path
+
+    def _store_text(self) -> str:
+        """The text of the store a lookup reads; raises ``FileNotFoundError`` when none exists.
+
+        A lookup takes no lock, so a move can remove the root file between choosing it and
+        opening it. The store it moved into holds the same tokens, so the read goes there
+        instead of reporting every provider as unconfigured.
+        """
+        path = self._store_path
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            if path == self._path:
+                raise
+            return self._path.read_text(encoding="utf-8")
+
+    def _migrate_legacy(self) -> None:
+        """Move an earlier version's root store to :func:`secrets_path`, once, when safe.
+
+        Only for the default location: a pinned path has no earlier layout. Runs under
+        this store's lock and then the old store's own lock, so neither a concurrent save
+        nor a second migrator interleaves. The bytes are copied verbatim, so a store this
+        version cannot parse is moved as it is rather than dropped. The old file is
+        removed only after the new one is written, fsynced and its directory synced, so
+        a crash at any point leaves at least one complete copy. A store already at the
+        new path wins: an old file beside it (a restored backup) is left where it is,
+        masked by its retired name.
+
+        Held back, without an error, while a sandbox started by an earlier build may still
+        run (:func:`_older_sandboxes`): its masks cover the root name and not the new
+        directory, so it could read the tokens there. The store stays at the root, masked
+        by every build, and the next startup or save tries again.
+
+        Raises when the old store cannot be read or the new one cannot be published.
+        A save must not go ahead then: it would create a new store holding one token,
+        and the old store, never moved, would hold every other one out of sight.
+        """
+        if self._pinned_path is not None:
+            return
+        path = secrets_path()
+        legacy = legacy_secrets_path()
+        if os.path.lexists(path) or not os.path.lexists(legacy):
+            return
+        if _earlier_sandbox_may_run():
+            return
+        _refuse_linked_store()
+        with _SecretLock(path), _SecretLock(legacy):
+            if os.path.lexists(path):
+                return
+            try:
+                info = os.lstat(legacy)
+            except FileNotFoundError:
+                return
+            if stat.S_ISLNK(info.st_mode) or info.st_nlink > 1:
+                # The sandbox refuses a spawn while a second name reaches this file, and
+                # that check reads the root name. Moving the bytes into a new inode and
+                # removing the name would drop it and leave the other name unguarded, so
+                # the store stays where the check can see it, and an operator removes the
+                # extra name or link first.
+                logger.warning(
+                    "ops-mission-control: not moving the secret store: its root name is a "
+                    "link or has a second name"
+                )
+                return
+            try:
+                content = legacy.read_bytes()
+            except FileNotFoundError:
+                return
+            atomic_write(path, content, fsync=True, restrict_to_owner=True)
+            # The lock just created ``secrets/``, and ``app_data_dir`` any missing folder
+            # above it, so each entry down from the data home must be durable before the
+            # only other copy goes.
+            home = config_dir()
+            directory = path.parent
+            while True:
+                fsync_dir(directory)
+                if directory == home or directory.parent == directory:
+                    break
+                directory = directory.parent
+            legacy.unlink(missing_ok=True)
+
     @staticmethod
     def _coerce(raw: Any, *, strict: bool = False) -> dict[str, dict[str, str]]:
         """Normalize a parsed store to ``provider -> {field: value}``, all strings.
@@ -254,7 +379,7 @@ class KeystoneFileBackend:
         stops, and nothing else would prompt an operator to look.
         """
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = json.loads(self._store_text())
         except FileNotFoundError:
             return {}
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
@@ -286,14 +411,14 @@ class KeystoneFileBackend:
         caller that must tell "not configured" from "cannot tell" asks here.
         """
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = json.loads(self._store_text())
         except FileNotFoundError:
             return False
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             return True
         return not isinstance(raw, dict)
 
-    def _read_for_update(self) -> dict[str, dict[str, str]]:
+    def _read_for_update(self, path: Path) -> dict[str, dict[str, str]]:
         """The store a read-modify-write is allowed to publish over.
 
         ``put`` and ``delete`` rewrite the WHOLE file from what they read, so an
@@ -329,7 +454,7 @@ class KeystoneFileBackend:
         log actually renders.
         """
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except json.JSONDecodeError as exc:
@@ -353,9 +478,32 @@ class KeystoneFileBackend:
         raise CorruptDocumentError(corrupt_msg, "", 0)
 
     def _lock(self) -> "_SecretLock":
+        if self._pinned_path is None:
+            _refuse_linked_store()
         return _SecretLock(self._path)
 
-    def _write(self, data: dict[str, dict[str, str]]) -> None:
+    def _refuse_write_while_earlier_sandbox_reads(self, path: Path) -> Path:
+        """Where a write goes while a sandbox of an earlier build may read the new directory.
+
+        *path* is where the write would land. Anything but the new directory is returned as
+        it is. In the new directory: with no store yet the first one goes to the root and
+        the next startup or save moves it; with a store already there (planted by that
+        sandbox, or left by a downgrade and upgrade) the write is refused, so no token is
+        published where that sandbox can read it.
+        """
+        if self._pinned_path is not None or path != self._path:
+            return path
+        if not _earlier_sandbox_may_run():
+            return path
+        if os.path.lexists(path):
+            raise OSError(
+                errno.EBUSY,
+                "the secret store is not written while a session started by an earlier "
+                "build may read its directory; end that session and retry",
+            )
+        return legacy_secrets_path()
+
+    def _write(self, path: Path, data: dict[str, dict[str, str]]) -> None:
         payload = json.dumps(data, indent=2, sort_keys=True)
         # Fail-loud lockdown BEFORE any content lands: ``restrict_to_owner=True``
         # applies the owner-only DACL to the temp file before the payload
@@ -374,12 +522,16 @@ class KeystoneFileBackend:
         # already-locked-down store — every stored provider token — on one
         # transient lockdown failure.
         #
-        # Staged in the masked auth-store staging directory, not beside the
-        # store: this file is a hidden leaf masked by its exact name, so a
-        # sibling temp would hold every provider token at a name no sandbox
-        # mask covers for the length of the write, and a crash would leave it
-        # there.
-        publish_through_auth_store_staging(self._path, payload)
+        # The store sits in the masked ``secrets/`` directory, so the temp the write
+        # stages beside it is masked too. The root file, and a pinned path, are hidden
+        # leaves masked by their exact name: a sibling temp would hold every provider
+        # token at a name no sandbox mask covers for the length of the write, and a
+        # crash would leave it there, so those stage in the masked auth-store staging
+        # directory.
+        if self._pinned_path is None and path == self._path:
+            atomic_write(path, payload, restrict_to_owner=True)
+        else:
+            publish_through_auth_store_staging(path, payload)
 
     # -- SecretBackend -----------------------------------------------------
 
@@ -395,11 +547,16 @@ class KeystoneFileBackend:
         # The base is ``_read_for_update``, not ``_read``: the lock serializes
         # writers but says nothing about a read that FAILED, and this write
         # replaces the whole file. See that method for why one transient EACCES
-        # must abandon the save rather than publish an empty store over it.
+        # must abandon the save rather than publish an empty store over it. The move of an
+        # old root store runs first and unguarded, for the same reason (see
+        # ``_migrate_legacy``); when it is held back the save rewrites the root store in
+        # place.
+        self._migrate_legacy()
         with self._lock():
-            data = self._read_for_update()
+            path = self._refuse_write_while_earlier_sandbox_reads(self._store_path)
+            data = self._read_for_update(path)
             data.setdefault(provider_id, {})[field_name] = value
-            self._write(data)
+            self._write(path, data)
 
     def delete(self, provider_id: str) -> bool:
         # ``_read_for_update`` for the same reason as ``put``, plus one specific to
@@ -407,12 +564,63 @@ class KeystoneFileBackend:
         # absent, so this returned False and the audit logged ``not_found`` — telling
         # the operator there was nothing to revoke while the live token was still on
         # disk and still working. A raise is the honest answer.
+        #
+        # A root copy that stays beside a moved store (a move whose unlink failed, a restored
+        # backup) is a copy of the same tokens, and a downgrade or a removed new store reads
+        # it again, so a revoke removes the provider from it first, and refuses to report
+        # success when that update fails.
+        self._migrate_legacy()
         with self._lock():
-            data = self._read_for_update()
+            path = self._store_path
+            data = self._read_for_update(path)
+            removed = provider_id in data
+            target = self._refuse_write_while_earlier_sandbox_reads(path) if removed else path
+            # The root copy first: a fault there then leaves the credential visible in the
+            # active store, so the operator still sees it set and can retry the revoke.
+            if self._pinned_path is None and path != legacy_secrets_path():
+                removed = self._delete_from_root_copy(provider_id) or removed
+            if provider_id in data:
+                del data[provider_id]
+                self._write(target, data)
+        return removed
+
+    def _delete_from_root_copy(self, provider_id: str) -> bool:
+        """Remove *provider_id* from the old root store beside a moved one, if it is there.
+
+        Under the old store's own lock, after this store's (the order the move takes them).
+        What is there is left alone only when it is demonstrably no store: not a regular
+        file, not JSON, or not a JSON object, so no lookup can take a credential from it (the
+        data-home root is writable from a sandbox, and a planted name must not make every
+        revoke fail). A JSON object that holds the provider is rewritten without it, every
+        other entry kept as it was. A failure to take the lock, read the file or rewrite it
+        raises, so a revoke never reports success while a copy a lookup can read may still
+        hold the credential.
+        """
+        legacy = legacy_secrets_path()
+        if not os.path.lexists(legacy):
+            return False
+        with _SecretLock(legacy):
+            if not legacy.is_file():
+                data: Any = None
+            else:
+                try:
+                    # The raw object, not the strict reading: a lookup reads this copy
+                    # leniently, so a provider entry it can use is removed even when
+                    # another entry would not survive a strict cycle.
+                    data = json.loads(legacy.read_text(encoding="utf-8"))
+                except ValueError:
+                    data = None
+            if not isinstance(data, dict):
+                # A fixed literal: no content.
+                logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                    "ops-mission-control: leaving the file at the retired secret store name "
+                    "alone: it is not a store"
+                )
+                return False
             if provider_id not in data:
                 return False
             del data[provider_id]
-            self._write(data)
+            self._write(legacy, data)
         return True
 
     def configured_fields(self, provider_id: str) -> frozenset[str]:
@@ -421,6 +629,65 @@ class KeystoneFileBackend:
 
 
 _backend: SecretBackend = KeystoneFileBackend()
+
+
+def _refuse_linked_store() -> None:
+    """Refuse a link planted at the store or in its directory chain, before a mkdir follows it.
+
+    A sandbox of an earlier build does not mask ``data/``, so it could plant ``secrets`` as a
+    link to a directory it reads. The check runs before the lock creates anything.
+    """
+    path = secrets_path()
+    refuse_linked_parent(path)
+    if path.is_symlink():
+        raise OSError(errno.ELOOP, "the secret store is a link")
+
+
+def _earlier_sandbox_may_run() -> bool:
+    """Whether a sandbox started by an earlier build may still run, so tokens stay at the root.
+
+    True when one does or the process table cannot be read. Such a sandbox's masks do not
+    cover the app's ``secrets/`` directory, so nothing is moved or first written there
+    until it ends; the root file is masked by every build. The log line is a fixed literal
+    plus a pid.
+    """
+    older = _older_sandboxes()
+    if older is None or older:
+        logger.warning(
+            "ops-mission-control: the secret store stays at the data-home root: a sandbox "
+            "started by an earlier build may still run (%s), and its masks do not cover the "
+            "app's secrets directory. The move is retried at the next start and save",
+            "the process table could not be read" if older is None else f"pid {older[0]}",
+        )
+        return True
+    return False
+
+
+def _older_sandboxes() -> list[int] | None:
+    """Live sandboxes that mask the root store's name but not the new directory.
+
+    A sandbox started by a build before this layout masks ``ops_mission_control_secrets.json``
+    and nothing under ``apps/ops-mission-control/data/``, so it would read the tokens once
+    they move. ``None`` means the process table could not be read (see
+    :mod:`kiro_crew.older_sandboxes`).
+    """
+    # Deferred: the process-table helpers load only when a move is actually pending.
+    from kiro_crew.older_sandboxes import sandboxes_masking_only
+
+    return sandboxes_masking_only(
+        config_dir(), LEGACY_SECRETS_FILENAME, f"apps/{APP_NAME}/data/{STORE_DIR}"
+    )
+
+
+def migrate_legacy_store() -> None:
+    """Move an earlier version's root store into the app's data directory, if one is there.
+
+    Run once by the app's startup hook, in a worker thread, before the gateway serves a
+    request, so no lookup on the loop pays for the move. Held back, without an error,
+    while a sandbox of an earlier build runs. Raises like
+    :meth:`KeystoneFileBackend._migrate_legacy`.
+    """
+    KeystoneFileBackend()._migrate_legacy()
 
 
 def register_secret_backend(backend: SecretBackend) -> None:
