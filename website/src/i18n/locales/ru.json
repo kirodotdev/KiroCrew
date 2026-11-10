@@ -8276,6 +8276,8 @@
       "waiting_for_you_to_approve": "Ждём твоего подтверждения…",
       "continue_with_builder_id": "Продолжить с AWS Builder ID",
       "continue_with_company_sso": "Продолжить через SSO компании",
+      "builder_id_hint": "Бесплатный личный вход для разработчиков. Аккаунт AWS тебе не нужен.",
+      "company_sso_hint": "Для AWS IAM Identity Center. Используй URL портала доступа от твоей компании, даже если вход идёт через Okta или Microsoft Entra.",
       "sso_start_url_label": "URL входа твоей компании",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Вставь URL портала доступа AWS, который дала твоя компания.",

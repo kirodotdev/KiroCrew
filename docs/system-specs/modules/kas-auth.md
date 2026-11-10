@@ -608,7 +608,11 @@ engine instead ([aws-control.md](aws-control.md)).
   of the scrim + aside door; in that chrome the four provider choices are
   outlined and sit in a two-column grid, none accent-filled, because the detail's
   own primary button is "Use {{name}}", from
-  `components.kiroPrerequisiteGate.use_agent`) and adds a signed-in summary (provider,
+  `components.kiroPrerequisiteGate.use_agent`; in both chromes the AWS Builder ID
+  and Company SSO choices carry a one-line hint, the button's accessible
+  description, saying Builder ID is a free personal sign-in that needs no AWS
+  account and Company SSO is AWS IAM Identity Center, Okta or Microsoft Entra
+  behind the portal included) and adds a signed-in summary (provider,
   expiry, renewability -- never a token) with sign-out and sign-in-again. It is
   reachable from the chat error row an `AcpAuthRequired` turn produces
   (`chat_utils.AUTH_REQUIRED_KIND` → "Sign in to Kiro", navigating to

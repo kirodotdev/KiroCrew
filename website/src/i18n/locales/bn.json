@@ -7864,6 +7864,8 @@
       "waiting_for_you_to_approve": "আপনার অনুমোদনের অপেক্ষায়…",
       "continue_with_builder_id": "AWS Builder ID দিয়ে চালিয়ে যান",
       "continue_with_company_sso": "কোম্পানির SSO দিয়ে চালিয়ে যান",
+      "builder_id_hint": "ডেভেলপারদের জন্য একটি ফ্রি ব্যক্তিগত সাইন-ইন। তোমার AWS অ্যাকাউন্ট লাগবে না।",
+      "company_sso_hint": "AWS IAM Identity Center-এর জন্য। তোমার কোম্পানির দেওয়া অ্যাক্সেস পোর্টাল URL ব্যবহার করো, সেটা Okta বা Microsoft Entra দিয়ে সাইন ইন করালেও।",
       "sso_start_url_label": "কোম্পানির সাইন-ইন URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "আপনার কোম্পানির দেওয়া AWS অ্যাক্সেস পোর্টাল URL এখানে পেস্ট করুন।",

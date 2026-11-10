@@ -7658,6 +7658,8 @@
       "waiting_for_you_to_approve": "等待你批准…",
       "continue_with_builder_id": "使用 AWS Builder ID 继续",
       "continue_with_company_sso": "使用公司 SSO 继续",
+      "builder_id_hint": "面向开发者的免费个人登录方式，无需 AWS 账户。",
+      "company_sso_hint": "适用于 AWS IAM Identity Center。请使用公司提供给你的访问门户网址，即使它通过 Okta 或 Microsoft Entra 让你登录。",
       "sso_start_url_label": "公司登录网址",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "粘贴公司提供给你的 AWS 访问门户网址。",

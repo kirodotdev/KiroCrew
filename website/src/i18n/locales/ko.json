@@ -7658,6 +7658,8 @@
       "waiting_for_you_to_approve": "승인을 기다리고 있습니다…",
       "continue_with_builder_id": "AWS Builder ID로 계속",
       "continue_with_company_sso": "회사 SSO로 계속",
+      "builder_id_hint": "개발자를 위한 무료 개인 로그인입니다. AWS 계정이 필요하지 않습니다.",
+      "company_sso_hint": "AWS IAM Identity Center용입니다. Okta나 Microsoft Entra로 로그인하더라도 회사에서 제공한 액세스 포털 URL을 사용하세요.",
       "sso_start_url_label": "회사 로그인 URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "회사에서 제공한 AWS 액세스 포털 URL을 붙여넣으세요.",

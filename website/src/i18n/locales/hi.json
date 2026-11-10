@@ -7864,6 +7864,8 @@
       "waiting_for_you_to_approve": "मंज़ूरी का इंतज़ार है…",
       "continue_with_builder_id": "AWS Builder ID के साथ जारी रखो",
       "continue_with_company_sso": "कंपनी SSO के साथ जारी रखो",
+      "builder_id_hint": "डेवलपर्स के लिए एक मुफ़्त निजी साइन-इन। तुम्हें AWS अकाउंट की ज़रूरत नहीं है।",
+      "company_sso_hint": "AWS IAM Identity Center के लिए। अपनी कंपनी की दी हुई एक्सेस पोर्टल URL इस्तेमाल करो, भले ही वह तुम्हें Okta या Microsoft Entra से साइन इन कराए।",
       "sso_start_url_label": "कंपनी की साइन-इन URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "अपनी कंपनी की दी हुई AWS एक्सेस पोर्टल URL यहाँ पेस्ट करो।",
