@@ -8,6 +8,7 @@ live here, so every sibling can import this module and it imports none of them.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -135,11 +136,39 @@ class SourceRef:
         instances on one host would otherwise collide on the same issue key.
         Safe to include because :func:`_jira_ref` emits exactly one canonical
         URL per issue per instance -- it can never split one object in two.
+
+        GitHub resolves host, owner and repository names case-insensitively, so
+        ``Acme/Widgets/pull/1`` and ``acme/widgets/pull/1`` are one pull request.
+        Those members have their ASCII letters folded to lowercase here and
+        nowhere else: the ref keeps the spelling it was mentioned with, so its
+        URL and label still show that spelling. A GitLab project path is
+        case-sensitive and is not folded.
         """
+        folded = _CASE_FOLDED_IDENTITY_FIELDS.get(self.provider, frozenset())
         instance_context = self.url if self.provider == "jira" else ""
-        return tuple(getattr(self, f.name) for f in fields(self) if f.name != "url") + (
-            instance_context,
-        )
+        return tuple(
+            _ascii_lower(getattr(self, f.name)) if f.name in folded else getattr(self, f.name)
+            for f in fields(self)
+            if f.name != "url"
+        ) + (instance_context,)
+
+
+#: Per provider, the identity members that provider compares case-insensitively.
+_CASE_FOLDED_IDENTITY_FIELDS: dict[str, frozenset[str]] = {
+    "github": frozenset({"host", "owner", "repo"}),
+}
+_ASCII_TO_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _ascii_lower(value: str) -> str:
+    """*value* with only A-Z lowercased.
+
+    GitHub names are ASCII, so this is all its case-insensitivity covers. Full
+    Unicode ``str.lower`` would also merge a lookalike (the Kelvin sign folds to
+    ``k``) into a real owner, and can lengthen a key (``İ`` becomes two code
+    points) past ``_MAX_SOURCE_IDENTITY_KEY_LENGTH``.
+    """
+    return value.translate(_ASCII_TO_LOWER)
 
 
 # Defensive cap on a dismissed-identity key travelling in a URL path segment,
@@ -228,6 +257,49 @@ def is_valid_source_identity_key(key: object) -> bool:
         elif not isinstance(member, str):
             return False
     return json.dumps(decoded, ensure_ascii=True, separators=(",", ":")) == key
+
+
+_IDENTITY_MEMBER_NAMES = tuple(f.name for f in fields(SourceRef) if f.name != "url") + (
+    "instance_context",
+)
+
+
+def canonical_source_identity_key(key: str) -> str:
+    """*key* with the case folding :attr:`SourceRef.identity` applies.
+
+    A dismissal key is persisted, so one recorded under a mixed-case GitHub
+    owner/repo is still on disk and still arrives from a client tab that has not
+    re-read the slots. Folding it here makes it name the same object the folded
+    identity does: an unlinked chip stays hidden whichever spelling re-mentions
+    it. A key that is not a well-formed identity, or whose provider folds
+    nothing, is returned unchanged. Cached because the derivation folds the
+    whole dismissed set on every call; only a key within the identity length
+    bound is decoded or cached, since an on-disk line can carry anything.
+    """
+    if not isinstance(key, str) or len(key) > _MAX_SOURCE_IDENTITY_KEY_LENGTH:
+        return key
+    return _canonical_source_identity_key(key)
+
+
+@functools.lru_cache(maxsize=4096)
+def _canonical_source_identity_key(key: str) -> str:
+    try:
+        decoded = json.loads(key)
+    except (TypeError, ValueError):
+        return key
+    if not isinstance(decoded, list) or len(decoded) != _IDENTITY_ARITY:
+        return key
+    members = dict(zip(_IDENTITY_MEMBER_NAMES, decoded))
+    provider = members["provider"]
+    folded = _CASE_FOLDED_IDENTITY_FIELDS.get(provider) if isinstance(provider, str) else None
+    if not folded:
+        return key
+    return source_ref_identity_key(
+        tuple(
+            _ascii_lower(value) if name in folded and isinstance(value, str) else value
+            for name, value in members.items()
+        )
+    )
 
 
 def bounded_valid_identities(raw: object, cap: int) -> set[str]:
