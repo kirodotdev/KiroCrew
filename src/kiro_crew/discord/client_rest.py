@@ -520,6 +520,11 @@ async def _api_request(
     recheck_hint = destination if recheck_destination else ""
     rate_limited = 0
     transient = 0
+    # A message create is applied once per copy Discord receives, and a 5xx, a
+    # timeout or a dropped response can follow a write Discord already made. So
+    # it is re-sent only when Discord certainly did not apply it: after a 429, or
+    # when the connection failed before the request went out.
+    sent_once = method == "POST" and path.rstrip("/").endswith("/messages")
     # The attempt that follows a 429 has already served that back-off, so it
     # sends immediately; re-checking the hold it just waited out would
     # charge it twice.
@@ -581,7 +586,7 @@ async def _api_request(
                     continue
                 if resp.status >= 500:
                     transient += 1
-                    if transient > _TRANSIENT_RETRIES:
+                    if transient > _TRANSIENT_RETRIES or sent_once:
                         logger.warning(
                             "Discord API %s failed: status=%s (retries exhausted)",
                             route,
@@ -630,7 +635,9 @@ async def _api_request(
                 route,
                 type(exc).__name__,
             )
-            if transient > _TRANSIENT_RETRIES:
+            if transient > _TRANSIENT_RETRIES or (
+                sent_once and not isinstance(exc, aiohttp.ClientConnectorError)
+            ):
                 return _failed(DISCORD_TRANSIENT, detail=type(exc).__name__)
             permission = await self._wait_then_revalidate(
                 recheck_path, _TRANSIENT_BACKOFF_SECS * transient, recheck_hint
