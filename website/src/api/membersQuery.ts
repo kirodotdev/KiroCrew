@@ -211,6 +211,9 @@ export interface MemberThreadOutcome {
   collision?: string
   /** Set when the last POST failed. */
   failed?: boolean
+  /** Set with `failed` when the POST was an owner-only refusal (a relay
+   *  teammate opening a Bot): not a fault, so the notice says who may chat. */
+  ownerOnly?: boolean
   /** Redacted diagnostics for this member's failed open or repair. */
   errorReport?: ErrorReport
 }

@@ -21844,6 +21844,7 @@
       "import_refused_text": "Este arquivo contém texto que parece uma senha ou chave, por isso não pode ser importado.",
       "slug_collision": "Este Bot compartilha seu nome curto com \"{{name}}\", cujo chat já o usa. Renomear mantém o nome curto, então exclua \"{{self}}\" e crie-o novamente com um nome que tenha outro nome curto. Mantenha \"{{name}}\".",
       "thread_open_failed": "Não foi possível abrir o chat deste Bot.",
+      "thread_owner_only": "Só o dono deste Bot pode conversar com ele.",
       "thread_repair_failed": "Não foi possível reconectar este chat. Reabra o Bot para tentar novamente.",
       "title": "Bots",
       "unread_message": "Mensagem não lida",

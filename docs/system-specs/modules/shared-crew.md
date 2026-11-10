@@ -1778,7 +1778,8 @@ among the people a sharing path admitted by its own check
 (`routes_identity._tailnet_person`: the direct listener after checking the access
 set, or the SSM listener on a live invite), and the owner. The People,
 sessions and mode reads also admit a team Crew teammate the Kiro relay verified
-(`routes_identity._relay_teammate`); the name-and-picture edit does not. A
+(`routes_identity._relay_teammate`), as does a narrowed Bots roster read
+(`GET /api/members`, see member-event-log); the name-and-picture edit does not. A
 non-owner dashboard link session (a Telegram, Teams or Webex allowlist link) goes through `require_owner_for_dashboard_caller` and is refused,
 as it is for the read. The record is keyed by stable Tailscale user id in the invite store's
 `display` map, so it follows a renamed login and works for a person who was never
