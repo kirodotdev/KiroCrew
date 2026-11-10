@@ -601,7 +601,12 @@ class TestSpawnSubAgentsSummarization:
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
             mock_post.return_value = {"id": "a1"}
             short_result = "This is a short result under 3K chars."
-            mock_get.return_value = {"done": True, "agent": "w", "result": short_result}
+            mock_get.return_value = {
+                "done": True,
+                "agent": "w",
+                "result": short_result,
+                "result_path": "/crew/subagents/a1/result.txt",
+            }
 
             result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
@@ -618,7 +623,12 @@ class TestSpawnSubAgentsSummarization:
             mock_post.return_value = {"id": "agent123"}
             # Generate a result that exceeds 3000 chars
             large_result = "word " * 1000  # ~5000 chars, well over 3K
-            mock_get.return_value = {"done": True, "agent": "w", "result": large_result}
+            mock_get.return_value = {
+                "done": True,
+                "agent": "w",
+                "result": large_result,
+                "result_path": "/home/user/.kirocrew/subagents/agent123/result.txt",
+            }
             mock_summarize.return_value = (
                 "Full transcript: /home/user/.kirocrew/subagents/agent123/result.txt\n"
                 "Preview (first+last 100 words):\nword word word...\n\n"
@@ -633,7 +643,7 @@ class TestSpawnSubAgentsSummarization:
             assert "on disk" in result
 
     def test_large_result_uses_summarize_result_with_correct_path(self):
-        """Verify summarize_result is called with the agent's result.txt path."""
+        """summarize_result gets the path the gateway's status read names."""
         from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 
         with patch("kiro_crew.mcp_core._post") as mock_post, \
@@ -643,37 +653,37 @@ class TestSpawnSubAgentsSummarization:
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
             mock_post.return_value = {"id": "abc123"}
             large_result = "x " * 2000  # ~4000 chars, over 3K threshold
-            mock_get.return_value = {"done": True, "agent": "w", "result": large_result}
+            gateway_path = "/crew-link/subagents/abc123/result.txt"
+            mock_get.return_value = {
+                "done": True,
+                "agent": "w",
+                "result": large_result,
+                "result_path": gateway_path,
+            }
             mock_summarize.return_value = "summarized content"
 
             _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
-            # summarize_result must have been called with the result text and a path
-            # containing the agent id
             assert mock_summarize.called
             call_args = mock_summarize.call_args
             assert len(call_args[0][0]) > COMPLETION_KEEP_DEFAULT_CHARS
-            assert "abc123" in call_args[0][1]
-            assert "result.txt" in call_args[0][1]
+            assert call_args[0][1] == gateway_path
 
-    def test_agent_dir_failure_falls_back_to_full_result(self):
-        """If _agent_dir raises, the full result is inlined (graceful fallback)."""
+    def test_no_result_path_falls_back_to_full_result(self):
+        """A status read that names no result file inlines the full result."""
         with patch("kiro_crew.mcp_core._post") as mock_post, \
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.sel"), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-            mock_post.return_value = {"id": "../bad-id"}
+            mock_post.return_value = {"id": "a1"}
             large_result = "fallback " * 600  # over 3K
             mock_get.return_value = {"done": True, "agent": "w", "result": large_result}
 
-            # _agent_dir will raise ValueError for "../bad-id" due to path traversal check
             result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
-            # Should still complete without error — falls back to full text
-            assert '"completed"' in result
-            # The result should contain the original text (not summarized)
-            # because _agent_dir raised and result_path is empty
-            assert "Full transcript:" not in result
+            block = json.loads(result.split("\n\n")[0])
+            assert block["status"] == "completed"
+            assert block["text"] == large_result
 
     def test_mixed_short_and_large_results(self):
         """When multiple agents return, only large results get summarized."""
@@ -688,8 +698,18 @@ class TestSpawnSubAgentsSummarization:
 
             def _get_side(url):
                 if "short1" in url:
-                    return {"done": True, "agent": "fast", "result": short_result}
-                return {"done": True, "agent": "thorough", "result": large_result}
+                    return {
+                        "done": True,
+                        "agent": "fast",
+                        "result": short_result,
+                        "result_path": "/crew/subagents/short1/result.txt",
+                    }
+                return {
+                    "done": True,
+                    "agent": "thorough",
+                    "result": large_result,
+                    "result_path": "/crew/subagents/long1/result.txt",
+                }
 
             mock_get.side_effect = _get_side
             mock_summarize.return_value = "summarized long result"
@@ -716,7 +736,12 @@ class TestSpawnSubAgentsSummarization:
             mock_post.return_value = {"id": "a1"}
             # Exactly at the threshold (not over)
             exact_result = "x" * COMPLETION_KEEP_DEFAULT_CHARS
-            mock_get.return_value = {"done": True, "agent": "w", "result": exact_result}
+            mock_get.return_value = {
+                "done": True,
+                "agent": "w",
+                "result": exact_result,
+                "result_path": "/crew/subagents/a1/result.txt",
+            }
 
             result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
@@ -850,14 +875,20 @@ class TestSpawnSubAgentsFailedChildTranscript:
         with patch("kiro_crew.mcp_core.summarize_result") as mock_summarize:
             mock_summarize.return_value = "summary with path"
             blocks = self._run(
-                {"done": True, "agent": "w", "error": "crashed", "result": large},
+                {
+                    "done": True,
+                    "agent": "w",
+                    "error": "crashed",
+                    "result": large,
+                    "result_path": "/crew/subagents/fail123/result.txt",
+                },
                 agent_id="fail123",
             )
 
         mock_summarize.assert_called_once()
         text_arg, path_arg = mock_summarize.call_args[0]
         assert text_arg == large
-        assert "fail123" in path_arg and path_arg.endswith("result.txt")
+        assert path_arg == "/crew/subagents/fail123/result.txt"
         assert blocks[0]["text"] == "summary with path"
 
     def test_failed_poll_of_an_unfinished_child_is_listed_as_still_running(self):
