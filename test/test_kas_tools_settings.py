@@ -154,10 +154,16 @@ class TestTranslation:
             "write": {"allowedPaths": ["./out/**"]},
         }
         assert _rules(settings) == []
-        # allowedCommands and the write allowedPaths are answered by Crew at the
-        # gate, not by a rule (`test_kas_allowed_commands.py`,
-        # `test_kas_tools_settings_grants.py`), so only the read allow is named.
-        assert _lost(settings) == ["read.allowedPaths"]
+        # allowedCommands and both allowedPaths are answered by Crew at the gate,
+        # not by a rule (`test_kas_allowed_commands.py`,
+        # `test_kas_tools_settings_grants.py`), so nothing is named.
+        assert _lost(settings) == []
+
+    def test_grep_and_glob_allowed_paths_are_still_named(self):
+        """kiro-cli reads them apart from the read tool's; Crew does not answer them."""
+        settings = {"grep": {"allowedPaths": ["./src/**"]}, "glob": {"allowedPaths": ["x"]}}
+        assert _rules(settings) == []
+        assert _lost(settings) == ["glob.allowedPaths", "grep.allowedPaths"]
 
     def test_deny_by_default_is_carried_as_no_rule(self):
         """Crew's gate enforces it (``spec_shell_allowlist``), so the notice does not
