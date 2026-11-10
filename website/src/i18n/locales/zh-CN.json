@@ -229,7 +229,7 @@
     "k_search_for_anything": "⌘K — 搜索任何内容…",
     "kiro_credit_usage_checking": "Kiro 账户与额度 — 检查中…",
     "kiro_credit_usage_checking_2": "Kiro 账户与额度 — 检查中",
-    "kiro_credit_usage_signin_required": "Kiro 账户与额度 — 无法读取有效的 Kiro 登录凭据；请重新登录",
+    "kiro_credit_usage_signin_required": "Kiro 账户与额度 — 当前没有有效的 Kiro 登录；登录后即可查看额度",
     "kiro_credit_usage_unavailable": "Kiro 账户与额度 — 不可用",
     "kiro_discord_community": "Kiro Discord 社区",
     "main_navigation": "主导航",
@@ -6022,6 +6022,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "账户详情暂不可用",
+      "credit_usage_sign_in_to_see": "当前没有有效的 Kiro 登录。登录后即可查看账户和额度。",
+      "credit_usage_sign_in_lapsed": "你的 Kiro 登录已失效，无法显示账户和额度。请重新登录以查看。",
+      "sign_in_in_settings": "在设置中登录 Kiro",
       "balance_checked_at": "检查时间 {{time}}",
       "forecast_lasts": "按本周期的用量，额度应该能撑到重置。",
       "forecast_runs_out": "按本周期的用量，大约会在 {{date}} 用完，早于重置日。",

@@ -239,7 +239,7 @@
     "k_search_for_anything": "⌘K — যা কিছু খুঁজুন…",
     "kiro_credit_usage_checking": "Kiro অ্যাকাউন্ট ও ক্রেডিট — যাচাই করা হচ্ছে…",
     "kiro_credit_usage_checking_2": "Kiro অ্যাকাউন্ট ও ক্রেডিট — যাচাই করা হচ্ছে",
-    "kiro_credit_usage_signin_required": "Kiro অ্যাকাউন্ট ও ক্রেডিট — সক্রিয় কোনও Kiro সাইন-ইন পড়া যায়নি; আবার সাইন ইন করো",
+    "kiro_credit_usage_signin_required": "Kiro অ্যাকাউন্ট ও ক্রেডিট — কোনও সক্রিয় Kiro সাইন-ইন নেই; ক্রেডিট দেখতে সাইন ইন করো",
     "kiro_credit_usage_unavailable": "Kiro অ্যাকাউন্ট ও ক্রেডিট — জানা যাচ্ছে না",
     "kiro_discord_community": "Kiro Discord কমিউনিটি",
     "main_navigation": "প্রধান নেভিগেশন",
@@ -6190,6 +6190,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "অ্যাকাউন্টের বিবরণ পাওয়া যাচ্ছে না",
+      "credit_usage_sign_in_to_see": "কোনও সক্রিয় Kiro সাইন-ইন নেই। তোমার অ্যাকাউন্ট ও ক্রেডিট দেখতে সাইন ইন করো।",
+      "credit_usage_sign_in_lapsed": "তোমার Kiro সাইন-ইন আর বৈধ নেই, তাই অ্যাকাউন্ট ও ক্রেডিট দেখানো যাচ্ছে না। এগুলো দেখতে আবার সাইন ইন করো।",
+      "sign_in_in_settings": "সেটিংসে Kiro-তে সাইন ইন করো",
       "balance_checked_at": "{{time}}-এ যাচাই করা হয়েছে",
       "forecast_lasts": "এই চক্রের গতিতে, তোমার ক্রেডিট রিসেট পর্যন্ত চলা উচিত।",
       "forecast_runs_out": "এই চক্রের গতিতে, রিসেটের আগেই প্রায় {{date}}-এ তোমার ক্রেডিট শেষ হয়ে যাবে।",
