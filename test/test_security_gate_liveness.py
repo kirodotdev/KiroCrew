@@ -721,7 +721,11 @@ def _url_payload_command(n: int) -> str:
 #: and its facade row, so a glob operand after a bare glob verb (the ``* * * *`` of a
 #: cron schedule) is not read as this host; and ``helpers``' RLIMIT_AS key, now
 #: ``max_address_space_mb``. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_048
+#: Raised by 67, from 35,048, for the Outlook ``webLink`` route
+#: (``/owa/?ItemID=<id>&exvsurl=1&...``) in ``redaction_entropy``, its use by
+#: the exfil gate and its five names in the ``redaction`` facade manifest, so
+#: Graph's own message and event links are not masked or blocked. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_115
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
