@@ -18260,6 +18260,8 @@
         "side_panel_pin_summary": "在侧边栏中固定摘要",
         "side_panel_pin_summary_hint": "将摘要显示为侧边栏的第一个标签页，并在打开侧边栏时显示摘要。如果你打开文件或其他项目，仍会显示该项目。需要开启会话摘要。",
         "side_panel_pin_summary_needs_session_summaries": "会话摘要已关闭。在“设置 → 聊天 → 会话”中开启后即可固定摘要。",
+        "project_tags": "项目标签",
+        "project_tags_desc": "在侧边栏为每个新会话打上其项目文件夹名称的标签，例如“my-app”。",
         "topic_tags": "主题标签",
         "topic_tags_desc": "在侧边栏为每个新会话打上最多 2 个主题标签，例如“debugging”。每个新会话调用一次后台模型。",
         "transcript": "对话记录",

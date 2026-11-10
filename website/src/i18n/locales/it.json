@@ -19234,6 +19234,8 @@
         "side_panel_pin_summary": "Fissa il riepilogo nel pannello laterale",
         "side_panel_pin_summary_hint": "Mostra il riepilogo come prima scheda del pannello laterale. Quando il pannello si apre, mostra il riepilogo. Se apri un file o un altro elemento, viene mostrato quello. Richiede i riepiloghi delle sessioni attivi.",
         "side_panel_pin_summary_needs_session_summaries": "I riepiloghi delle sessioni sono disattivati. Attivali in Impostazioni → Chat → Sessioni per fissare il riepilogo.",
+        "project_tags": "Tag di progetto",
+        "project_tags_desc": "Tagga ogni nuova sessione nella barra laterale con il nome della sua cartella di progetto, come \"my-app\".",
         "topic_tags": "Tag di argomento",
         "topic_tags_desc": "Tagga ogni nuova sessione nella barra laterale con fino a due argomenti, come \"debugging\". Usa una chiamata al modello in background per nuova sessione.",
         "transcript": "Conversazione",

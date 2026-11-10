@@ -18260,6 +18260,8 @@
         "side_panel_pin_summary": "요약을 사이드 패널에 고정",
         "side_panel_pin_summary_hint": "요약을 사이드 패널의 첫 번째 탭으로 표시하고, 패널을 열면 요약을 보여 줍니다. 파일 등 특정 항목을 열면 그 항목을 계속 표시합니다. 세션 요약이 켜져 있어야 합니다.",
         "side_panel_pin_summary_needs_session_summaries": "세션 요약이 꺼져 있습니다. 요약을 고정하려면 설정 → 채팅 → 세션에서 세션 요약을 켜세요.",
+        "project_tags": "프로젝트 태그",
+        "project_tags_desc": "사이드바의 새 세션마다 \"my-app\" 같은 프로젝트 폴더 이름 태그를 붙입니다.",
         "topic_tags": "주제 태그",
         "topic_tags_desc": "사이드바의 새 세션마다 \"debugging\" 같은 주제 태그를 최대 2개 붙입니다. 새 세션마다 백그라운드 모델 호출을 한 번 씁니다.",
         "transcript": "대화 내용",

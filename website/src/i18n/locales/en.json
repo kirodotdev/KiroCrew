@@ -10460,6 +10460,8 @@
         "side_panel_pin_summary": "Pin Summary in Side Panel",
         "side_panel_pin_summary_hint": "Shows Summary as the first side panel tab. Whenever the panel opens, it shows Summary. Opening a file or another item still shows that item. Needs Session summaries on.",
         "side_panel_pin_summary_needs_session_summaries": "Session summaries are off. Turn them on in Settings → Chat → Sessions to pin Summary.",
+        "project_tags": "Project tags",
+        "project_tags_desc": "Tags each new session in the sidebar with the name of its project folder, like \"my-app\".",
         "topic_tags": "Topic tags",
         "topic_tags_desc": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session.",
         "transcript": "Transcript",

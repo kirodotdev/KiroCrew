@@ -9318,6 +9318,7 @@
         "feature_videos_cache_max_mb": 500.0,
         "milestones_enabled": true,
         "folder_suggestions_enabled": true,
+        "project_tags_enabled": true,
         "topic_tags_enabled": false,
         "tips_cadence_hours": 6.0,
         "tips_snooze_hours": 48.0,
@@ -11024,6 +11025,20 @@
       "tags": [],
       "label": "Folder Suggestions Enabled",
       "help": "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "dashboard.project_tags_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Project Tags Enabled",
+      "help": "Tag a new chat session with the last folder name of its project path, such as my-app. Off creates and adds no project tag; tags already on a session stay.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
