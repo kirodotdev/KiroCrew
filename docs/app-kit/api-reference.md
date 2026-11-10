@@ -772,7 +772,7 @@ page.
 |---|---|---|---|
 | `query` | `IssueSearchRequest` | yes | What to list; a new query replaces the filter bar's edits |
 | `view` | `'condensed' \| 'expanded'` | no | One row per issue (default) or one card |
-| `showFilters` | `boolean` | no | State, assignee (`me` included), labels and search text |
+| `showFilters` | `boolean` | no | State, assignee (`me` included), labels and search text; hidden while `query.raw` is set, since a raw query replaces those filters |
 | `onSelect` | `(issue: IssueSummary) => void` | no | Makes each row a button; without it a row links out |
 | `emptyText` | `string` | no | Replaces the empty-state text |
 
@@ -780,7 +780,7 @@ page.
 The condensed row shows the provider mark, the key (`#4821`, `CREW-142`), the title,
 up to two labels (hidden when narrow), the provider's `statusLabel` and the updated
 time. The expanded card adds the project, a three-line excerpt, priority, every
-label, the first assignee, the author, comment and linked-change counts, and an
+label, the first assignee, the author, the comment count (left out for Jira and Linear, whose searches return none) and linked-change count, and an
 **Open in &lt;provider&gt;** link. Every provider string is rendered as text, links
 open only `http(s)` urls in a new tab with `rel="noopener noreferrer"`, and an avatar
 loads only from an `http(s)` url.

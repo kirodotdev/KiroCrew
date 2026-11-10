@@ -9,6 +9,8 @@
  *   condensed  the list in rows, filter bar on, all four providers, Load more.
  *   expanded   the same issues as cards.
  *   refused    an app that declares only /api/source/issue (singular).
+ *   empty / loading / error   the list's other states, filter bar on.
+ *   (The shoot script clicks "Assigned to me" on the condensed scene.)
  * Theme: &theme=dark|light
  */
 import { createRoot } from 'react-dom/client'
@@ -72,6 +74,13 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href)
   if (url.pathname !== '/api/source/issues') return realFetch(input, init)
   const body = JSON.parse(String(init?.body ?? '{}')) as IssueSearchRequest
+  if (scene === 'loading') return new Promise<Response>(() => {})
+  if (scene === 'error') {
+    return new Response(JSON.stringify({ error: 'GitHub rate limit reached. Try again in a few minutes.' }), { status: 502, headers: { 'Content-Type': 'application/json' } })
+  }
+  if (scene === 'empty') {
+    return new Response(JSON.stringify({ provider: body.provider, scope: body.scope, issues: [], nextCursor: null, total: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
   const first = !body.cursor
   const page: IssueSearchResponse = {
     provider: body.provider, scope: body.scope,

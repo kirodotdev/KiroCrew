@@ -27,6 +27,9 @@ import { AppSdkContext, apiPathAllowed, type AppApi } from '../scopedApi'
 
 export const ISSUES_PATH = '/api/source/issues'
 
+/** How long a loaded list counts as fresh: the route caches results 30 s. */
+const ISSUES_STALE_MS = 30_000
+
 /** Fetches one page for a query. */
 export type IssuesTransport = (query: IssueSearchRequest) => Promise<IssueSearchResponse>
 
@@ -81,6 +84,21 @@ export interface UseIssuesResult {
 
 const NO_ISSUES: IssueSummary[] = []
 
+/** Every page's issues in order, each issue once. The route pages by offset over a
+ *  list sorted by update time, so an issue updated after page 1 loaded shifts the
+ *  rest down and the next page repeats one; the first copy wins. */
+function uniqueIssues(pages: IssueSearchResponse[]): IssueSummary[] {
+  const seen = new Set<string>()
+  const out: IssueSummary[] = []
+  for (const issue of pages.flatMap(p => p.issues)) {
+    const id = issue.url || `${issue.provider}:${issue.key}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push(issue)
+  }
+  return out
+}
+
 export function useIssues(query: IssueSearchRequest, opts: UseIssuesOptions = {}): UseIssuesResult {
   const { transport, refusal } = useIssuesTransport()
   // The cursor is the page parameter, never part of the key.
@@ -94,10 +112,14 @@ export function useIssues(query: IssueSearchRequest, opts: UseIssuesOptions = {}
     },
     initialPageParam: null as string | null,
     getNextPageParam: (last: IssueSearchResponse) => last.nextCursor || undefined,
+    // The app's client keeps data forever (`staleTime: Infinity`, freshness by
+    // server push), but nothing pushes issue changes. Revalidate a list that is
+    // older than the route's own 30 s cache when it mounts or regains focus.
+    staleTime: ISSUES_STALE_MS,
     enabled,
   })
   const pages = result.data?.pages
-  const issues = useMemo(() => (pages ? pages.flatMap(p => p.issues) : NO_ISSUES), [pages])
+  const issues = useMemo(() => (pages ? uniqueIssues(pages) : NO_ISSUES), [pages])
   const { fetchNextPage, refetch, hasNextPage, isFetchingNextPage } = result
   return {
     issues,

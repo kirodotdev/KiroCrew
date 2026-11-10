@@ -171,6 +171,17 @@ describe('IssueList', () => {
     expect(bodies()).toEqual([{ ...QUERY, cursor: null }, { ...QUERY, cursor: 'c2' }])
   })
 
+  it('shows an issue once when the next page repeats it after a re-sort', async () => {
+    pages = {
+      '': page([issue()], 'c2'),
+      c2: page([issue(), issue({ key: '#4822', url: 'https://github.com/acme/widgets/issues/4822', title: 'Second page' })], null),
+    }
+    render(externalApp([ISSUES_PATH], <IssueList query={QUERY} />))
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }, LAZY))
+    await screen.findByText('Second page')
+    expect(screen.getAllByText('Crash when the list is empty')).toHaveLength(1)
+  })
+
   it('starts again from the first page when a filter changes', async () => {
     pages = {
       '': page([issue()], 'c2'),
@@ -228,6 +239,32 @@ describe('IssueList', () => {
     expect(screen.getByText('Crash when the list is empty')).toBeInTheDocument()
   })
 
+  it('reads the list again when an app reopens it after the route cache expires', async () => {
+    const mount = () => render(
+      <AppApiProvider appName="issues-app-stale" allowedApiPaths={[ISSUES_PATH]} navigateFn={() => {}}>
+        <IssueList query={QUERY} />
+      </AppApiProvider>,
+    )
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-01T10:00:00Z'))
+    try {
+      const first = mount()
+      await screen.findByText('Crash when the list is empty', {}, LAZY)
+      first.unmount()
+      // 31 s later: past the route's 30 s cache, so the reopened list reads again.
+      clock.mockReturnValue(Date.parse('2026-11-01T10:00:31Z'))
+      mount()
+      await waitFor(() => expect(bodies()).toHaveLength(2))
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  it('hides the filter bar while a raw query replaces the structured filters', async () => {
+    render(externalApp([ISSUES_PATH], <IssueList query={{ ...QUERY, raw: 'is:open label:bug' }} showFilters />))
+    await screen.findByText('Crash when the list is empty', {}, LAZY)
+    expect(screen.queryByRole('search')).toBeNull()
+  })
+
   it('shows a skeleton while the first page loads', async () => {
     let release: (r: Response) => void = () => {}
     fetchMock.mockImplementationOnce(() => new Promise<Response>(r => { release = r }))
@@ -271,6 +308,17 @@ describe('IssueCard', () => {
       expect(screen.getByText('Unassigned')).toBeInTheDocument()
       expect(screen.queryByText(/Opened by/)).not.toBeNull() // the RTL card still has its author
     }
+  })
+
+  it('hides the comment count on Jira and Linear cards, whose search sends no count', async () => {
+    for (const noCount of [PROVIDERS[2], PROVIDERS[3]]) {
+      const { unmount } = render(<IssueCard issue={{ ...noCount, commentCount: 0 }} view="expanded" />)
+      await screen.findByText(noCount.key, {}, LAZY)
+      expect(screen.queryByTitle(/comments?$/)).toBeNull()
+      unmount()
+    }
+    render(<IssueCard issue={PROVIDERS[0]} view="expanded" />)
+    expect(await screen.findByTitle('3 comments', {}, LAZY)).toBeInTheDocument()
   })
 
   it('renders provider text as text and opens only http(s) urls', async () => {

@@ -88,6 +88,9 @@ function Avatar({ person }: { person: IssuePerson }) {
   return <img src={src} alt="" width={16} height={16} referrerPolicy="no-referrer" className="h-4 w-4 shrink-0 rounded-full" />
 }
 
+/** Providers whose issue search sends `commentCount: 0` because the list API has no count. */
+const NO_COMMENT_COUNT: ReadonlySet<IssueSummary['provider']> = new Set(['jira', 'linear'])
+
 /** An icon and a number; the words are for screen readers and the tooltip. */
 function Count({ icon, value, label }: { icon: ReactNode; value: number; label: string }) {
   return (
@@ -214,7 +217,11 @@ function ExpandedCard({ issue, onSelect }: { issue: IssueSummary; onSelect?: (is
             <span dir="auto" className="truncate">{i18nT('appSdk.issues.opened_by', { name: personName(issue.author) })}</span>
           </span>
         )}
-        <Count icon={<MessageSquare size={12} aria-hidden="true" />} value={issue.commentCount} label={i18nT('appSdk.issues.comments', { count: issue.commentCount })} />
+        {/* Jira's and Linear's search APIs return no comment count, so the route
+            sends 0 for every issue from them; showing it would state a wrong number. */}
+        {!NO_COMMENT_COUNT.has(issue.provider) && (
+          <Count icon={<MessageSquare size={12} aria-hidden="true" />} value={issue.commentCount} label={i18nT('appSdk.issues.comments', { count: issue.commentCount })} />
+        )}
         {linked > 0 && (
           <Count icon={<GitPullRequest size={12} aria-hidden="true" />} value={linked} label={i18nT('appSdk.issues.linked_changes', { count: linked })} />
         )}
