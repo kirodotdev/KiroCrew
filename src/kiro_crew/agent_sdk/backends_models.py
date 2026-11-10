@@ -276,6 +276,14 @@ ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
 # (``AcpProvider.supports_effort``); every concrete id keeps the registry answer.
 ACP_BACKENDS_DEFAULT_PSEUDO_MODEL = frozenset({ACP_BACKEND_CLAUDE})
 
+# Backends whose session offers the ``ultracode`` switch to the dashboard: it changes
+# how Claude Code plans work, not which tools run or how they are approved. Opt-in
+# (harness-parity H6); see claude-code-provider.md, "The ultracode switch".
+ACP_BACKENDS_ULTRACODE_CONFIG_OPTION = frozenset({ACP_BACKEND_CLAUDE})
+
+#: The ``configId`` of that switch.
+ULTRACODE_CONFIG_OPTION_ID = "ultracode"
+
 
 def effort_config_option_id(backend: str) -> str:
     """The ``configId`` *backend* exposes its reasoning effort under.
