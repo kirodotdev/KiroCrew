@@ -119,7 +119,7 @@ async def test_default_chat_uses_canonical_agent_for_provider_and_gate(monkeypat
     monkeypatch.setattr(
         cli_chat,
         "_build_tool_gate",
-        lambda agent: gate_agents.append(agent) or MagicMock(),
+        lambda agent, kiro_agent="": gate_agents.append(agent) or MagicMock(),
     )
     monkeypatch.setattr(cli_chat, "_send_and_print", AsyncMock())
 
@@ -157,7 +157,7 @@ async def test_a_crew_member_name_starts_its_bound_kiro_agent(
     provider.start = AsyncMock()
     provider.shutdown = AsyncMock()
     started: list[tuple[str | None, str | None, str | None]] = []
-    gate_agents: list[str] = []
+    gate_agents: list[tuple[str, str]] = []
 
     def _factory(config):
         def _provider(*args, agent=None, crew_agent=None, model_override=None, **kwargs):
@@ -175,7 +175,7 @@ async def test_a_crew_member_name_starts_its_bound_kiro_agent(
     monkeypatch.setattr(
         cli_chat,
         "_build_tool_gate",
-        lambda name: gate_agents.append(name) or MagicMock(),
+        lambda name, kiro_agent="": gate_agents.append((name, kiro_agent)) or MagicMock(),
     )
     monkeypatch.setattr(cli_chat, "_send_and_print", AsyncMock())
 
@@ -183,8 +183,9 @@ async def test_a_crew_member_name_starts_its_bound_kiro_agent(
 
     assert started == [expected]
     # The governance gate keeps the name the user picked, as the dashboard's
-    # tool hook does, so a member's task profile applies to its tool calls.
-    assert gate_agents == [agent or default_agent]
+    # tool hook does, so a member's task profile applies to its tool calls; the
+    # spec hooks it asks are those of the kiro agent the session started.
+    assert gate_agents == [(agent or default_agent, expected[0])]
 
 
 @pytest.mark.asyncio
@@ -240,7 +241,7 @@ async def test_a_chat_start_rotates_an_over_cap_audit_log_before_the_backend_sta
         live_size_when_backend_started.append(live.stat().st_size if live.exists() else 0)
 
     provider.start = AsyncMock(side_effect=_start)
-    monkeypatch.setattr(cli_chat, "_build_tool_gate", lambda agent: MagicMock())
+    monkeypatch.setattr(cli_chat, "_build_tool_gate", lambda agent, kiro_agent="": MagicMock())
     monkeypatch.setattr(cli_chat, "_send_and_print", AsyncMock())
 
     await cli_chat._chat("hello", None)
@@ -258,7 +259,7 @@ async def test_a_chat_start_leaves_a_fresh_data_home_untouched(monkeypatch, tmp_
     """No audit log yet: the sweep costs one ``stat`` and creates nothing, not even the lock file."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     _patch_provider(monkeypatch)
-    monkeypatch.setattr(cli_chat, "_build_tool_gate", lambda agent: MagicMock())
+    monkeypatch.setattr(cli_chat, "_build_tool_gate", lambda agent, kiro_agent="": MagicMock())
     monkeypatch.setattr(cli_chat, "_send_and_print", AsyncMock())
 
     await cli_chat._chat("hello", None)
