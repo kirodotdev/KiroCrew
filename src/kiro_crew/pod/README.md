@@ -761,3 +761,9 @@ stale case share one remedy naming `loginctl enable-linger <user>`, the
 privileged `sudo loginctl enable-linger <uid>` form, and `./dev-backend.sh`,
 because `loginctl` needs the system bus and so is not self-service on a host that
 cannot reach one. Refusals name the path actually judged.
+
+A unit query that times out (`systemctl()` gives each call its own timeout) raises
+`PodError`, never `PodBackendAbsent`: a manager that did not answer is no proof that
+no pod runs. The failure tail `pod up` prints comes from `recent_journal()`, which
+reports an unreadable journal in its text instead of raising, so `up` still stops
+the unit it started.
