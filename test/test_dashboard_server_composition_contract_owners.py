@@ -879,3 +879,97 @@ async def test_the_optional_post_bind_work_never_fails_the_gateway(
     assert "local decision model: starting qwen-small" in messages
     assert "local decision model: resume at startup failed" in messages
     assert cancelled not in server._OWN_HOST_WARM_TASKS
+
+
+@pytest.mark.asyncio
+async def test_a_raising_cleanup_step_does_not_skip_the_crew_log_drain(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """aiohttp stops at the first cleanup hook that raises, so each step contains its own.
+
+    The steps here are registered in the order the dashboard entrypoint uses: the Kiro
+    services, the remote puller, then the instance tunnels and the crew-log drain. Every
+    one before the drain raises, the way a network close or a gone process does at
+    shutdown; the drain must still write out the session logs' buffered appends.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    drained: list[bool] = []
+    monkeypatch.setattr(crew_log_emit, "drain_for_shutdown", lambda: drained.append(True))
+
+    class _Raises:
+        async def close(self) -> None:
+            raise ConnectionError("network is down")
+
+        async def shutdown(self) -> None:
+            raise ProcessLookupError("ssh child already gone")
+
+        async def stop(self) -> None:
+            raise OSError("socket closed under the puller")
+
+    puller = types.ModuleType("kiro_crew.dashboard.handlers.remote_puller")
+    puller.stop = _Raises().stop  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, puller.__name__, puller)
+
+    app = web.Application()
+    app["kiro_prerequisite_service"] = _Raises()
+    app["kas_login_service"] = _Raises()
+    state = types.SimpleNamespace(instances_manager=_Raises())
+    server._register_kiro_service_shutdown(app)
+    app.on_cleanup.append(server._stop_remote_puller)
+    server._register_instances_hooks(app, state, 0)
+    app.on_cleanup.freeze()
+
+    with caplog.at_level("WARNING"):
+        await app.on_cleanup.send(app)
+
+    assert drained == [True]
+    for what in ("Kiro prerequisite", "KAS login", "Remote report puller", "Instance tunnel"):
+        assert what in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_decision_model_cleanup_steps_log_a_failure_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stop that fails at shutdown is logged, so the cleanup steps after it still run."""
+    import kiro_crew.decisions as decisions
+
+    def _deactivate(**_kwargs: Any) -> None:
+        raise ProcessLookupError("local model server already gone")
+
+    async def _close_sessions() -> None:
+        raise ConnectionError("network is down")
+
+    runtime = types.ModuleType("kiro_crew.decisions.local_runtime")
+    runtime.get_runtime = lambda: types.SimpleNamespace(deactivate=_deactivate)  # type: ignore[attr-defined]
+    client = types.ModuleType("kiro_crew.decisions.impl_systemone")
+    client.close_sessions = _close_sessions  # type: ignore[attr-defined]
+    for module in (runtime, client):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+        monkeypatch.setattr(decisions, module.__name__.rsplit(".", 1)[1], module, raising=False)
+
+    app = web.Application()
+    server._register_stt_hooks(app)
+    names = ("_local_decision_model_shutdown", "_decision_http_shutdown")
+    with caplog.at_level("WARNING"):
+        for hook in (h for h in app.on_cleanup if h.__name__ in names):
+            await hook(app)
+    assert "Local decision model stop failed" in caplog.text
+    assert "Decision HTTP session close failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_speech_task_that_failed_does_not_raise_out_of_its_cleanup_step() -> None:
+    """The idle sweep or prewarm task ending with an error must not stop later steps."""
+
+    async def _failed() -> None:
+        raise RuntimeError("model load failed")
+
+    app = web.Application()
+    server._register_stt_hooks(app)
+    task = asyncio.ensure_future(_failed())
+    await asyncio.wait({task})
+    app["stt_idle_sweep"] = task
+    hook = next(h for h in app.on_cleanup if h.__name__ == "_stt_shutdown")
+    await hook(app)
