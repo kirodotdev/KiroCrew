@@ -185,8 +185,7 @@ class GooseLaunch(ProcessAdapter):
         # The same refuse-then-mask preflight the other enforced hosts run, keyed on
         # the same routing question rather than on this harness's identity: it is
         # ENFORCED, so the OS credential mask is the compensating control for the
-        # passive reads ACP v1 cannot make it ask about. This harness re-exposes no
-        # file from inside the mask, so no expose list is resolved for it.
+        # passive reads ACP v1 cannot make it ask about.
         hidden = await launch_mod._run_preflight_bounded(
             launch_mod._sandbox_preflight, self.backend, ctx.sandbox_mode
         )
@@ -209,6 +208,7 @@ class GooseLaunch(ProcessAdapter):
             spawn_label=spawn_label,
             stderr_label=stderr_label,
             extra_hidden_dirs=hidden,
+            extra_expose_files=acp_tool_gate.adapter_expose_files(self.backend, hidden),
         )
 
     async def prepare_spawn_env(

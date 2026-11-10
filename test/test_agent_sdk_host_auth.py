@@ -685,7 +685,9 @@ def test_an_uncontained_expose_leaf_is_dropped_not_honoured(monkeypatch) -> None
     # a re-exposure stays a HOST decision rather than a declared one.
     monkeypatch.setitem(gate.ADAPTER_EXPOSED_CREDENTIAL_LEAVES, enforced, ("Documents/notes.txt",))
     hidden = gate.adapter_hidden_credential_dirs(enforced)
-    assert gate.adapter_expose_files(enforced, hidden) == ()
+    assert gate.adapter_expose_files(enforced, hidden) == (
+        os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts"),
+    )
 
 
 def test_a_sibling_of_a_masked_directory_is_not_treated_as_inside_it() -> None:
