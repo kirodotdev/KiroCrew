@@ -132,7 +132,10 @@ def test_gitlab_conflicts_are_reported_behind_another_blocker(detailed_status):
         },
         "discussions": [],
     }
-    provider = GitLabMergeRequestProvider(gitlab_hosts=[], fetch=_gitlab_fetch(payloads))
+    provider = GitLabMergeRequestProvider(
+        gitlab_hosts=[],
+        fetch=lambda _target, resource: payloads[resource],
+    )
 
     result = _probe(provider, "https://gitlab.com/acme/widgets/-/merge_requests/8")
 
