@@ -3947,7 +3947,10 @@ and `POST /api/tasks/{task_id}/cancel`, also answer the dashboard owner only:
 they feed an answer into, or end, the owner's own runs, and a non-owner
 dashboard session passes the middleware just as the owner's does, so
 `require_owner_for_dashboard_caller` refuses it with 403 `owner_only` before
-the body is read; an app token is not affected by that gate. The routes:
+the body is read; an app token is not affected by that gate. The timeline
+route, `GET /api/tasks/{task_id}/timeline`, is owner-only too, because it
+shows the owner's own runs' history, but it uses the stricter
+`require_owner_dashboard_request`, which also refuses app tokens. The routes:
 
 - `GET /api/tasks?state=&lane=&limit=` — rows from `TaskStore.list_rows`,
   oldest first, `limit` in `[1, 1000]` (default 100; over-cap values are
@@ -4314,7 +4317,8 @@ be a snake_case wire token. Any other reason — the controller's own free-text
 reading — renders verbatim with `translate="no"` because that text is machine
 data; an unknown wait or lane token likewise renders as itself. Tests:
 `test/test_api_tasks.py` (tmp store, fake manager, real token middleware
-for the auth case, route order), `website/src/test/TasksCapacityCard.test.tsx`.
+for the auth case, route order, the exact `/api/tasks` route table),
+`website/src/test/TasksCapacityCard.test.tsx`.
 UX evidence: `website/scripts/capture-tasks-capacity.mjs` photographs the real
 built card, one scene per branch it colours or explains — including BOTH homes of
 the degrade reason (the row when two lanes are lowered, the lane line when one is)
