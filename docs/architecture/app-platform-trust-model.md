@@ -63,10 +63,13 @@ where a sandbox backend applies, which does not bound the in-process modules.
     endpoint, and without the watch a backend they un-trust would keep serving
     until the next boot. Bound is one `_HEALTH_WATCH_INTERVAL`.
 
-  Scope is the executing surface. An app with its own `agent.apps_trusted` grant
-  keeps running while that grant stands — the blanket flag does not govern it — and
-  non-executable resources (agents, skills, MCP declarations, cron definitions)
-  are outside the ceiling. Anything that tries to RUN app code meets
+  Scope is the whole app, not only its executing surface. An app with its own
+  `agent.apps_trusted` grant keeps running while that grant stands — the blanket
+  flag does not govern it.
+  Registration is inside the ceiling as well: enable and `register_app` consult
+  `app_execution_denied`, so an app the ceiling does not admit has none of its
+  agents, skills, MCP declarations or cron definitions registered, even when it
+  ships no code of its own. Anything that tries to RUN app code meets
   `app_execution_denied` and fails closed on its own.
   The liveness watch is level-triggered on the ceiling rather than edge-triggered
   on one setting, so REMOVING an app's own grant from `config.json` also stops its

@@ -381,10 +381,14 @@ edit gets the same revocation, but only once the liveness watch notices, and an
 app's shutdown hook can no longer load by then. See
 `docs/architecture/app-platform-trust-model.md` for the full contract.
 
-Non-executable resources (agents, skills, MCP server declarations, cron
-definitions, UI bundles) are unaffected. If your app needs any executable
-surface, say so in your README: a user who has not turned the setting on will see
-`app_execution_denied` rather than a working install.
+The gate covers the whole app, not only its executable surfaces. Until the app
+is trusted, either alone (`agent.apps_trusted`, which the App Store asks for at
+enable) or through that setting, `enable` refuses it and registration denies it,
+so none of its agents, skills, MCP server declarations or cron definitions is
+registered. That holds for an app that declares only a skill and a remote MCP
+server, too. Only the static files of an installed UI bundle are still served
+from `/apps/<name>/ui/`. Tell users in your README to trust the app when they enable it; a
+user who has not will see `app_execution_denied` rather than a working install.
 
 Repository layout:
 
