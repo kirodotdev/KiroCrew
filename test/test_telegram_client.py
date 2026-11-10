@@ -944,6 +944,26 @@ class TestClientHealth:
         except aiohttp.ClientConnectionError:
             pass
 
+    def test_get_me_non_bot_api_reply_is_not_auth_error(self, monkeypatch) -> None:
+        """A proxy's empty body (json() -> None) or ok-less JSON error
+        is unverifiable, not a rejected token."""
+        from kiro_crew.telegram.client import TelegramAuthError
+
+        for body in (None, {"message": "Internal server error"}):
+            client = self._client()
+
+            async def _call_raw(method, params, timeout=15, _b=body):
+                return _b
+
+            monkeypatch.setattr(client, "_call_raw", _call_raw)
+            try:
+                asyncio.run(client.get_me())
+                raise AssertionError("expected ConnectionError")
+            except TelegramAuthError:
+                raise AssertionError(f"{body!r} read as a rejected token")
+            except ConnectionError:
+                pass
+
     def test_notify_status_swallows_callback_errors(self) -> None:
         client = self._client()
 

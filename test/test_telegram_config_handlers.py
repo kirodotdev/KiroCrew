@@ -413,3 +413,34 @@ def test_save_survives_wrong_typed_stored_allow_list(tmp_path: Path, monkeypatch
     assert status == 200
     saved = json.loads(cfg.read_text(encoding="utf-8"))
     assert saved["telegram"]["allowed_user_ids"] == [555]
+
+
+def test_validate_token_non_bot_api_reply_is_unverifiable(monkeypatch) -> None:
+    """A proxy's empty 502 or ok-less JSON error is not Telegram's
+    rejection; the validator raises so the save proceeds with a warning."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    from kiro_crew.dashboard.messaging_api.telegram_settings import _validate_telegram_token
+
+    async def _run(reply) -> None:
+        app = web.Application()
+        app.router.add_get("/bot{token}/getMe", reply)
+        async with TestServer(app, host="127.0.0.1") as srv:
+            monkeypatch.setenv(
+                "TELEGRAM_API_BASE_URL", f"http://127.0.0.1:{srv.port}/bot{{token}}/{{method}}"
+            )
+            try:
+                result = await _validate_telegram_token("123:abc")
+            except ConnectionError:
+                return
+            raise AssertionError(f"read as rejected: {result!r}")
+
+    async def _empty(_request):
+        return web.Response(status=502)
+
+    async def _ok_less(_request):
+        return web.json_response({"message": "Internal server error"}, status=500)
+
+    asyncio.run(_run(_empty))
+    asyncio.run(_run(_ok_less))

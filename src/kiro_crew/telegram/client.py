@@ -1375,13 +1375,15 @@ class TelegramClient:
         aiohttp/OSError so callers can distinguish "bad token" from "offline".
         """
         data = await self._call_raw("getMe", {})
-        if isinstance(data, dict) and data.get("ok") and data.get("result"):
+        if not isinstance(data, dict) or "ok" not in data:
+            # Not a Bot API reply (empty body, or a proxy's own JSON error): the
+            # proxy failed, Telegram never judged the token.
+            raise ConnectionError("getMe got no Bot API reply")
+        if data.get("ok") and data.get("result"):
             return data["result"]
-        desc = ""
-        if isinstance(data, dict):
-            # Telegram error descriptions are short fixed strings
-            # ("Unauthorized") — token-free and safe to surface in settings.
-            desc = str(data.get("description") or "")
+        # Telegram error descriptions are short fixed strings
+        # ("Unauthorized") — token-free and safe to surface in settings.
+        desc = str(data.get("description") or "")
         raise TelegramAuthError(f"Telegram rejected getMe ({desc or 'invalid bot token'})")
 
     @staticmethod
