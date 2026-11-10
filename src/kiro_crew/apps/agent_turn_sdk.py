@@ -214,7 +214,9 @@ class AgentTurnSDK:
         is the agent a new session starts as (``""`` for today's default, resolved
         to its name before the session opens). Tools are approved only by the
         hook gate, under this app's identity and the agent the session manager
-        records for the session: a reused session's own agent, never *agent*.
+        records for the session: a reused session's own agent, never *agent*. A
+        directive only a person's turn may issue (``set_project``, ...) is refused,
+        and its refusal leads the reply.
 
         Session acquisition is outside *timeout_secs*: a cold start cancelled
         half way would leave a session that never received the first message.
@@ -242,9 +244,13 @@ class AgentTurnSDK:
         hooks = self._hooks()
 
         async def _run_turn() -> str:
+            from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
             from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 
-            return await stream_and_collect(
+            # An app turn is not a person's, and no session applier reads its
+            # stream: a person-only directive it calls is refused out loud.
+            refusals: list[str] = []
+            reply = await stream_and_collect(
                 provider,
                 text,
                 approval_policy=ToolApprovalPolicy.HOOK_BASED,
@@ -252,7 +258,9 @@ class AgentTurnSDK:
                 session_key=key,
                 agent=running,
                 app=app,
+                on_event=person_only_directive_refuser(key, refusals),
             )
+            return "\n\n".join([*refusals, reply])
 
         from kiro_crew.shared_crew.admission import OperationKind
         from kiro_crew.shared_crew.turn_gate import run_admitted_or_raise
