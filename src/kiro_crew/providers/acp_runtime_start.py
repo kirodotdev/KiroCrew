@@ -630,6 +630,9 @@ async def _start_kiro_runtime_impl(
         shared_scratch=self._shared_scratch,
         launch_agent=_launch_agent(self),
         harness_pin=self._harness_pin,
+        # The session this provider serves and the app it runs under, read for
+        # the profiles its KAS projection meets.
+        governance_scope=(self._owning_session_key(), getattr(self, "owning_app", "") or ""),
     )
     # One priority for both start queues this path enters, set by the session
     # layer for this start (rule: ``kiro_crew.start_priority``).
@@ -916,6 +919,10 @@ async def _start_kiro_runtime_impl(
                     shared_scratch=self._shared_scratch or runtime.work_scratch_dir,
                     launch_agent=_launch_agent(self),
                     harness_pin=self._harness_pin,
+                    governance_scope=(
+                        self._owning_session_key(),
+                        getattr(self, "owning_app", "") or "",
+                    ),
                 )
                 if remote is not None:
                     await attach_remote_workspace(runtime)

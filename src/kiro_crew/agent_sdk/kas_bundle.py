@@ -171,12 +171,17 @@ def sha256_file(path: Path) -> str:
 
 
 def require_loadable_host() -> None:
-    """Raise ``KasHostUnsupported`` when this host's glibc is too old for the engine.
+    """Raise ``KasHostUnsupported`` when the engine cannot run on this host.
 
-    The same check :func:`install_bundle` runs, for a caller that prints progress
-    before calling it and must refuse first.
+    The local checks :func:`install_bundle` runs before any transfer: the glibc
+    floor, then a published build for this OS and architecture. For a caller that
+    prints progress before calling it and must refuse first, and for ``doctor``,
+    which names the cause instead of a download that is refused every time.
     """
-    _owner("install_bundle")._require_loadable_glibc(None, None)
+    owner = _owner("install_bundle")
+    owner._require_loadable_glibc(None, None)
+    owner.host_platform_key()
+    owner.host_node_key()
 
 
 def sha256_bytes(data: bytes) -> str:

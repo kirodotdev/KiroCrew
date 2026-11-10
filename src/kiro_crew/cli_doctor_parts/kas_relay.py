@@ -132,6 +132,16 @@ def _report_kas_bundle(issues: list[str], *, automatic: bool = False) -> None:
 
     installed = kas_bundle.installed_bundle()  # type: ignore[misc]  # checked before kas_bundle
     if installed is None:
+        # A host the engine cannot run on (glibc below the floor, no build for its
+        # architecture) is refused by every install, so neither the first chat nor
+        # `kirocrew kas install` is a remedy there; the row names the cause the
+        # install would refuse with.
+        try:
+            kas_bundle.require_loadable_host()
+        except kas_bundle.KasHostUnsupported as exc:
+            print(f"  bundle:      ❌ {exc}")
+            issues.append(f"Kiro Crew's KAS engine cannot run on this host: {exc}")
+            return
         # Not a failure on its own: the gateway installs the pinned engine at the
         # first chat. Still a ⚠, because an offline host fails then.
         # Another version on disk is not "nothing installed": name what is there

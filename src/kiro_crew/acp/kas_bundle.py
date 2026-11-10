@@ -847,14 +847,21 @@ def install_pinned(
 ) -> InstalledKasBundle:
     """Install this release's pinned engine if it is not already there; return it.
 
-    The digest check runs on the manifest's bytes before anything is parsed or
-    fetched, so a host serving a different manifest under the pinned version's
-    name installs nothing.
+    A host that cannot run the engine (:class:`KasHostUnsupported`: no build for
+    its OS or architecture, or glibc below the floor) is refused before the
+    manifest is fetched, so the refusal names that cause even offline and a caller
+    that asks again costs no network round trip. The digest check runs on the
+    manifest's bytes before anything is parsed or fetched, so a host serving a
+    different manifest under the pinned version's name installs nothing.
     """
     root = root or kas_engines_root()
     present = installed_bundle(root=root, version=KAS_PIN_VERSION)
     if present is not None:
         return present
+    # The local host checks install_bundle repeats; none of them reads the network.
+    _require_loadable_glibc(None, None)
+    host_platform_key()
+    host_node_key()
     manifest, url = fetch_manifest(
         base_url, version=KAS_PIN_VERSION, sha256=KAS_PIN_MANIFEST_SHA256
     )

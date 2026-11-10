@@ -16,10 +16,9 @@ Instance fields read: ``_config_options``, ``_runtime``, ``_session_id``, ``_ses
 ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
 ``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
 ``_tool_call_tool_name``, ``kas_crew_answered``, ``kas_crew_answered_commands``,
-``kas_spec_denies``, ``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``,
+``kas_hook_held``, ``kas_spec_denies``, ``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``,
 ``kas_spec_shell_readonly``, ``kas_crew_answered_paths``, ``kas_crew_answered_read_paths``,
-``_bound_cwd``,
-``mirror_used``, ``spec_denied_tools``.
+``_bound_cwd``, ``mirror_used``, ``spec_denied_tools``.
 """
 
 from __future__ import annotations
@@ -755,6 +754,7 @@ def _build_permission_event(self: AcpSessionHandle, msg: JsonRpcMessage) -> AcpE
         # which shares this session's id and is told apart by the id its
         # agentSubtaskId frame recorded.
         event.spec_granted_builtins = frozenset(getattr(self, "kas_crew_answered", ()))
+        event.spec_hook_held = frozenset(getattr(self, "kas_hook_held", ()))
         event.spec_granted_commands = tuple(getattr(self, "kas_crew_answered_commands", ()))
         event.spec_shell_allowlist = getattr(self, "kas_spec_shell_allowlist", None)
         event.spec_write_allowlist = getattr(self, "kas_spec_write_allowlist", None)

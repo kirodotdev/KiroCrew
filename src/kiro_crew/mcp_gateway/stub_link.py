@@ -14,6 +14,8 @@ read and patch them there. This module owns:
   typed refusal kiro-cli gets when the daemon is out of capacity
   (:func:`_serve_capacity_refusal`), and the ``initialize`` a reconnect replays
   (:func:`_replay_initialize`);
+* the server with no tools a ``--refuse`` stub answers as, never reaching the daemon
+  (:func:`_serve_refusal`);
 * the reconnect after a live connection dies: its budget, its backoff, and the bounded
   hold of kiro-cli's requests while the link is down (:func:`_reconnect`,
   :func:`_drain_while_disconnected`, :func:`_reconnect_while_draining`).
@@ -611,6 +613,76 @@ async def _serve_capacity_refusal(
         except (asyncio.TimeoutError, OSError, ValueError):
             return 1
     return 0
+
+
+#: The ``protocolVersion`` a refusing stub answers ``initialize`` with: the one Kiro
+#: Crew's own MCP servers answer kiro-cli with (``mcp_shared_dispatch``).
+_REFUSAL_PROTOCOL_VERSION = "2024-11-05"
+#: The list requests a refusing stub answers with an empty list, by result key.
+_REFUSAL_EMPTY_LISTS = {
+    "tools/list": "tools",
+    "prompts/list": "prompts",
+    "resources/list": "resources",
+    "resources/templates/list": "resourceTemplates",
+}
+#: JSON-RPC "method not found", the answer to any other request a refusing stub gets.
+_METHOD_NOT_FOUND = -32601
+
+
+def _refusal_reply(msg: dict, server: str) -> dict:
+    """What a refusing stub answers request *msg* with: the reply of a server with no tools."""
+    method = msg.get("method")
+    reply: dict = {"jsonrpc": "2.0", "id": msg["id"]}
+    if method == "initialize":
+        reply["result"] = {
+            "protocolVersion": _REFUSAL_PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": {"name": server, "version": "0"},
+        }
+    elif method == "ping":
+        reply["result"] = {}
+    elif isinstance(method, str) and method in _REFUSAL_EMPTY_LISTS:
+        reply["result"] = {_REFUSAL_EMPTY_LISTS[method]: []}
+    else:
+        reply["error"] = {
+            "code": _METHOD_NOT_FOUND,
+            "message": f"MCP server {server!r} serves nothing to this agent",
+        }
+    return reply
+
+
+async def _serve_refusal(session: StubSession, *, server: str) -> int:
+    """Answer kiro-cli as an MCP server with no tools until it hangs up.
+
+    What a ``--refuse`` stub runs (``rewriter_spec._refusing_stub_entry``): the
+    agent's ``tools`` does not name *server*, whose env holds a ``secret://``
+    reference, and the entry exists so the host's own ``mcp.json`` merge, which
+    would start the server with the literal reference, is outranked. Nothing is
+    started and the gateway is never reached, so no approval of a target for
+    *server* can serve this agent its tools. Answering as an empty server, rather
+    than exiting, keeps the session from reporting a server that failed to start,
+    which is not what happened. Notifications are dropped (they have no id to
+    answer). Returns the process exit code.
+    """
+    while True:
+        try:
+            line = await session.next_line()
+        except Exception:  # pragma: no cover -- stdin reader died
+            return 1
+        if not line:
+            return 0
+        msg = parse_json_object_line(line)
+        if msg is None or "method" not in msg or "id" not in msg:
+            continue
+        reply = _refusal_reply(msg, server)
+        payload = (json.dumps(reply, separators=(",", ":")) + "\n").encode("utf-8")
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(_write_stdout_line, payload),
+                timeout=_ERROR_EMIT_TIMEOUT_SECS,
+            )
+        except (asyncio.TimeoutError, OSError, ValueError):
+            return 1
 
 
 def _split_abandoned_ids(session: StubSession) -> tuple[list, Any]:

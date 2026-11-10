@@ -511,6 +511,30 @@ async def test_kas_does_not_keep_legacy_mcp_json_for_a_spec_that_states_the_key(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "opted_in"),
+    [
+        ({"includeMcpJson": True}, True),
+        ({"useLegacyMcpJson": True}, True),
+        ({"includeMcpJson": False}, False),
+    ],
+)
+async def test_kas_stamps_the_specs_own_mcp_json_opt_in(
+    kas_projection_stubbed, monkeypatch, tmp_path, key, opted_in
+):
+    """The wire entry never carries ``true``, so the exclusion reads it from the stamp."""
+    from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
+
+    monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", tmp_path / "absent-global.json")
+    monkeypatch.setattr(kas_agents_mod, "build_kas_custom_agents", lambda *_a, **_kw: [{"id": "a"}])
+    spec = {"name": "a", "prompt": "p", "tools": [], **key}
+    (tmp_path / "a.json").write_text(json.dumps(spec), encoding="utf-8")
+    extras = await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    (entry,) = extras.custom_agents
+    assert entry[CREW_SETTINGS_MCP_KEY]["optedIn"] is opted_in
+
+
+@pytest.mark.asyncio
 async def test_kas_does_not_keep_legacy_mcp_json_for_a_checkout_spec(
     kas_projection_stubbed, monkeypatch, tmp_path
 ):

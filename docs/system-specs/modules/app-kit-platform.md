@@ -6772,7 +6772,10 @@ about `kirocrew-lite`, and a default that cannot be resolved is a refusal. The
 session is then opened BY that name (`get_or_create(key, agent=<name>)`, never
 `None`): a cold start with a `None` agent launches the literal `kirocrew`
 (`providers/acp_runtime_start.py`), not `agent.default_agent`, so passing the name
-is what makes the agent that starts the agent the ceiling was asked about. Once
+is what makes the agent that starts the agent the ceiling was asked about. `run`
+also names its app as the allocation's `owning_app`, so the session's own
+governance reads, its KAS projection among them, judge under the app its gate
+judges (`governance.md`, the trusted sub-agent allow). Once
 the lease is held, the agent the turn carries is read back from the session
 manager's record (`get_agent(key)`) on every path, `run` and `run_oneshot` alike:
 a reused session answers with the agent it started as, which is asked about again

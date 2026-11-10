@@ -840,7 +840,8 @@ class TestThePin:
             raise kas_bundle.KasBundleError("stop here")
 
         monkeypatch.setattr(kas_bundle, "fetch_manifest", fake_fetch)
-        with pytest.raises(kas_bundle.KasBundleError, match="stop here"):
+        # The host check that runs first never reads the runner's own libc.
+        with _patch_glibc(None), pytest.raises(kas_bundle.KasBundleError, match="stop here"):
             kas_bundle.install_pinned("https://h.test", root=tmp_path / "empty")
         assert seen == {
             "version": kas_bundle.KAS_PIN_VERSION,
@@ -915,6 +916,23 @@ class TestOldGlibcRefusal:
         assert kas_bundle.installed_bundle(root=root, version="0.66.33") is None
         assert kas_bundle.installed_versions(root=root) == []
         assert not any(root.glob("**/downloads")) if root.exists() else True
+
+    def test_install_pinned_refuses_an_old_glibc_host_before_the_manifest(
+        self, tmp_path, monkeypatch
+    ):
+        """The gateway's install path checks the host before any fetch: a host that
+        can never run the engine is refused with that cause even offline, and a
+        spawn, cron or subagent that asks again costs no network round trip."""
+        monkeypatch.setattr(kas_bundle.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(kas_bundle.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(
+            kas_bundle,
+            "fetch_manifest",
+            lambda *a, **k: pytest.fail("fetched the manifest on a host that cannot run it"),
+        )
+        with _patch_glibc((2, 26)):
+            with pytest.raises(kas_bundle.KasHostUnsupported, match=r"glibc \(2\.26\)"):
+                kas_bundle.install_pinned("https://h.test", root=tmp_path / "empty")
 
     def test_modern_glibc_installs_as_before(self, source_dir, tmp_path):
         root = tmp_path / "root"

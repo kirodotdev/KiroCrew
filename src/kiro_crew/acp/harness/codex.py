@@ -511,6 +511,7 @@ class CodexHarness(MembershipHarness):
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
+        governance_app: str | None = None,
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 

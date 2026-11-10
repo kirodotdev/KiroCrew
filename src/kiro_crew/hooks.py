@@ -758,6 +758,7 @@ class HookManager:
         classifier_only: bool = False,
         trust_reads: bool = False,
         deny_waivers: frozenset[str] = frozenset(),
+        pre_tool_hooks_fire: bool = False,
     ) -> ToolHookResult:
         """Whether *call* is auto-approved, denied, or handled normally.
 
@@ -818,6 +819,11 @@ class HookManager:
         other tier judges the call exactly as without them. Default empty: only
         the dashboard's override path and the transport floor it approves through
         pass any.
+
+        ``pre_tool_hooks_fire`` says the surface runs the PreToolUse hooks on this
+        request whatever the gate answers (the chat, subagent and task-runner turn
+        loops). Only the ``batch-guard-grant`` row reads it, to answer
+        ``ToolCall.spec_hook_held``; ``False`` keeps those calls asking.
         """
         if _GATE_TABLE_PROBLEMS:
             return ToolHookResult.deny(GATE_TABLE_UNSOUND_REASON)
@@ -830,6 +836,7 @@ class HookManager:
             classifier_only=classifier_only,
             trust_reads=trust_reads,
             deny_waivers=frozenset(deny_waivers),
+            pre_tool_hooks_fire=pre_tool_hooks_fire,
         )
         for tier in GATE_TIERS:
             verdict = tier.judge(facts, tier)
@@ -858,6 +865,7 @@ class HookManager:
         mcp_identity_unreadable: bool = False,
         kas_builtin_ids: bool = False,
         spec_granted_builtins: frozenset[str] = frozenset(),
+        spec_hook_held: frozenset[str] = frozenset(),
         spec_granted_commands: tuple[str, ...] = (),
         spec_shell_allowlist: tuple[str, ...] | None = None,
         spec_write_allowlist: tuple[str, ...] | None = None,
@@ -873,6 +881,7 @@ class HookManager:
         classifier_only: bool = False,
         trust_reads: bool = False,
         deny_waivers: frozenset[str] = frozenset(),
+        pre_tool_hooks_fire: bool = False,
     ) -> ToolHookResult:
         """:meth:`judge`, for a caller that holds the call as keywords.
 
@@ -903,6 +912,7 @@ class HookManager:
                 identity_unreadable=mcp_identity_unreadable,
                 kas_builtin_ids=kas_builtin_ids,
                 spec_granted_builtins=frozenset(spec_granted_builtins),
+                spec_hook_held=frozenset(spec_hook_held),
                 spec_granted_commands=tuple(spec_granted_commands),
                 spec_shell_allowlist=(
                     None if spec_shell_allowlist is None else tuple(spec_shell_allowlist)
@@ -926,6 +936,7 @@ class HookManager:
             classifier_only=classifier_only,
             trust_reads=trust_reads,
             deny_waivers=deny_waivers,
+            pre_tool_hooks_fire=pre_tool_hooks_fire,
         )
 
     def _effective_denied(self, ctx: object) -> list[str]:
