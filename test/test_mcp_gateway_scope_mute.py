@@ -50,7 +50,7 @@ def _write(path: Path, servers: dict) -> None:
 
 def _agent(agents: Path, servers: dict) -> None:
     (agents / f"{AGENT}.json").write_text(
-        json.dumps({"name": AGENT, "mcpServers": servers}), encoding="utf-8"
+        json.dumps({"name": AGENT, "mcpServers": servers, "tools": ["*"]}), encoding="utf-8"
     )
 
 

@@ -4275,7 +4275,10 @@ the minimum, and that the bundled Node needs glibc 2.28 while Amazon Linux 2-era
 hosts (glibc below 2.27) also lack the glibc 2.27 the engine's native onnxruntime
 library needs (the glibc reader and floor are `constants._host_glibc_version` /
 `_OFFICIAL_NODE_GLIBC_FLOOR`, the same ones doctor's Node remedy uses); nothing is
-published. Which
+published. The gateway's install (`install_pinned`) runs the same local host checks
+(the glibc floor and the OS and architecture keys) before it fetches the manifest, so
+the refusal names its cause on an offline host too and a spawn that asks again makes
+no network round trip. Which
 version runs is the release's pin, not a file on disk: `acp/kas_pin.py` holds
 `KAS_PIN_VERSION` and `KAS_PIN_MANIFEST_SHA256` (the sha256 of that version's
 published `manifest.json`, which in turn pins every artifact), `kirocrew kas
@@ -4311,7 +4314,10 @@ on (or when the route below is chosen automatically), resolves
 `kas_bundle.installed_bundle()`; nothing installed is installed by the spawn
 itself, in the gateway (`acp/kas_engine_install.install_pinned_engine`, below),
 and a failed install is an `AcpRuntimeError` naming the route, the cause and
-`kirocrew kas install` -- never a fallback to the relay, because a relay spawn
+`kirocrew kas install` -- except on a host the engine cannot run on
+(`KasHostUnsupported`), which is `acp/kas_host_unsupported.AcpKasHostUnsupported`
+(`transient = False`) naming the route and the cause with no retry advice, because
+the next attempt finds the same host -- never a fallback to the relay, because a relay spawn
 after a bundle failure would make a bundle problem look like a kiro-cli one. The argv is `build_kas_bundle_argv`:
 `node --experimental-wasm-modules <acp-server.js> --transport=stdio
 --auth=acp-callback`, byte-for-byte what kiro-cli's relay builds for the engine
@@ -4335,7 +4341,10 @@ runs. `kirocrew doctor` reports the route when selected (`_report_kas_bundle`:
 installed version against the release pin, the `install.json` path and its two
 entry points, the exact spawn argv, the vault as the only owner with Crew's own
 sign-in remedy) and asks nothing of kiro-cli there; `kirocrew kas status` is the
-same facts alone. The one predicate every kiro-cli-facing diagnostic shares is
+same facts alone. With no engine installed, doctor first asks
+`agent_sdk.kas_bundle.require_loadable_host`, and on a host that cannot run the
+engine prints that cause as a ❌ `bundle:` row and an issue, without the first-chat
+download, `kirocrew kas install` or `auto-approve:` lines. The one predicate every kiro-cli-facing diagnostic shares is
 `agent_sdk.kas_bundle.kas_bundle_route()` -- KAS selected AND the bundle route
 (`agent.kas_bundle` on, or the automatic switch below), positive on both
 halves, computed at call time -- so doctor's
@@ -4399,7 +4408,10 @@ leaf is read-only there. Its state (running, bytes, the last error) is what
 `GET /api/kas-bundle` reports whichever caller started it, and the dashboard's
 app-level `KasEngineNotice` shows a running download and a failed one, with the
 gateway's error text (cause, "if this host is offline, connect it first", and
-`kirocrew kas install`) and a Retry button. The install probe and first-run
+`kirocrew kas install`) and a Retry button. On a host that cannot run the engine
+the installer keeps the `KasHostUnsupported` type and its error text is the cause
+alone (`kas_engine_install.host_unsupported_message`), with no offline or retry
+advice; the notice's Retry button still shows there. The install probe and first-run
 setup treat a missing engine on a host that can run it as installable, not
 missing, so the setup gate lets KAS through without kiro-cli.
 

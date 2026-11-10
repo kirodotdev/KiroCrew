@@ -6,7 +6,8 @@ them, and ``test_context_management_doc.py`` pins one file:
 ``src/kiro_crew/docs/agent-spec-fields.md`` free to say the opposite of the code with
 every symbol and path resolving and the lint green — and the claims most exposed to
 that are its skill-resource ones, because they describe a decision whose inputs are
-not visible in any symbol it names.
+not visible in any symbol it names. § Prompt's account of the ``file://`` forms
+Crew's KAS resolver accepts and kiro-cli's v3 loader refuses is pinned the same way.
 
 This module closes that gap for that file. Where a claim is about what a function
 DOES, it is asserted by calling that function, so a behaviour-preserving rewrite stays
@@ -400,3 +401,29 @@ def test_app_wildcard_selects_a_flat_row_under_a_linked_loader_root(tmp_path):
         [row], [], [pattern], {pattern: head}, {pattern: canonical}, loader_roots, real_roots
     )
     assert found == [row]
+
+
+def test_prompt_section_states_the_v3_absolute_rule_crew_keeps_looser(doc_text, tmp_path):
+    """§ Prompt names kiro-cli v3's refusal of an absolute prompt and says Crew inlines one.
+
+    kiro-cli's v3 on-disk loader refuses an absolute or ``~`` ``file://`` prompt. Crew's
+    KAS resolver inlines it, because the app bridge writes an app agent's prompt in that
+    form, and the Kiro CLI launch pins the v2 engine, which reads it. The behaviour
+    half is executed, so a resolver that starts refusing the form, or a launch pinned
+    to another engine, fails beside the sentence saying otherwise.
+    """
+    from kiro_crew.acp.kas_agents import resolve_prompt
+    from kiro_crew.kiro_cli import KIRO_ACP_ENGINE
+
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("app prompt", encoding="utf-8")
+    spec = {"prompt": f"file://{prompt}"}
+    assert resolve_prompt(spec, agent_id="a", agents_dir=tmp_path / "agents") == "app prompt"
+
+    section = doc_text.split("### Prompt", 1)[1].split("### Tools and permissions", 1)[0]
+    flat = " ".join(section.split())
+    assert "treat the restriction as unconfirmed" not in flat
+    assert "Absolute file:// URIs are not allowed in agent prompts" in flat
+    assert "`apps/bridges_agents.py`" in flat
+    assert "as on kiro-cli;" not in flat and "as kiro-cli does;" not in flat
+    assert f"`--agent-engine {KIRO_ACP_ENGINE}`" in flat
