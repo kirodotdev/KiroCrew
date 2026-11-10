@@ -226,6 +226,14 @@ const DOWNLOAD_STEP_RUNNING = 'downloading'
 const DOWNLOAD_STEP_FAILED = 'failed'
 
 /**
+ * For an inline notice with the hand-off: below `sm` the hand-off takes its own
+ * line under the message instead of squeezing it into a column. The message's
+ * basis leaves room for the icon only, so the hand-off wraps.
+ */
+const PHONE_WRAP_ROW = 'flex-wrap sm:flex-nowrap'
+const PHONE_WRAP_MESSAGE = 'grow basis-[calc(100%-2rem)] sm:grow-0 sm:basis-auto'
+
+/**
  * Decoder stages, which are the backend's `stage` values verbatim.
  *
  * `unsupported` is not a failure and must not be rendered as one: no pinned
@@ -465,7 +473,8 @@ function TranscribeVocabularyPicker({
       {!!listError && (
         <ErrorNotice
           variant="inline"
-          className="-mt-1 mb-1"
+          className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
+          messageClassName={PHONE_WRAP_MESSAGE}
           testId="stt-vocabularies-error"
           report={reportForError(listError)}
           message={accessDenied
@@ -721,7 +730,7 @@ function PushToTalkConfig() {
         onChange={v => patch({ enabled: v })}
       />
       {saveError && (
-        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className="my-1" />
+        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className={`my-1 ${PHONE_WRAP_ROW}`} messageClassName={PHONE_WRAP_MESSAGE} />
       )}
 
       <SettingsSelect
@@ -1251,7 +1260,7 @@ export default function SttSettings({ cardIndex }: {
             disabled state is status text. */}
         {!available && unavailableText && !providerNotice && (
           INSTALLED_BUT_REFUSED_CODES.has(status?.code ?? '')
-            ? <ErrorNotice variant="inline" className="-mt-1 mb-1" message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
+            ? <ErrorNotice variant="inline" className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`} messageClassName={PHONE_WRAP_MESSAGE} message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
             : <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
         )}
         {/* The probe itself failed: the badge above is then showing the config's
@@ -1260,7 +1269,8 @@ export default function SttSettings({ cardIndex }: {
         {statusQ.isError && (
           <ErrorNotice
             variant="inline"
-            className="-mt-1 mb-1"
+            className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
+            messageClassName={PHONE_WRAP_MESSAGE}
             message={errMessage(statusQ.error) || i18nT('pages.settings.sttSettings.status_unavailable')}
             askAgent
           />
@@ -1389,7 +1399,8 @@ export default function SttSettings({ cardIndex }: {
                     {customUnusable && (
                       <ErrorNotice
                         variant="inline"
-                        className="mt-1"
+                        className={`mt-1 ${PHONE_WRAP_ROW}`}
+                        messageClassName={PHONE_WRAP_MESSAGE}
                         message={selectedModel?.error ?? ''}
                         askAgent
                         testId="stt-custom-model-missing"
@@ -1456,7 +1467,8 @@ export default function SttSettings({ cardIndex }: {
                 {customErr && (
                   <ErrorNotice
                     variant="inline"
-                    className="-mt-1 mb-1"
+                    className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
+                    messageClassName={PHONE_WRAP_MESSAGE}
                     id={CUSTOM_MODEL_ERROR_ID}
                     message={customErr}
                     askAgent
@@ -1496,7 +1508,8 @@ export default function SttSettings({ cardIndex }: {
             {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
               <ErrorNotice
                 variant="inline"
-                className="-mt-1 mb-1"
+                className={`-mt-1 mb-1 ${PHONE_WRAP_ROW}`}
+                messageClassName={PHONE_WRAP_MESSAGE}
                 message={download.model === CUSTOM_MODEL
                   ? download.error
                   : i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}

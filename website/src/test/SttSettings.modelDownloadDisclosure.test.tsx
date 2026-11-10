@@ -9,7 +9,7 @@
  * download control with the size on it.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
@@ -130,6 +130,21 @@ describe('SttSettings model download disclosure', () => {
     expect(screen.getByText(/50%/)).toBeTruthy()
     expect(screen.getByText(/74MB of 148MB/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /download now/i })).toBeNull()
+  })
+
+  it('puts the failed download hand-off on a line of its own on a phone', async () => {
+    // Beside the message, the hand-off squeezes the sentence into ~60% of a phone's
+    // width. jsdom has no layout, so the wrap is read off the classes.
+    mount({
+      download: { step: 'failed', model: 'base', downloaded_bytes: 0, total_bytes: BASE_BYTES, error: 'connection reset' },
+    })
+    const message = await screen.findByText('The download failed: connection reset')
+    const row = message.closest('[role="alert"]') as HTMLElement
+    expect(row.classList).toContain('flex-wrap')
+    expect(row.classList).toContain('sm:flex-nowrap')
+    expect(message.classList).toContain('basis-[calc(100%-2rem)]')
+    expect(message.classList).toContain('sm:basis-auto')
+    expect(within(row).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
   })
 
   it('does not attribute another model transfer to the selected one', async () => {
