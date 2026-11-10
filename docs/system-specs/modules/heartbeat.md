@@ -180,7 +180,7 @@ Tasks can specify a delivery target via HTML comment tags:
 | Mode | Syntax | Behavior |
 |------|--------|----------|
 | Default | _(no tag)_ | Routed per `heartbeat.default_deliver`: `slack` (default) = owner's Slack DM + dashboard bell; `dashboard` = new dashboard slot + bell only |
-| Dashboard prompt | `<!-- deliver:prompt:dashboard:<slot> -->` | Injects result as a *user* prompt into a specific dashboard chat slot (e.g., `chat-0`, `chat-3`), triggering an agent turn |
+| Dashboard prompt | `<!-- deliver:prompt:dashboard:<slot> -->` | Delivers the result as the gateway's prompt into a specific dashboard chat slot (e.g., `chat-0`, `chat-3`), triggering an agent turn; drawn as a system note, never as the person's message |
 | Dashboard slot | `<!-- deliver:dashboard:<slot> -->` | Appends result to a specific dashboard chat slot + bell (no agent turn) |
 | Dashboard | `<!-- deliver:dashboard -->` | Appends result to a new dashboard chat slot + bell |
 | Slack DM | `<!-- deliver:slack -->` | Posts result to owner's Slack DM only (no bell) |
@@ -204,7 +204,7 @@ audience. A refused target is SEL-logged `heartbeat_channel_deliver` /
 
 ### Dashboard Delivery (`prompt:dashboard:<slot>`)
 
-Resolves `chat-N` slot names to active session keys. The result is injected as a user message into the target slot, triggering an LLM response in that session. Useful for heartbeat tasks that should report back into an active dashboard conversation.
+Resolves `chat-N` slot names to active session keys. The prompt (`<title>\n\n<result>`) is the gateway's words, not the person's: it lands as an `inject` row (`injectKind: heartbeat`) and runs as a synthetic payload whether the slot was idle or busy, triggering an LLM response in that session. Queued behind a running turn it carries the queue kind `heartbeat_prompt`: it is shown as no editable card, drains as that same row, and, like the other system kinds, is not kept across a restart (the result stays in the heartbeat session itself). Useful for heartbeat tasks that should report back into an active dashboard conversation.
 
 Slot resolution: `chat-0` → first active slot, `chat-3` → fourth slot. A busy slot queues the prompt. A slot that cannot be resolved drops the delivery: SEL `heartbeat_prompt_deliver` with `outcome=not_found` and a warning, with no Slack DM fallback.
 

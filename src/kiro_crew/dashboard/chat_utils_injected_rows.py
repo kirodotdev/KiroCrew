@@ -358,6 +358,20 @@ AUTOMATION_NOTICE_KIND = "automation_notice"
 #: ``inject`` row (``injectKind: workflow``), never the person's bubble.
 WORKFLOW_FOLLOWUP_KIND = "workflow_followup"
 
+#: A heartbeat task's prompt delivered with ``deliver:prompt:dashboard:<slot>``
+#: (``slack/gateway_runtime/result_egress``): ``<title>\n\n<result>``, which starts
+#: an agent turn in that chat. The gateway's words, like the follow-up above, so it
+#: drains as an ``inject`` row (``injectKind: heartbeat``), never the person's bubble.
+HEARTBEAT_PROMPT_KIND = "heartbeat_prompt"
+
+#: The gateway prompts ``_ChatSlot.enqueue_or_run_prompt`` can carry, each mapped
+#: to the ``injectKind`` of the row it writes on the run arm and drains to when
+#: queued, so both arms draw the same row.
+GATEWAY_PROMPT_INJECT_KINDS = {
+    WORKFLOW_FOLLOWUP_KIND: "workflow",
+    HEARTBEAT_PROMPT_KIND: "heartbeat",
+}
+
 #: Provenance banner wrapped around every app-originated message. Structural
 #: classification is by the queue entry's ``kind`` tag (unforgeable, set at
 #: enqueue time); the banner exists for the MODEL and the transcript reader,
@@ -376,7 +390,7 @@ _SYSTEM_INJECTION_KINDS = SUBAGENT_DELIVERY_KINDS | frozenset(
         MCP_APP_MESSAGE_KIND,
         AUTOMATION_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
-        WORKFLOW_FOLLOWUP_KIND,
+        *GATEWAY_PROMPT_INJECT_KINDS,
     )
 )
 
@@ -451,13 +465,14 @@ def is_synthetic_payload_item(item: dict) -> bool:
     An MCP-App message entry (``MCP_APP_MESSAGE_KIND``) is synthetic by the same
     asymmetry: its text is app-authored (server-authored), so mirroring it to a
     linked channel as the human's own words would attribute machine speech to a
-    person. A workflow follow-up (``WORKFLOW_FOLLOWUP_KIND``) is the gateway's own
-    text, so it is synthetic too.
+    person. A gateway prompt (``GATEWAY_PROMPT_INJECT_KINDS``: a workflow follow-up,
+    a heartbeat prompt) is the gateway's own text, so it is synthetic too.
     """
     payload = item.get("payload")
     if payload:
         return payload == RecoveryPayload.CONTINUATION
-    if item.get("kind") in (MCP_APP_MESSAGE_KIND, WORKFLOW_FOLLOWUP_KIND):
+    kind = item.get("kind")
+    if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
         return True
     return is_synthetic_recovery_item(item)
 

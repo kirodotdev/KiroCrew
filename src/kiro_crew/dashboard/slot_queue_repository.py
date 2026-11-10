@@ -935,19 +935,20 @@ class SlotQueueRepository:
             # the linked-thread mirror suppressed, so a human on the mirrored
             # channel never sees what the user typed. Refused, not re-kinded:
             # the entry is not a user prompt to begin with. Scoped to the app
-            # kind and the gateway's workflow follow-up: other system kinds
-            # (queued cron text among them) were editable before this endpoint
-            # existed, and taking that away is not this feature's call. The
-            # frontend withholds the same set: the app card's pencil
-            # (`isAppMessageQueued`), the follow-up's whole card
-            # (`isNonInteractiveQueued`).
+            # kind and the gateway's own prompts (a workflow follow-up, a
+            # heartbeat prompt): other system kinds (queued cron text among
+            # them) were editable before this endpoint existed, and taking that
+            # away is not this feature's call. The frontend withholds the same
+            # set: the app card's pencil (`isAppMessageQueued`), a gateway
+            # prompt's whole card (`isNonInteractiveQueued`).
             from kiro_crew.dashboard.chat_utils import MCP_APP_MESSAGE_KIND
             from kiro_crew.dashboard.chat_utils_injected_rows import (
                 AUTOMATION_STEER_META,
-                WORKFLOW_FOLLOWUP_KIND,
+                GATEWAY_PROMPT_INJECT_KINDS,
             )
 
-            if item.get("kind") in (MCP_APP_MESSAGE_KIND, WORKFLOW_FOLLOWUP_KIND):
+            kind = item.get("kind")
+            if kind == MCP_APP_MESSAGE_KIND or kind in GATEWAY_PROMPT_INJECT_KINDS:
                 return False
             # The lists index the OLD text's markers; drop only what this edit
             # removed (named before, unnamed now) and renumber the survivors
