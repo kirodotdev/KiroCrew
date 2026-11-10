@@ -2779,6 +2779,13 @@ not even another empty one. A surface that cannot name its address opens no bubb
 all -- without a key every later write would have to guess which chat the `msg_id`
 belongs to, and a wrong guess rewrites a stranger's message.
 
+A refused `send_receipt` opens no bubble either, but its line is KEPT, on an entry with
+no `msg_id` that nothing ever writes to. The next message at that address sends ONE
+bubble listing every held line, so `⏳ Queued (N)` still counts the message whose bubble
+was refused. A drain or a `/stop` meeting that entry has no bubble to write and only
+takes off the lines it answered. A message from another address replaces the entry
+rather than joining it, so a held line is only ever shown in its own conversation.
+
 Deciding on the address is what makes the rule true on both shared-key routes at
 once. Under `dm_scope = "unified"` two people's DMs share a session key and bind
 DIFFERENT chats, so neither may write to the other's; in a GROUP SPACE (`space:{room_id}`,
@@ -2875,10 +2882,11 @@ lines off the list; every drain passes it, pinned by a source check, because a c
 wired up later cannot be covered by a behavioural test written now. It is told HOW MANY of
 that principal's the drain put back as well, and keeps their newest that many rather than
 dropping as many lines as it answered texts: a queued message does not always open a line
-here -- a refused `send_receipt` opens no bubble at all, and a message arriving while the
-entry owes a record is not retained -- so a principal can hold fewer lines than they have
-messages queued, and a positional count would then consume a line whose message is still
-queued, which is the erasure this whole condition exists to prevent. Counting from the
+here -- a message arriving while the entry owes a record is not retained, and one from
+another address replaces a never-sent entry's lines -- so a principal can hold fewer
+lines than they have messages queued, and a positional count would then consume a line
+whose message is still queued, which is the erasure this whole condition exists to
+prevent. Counting from the
 newest end is what makes the two numbers unable to disagree, and where it is still
 ambiguous it keeps: a line left listed is re-rendered by the next transition, a line
 removed is gone. A refused re-render owes no record, exactly as a refused grow does not:
