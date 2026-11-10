@@ -352,7 +352,7 @@ class TestInstallCoordinatesDoNotTrustTheCache:
             return None
 
         monkeypatch.setattr(oc, "fetch_document", counting_fetch)
-        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(oc, "_failed_recently", lambda: True)
         with pytest.raises(oc.CatalogUnavailable):
             oc.fetch_inventory_entries()
         assert calls == [], "a remembered failure must not be retried"
@@ -361,7 +361,7 @@ class TestInstallCoordinatesDoNotTrustTheCache:
         """Reading the agent-writable memory is safe only in this direction: clearing it
         buys one real fetch attempt, which is the same fail-closed answer."""
         monkeypatch.setattr(oc, "fetch_document", lambda url, *a, **k: None)
-        monkeypatch.setattr(oc, "_read_cache", lambda: None)  # memory cleared
+        monkeypatch.setattr(oc, "_failed_recently", lambda: False)  # memory cleared
         monkeypatch.setattr(oc, "_write_failure", lambda: None)
         with pytest.raises(oc.CatalogUnavailable):
             oc.fetch_inventory_entries()
@@ -439,7 +439,7 @@ class TestAFailedListingFetchDoesNotGateTheInstall:
     def test_a_fresh_sentinel_does_not_stop_the_install_click(self, monkeypatch):
         """THE regression: a listing-page failure must not gate the next install."""
         calls: list[str] = []
-        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(oc, "_failed_recently", lambda: True)
         monkeypatch.setattr(
             oc,
             "fetch_document",
@@ -478,7 +478,7 @@ class TestAFailedListingFetchDoesNotGateTheInstall:
         fails too, the refusal still raises -- and the sentinel is refreshed for
         the listing page, which is whose back-off it is."""
         writes: list[dict] = []
-        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(oc, "_failed_recently", lambda: True)
         monkeypatch.setattr(oc, "fetch_document", lambda url: None)
         monkeypatch.setattr(oc, "_write_failure", lambda: writes.append({}))
         with oc.install_attempt(), pytest.raises(oc.CatalogUnavailable):
@@ -489,7 +489,7 @@ class TestAFailedListingFetchDoesNotGateTheInstall:
         """The bypass is the INSTALL path's, not everyone's: a store listing
         during a real outage must keep refusing without paying the timeout."""
         calls: list[str] = []
-        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(oc, "_failed_recently", lambda: True)
         monkeypatch.setattr(oc, "fetch_document", lambda url: (calls.append(url), None)[1])
         with pytest.raises(oc.CatalogUnavailable):
             oc.fetch_inventory_entries()
@@ -501,7 +501,7 @@ class TestAFailedListingFetchDoesNotGateTheInstall:
         keep failing at once from the sentinel during an outage, instead of each
         waiting out a fetch timeout on every refresh."""
         calls: list[str] = []
-        monkeypatch.setattr(oc, "_read_cache", lambda: {oc._FAILED_KEY: 1.0})
+        monkeypatch.setattr(oc, "_failed_recently", lambda: True)
         monkeypatch.setattr(oc, "fetch_document", lambda url: (calls.append(url), None)[1])
         with pytest.raises(oc.CatalogUnavailable):
             oc.inventory_for_install("demo-app")
