@@ -81,6 +81,7 @@ from kiro_crew.dashboard_templates.manifest import (
 )
 from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform_compat import open_create_or_existing, release_lock, try_acquire_lock
+from kiro_crew.user_json import loads_user_json
 
 __all__ = [
     "ACTIONS",
@@ -1409,7 +1410,7 @@ def _manifest_json(entry: catalog.CatalogEntry) -> dict[str, Any]:
     what it COPIED, so a field the loader ignores today still travels with the copy.
     """
     try:
-        raw = json.loads((entry.directory / "manifest.json").read_text(encoding="utf-8"))
+        raw = loads_user_json((entry.directory / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         # `load_one` decoded this file already, so reaching here means it changed
         # between the two reads. A refusal names the template; the bare decode error
