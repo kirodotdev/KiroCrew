@@ -11268,6 +11268,9 @@
     }
   },
   "hooks": {
+    "useMoveArtifactToFolder": {
+      "move_refused": "আর্টিফ্যাক্টটি সরানো যায়নি।"
+    },
     "mic": {
       "could_not_start_the_microphone": "মাইক্রোফোন চালু করা যায়নি।",
       "microphone_is_unavailable_another_app_may_be_usi": "মাইক্রোফোন পাওয়া যাচ্ছে না — হয়তো অন্য কোনো অ্যাপ এটা ব্যবহার করছে।",

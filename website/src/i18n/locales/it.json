@@ -11517,6 +11517,9 @@
     }
   },
   "hooks": {
+    "useMoveArtifactToFolder": {
+      "move_refused": "L'artefatto non è stato spostato."
+    },
     "mic": {
       "could_not_start_the_microphone": "Impossibile avviare il microfono.",
       "microphone_is_unavailable_another_app_may_be_usi": "Il microfono non è disponibile — potrebbe essere in uso da un'altra app.",

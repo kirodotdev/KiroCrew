@@ -6562,6 +6562,9 @@
     }
   },
   "hooks": {
+    "useMoveArtifactToFolder": {
+      "move_refused": "The artifact was not moved."
+    },
     "usePanelTabs": {
       "git": "Git"
     },

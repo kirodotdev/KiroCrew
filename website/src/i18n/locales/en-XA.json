@@ -10984,6 +10984,9 @@
     }
   },
   "hooks": {
+    "useMoveArtifactToFolder": {
+      "move_refused": "[Ţĥè àŕţìƒàçţ ẁàş ñøţ ɱøṽèð. ···················]"
+    },
     "usePanelTabs": {
       "git": "[Ğìţ ·····]",
       "artifacts": "[Àŕţìƒàçţş ··············]",

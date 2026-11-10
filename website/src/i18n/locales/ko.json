@@ -11019,6 +11019,9 @@
     }
   },
   "hooks": {
+    "useMoveArtifactToFolder": {
+      "move_refused": "아티팩트를 이동하지 못했습니다."
+    },
     "mic": {
       "could_not_start_the_microphone": "마이크를 시작할 수 없습니다.",
       "microphone_is_unavailable_another_app_may_be_usi": "마이크를 사용할 수 없습니다 — 다른 앱이 사용 중일 수 있습니다.",

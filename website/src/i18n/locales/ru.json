@@ -11766,6 +11766,9 @@
     }
   },
   "hooks": {
+    "useMoveArtifactToFolder": {
+      "move_refused": "Не удалось переместить артефакт."
+    },
     "mic": {
       "could_not_start_the_microphone": "Не удалось включить микрофон.",
       "microphone_is_unavailable_another_app_may_be_usi": "Микрофон недоступен — возможно, его использует другое приложение.",

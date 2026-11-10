@@ -11019,6 +11019,9 @@
     }
   },
   "hooks": {
+    "useMoveArtifactToFolder": {
+      "move_refused": "アーティファクトを移動できませんでした。"
+    },
     "mic": {
       "could_not_start_the_microphone": "マイクを起動できませんでした。",
       "microphone_is_unavailable_another_app_may_be_usi": "マイクは利用できません — 別のアプリが使用中の可能性があります。",

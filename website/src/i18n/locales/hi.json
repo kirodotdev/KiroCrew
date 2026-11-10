@@ -11268,6 +11268,9 @@
     }
   },
   "hooks": {
+    "useMoveArtifactToFolder": {
+      "move_refused": "आर्टिफ़ैक्ट नहीं ले जाया जा सका।"
+    },
     "mic": {
       "could_not_start_the_microphone": "माइक्रोफ़ोन शुरू नहीं हो सका।",
       "microphone_is_unavailable_another_app_may_be_usi": "माइक्रोफ़ोन अनुपलब्ध है — कोई दूसरा ऐप इसका उपयोग कर रहा हो सकता है।",
