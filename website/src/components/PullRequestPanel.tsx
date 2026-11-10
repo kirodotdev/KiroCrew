@@ -358,6 +358,14 @@ const settledMergeField = (value: string | undefined): string | undefined =>
  *    nobody asked. `SourceTabState` suppresses CI on the same predicate and for
  *    the same reason -- the lifecycle glyph is the terminal signal.
  */
+/** A source's partial sections split by cause. A failed read is an error the
+ *  panel shows through `ErrorNotice`; a section cut at a page limit failed
+ *  nothing, so it stays the status note. */
+export function partialSectionsByCause(source: { partialSections?: string[]; failedSections?: string[] }) {
+  const failed = source.failedSections ?? []
+  return { failed, truncated: (source.partialSections ?? []).filter(section => !failed.includes(section)) }
+}
+
 export function selectedSourceStatus(
   source: PullRequestSource,
   cached: PullRequestStatus | undefined,
@@ -1139,6 +1147,7 @@ export default function PullRequestPanel({
     && checkCounts.complete === checkCounts.total
   const showAllChecksPassed = allChecksPassed && !query.isFetching
   const mergeBlocker = source ? pullRequestMergeBlocker(source) : null
+  const partial = partialSectionsByCause(source ?? {})
   const statusByUrl = useMemo(() => {
     const cached = statusQuery.data?.statuses || {}
     const merged: Record<string, PullRequestStatus> = { ...cached }
@@ -1407,13 +1416,28 @@ export default function PullRequestPanel({
             </div>
           )}
 
-          {source.partialSections && source.partialSections.length > 0 && (
+          {partial.failed.length > 0 && (
+            // askAgent on: the panel is read-only (no draft), and a secondary
+            // read the provider refused is the kind of failure the agent can
+            // diagnose.
+            <ErrorNotice
+              className="shrink-0 mx-4 my-2"
+              variant="inline"
+              message={sourceProviderMeta(source.provider).pullRequestWording
+                ? i18nT('components.pullRequestPanel.provider_results_failed_pull_request', { sections: partial.failed.join(', ') })
+                : i18nT('components.pullRequestPanel.provider_results_failed_merge_request', { sections: partial.failed.join(', ') })}
+              askAgent
+              testId="pull-request-panel-failed-sections"
+            />
+          )}
+
+          {partial.truncated.length > 0 && (
             <div role="status" className="shrink-0 flex items-start gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-muted">
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
               <span>
                 {sourceProviderMeta(source.provider).pullRequestWording
-                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: source.partialSections.join(', ') })
-                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: source.partialSections.join(', ') })}
+                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: partial.truncated.join(', ') })
+                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: partial.truncated.join(', ') })}
               </span>
             </div>
           )}

@@ -336,6 +336,12 @@ class _SourceChangePayloadExtras(TypedDict, total=False):
     #: the optional ``fetch_check_status`` hook is the cheaper way to feed the
     #: chip without a full-payload fetch.
     ciStatus: str
+    #: The subset of ``partialSections`` whose read FAILED (a caught provider
+    #: error), as opposed to one cut at a page limit. The panel renders these
+    #: as an error with an agent hand-off; the rest stay a status note. Every
+    #: built-in fetcher emits it; a plugin that omits it shows every partial
+    #: section as the status note.
+    failedSections: list[str]
 
 
 class SourceChangePayload(_SourceChangePayloadExtras):
@@ -380,8 +386,9 @@ class SourceChangePayload(_SourceChangePayloadExtras):
     checks: list[dict[str, Any]]
     comments: list[SourceChangeComment]
     files: list[SourceChangeFile]
-    #: Names of sections known to be truncated by pagination caps, surfaced as
-    #: a "partial data" note in the panel. ``[]`` when complete.
+    #: Names of sections known to be incomplete -- cut by a pagination cap or
+    #: left empty by a failed read (those are also in ``failedSections``),
+    #: surfaced as a "partial data" note in the panel. ``[]`` when complete.
     partialSections: list[str]
 
 
