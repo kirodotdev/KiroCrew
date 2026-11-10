@@ -2410,7 +2410,9 @@ archived instead of being permanently deleted:
 - **Triggers**: `_rotate()` (>10MB), `rewrite_session()` (compact), and the
   dashboard rewrite path (`_save_slot_to_history` with a snapshot /
   `rewrite=True` / `_pending_rewrite` → `_archive_dropped_lines`). The default
-  frozen-prefix dashboard save drops nothing, so it does not archive.
+  frozen-prefix dashboard save archives only the originals of the rows the
+  file-change bound rewrites (`file-changes`) and its foreign-dedup drops
+  (`foreign-dedup`).
 - **Atomic writes**: exclusive-create (`open mode 'x'`) avoids TOCTOU clobber
 - **Durable before the replace**: `_archive_lines` fsyncs the archive file and
   syncs the archive directory and its parent (`atomic_write.fsync_dir`, a no-op
@@ -2421,12 +2423,16 @@ archived instead of being permanently deleted:
   disk first. A failed write or sync removes the file that call created before
   raising (best effort; a failed removal is logged and the sync error is still
   raised), so a lasting fault leaves no archive copy per retry. The same holds
-  one step later for rotation and for compaction (`rewrite_session`): when the
-  transcript rewrite after the archive raises and the transcript is unchanged
-  (same inode, size and mtime), the archive it just wrote is removed; a rewrite
-  that replaced the file before failing keeps its archive, the rows' only copy.
-  The dashboard rewrite path does not: a failed replace there keeps its archive,
-  and the retry writes another.
+  one step later for rotation, for compaction (`rewrite_session`) and for the
+  dashboard save (`_save_slot_to_history`): when the transcript rewrite after
+  the archive raises and the transcript is unchanged (same inode, size and
+  mtime), the archive it just wrote is removed; a rewrite that replaced the file
+  before failing keeps its archive, the rows' only copy. The dashboard save
+  removes every archive its payload wrote (a rewrite's dropped tail, the
+  file-change bound's originals, the foreign-dedup drops) and then clears the
+  slot's `_frozen_prefix_cache`: a retry served from that cache would write the
+  bound's output and leave out the dedup drops without archiving either again,
+  so it re-reads the file and archives what it drops once more.
 - **Durable replace**: every write that renames a new copy over a whole
   transcript syncs its data first, because an unsynced replacement can come
   back empty after a power loss and the kept rows are in no other file. The
