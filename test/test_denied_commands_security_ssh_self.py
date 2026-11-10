@@ -1068,3 +1068,44 @@ class TestSandboxEscapeSshSelf:
         # textual layers decide these without it).
         assert _denied_by("ssh -- localhost") == self._RULE
         assert _denied_by("ssh -v -- 127.0.0.1 id") == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A Python edit script on stdin: a bare ``*`` (multiplication) followed by a
+            # self-host word was read as a glob verb naming ``ssh`` and its target.
+            "python3 - <<'EOF'\nn = a * localhost\nEOF",
+            "cd /work && python3 -u - <<'PY'\nfor p in paths: p.write_text(t * 127.0.0.1)\nPY",
+            # The same body written to a script file, which the line then runs.
+            "cat > /tmp/edit.py <<'EOF'\nn = a * localhost\nEOF\npython3 /tmp/edit.py",
+            "tee /tmp/edit.py <<'EOF' >/dev/null\nn = a * localhost\nEOF",
+        ],
+    )
+    def test_heredoc_body_read_as_data_is_not_argv(self, cmd):
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A shell reads the body as its script.
+            "bash <<'EOF'\nssh localhost id\nEOF",
+            "sudo sh <<'EOF'\nssh localhost id\nEOF",
+            "cat <<'EOF' | bash\nssh localhost id\nEOF",
+            "source /dev/stdin <<'EOF'\nssh localhost id\nEOF",
+            # The body is stdin to code that executes it.
+            "python3 -c 'import os,sys; os.system(sys.stdin.read())' <<'EOF'\nssh localhost\nEOF",
+            "cat <<'EOF' | python3 -c 'import os,sys; os.system(sys.stdin.read())'\nssh localhost\nEOF",
+            "perl -e 'system(<STDIN>)' <<'EOF'\nssh localhost\nEOF",
+            "python3 runner.py <<'EOF'\nssh localhost\nEOF",
+            # The body is written to a file a shell then runs.
+            "cat > /tmp/x.sh <<'EOF'\nssh localhost id\nEOF\nbash /tmp/x.sh",
+            "cat > /tmp/x.sh <<'EOF'\nssh localhost id\nEOF\nchmod +x /tmp/x.sh && /tmp/x.sh",
+            # An unquoted body runs its substitutions even for ``cat``.
+            "cat <<EOF\n$(ssh localhost id)\nEOF",
+            "cat <<EOF\n`ssh localhost id`\nEOF",
+            # A real ssh command outside the body.
+            "python3 - <<'EOF'\nprint(1)\nEOF\nssh localhost id",
+        ],
+    )
+    def test_heredoc_body_that_can_run_stays_argv(self, cmd):
+        assert _denied_by(cmd) == self._RULE

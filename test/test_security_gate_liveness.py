@@ -809,7 +809,13 @@ def _url_payload_command(n: int) -> str:
 #: ``/`` and ``~`` read the full text. Re-measured.
 #: Raised by 3, from 35,997, for the ``chat_steering_off.json`` leaf on the read-gate
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
-_PACKAGE_LINE_BUDGET = 36_000
+#: Raised by 100, from 36,000, to 36,100, for two false-refusal fixes and one
+#: diagnostic: ``argv_floor_ssh._heredoc_bodies_as_data`` (a heredoc body no program
+#: on the line can run is data to the ssh-self floor), ``exfil_bash._inert_line_allows``
+#: (the ``-d @`` date carve-out across a chain, pipe, quoted ``$(…)`` or locale
+#: prefix) and ``exfil_bash._exfil_denial`` (each exfil refusal names its rule and
+#: span). No deny pattern or rule is removed. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_100
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from itertools import takewhile
 
 # The reader names a test instruments on the facade are reached as attributes of
 # the reader module rather than bound here at import: the facade mirrors a patch
@@ -937,6 +938,55 @@ def _reaches_self_over_ssh(text_lower: str) -> bool:
     return any(map(_is_ssh_to_self, [text_lower, *_quoted_assignment_scripts(text_lower)]))
 
 
+#: Programs that read a here-document body as data or as a Python program, never as
+#: a shell command line. A line running anything else keeps every body as argv.
+_HEREDOC_DATA_PROGRAMS = frozenset(("cat", "tee", "cd"))
+_HEREDOC_PYTHON_RE = re.compile(r"python(?:3(?:\.\d+)?)?\Z")
+#: Options that leave Python reading its program from stdin or a file, never ``-c``/``-m``.
+_HEREDOC_PYTHON_OPTIONS = frozenset(("-", "-u", "-b", "-i", "-e", "-s", "-q", "-o"))
+
+
+def _is_option(arg: str) -> bool:
+    return arg.startswith("-")
+
+
+def _heredoc_bodies_as_data(text_lower: str) -> str:
+    """*text_lower* with its here-document bodies cut out when no program can run one.
+
+    A body is data to ``cat``/``tee`` (redirected, never piped) and a Python program
+    to ``python3 -``, so reading it as argv turned a Python edit script's
+    ``a * localhost`` into a glob verb and its target. Fails closed: the text is
+    returned whole when any program on the line is outside those, when Python takes
+    ``-c``/``-m`` (its code could run stdin), or when an unquoted body holds a ``$``
+    or backtick, which bash expands even for ``cat``. Python running a program it
+    reads is the OS network fence's residual (#9806), as ``python3 -c`` is here."""
+    if "<<" not in text_lower:
+        return text_lower
+    from . import argv_rules as _argv_rules  # local: not names the facade serves
+    from . import shell_commands as _shell_commands
+
+    commands = _shell_commands.read_commands(text_lower, heredocs=True)
+    docs = [doc for cmd in commands for doc in cmd.heredocs]
+    if not docs or any(not d.quoted and ("$" in d.body or "`" in d.body) for d in docs):
+        return text_lower
+    for cmd in commands:
+        words = _shell_normalizer._shell_tokens(" ".join(word.raw for word in cmd.argv))
+        parsed = _argv_rules._program_args(words)
+        if parsed is None:
+            continue
+        program, args = parsed
+        if _HEREDOC_PYTHON_RE.match(program):
+            # Its body on stdin is the program (``python3 -``); else options end at the script.
+            end = len(args) if cmd.heredocs else len(list(takewhile(_is_option, args)))
+            if not set(args[:end]) <= _HEREDOC_PYTHON_OPTIONS or (cmd.heredocs and "-" not in args):
+                return text_lower
+        elif program not in _HEREDOC_DATA_PROGRAMS:
+            return text_lower
+        if cmd.heredocs and cmd.separator == "|":
+            return text_lower
+    return _argv_rules._rm._without_bodies(text_lower)
+
+
 def _is_ssh_to_self(text_lower: str) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
@@ -982,6 +1032,8 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
+    # A body no program on the line can run is data, not argv.
+    text_lower = _heredoc_bodies_as_data(text_lower)
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
