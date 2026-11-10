@@ -80,6 +80,10 @@ A zone's rules come from the timezone data the gateway's Python finds: the opera
 
 The default per-wake execution budget is 30 minutes. Script and command subprocesses have separate defaults of 30 seconds and 300 seconds respectively.
 
+### A message that starts with `@`
+
+An agent cron expands a leading `@name` the way a dashboard chat does: the prompt or SOP of that name (for example `@agent-sop:nightly-check`) replaces the tag, and the rest of the message follows it as additional context. Only a message that begins with `@` is expanded. A project prompt (`.kiro/prompts`) is looked up in the directory the run starts in: the job's `project_path` if set, otherwise the agent's workspace. A name that matches nothing leaves the message as written, so `@here ...` still runs unchanged. A prompt that is refused (a sensitive path, or over the size limit) is logged and the message also runs as written. For an `agent_sequence` job each step expands the message against its own directory. Script and command crons do not expand it; the transcript's `# Cron Run` row always shows the message as stored.
+
 ## The Chat Tab a Cron Writes Into
 
 A `persistent_session` job (the default) has ONE dashboard chat tab, `Cron: <name>`, for its whole life — every run appends to the same conversation rather than opening a new tab per run. Replying in that tab is a normal follow-up turn against the job's accumulated session.

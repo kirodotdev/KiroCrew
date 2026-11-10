@@ -832,3 +832,58 @@ async def test_a_job_with_no_previous_result_passes_no_prefix(fire: _Fire) -> No
     await fire.fire(_make_llm_job())
 
     assert gw_mod.run_in_embed_pool.await_args.kwargs["request_prefix_context"] is None
+
+
+# ── a leading @prompt mention in the job message ─────────────────────────────
+
+
+def _project_with_prompt(tmp_path: Any, name: str, body: str) -> str:
+    prompts = tmp_path / ".kiro" / "prompts"
+    prompts.mkdir(parents=True)
+    (prompts / f"{name}.md").write_text(body, encoding="utf-8")
+    return str(tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sequence", [False, True], ids=["single", "sequence"])
+async def test_a_leading_prompt_mention_in_the_job_message_is_expanded(
+    fire: _Fire, tmp_path: Any, sequence: bool
+) -> None:
+    """The model gets the prompt body and the text after the mention, as a chat turn does."""
+    project = _project_with_prompt(tmp_path, "cron-sop", "Step one: check the pipeline.")
+    job = _sequence_job() if sequence else _make_llm_job()
+    job.project_path = project
+    job.message = "@cron-sop\n1. pipeline 42"
+
+    await fire.fire(job)
+
+    calls = gw_mod.run_in_embed_pool.await_args_list
+    assert calls, "build_message was never called"
+    for call in calls:
+        built = call.args[1]
+        assert built.startswith("Execute the following instructions:")
+        assert "Step one: check the pipeline." in built
+        assert "1. pipeline 42" in built
+        assert "@cron-sop" not in built
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_leading_mention_runs_as_written(fire: _Fire, tmp_path: Any) -> None:
+    job = _make_llm_job()
+    job.project_path = str(tmp_path)
+    job.message = "@here run the daily check"
+
+    await fire.fire(job)
+
+    assert gw_mod.run_in_embed_pool.await_args.args[1] == "@here run the daily check"
+
+
+@pytest.mark.asyncio
+async def test_a_mention_that_is_not_leading_is_not_expanded(fire: _Fire, tmp_path: Any) -> None:
+    job = _make_llm_job()
+    job.project_path = _project_with_prompt(tmp_path, "cron-sop", "Step one.")
+    job.message = "Run @cron-sop now"
+
+    await fire.fire(job)
+
+    assert gw_mod.run_in_embed_pool.await_args.args[1] == "Run @cron-sop now"
