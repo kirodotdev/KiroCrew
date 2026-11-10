@@ -31,6 +31,8 @@ import { agentOrDefaultLabel } from '../../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
+import { usePersistedBool } from '../../../hooks/usePersistedBool'
+import { FOLLOWUP_START_SENDS_KEY } from '../followupStartSends'
 import { Input } from '../../../components/ui'
 import { KnowledgeBubbleChip } from '../ChatPageMessageContent'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
@@ -55,7 +57,7 @@ import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { pinIsWithheld } from '../../../lib/model'
-import FollowUpCard from '../../../components/FollowUpCard'
+import FollowUpCard, { type FollowupStartMode } from '../../../components/FollowUpCard'
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
 import FlyingQuote from '../../../components/FlyingQuote'
 import QueueStack, { SubagentDeliveryProgress } from '../../../components/QueueStack'
@@ -229,8 +231,8 @@ interface ComposerDockViewProps {
   removeFileChip: (p: string) => void
   selectPickedFile: ReturnType<typeof useFileMentionActions>['selectPickedFile']
   followupAddToSession: (item: FollowupItem, index: number) => void
-  followupStartInNewChat: (item: FollowupItem, index: number) => Promise<void>
-  followupStartInWorktree: (item: FollowupItem, index: number) => Promise<void>
+  followupStartInNewChat: (item: FollowupItem, index: number, mode: FollowupStartMode) => Promise<void>
+  followupStartInWorktree: (item: FollowupItem, index: number, mode: FollowupStartMode) => Promise<void>
   displayMode: SlotApprovalMode
   _modelPinActive: string
   _modelPinAgent: string
@@ -341,6 +343,10 @@ export default function ComposerDockView({
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
   const crewModeNoteId = useId()
+  // "Send follow-ups with one click": browser-local, off unless stored as '1'
+  // (followupStartSends.ts). The card renders its footer and its Start mode
+  // from this one value.
+  const [followupStartSends] = usePersistedBool(FOLLOWUP_START_SENDS_KEY, false)
   // App composer actions: rows in "+" whose apps insert plain text.
   const composerActions = useComposerActionItems()
   // Someone else holds the typing lock: no dictation may start into the draft.
@@ -532,6 +538,7 @@ export default function ComposerDockView({
                     onAddToSession={followupAddToSession}
                     onStartInWorktree={followupStartInWorktree}
                     onStartInNewChat={followupStartInNewChat}
+                    startSends={followupStartSends}
                     onSkip={(index) => dispatch(dismissFollowupItem({ slot: activeSlot, index, ts: pendingFollowup.ts }))}
                   />
                 </div>

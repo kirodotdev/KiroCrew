@@ -66,7 +66,7 @@ const PINNED: Record<string, Counts> = {
   'src/pages/chat/usePromoteSlot.ts': { gesture: 0, announced: 1, keepTarget: 0, plain: 0, reason: 'opening the kept copy announces; the copy is a slot the keep just created, not a session the user picked, so it is not a gesture' },
   'src/pages/overview/PromptsTab.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'switches to a just-created slot' },
   'src/pages/useArtifactDetailPageCompanion.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'in-page nav intent + just-created slot; both self-handle within the page' },
-  'src/pages/useChatPageSlotSwitches.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 5, reason: 'the page\'s own slot-switching flows, each awaited with in-page error UI or on a slot it just created or found: fork, the signed chat link (reconnect + just-linked slot), the follow-up session and the split pane\'s side chat' },
+  'src/pages/useChatPageSlotSwitches.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 6, reason: 'the page\'s own slot-switching flows, each awaited with in-page error UI or on a slot it just created or found: fork, the signed chat link (reconnect + just-linked slot), the follow-up session (its pre-fill and one-click send paths, both on the slot it just created) and the split pane\'s side chat' },
   'src/store/chat/openCreatedSlot.ts': { gesture: 0, announced: 0, keepTarget: 1, plain: 0, reason: 'opens a slot a server route just created, so a 404 is a create/fetch race' },
   'src/store/chatSlice.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'deleteSlot internal fallback navigation; self-handles via unwrap().catch' },
 }
