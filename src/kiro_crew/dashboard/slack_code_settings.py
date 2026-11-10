@@ -25,7 +25,11 @@ from aiohttp import web
 
 from kiro_crew import slack_manifest
 from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME
-from kiro_crew.config.sections_slack import CODE_CHANNEL_DEFAULT_MAX
+from kiro_crew.config.sections_slack import (
+    CODE_CHANNEL_APPROVAL_ASK,
+    CODE_CHANNEL_APPROVAL_MODES,
+    CODE_CHANNEL_DEFAULT_MAX,
+)
 from kiro_crew.effort import is_valid_effort
 from kiro_crew.slack import features as slack_features
 from kiro_crew.slack import scope_probe
@@ -35,7 +39,7 @@ from kiro_crew.slack import scope_probe
 # ``slack_manifest.FEATURES``), each under its own ``slack.<name>`` key, so
 # registering one there needs nothing here.
 #: The ``code_channel_defaults`` keys the PUT accepts.
-DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort")
+DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort", "approval_mode")
 #: The model picker's "pin nothing, inherit" spelling; stored as unset.
 _INHERIT_MODEL = "auto"
 
@@ -83,25 +87,33 @@ def _choosable_agent_names(project_dir: str | None) -> list[str]:
     offered), minus Kiro Crew's generated specs (the side-turn read-only spec,
     skill-view aliases) and the background-only agents above.
     """
+    return list(_choosable_agents(project_dir))
+
+
+def _choosable_agents(project_dir: str | None) -> dict[str, str]:
+    """:func:`_choosable_agent_names`, each with its spec's ``description``, in order."""
     from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
     from kiro_crew.dashboard.handlers.agent_catalog import _choosable_templates
 
-    return [
-        a.name
+    return {
+        a.name: str(a.description or "")
         for a in _choosable_templates(list_agents(project_dir=project_dir or None))
         if not is_internal_agent_spec(a)
         and not (a.kirocrew_owned and a.filename in _BACKGROUND_AGENT_FILES)
-    ]
+    }
 
 
 async def _agent_names(project_dir: str | None) -> list[str]:
     """:func:`_choosable_agent_names`, off the event loop."""
+    return list(await _agent_menu(project_dir))
+
+
+async def _agent_menu(project_dir: str | None) -> dict[str, str]:
+    """:func:`_choosable_agents`, off the event loop."""
     from kiro_crew.executors import discovery_executor
 
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        discovery_executor(), lambda: _choosable_agent_names(project_dir)
-    )
+    return await loop.run_in_executor(discovery_executor(), lambda: _choosable_agents(project_dir))
 
 
 def _defaults_project_dir(folders: list[dict[str, Any]], folder_ref: str | None) -> str | None:
@@ -199,6 +211,7 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
             "agent": defaults.agent,
             "model": defaults.model,
             "reasoning_effort": defaults.reasoning_effort,
+            "approval_mode": defaults.approval_mode,
         },
         "code_channel_effective": {
             "folder": _folder_view(folders, folder),
@@ -208,6 +221,7 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
             "reasoning_effort": resolved.reasoning_effort,
             "project_dir": resolved.project_dir,
             "project_source": resolved.project_source,
+            "approval_mode": resolved.approval_mode,
             "slack_agent": _slack_agent(cfg),
             "folder_path": resolved.folder_path,
             "folder_auto_create": resolved.folder_auto_create,
@@ -348,6 +362,17 @@ async def validate_code_settings(
         raise CodeSettingsError(
             "code_channel_defaults.reasoning_effort must be one of low, medium, high, xhigh, max"
         )
+
+    approval = merged["approval_mode"]
+    if approval is not None and "approval_mode" in raw:
+        if approval not in CODE_CHANNEL_APPROVAL_MODES:
+            raise CodeSettingsError(
+                "code_channel_defaults.approval_mode must be one of "
+                + ", ".join(CODE_CHANNEL_APPROVAL_MODES)
+            )
+        if approval == CODE_CHANNEL_APPROVAL_ASK:
+            # The default: stored as unset, the one spelling the builder reads.
+            merged["approval_mode"] = None
 
     # Only the sub-keys this save changes: the write merges them into the object
     # as re-read inside the config lock (``merge_nested``), so a concurrent edit
