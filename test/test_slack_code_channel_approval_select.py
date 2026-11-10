@@ -13,6 +13,7 @@ Recorded Slack payloads in, recorded calls out (the agent-picker ``env``).
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -34,6 +35,7 @@ from test_slack_code_channel_agent_picker import (  # noqa: F401
 
 import kiro_crew.dashboard.chat_handlers as chat_handlers
 from kiro_crew import safety_override as safety_override_mod
+from kiro_crew.dashboard.state_parts import slot_turns
 from kiro_crew.slack.code_channels import agent_picker, approval_picker, commands
 from kiro_crew.slack.code_channels import worker_approvals as wa
 from kiro_crew.testing.clock import ManualClock
@@ -60,11 +62,14 @@ def chan(env: Env, monkeypatch: pytest.MonkeyPatch) -> Any:  # noqa: F811
         ("_trust_reads", False),
         ("_trust_scope", ""),
         ("_approval_futures", {}),
+        ("_approval_instances", {}),
         ("messages", []),
         ("_slack_channel", CH),
         ("_dirty", False),
     ):
         setattr(slot, name, value)
+    # The real slot's lookup, which the shared approval sweep calls per pending request.
+    slot.approval_instance = functools.partial(slot_turns.approval_instance, slot)
     env.slot = slot
     assert env.state is not None
     env.state._slots = {SLOT: slot}
