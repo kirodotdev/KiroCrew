@@ -376,7 +376,7 @@ class TestResolveCwd:
             terminal, "_resolve_shell_with_fence_shells",
             lambda _: ("/bin/sh", None, {}),
         )
-        monkeypatch.setattr(terminal.web, "WebSocketResponse", lambda **_: ws)
+        monkeypatch.setattr(terminal.ws_heartbeat, "LagTolerantWebSocketResponse", lambda **_: ws)
         # Fail before allocating a POSIX PTY or preparing either spawn's env.
         pty = MagicMock()
         pty.openpty.side_effect = AssertionError("unexpected PTY allocation")
