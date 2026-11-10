@@ -392,7 +392,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
     # Imported here because this module's bodies run in the chat_handlers
     # namespace, which carries only the names it re-exports.
-    from kiro_crew.dashboard import card_send
+    from kiro_crew.dashboard import card_send, channel_prompt
 
     _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
@@ -1309,6 +1309,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             author=_author_meta(_queued_actor_of(request)) if _person_send else None,
             queued_work=_queued_admission,
         )
+        channel_prompt.stamp_queued(slot, qid, body)
         _send_race.commit_request(request, message_id=qid)
         # The admission await (a config refresh included, even when admission
         # turns out off) may have outlived the running turn's handoff: the
@@ -1386,7 +1387,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # Same entry-meta contract as the busy-slot branch: the client's `sendId`
         # and attachment lists ride on the queue entry so the drained row
         # carries them.
-        _hold_meta: dict = containment_meta(state, slot)
+        _hold_meta: dict = {**containment_meta(state, slot), **channel_prompt.entry_meta(body)}
         _hold_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
         if _hold_sid:
             _hold_meta["sendId"] = _hold_sid
@@ -1856,6 +1857,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # resolver's fallback is ``user``, so a site that observes an app and stays
         # silent records a person who never typed anything.
         _turn_kwargs: dict = {"_directive_user_origin": _person_send}
+        _turn_kwargs.update(channel_prompt.turn_kwargs(body))
         # The owner mark rides this dispatch's own call, so a turn that never
         # starts takes it with it (``turn_entry``).
         _turn_kwargs["_directive_owner_origin"] = _owner_sent

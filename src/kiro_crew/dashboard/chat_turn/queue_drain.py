@@ -9,6 +9,7 @@ import json
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY, batch_prompt_on_channel
 from kiro_crew.dashboard.chat_delivery import (
     BACKGROUND_START_TASKS,
     START_BACKGROUND_META_KEY,
@@ -1293,6 +1294,8 @@ async def _start_next_queued_turn(
     # Read off the consumed entries (``_batch_recovery_echo_owed``); the merged
     # row's union says nothing about each entry, so it does not ride along.
     _drained_meta.pop(MIRROR_ECHO_OWED_META_KEY, None)
+    # Read off the consumed entries too (``batch_prompt_on_channel``).
+    _drained_meta.pop(PROMPT_ON_CHANNEL_META_KEY, None)
     # Queue plumbing: read above to pick the row, never part of a row's meta.
     _drained_meta.pop(REQUEUED_STEER_ROW_MID_META, None)
     # Queue plumbing like the steer mark above, read the way the channel origin is:
@@ -1470,6 +1473,9 @@ async def _start_next_queued_turn(
     # set only when every consumed entry carries the stamp, so it is echoed once.
     if _batch_recovery_echo_owed(consumed):
         _run_kwargs["_recovery_echo_owed"] = True
+    # A channel challenge link's prompt is already in the thread it came from.
+    if batch_prompt_on_channel(consumed):
+        _run_kwargs["_prompt_on_channel"] = True
     # A recovery of a Dashboard card's reply is still that card's words. ANY consumed
     # entry carrying the mark makes the whole drained turn untrusted (it can only
     # add prompts, never remove one), and it survives a restart because a stamp

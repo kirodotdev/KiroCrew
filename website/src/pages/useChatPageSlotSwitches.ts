@@ -8,6 +8,7 @@ import { ApiError } from '../api/apiError'
 import { safeSetSessionItem } from '../utils/safeStorage'
 import { extractPromptFromToken, extractSlackContextFromToken } from '../utils/tokenPrompt'
 import { takeUrlToken } from '../lib/urlToken'
+import { markChallengeAutoSend } from '../utils/channelChallengeSend'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 import { errMessage } from '../utils/thunkError'
 import { showTranscriptForkFailure } from '../utils/forkFailure'
@@ -136,8 +137,9 @@ export function useSignedLinkAnchor({
 }: SignedLinkAnchorOptions) {
   // Consume prompt from token payload (channel challenge-and-redirect flow).
   // The prompt is HMAC-signed in the token — server validates the signature
-  // and sets the session cookie before the SPA loads. No auto-send — the user
-  // must press Enter to confirm.
+  // and sets the session cookie before the SPA loads. Once the target session is
+  // active the prompt is sent, tagged as already in the channel thread so the
+  // mirror does not quote it back there (`utils/channelChallengeSend`).
   //
   // Three cases, driven by signed claims in the token:
   //  1. session_key present → the originating Slack thread is already linked to
@@ -230,6 +232,7 @@ export function useSignedLinkAnchor({
       if (!slotKey || composerSlotRef.current === slotKey) setInput(prompt)
       raisePrefillHint()
       if (!agentMismatch) {
+        markChallengeAutoSend(autoSendRef, prompt)
         autoSendRef.current = prompt
         setAutoSendTick(t => t + 1)
       }
