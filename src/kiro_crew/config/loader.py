@@ -743,6 +743,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _otlp_endpoint_rows,
         _read_backend_choice,
         _registry_entry,
+        _resolved_kas_bundle,
         _restore_stored_harness_fields,
         _restore_stored_stt_provider,
         _session_folder_root_or_empty,
@@ -842,6 +843,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.config.loader_document import (  # noqa: F401
         _ABSENT_AGENT_KEY,
+        _RESOLVED_DEFAULT_AGENT_KEYS,
         _SIDECAR_AGENTS_REPAIRED,
         _SIDECAR_BASE_SHADOW,
         _SIDECAR_BASE_UNREADABLE,
@@ -883,10 +885,12 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         coerce_config_field,
         coerce_dict_section,
         config_content_stamp,
+        kas_bundle_build_default,
         member_acp_backend_declared,
         read_config_for_update,
         refresh_config_meta_stamp,
         stamp_config_meta,
+        strip_undeclared_resolved_defaults,
         unsandboxed_exec_declared,
         unsandboxed_exec_platform_default,
         update_config_locked,

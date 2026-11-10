@@ -303,7 +303,13 @@ class AgentConfig:
             "(the dashboard's Sign in), never from kiro-cli's store. With nothing "
             "installed the gateway installs the pinned engine at the first spawn. "
             "With false, KAS still takes this route when kiro-cli's relay cannot "
-            "run on the host (no kiro-cli, or one that is not signed in).",
+            "run on the host (no kiro-cli, or one that is not signed in). "
+            "When unset, a Nightly build turns it on and every other build leaves "
+            "it off (config.loader_document.kas_bundle_build_default(), read from "
+            "the build's own stamp, not the update channel). A saved value always "
+            "wins, and save() leaves the key off disk until it is set. This "
+            "dataclass default stays false so the committed config-schema snapshot "
+            "is the same for every build.",
             # The running KAS runtime keeps its process across the switch, so
             # sessions move routes only once that process is replaced.
             restart=True,

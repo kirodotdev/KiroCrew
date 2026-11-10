@@ -27,6 +27,14 @@ mapping to get wrong. `test_publish_feed_contract.py` pins the channel set
 against `publish-cli.yml`, and `cli.sh` rejects anything outside it before
 touching the CDN.
 
+Nightly builds also run Kiro Crew's own KAS engine by default: `nightly.yml`
+passes `build_channel: nightly` to `build-wheel.yml`, `build-desktop.yml` and
+`build-windows.yml`, `scripts/stamp-distribution.sh` bakes it into
+`_build_info.BUILD_CHANNEL`, and an unset `agent.kas_bundle` reads that stamp
+(`config.loader_document.kas_bundle_build_default`). `release.yml` passes no
+lane, so insider and stable builds keep the default off. Pinned by
+`test_kas_bundle_nightly_default.py`.
+
 Channel is derived from the tag, and nothing else. `release.yml`'s `version` job
 treats **any** prerelease label as insider and maps it to a PEP 440 `rcN` wheel
 using the label's trailing number. Cutting the branch, numbering the RCs,

@@ -4410,7 +4410,10 @@ engaged for this backend and KAS is excluded from
 
 **KAS bundle route: the same harness, no kiro-cli.** `agent.kas_bundle = true`
 makes `KasHarness.resolve_spawn` spawn the engine from Kiro Crew's OWN install
-instead of kiro-cli's relay. `kirocrew kas install` (`cli_kas.py` →
+instead of kiro-cli's relay. Unset, it is on in a Nightly build and off in every
+other build (`config.loader_document.kas_bundle_build_default`, read from the
+build's own `_build_info.BUILD_CHANNEL` stamp, never the update-channel file;
+see config.md's omitted-key departures); a saved value always wins. `kirocrew kas install` (`cli_kas.py` →
 `acp/kas_bundle.py`) fetches the pinned version's manifest from `agent.kas_bundle_url`
 (`<base>/kas/<version>/manifest.json`; there is no "current" pointer, because the
 release's pin is the only version anything asks for), picks this
