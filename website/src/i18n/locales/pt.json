@@ -8071,7 +8071,7 @@
       "continue_with_builder_id": "Continuar com AWS Builder ID",
       "continue_with_company_sso": "Continuar com o SSO da sua empresa",
       "builder_id_hint": "Um login pessoal e gratuito para desenvolvedores. Você não precisa de uma conta da AWS.",
-      "company_sso_hint": "Para o AWS IAM Identity Center. Use a URL do portal de acesso que sua empresa forneceu, mesmo que o login passe pelo Okta ou Microsoft Entra.",
+      "company_sso_hint": "Para contas de trabalho no AWS IAM Identity Center. Você vai precisar da URL do portal de acesso que sua empresa forneceu, mesmo que o login passe pelo Okta ou Microsoft Entra.",
       "sso_start_url_label": "URL de login da sua empresa",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Cole a URL do portal de acesso da AWS que sua empresa forneceu.",

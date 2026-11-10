@@ -2874,7 +2874,7 @@
       "continue_with_builder_id": "Continue with AWS Builder ID",
       "continue_with_company_sso": "Continue with company SSO",
       "builder_id_hint": "A free personal sign-in for developers. You don't need an AWS account.",
-      "company_sso_hint": "For AWS IAM Identity Center. Use the access portal URL your company gave you, even if it signs you in through Okta or Microsoft Entra.",
+      "company_sso_hint": "For work accounts on AWS IAM Identity Center. You'll need the access portal URL your company gave you, even if it signs you in through Okta or Microsoft Entra.",
       "sso_start_url_label": "Company sign-in URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Paste the AWS access portal URL your company gave you.",

@@ -276,7 +276,7 @@ function ProviderButton({
   )
   if (!hint) return button
   return (
-    <div className="flex flex-col gap-1">
+    <div className="mb-1 flex flex-col gap-1">
       {button}
       <p id={hintId} className="px-1 text-[12px] leading-snug text-muted">
         {hint}

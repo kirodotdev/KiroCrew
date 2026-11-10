@@ -104,7 +104,7 @@ describe('KasLoginGate', () => {
     expect(
       screen.getByRole('button', { name: 'Continue with company SSO' }),
     ).toHaveAccessibleDescription(
-      'For AWS IAM Identity Center. Use the access portal URL your company gave you, even if it signs you in through Okta or Microsoft Entra.',
+      "For work accounts on AWS IAM Identity Center. You'll need the access portal URL your company gave you, even if it signs you in through Okta or Microsoft Entra.",
     )
   })
 
