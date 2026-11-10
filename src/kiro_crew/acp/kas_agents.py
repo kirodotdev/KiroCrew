@@ -145,7 +145,7 @@ from kiro_crew.acp.kas_prompt import (
 from kiro_crew.acp.kas_prompt_paths import is_unsafe_prompt_path as _is_unsafe_prompt_path
 from kiro_crew.acp.kas_settings_mcp import include_mcp_json
 from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
-from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases
+from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases, with_use_aws_denies
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
 from kiro_crew.acp.kas_spec_denies import spec_denies_record, web_fetch_carried, web_fetch_gate
 from kiro_crew.acp.kas_spec_grants import _entry_shell_readonly, shell_auto_allows_readonly
@@ -1143,6 +1143,9 @@ def to_client_custom_agent(
         source="translated `toolsSettings`",
     )
     authored_policy = permissions  # before the hooks' asks, which restrict nothing
+    permissions = with_use_aws_denies(
+        permissions, tools_settings, agent_id, _audit_permission_decision, may_skip_gate_now
+    )
     # With the batch write guard on, a write-class MCP tool the policy allows gets
     # an exact ``ask`` so its call reaches the guard; the refs are answered by
     # Crew's gate (``batch-guard-grant``), so a write alone still runs unprompted.
