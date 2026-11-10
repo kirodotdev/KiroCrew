@@ -11,20 +11,20 @@ from kiro_crew.cloud import ui
 
 class TestChoiceKeys:
     def test_down_wraps_and_enter_selects(self):
-        selected, done = ui._apply_choice_key("\x1b[B", 1, 2)
+        selected, done, _ = ui._apply_choice_key("\x1b[B", 1, 2)
         assert selected == 0
         assert done is False
-        selected, done = ui._apply_choice_key("\n", selected, 2)
+        selected, done, _ = ui._apply_choice_key("\n", selected, 2)
         assert selected == 0
         assert done is True
 
     def test_up_wraps(self):
-        selected, done = ui._apply_choice_key("\x1b[A", 0, 3)
+        selected, done, _ = ui._apply_choice_key("\x1b[A", 0, 3)
         assert selected == 2
         assert done is False
 
     def test_digit_selects(self):
-        selected, done = ui._apply_choice_key("2", 0, 3)
+        selected, done, _ = ui._apply_choice_key("2", 0, 3)
         assert selected == 1
         assert done is True
 

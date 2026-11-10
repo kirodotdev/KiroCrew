@@ -173,12 +173,13 @@ def _choose_cursor(title: str, options: list[tuple[str, str]], default_index: in
 
     fd = sys.stdin.fileno()
     old_attrs = termios.tcgetattr(fd)
+    typed = ""
     try:
         tty.setcbreak(fd)
         render()
         while True:
             key = _read_key()
-            selected, done = _apply_choice_key(key, selected, len(options))
+            selected, done, typed = _apply_choice_key(key, selected, len(options), typed)
             if done:
                 return selected
             render()
@@ -209,21 +210,30 @@ def _read_key() -> str:
     return ch
 
 
-def _apply_choice_key(key: str, selected: int, count: int) -> tuple[int, bool]:
-    """Apply one keypress to a cursor menu. Returns (selected, done)."""
+def _apply_choice_key(
+    key: str, selected: int, count: int, typed: str = ""
+) -> tuple[int, bool, str]:
+    """Apply one keypress to a cursor menu. Returns (selected, done, typed).
+
+    ``typed`` is the digits pressed so far. A number that one more digit could
+    still extend (``1`` in a 13-item menu) moves the cursor and waits, so ``1``
+    then ``3`` picks item 13 and ``1`` then Enter picks item 1.
+    """
     if count <= 0:
-        return 0, True
+        return 0, True, ""
     if key in ("\r", "\n"):
-        return selected, True
+        return selected, True, ""
     if key in ("\x1b[A", "k", "K"):
-        return (selected - 1) % count, False
+        return (selected - 1) % count, False, ""
     if key in ("\x1b[B", "j", "J"):
-        return (selected + 1) % count, False
-    if key.isdigit():
-        idx = int(key) - 1
-        if 0 <= idx < count:
-            return idx, True
-    return selected, False
+        return (selected + 1) % count, False, ""
+    if key.isdecimal():
+        number = int(typed + key)
+        if 1 <= number <= count:
+            if number * 10 > count:
+                return number - 1, True, ""
+            return number - 1, False, typed + key
+    return selected, False, ""
 
 
 class Spinner:
