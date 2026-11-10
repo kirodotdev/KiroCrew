@@ -332,7 +332,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # retain queued intent until a later admitted turn.
     from kiro_crew.memory_startup import wait_for_memory_preparation
 
-    await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+    await wait_for_memory_preparation(lambda: getattr(state, "memory_startup_task", None))
     turn_timing.mark("memory_ready")
     _memory_preparation_admitted = True
     turn._memory_preparation_admitted = _memory_preparation_admitted

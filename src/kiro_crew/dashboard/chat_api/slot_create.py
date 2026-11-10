@@ -420,7 +420,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # protected assignment is published.
     if existing_slot is None and is_owner_dashboard_request(request):
         try:
-            await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+            await wait_for_memory_preparation(lambda: getattr(state, "memory_startup_task", None))
         except MemoryStartupUnavailable as exc:
             return web.json_response({"error": str(exc), "code": "store_unavailable"}, status=503)
 

@@ -1164,3 +1164,90 @@ async def test_profile_identity_failure_is_503_instead_of_invalid_content_400(
     assert json.loads(response.text)["code"] == "store_unavailable"
     assert str(memory._workspace) not in response.text
     assert (memory.read_preferences(), memory.read_projects()) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_a_turn_before_the_task_is_published_waits_for_publication_and_task():
+    startup = MemoryStartup.begin()
+    holder: dict = {}
+    try:
+        waiter = asyncio.create_task(wait_for_memory_preparation(lambda: holder.get("task")))
+        await asyncio.sleep(0.3)
+        assert not waiter.done()  # today: refused at once as "being restored"
+        release = asyncio.Event()
+
+        async def prepare():
+            await release.wait()
+            startup.complete()
+
+        holder["task"] = asyncio.create_task(prepare())
+        await asyncio.sleep(0.3)
+        assert not waiter.done()
+        release.set()
+        await asyncio.wait_for(waiter, 10)
+    finally:
+        startup.stop()
+        startup.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_budget_exhausted_before_publication_names_session_restore(monkeypatch):
+    monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.3)
+    startup = MemoryStartup.begin()
+    try:
+        with pytest.raises(
+            MemoryStartupUnavailable, match=r"still starting \(restoring sessions\)"
+        ):
+            await wait_for_memory_preparation(lambda: None)
+    finally:
+        startup.stop()
+        startup.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+async def test_publication_and_task_share_one_grace_budget(monkeypatch):
+    monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_ADMISSION_WAIT_SECONDS", 0.5)
+    startup = MemoryStartup.begin()
+    holder: dict = {}
+    never = asyncio.Event()
+    try:
+
+        async def publish_late():
+            await asyncio.sleep(0.3)
+            holder["task"] = asyncio.create_task(never.wait())
+
+        late = asyncio.create_task(publish_late())
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(MemoryStartupUnavailable, match="Memory preparation is still running"):
+            await wait_for_memory_preparation(lambda: holder.get("task"))
+        assert asyncio.get_running_loop().time() - started < 0.9  # not 0.3 + 0.5 twice
+        holder["task"].cancel()
+        await late
+    finally:
+        startup.stop()
+        startup.release()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "dashboard/chat_turn/turn_admission.py",
+        "dashboard/chat_api/slot_create.py",
+        "dashboard/handlers/hooks.py",
+    ],
+)
+def test_chat_entry_points_pass_a_task_getter_not_a_snapshot(path):
+    import pathlib
+
+    import kiro_crew
+
+    tree = ast.parse((pathlib.Path(kiro_crew.__file__).parent / path).read_text())
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "wait_for_memory_preparation"
+    ]
+    assert calls and all(isinstance(c.args[0], ast.Lambda) for c in calls)
