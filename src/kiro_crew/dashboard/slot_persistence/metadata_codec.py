@@ -591,6 +591,8 @@ def _read_created_by(r: _Read) -> None:
             claimed.startswith(_CRON_CREATOR_PREFIX) or _creation_parent(r.slot.key) == claimed
         )
         r.slot._created_by = claimed if verified else UNVERIFIED_CREATOR
+        # Waiting on the boot fold, not refused for good: see ``session_tree_boot``.
+        r.slot._creator_pending_fold = not verified
         # A mode a person set on this session lived in memory and did not survive,
         # so the session follows its creator's next mode change again. A raise
         # still needs the crew log's creation record (``approval_inheritance``).

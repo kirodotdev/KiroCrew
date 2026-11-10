@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,7 @@ from kiro_crew.crew_log.session_tree import (
 )
 from kiro_crew.crew_log.session_tree_projection import CHECKPOINT_NAME, SessionTreeProjection
 from kiro_crew.dashboard.session_memory import lineage_parents
+from kiro_crew.dashboard.session_tree_boot import confirm_creators
 
 GATEWAY = "gateway"
 
@@ -251,9 +253,10 @@ def test_a_childs_first_turn_after_a_restart_cites_the_creator_from_the_spawn():
 
 @pytest.mark.parametrize("driver", ["recent", "open"])
 def test_a_boot_restore_keeps_only_the_creator_the_spawn_records(tmp_path, monkeypatch, driver):
-    """A restarted gateway restores tabs before anything else has folded the crew
-    log; the restore folds it first, so the creator a line names is kept when the
-    spawn records it and refused when nothing does."""
+    """A restarted gateway restores tabs before the crew log is folded. The restore
+    does not wait for the fold: every claim is fenced until it lands, then the
+    creator a line names is kept when the spawn records it and refused when nothing
+    does."""
     from chat_test_helpers import _make_state
 
     from kiro_crew.config.paths import config_dir
@@ -286,8 +289,65 @@ def test_a_boot_restore_keeps_only_the_creator_the_spawn_records(tmp_path, monke
     restore = restore_recent_sessions if driver == "recent" else restore_open_slots
     kwargs = {"window_minutes": 60} if driver == "recent" else {}
     assert restore(state, **kwargs) == 2
+    # The restore did not fold the tree, so no claim is confirmed yet (fail closed).
+    assert stp.projection().seeded is False
+    assert state._slots["chat-w"]._created_by == UNVERIFIED_CREATOR
+    assert state._slots["chat-x"]._created_by == UNVERIFIED_CREATOR
+
+    stp.projection().ensure_seeded()
+    assert confirm_creators(state) == 1
     assert state._slots["chat-w"]._created_by == "chat-l"
     assert state._slots["chat-x"]._created_by == UNVERIFIED_CREATOR
+
+
+def test_the_boot_seed_runs_in_the_background_and_confirms_after_the_fold(tmp_path, monkeypatch):
+    """The seed does not hold the caller: a claim made before the fold lands is
+    refused, and the same claim passes once the fold lands."""
+    from kiro_crew.dashboard.session_control import UNVERIFIED_CREATOR
+    from kiro_crew.dashboard.session_control_parts.session_status import _creation_parent
+    from kiro_crew.dashboard.session_tree_boot import seed_and_confirm
+
+    _open_creator("s-l", "chat-l")
+    emit.on_session_spawned("s-l", creator_slot="chat-l", child_slot="chat-w")
+    assert_drained()
+    stp.reset_for_tests()
+    emit.reset_caches()
+
+    slot = SimpleNamespace(
+        key="chat-w",
+        _saved_created_by="chat-l",
+        _created_by=UNVERIFIED_CREATOR,
+        _creator_pending_fold=True,
+    )
+    state = SimpleNamespace(_slots={"chat-w": slot})
+    proj = stp.projection()
+    release = threading.Event()
+    real = proj.ensure_seeded
+
+    async def _run():
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+
+        def _slow_seed(*a, **k):
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(10)
+            return real(*a, **k)
+
+        monkeypatch.setattr(proj, "ensure_seeded", _slow_seed)
+        task = asyncio.create_task(seed_and_confirm(state))
+        try:
+            await asyncio.wait_for(started.wait(), 30)
+            # The loop is free while the fold is in flight, and the claim is refused.
+            assert not task.done()
+            assert _creation_parent("chat-w") != "chat-l"
+            assert slot._created_by == UNVERIFIED_CREATOR
+        finally:
+            release.set()
+        await asyncio.wait_for(task, 30)
+
+    asyncio.run(_run())
+    assert _creation_parent("chat-w") == "chat-l"
+    assert slot._created_by == "chat-l"
 
 
 def test_the_spawn_survives_a_restart_through_the_checkpoint_too():
@@ -602,3 +662,44 @@ def test_the_creator_log_is_a_real_unit_with_the_entry_type_registered():
     )
     written = handle.append("session/spawned", {"child": {"slot": "W"}}, src=GATEWAY)
     assert written is not None and written.type == "session/spawned"
+
+
+def test_a_turn_that_waits_for_the_fold_settles_its_own_claim():
+    """A first turn awaits the fold before it cites the creator, and must not race the
+    boot sweep that confirms the restored claim."""
+    from kiro_crew.dashboard.chat_turn.crew_log_attribution import _crew_log_seed_tree
+    from kiro_crew.dashboard.session_control import UNVERIFIED_CREATOR
+
+    _open_creator("s-l", "chat-l")
+    emit.on_session_spawned("s-l", creator_slot="chat-l", child_slot="chat-w")
+    assert_drained()
+    stp.reset_for_tests()
+    emit.reset_caches()
+
+    slot = SimpleNamespace(
+        key="chat-w",
+        _saved_created_by="chat-l",
+        _created_by=UNVERIFIED_CREATOR,
+        _creator_pending_fold=True,
+    )
+    asyncio.run(_crew_log_seed_tree(slot))
+    assert slot._created_by == "chat-l"
+
+
+def test_a_fenced_slot_the_restore_did_not_mark_stays_fenced_after_the_fold():
+    """A History reopen fences with the same sentinel; the fold must not hand it back."""
+    from kiro_crew.dashboard.session_control import UNVERIFIED_CREATOR
+
+    _open_creator("s-l", "chat-l")
+    emit.on_session_spawned("s-l", creator_slot="chat-l", child_slot="chat-w")
+    assert_drained()
+    stp.projection().ensure_seeded()
+
+    reopened = SimpleNamespace(
+        key="chat-w",
+        _saved_created_by="chat-l",
+        _created_by=UNVERIFIED_CREATOR,
+        _creator_pending_fold=False,
+    )
+    assert confirm_creators(SimpleNamespace(_slots={"chat-w": reopened})) == 0
+    assert reopened._created_by == UNVERIFIED_CREATOR

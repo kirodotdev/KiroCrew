@@ -1610,7 +1610,19 @@ async def start_dashboard(
     if schedule_memory_preparation is not None:
         state.memory_startup_task = schedule_memory_preparation(state)
 
+    # Fold the crew log's session tree alongside the restore instead of inside the
+    # first restored worker's prefetch. Restored creator claims stay fenced until it
+    # lands; see session_tree_boot.
+    from kiro_crew.dashboard.session_tree_boot import start_background_seed
+
+    start_background_seed(state)
+
     await _restore_dashboard_sessions(state, cfg)
+    # A slot published after the fold's sweep ran is confirmed here (no I/O, no-op while
+    # the fold is still in flight).
+    from kiro_crew.dashboard.session_tree_boot import confirm_creators
+
+    confirm_creators(state)
 
     # Crew Mode's start pass (learn closed roots, move roots onto a conductor an
     # update changed) and its retry of busy roots, now that the restore has rebuilt

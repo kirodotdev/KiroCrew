@@ -185,6 +185,11 @@ async def _crew_log_seed_tree(slot: Any) -> None:
         from kiro_crew.crew_log.session_tree_projection import projection
 
         await asyncio.to_thread(projection().ensure_seeded)
+        # The boot fold may not have confirmed this slot's claim yet; the lineage read
+        # below compares it with the tree, so settle it here rather than race the sweep.
+        from kiro_crew.dashboard.session_tree_boot import confirm_creator
+
+        confirm_creator(slot)
     except asyncio.CancelledError:
         raise
     except Exception:

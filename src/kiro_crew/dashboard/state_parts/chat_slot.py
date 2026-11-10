@@ -143,6 +143,7 @@ class _ChatSlot:
         "_attribution",
         "_created_by_sid",
         "_saved_created_by",
+        "_creator_pending_fold",
         "_lineage_minted",
         "_reports_to_creator",
         "_revived_by",
@@ -450,6 +451,7 @@ class _ChatSlot:
     _attribution: Any
     _created_by_sid: str
     _saved_created_by: str
+    _creator_pending_fold: bool
     _lineage_minted: bool
     _reports_to_creator: bool
     _revived_by: str
