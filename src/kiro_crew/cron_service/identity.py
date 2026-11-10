@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -24,6 +25,14 @@ if TYPE_CHECKING:
     from kiro_crew.execution_context import ExecutionContext
 
 logger = logging.getLogger("kiro_crew.cron")
+
+#: Hex digits in the run id a stateless run's key ends with.
+_STATELESS_RUN_ID_HEX_CHARS = 8
+#: ``cron:<job id>:<run id>``, both ids ``uuid4().hex[:8]``, in the live ``:`` spelling
+#: or the transcript stem ``history_files._safe_key`` folds it to.
+_STATELESS_RUN_KEY = re.compile(
+    rf"cron[:_][0-9a-f]{{8}}[:_][0-9a-f]{{{_STATELESS_RUN_ID_HEX_CHARS}}}"
+)
 
 
 def agent_sequence_dispatches(seq: list[str]) -> bool:
@@ -90,8 +99,21 @@ def build_cron_session_context(job: CronJob) -> tuple[str, str]:
         return f"cron:{job.id}", job.message
 
     # Stateless: fresh key, bare message.
-    run_id = uuid.uuid4().hex[:8]
+    run_id = uuid.uuid4().hex[:_STATELESS_RUN_ID_HEX_CHARS]
     return f"cron:{job.id}:{run_id}", job.message
+
+
+def is_stateless_cron_run_key(key: str) -> bool:
+    """Whether *key* names one fire of a stateless job, minted above.
+
+    Every fire of such a job writes its own transcript, so a job firing every few
+    minutes writes thousands, and session search leaves them out of its window.
+    A persistent job's ``cron:<job id>`` is not one: that single transcript can
+    hold a conversation. Neither is the sequential-agent ``cron:<job id>:<agent>``,
+    unless the agent's name is eight lowercase hex characters, the one shape the
+    two kinds share.
+    """
+    return _STATELESS_RUN_KEY.fullmatch(key) is not None
 
 
 def cron_prior_result_context(job: CronJob) -> str:
