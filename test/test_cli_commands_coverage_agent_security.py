@@ -855,6 +855,68 @@ class TestSecurityCli:
         assert "Built-in deny patterns" in out
         assert "my-custom-pattern" in out
 
+    @pytest.mark.parametrize("value", [7, "rm", {"a": 1}])
+    def test_deny_list_says_a_non_list_value_enforces_nothing(
+        self, value: object, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The gate reads only a list of strings, so the CLI must not list letters or
+        keys as enforced patterns, nor crash on a number."""
+        (tmp_path / "config.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": value}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            cc._security(_ns(sec_action="deny-list"))
+        out = capsys.readouterr().out
+        assert "Built-in deny patterns" in out
+        assert "User-configured deny patterns:" not in out
+        assert "hooks.auto_deny_tools is not a list" in out
+
+    def test_deny_list_shows_only_the_text_entries_the_gate_enforces(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "config.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": ["keep-me", 5, None]}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            cc._security(_ns(sec_action="deny-list"))
+        out = capsys.readouterr().out
+        assert "  ✗ keep-me" in out
+        assert "  ✗ 5" not in out and "  ✗ None" not in out
+        assert "2 entries in hooks.auto_deny_tools are not text" in out
+
+    def test_deny_list_reads_the_local_overlay_the_gateway_merges(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "config.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": ["base-pattern"]}}), encoding="utf-8"
+        )
+        (tmp_path / "config.local.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": ["overlay-pattern"]}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            cc._security(_ns(sec_action="deny-list"))
+        out = capsys.readouterr().out
+        assert "  ✗ overlay-pattern" in out
+        assert "base-pattern" not in out
+
+    @pytest.mark.parametrize("value", [7, "rm", {"a": 1}, ["keep-me", 5, None], ["a", "b"]])
+    def test_deny_list_lists_exactly_what_the_gate_parses(
+        self, value: object, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from kiro_crew.hooks import HooksConfig
+
+        (tmp_path / "config.json").write_text(
+            json.dumps({"hooks": {"auto_deny_tools": value}}), encoding="utf-8"
+        )
+        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path):
+            cc._security(_ns(sec_action="deny-list"))
+        out = capsys.readouterr().out
+        user_half = (
+            out.split("User-configured deny patterns:")[1] if "User-configured" in out else ""
+        )
+        listed = [line[4:] for line in user_half.splitlines() if line.startswith("  ✗ ")]
+        assert listed == HooksConfig.from_dict({"auto_deny_tools": value}).auto_deny_tools
+
     def test_deny_list_without_config_file(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
