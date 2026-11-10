@@ -385,7 +385,7 @@ class _StartStopped(RuntimeError):
 def _end_allow_wait(hub: LiveHub, key: str) -> None:
     """A start parked on Chrome's Allow sheet put the card in waiting_allow: end it."""
     sess = hub.get(key)
-    if sess is not None and sess.state == STATE_WAITING_ALLOW:
+    if sess is not None and STATE_WAITING_ALLOW in (sess.state, sess.queued_state):
         hub.set_state(key, STATE_ERROR)
 
 
