@@ -65,10 +65,9 @@ _CLI_JSON_MAX_BYTES = 1024 * 1024
 class _OverlayTooLarge(ValueError):
     """The workspace cli.json, or the document a write would publish, passes the ceiling.
 
-    A ``ValueError`` that is neither ``OSError`` nor ``json.JSONDecodeError`` on
-    purpose: every ``except (JSONDecodeError, OSError)`` here reads a refused
-    file as empty and goes on to replace it, which for an oversized file would
-    discard the person's settings.
+    A ``ValueError`` that is not ``json.JSONDecodeError`` on purpose: the writers
+    read a file that does not parse as empty and go on to replace it, which for an
+    oversized file would discard the person's settings.
     """
 
 
@@ -132,8 +131,10 @@ def _write_cli_overlay(
     """
     with workspace_cli_settings_lock(work_dir, timeout=timeout) as cli_json:
         try:
-            existing = _load_cli_json(cli_json) if cli_json.exists() else {}
-        except (json.JSONDecodeError, OSError):
+            existing = _load_cli_json(cli_json)
+        except (FileNotFoundError, json.JSONDecodeError):
+            # Any other OSError propagates: rewriting a file that did not read
+            # from {} would drop every key this writer does not set.
             existing = {}
         if not isinstance(existing, dict):
             existing = {}
@@ -216,8 +217,10 @@ def _write_tool_search_overlay(
     """
     with workspace_cli_settings_lock(work_dir) as cli_json:
         try:
-            existing = _load_cli_json(cli_json) if cli_json.exists() else {}
-        except (json.JSONDecodeError, OSError):
+            existing = _load_cli_json(cli_json)
+        except (FileNotFoundError, json.JSONDecodeError):
+            # Any other OSError propagates: rewriting a file that did not read
+            # from {} would drop every key this writer does not set.
             existing = {}
         if not isinstance(existing, dict):
             existing = {}
