@@ -1,6 +1,6 @@
-"""Argument shaping for a live Amazon Transcribe stream.
+"""Argument shaping and start-refusal reading for a live Amazon Transcribe stream.
 
-Split out of :mod:`kiro_crew.dashboard.stt_stream`, which imports both functions
+Split out of :mod:`kiro_crew.dashboard.stt_stream`, which imports these functions
 and remains the path callers use.
 """
 
@@ -10,6 +10,11 @@ import inspect
 from typing import Any
 
 from kiro_crew.config.sections import SttConfig
+
+try:
+    from amazon_transcribe.exceptions import BadRequestException as _TranscribeBadRequest
+except ImportError:  # pragma: no cover -- the streaming extra is optional
+    _TranscribeBadRequest = None  # type: ignore[assignment,misc]
 
 #: The ``start_stream_transcription`` keyword mixed-language detection needs. SDK
 #: 0.6.3 and later accept it; an older install raises ``TypeError`` on it.
@@ -53,3 +58,21 @@ def _transcribe_language_kwargs(stt_cfg: SttConfig) -> dict[str, Any]:
         "language_options": candidates,
         "vocabulary_names": [vocabulary] if vocabulary else None,
     }
+
+
+def _vocabulary_rejected(exc: BaseException, vocabulary: str) -> bool:
+    """Whether a refused stream start was Amazon Transcribe refusing *vocabulary*.
+
+    Narrow on purpose: a vocabulary must be configured, the refusal must be the
+    service's ``BadRequestException`` (raised by ``start_stream_transcription``
+    itself, before any audio is sent), and its message must name the vocabulary. A
+    bad request for any other reason keeps the generic code, so an operator is
+    never sent to change a vocabulary that is not the problem. The stem, not the
+    word: with mixed languages the vocabulary rides as ``VocabularyNames``, whose
+    refusals speak of "vocabularies".
+    """
+    if not vocabulary or _TranscribeBadRequest is None:
+        return False
+    if not isinstance(exc, _TranscribeBadRequest):
+        return False
+    return "vocabular" in str(getattr(exc, "message", "")).lower()

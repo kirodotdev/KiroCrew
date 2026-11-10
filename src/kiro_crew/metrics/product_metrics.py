@@ -117,6 +117,22 @@ _INVENTORY = frozenset(
         "kirocrew.inventory.probe.failures",
         # Crewmates the person created; the count rides in the value.
         "kirocrew.inventory.members",
+        # The selected dictation and reply provider (metrics/voice.py labels).
+        "kirocrew.inventory.voice.provider",
+    }
+)
+
+# Voice: dictation and spoken replies (metrics/voice.py). `provider` is a
+# built-in name, `registered` for an edition's, or `other`; every other value is
+# a tuple-backed enum or a fixed bucket. No transcript, reply text, voice id,
+# language or error message is an attribute.
+_VOICE = frozenset(
+    {
+        "kirocrew.voice.stt.started",
+        "kirocrew.voice.stt.ended",
+        "kirocrew.voice.stt.errors",
+        "kirocrew.voice.unavailable",
+        "kirocrew.voice.tts.replies",
     }
 )
 
@@ -142,7 +158,7 @@ _RECOMMENDATIONS = frozenset(
 
 #: The v1 export allowlist: every metric a product destination may receive.
 PRODUCT_METRICS: "frozenset[str]" = (
-    _SESSIONS | _CREW | _WORK | _FEATURES | _INVENTORY | _RECOMMENDATIONS
+    _SESSIONS | _CREW | _WORK | _FEATURES | _INVENTORY | _VOICE | _RECOMMENDATIONS
 )
 
 # PENDING -- reviewed for export but NOT exportable yet. Each one joins
