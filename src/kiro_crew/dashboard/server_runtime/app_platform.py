@@ -193,7 +193,10 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
                 "Error stopping background pollers on shutdown; proceeding to the "
                 "gateway hook shutdown sweep so app backends are torn down"
             )
-        await on_gateway_shutdown()
+        try:
+            await on_gateway_shutdown()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.exception("Gateway hook shutdown sweep failed")
 
     app.on_cleanup.append(_hooks_shutdown)
 
