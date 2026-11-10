@@ -42,6 +42,7 @@ import pytest
 from theme_install_helpers import _VALID_MP3, _VALID_VARS, _make_theme, _make_tiered, _write
 
 from conftest import requires_symlinks
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers.themes import (
     _atomic_write_theme_json,
     _clone_github,
@@ -355,6 +356,20 @@ class TestValidateThemeDir:
         summary, err = _validate_theme_dir(d)
         assert summary is None
         assert err is not None and "symlink" in err.lower()
+
+    @pytest.mark.parametrize(
+        ("linked", "error"),
+        [("", "theme path is not a directory"), ("styles", "symlinks are not allowed: styles")],
+    )
+    def test_a_junction_is_refused_like_a_symlink(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str, error: str
+    ) -> None:
+        """A Windows junction is a directory that is not a symlink; the guards refuse it."""
+        d = _make_theme(tmp_path, styled=True)
+        junction = d / linked  # "" names the pack root itself
+        monkeypatch.setattr(platform_compat, "_ISJUNCTION", lambda p: Path(p) == junction)
+        assert junction.is_dir() and not junction.is_symlink()
+        assert _validate_theme_dir(d) == (None, error)
 
     def test_bad_css_value_rejected(self, tmp_path: Path) -> None:
         bad = {

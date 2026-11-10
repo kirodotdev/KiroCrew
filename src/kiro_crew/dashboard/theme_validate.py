@@ -19,6 +19,7 @@ from typing import Any
 
 from kiro_crew.config.loader import config_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.slugs import slug_hash_fallback
 from kiro_crew.user_json import loads_user_json
 
@@ -1269,7 +1270,7 @@ def _validate_theme_dir(
     opt-in rather than applied to every read. See ``_validate_overrides_css``
     and ``_theme_asset_descriptor``.
     """
-    if not path.is_dir() or path.is_symlink():
+    if not path.is_dir() or is_link_or_junction(path):
         return None, "theme path is not a directory"
     root = path.resolve()
 
@@ -1369,7 +1370,7 @@ def _validate_theme_dir(
         entries += 1
         if entries > max_entries:
             return None, f"too many files in theme (max {max_entries})"
-        if entry.is_symlink():
+        if is_link_or_junction(entry):
             return None, f"symlinks are not allowed: {entry.name}"
         try:
             entry.resolve().relative_to(root)
