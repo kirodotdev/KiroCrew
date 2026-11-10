@@ -1,6 +1,7 @@
 """The pure fold API over the registry: a fold's resumable position (:class:`Checkpoint`),
 starting one (``initial``), continuing it over entries (``advance``), rendering it
-(``projection_of``) and the whole-file form (``fold``).
+(``projection_of``), the whole-file form (``fold``), and the state a slot's newest unit
+carries for a slot fold (``carried_state``).
 """
 
 from __future__ import annotations
@@ -11,8 +12,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.crew_log.entry_types import SLOT_CARRY_ENTRY_TYPE
 from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
-from kiro_crew.crew_log.projection_catalogue import FOLD_NAMES, Projection
+from kiro_crew.crew_log.projection_catalogue import CARRIED_FOLD_NAMES, FOLD_NAMES, Projection
 from kiro_crew.crew_log.projection_registry import _FOLDS
 from kiro_crew.crew_log.schema import Entry
 
@@ -115,7 +117,42 @@ def initial(name: str) -> Checkpoint:
     return Checkpoint(name=name, last_seq=0, state=fold_spec.start())
 
 
-def advance(checkpoint: Checkpoint, entries: Iterable[Entry]) -> Checkpoint:
+def carried_state(entry: Entry, name: str, slot: str) -> "dict[str, Any] | None":
+    """The state *entry* carries for the *name* fold of *slot*, or ``None``.
+
+    A slot's newest unit holds one ``session/carried`` entry per slot fold whose state
+    it took over from the units the slot ran under before it. A slot-fold driver that
+    meets one for the fold and the slot it is folding REPLACES its state with the
+    carried one, so those earlier units stop changing the answer and retention may
+    collect them. The DRIVER applies it, never a fold's ``step``, because only the
+    driver knows which slot it folds: a unit of another slot joined into this fold (a
+    bound worker's, through ``also_slots``) carries that slot's state, not this one's.
+
+    ``None`` for anything else: another type, another fold or slot, no slot to compare,
+    or a state that does not decode to this fold's shape. The version the state was
+    written under is NOT compared. A savepoint is a cache that a version move retires
+    to a cold fold; a carried state is the only record left of the units it came from
+    once they are collected, so a fold whose stored shape changes owes a reader for its
+    older carried states rather than a refusal that would drop them.
+    """
+    if entry.type != SLOT_CARRY_ENTRY_TYPE or not slot or name not in CARRIED_FOLD_NAMES:
+        return None
+    data = entry.data
+    if not isinstance(data, Mapping) or data.get("fold") != name or data.get("slot") != slot:
+        return None
+    encoded = data.get("state")
+    if not isinstance(encoded, str):
+        return None
+    try:
+        state = json.loads(encoded)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(state, dict) or not _state_matches_fold(name, state):
+        return None
+    return state
+
+
+def advance(checkpoint: Checkpoint, entries: Iterable[Entry], *, slot: str = "") -> Checkpoint:
     """*checkpoint* continued over *entries*, which must come after it, in order.
 
     Every entry's seq must be strictly greater than the last one consumed. An
@@ -133,6 +170,10 @@ def advance(checkpoint: Checkpoint, entries: Iterable[Entry]) -> Checkpoint:
     are frozen records, and a returned one sharing a mutable dict with its input
     would leave that input claiming a seq its state has moved past. The copy is
     bounded work, since every fold's state is bounded by construction.
+
+    *slot* is the slot a SLOT fold is folding, and only a caller folding one passes it:
+    a ``session/carried`` entry for this fold and that slot then replaces the state
+    (:func:`carried_state`). Empty, no carry applies, which is a session fold's answer.
     """
     fold_spec = _FOLDS[require_name(checkpoint.name)]
     state = copy.deepcopy(checkpoint.state)
@@ -145,7 +186,11 @@ def advance(checkpoint: Checkpoint, entries: Iterable[Entry]) -> Checkpoint:
                 code=CODE_BAD_DATA,
                 field="seq",
             )
-        fold_spec.step(state, entry)
+        carried = carried_state(entry, checkpoint.name, slot) if slot else None
+        if carried is not None:
+            state = carried
+        else:
+            fold_spec.step(state, entry)
         last = entry.seq
     return Checkpoint(name=checkpoint.name, last_seq=last, state=state)
 

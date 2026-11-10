@@ -66,6 +66,12 @@ CANONICAL: dict[str, dict] = {
     },
     "session/class": {"memory": "persistent", "app": "secretary", "channel": True},
     "session/closed": {"reason": "reset"},
+    "session/carried": {
+        "fold": "ledger",
+        "slot": "dashboard:3",
+        "version": 4,
+        "state": '{"goal":"land the projection change","phase":"implementation"}',
+    },
     "session/adopted": {
         "parent": {"slot": "chat-9", "sid": "acp-sess-adopter"},
         "previous_parent": {"slot": "chat-3", "sid": "acp-sess-former"},
@@ -386,7 +392,7 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # have to satisfy a contract written without it. Each type that joins does so
     # because KNOWN_TYPES is derived from this registry: an undeclared type in a
     # log stops every later fold of it. Bump the count when a new writer lands.
-    assert len(SESSION_ENTRY_TYPES) == 51
+    assert len(SESSION_ENTRY_TYPES) == 52
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.

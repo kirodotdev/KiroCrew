@@ -186,12 +186,18 @@ def crew_log_units(
     """Every crew log holding *crew_id*'s ledger entries, oldest unit first.
 
     Units are listed by the wall clock their headers carry, then re-ordered by the
-    order this crew RECORDED into them (:data:`_UNIT_ORDER_SUFFIX`): a unit nothing
-    recorded into contributes no entries, so its place among them is immaterial and
-    header order is kept for it, and every unit absent from the order log is older
-    than everything in it -- the log keeps the newest ids -- so those apply FIRST.
-    The LIVE unit applies LAST whatever either says: a writer knows which unit it is
-    in, and the fold cannot be wrong about it.
+    order this crew RECORDED into them (:data:`_UNIT_ORDER_SUFFIX`). A unit absent from
+    the order log is placed by the slot's ``previous_sid`` succession, after the
+    recorded units before it there (``session_ledger_control._causal_units``): one
+    older than every recorded unit, evicted from the log that keeps the newest ids,
+    applies FIRST, and the crew's newer units after them, its newest last. A unit nothing
+    recorded into holds no radar entry of its own, but the crew's newest unit is where
+    the slot carry writes the crew's whole record (``session/carried``), and it keeps its
+    place after the units that record holds once the crew moves on to a later unit:
+    folded first, they would be laid over it again, and that later unit's own carry,
+    folded over the same succession (``projection_readers._slot_units_for_fold``), is
+    read in the order it was folded in. The LIVE unit applies LAST whatever either says:
+    a writer knows which unit it is in, and the fold cannot be wrong about it.
 
     ``()`` when the crew has none -- a crew that never recorded, or a gateway whose
     crew log is off -- and, unless *strict*, on every failure to LIST them, because
@@ -203,13 +209,15 @@ def crew_log_units(
     """
     try:
         from kiro_crew.crew_log.store import session_units_for_slot
+        from kiro_crew.session_ledger_control import _causal_units
 
-        units = session_units_for_slot(slot_key_for(crew_id), strict=strict)
-        recorded = _recorded_unit_order(owner, repo, crew_id, root)
-        if recorded:
-            known = [u for u in recorded if u in units]
-            rest = [u for u in units if u not in recorded]
-            units = tuple(rest + known)
+        slot = slot_key_for(crew_id)
+        units = session_units_for_slot(slot, strict=strict)
+        # Recorded order, with each unit the crew has not recorded into placed by
+        # succession: a unit holding the slot carry of the crew's record folds after the
+        # units that record already holds, and the newest folds last, so its own
+        # appends continue the warm cell instead of retiring it.
+        units = _causal_units(slot, units, _recorded_unit_order(owner, repo, crew_id, root))
         if live_session_id and live_session_id in units:
             units = tuple(u for u in units if u != live_session_id) + (live_session_id,)
         return units

@@ -1170,7 +1170,7 @@ def test_the_header_slot_reader_answers_none_for_a_unit_that_is_not_there():
 # --- only a close the gateway can PROVE is terminal authorizes collection ---
 
 
-def test_only_a_destroy_close_authorizes_collection():
+def test_a_destroy_close_authorizes_collection():
     """``destroy`` DELETES the id's mapping, unconditionally, before writing this.
 
     An id absent from the map cannot be resumed by anything, and the gateway
@@ -1183,6 +1183,40 @@ def test_only_a_destroy_close_authorizes_collection():
 
     assert store.sweep_expired(30) == (1, 0)
     assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_a_superseded_close_authorizes_collection():
+    """The emitter writes ``superseded`` only once a later unit of the slot carries
+    every slot fold's state over this one and no key maps its id
+    (``test_crew_log_slot_carry.py``), so the unit is finished and the sweep reads the
+    proof from the log alone."""
+    log = _closed_session(closed_days_ago=90, reason="superseded")
+    del log
+
+    assert store.sweep_expired(30) == (1, 0)
+    assert not CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_a_superseded_close_inside_the_window_is_kept():
+    log = _closed_session(closed_days_ago=5, reason="superseded")
+    del log
+
+    assert store.sweep_expired(30) == (0, 0)
+    assert CrewLog.exists(lg.KIND_SESSION, SESSION)
+
+
+def test_closed_for_good_reads_the_same_proof_as_the_sweep():
+    """The writer asks it before a ``superseded`` close, so a unit is not closed twice."""
+    log = _closed_session(closed_days_ago=1, reason="superseded")
+    del log
+    log = _closed_session("s-reset", closed_days_ago=1, reason="reset")
+    del log
+    log = _open_session("s-open")
+    del log
+
+    assert store.closed_for_good(_unit_dir(lg.KIND_SESSION, SESSION))
+    assert not store.closed_for_good(_unit_dir(lg.KIND_SESSION, "s-reset"))
+    assert not store.closed_for_good(_unit_dir(lg.KIND_SESSION, "s-open"))
 
 
 @pytest.mark.parametrize(

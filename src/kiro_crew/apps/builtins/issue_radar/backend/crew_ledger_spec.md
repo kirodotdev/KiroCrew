@@ -65,8 +65,18 @@ the unit it records into to `crews/<crew_id>.unit-order` (fsynced, once the entr
 IN the file and not before -- the order file's claim is "among the units that
 recorded, this one holds the newest entry", which only a landed append earns; a unit
 recording again after another is moved to the end, never listed
-twice; the newest 64 kept, older ids and units nothing recorded into keep header
-order and apply first). The file is never appended in place or staged under a
+twice; the newest 64 kept). A unit the file does not name is placed by the slot's
+`previous_sid` succession, right after the last recorded unit before it there
+(`session_ledger_control._causal_units`, the rule the session ledger's list uses too):
+older ids and units older than every recorded one apply first, and a newer unit
+nothing recorded into after the units before it, so the slot's newest unit applies
+LAST. The slot carry writes the crew's whole record into that unit as a
+`session/carried` entry before it records anything (the crew log emitter spec, "The
+slot carry"), so folded first, the units that record came from would be laid over it
+again, and its own appends would retire the warm cell and the savepoint; it keeps that
+place once the crew moves on to a later unit, whose own carry is folded over the same
+succession. The file is
+never appended in place or staged under a
 predictable name: it is rewritten whole through a uniquely named temp file
 renamed over the name, under a PINNED parent directory where the platform
 supports it, and read refusing a link at its name -- the data home is where a

@@ -1484,6 +1484,9 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # unit for a reader to find.
         previous_sid=_crew_log_edge.sid,
         previous_undecided=_crew_log_edge.undecided,
+        # The key this turn acquired its session under (the slot's effective session
+        # key), which a linked tab's ledger callers are keyed by; the slot carry joins it.
+        session_key=session_key,
     )
     agent_label = kiro_agent or slot.agent or "default"
     # The label states what the session RUNS on, so a withheld pin reports the

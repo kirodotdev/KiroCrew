@@ -101,7 +101,11 @@ from kiro_crew.crew_log.entry_types_ledgers import (  # noqa: F401
     WORK_CHARGE_ENTRY_TYPE,
     WORK_ENTRY_TYPE,
 )
-from kiro_crew.crew_log.entry_types_lifecycle import ACTOR_VALUES  # noqa: F401
+from kiro_crew.crew_log.entry_types_lifecycle import (  # noqa: F401
+    ACTOR_VALUES,
+    SLOT_CARRY_ENTRY_TYPE,
+    SUPERSEDED_CLOSE_REASON,
+)
 from kiro_crew.crew_log.entry_types_surfaces import (  # noqa: F401
     CARD_FINISHED_STATUSES,
     CREWMATE_OPTION_LIMIT,

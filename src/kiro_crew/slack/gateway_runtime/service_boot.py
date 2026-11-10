@@ -1169,6 +1169,10 @@ async def run(self: GatewayOrchestrator) -> None:
         # it while the probe is missing -- which would let the repair close a
         # child that is still running.
         self._register_child_liveness()
+    # Past readiness too, and before the dashboard workers and cron start, so the slot
+    # carry of the first session they open can ask the session map. Not gated on the
+    # subagent manager: every slot that moves to a new session id needs it.
+    self._register_session_key_probe()
     # Past the store-ready pass: with no adoption sweep armed, none will
     # decide the runs a restart recovered, so fair admission stops holding them.
     if self.task_runner is not None and not self._runner_admission_adopted:

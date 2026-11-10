@@ -417,16 +417,44 @@ A slot-keyed fold is the module's stated exception to "one fold, one unit", and 
 is stated rather than assumed, because a reader has to know which kind of fold it
 holds. A slot owns one ACP session id at a time rather than for its whole life, so
 the record it answers for is spread over a unit per id the slot ran under.
-`fold_slot_checkpoint` folds those units oldest first, RE-BASING the seq guard at
+`fold_slot_checkpoint` folds those units oldest first, RE-BASING the position at
 each one: a seq is comparable only within one file, so the second unit's entries all
-sit at or below the first unit's seq, and `advance` would refuse the whole file as a
-re-fold. The state carries forward across the boundary while the seq restarts. This
+sit at or below the first unit's seq, and one `advance` across them would refuse the
+whole file as a re-fold. The state carries forward across the boundary while the seq
+restarts. `fold_slot_checkpoints` is the same fold for several folds over the same
+units in one pass, and the single-fold form is that with one name. This
 is not general: `timeline` is a single-succession-unit fold, and a multi-unit slot fold
 of it is refused with `CrewLogError` `bad_data` at the seq that went backwards.
 `fold_slot` renders the result for the ledger's and the work board's routes; the radar
 fold's owner (the crew store) renders the checkpoint itself, since it also advances it
 over the entry it is appending. The returned `last_seq` belongs to the newest unit
 folded.
+
+**A carried state replaces the fold's.** Every fold in `CARRIED_FOLD_NAMES` (the slot-keyed
+folds above, `worker` included, the `worktree` tree fold, and the `status` session fold the gone
+rows of `session_status` read over a slot, `CARRIED_SESSION_FOLD_NAMES`) is moved by
+`session/carried` as well as by its own types: the entry the emitter writes into a slot's newest unit with that fold's
+state over every unit the slot ran under before it (crew-log-emitter.md, "The slot carry"). The
+tree fold is carried under its ROOT's slot, because it reads the root board's own units, the ones
+the root's carry replaces. A driver that meets one for the fold AND the slot it is folding replaces
+its state with the carried one (`projection_kernel.carried_state`), so the units before it stop
+changing the answer and retention may collect them once they are closed `superseded`
+(crew-log-core.md). The drivers apply it, not a fold's `step`: the slot-memo adapter `_SlotFold`
+(which `read_tree_projection`'s cell is, keyed by the root), `fold_slot_checkpoints`, and
+`advance` when its caller names a slot (`fold_tree_checkpoint` names the root). Only a driver knows which slot it folds, and a unit of
+another slot joined through `also_slots` carries that slot's own state. One driver also applies a carry
+for another slot: `fold_joined_checkpoint`, the ledger carry's cold fold over a join that leads with
+units headed with another spelling of the slot, applies that spelling's own ledger carry inside the
+leading run of its units, where the state holds nothing but those units, and answers `None` when a
+unit of a later spelling holds one (crew-log-core.md, "A joined spelling with carries of its own"). An entry carried for
+another fold or slot, one that does not decode to an object of this fold's shape
+(`_state_matches_fold`), and any carry met by a caller that names no slot change nothing, so a
+read of `status` for one unit still answers for that unit alone. The `usage` and `tools` session
+folds are read over a slot too and are not carried (crew-log-core.md, "A slot's units are
+carried"). The version the state was written under is recorded and NOT compared: a savepoint is a cache a
+version move retires to a cold fold, but a carried state is the only record left of the units it
+came from once they are collected, so a fold that changes what it stores owes a reader for its
+older carried states rather than a refusal that would drop them.
 
 How far a fold reaches differs by fold, and only the `work` board reaches past one
 slot. The `ledger` and `radar` folds join exactly one slot's own units -- the radar
@@ -437,17 +465,25 @@ fold answers whole only when those units are folded together; which units those 
 decided from the board's own recorded bindings rather than from the reader's request.
 
 Unit selection belongs to the fold: `read_slot_projection` asks `_slot_units_for_fold`
-for the list before folding, and a fold with no rule of its own gets
-`session_units_for_slot`. It names the units whose HEADER can be
-PROVED to belong to the store holding it, ordered by the header's `createdAt` and
-then by unit id so a tie is stable -- which is the order the units were opened in,
-and therefore the order their entries happened in, so a later update wins over an
-earlier one. A caller that cannot tolerate a clock's ordering re-orders the list
-itself: the ledger's `crew_log_units` applies its own append-order log and drops the
-units a permanent delete excluded before folding, because a backward clock step
-would otherwise apply a retired session's goal over a later one's
-(`session-work-ledger.md`); the radar fold's owner keeps the order the crew RECORDED
-into its units and pins the crew's LIVE unit last, for the same reason. `read_slot_projection`
+for the list before folding. The store's listing, `session_units_for_slot`, names the
+units whose HEADER can be PROVED to belong to the store holding it, ordered by the
+header's `createdAt` and then by unit id so a tie is stable, and no fold reads it in
+that order: a backward clock step between two units of one slot lists the newer one
+first, which applies a retired session's update over a later one's, and once the slot
+carries (above) it folds a unit again after the carry that already holds it, which a
+later carry would keep for good. So a fold whose owner records the order its units were
+written in reads that order: the ledger's `crew_log_units` applies its append-order log
+and drops the units a permanent delete excluded (`session-work-ledger.md`), the work
+board, the project report, the work tree and the panel read their own order logs, and
+the radar fold's owner keeps the order the crew RECORDED into its units and pins the
+crew's LIVE unit last. Each places a unit its log does not name by the slot's
+`previous_sid` succession, after the recorded units before it there
+(`session_ledger_control._causal_units`), so the newest unit, which the slot carry
+writes into before it records, folds after the units its carry holds. Every other fold
+(`status`, `mistakes`, `workers`, `worker` and the rest) reads `units_in_succession`,
+the same chain. The carry is folded over exactly the list the fold's reader folds,
+which must end with the carrying unit (crew-log-emitter.md, "The slot carry").
+`read_slot_projection`
 is the slot-keyed read the `ledger`, `work` and per-slot `usage` routes use, and `slot_of_session` resolves a
 session-addressed request to the slot recorded in that session's header: the header
 rather than a session mapping, because it is written once inside the fenced tree and
@@ -514,7 +550,9 @@ sub-board entry folds only into the sub-board's own row of the project report. T
 `_own_board_units(root)`): each nested board reaches it as the copies relayed into
 the root's log, so no bind is walked and no other board's log is opened.
 `read_tree_projection` folds them in the root's warm slot cell, so a read with no new
-entry reads none and a restart resumes from the savepoint.
+entry reads none and a restart resumes from the savepoint. The root's newest unit carries the
+tree (`session/carried`, above), so the root's older units may be collected without the tree
+losing a board.
 
 `_Fold.bind_slot` is the optional fourth fold operation. The `work` fold registers
 `_work_bind_slot`, and `fold_slot_checkpoint` invokes it before the first entry.

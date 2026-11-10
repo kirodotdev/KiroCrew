@@ -1,9 +1,10 @@
 """A reset's new unit is listed LAST, so the ledger fold stays warm.
 
-The ledger's ``crew_log_units`` lists units missing from the order file before the
-recorded ones, except the slot's newest unit by succession, which goes after them. A
-conductor reset opens such a unit, so its open and its first record are appends, and the
-warm cell carries over both instead of refolding the slot cold.
+``work_crew_log_units``, ``panel_crew_log_units`` and the ledger's ``crew_log_units`` place
+a unit missing from the order file by succession: before the recorded ones when it is older
+than all of them, else after the recorded ones before it. A conductor reset opens a unit newer
+than every recorded one, so its open and its first record are appends, and the warm cell
+carries over both instead of refolding the slot cold.
 
 Each test runs the real crew-log writer on a temp data home and checks the warm answer
 against a from-scratch fold of the same units.
@@ -129,6 +130,32 @@ def test_two_resets_in_a_row_stay_warm(name, origins):
         _record(name, unit)
         assert _read(name, origins)[1] == "warm"
     assert _read(name, origins)[0] == ("u-1", "u-2", "u-3", "u-4")
+
+
+def test_a_skipped_reset_unit_keeps_its_place_once_a_newer_unit_opens(origins):
+    """A reset unit that never records stays after the units before it when the next
+    reset opens, because a unit the order file does not name is placed by succession, so
+    that read is an append and stays warm. Moved first, it would refold the slot cold, and
+    a slot carry it held would have the units before it laid over it again."""
+    _two_units("ledger", origins)
+    _open("u-3")
+    assert _read("ledger", origins)[0] == ("u-1", "u-2", "u-3")
+    _open("u-4")
+    assert _read("ledger", origins) == (("u-1", "u-2", "u-3", "u-4"), "warm")
+    _record("ledger", "u-4")
+    assert _read("ledger", origins) == (("u-1", "u-2", "u-3", "u-4"), "warm")
+
+
+def test_an_unrecorded_unit_older_than_a_recorded_one_still_folds_first(origins):
+    _open("u-1")
+    _open("u-2")
+    _record("ledger", "u-2")
+    _open("u-3")
+    _record("ledger", "u-3")
+    assert _read("ledger", origins)[0] == ("u-1", "u-2", "u-3")
+    # Recorded order wins over header order for the recorded units.
+    _record("ledger", "u-2")
+    assert _read("ledger", origins)[0] == ("u-1", "u-3", "u-2")
 
 
 def test_the_ledger_writer_still_folds_its_own_unit_last(origins):
