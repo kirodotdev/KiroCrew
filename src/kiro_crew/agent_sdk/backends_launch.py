@@ -169,14 +169,15 @@ class SelfServedLaunch:
 #: Re-measure against a fresh capture before raising it.
 COPILOT_VERIFIED_VERSION = "1.0.100"
 
-#: The one Strands CLI release Crew's Strands gate was measured against: its
+#: The one Strands CLI release Crew's Strands gate is verified on: its
 #: Python-project ACP server forwards a Strands interrupt as
 #: ``session/request_permission`` and refuses a non-empty ``session/new``
 #: ``mcpServers`` array, and its worker reads the project and session overrides the
-#: gate module depends on. The install hint pins it; another release is named at the
-#: handshake (``acp.harness.strands``). Re-measure against a fresh capture before
-#: raising it.
-STRANDS_VERIFIED_VERSION = "0.2.3"
+#: gate module depends on. Measured on 0.2.3; the published 0.2.4 package differs
+#: from it only in its version. The install hint pins it; another release is named
+#: at the handshake (``acp.harness.strands``). Re-measure against a fresh capture
+#: before raising it to a release whose code differs.
+STRANDS_VERIFIED_VERSION = "0.2.4"
 #: The Python packages the Strands CLI's project worker imports, at the versions the
 #: gate was measured on. Installed into the project environment Crew runs Strands in.
 STRANDS_PYTHON_REQUIREMENT = "strands-harness==0.3.3"
