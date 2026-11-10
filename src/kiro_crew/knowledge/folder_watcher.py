@@ -457,7 +457,11 @@ class FolderWatcher:
 
         # 1. Discover files
         screened: set[str] = set()
-        discovered = await asyncio.to_thread(self._walk, uri, screened_out=screened, **filters)
+        unlisted: set[str] = set()
+        unseen_real: set[str] = set()
+        discovered = await asyncio.to_thread(
+            self._walk, uri, screened_out=screened, unlisted=unlisted,
+            unlisted_real=unseen_real, **filters)
 
         # Capture all discovered paths before cap (for accurate deletion detection)
         all_discovered_paths = {fp for fp, _ in discovered}
@@ -501,16 +505,33 @@ class FolderWatcher:
         chunks_ingested = 0  # against chunk_budget
 
         # 4. Detect deleted files (use full set, not capped set, to avoid false deletions)
-        removed = [fp for fp in existing if fp not in all_discovered_paths]
+        # A file this walk could not see -- its directory failed to list, or the
+        # file failed to stat (a permission change, a network mount that dropped
+        # out mid-walk) -- is not known to be deleted, so its row and items stay.
+        unlisted_dirs = tuple(os.path.join(d, "") for d in unlisted)
+
+        def _unseen(fp: str) -> bool:
+            return fp in unlisted or fp.startswith(unlisted_dirs)
+
+        removed = [fp for fp in existing if fp not in all_discovered_paths
+                   and not _unseen(fp)]
         # An includer's indexed text holds every target its record names. One that
         # left this walk (deleted, newly excluded, or now rejected by a walk rule;
         # the walk set is pre-cap, so a capped part still counts while it exists)
         # makes the includer stale. Recomputed every sweep from the record and the
         # walk, with nothing marked, so a stopped or cancelled sweep loses nothing.
 
+        # Targets are recorded resolved and normcased, the form the walk gave the
+        # unseen paths in: an unseen target is not a gone one either.
+        unseen_real_dirs = tuple(os.path.join(d, "") for d in unseen_real)
+
+        def _target_present(target: str) -> bool:
+            return (target in include_paths or target in unseen_real
+                    or target.startswith(unseen_real_dirs))
+
         def _targets_gone(fp: str) -> bool:
             targets = records.get(fp, [])
-            return targets is None or not include_paths.issuperset(targets)
+            return targets is None or not all(_target_present(t) for t in targets)
 
         gone = sorted(fp for fp in existing if fp in all_discovered_paths and _targets_gone(fp))
         if gone:
@@ -756,8 +777,16 @@ class FolderWatcher:
               include_extensions: set[str] | None = None,
               min_size: int = 0,
               confine_to_root: bool = False,
-              screened_out: set[str] | None = None) -> list[tuple[str, float]]:
+              screened_out: set[str] | None = None,
+              unlisted: set[str] | None = None,
+              unlisted_real: set[str] | None = None) -> list[tuple[str, float]]:
         """Walk directory, return [(file_path, mtime)] for supported files.
+
+        ``unlisted``, when given, receives each directory the walk could not list
+        and each file it could not ``stat``. Neither is a deletion: the file may
+        still be on disk, so the caller keeps what it already indexed there.
+        ``unlisted_real``, when given, receives the same paths resolved and
+        normcased, the form an include record names its targets in.
 
         ``screened_out``, when given, receives the resolved path each returned
         file was screened under (``is_sensitive_path``, ``confine_to_root``).
@@ -793,7 +822,21 @@ class FolderWatcher:
             except OSError:
                 return []
 
-        for dirpath, dirnames, filenames in os.walk(root):
+        def _note_unseen(path: str) -> None:
+            # Resolved here, in the walk's worker thread: realpath touches the
+            # filesystem, and a stalled mount must not stall the event loop.
+            if unlisted is not None:
+                unlisted.add(path)
+            if unlisted_real is not None:
+                unlisted_real.add(os.path.normcase(os.path.realpath(path)))
+
+        def _unlistable(err: OSError) -> None:
+            # A directory that vanished after its parent was listed is gone, not
+            # unseen; only a listing that failed for another reason keeps its files.
+            if err.filename and not isinstance(err, (FileNotFoundError, NotADirectoryError)):
+                _note_unseen(os.fspath(err.filename))
+
+        for dirpath, dirnames, filenames in os.walk(root, onerror=_unlistable):
             rel_dir = os.path.relpath(dirpath, root)
             # Prune skip dirs in-place.
             # Windows: the `.`-prefix hidden check is POSIX-centric — Windows marks
@@ -849,7 +892,12 @@ class FolderWatcher:
                     continue
                 try:
                     st = os.stat(full_path)
+                except (FileNotFoundError, NotADirectoryError):
+                    # Deleted since the listing, or a symlink whose target (or a
+                    # directory on its path) is gone.
+                    continue
                 except OSError:
+                    _note_unseen(full_path)
                     continue
                 if min_size and st.st_size < min_size:
                     continue
