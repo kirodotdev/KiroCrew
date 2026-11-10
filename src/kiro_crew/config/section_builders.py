@@ -69,6 +69,7 @@ from kiro_crew.config.memory_sections import (
     _coerce_embedding_provider,
     _read_auto_add_documents,
     kind_routing_mode_from,
+    lesson_origin_gate_mode_from,
 )
 from kiro_crew.config.sections import (
     CODE_CHANNEL_APPROVAL_ASK,
@@ -347,6 +348,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
         kind_routing=kind_routing_mode_from(section.get("kind_routing")),
+        lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),

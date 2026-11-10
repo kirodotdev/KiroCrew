@@ -392,6 +392,35 @@ async def api_lessons_create(request: web.Request) -> web.Response:
 
     writer = memory_changes.writer_principal(request, state, sk)
     written_by = memory_changes.writer_stamp(writer)
+    # The lesson origin gate reads the agent's own writes only (the MCP tool posts
+    # with the internal secret): a person's dashboard Add or CLI call is the
+    # person. The triggering turn is the latest turn opener in the caller's chat.
+    # A channel session is left as it is, as in gate_consolidation_lessons: its
+    # transport adds the person's row only after the reply, so the latest row
+    # would misread the person's own learn_add as automatic.
+    from kiro_crew.memory_origin_gate import configured_mode as _origin_mode
+    from kiro_crew.memory_origin_gate import gate_learn_add, record_origin_gate
+    from kiro_crew.messaging.link import is_channel_session_key
+
+    lesson_source = "user_explicit"
+    origin = None
+    origin_mode = _origin_mode()
+    if (
+        origin_mode != "off"
+        and request.get("internal_auth") is True
+        and not is_channel_session_key(sk)
+    ):
+        origin_slot = memory_changes.slot_for_session(state, sk)
+        origin = gate_learn_add(
+            applies,
+            getattr(origin_slot, "messages", None),
+            origin_mode,
+            rule=rule,
+            repo_scope=repo_scope,
+        )
+        applies, lesson_source = origin.applies, origin.source
+        if origin.drop_negative:
+            negative = None
     # Write to vector store if available, else JSONL
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
@@ -446,7 +475,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             rule,
             category,
             negative,
-            "user_explicit",
+            lesson_source,
             rule_emb,
             rule_emb_generation,
             repo_scope,
@@ -476,6 +505,8 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         outcome = result.outcome.value
         reason = result.reason
         stored = result.stored
+        if origin is not None and origin.gate.loggable:
+            await asyncio.to_thread(record_origin_gate, vs, origin.gate)
         # Redacted through the SAME chain this handler already applies to a lesson's
         # rule and category below (`_redact_memory_field`, which walks a list). A
         # superseded rule is stored user text leaving the process, so a credential or
@@ -991,6 +1022,44 @@ async def api_lessons_update(request: web.Request) -> web.Response:
         )
     except ValidationError as exc:
         return web.json_response({"error": str(exc), "code": "validation_error"}, status=400)
+    # The lesson origin gate covers a re-tier too: under ``enforce`` the agent
+    # cannot move a lesson into the standing tier from a turn no person sent, or
+    # a demoted learn_add would be one learn_update away from ``always``. Same
+    # caller and channel rules as the create route.
+    from kiro_crew.memory_origin_gate import MODE_ENFORCE
+    from kiro_crew.memory_origin_gate import configured_mode as _origin_mode
+    from kiro_crew.memory_origin_gate import gate_learn_add
+    from kiro_crew.messaging.link import is_channel_session_key
+    from kiro_crew.shared_crew import memory_changes
+
+    if (
+        request.get("internal_auth") is True
+        and not is_channel_session_key(sk)
+        and _origin_mode() == MODE_ENFORCE
+    ):
+        origin_slot = memory_changes.slot_for_session(state, sk)
+        origin = gate_learn_add(
+            cleaned["applies"],
+            getattr(origin_slot, "messages", None),
+            MODE_ENFORCE,
+            rule=cleaned["rule"],
+            repo_scope=cleaned.get("repo_scope"),
+        )
+        if origin.gate.demoted:
+            _sel().log_api_access(
+                caller=sk,
+                operation="lessons.update",
+                outcome="denied",
+                source="dashboard",
+                resources="origin_gate",
+            )
+            return web.json_response(
+                {
+                    "error": "A lesson moves into the standing tier only from a person's turn.",
+                    "code": "origin_gate",
+                },
+                status=403,
+            )
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.update")
     if refusal is not None:
         return refusal

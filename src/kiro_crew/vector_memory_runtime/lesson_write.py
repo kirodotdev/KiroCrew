@@ -84,8 +84,14 @@ def write_lesson(
     defer_backfills: bool = False,
     facets: "memory_schema.MemoryFacets | None" = None,
     written_by: Mapping[str, str] | None = None,
+    source_ref: str | None = None,
 ) -> LessonWriteResult:
     """Write a lesson as a semantic entry with key lesson.<hash>.
+
+    *source_ref* is the record metadata ``source_ref`` the row is stamped with
+    (``memory_record_meta``), for a caller that knows which session produced the
+    lesson. It never enters ``source`` or the stored value, so every reader that
+    compares ``source`` sees what it saw before.
 
     Returns which outcome occurred (see :class:`LessonWriteOutcome`) rather than a
     bare ``bool``, whose ``False`` conflated "validation refused this", "a dedup
@@ -659,7 +665,14 @@ def write_lesson(
             facets if facets is not None else memory_schema.MemoryFacets()
         )
         facets = dataclasses.replace(prior, scope=repo_scope)
-    err = self.set_semantic(key, value, confidence, source, facets=facets)
+    err = self.set_semantic(
+        key,
+        value,
+        confidence,
+        source,
+        facets=facets,
+        metadata={"source_ref": source_ref} if source_ref else None,
+    )
     if err is not None:
         # Nothing was deleted: the scan only QUEUED its supersedes, and the
         # queue drains below this return. So a value the store rejects costs

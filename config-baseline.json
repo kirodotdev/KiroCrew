@@ -2656,6 +2656,7 @@
         "writes_enabled": true,
         "lesson_extraction_enabled": true,
         "kind_routing": "off",
+        "lesson_origin_gate": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3230,6 +3231,24 @@
       "tags": [],
       "label": "Consolidation Kind Routing",
       "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (a PR, CI or branch status that GitHub, git or the work ledger already holds) and writes facts and events as before. Stored facts are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.lesson_origin_gate",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lesson Origin Gate",
+      "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. Stored lessons are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
