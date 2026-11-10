@@ -247,6 +247,8 @@
     "click_to_collapse_readouts": "click to collapse readouts",
     "click_to_expand_readouts": "click to expand readouts",
     "gateway_offline_reconnecting": "Gateway offline — reconnecting",
+    "relay_access_refused": "Relay refused the connection — retrying",
+    "relay_session_ended": "Relay session ended — reopen this Crew",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — session expired, see banner above",
     "signed_in_with": "Signed in with {{provider}}",
     "updates": "updates",

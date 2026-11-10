@@ -228,6 +228,8 @@
     "expand_sidebar": "Seitenleiste ausklappen",
     "gateway_connected": "Gateway verbunden",
     "gateway_offline_reconnecting": "Gateway offline — wird neu verbunden",
+    "relay_access_refused": "Relay hat die Verbindung abgelehnt — neuer Versuch",
+    "relay_session_ended": "Relay-Sitzung beendet — diese Crew erneut öffnen",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — Sitzung abgelaufen, siehe Banner oben",
     "gateway_restarting_reconnecting": "Gateway startet neu — wird neu verbunden…",
     "hide_full_changelog": "▾ Vollständiges Änderungsprotokoll ausblenden",

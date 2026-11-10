@@ -238,6 +238,8 @@
     "expand_sidebar": "Expandir barra lateral",
     "gateway_connected": "Gateway conectado",
     "gateway_offline_reconnecting": "Gateway offline — reconectando",
+    "relay_access_refused": "O relay recusou a conexão — tentando novamente",
+    "relay_session_ended": "Sessão do relay encerrada — abra esta Crew novamente",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — sessão expirada, veja o banner acima",
     "gateway_restarting_reconnecting": "O gateway está reiniciando — reconectando…",
     "hide_full_changelog": "▾ Ocultar registro completo de alterações",

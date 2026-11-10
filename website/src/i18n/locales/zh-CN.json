@@ -218,6 +218,8 @@
     "expand_sidebar": "展开侧边栏",
     "gateway_connected": "网关已连接",
     "gateway_offline_reconnecting": "网关离线 — 正在重连",
+    "relay_access_refused": "中继拒绝了连接 — 正在重试",
+    "relay_session_ended": "中继会话已结束 — 请重新打开此 Crew",
     "gateway_offline_session_expired_see_banner_above": "网关离线 — 会话已过期，见上方横幅",
     "gateway_restarting_reconnecting": "网关正在重启 — 正在重连…",
     "hide_full_changelog": "▾ 隐藏完整更新日志",
