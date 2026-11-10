@@ -10,6 +10,13 @@ from typing import Iterator
 from unittest.mock import patch
 
 import pytest
+from test_cron_call_tool_scan import (
+    ACCOUNT_RESOURCE,
+    CODEDEPLOY_TARGET,
+    DRIVE_ID,
+    GITHUB_TOKEN,
+    GRAPH_MESSAGE_ID,
+)
 
 from conftest import forget_env_at_teardown
 from kiro_crew.cli_commands import _cron_preview
@@ -271,6 +278,42 @@ class TestCronPreviewCallToolPath:
             "call InternalSearch",
             "close",
         ]
+
+    def test_call_tool_sends_identifiers_as_written_and_refuses_a_credential(
+        self, tmp_path: Path, capsys
+    ):
+        """The production scan: ids reach the server byte-identical, and a call the scan
+        would change is refused by path before the server, its value never printed."""
+        calls = [
+            {"message_id": GRAPH_MESSAGE_ID},
+            {"driveId": DRIVE_ID},
+            {"targetNames": [ACCOUNT_RESOURCE]},
+            {"targetNames": [CODEDEPLOY_TARGET]},
+        ]
+        _write_script(
+            tmp_path, "s.py",
+            "from kiro_crew.cron_script import Report\n"
+            "def run(ctx):\n"
+            f"    for args in {calls!r}:\n"
+            "        ctx.call_tool('srv', 'get', args)\n"
+            "    try:\n"
+            f"        ctx.call_tool('srv', 'post', {{'text': 'rotate ' + {GITHUB_TOKEN!r}}})\n"
+            "    except ValueError as exc:\n"
+            "        raise Report(str(exc))\n"
+            "    raise Report('sent')\n")
+        received = []
+        mock_client = type("MC", (), {
+            "call_tool": lambda self, tool, args: (received.append(args), "result")[1],
+            "is_running": lambda self: True,
+            "close": lambda self: None,
+        })()
+        with _patch_resolve(tmp_path):
+            with patch("kiro_crew.cron_script.McpToolClient", return_value=mock_client):
+                _cron_preview(_make_args(f"{tmp_path / 's.py'}:run"))
+        out = capsys.readouterr().out
+        assert received == calls
+        assert "not sent: args.text reads as a credential" in out
+        assert GITHUB_TOKEN not in out
 
     def test_notify_prints_suppressed(self, tmp_path: Path, capsys):
         """ctx.notify() prints suppression message instead of delivering."""
