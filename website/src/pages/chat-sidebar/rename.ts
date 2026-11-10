@@ -36,8 +36,9 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   const [renameScope, setRenameScope] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   // Set when the server refuses a rename; rendered through the sidebar-root
-  // ErrorNotice cluster so the revert (below) never happens silently.
-  const [renameError, setRenameError] = useState('')
+  // ErrorNotice cluster so the revert (below) never happens silently. Carries
+  // the refused name, because the notice sits away from the row.
+  const [renameError, setRenameError] = useState<{ key: string; refused: string; reason: string } | null>(null)
   const [renameAnnouncement, setRenameAnnouncement] = useState('')
   // An offline refusal is NOT a failure: no PATCH was sent, so it is announced
   // on a neutral row beside the preserved draft rather than the danger surface
@@ -189,6 +190,9 @@ export function useSessionRename({ dispatch, store, queryClient }: {
         if (rec.inflight.size === 0 && rec.gen === myGen) renameRecoveryRef.current.delete(key)
       }
       setRenameAnnouncement('')
+      // The notice names a title, so it must not outlive a newer attempt on its
+      // own session; another session's notice stays.
+      setRenameError(prev => (prev?.key === key ? null : prev))
       dispatch(sseSlotTitle({ key, title: refused }))
       // Recovery on a refused rename must go through Redux: slot titles live in
       // the dashboard slice (written by `sseSlots` / `fetchSlots.fulfilled`),
@@ -213,7 +217,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
         rec.gen === myGen &&
         store.getState().dashboard.slots.find(s => s.key === key)?.title === refused
       api.renameSlot(key, refused).then(() => { settle(); setRenameAnnouncement(i18nT('pages.chatPage.session_renamed_to', { title: refused })) }, async e => {
-        setRenameError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))
+        if (rec.gen === myGen) setRenameError({ key, refused: sessionDisplayTitle({ key, title: refused }), reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') })
         try {
           const server = (await queryClient.fetchQuery({
             queryKey: ['chat-slots'], queryFn: () => api.chatSlots(), staleTime: 0, gcTime: 0,

@@ -14433,7 +14433,7 @@
       "source_hosts_failed_reason": "Falha ao carregar as configurações de links do GitLab e do Jira: {{reason}}",
       "artifact_reference_failed_reason": "Falha ao vincular o artefato a este chat: {{reason}}",
       "http_status": "HTTP {{status}}",
-      "could_not_rename_session": "Não foi possível renomear a sessão",
+      "could_not_rename_session": "Não foi possível renomear a sessão para “{{title}}”",
       "could_not_rename_session_to": "Não foi possível renomear a sessão para “{{title}}” — o título anterior foi mantido",
       "could_not_generate_title": "Não foi possível gerar um título",
       "could_not_open_side_chat": "Não foi possível abrir o chat lateral",

@@ -14108,7 +14108,7 @@
       "source_hosts_failed_reason": "GitLab ও Jira লিঙ্ক সেটিংস লোড করা ব্যর্থ হয়েছে: {{reason}}",
       "artifact_reference_failed_reason": "এই চ্যাটে আর্টিফ্যাক্ট যুক্ত করা ব্যর্থ হয়েছে: {{reason}}",
       "http_status": "HTTP {{status}}",
-      "could_not_rename_session": "সেশনের নাম পরিবর্তন করা যায়নি",
+      "could_not_rename_session": "সেশনের নাম পরিবর্তন করে “{{title}}” করা যায়নি",
       "could_not_rename_session_to": "সেশনের নাম পরিবর্তন করে “{{title}}” করা যায়নি — আগের শিরোনামটিই থাকছে",
       "could_not_generate_title": "শিরোনাম তৈরি করা যায়নি",
       "could_not_open_side_chat": "সাইড চ্যাট খোলা যায়নি",
