@@ -16,6 +16,7 @@ gates read these lists, and this module imports no other part of the path floor.
 from __future__ import annotations
 
 from kiro_crew.agent_sdk import host_auth, native_allow_stores
+from kiro_crew.apps import credential_masks
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES, fenced_home_dirs
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 
@@ -829,13 +830,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # services open their captured store directly. Global V1 retains its existing
     # file access behavior. See docs/system-specs/modules/security.md.
     MEMORY_STORES_DIR_NAME,
+    *credential_masks.declared_crew_leaves(installed=False),  # built-ins' credentialMasks
 ]
-
 
 _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES
 ]
-
 
 # ── Publish artifacts of a keystone leaf ──
 # Every leaf above is published through ``atomic_write``, which writes a
@@ -873,7 +873,6 @@ _SENSITIVE_HOME_DIRS += [
 # Not included: ``deploy/pending-deploys.lock``. Its directory holds no keystone leaf, so
 # there is no keystone payload beside it for the fence to protect.
 _KEYSTONE_ARTIFACT_SUFFIXES: tuple[str, ...] = (".tmp", ".lock")
-
 
 _KEYSTONE_ARTIFACT_PARENTS: list[str] = sorted(
     {

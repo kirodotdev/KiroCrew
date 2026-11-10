@@ -1376,8 +1376,14 @@ beside the app directory keeps it after a keep-data uninstall; only a manifest t
 cleanly rewrites or removes that record. Only the app's own backend spawn gets it back
 (`sandbox_tiers.app_declared_mask_targets`, through the carve-out guards), and only while
 the file is absent or a regular file with one name. Tightening
-only: no seal, carve-out, keystone disposition or tool-gate row reads a declaration, so
-`test_sandbox_governance_mask.py`'s pin over the core dispositions is unchanged. The
+only: no seal, carve-out or keystone disposition reads a declaration. The tool gate reads
+the shipped built-ins' declarations once, at import (`credential_masks.declared_crew_leaves(installed=False)`,
+splatted into `_CREW_SECRET_LEAVES`), so the agent's file tools refuse a built-in's
+credential file as they refuse a core one with no core row naming the app; an installed
+app's declaration does not reach the gate, because its manifest is sandbox-writable and
+read per spawn, which a static list cannot follow. A declared leaf is HIDDEN in the
+spawn plan, so `test_sandbox_governance_mask.py`'s pin that every tool-gate crew entry has
+a sandbox disposition holds for it. The
 installed app tree is sandbox-writable, so an agent that rewrites an `app.json` drops
 that app's masks from its next spawn; that residual is stated, not sealed.
 

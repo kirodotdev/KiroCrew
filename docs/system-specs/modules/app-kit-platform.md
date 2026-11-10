@@ -7573,11 +7573,12 @@ parent can be renamed from under its deny; only the entries are guarded, not the
 contents. The spawn that lifts a leaf (the app's own backend, below) leaves that
 spelling's parents unguarded, so the backend can create, rotate and remove the folders it
 keeps its credential in. A namespace mask is a mount, which moves with a renamed parent,
-so that plan gains no guard. No seal, tool-gate row or keystone disposition
-reads a declaration, and the one carve-out that does (the app's own backend, below)
-never lifts a core leaf, so a manifest can only add masks.
-`test_sandbox_governance_mask.py`'s pin over the three dispositions is untouched: it is
-over the core tables, and a declared leaf is never on the tool-gate floor.
+so that plan gains no guard. No seal or keystone disposition reads a declaration, the
+tool gate reads the shipped built-ins' only, as more refusals (`declared_crew_leaves(installed=False)`, in
+`security._CREW_SECRET_LEAVES`), and the one carve-out that does (the app's own backend,
+below) never lifts a core leaf, so a manifest can only add masks. A built-in's declared
+leaf on the tool-gate floor is HIDDEN in the spawn plan, so
+`test_sandbox_governance_mask.py`'s pin over the three dispositions holds for it.
 
 **The app's own backend.** `sandbox_tiers.app_declared_mask_targets(name, builtin=...)`
 returns the declared leaves as every mask spells them, minus any leaf that is a core

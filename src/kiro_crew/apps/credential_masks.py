@@ -24,10 +24,11 @@ the data. The record is read with the manifests and only ever adds masks, so a d
 directory with no manifest beside it stays masked, and only a manifest that reads
 cleanly rewrites or removes it.
 
-**Tightening only.** A declaration can add masks and never remove one: nothing here
-is read by a seal or the tool gate, and the one carve-out that reads it (the app's
-own backend, ``sandbox_tiers.app_declared_mask_targets``) drops every core leaf, so no
-core leaf's disposition depends on a manifest. An entry is refused when it is absolute, empty, holds a
+**Tightening only.** A declaration can add masks and never remove one: no seal reads
+it, the tool gate reads only the shipped built-ins' (:func:`declared_crew_leaves`), as
+more refusals, and the one carve-out that reads it (the app's own backend,
+``sandbox_tiers.app_declared_mask_targets``) drops every core leaf, so no core leaf's
+disposition depends on a manifest. An entry is refused when it is absolute, empty, holds a
 ``.`` / ``..`` / empty segment, a backslash, a colon, a control character or a lone
 surrogate (no filesystem path can encode one), ends a segment in a space or a dot (Windows drops both, so ``a.`` would name ``a``), or is
 over the length and depth caps. The app's name comes from where its manifest lives,
@@ -294,17 +295,24 @@ def declared_masks(*, builtin: bool = True, installed: bool = True) -> dict[str,
     return {name: tuple(entries) for name, entries in sorted(out.items())}
 
 
-def declared_crew_leaves() -> tuple[str, ...]:
+def declared_crew_leaves(*, installed: bool = True) -> tuple[str, ...]:
     """Every declared mask as a crew-home-relative leaf, sorted and deduplicated.
 
     Each entry at both places its app's data can be: ``data/`` and the lifecycle's
     move-aside directory.
+
+    ``installed=False`` reads only the shipped built-ins, for the agent tool gate:
+    ``security._CREW_SECRET_LEAVES`` adds those once, at import, so the agent's file
+    tools refuse a built-in's credential file as they refuse a core one, and no core row
+    has to name the app. The shipped manifests are part of the installed product, so
+    that set is fixed for the process; an installed app's manifest is sandbox-writable
+    and read per spawn, which a static gate list cannot follow.
     """
     return tuple(
         sorted(
             {
                 leaf
-                for app, entries in declared_masks().items()
+                for app, entries in declared_masks(installed=installed).items()
                 for entry in entries
                 for leaf in (crew_leaf(app, entry), staged_crew_leaf(app, entry))
             }
