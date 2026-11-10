@@ -234,7 +234,10 @@ all, and returns results in input order. A task may be a zero-arg thunk
 both are accepted deliberately, because Python authors reach for the latter out of
 `gather(*coros)` habit and a coroutine is not callable, which would otherwise turn
 every task into `None`. A task that raises resolves to `None` and the call itself
-never raises, so callers filter falsy entries. An empty list returns `[]`.
+never raises, so callers filter falsy entries. The one exception is
+`BudgetExceeded`: it is held until every task has settled, so no sibling outlives
+the run, then raised, so a run ceiling hit inside a fan-out still ends the run. An
+empty list returns `[]`.
 
 **`pipeline(items, *stages)` has no barrier between stages.** Each item flows
 through all stages in its own chain, so item B can reach stage 2 while item A is
@@ -242,8 +245,9 @@ still in stage 1; wall clock is the slowest single chain, not the sum of the
 slowest per stage. Stages are called `stage(prev, item, index)`, **arity-adapted**
 (a 1-arg stage receives only `prev`); for stage 0, `prev` is the item itself. A
 stage may be sync or async. A stage that raises drops that item to `None` and
-skips its remaining stages. Results come back in input order; with no stages, the
-items are returned as-is.
+skips its remaining stages, except that a `BudgetExceeded` is held and raised once
+every chain has settled, as in `parallel`. Results come back in input order; with
+no stages, the items are returned as-is.
 
 Both take an optional `limit` at the `dsl` level (a semaphore); the runner passes
 its `concurrency`.
@@ -343,7 +347,8 @@ class Budget(Protocol):
 `run_failed` with `where="ceiling"`. The same exception is raised by
 `context.AgentCounter.increment()` once the per-run agent-call cap
 (`DEFAULT_MAX_AGENTS_PER_RUN` = 1000) is reached, so a runaway fan-out lands on the
-same terminal path.
+same terminal path; `parallel` and `pipeline` pass it on rather than resolving it to
+`None`.
 
 > Open question: nothing in the shipped engine calls `Budget.charge()`. The
 > ceiling is enforced (`would_exceed` before each call), but `spent()` stays 0 and
@@ -2016,7 +2021,7 @@ delivery milestone markers, not gates, and have no entry here.
 |---|---|---|---|
 | A3 | `pipeline()` has NO barrier between stages (an item may reach a later stage while another item is still in an earlier one), while `parallel()` IS a barrier (it awaits every thunk before returning). | `test_workflows_dsl.py::test_pipeline_no_inter_stage_barrier_deadlock_proof`, `::test_parallel_is_a_barrier` | `dsl.py` |
 | A4 | `Budget` is a HARD ceiling: `charge()` that reaches or passes `total` raises `BudgetExceeded`; `total=None` means unbounded and `remaining()` is `inf`. | `test_workflows_context.py::test_budget_hard_ceiling_raises_at_total`, `::test_budget_hard_ceiling_raises_over_total`, `::test_budget_unbounded_when_total_none` | `context.py` (`Budget`) |
-| A5 | A failing thunk or pipeline stage resolves to `None`; the combinator itself never raises, so callers filter `None` instead of handling exceptions. | `test_workflows_dsl.py::test_parallel_failed_thunk_becomes_none_and_does_not_raise`, `::test_pipeline_failed_stage_drops_item_to_none` | `dsl.py` |
+| A5 | A failing thunk or pipeline stage resolves to `None`; the combinator itself never raises, so callers filter `None` instead of handling exceptions. The one exception is `BudgetExceeded`, raised once every task has settled. | `test_workflows_dsl.py::test_parallel_failed_thunk_becomes_none_and_does_not_raise`, `::test_pipeline_failed_stage_drops_item_to_none`, `::test_budget_exceeded_is_raised_after_every_task_settles` | `dsl.py` |
 | A7 | A run emits exactly the documented event vocabulary, in order, with contiguous `seq` from zero: `run_started` first, one of `run_finished` / `run_failed` / `run_cancelled` last. `REQUIRED_DATA_KEYS` covers exactly `EVENT_TYPES`, and the validator rejects an unknown type or a missing required key. | `test_workflows_events.py::test_required_keys_cover_exactly_event_types`, `::test_every_event_type_has_a_builder_and_validates`, `::test_seq_is_monotonic_from_zero`, `::test_validate_rejects_unknown_type`, `::test_validate_rejects_missing_required_keys`; `test_workflows_runner.py::test_happy_path_emits_full_stream_in_order`, `::test_run_started_first_and_finished_last` | `events.py`, `runner.py`, `__init__.py` (`EVENT_TYPES`) |
 
 ### Group B: sandbox, ceilings, and audit

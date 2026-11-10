@@ -369,6 +369,38 @@ async def test_agent_count_cap_enforced() -> None:
     assert sum(1 for e in res.events if e.type == "agent_started") == 3
 
 
+@pytest.mark.parametrize(
+    ("fan_out", "limits"),
+    [
+        (
+            "await ctx.parallel([lambda: ctx.agent('x') for _ in range(5)])",
+            {"max_agents_per_run": 3},
+        ),
+        (
+            "await ctx.pipeline([1, 2, 3, 4, 5], lambda prev: ctx.agent('x'))",
+            {"max_agents_per_run": 3},
+        ),
+        ("await ctx.parallel([lambda: ctx.agent('x')])", {"budget_total": 0}),
+    ],
+)
+async def test_ceiling_inside_a_fan_out_fails_the_run(fan_out: str, limits: dict) -> None:
+    """A cap or budget hit inside ``parallel``/``pipeline`` ends the run at the ceiling."""
+    script = (
+        'META = {"name": "fan"}\n'
+        "async def workflow(ctx):\n"
+        "    for _ in range(3):\n"
+        f"        {fan_out}\n"
+        "    return 'done'\n"
+    )
+    runner_kw = {k: v for k, v in limits.items() if k != "budget_total"}
+    res = await _runner(**runner_kw).run(
+        script, run_id="wf_6f", now=NOW, budget_total=limits.get("budget_total")
+    )
+    assert res.ok is False
+    assert res.events[-1].type == "run_failed"
+    assert res.events[-1].data["where"] == "ceiling"
+
+
 async def test_failed_agent_resolves_to_none_not_run_failure() -> None:
     async def _boom_agent(prompt: str, opts: dict):
         raise RuntimeError("agent died")
