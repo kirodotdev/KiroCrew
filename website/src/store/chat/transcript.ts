@@ -205,10 +205,12 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *  the transcript hides a superseded row only while its successor is in the same
  *  list (`isHiddenSupersededSteer`), so a page that lacks it draws the old row. */
 export function pageRegressesSupersededSteer(existing: ChatMessage[], page: ChatMessage[]): boolean {
+  // A `user` steer row is a person's or a peer's steer, a `nudge` one an
+  // automation steer; the role is part of the row identity.
   const steerKey = (m: ChatMessage): string | undefined => {
     const meta = m.meta as { mid?: unknown; steer?: unknown } | undefined
-    if (m.role !== 'user' || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
-    return JSON.stringify([meta.mid, m.ts ?? null])
+    if ((m.role !== 'user' && m.role !== 'nudge') || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
+    return JSON.stringify([m.role, meta.mid, m.ts ?? null])
   }
   const superseded = new Set<string>()
   for (const m of existing) {
@@ -243,8 +245,8 @@ export function queueAfterSupersededDrain<Q extends { content: string; queueId?:
   if (!queue?.length) return []
   const steerKey = (m: ChatMessage): string | undefined => {
     const meta = m.meta as { mid?: unknown; steer?: unknown } | undefined
-    if (m.role !== 'user' || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
-    return JSON.stringify([meta.mid, m.ts ?? null])
+    if ((m.role !== 'user' && m.role !== 'nudge') || !meta?.steer || typeof meta.mid !== 'string' || !meta.mid) return undefined
+    return JSON.stringify([m.role, meta.mid, m.ts ?? null])
   }
   const unretired = new Set<string>()
   for (const m of page) {
@@ -261,7 +263,7 @@ export function queueAfterSupersededDrain<Q extends { content: string; queueId?:
   existing.forEach((m, i) => {
     const key = steerKey(m)
     if (!key || !unretired.has(key) || (m.meta as { steerState?: unknown }).steerState !== 'superseded') return
-    const landed = existing.slice(i + 1).find(r => r.role === 'user' && !(r.meta as { steer?: unknown } | undefined)?.steer
+    const landed = existing.slice(i + 1).find(r => r.role === m.role && !(r.meta as { steer?: unknown } | undefined)?.steer
       && r.content === m.content && typeof (r.meta as { landedFromSteer?: unknown } | undefined)?.landedFromSteer === 'string')
     const landedId = (landed?.meta as { landedFromSteer?: string } | undefined)?.landedFromSteer
     if (landedId && queue.some(q => q.queueId === landedId)) drainedIds.add(landedId)
@@ -287,7 +289,7 @@ export function queueAfterSupersededDrain<Q extends { content: string; queueId?:
  *   - a `card` row (`chat_cards._patch_row` -> `slot.update_message`): its
  *     `meta.card.status` advances a LIVE status to a terminal one. A snapshot
  *     captured while it was still live reverts a finished card to "running".
- *   - a steer row (`role: "user"`, `meta.steer`): `steer_queue`'s
+ *   - a steer row (`role: "user"` or `"nudge"`, `meta.steer`): `steer_queue`'s
  *     `_mark_steer_row_state` -> `slot.update_message` advances
  *     `meta.steerState` `written` -> `consumed`/`requeued`/`retracted`. A snapshot captured
  *     while it was still `written` revives the "pending steer" badge on a steer
@@ -357,7 +359,8 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   const STEER_SETTLED = new Set(['consumed', 'requeued', 'retracted', 'superseded'])
 
   // The `(role, mid, ts)` upsert key for a covered row, or undefined if the row
-  // is not one this pass guards. Steer rows ride the `user` role, so they are
+  // is not one this pass guards. Steer rows ride the `user` role (a person's or
+  // a peer's steer) or the `nudge` role (an automation steer), so they are
   // distinguished by `meta.steer` rather than role alone.
   //
   // `ts` is part of the key on purpose, matching `deduplicateByMid`'s own
@@ -378,7 +381,7 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
     // with field content, and no string literal trips the zero-tolerance i18n
     // added-lines gate on this internal identity key.
     if (m.role === 'card') return JSON.stringify(['card', mid, m.ts ?? null])
-    if (m.role === 'user' && (m.meta as { steer?: unknown } | undefined)?.steer) return JSON.stringify(['steer', mid, m.ts ?? null])
+    if ((m.role === 'user' || m.role === 'nudge') && (m.meta as { steer?: unknown } | undefined)?.steer) return JSON.stringify(['steer', m.role, mid, m.ts ?? null])
     return undefined
   }
 
