@@ -380,6 +380,19 @@ def _run_marker_clause(subcommand: str, port: int) -> str:
     )
 
 
+def custom_remote_bin(remote_bin: str) -> str | None:
+    """The user's ``remote_bin`` as the remote shell spells it, or None for the candidate search.
+
+    Empty and the default sentinel mean "try every candidate". A custom path has a
+    leading ``~/`` rewritten to ``$HOME/``, because tilde does not expand inside the
+    double quotes the path is embedded in. *remote_bin* must already be
+    charset-validated.
+    """
+    if not remote_bin or remote_bin == DEFAULT_REMOTE_BIN:
+        return None
+    return re.sub(r"^~/", "$HOME/", remote_bin)
+
+
 def build_remote_command(
     remote_bin: str,
     subcommand: str,
@@ -395,9 +408,9 @@ def build_remote_command(
     never overridden by the marker. *remote_bin* must already be charset-validated;
     *subcommand* is a fixed/validated literal.
     """
-    if not remote_bin or remote_bin == DEFAULT_REMOTE_BIN:
+    expanded = custom_remote_bin(remote_bin)
+    if expanded is None:
         return build_candidate_command(subcommand, candidates, marker_port=marker_port)
-    expanded = re.sub(r"^~/", "$HOME/", remote_bin)
     return f'"{expanded}" {subcommand}'
 
 
