@@ -178,15 +178,47 @@ def test_the_notice_drops_only_a_trusted_list_the_gate_applies() -> None:
         )
 
     assert lost({"web_fetch": {"blocked": ["https://evil\\.com/.*"], "trusted": _TRUSTED}}) == [
-        "toolsSettings.web_fetch.blocked"
+        f"toolsSettings.web_fetch.blocked: https://evil\\.com/.* {_HOST_ONLY}"
     ]
     assert lost({"webFetch": {"trusted": [*_TRUSTED, "https://x\\.com/\\d+"]}}) == [
         "toolsSettings.webFetch.trusted"
     ]
     assert lost({"web_fetch": {"blocked": ["(?i)x"], "trusted": _TRUSTED}}) == [
-        "toolsSettings.web_fetch.blocked",
+        f"toolsSettings.web_fetch.blocked: (?i)x {_REGEX_SYNTAX}",
         "toolsSettings.web_fetch.trusted",
     ]
+
+
+_HOST_ONLY = "(whole-URL rule; KAS checks host only)"
+_REGEX_SYNTAX = "(regex syntax KAS cannot express)"
+
+
+def test_the_notice_names_each_blocked_entry_kas_cannot_carry() -> None:
+    """Each dropped ``blocked`` entry is named on its own, under the key the spec
+    wrote, with the reason it is dropped; one KAS carries as a host deny is not
+    named."""
+    long_host = "a" * 1025
+    blocked = [
+        "evil\\.com",
+        "evil\\.(com|net)",
+        long_host,
+        "https://a\\.com/x",
+        "https://b\\.com/.*",
+        "x\x7f/",
+    ]
+    lost = kas_agents.spec_keys_without_carrier(
+        {"toolsSettings": {"webFetch": {"blocked": blocked}}},
+        translates_tools_settings=True,
+    )
+    assert lost == [
+        f'toolsSettings.webFetch.blocked: "x\\u007f/" {_HOST_ONLY}',
+        f"toolsSettings.webFetch.blocked: {long_host} (longer than 1024 characters)",
+        f"toolsSettings.webFetch.blocked: evil\\.(com|net) {_REGEX_SYNTAX}",
+        f"toolsSettings.webFetch.blocked: https://a\\.com/x {_HOST_ONLY}",
+        f"toolsSettings.webFetch.blocked: https://b\\.com/.* {_HOST_ONLY}",
+    ]
+    carried = {"toolsSettings": {"web_fetch": {"blocked": ["evil\\.com"]}}}
+    assert kas_agents.spec_keys_without_carrier(carried, translates_tools_settings=True) == []
 
 
 def test_another_tool_is_never_granted_by_the_web_fetch_record() -> None:
