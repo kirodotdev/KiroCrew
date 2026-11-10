@@ -775,23 +775,24 @@ class TestAgentRoutes:
                 await release_flush.wait()
 
             monkeypatch.setattr(session, "flush_all", slow_flush)
-            stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
-            await await_until(flush_entered)
+            # The app's cleanup hook flushes again, so a flush left parked hangs teardown.
+            try:
+                stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
+                await await_until(flush_entered)
 
-            dispatch = await await_until(
-                asyncio.ensure_future(
-                    client.post(
-                        f"{BASE}/meetings/standup/dispatch",
-                        json={"text": "too late"},
+                dispatch = await await_until(
+                    asyncio.ensure_future(
+                        client.post(
+                            f"{BASE}/meetings/standup/dispatch",
+                            json={"text": "too late"},
+                        )
                     )
-                ),
-                timeout=1,
-            )
-            assert dispatch.status == 409
-            assert (await dispatch.json())["code"] == "no_active_meeting"
-
-            release_flush.set()
-            assert (await stop_request).status == 200
+                )
+                assert dispatch.status == 409
+                assert (await dispatch.json())["code"] == "no_active_meeting"
+            finally:
+                release_flush.set()
+            assert (await await_until(stop_request)).status == 200
 
         assert _common.ACTIVE.get() is None
 
