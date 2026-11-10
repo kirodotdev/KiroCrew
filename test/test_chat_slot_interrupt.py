@@ -458,6 +458,31 @@ class TestChatSlotInterrupt:
             assert fut.done()
             assert fut.result() == "rejected"
 
+    @pytest.mark.asyncio
+    async def test_older_interrupt_idle_outcome_keeps_newer_stop_posture(self, _patch_sel):
+        """A late "idle" from an older /interrupt leaves a newer stop's claim alone.
+
+        The turn ends while the interrupt awaits ``stop_turn`` and a newer
+        press claims a fresh generation; the older "idle" must not settle it.
+        """
+        slot = _ChatSlot("test")
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        slot.task = mock_task
+        slot.queue_append("msg")
+        state = _mock_state(slot)
+
+        async def newer_press_claims_during_await(*_args, **_kwargs):
+            slot._stop_state = "idle"  # the turn ends and resets the posture
+            slot._stop_state = "soft_pending"  # a newer press claims a new generation
+            return "idle"
+
+        state.sessions.stop_turn = AsyncMock(side_effect=newer_press_claims_during_await)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/interrupt", json={})
+            assert resp.status == 200
+        assert slot._stop_state == "soft_pending"
+
 
 class TestRefusalRecoverySkippedOnCancel:
     """Recovery prompt should not fire when the user pressed Stop during the turn."""
