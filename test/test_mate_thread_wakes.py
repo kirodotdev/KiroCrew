@@ -51,6 +51,10 @@ class _Slot:
         self._lineage_minted = False
         self._reports_to_creator = False
         self.display_title = f"title of {key}"
+        self.mcp_report: dict | None = None
+
+    def mcp_report_payload(self) -> dict | None:
+        return self.mcp_report
 
     @property
     def running(self) -> bool:
@@ -397,6 +401,38 @@ async def test_a_held_report_keeps_only_the_excerpt_it_shows(dispatched):
     turn.set_result(None)
     await _settle(state)
     assert dispatched == [("member-atlas", expected)]
+
+
+@pytest.mark.asyncio
+async def test_a_report_names_the_worker_servers_its_session_could_not_use(dispatched, monkeypatch):
+    """A gap the worker reports on its own failed server is not a missing capability.
+
+    ``jira`` is declared but not mounted, so the worker lacks it: it is not named.
+    """
+    from kiro_crew import mate_capability_catalog as catalog_mod
+
+    mounted = ["notes", "tracker", "wiki", "calendar"]
+    spec = {"mcpServers": {n: {} for n in [*mounted, "jira"]}, "tools": [f"@{n}" for n in mounted]}
+    monkeypatch.setattr(catalog_mod, "worker_spec", lambda member: spec)
+    mate, worker = _crewmate(), _worker()
+    worker.mcp_report = {
+        "ready": ["notes"],
+        "failed": ["tracker", "wiki", "jira"],
+        "failures": {"tracker": "Authentication expired", "wiki": "spawn ENOENT"},
+        "awaiting_auth": ["calendar"],
+        "no_tools": ["notes"],
+    }
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "Could not file the tickets.")
+    await _settle(state)
+
+    [(_key, prompt)] = dispatched
+    assert (
+        "tracker (sign-in missing or expired), wiki (failed to start), "
+        "calendar (waiting for authorization), notes (started with no tools)."
+    ) in prompt
+    assert "not a missing capability" in prompt and "jira" not in prompt
 
 
 def test_a_worker_gap_is_asked_for_on_the_users_next_turn():
