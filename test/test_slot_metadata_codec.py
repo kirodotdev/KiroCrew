@@ -744,6 +744,7 @@ def _saved_merge_card(index: int) -> dict:
             "session": f"dashboard:fork-{index}",
             "slot": f"fork-{index}",
             "title": f"Fork {index}",
+            "createdAt": "2026-01-01T00:00:00+00:00",
             "after": "",
             "through": f"message-{index}",
             "digest": f"{index:064x}",
