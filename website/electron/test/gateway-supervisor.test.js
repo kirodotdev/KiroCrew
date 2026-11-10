@@ -38,6 +38,8 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "stopOnQuit",
     "reopenTunnel",
     "syncTunnel",
+    "forwardPanePorts",
+    "releasePaneForwards",
     "canSwitchToRemoteCrew",
     "switchToRemoteCrew",
     "onInstallDispatched",

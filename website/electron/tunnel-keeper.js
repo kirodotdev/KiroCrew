@@ -7,6 +7,51 @@ const { validateRemoteSettings } = require("./validation");
 const RESPAWN_DELAY_MS = 5000;
 
 /**
+ * How long a pane waits for its forward before it loads anyway. ssh's own
+ * connect budget is 15s (DEFAULT_CONNECT_TIMEOUT_SECS on the Python side); a
+ * little over it lets one full attempt land.
+ */
+const PANE_FORWARD_WAIT_MS = 20000;
+
+/** Pane ports one window may ask for; the keeper holds at most this many too. */
+const MAX_PANE_PORTS = 32;
+
+/**
+ * The keeper's report about one pane forward (see tunnel_keeper.py):
+ * `tunnel: pane <port> <state>`, where a `down` or `refused` state is followed
+ * by a space and its reason.
+ */
+const PANE_LINE_PREFIX = "tunnel: pane ";
+const PANE_STATES = new Set(["connected", "down", "refused"]);
+const PANE_PORT_MAX_DIGITS = 5;
+
+/** `{ port, state }` for a keeper's pane report, else null. */
+function parsePaneReport(line) {
+  if (!line.startsWith(PANE_LINE_PREFIX)) return null;
+  const rest = line.slice(PANE_LINE_PREFIX.length);
+  const portEnd = rest.indexOf(" ");
+  if (portEnd < 1 || portEnd > PANE_PORT_MAX_DIGITS) return null;
+  const digits = rest.slice(0, portEnd);
+  for (const ch of digits) if (ch < "0" || ch > "9") return null;
+  const tail = rest.slice(portEnd + 1);
+  const stateEnd = tail.indexOf(" ");
+  const state = stateEnd === -1 ? tail : tail.slice(0, stateEnd);
+  if (!PANE_STATES.has(state)) return null;
+  return { port: Number(digits), state };
+}
+
+/** The distinct valid pane ports in `ports`, never the dashboard's own `port`. */
+function cleanPanePorts(ports, port) {
+  if (!Array.isArray(ports)) return [];
+  const clean = new Set();
+  for (const value of ports) {
+    if (Number.isInteger(value) && value >= 1 && value <= 65535 && value !== port) clean.add(value);
+    if (clean.size >= MAX_PANE_PORTS) break;
+  }
+  return [...clean].sort((a, b) => a - b);
+}
+
+/**
  * The SSH forward a client-only launch reaches its remote crew through, kept
  * open by this app instead of by a terminal the user has to remember.
  *
@@ -17,6 +62,14 @@ const RESPAWN_DELAY_MS = 5000;
  * after ssh's keepalive notices the dead connection, and stop it on quit. Its
  * stdin is held open as a lifeline, so the forward cannot outlive this app
  * however the app exits.
+ *
+ * The same keeper also carries the Remote Crew panes that crew's dashboard
+ * frames. Each pane loads `localhost:<port>`, and that port is a forward the
+ * crew's gateway opened on ITS machine, so from here nothing answers on it
+ * until the keeper forwards it too. Every window says which pane ports it
+ * shows (`forwardPanePorts`), the keeper is asked for their union over its
+ * stdin, and a port no window shows any more is dropped. A replaced keeper is
+ * asked again for every port still shown.
  *
  * Not offered on Windows: the ssh transport the supervisor spawns is not yet
  * supported there.
@@ -36,6 +89,12 @@ function createTunnelKeeper({
   let activeKey = "";
   let respawnTimer = null;
   let wanted = false;
+  // Pane ports per asking window, the ports the current keeper was asked to
+  // hold, what it last reported for each, and the requests waiting on one.
+  const paneOwners = new Map();
+  let paneAsked = new Set();
+  let paneState = new Map();
+  const paneWaiters = new Map();
 
   /** The crew's coordinates when this port opted into a managed tunnel, else null. */
   function managedTarget() {
@@ -73,13 +132,23 @@ function createTunnelKeeper({
       return;
     }
     child = proc;
-    const relay = (chunk) => {
-      for (const line of String(chunk).split("\n")) {
-        if (line.trim()) log(line.trim());
-      }
+    forgetPaneReports();
+    // Whole lines only: a pane report split across two chunks must still be read.
+    const lineRelay = () => {
+      let partial = "";
+      return (chunk) => {
+        const lines = (partial + String(chunk)).split("\n");
+        partial = lines.pop();
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line) continue;
+          log(line);
+          if (child === proc) notePaneReport(line);
+        }
+      };
     };
-    if (proc.stdout) proc.stdout.on("data", relay);
-    if (proc.stderr) proc.stderr.on("data", relay);
+    if (proc.stdout) proc.stdout.on("data", lineRelay());
+    if (proc.stderr) proc.stderr.on("data", lineRelay());
     // A write to a closed lifeline is how an exited keeper looks from here; it
     // is reported by the exit handler, not as an uncaught stream error.
     if (proc.stdin) proc.stdin.on("error", () => {});
@@ -90,12 +159,116 @@ function createTunnelKeeper({
     const lost = (reason) => {
       if (child !== proc) return;
       child = null;
+      forgetPaneReports();
       if (!wanted) return;
       log(`tunnel: keeper ${reason}; restarting`);
       scheduleRespawn();
     };
     proc.on("error", (error) => lost(`error: ${error && error.message}`));
     proc.on("exit", (code, signal) => lost(`exited (code=${code} signal=${signal})`));
+    syncPanePorts();
+  }
+
+  function settlePane(panePort, state) {
+    const waiters = paneWaiters.get(panePort);
+    if (!waiters) return;
+    paneWaiters.delete(panePort);
+    for (const waiter of waiters) waiter(state);
+  }
+
+  /**
+   * What a keeper reported dies with it: a replacement is asked for every
+   * port afresh, and a request waits for that answer, not the old one.
+   */
+  function forgetPaneReports() {
+    paneAsked = new Set();
+    paneState = new Map();
+  }
+
+  function notePaneReport(line) {
+    const report = parsePaneReport(line);
+    if (!report) return;
+    const panePort = report.port;
+    if (!paneAsked.has(panePort)) return;
+    const state = report.state === "connected" ? "up" : "down";
+    paneState.set(panePort, state);
+    settlePane(panePort, state);
+  }
+
+  function writeToKeeper(line) {
+    try {
+      if (child && child.stdin) child.stdin.write(`${line}\n`);
+    } catch { /* a dead keeper is reported by its exit handler */ }
+  }
+
+  /** Ask the current keeper for every pane port some window shows, and drop the rest. */
+  function syncPanePorts() {
+    if (!child) return;
+    const union = new Set();
+    for (const ports of paneOwners.values()) for (const p of ports) union.add(p);
+    for (const p of paneAsked) {
+      if (union.has(p)) continue;
+      paneAsked.delete(p);
+      paneState.delete(p);
+      writeToKeeper(`drop ${p}`);
+      settlePane(p, "down");
+    }
+    for (const p of union) {
+      if (paneAsked.has(p)) continue;
+      paneAsked.add(p);
+      writeToKeeper(`forward ${p}`);
+    }
+  }
+
+  /** "up" or "down" once the keeper has reported on `panePort`, or after the wait. */
+  function waitForPane(panePort) {
+    const known = paneState.get(panePort);
+    if (known) return Promise.resolve(known);
+    return new Promise((resolve) => {
+      let timer = null;
+      const done = (state) => {
+        if (timer) clearTimeoutFn(timer);
+        timer = null;
+        const waiters = paneWaiters.get(panePort);
+        if (waiters) {
+          waiters.delete(done);
+          if (waiters.size === 0) paneWaiters.delete(panePort);
+        }
+        resolve(state);
+      };
+      if (!paneWaiters.has(panePort)) paneWaiters.set(panePort, new Set());
+      paneWaiters.get(panePort).add(done);
+      timer = setTimeoutFn(() => {
+        timer = null;
+        done("down");
+      }, PANE_FORWARD_WAIT_MS);
+    });
+  }
+
+  /**
+   * Record the pane ports window `owner` shows now and have the keeper carry
+   * them. Resolves `{port: "up" | "down"}` for each once the keeper has
+   * reported on it (or the wait ran out), so the window loads a pane only once
+   * its port answers here. Resolves null when this app keeps no forward for
+   * the launch port, where there is nothing to ask.
+   */
+  function forwardPanePorts(owner, ports) {
+    const clean = cleanPanePorts(ports, port);
+    // Recorded with no forward kept too: a window asks once and is answered
+    // null, so a keeper started later (the crew opting in without a reload)
+    // must already know what that window shows.
+    if (clean.length) paneOwners.set(owner, new Set(clean));
+    else paneOwners.delete(owner);
+    if (!wanted) return Promise.resolve(null);
+    syncPanePorts();
+    return Promise.all(clean.map(waitForPane)).then((states) =>
+      Object.fromEntries(clean.map((p, i) => [p, states[i]])));
+  }
+
+  /** Forget window `owner`'s pane ports (it closed); ports no window shows are dropped. */
+  function releasePaneForwards(owner) {
+    if (!paneOwners.delete(owner)) return;
+    syncPanePorts();
   }
 
   function scheduleRespawn() {
@@ -138,7 +311,7 @@ function createTunnelKeeper({
     try { proc.kill("SIGTERM"); } catch { /* already gone */ }
   }
 
-  /** Stop the keeper and its forward; nothing respawns until start() again. */
+  /** Stop the keeper and its forwards; nothing respawns until start() again. */
   function stop() {
     wanted = false;
     if (respawnTimer) {
@@ -147,7 +320,10 @@ function createTunnelKeeper({
     }
     const proc = child;
     child = null;
+    forgetPaneReports();
     if (proc) terminate(proc);
+    // No keeper will answer them now: a waiting pane loads at once.
+    for (const panePort of [...paneWaiters.keys()]) settlePane(panePort, "down");
   }
 
   /**
@@ -159,11 +335,12 @@ function createTunnelKeeper({
     if (!wanted) return;
     const proc = child;
     child = null;
+    forgetPaneReports();
     if (proc) terminate(proc);
     start();
   }
 
-  return { start, stop, restart };
+  return { start, stop, restart, forwardPanePorts, releasePaneForwards };
 }
 
-module.exports = { createTunnelKeeper, RESPAWN_DELAY_MS };
+module.exports = { createTunnelKeeper, RESPAWN_DELAY_MS, PANE_FORWARD_WAIT_MS, MAX_PANE_PORTS };

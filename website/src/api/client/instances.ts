@@ -179,6 +179,14 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
       post('/api/instances/' + encodeURIComponent(id) + '/refresh-token').then(j) as Promise<
         InstanceTunnelStatus & { token?: string }
       >,
+    /** A token for the crew's pane naming `embedParentPort`, the port THIS page is
+     *  served on, with the gateway's forward it pairs with. Stores nothing on the
+     *  gateway; `own_page` says the page is the gateway's own (lib/paneCredential). */
+    embedInstanceToken: (id: string, embedParentPort: number) =>
+      post('/api/instances/' + encodeURIComponent(id) + '/embed-token', {
+        embed_parent_port: embedParentPort,
+        own_page: true,
+      }).then(j) as Promise<{ token: string; port: number; ttl: string }>,
     disconnectInstance: (id: string) =>
       post('/api/instances/' + encodeURIComponent(id) + '/disconnect').then(j) as Promise<{
         disconnected: string
