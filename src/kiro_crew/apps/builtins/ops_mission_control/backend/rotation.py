@@ -762,9 +762,7 @@ def protected_cron_names() -> frozenset[str]:
     return frozenset(crons_for_tier(TIER_ALWAYS))
 
 
-async def apply_tiers(
-    shift: ShiftStatus, cron_service: Any, *, watching: bool = True
-) -> dict[str, Any]:
+async def apply_tiers(shift: ShiftStatus, cron_service: Any, *, watching: bool) -> dict[str, Any]:
     """Arm/disarm this app's crons to match the tier map, server-side.
 
     Why this exists rather than the agent issuing ``cron_pause``/``cron_resume``:

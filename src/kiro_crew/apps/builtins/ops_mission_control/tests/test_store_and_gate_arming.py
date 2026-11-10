@@ -147,6 +147,26 @@ class TestTierArming(_HomeIsolated):
         self.assertNotIn("cron_pause", message)
         self.assertNotIn("cron_resume", message)
 
+    def test_rotation_check_never_stops_before_the_arm_route(self):
+        """No early exit may skip the arm call that pauses an armed, unwatched tier.
+
+        A "stop if nothing is configured" step left `dispatch` armed after the last
+        signal source was removed, because only the route can pause it again.
+        """
+        import json
+        from pathlib import Path
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
+
+        app_dir = Path(rotation.__file__).resolve().parents[1]
+        manifest = json.loads((app_dir / "app.json").read_text(encoding="utf-8"))
+        message = next(c["message"] for c in manifest["crons"] if c["name"] == "rotation-check")
+        sop = (
+            app_dir.parents[2] / "builtin_skills/ops-mission-control/sops/rotation-check.md"
+        ).read_text(encoding="utf-8")
+        for text in (message, sop[: sop.index("1. `POST /rotation/arm`")]):
+            self.assertNotIn("produce NO output and stop", text)
+
     def test_protected_cron_names_is_derived_from_the_tier_table(self):
         """The protected set must BE the always tier, not a second hand-kept list.
 
@@ -508,6 +528,46 @@ class TestMayBeWatching(unittest.TestCase):
         with self.assertLogs(level="ERROR"):
             self.assertTrue(reg.may_be_watching())
 
+    def test_an_unreadable_store_counts_as_maybe_watching(self):
+        """Config and secret lookups answer "not configured" on a read failure.
+
+        Arming must not read that as "nothing to watch": it would pause a live shift.
+        """
+        import tempfile
+        from pathlib import Path
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import providers, secrets
+        from kiro_crew.apps.builtins.ops_mission_control.backend.registry import (
+            OpsProviderRegistry,
+        )
+
+        class _Off:
+            id = "off"
+
+            def configured(self):
+                return False
+
+        reg = OpsProviderRegistry.__new__(OpsProviderRegistry)
+        reg._signal_sources = cast(Any, {"off": _Off()})
+        with tempfile.TemporaryDirectory() as tmp:
+            absent = Path(tmp) / "absent.json"
+            # A directory where the file should be: reading it raises OSError.
+            unreadable = Path(tmp)
+            cases = (
+                ("both absent", absent, absent, False),
+                ("config unreadable", unreadable, absent, True),
+                ("secrets unreadable", absent, unreadable, True),
+            )
+            for label, config_path, secrets_path, expected in cases:
+                with (
+                    self.subTest(label),
+                    mock.patch.object(providers, "_config_path", return_value=config_path),
+                    mock.patch.object(
+                        secrets, "_backend", secrets.KeystoneFileBackend(secrets_path)
+                    ),
+                ):
+                    self.assertIs(reg.may_be_watching(), expected)
+
 
 class TestArmingOnAnAlreadyUnreadableStore(unittest.IsolatedAsyncioTestCase):
     """`POST /rotation/arm` on a store that was unreadable BEFORE the arm began.
@@ -614,7 +674,7 @@ class TestServerSideArming(unittest.IsolatedAsyncioTestCase):
 
         jobs = self._all_jobs(enabled=True)
         svc = _FakeCronService(jobs)
-        result = await rotation.apply_tiers(ShiftStatus(on_shift=False), svc)
+        result = await rotation.apply_tiers(ShiftStatus(on_shift=False), svc, watching=True)
 
         self.assertTrue(result["ok"])
         by_name = {job.name: job.enabled for job in jobs}
@@ -635,7 +695,7 @@ class TestServerSideArming(unittest.IsolatedAsyncioTestCase):
 
         jobs = self._all_jobs(enabled=False)
         svc = _FakeCronService(jobs)
-        await rotation.apply_tiers(ShiftStatus(on_shift=True), svc)
+        await rotation.apply_tiers(ShiftStatus(on_shift=True), svc, watching=True)
 
         by_name = {job.name: job.enabled for job in jobs}
         self.assertTrue(by_name["ops-mission-control/dispatch"])
@@ -680,7 +740,7 @@ class TestServerSideArming(unittest.IsolatedAsyncioTestCase):
             rotation.TIER_PRIMARY: False,
         }
         with mock.patch.object(rotation, "tier_states", return_value=hostile):
-            await rotation.apply_tiers(ShiftStatus(on_shift=False), svc)
+            await rotation.apply_tiers(ShiftStatus(on_shift=False), svc, watching=True)
 
         by_name = {job.name: job.enabled for job in jobs}
         self.assertTrue(
@@ -700,9 +760,9 @@ class TestServerSideArming(unittest.IsolatedAsyncioTestCase):
         jobs = self._all_jobs(enabled=True)
         svc = _FakeCronService(jobs)
         # Settle first, then re-apply the identical shift.
-        await rotation.apply_tiers(ShiftStatus(on_shift=True), svc)
+        await rotation.apply_tiers(ShiftStatus(on_shift=True), svc, watching=True)
         svc.calls.clear()
-        again = await rotation.apply_tiers(ShiftStatus(on_shift=True), svc)
+        again = await rotation.apply_tiers(ShiftStatus(on_shift=True), svc, watching=True)
 
         self.assertEqual(again["changed"], [])
         self.assertEqual(svc.calls, [])
@@ -717,7 +777,7 @@ class TestServerSideArming(unittest.IsolatedAsyncioTestCase):
 
         stranger = _FakeJob("my-personal-backup", False)
         svc = _FakeCronService(self._all_jobs(enabled=False) + [stranger])
-        await rotation.apply_tiers(ShiftStatus(on_shift=True), svc)
+        await rotation.apply_tiers(ShiftStatus(on_shift=True), svc, watching=True)
 
         self.assertFalse(stranger.enabled)
         self.assertNotIn(("id-my-personal-backup", True), svc.calls)
@@ -728,7 +788,7 @@ class TestServerSideArming(unittest.IsolatedAsyncioTestCase):
             ShiftStatus,
         )
 
-        result = await rotation.apply_tiers(ShiftStatus(on_shift=True), None)
+        result = await rotation.apply_tiers(ShiftStatus(on_shift=True), None, watching=True)
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "cron_service_unavailable")
 
@@ -753,7 +813,7 @@ class TestServerSideArming(unittest.IsolatedAsyncioTestCase):
         svc = _FakeCronService(jobs)
         # Not the primary owner, and off shift: the widest possible disarm.
         with mock.patch.object(rotation, "is_primary", return_value=False):
-            await rotation.apply_tiers(ShiftStatus(on_shift=False), svc)
+            await rotation.apply_tiers(ShiftStatus(on_shift=False), svc, watching=True)
 
         by_name = {job.name: job.enabled for job in jobs}
         self.assertTrue(

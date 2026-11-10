@@ -20,6 +20,7 @@ import logging
 import time
 from typing import Any
 
+from kiro_crew.apps.builtins.ops_mission_control.backend import providers, secrets
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import Signal, utc_now_iso
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import (
     DEFAULT_IS_SNAPSHOT,
@@ -129,10 +130,16 @@ class OpsProviderRegistry:
     def may_be_watching(self) -> bool:
         """False only when every signal source answered that it is not set up.
 
+        An app config or secret store that exists but cannot be read also counts as
+        maybe watching: their lookups degrade to "not configured" without raising.
+
         Arming reads this, not ``configured_signal_sources``: a ``configured()`` that
         raises is an unknown, and pausing an armed instance on a transient config or
         secret-store error would silently drop a live shift's coverage.
         """
+        # Both stores degrade a read failure to "not configured" without raising.
+        if providers.config_unreadable() or secrets.store_unreadable():
+            return True
         for src in self._signal_sources.values():
             try:
                 if src.configured():
