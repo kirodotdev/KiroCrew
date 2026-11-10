@@ -754,6 +754,12 @@ _DOCUMENT_LINK_RE = re.compile(
 #     opens with an Exchange id prefix (`AAMk`, `AAQk`, `AQMk`, `AQQk`), then
 #     12-252 characters of `[A-Za-z0-9_-]` or the escapes `%2B`, `%2F`,
 #     `%3D`, and must decode to one whole Exchange id (`_is_whole_exchange_id`);
+#   * Outlook's own open-in-browser link (Microsoft Graph `webLink`), the one
+#     route whose id rides in the query: exactly `/owa/?ItemID=<id>&exvsurl=1
+#     &viewmodel=ReadMessageItem` or `/owa/?itemid=<id>&exvsurl=1&path=
+#     /calendar/item`, fields in that order, nothing else, the id judged as
+#     above (`_OWA_WEB_LINK_QUERIES`). Only on `/owa/` does the link read past
+#     `?`, so every other route's query stays outside it as before;
 #   * Slack: `app.slack.com`, `<workspace>.slack.com` or
 #     `<workspace>.enterprise.slack.com`, then exactly `client/<id>/<id>/<msg>`
 #     and one optional trailing `/`, where an id is one uppercase letter and
@@ -779,6 +785,14 @@ _OUTLOOK_FOLDERS = frozenset(
 )
 _OUTLOOK_ID_PREFIXES = ("AAMk", "AAQk", "AQMk", "AQQk")
 _OUTLOOK_ID_ESCAPES = frozenset({"%2B", "%2b", "%2F", "%2f", "%3D", "%3d"})
+#: The Graph `webLink` query of a message and of an event: the id field's exact
+#: name, then the fixed fields that follow it, in order.
+_OWA_WEB_LINK_QUERIES = (
+    ("ItemID", ("exvsurl=1", "viewmodel=ReadMessageItem")),
+    ("itemid", ("exvsurl=1", "path=/calendar/item")),
+)
+_OWA_WEB_LINK_PATH = "/owa/"
+_OWA_QUERY_CHARS = _LINK_PATH_CHARS | frozenset("=&")
 #: A URL path's segment separator: `/` on every platform, never `os.sep`.
 _URL_PATH_SEP = "/"
 
@@ -852,6 +866,41 @@ def _outlook_item_id(segments: list[str]) -> str | None:
     return item if route == (("id",) if app == "mail" else ("item",)) else None
 
 
+def _outlook_web_link_item(path: str, query: str) -> str | None:
+    """The item id when *path* and *query* are exactly an Outlook `webLink`."""
+    if path != _OWA_WEB_LINK_PATH:
+        return None
+    fields = query.split("&")
+    for id_name, fixed in _OWA_WEB_LINK_QUERIES:
+        name, sep, item = fields[0].partition("=")
+        if name == id_name and sep and tuple(fields[1:]) == fixed:
+            return item
+    return None
+
+
+def _outlook_web_link_tail(
+    domain: str, path_and_query: str, port: str, is_https: bool
+) -> str | None:
+    """What the exfil gate still judges when the URL opens with an Outlook `webLink`.
+
+    None when it does not. The gate asks this so it judges the link with the
+    very matcher the credential pass uses, rather than a second copy that could
+    drift. The link (``_OWA_WEB_LINK_QUERIES``) has a fixed path, fixed fields
+    in a fixed order, and an id that decodes as one whole Exchange entry id with
+    no key-shaped piece. Like the Slack app-create carve-out it VALIDATES the
+    bytes rather than trusting the host: the id's free fields are GUIDs and
+    counters of at most 22 bytes each, less than the sub-200-char query any URL
+    may carry past those heuristics today. Whatever the scan glued after the
+    link (a sentence's `.`, a fragment) is returned, so it stays judged.
+    HTTPS with no explicit port only, like the OAuth and Slack carve-outs.
+    """
+    if not is_https or port:
+        return None
+    url = f"https://{domain}{path_and_query}"
+    end = _chat_mail_link_at(url, 0)
+    return url[end:] if end is not None and "?" in url[:end] else None
+
+
 def _is_outlook_id(item: str) -> bool:
     """Whether *item* has an Outlook id's prefix, alphabet and length, and decodes whole."""
     if not item.startswith(_OUTLOOK_ID_PREFIXES):
@@ -923,23 +972,33 @@ def _chat_mail_link_at(text: str, start: int) -> int | None:
     limit = min(len(text), host_end + _LINK_PATH_MAX + 1)
     while end < limit and text[end] in _LINK_PATH_CHARS:
         end += 1
+    host = text[host_start:host_end]
+    outlook = host in _OUTLOOK_HOSTS
+    # Only the `webLink` route reads on into its query; its fixed fields bound it.
+    if outlook and text[host_end:end] == _OWA_WEB_LINK_PATH and text[end : end + 1] == "?":
+        end += 1
+        while end < limit and text[end] in _OWA_QUERY_CHARS:
+            end += 1
     if end - host_end > _LINK_PATH_MAX:
         return None
-    host, link = text[host_start:host_end], text[start:end]
+    link = text[start:end]
     parts = urllib.parse.urlsplit(link)
     if (
         parts.scheme != "https"
         or parts.netloc != host
         or parts.hostname != host
-        or parts.query
+        or (parts.query and not outlook)
         or parts.fragment
         or not parts.path.startswith("/")
     ):
         return None
     segments = parts.path[1:].split(_URL_PATH_SEP)
-    outlook = host in _OUTLOOK_HOSTS
     if outlook:
-        item = _outlook_item_id(segments)
+        item = (
+            _outlook_web_link_item(parts.path, parts.query)
+            if parts.query
+            else _outlook_item_id(segments)
+        )
         if item is None or not _is_outlook_id(item):
             return None
     elif not (_is_slack_host(host) and _is_slack_client_route(segments)):

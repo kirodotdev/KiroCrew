@@ -742,7 +742,11 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 14, from 35,146, for ``DeniedCommandRule.note``: the optional field and its
 #: docstring, and ``edition_denied_rules`` carrying an edition rule's note through. It
 #: changes only the refusal text; no rule, pattern or match changed. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_160
+#: Raised by 67, from 35,160, for the Outlook ``webLink`` route
+#: (``/owa/?ItemID=<id>&exvsurl=1&...``) in ``redaction_entropy``, its use by
+#: the exfil gate and its five names in the ``redaction`` facade manifest, so
+#: Graph's own message and event links are not masked or blocked. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_227
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
