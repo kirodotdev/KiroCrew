@@ -51,6 +51,7 @@ import { useSlotTitleGenerating } from '../../hooks/slotTitleGeneration'
 import { DisclosureChevron, isOpenInTabModifierClick } from './chrome'
 import { SessionSourceChips } from './SessionSourceChips'
 import { useSessionCardLines, cardLineClass } from './cardLines'
+import { SearchFolderLabel, SearchHitTail } from './searchHits'
 import { connectedChannelLinks } from './connectedChannelLinks'
 import { CrewEyebrow } from '../../components/crew/CrewModeMarks'
 import { crewRootOf } from '../../lib/crewMode'
@@ -1829,14 +1830,14 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                *  and in practice the two names coincide often enough that showing
                *  both read as a stutter. Folder membership is carried by the tree
                *  itself in folder view; in flat view the row's own context menu
-               *  still names it. */}
+               *  still names it, and a search names it beside the time. */}
               {slotActivityTs(s) || isPinned || s.muted || s.process === 'released' || conductorMeta ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
                   {/* FIRST in the group, so it sits immediately left of the timestamp
                    *  and the timestamp keeps the position it has in every other lane.
                    *  Inside the card's own meta group rather than beside the card:
                    *  outside it, this cluster occupied the column the time uses. */}
-                  {conductorMeta}
+                  {conductorMeta}<SearchFolderLabel slot={s} />
                   {slotActivityTs(s) && <span data-testid="session-row-time" className="text-muted font-normal shrink-0">{fmtRelativeTime(slotActivityTs(s))}</span>}
                   {/* Last in the row: the pin is a state marker, not a label, so
                    *  it sits after the text that reads left-to-right rather than
@@ -1915,16 +1916,15 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 lands — the one marker with no state branch of its own. A row that
                 is unread with nothing said yet still renders the line, because the
                 dot IS the content then. A crew card's workers summary takes the
-                tail's place: still ONE line, below the row's own state. */}
-            {crewRoot
-              // An Ultra Mode row shows only what needs attention; the full counts
-              // are in the tooltip.
+                tail's place (ONE line); a search's snippet stands in for the tail. */}
+            <SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={crewRoot
+              // An Ultra Mode row shows only what needs attention; the full counts are in the tooltip.
               ? <CrewRootSummaryLine root={s.key} fallback={rowState ?? lastMessageLine} own={crewOwnState} work={s.crew_work}
                   // What the main chat itself holds for the person: an approval, a
                   // question, a spawn approval, or an armed loop asking (a ledger item
                   // on the person is counted from `crew_work` already).
                   rootOwes={s.pending_approval || s.needs_input || subagentAwaiting > 0 || (loopWaiting && !(crewWork?.person ?? 0)) ? 1 : 0} />
-              : (rowState ?? lastMessageLine)}
+              : (rowState ?? lastMessageLine)} />
             {s.source_links && s.source_links.length > 0 && (
               <SessionSourceChips
                 slotKey={s.key}

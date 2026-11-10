@@ -11,11 +11,12 @@ import { useStore } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
 import type { RootState } from '../store'
 import { useConnected } from '../hooks/useConnected'
-import { fetchHistory, deleteHistorySession, switchSlot, resumeFromHistory, clearHistorySessions } from '../store/chatSlice'
+import { fetchHistory, deleteHistorySession, switchSlot, resumeFromHistory, clearHistorySessions, requestFolderReveal } from '../store/chatSlice'
 import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from './chat-sidebar/CreatorFilter'
 import { sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
 import { SharedCrewBylineContext } from './chat-sidebar/SessionCreatorByline'
-import { api } from '../api/client'
+import { api, SEARCH_MIN_CHARS } from '../api/client'
+import { folderNameText, orderFoldersWithPaths } from '../utils/folderTree'
 import { computeRecentRank, clampTintCount } from '../utils/recencyTint'
 import { useDndSensors } from '../hooks/useDndSensors'
 import { useSessionPalette } from '../hooks/useSessionPalette'
@@ -47,7 +48,8 @@ import { compareText } from '../i18n/format'
 export { sidebarCollision, isFolderNestBand } from './chat-sidebar/dnd/collision'
 export { boardSidebarWidth } from './chat-sidebar/board'
 import { useSessionFilterState, useSessionStatusFilters } from './chat-sidebar/filters'
-import { useDebouncedSessionSearch, useSearchMatches } from './chat-sidebar/search'
+import { sidebarSearchHits, useDebouncedSessionSearchState, useSearchMatches } from './chat-sidebar/search'
+import { makeSidebarSearchView, SearchFolderHits, SearchResultsHeader, SidebarSearchContext } from './chat-sidebar/searchHits'
 import { openCrewWindow, useCrewWindow } from './chat/crew-window/crewWindowStore'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { isPeerRow, sessionRowIdentity } from './chat-sidebar/rowIdentity'
@@ -262,20 +264,10 @@ function ChatSidebar({
   // `filteredSlots` can ORDER matches by the backend's ranking (title matches
   // carry a strong field boost server-side) rather than re-sorting them by
   // date, which buries a title match below every fresher session that merely
-  // mentions the query in its body. First-wins on canonical-key collisions so
-  // a duplicate file cannot demote the better-ranked entry.
-  const slotSearchRanks = useDebouncedSessionSearch(
-    slotFilter,
-    sessions => {
-      const ranks = new Map<string, number>()
-      sessions.forEach((s, i) => {
-        const key = s.key.replace(/^dashboard_/, '')
-        if (!ranks.has(key)) ranks.set(key, i)
-      })
-      return ranks
-    },
-    slotTitleDigest,
-  )
+  // mentions the query in its body. The reply's snippets and scan note ride
+  // along for the search lane (./chat-sidebar/searchHits).
+  const { result: slotSearch, failed: slotSearchFailed } = useDebouncedSessionSearchState(slotFilter, sidebarSearchHits, slotTitleDigest)
+  const slotSearchRanks = slotSearch?.ranks ?? null
   const {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
     suppressMenuRestore, disarmMenuRestore, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit, renameAnnouncement, slotRenameEnterRef,
@@ -565,10 +557,15 @@ function ChatSidebar({
   // button is not drawn at all, and an ungated lane would render a layout the user has
   // no control to leave. The folder filter applies to the flat lane and the tree, NOT
   // to the board.
-  const shownLane = renderedLane({ lane, boardColumns: orderedColumns.length, folders: folders.length, lineageAvailable })
+  const searchActive = slotFilter.trim().length >= SEARCH_MIN_CHARS
+  const shownLane = renderedLane({ lane, boardColumns: orderedColumns.length, folders: folders.length, lineageAvailable, searching: searchActive })
   const boardLaneActive = shownLane === 'board' || shownLane === 'board-flat'
   const flatLaneActive = shownLane === 'flat'
   const conductorLaneActive = shownLane === 'conductor'
+  // The search lane: a list lane drawn for an active query, in relevance order -- the
+  // flat lane in place of the tree (see `renderedLane`), or the conductor lane, which
+  // flattens itself for a query.
+  const searchLaneActive = searchActive && (flatLaneActive || conductorLaneActive)
   // Whether any folder ROW is on screen to drag: the tree, and the board unless
   // flat view empties its columns of folders (`relevantFolders`). The flat lane
   // explodes chats out of their folders and the conductor lane nests by lineage.
@@ -598,9 +595,18 @@ function ChatSidebar({
     setLaneRowWindowRoot(el)
   }, [setLaneRowWindowRoot])
   const laneScrollMemory = useLaneScrollMemory(
-    boardLaneActive ? null : `chat-sidebar-lane:${conductorLaneActive ? 'conductor' : flatLaneActive ? 'flat' : 'tree'}`,
+    // The search lane keeps its own entry, so a search neither lands on the flat
+    // lane's remembered row nor moves it, and clearing the query restores the lane
+    // the person was browsing at the row they left.
+    boardLaneActive ? null : `chat-sidebar-lane:${searchLaneActive ? 'search' : conductorLaneActive ? 'conductor' : flatLaneActive ? 'flat' : 'tree'}`,
     laneScrollRef,
   )
+  // What a search-lane row shows: its snippet and its folder (./chat-sidebar/searchHits).
+  const searchSnippets = slotSearch?.snippets
+  const searchView = useMemo(() => (searchLaneActive
+    ? makeSidebarSearchView(slotFilter, searchSnippets, slotFolders,
+      new Map(orderFoldersWithPaths(folders, folderSortMode).map(o => [o.folder.id, typeof o.path === 'string' ? o.path : folderNameText(o.folder)])))
+    : null), [searchLaneActive, slotFilter, searchSnippets, slotFolders, folders, folderSortMode])
 
   useHoverPinLiveness({ hoverPinRef, releaseHoverPin, filteredSlots: laneSlots, boardLaneActive, flatLaneActive, conductorLaneActive, orderedColumns })
 
@@ -933,9 +939,31 @@ function ChatSidebar({
     }).then(ok => { if (ok) dispatch(deleteHistorySession(key)) })
   }
 
+  // Above the search lane's rows: the match count (every row drawn, crew groups
+  // included), "Clear filters" while a filter narrows the list (the query stays), and
+  // why the list may be short. The folder filter is not among them: it is inert
+  // while the box holds text.
+  // Then the folders the query named, which the lane draws no blocks for.
+  const searchHeader = searchLaneActive ? (
+    <>
+      <SearchResultsHeader
+        count={flatSlots.length + shownCrewRowCount}
+        filtersOn={sidebarRows.filtersNarrowing}
+        onClearFilters={() => { clearAllFilters(); clearHiddenFilters(); clearTagFilter(); clearModelFilter() }}
+        failed={slotSearchFailed}
+        scan={slotSearch?.scan ?? null}
+      />
+      <SearchFolderHits
+        folders={folders} query={slotFilter} matchIds={folderNameMatchIds} isFolderHidden={isFolderHidden}
+        rows={flatSlots} folderOf={sidebarRows.folderOf}
+        onOpen={id => { setSlotFilter(''); dispatch(requestFolderReveal(id)) }}
+      />
+    </>
+  ) : null
+
   // Everything the render owners draw from, built after the last hook call. The
   // factories run once per render, so the row stamps belong to this pass.
-  const scope: SidebarScope = { activeDrag, activeFilters, activeModelKeys, activeModelRows, activeSlot,
+  const scope: SidebarScope = { searchHeader, searchLaneActive, activeDrag, activeFilters, activeModelKeys, activeModelRows, activeSlot,
     activeTagIds, activeTagNames, addColumnAfterMutation, allHiddenFolders, armHold, attachStripEdges,
     autoTitleError, availableLanes, boardError, boardFolderCollapsed, boardLaneActive, boardPeerCount,
     broadcastOpen, bulkModel, changeRecentUnit, chatDropTarget, citedCreatorExists, cleanupOpen,
@@ -1101,9 +1129,9 @@ function ChatSidebar({
       ) : (
       <LayoutGroup id="chat-slots">
         {conductorLaneActive ? (
-          lanes.renderConductorLane()
+          <SidebarSearchContext.Provider value={searchView}>{lanes.renderConductorLane()}</SidebarSearchContext.Provider>
         ) : flatLaneActive ? (
-          lanes.renderFlatLane()
+          <SidebarSearchContext.Provider value={searchView}>{lanes.renderFlatLane()}</SidebarSearchContext.Provider>
         ) : orderedColumns.length === 0 ? (
           lanes.renderTreeLane()
         ) : (

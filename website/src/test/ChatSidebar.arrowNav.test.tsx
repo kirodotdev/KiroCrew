@@ -730,7 +730,10 @@ describe('chat sidebar — session list arrow navigation', () => {
 
     fireEvent.change(getByPlaceholderText(/search/i), { target: { value: 'keep' } })
     await waitFor(() => expect(queryByText('drop second')).toBeNull())
-    fireEvent.keyDown(row('k1'), { key: 'ArrowDown', altKey: true })
+    // A query draws the search lane, whose rows carry the `flat` scope.
+    const k1 = document.querySelector<HTMLElement>('[data-session-row="k1"][data-session-scope="flat"]')
+    expect(k1).not.toBeNull()
+    fireEvent.keyDown(k1!, { key: 'ArrowDown', altKey: true })
 
     await waitFor(() => expect(setPinnedOrder).toHaveBeenCalledWith(['k2', 'k3', 'k1'], false))
   })

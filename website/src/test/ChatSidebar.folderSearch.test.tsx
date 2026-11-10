@@ -535,8 +535,8 @@ describe('chat sidebar — what a folder-name match looks like', () => {
     const utils = renderSidebar()
     await waitFor(() => expect(utils.queryByText('Archive')).not.toBeNull())
     typeSearch(utils, 'arch')
-    await waitFor(() => expect(utils.container.querySelector('[data-folder-row="f-archive"] mark')).not.toBeNull())
-    const mark = utils.container.querySelector('[data-folder-row="f-archive"] mark')
+    await waitFor(() => expect(utils.container.querySelector('[data-search-folder-hit="f-archive"] mark')).not.toBeNull())
+    const mark = utils.container.querySelector('[data-search-folder-hit="f-archive"] mark')
     // The marked run is the query's own letters, in the name's original case.
     expect(mark?.textContent).toBe('Arch')
     expect(mark?.className).toContain('search-match')
@@ -549,8 +549,8 @@ describe('chat sidebar — what a folder-name match looks like', () => {
     const utils = renderSidebar()
     await waitFor(() => expect(utils.queryByText('Inspections')).not.toBeNull())
     typeSearch(utils, 'inspect')
-    await waitFor(() => expect(utils.container.querySelector('[data-folder-row="f-nested"] mark')).not.toBeNull())
-    expect(utils.container.querySelector('[data-folder-row="f-syd"] mark')).toBeNull()
+    await waitFor(() => expect(utils.container.querySelector('[data-search-folder-hit="f-nested"] mark')).not.toBeNull())
+    expect(utils.container.querySelector('[data-search-folder-hit="f-syd"] mark')).toBeNull()
   })
 
   it('drops a folder whose whole subtree draws nothing, instead of listing it with a phantom count', async () => {
@@ -563,24 +563,63 @@ describe('chat sidebar — what a folder-name match looks like', () => {
     await waitFor(() => expect(utils.queryByText('Inspections')).not.toBeNull())
     typeSearch(utils, 'archive')
     await waitFor(() => expect(utils.queryByText('Trading Desk')).toBeNull())
-    expect(utils.container.querySelector('[data-folder-row="f-archive"]')).not.toBeNull()
-    expect(utils.container.querySelector('[data-folder-row="f-syd"]')).toBeNull()
-    expect(utils.container.querySelector('[data-folder-row="f-nested"]')).toBeNull()
+    expect(utils.container.querySelector('[data-search-folder-hit="f-archive"]')).not.toBeNull()
+    expect(utils.container.querySelector('[data-search-folder-hit="f-syd"]')).toBeNull()
+    expect(utils.container.querySelector('[data-search-folder-hit="f-nested"]')).toBeNull()
   })
 
-  it('keeps a genuine ancestor, and counts only the child it actually draws', async () => {
-    // The mirror case: "inspect" names the SUBFOLDER, so the parent is the path to
-    // a real match and belongs on screen. Its count is 1 because `Inspections` is
-    // drawn beneath it — the number and the body agree, which is the property the
-    // "archive" case violated.
+  it('names a matched subfolder by its path, and counts only the results it holds', async () => {
+    // The mirror case: "inspect" names the SUBFOLDER. The search lane draws no
+    // folder blocks, so the parent is not a row of its own; it is the path the
+    // matched row reads, unmarked. The count is the one result filed under it.
     const utils = renderSidebar()
     await waitFor(() => expect(utils.queryByText('Inspections')).not.toBeNull())
     typeSearch(utils, 'inspect')
     await waitFor(() => expect(utils.queryByText('Trading Desk')).toBeNull())
-    const parent = utils.container.querySelector('[data-folder-row="f-syd"]')
-    expect(parent).not.toBeNull()
-    expect(utils.container.querySelector('[data-folder-row="f-nested"]')).not.toBeNull()
-    expect((parent?.textContent || '').replace(/\s+/g, '')).toBe('SydneyProperty1')
+    expect(utils.container.querySelector('[data-search-folder-hit="f-syd"]')).toBeNull()
+    const hit = utils.container.querySelector('[data-search-folder-hit="f-nested"]')
+    expect((hit?.textContent || '').replace(/\s+/g, '')).toBe('SydneyProperty›Inspections1')
+    expect(hit?.querySelector('mark')?.textContent).toBe('Inspect')
+  })
+
+  it('leaves the search and reveals the folder when its row is pressed', async () => {
+    const scroll = stubScrollIntoView()
+    try {
+      const utils = renderSidebar()
+      await waitFor(() => expect(utils.queryByText('Archive')).not.toBeNull())
+      typeSearch(utils, 'archive')
+      await waitFor(() => expect(utils.queryByText('Trading Desk')).toBeNull())
+      fireEvent.click(utils.container.querySelector('[data-search-folder-hit="f-archive"]')!)
+      // The query is gone, so the folder tree is back with every folder in it.
+      await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
+      expect((utils.getByPlaceholderText('Search sessions…') as HTMLInputElement).value).toBe('')
+      // The reveal lands on the TREE's folder header: the search lane's folder row
+      // is gone by then and must not have taken the scroll.
+      const header = () => utils.container.querySelector('[data-testid="tree-view-lane"] [data-folder-row="f-archive"]')
+      await waitFor(() => expect(header()?.classList.contains('session-reveal-flash')).toBe(true))
+      expect(scroll.spy.mock.contexts.at(-1)).toBe(header())
+    } finally {
+      scroll.restore()
+    }
+  })
+
+  it('lands a reveal from elsewhere on the tree header, not on the search lane folder row', async () => {
+    // The launcher reveals the folder the query already names: the reveal clears the
+    // query, and its first scroll attempt runs before the tree is back. Only the tree
+    // header may answer it, or the flash lands on a row about to unmount.
+    const scroll = stubScrollIntoView()
+    try {
+      const utils = renderSidebar()
+      await waitFor(() => expect(utils.queryByText('Archive')).not.toBeNull())
+      typeSearch(utils, 'archive')
+      await waitFor(() => expect(utils.queryByText('Trading Desk')).toBeNull())
+      act(() => { utils.store.dispatch(requestFolderReveal('f-archive')) })
+      const header = () => utils.container.querySelector('[data-testid="tree-view-lane"] [data-folder-row="f-archive"]')
+      await waitFor(() => expect(header()?.classList.contains('session-reveal-flash')).toBe(true))
+      expect(scroll.spy.mock.contexts.at(-1)).toBe(header())
+    } finally {
+      scroll.restore()
+    }
   })
 
   it('marks nothing while the search box is empty', async () => {

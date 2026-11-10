@@ -6728,6 +6728,9 @@
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",
       "history_search_failed": "Search failed. Showing title matches only.",
+      "search_results_count_one": "{{count}} match, best first",
+      "search_results_count_other": "{{count}} matches, best first",
+      "search_clear_filters": "Clear filters",
       "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",
       "archive_session_other": "Archive {{count}} sessions",
