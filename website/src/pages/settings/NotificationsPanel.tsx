@@ -268,9 +268,10 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
   })
   const channels = channelsQuery.data?.channels
   const bridgeTransports = channelsQuery.data?.bridge_transports
-  // Channels with a route save still in flight (its refetch included: onSettled
-  // awaits it). A route is written whole, so a later save the server handled
-  // first would be undone by the earlier one; the row holds new picks until then.
+  // Channels with a route save still in flight (its refetch included when
+  // onSettled runs one: it awaits it). A route is written whole, so a later
+  // save the server handled first would be undone by the earlier one; the
+  // row holds new picks until then.
   const routeSaving = new Set(useMutationState({
     filters: { mutationKey: CHANNEL_PATCH_KEY, status: 'pending' },
     select: m => m.state.variables as { channel: string; settings: ChannelPatch } | undefined,
@@ -684,10 +685,19 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   // server may never have held.
   const persistedRef = useRef(new Map<string, { value: unknown; pending: number }>())
   const fieldKey = (channel: string, k: string) => JSON.stringify([channel, k])
+  // Each channel's latest save and its PUT. A channel's saves go out one at a
+  // time, each once the one before it answered, so the server handles the
+  // later click last and keeps it; other channels' saves do not wait.
+  const lastSave = useRef(new Map<string, { vars: object; put: Promise<unknown> }>())
   const patchMut = useMutation({
     mutationKey: CHANNEL_PATCH_KEY,
-    mutationFn: ({ channel, settings }: { channel: string; settings: ChannelPatch }) =>
-      api.updateNotificationChannelSettings(channel, settings),
+    mutationFn: (vars: { channel: string; settings: ChannelPatch }) => {
+      const put = (lastSave.current.get(vars.channel)?.put ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() => api.updateNotificationChannelSettings(vars.channel, vars.settings))
+      lastSave.current.set(vars.channel, { vars, put })
+      return put
+    },
     // Optimistic update; the PUT is authoritative — a failure rolls back the
     // fields this patch set and the refetch below re-syncs with the server.
     onMutate: ({ channel, settings }) => {
@@ -749,12 +759,17 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
         }),
       })
     },
-    onSettled: (_data, _err, { channel }, ctx) => {
+    onSettled: (_data, _err, vars, ctx) => {
+      const { channel } = vars
       for (const k of ctx?.touched ?? []) {
         const key = fieldKey(channel, k)
         const entry = persistedRef.current.get(key)
         if (entry && --entry.pending <= 0) persistedRef.current.delete(key)
       }
+      // Only the channel's latest save re-reads the list. A read now, with a
+      // later save of this channel still to land, would show the earlier
+      // click again; that later save re-reads when it settles.
+      if (lastSave.current.get(channel)?.vars !== vars) return
       return qc.invalidateQueries({ queryKey: CHANNELS_KEY })
     },
   })
