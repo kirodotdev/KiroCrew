@@ -338,6 +338,7 @@ def forget_home_bound_caches() -> None:
     token_auth = sys.modules.get("kiro_crew.dashboard.token_auth")
     if token_auth is not None:
         token_auth._app_perms_cache.clear()
+        token_auth._app_perms_denied.clear()
 
 
 @pytest.fixture(autouse=True)

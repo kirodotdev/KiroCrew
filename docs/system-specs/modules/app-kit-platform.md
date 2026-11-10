@@ -2538,7 +2538,9 @@ change to the default lesson store, never its text, and no read grant with it
 **An app backend subscribes the way its page does.** The gateway hands a backend
 it spawns `KIROCREW_GATEWAY_ORIGIN` and `KIROCREW_PROXY_SECRET`, which is the
 app's `.app_secret`; `POST /api/apps/<name>/token` with that value as
-`X-App-Secret` returns the same app-scoped token the page uses, and `/api/ws`
+`X-App-Secret` returns the same app-scoped token the page uses (only while the
+owner-enable marker the gateway sealed is present, see dashboard-token-auth), and
+`/api/ws`
 with it is the same scoped stream. `kirocrew_client.KiroCrewClient(app_name=...)`
 does the exchange (`authenticate()`) and `create_ws()` opens that socket. There is no
 second delivery channel, and an origin the gateway could not prove is omitted, so

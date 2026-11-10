@@ -903,20 +903,28 @@ def generate_app_secret() -> str:
 
 
 def validate_app_secret(app_name: str, provided_secret: str) -> bool:
-    """Validate an app secret against the stored secret on disk.
+    """Validate an app secret for an app the owner enabled through the gateway.
 
-    Reads ``~/.kiro/crew/apps/{app_name}/.app_secret`` and performs
-    constant-time comparison via :func:`hmac.compare_digest`.
-    Returns ``False`` if the file doesn't exist or doesn't match.
+    The authority is the owner-enable marker ``<crew-home>/host-exec-grants/{app_name}``
+    (``apps.host_exec_grants``): a sealed, top-level directory only the unsandboxed
+    gateway writes, on an owner-authenticated enable or first owner registration,
+    and every disable and uninstall revokes. Files under the agent-writable
+    ``apps/{app_name}/`` (``installed.json``, ``app.json``) are never enough. With the
+    marker present, the secret is compared in constant time against
+    ``apps/{app_name}/.app_secret``.
     """
+    # circular import: apps.manager imports write_app_secret from token_auth
+    from kiro_crew.apps.host_exec_grants import host_exec_granted
     from kiro_crew.config.loader import config_dir
 
+    if not provided_secret or not host_exec_granted(app_name):
+        return False
     secret_path = config_dir() / "apps" / app_name / ".app_secret"
     try:
         stored = secret_path.read_text(encoding="utf-8").strip()
     except (OSError, FileNotFoundError):
         return False
-    if not stored or not provided_secret:
+    if not stored:
         return False
     return _ct_eq(stored, provided_secret)
 
@@ -941,7 +949,16 @@ def write_app_secret(app_name: str, secret: str) -> None:
     # dashboard/server.py:_write_secret_file) so we don't leave a zero-byte
     # .app_secret under the default DACL that a later successful write
     # (which does not re-inherit on O_TRUNC) could then populate.
-    fd = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # The file is the gateway's own: a link planted at its path is removed, never
+    # written through, and O_NOFOLLOW refuses one planted after that check, so the
+    # unsandboxed gateway cannot be aimed at another file (e.g. a sealed leaf).
+    if secret_path.is_symlink():
+        secret_path.unlink()
+    fd = os.open(
+        str(secret_path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
     try:
         # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
         # OSError, which would defeat the cleanup-and-reraise below for this

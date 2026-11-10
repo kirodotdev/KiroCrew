@@ -17,6 +17,7 @@ from typing import Any
 
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
+from kiro_crew.apps.host_exec_grants import grant_host_exec
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
@@ -424,6 +425,24 @@ def register_external_app(
     if is_new_secret:
         secret = generate_app_secret()
         write_app_secret(name, secret)
+        if not existing and meta.enabled:
+            # A first registration is an owner-authenticated install+enable (the
+            # route requires an owner dashboard request), so it records the owner-
+            # enable marker the token exchange reads (``validate_app_secret``). A
+            # re-registration never does: it would read ``enabled`` back from the
+            # agent-writable installed.json.
+            if not grant_host_exec(name):
+                # The record is written; enabling it (the "already enabled" path)
+                # retries the marker, which a re-registration would not.
+                return AppResult(
+                    ok=False,
+                    name=name,
+                    error=(
+                        f"registered {name}, but could not record that the owner "
+                        "enabled it; free up space or fix the data folder's "
+                        "permissions, then enable the app in the App Store"
+                    ),
+                )
     else:
         secret = ""
 
