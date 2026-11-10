@@ -637,39 +637,41 @@ describe('KiroAccountModal refresh', () => {
     await screen.findByRole('progressbar', { name: 'Kiro credit usage' })
   })
 
-  // #23655: the label swap used to resize the button while `transition-all`
-  // animated it, which left a second, stale button painted over it on mobile
-  // WebKit. Both labels now always occupy the button, so its width never
-  // depends on the state, and only colors transition.
-  it('keeps one button the same size while it flips to refreshing and back (#23655)', async () => {
+  // #23655: the label swap resized the button while `transition-all` animated
+  // it, which left a second, stale button painted over it on mobile WebKit. The
+  // residue came from animating the resize, not from the resize -- so only
+  // colors transition, and the button is free to be the width of the label it
+  // shows. #25265 froze the width instead, by holding both labels in one grid
+  // cell; that padded the idle button out to "Refreshing…" in every locale and
+  // left dead space after "Refresh", so the width change is taken deliberately
+  // and the slack is what this pins against.
+  it('swaps the single label it carries, with only colors transitioning (#23655)', async () => {
     let settle: (v: { usage: Record<string, unknown> }) => void = () => {}
     refreshMock.mockImplementation(() => new Promise(resolve => { settle = resolve }))
     renderWithProviders(<QueryFedModal initial={{ ...BASE_USAGE }} />)
     const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
-    const labels = [i18nT('components.kiroAccountModal.refresh_balance'), i18nT('components.kiroAccountModal.refreshing_balance')]
-    // Every label the button can show sits in it, and only the shown one is
-    // visible and named.
-    const expectSized = (button: HTMLElement, shown: string) => {
+    const idleLabel = i18nT('components.kiroAccountModal.refresh_balance')
+    const pendingLabel = i18nT('components.kiroAccountModal.refreshing_balance')
+    // Exactly one label is in the button, so its width is that label's own and
+    // carries no room reserved for the other. The name is that same text, which
+    // rules out an `aria-label` carrying a state the button does not show.
+    const expectOneLabel = (button: HTMLElement, shown: string) => {
       expect(button.className).not.toMatch(/\btransition-all\b/)
       expect(button.className).toMatch(/\btransition-colors\b/)
-      for (const text of labels) {
-        const span = within(button).getByText(text)
-        const hidden = text !== shown
-        expect(span.classList.contains('invisible')).toBe(hidden)
-        expect(span.getAttribute('aria-hidden') === 'true').toBe(hidden)
-      }
+      expect(button.textContent).toBe(shown)
+      expect(button).toHaveAccessibleName(shown)
     }
 
     const idle = within(dialog).getByRole('button', REFRESH)
-    expectSized(idle, labels[0])
+    expectOneLabel(idle, idleLabel)
     fireEvent.click(idle)
     const pending = await within(dialog).findByRole('button', REFRESHING)
     expect(pending).toBe(idle)
-    expectSized(pending, labels[1])
+    expectOneLabel(pending, pendingLabel)
 
     settle({ usage: { credits_plan: 1000, credits_used: 41 } })
     const settled = await within(dialog).findByRole('button', REFRESH)
-    expectSized(settled, labels[0])
+    expectOneLabel(settled, idleLabel)
   })
 
   it('renders the meter from the refreshed payload and keeps Refresh beside it', async () => {
