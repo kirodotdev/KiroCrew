@@ -419,9 +419,9 @@ export default function ArtifactDeployPage() {
 
       {/* StatCard row — mirrors AgentsPage/ArtifactsPage pattern */}
       <div className="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(150px,1fr))] mb-6">
-        <StatCard label={i18nT('pages.artifactDeployPage.profiles')} value={profiles.length} />
-        <StatCard label={i18nT('pages.artifactDeployPage.active_deployments')} value={totalDeployments} accent />
-        <StatCard label={i18nT('pages.artifactDeployPage.ready_to_deploy')} value={draftWebapps.length} delay={60} />
+        <StatCard label={i18nT('pages.artifactDeployPage.profiles')} value={fmtNumber(profiles.length)} />
+        <StatCard label={i18nT('pages.artifactDeployPage.active_deployments')} value={fmtNumber(totalDeployments)} accent />
+        <StatCard label={i18nT('pages.artifactDeployPage.ready_to_deploy')} value={fmtNumber(draftWebapps.length)} delay={60} />
         <StatCard label={i18nT('pages.artifactDeployPage.est_cost_not_a_bill')} value={estCost > 0 ? `≤ ${formatCost(estCost)}` : formatCost(0)} delay={120} />
       </div>
 
