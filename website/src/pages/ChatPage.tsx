@@ -1203,7 +1203,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               modelsBackend={selectionCapabilitiesQ.data?.models_backend}
               jevRouteOn={jevRouteOn} modelDropdown={modelDropdown} modelDropdownRef={modelDropdownRef} modelFilter={modelFilter} modelInputRef={modelInputRef}
               modelPickerConfigured={modelPickerConfigured} modelPickerReturnsFocusRef={modelPickerReturnsFocusRef} setModelDropdown={setModelDropdown} setModelFilter={setModelFilter}
-              onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote}
+              onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote} onJumpToQuote={handleJumpToQuote}
               applyAutomationChange={applyAutomationChange} automation={automation} automationCreationReady={automationCreationReady} automationOpen={automationOpen}
               automationSnapshotFailed={automationSnapshotFailed} setAutomationOpen={setAutomationOpen} prefillHint={prefillHint} setPrefillHint={setPrefillHint} pasteSlice={pasteSlice}
               pendingFiles={pendingFiles} pendingSessions={pendingSessions} resizedInfo={resizedInfo} unstageSessionRef={unstageSessionRef} uploading={uploading} agentBtnRect={agentBtnRect}

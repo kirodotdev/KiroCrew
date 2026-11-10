@@ -185,6 +185,7 @@ function ChatInput({
   pendingSessions = [],
   pendingQuote = null,
   onRemoveQuote,
+  onJumpToQuote,
   onRemoveSessionRef,
   isMac = false,
   onDrop,
@@ -1470,7 +1471,7 @@ function ChatInput({
             quoted message is the first thing the reply says, so it is drawn
             where the reply is written rather than in the strips above (those
             are attachments -- things sent ALONG with the text). */}
-        {pendingQuote && <QuoteCard quote={pendingQuote} variant="composer" onRemove={onRemoveQuote} />}
+        {pendingQuote && <QuoteCard quote={pendingQuote} variant="composer" onRemove={onRemoveQuote} onJump={pendingQuote.ts ? onJumpToQuote : undefined} />}
         {lexicalComposer && !lexicalLoadFailed ? (
           <ComposerLoadBoundary onError={() => setLexicalLoadFailed(true)}>
             <Suspense fallback={
