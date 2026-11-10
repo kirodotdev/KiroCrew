@@ -7155,7 +7155,18 @@ Assembles all sources into prompts:
 Startup V1 context retains complete preference documents and eligible `pref.*`
 records up to the `prefs_startup` allowance (past it, whole rows in request-relevance
 order plus an omission notice). A required activity index (at most 1,800 characters) lists project
-headings/first entries and the last three days' headings or first lines. Each
+headings/first entries and the last three days' headings or first lines. A
+history day's `# YYYY-MM-DD` header and the `#### HH:MM <zone>` stamp
+`append_history` writes above each entry (V1 and V2 alike) are not titles
+(`memory_history_stamps.py` recognizes both): the slot label already names the
+day, so the entry's first line takes the slot, while a titled heading such as
+`#### 10:00 deploy chat` stays listed. A stamp is recognized when its zone is
+empty, one of the reading host's own
+`time.tzname` names (what `%Z` prints there, which covers localized Windows
+names), or a zone shape: an abbreviation (`UTC`, `ChST`), an offset (`+14`,
+`UTC-11`) or an English Windows name ending in `Time`. A localized zone name
+written by a different host matches none of these, so such a stamp is still
+listed. Each
 source has a share, so project overflow cannot hide recent task names. The
 existing bounded `Recent Session Context` source snippets remain injected:
 those snippets need not exist in vector memory. With `memory.inject_activity`
