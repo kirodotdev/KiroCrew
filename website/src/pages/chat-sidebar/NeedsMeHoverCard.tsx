@@ -19,7 +19,7 @@ import { useTranslation } from 'react-i18next'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { ArrowUp, Check, FileText, MessageCircleQuestionMark, Reply, ShieldCheck, X } from 'lucide-react'
 import { store, useAppDispatch, useAppSelector } from '../../store'
-import { capturePendingAskId, resolveByApprovalId } from '../../store/chatSlice'
+import { capturePendingAskId, resolveApprovalRow } from '../../store/chatSlice'
 import { resolveAskAfterSend } from '../../lib/resolveAskAfterSend'
 import { api, ApiError } from '../../api/client'
 import { OverlayPortal, useCloseWhenCrewHidden } from '../../components/overlayRoot'
@@ -31,6 +31,7 @@ import { adoptSendRaceRevision, baseRevisionFor, isSendRaceConflict, sendIdempot
 import { baseRevisionForPress } from '../../hooks/sharedCrew/sendRevisionSeed'
 import { ROW_META_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { alreadyResolvedDecision, decisionVerdict, mintResponseId } from '../../components/chat-input/sharedDecision'
+import { toApiDecision } from '../../utils/approvalDecision'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { ChatSlot } from '../../types'
@@ -58,7 +59,9 @@ const NO_QUESTIONS: readonly CardQuestion[] = []
 /** What the quick reply shows. A send in flight resolves to the one it ends in. */
 type ReplyState = { kind: 'idle' | 'sending' | 'sent' | 'queued' | 'unconfirmed' } | { kind: 'error'; reason?: string }
 
-type Outcome = 'pending' | 'approved' | 'denied' | 'expired' | 'elsewhere_approved' | 'elsewhere_denied' | 'error'
+// `refused`: a press the server refused as no longer pending (404). It is
+// shown as a failure, unlike `expired`, which is an ask that ended with no press.
+type Outcome = 'pending' | 'approved' | 'denied' | 'expired' | 'refused' | 'elsewhere_approved' | 'elsewhere_denied' | 'error'
 
 export default function NeedsMeHoverLayer({ rootRef }: { rootRef: RefObject<HTMLElement | null> }) {
   const [target, setTarget] = useState<{ key: string; row: HTMLElement; focusReply: boolean } | null>(null)
@@ -234,23 +237,22 @@ function NeedsMeCard({ identity, drafts, inFlight, row, focusReply, cardRef, dra
 
   const decide = useCallback((a: Extract<NeedsMeAsk, { kind: 'approval' }>, approve: boolean) => {
     if (!a.requestMid) return
+    const rowTarget = { origin: 'native' as const, id: a.requestId, slot: slotKey, mid: a.requestMid }
     const k = approvalKey(a.requestId, a.requestMid)
     setOutcomes(o => ({ ...o, [k]: 'pending' }))
     const set = (v: Outcome) => setOutcomes(o => ({ ...o, [k]: v }))
     const decision = approve ? 'approved' : 'rejected_once'
-    api.approveChatSlot(slotKey, decision, {
-      request_id: a.requestId, request_mid: a.requestMid, origin: 'native', response_id: mintResponseId(),
-    }).then(() => {
+    api.decideApproval(rowTarget, toApiDecision(decision), mintResponseId()).then(() => {
       set(approve ? 'approved' : 'denied')
-      dispatch(resolveByApprovalId({ id: a.requestId, slot: slotKey, decision, mid: a.requestMid }))
+      dispatch(resolveApprovalRow({ target: rowTarget, decision }))
     }).catch((err: unknown) => {
       const elsewhere = alreadyResolvedDecision(err)
       if (elsewhere) {
         set(decisionVerdict(elsewhere) === 'approved' ? 'elsewhere_approved' : 'elsewhere_denied')
-        dispatch(resolveByApprovalId({ id: a.requestId, slot: slotKey, decision: decisionVerdict(elsewhere), mid: a.requestMid }))
+        dispatch(resolveApprovalRow({ target: rowTarget, decision: decisionVerdict(elsewhere) }))
       } else if (err instanceof ApiError && err.status === 404) {
-        set('expired')
-        dispatch(resolveByApprovalId({ id: a.requestId, slot: slotKey, decision: 'stale', mid: a.requestMid }))
+        set('refused')
+        dispatch(resolveApprovalRow({ target: rowTarget, decision: 'stale' }))
       } else {
         set('error')
       }
@@ -377,6 +379,8 @@ function AskRow({ ask, outcome, decidable, onDecide }: {
           {done === 'approved' && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-ok-text"><Check size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.approved')}</span>}
           {done === 'denied' && <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-danger-text"><X size={12} aria-hidden />{t('pages.chatSidebar.needsMeCard.denied')}</span>}
           {done === 'expired' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.expired')}</span>}
+          {/* No hand-off: the card's quick-reply draft sits below this notice. */}
+          {done === 'refused' && <ErrorNotice variant="inline" message={t('components.approvalCard.approval_no_longer_pending')} className="basis-full min-w-0" />}
           {done === 'elsewhere_approved' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.approved_elsewhere')}</span>}
           {done === 'elsewhere_denied' && <span className="text-[11px] font-semibold text-muted">{t('pages.chatSidebar.needsMeCard.denied_elsewhere')}</span>}
           {!done && ask.requestMid && decidable && (

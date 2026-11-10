@@ -102,7 +102,7 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   // A retired row says "no longer pending", so its failed DELETE shows no
   // recorded decision; the feed reads the same rule.
   const decidedDismissFailed = phase === 'decided'
-  const refusalCopy = failureHere && !buttonsWithdrawn ? decisionFailedCopy(failureHere.reason, { targeted: !!n.approval_instance })
+  const refusalCopy = failureHere && !buttonsWithdrawn ? decisionFailedCopy(failureHere.reason)
     : endedFailure !== null ? decisionFailedCopy(endedFailure, { ended: true }) : null
   // Withdrawing the buttons unmounts the one the user just pressed, which
   // drops keyboard focus to <body>. Move it to the panel's Close, which only
