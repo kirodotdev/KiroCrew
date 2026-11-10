@@ -452,9 +452,11 @@ class CronSDK:
         ``approval_mode`` is ``""`` (hook-based approval, the default). ``"auto"``
         raises ``ValueError``: an auto job approves every tool call with nobody
         watching, and that is the owner's switch on the Schedule page, not an
-        app's. A job an app owns never runs auto, so an unattended agent job
-        runs under the hook-based approval chain. Any other value raises
-        ``ValueError``.
+        app's. A job an app owns never runs auto: its agent turns ask through
+        the hook-based approval chain, and with nobody there to answer a tool
+        request is declined. For unattended agent work, use
+        :class:`~kiro_crew.apps.spawn_sdk.SpawnSDK` with the app's own
+        restricted agent instead. Any other value raises ``ValueError``.
 
         ``timeout_secs`` is the per-wake execution budget in seconds (1..86400;
         ``0`` keeps the 1800s default). ``timeout`` bounds only the

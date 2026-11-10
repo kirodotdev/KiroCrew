@@ -479,10 +479,11 @@ def apply_job_update(
         valid_approval_modes = ("", "auto")
         if kwargs["approval_mode"] not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
-        refuse_app_auto(job.created_by, kwargs["approval_mode"])
         if job.approval_mode != "auto":
             # Refuse only a NEW ``auto``: an edit that resends the stored value must
-            # still save; the fire path already runs it as asking.
+            # still save; the fire path already runs it as asking (for an app's job,
+            # always: see :func:`effective_job_approval_mode`).
+            refuse_app_auto(job.created_by, kwargs["approval_mode"])
             refuse_policy_denied_auto(kwargs["approval_mode"])
     # Validate before any mutations
     # Table-driven type+length gate for every updatable string
@@ -852,8 +853,32 @@ def refuse_app_auto(created_by: object, approval_mode: object) -> None:
     switch is the Schedule page, and not for an app's job. Every writer (REST,
     apps SDK, CLI, import) reaches this through :func:`build_job` or
     :func:`apply_job_update`.
+
+    Like :func:`refuse_policy_denied_auto`, the refusal is audited here once for
+    every writer, attributed to the app; the audit is best-effort and the
+    refusal outranks it.
     """
     if approval_mode == "auto" and is_app_owned(created_by):
+        try:
+            from kiro_crew import cron as seams  # the facade holds the patched names
+
+            # The store does not know who asked (the app, the owner or the CLI),
+            # so the row names the job's owner, not a requester. The REST route
+            # writes its own app-attributed row when an app token asks.
+            seams.sel.sel().log_api_access(
+                caller="cron",
+                operation="cron.approval_mode",
+                outcome="denied",
+                source="cron",
+                resources=f"approval_mode=auto job_owner={created_by}",
+                error=APP_AUTO_APPROVAL_REFUSAL,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "app approval_mode denial audit failed", exc_info=True
+            )
         raise ValueError(APP_AUTO_APPROVAL_REFUSAL)
 
 

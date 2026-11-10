@@ -216,3 +216,40 @@ def test_an_owner_auto_job_still_fires_as_auto() -> None:
     assert effective_job_approval_mode("auto", OWNER) == "auto"
     assert effective_job_approval_mode("auto") == "auto"
     assert effective_job_approval_mode("", APP_STAMP) == ""
+
+
+# ── Audit and resend ──
+
+
+def test_an_app_auto_refusal_writes_one_neutral_sel_denial_naming_the_job_owner() -> None:
+    import kiro_crew.sel as sel_mod
+    from kiro_crew.cron_service.fields import refuse_app_auto
+
+    events: list[dict] = []
+    fake = MagicMock()
+    fake.log_api_access.side_effect = lambda **kw: events.append(kw)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sel_mod, "sel", lambda: fake)
+        with pytest.raises(ValueError, match="not available to a job owned by an app"):
+            refuse_app_auto(APP_STAMP, "auto")
+        assert [(e["caller"], e["operation"], e["outcome"]) for e in events] == [
+            ("cron", "cron.approval_mode", "denied")
+        ]
+        assert f"job_owner={APP_STAMP}" in events[0]["resources"]
+        refuse_app_auto(APP_STAMP, "")
+        refuse_app_auto(OWNER, "auto")
+        assert len(events) == 1, "an allowed mode writes no denial"
+
+        fake.log_api_access.side_effect = OSError("disk full")
+        with pytest.raises(ValueError, match="not available to a job owned by an app"):
+            refuse_app_auto(APP_STAMP, "auto")
+
+
+def test_an_edit_that_resends_a_stored_auto_on_an_app_job_still_saves(svc: CronService) -> None:
+    job = svc.add_job("a", "m", every_secs=3600, created_by=OWNER, approval_mode="auto")
+    # A job saved before this rule: an app stamp that already holds ``auto``.
+    svc.get_job(job.id).created_by = APP_STAMP
+    svc.update_job(job.id, approval_mode="auto", name="renamed")
+    after = svc.get_job(job.id)
+    assert after.name == "renamed"
+    assert effective_job_approval_mode(after.approval_mode, after.created_by) == ""
