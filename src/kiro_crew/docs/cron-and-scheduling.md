@@ -306,6 +306,8 @@ The CLI has no flag for this. `kirocrew cron add` leaves `strict_schedule` at it
 | Delete an installer's job | Delete button | — | `kirocrew cron remove --managed-by <key>` |
 | Adopt / release | — | — | `kirocrew cron adopt <id> --session-of <slot>` / `--release` |
 
+`kirocrew cron trigger <id>` exits 0 when the run starts, 75 when the job is already running (try again later), and 1 on any other failure.
+
 `kirocrew cron add --managed-by <key>` registers a job for an external installer. The key is unique across the store: a second add with the same key is refused, so a re-install runs `kirocrew cron remove --managed-by <key>` first and then adds again. `kirocrew cron list` prints the key as `managed by: <key>`.
 
 ### Which chat session owns a job

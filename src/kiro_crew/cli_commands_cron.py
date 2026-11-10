@@ -44,7 +44,6 @@ from kiro_crew.cron import (
     validate_managed_by,
 )
 from kiro_crew.cron_script import resolve_script_path
-from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.history import ConversationLog
 from kiro_crew.mcp_cron import _vet_cron_capability_governance, _vet_script_file, _vet_shell_command
 from kiro_crew.platform import redact_log_via_context
@@ -941,7 +940,11 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         # paired credential would let that sibling run the job.
         port, _evidence_backed = resolve_client_port_ex(None)
         secret_path = config_dir() / ".local_secret"
-        ok, msg = trigger_cron_job(args.job_id, port, secret_path)
+        # Local: a module-level name here would be served by the ``cli_commands``
+        # facade, whose name set is pinned.
+        from kiro_crew.cron_trigger import ALREADY_RUNNING_STATUS, trigger_cron_job_status
+
+        ok, msg, http_status = trigger_cron_job_status(args.job_id, port, secret_path)
         # The success line is the command's output; a failure reason goes to
         # stderr like every other cron refusal.
         print(msg, file=sys.stdout if ok else sys.stderr)
@@ -953,7 +956,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             resources=f"job_id={args.job_id}",
         )
         if not ok:
-            sys.exit(1)
+            # A busy job is worth retrying later, unlike a real failure, so it
+            # gets its own code, 75 (EX_TEMPFAIL), a script can test without the text.
+            sys.exit(75 if http_status == ALREADY_RUNNING_STATUS else 1)
 
     elif action == "preview":
         _cron_preview(args)

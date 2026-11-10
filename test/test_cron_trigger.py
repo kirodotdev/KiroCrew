@@ -421,8 +421,8 @@ class TestCronTriggerCLI:
         from unittest.mock import patch as _patch
 
         with _patch(
-            "kiro_crew.cli_commands.trigger_cron_job",
-            return_value=(True, "Triggered job: test-job (abc12345)"),
+            "kiro_crew.cron_trigger.trigger_cron_job_status",
+            return_value=(True, "Triggered job: test-job (abc12345)", None),
         ) as mock_trigger:
             _cron(args)
         assert mock_trigger.call_args[0][0] == "abc12345"
@@ -475,7 +475,8 @@ class TestCronTriggerCLI:
         assert out.out == ""
         assert out.err == "Job not found: aabbccddee\n"
 
-    def test_cli_trigger_already_running_names_reason_and_exits_1(self, mock_dashboard, capsys):
+    def test_cli_trigger_already_running_names_reason_and_exits_75(self, mock_dashboard, capsys):
+        """A busy job exits 75 (EX_TEMPFAIL), so a script can retry it later."""
         import argparse
 
         from kiro_crew.cli_commands import _cron
@@ -493,7 +494,7 @@ class TestCronTriggerCLI:
         ):
             with pytest.raises(SystemExit) as exc:
                 _cron(args)
-        assert exc.value.code == 1
+        assert exc.value.code == 75
         out = capsys.readouterr()
         assert out.out == ""
         assert out.err == "Error: HTTP 409: job is already running\n"
