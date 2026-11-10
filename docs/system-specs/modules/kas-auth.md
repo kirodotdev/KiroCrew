@@ -50,7 +50,12 @@
 > route in plain words; beside the card's sign-in button the copy points at that button.
 > Any other wording, the launcher form included, keeps its English. `kirocrew doctor`'s
 > `kas auth:` row names the route ("KAS through kiro-cli's relay") and prints the
-> same remedy when kiro-cli's own store is what answers. A stored Kiro CLI pick
+> same remedy when kiro-cli's own store is what answers. A terminal names the card
+> second, since a host reached by ssh may have no browser: `kirocrew chat`'s error
+> reads `host_auth.KAS_TERMINAL_SIGN_IN` ("Sign in with `kirocrew kas login` (or in
+> the dashboard: ...)") in place of the card (`host_auth.for_terminal`), and
+> doctor's bundle-route remedy is built from that constant. The dashboard keeps the
+> sentence it translates. A stored Kiro CLI pick
 > (`agent.acp_backend == "kiro"`) is not moved: it keeps kiro-cli's sign-in.
 
 ## Why this exists
