@@ -4658,6 +4658,20 @@ peer's message is rewritten to `[marker-removed]`, and a frame that rode inside
 the scrubbed block would be rewritten too. The genuine frame is therefore
 minted only after the scrub, exactly as the post-compaction skills index is.
 
+Every follow-up turn that is not a post-compaction re-injection also carries a
+short frame holding only `## Reply language`
+(`sections.py::reply_language_refresh`) when a language is set. Its body is
+`_reply_language_rule` itself, so it keeps the "only when the user asks"
+exception: a user who asks for another language mid-conversation is not
+overruled by the next turn's reminder. A long session's
+later turns -- auto-nudge and monitor cycles, work-ledger wakes, worker reports
+via `session_send`, crons -- carry English nudge templates and tool output and
+no other copy of the rule, so without it the model drifts to English. The
+reminder is minted in `build_message` beside the `[RUNTIME]` refresh, the one
+place every follow-up turn is built; the templates and tool output themselves
+are never translated. A worker reads the same line, and its prompt tells it to
+write `work_report` `summary` (shown on the goal board) in that language.
+
 A `subagent:` session is the one kind that does NOT receive the frame
 (`_response_preferences_apply`, resolved through the same runtime-source seam
 as `[RUNTIME]`): its final message is read by its parent agent, which needs the

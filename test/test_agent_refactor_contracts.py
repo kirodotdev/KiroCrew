@@ -129,7 +129,7 @@ BASE_SURFACE: dict[str, str] = {
     "_WORKER_EXCLUDED_GRANTS": "value frozenset 1a2756dd420ed333",
     "_WORKER_MIRRORED_KEYS": "value tuple 27234a2a963813c9",
     "_WORKER_MIRRORED_SHAPES": "value dict 245618c04df2519f",
-    "_WORKER_SYSTEM_PROMPT": "value str aeb6a9e42c47369f",
+    "_WORKER_SYSTEM_PROMPT": "value str d562e5012e77bb37",
     "_WORKER_WORK_GRANTS": "value tuple 2617544a8ba41753",
     "_agent_identity_enabled": "callable _agent_identity_enabled() -> 'bool'",
     "_agentcore_capability_permitted": "callable _agentcore_capability_permitted() -> 'bool'",
