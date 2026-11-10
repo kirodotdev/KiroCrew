@@ -1200,10 +1200,13 @@ measures, never above.
 ## Rules
 
 - Remote Crew chaining cases using a real `HopPortGuard` obtain a kernel-selected
-  loopback port with `bind(("127.0.0.1", 0))`; fake-only cases retain inert guards
-  and their fake port band. The released port is only a hint: tests still exercise
-  the production handoff, assert real ownership and cross-process bind refusal,
-  and close real guards in `finally`.
+  loopback port with `bind(("127.0.0.1", 0))` and keep that socket bound until the
+  guard's first hold of the port, which closes it just before binding: the fake
+  forwarder binds nothing, so a port released at once is free through the whole
+  connect and mint, and another worker can be handed it first. Fake-only cases
+  retain inert guards and their fake port band. The port is only a hint: tests
+  still exercise the production handoff, assert real ownership and cross-process
+  bind refusal, and close real guards in `finally`.
 
 - **Host-floor patches use `_floor_monkeypatch`, never the test's shared
   `monkeypatch`.** The rootdir fixtures keep path redirects, service guards,
