@@ -411,12 +411,11 @@ The rail carries everything the nav drawer does except Connect-your-phone, which
 moot on the phone itself: the Main rows and Library on top, the apps, then
 Terminal (which toggles the docked panel and closes
 the drawer so the panel is not left behind it) and Capabilities, with
-Account & Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
-that secondary group: it stays pinned above Settings while the Apps list keeps
-`APPS_FLOOR_PX` (240px, four tiles), and otherwise folds into the Apps scroller after
-the apps, behind a separator. The decision reads `stableRailHeight` — the tallest
-height seen at the current window width — so the on-screen keyboard or a browser
-toolbar shrinking the rail at the same width never moves the tiles.
+Account & Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` lays it
+out like the desktop rail: everything above Account & Settings and Search is ONE scroll
+region (the top rows, the apps, then the secondary group behind a separator),
+with a bottom-edge fade while tiles sit below the fold; only the foot is pinned
+(#34398).
 
 **The Bots page hosts the same drawer.** On a phone `/members` lands on a
 Bot exactly as a wide window does, and its roster is a left drawer over the
