@@ -2593,7 +2593,10 @@ pins the contract.
     entirely — required on minimal container / `root`-login images that
     ship no `sudo` binary — and a non-root caller with no `sudo` fails
     with a clear `ServiceInstallError` rather than an uncaught
-    `FileNotFoundError`.
+    `FileNotFoundError`. A unit write that `sudo install` refuses ends with
+    the no-service fallback: keep `kirocrew gateway` running under tmux or
+    screen, or ask an administrator for sudo access. `cli.sh`'s Next steps
+    mark the `service install` line `needs sudo on Linux` for the same reason.
   - The gateway runs as `User=<account> Group=$(id -gn <account>)`, the
     account being `$SUDO_USER` when it names a non-root account, else
     `$USER`, else `$LOGNAME`, else the passwd entry of the process's uid

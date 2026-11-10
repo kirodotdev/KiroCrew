@@ -1406,11 +1406,12 @@ else
   # wants a running gateway. The persistent-service path (systemd/launchd) is
   # otherwise buried in the docs, which is the #1 remote-crew onboarding
   # complaint. `service install` is the durable path; `gateway` is the foreground
-  # one for a quick look.
+  # one for a quick look. On Linux the service is a system unit, so its line says
+  # up front that it needs sudo.
   echo ""
   echo "Next steps:"
   echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
-  echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
+  echo "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service (survives logout, restarts on crash)"
   echo "  kirocrew --help             # everything else"
   echo ""
   echo "Need a non-default port (e.g. 5476 is already taken)?"
