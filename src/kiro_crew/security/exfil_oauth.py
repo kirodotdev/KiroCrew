@@ -292,13 +292,13 @@ _OAUTH_QUERY_PARAMS = frozenset(
 
 # A client_id an operator-listed endpoint may carry unscanned: RFC 7591 lets a
 # DCR server pick any unique string. The set has no `%` or `+`, so a value that
-# matches decodes to itself and every decoded form has the same shape.
-_OAUTH_OPERATOR_CLIENT_ID_RE = re.compile(r"[A-Za-z0-9._-]{16,128}\Z")
+# is made of them decodes to itself and every decoded form has the same shape.
+_OAUTH_OPERATOR_CLIENT_ID_CHARS = frozenset(string.ascii_letters + string.digits + "._-")
 
 
 def _operator_client_id_shaped(value: str) -> bool:
     """Return whether *value* is a client_id an operator-listed endpoint may carry."""
-    return bool(_OAUTH_OPERATOR_CLIENT_ID_RE.fullmatch(value))
+    return 16 <= len(value) <= 128 and all(c in _OAUTH_OPERATOR_CLIENT_ID_CHARS for c in value)
 
 
 def _operator_listed_client_id_query(host: str, path: str, query: str) -> bool:

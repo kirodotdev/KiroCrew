@@ -1945,7 +1945,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OAUTH_EXTENSION_MEMO,
         _OAUTH_EXTENSION_PATH_BAD,
         _OAUTH_EXTENSION_PATH_MAX_LEN,
-        _OAUTH_OPERATOR_CLIENT_ID_RE,
+        _OAUTH_OPERATOR_CLIENT_ID_CHARS,
         _OAUTH_URL_SYMBOLS,
         OAuthUrlShapeProfile,
         _discovered_oauth_endpoint_approved,
