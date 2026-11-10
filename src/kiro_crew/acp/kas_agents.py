@@ -177,7 +177,7 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks, user_hook_files
-from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
+from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK, tools_settings_unapplied
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.agent_spec_pins import pinned_memo_key
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, persisted_hook_store
@@ -315,7 +315,7 @@ def spec_keys_without_carrier(
     # kiro-cli reads one spelling per alias group; each name is the one the spec wrote.
     tools_settings, dropped = canonical_tools_settings(raw)
     lost.extend(f"toolsSettings.{key}" for key in dropped)
-    _, not_carried = tools_settings_to_permissions(tools_settings)
+    translated, not_carried = tools_settings_to_permissions(tools_settings)
     authored = spec.get("permissions")
     # A `web_fetch.trusted` KAS cannot carry, Crew's gate may (`web_fetch_carried`).
     gate_carried = web_fetch_carried(tools_settings, authored)
@@ -360,7 +360,21 @@ def spec_keys_without_carrier(
                 if isinstance(tools_settings.get(key), dict)
                 and tools_settings[key].get("allowedPaths")
             )
-    return sorted(set(lost))
+    # An allowlist the gate's own readers enforce is marked, so the notice never
+    # says it has no effect.
+    gate_read = set()
+    if isinstance(tools_settings, dict):
+        if spec_shell_allowlist(tools_settings, spec.get("allowedTools"), translated) is not None:
+            gate_read |= {
+                f"toolsSettings.{as_authored(raw, key)}.allowedCommands"
+                for key in ("execute_bash", "shell")
+            }
+        if spec_write_allowlist(tools_settings) is not None:
+            gate_read |= {
+                f"toolsSettings.{as_authored(raw, key)}.allowedPaths"
+                for key in ("fs_write", "write")
+            }
+    return sorted({f"{key}{GATE_READ_MARK}" if key in gate_read else key for key in lost})
 
 
 def _allowed_commands_withheld(

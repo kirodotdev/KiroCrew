@@ -1496,12 +1496,15 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     unless the list is also named whole.
     """
     from kiro_crew.agent_sdk.kas_tool_view import allow_exclude_limit
+    from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK as GATE
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
     from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
 
     unread = [key for key in keys if MARK in key]
     keys = [key for key in keys if MARK not in key]
-    whole = {key.partition(MARK)[0] + ".allowedCommands" for key in unread} & set(keys)
+    whole = {key.partition(MARK)[0] + ".allowedCommands" for key in unread} & {
+        key.removesuffix(GATE) for key in keys
+    }
     others = "" if whole else "; the agent's other entries still apply"
     entries = (
         f"Agent {agent} has allowedCommands entries Kiro Crew cannot read: {'; '.join(unread)}. "
@@ -1510,10 +1513,23 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     )
     if unread and not keys:
         return f"ℹ️ {entries}"
-    notice = (
-        f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
-        "receive, so they have no effect in this session."
-    )
+    # Crew's own gate still refuses what a marked allowlist leaves out, so it is
+    # never said to have no effect.
+    allowlists = [k.removesuffix(GATE) for k in keys if k.endswith(GATE)]
+    rest = [k for k in keys if not k.endswith(GATE)]
+    sentences = []
+    if rest:
+        sentences.append(
+            f"Agent {agent} sets {' and '.join(rest)}, which this backend does not "
+            "receive, so they have no effect in this session."
+        )
+    if allowlists:
+        sentences.append(
+            f"Agent {agent} sets {' and '.join(allowlists)}, which this backend does not "
+            "receive. Kiro Crew's own approval gate still enforces them: it refuses what "
+            "they do not cover, and what they cover may ask for approval."
+        )
+    notice = "ℹ️ " + " ".join(sentences)
     servers = oauth_servers_in(keys)
     if servers:
         noun = "server" if len(servers) == 1 else "servers"
