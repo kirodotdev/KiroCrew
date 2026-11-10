@@ -2432,6 +2432,11 @@ continue" with the gateway's reason; a turn starting retires it. An error card
 with a remedy of its own (a context overflow, a repeated session start, a
 refused feature request, a refused app agent) withholds Resume from the composer
 too, through the one predicate `newestErrorOwnsRecovery` that ChatPage reads. A
+sign-in error (`auth_required`) is not one of them: the press works once the
+sign-in lands, so the composer keeps Resume and only its placeholder changes,
+to "Last turn needs a sign-in -- follow the message above, then press Resume or
+send your message again" (`authRequiredIsNewest`, read by ChatPage, `ChatPane`
+and a crew's window). A
 split-view pane of an ordinary chat is the same `ChatPane` and offers the same
 Resume.
 

@@ -223,6 +223,7 @@ function ChatInput({
   onStop,
   continuable = false,
   continueIsRecovery = false,
+  resumeAfterSignIn = false,
   restoredQueueCount = 0,
   onContinue,
   continuing = false,
@@ -613,7 +614,9 @@ function ChatInput({
   const resumeOffered = !!(continuable && onContinue && continueIsRecovery)
   const continuePlaceholder = !resumeOffered ? '' : restoredQueueCount > 1
     ? i18nT('components.chatInput.turn_interrupted_restored_queue', { count: restoredQueueCount })
-    : i18nT(restoredQueueCount === 1 ? 'components.chatInput.turn_interrupted_restored_card' : 'components.chatInput.turn_interrupted_press_resume')
+    : i18nT(restoredQueueCount === 1 ? 'components.chatInput.turn_interrupted_restored_card'
+      : resumeAfterSignIn ? 'components.chatInput.turn_interrupted_sign_in_first'
+      : 'components.chatInput.turn_interrupted_press_resume')
   const continueLabel = i18nT(continueIsRecovery
     ? 'components.chatInput.resume_interrupted_turn'
     : 'components.chatInput.continue_thread')

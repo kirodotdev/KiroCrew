@@ -327,6 +327,9 @@ export interface ChatInputProps {
    * component keeps working, it just gets the neutral wording.
    */
   continueIsRecovery?: boolean
+  /** The newest error row is a sign-in error: Resume stays (it works once the
+   *  sign-in lands), and its placeholder names the sign-in first. */
+  resumeAfterSignIn?: boolean
   /** Queue cards restored from before a gateway restart. Resume runs only the
    *  interrupted turn and leaves them for the user to send, so while Resume is
    *  offered the placeholder says how many wait. */
