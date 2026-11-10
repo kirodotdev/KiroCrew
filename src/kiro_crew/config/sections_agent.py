@@ -42,6 +42,7 @@ from kiro_crew.constants import (
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
+from kiro_crew.crewmate_worktree import BRANCH_PREFIX as _BRANCH_PREFIX
 from kiro_crew.effort import EFFORT_LEVELS
 
 logger = logging.getLogger("kiro_crew.config.loader")
@@ -1359,6 +1360,21 @@ class AgentConfig:
             "disabling them. When on, their reach is still bounded to sessions "
             "they created themselves (creator ownership), the same fence that "
             "binds a member when Session Control is on.",
+        ),
+    )
+    member_branch_prefix: str = field(
+        default=_BRANCH_PREFIX,
+        metadata=_meta(
+            "Bot branch prefix",
+            "The start of the git branch a bot's new worktree is cut on, before "
+            "<bot>/<repo>: 'alice/' gives alice/reviewer/myservice. Each part "
+            "between slashes may use only letters, digits, '.', '_' and '-', may "
+            "not start or end with '.' or '-', has no '..' and no '.lock' ending, and "
+            "is at most 40 characters; an empty or rejected value uses crew/. The "
+            "first part must not be the name "
+            "of a branch the repository has, such as main. Takes effect live for the "
+            "next new worktree; one that exists keeps its branch, and one made again "
+            "after its folder was deleted takes the current prefix.",
         ),
     )
     conductor_own_child_verbs: bool = field(
