@@ -1055,9 +1055,12 @@ prompt. `cloud connect` performs the same check and installer prompt before
 opening the dashboard tunnel. If installation is declined or fails, the command
 exits non-zero and tells the user to retry after fixing the local prerequisite.
 
-The instance-size picker supports arrow keys in an interactive terminal
-(`↑`/`↓`, `j`/`k`, digit shortcuts, Enter to select) and falls back to the
-numbered prompt for non-TTY input. Ctrl-C must interrupt prompts and long AWS
+The cloud wizard's cursor menus (instance size, existing deployments) support
+arrow keys in an interactive terminal (`↑`/`↓`, `j`/`k`, digit shortcuts, Enter
+to select) and fall back to the numbered prompt for non-TTY input. A digit picks
+at once unless one more digit could still name an item: in a 13-item menu `1`
+moves to item 1 and waits, so `1` `3` picks item 13 and `1` Enter picks item 1.
+A digit that makes no item number is ignored. Ctrl-C must interrupt prompts and long AWS
 subprocesses; unhandled cloud-command interrupts return exit code 130.
 
 Remote Kiro sign-in prefers the device-code flow over SSM. The launcher starts
