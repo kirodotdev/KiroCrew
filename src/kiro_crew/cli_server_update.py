@@ -949,6 +949,25 @@ def _update_wheel(layout) -> None:
     print("    kirocrew restart")
 
 
+def _gateway_holds_update_lock() -> bool:
+    """Is the update lock held by this home's running gateway?
+
+    Compares the update lock's holder with the gateway lock's holder; either one
+    unknown answers ``False``.
+    """
+    from kiro_crew import gateway_lock
+    from kiro_crew.config.loader import config_dir
+    from kiro_crew.platform.wheel_engine import update_lock_holder_pid
+
+    holder = update_lock_holder_pid()
+    if holder is None:
+        return False
+    try:
+        return gateway_lock.lock_holder(config_dir()).pid == holder
+    except gateway_lock.LockProbeError:
+        return False
+
+
 def _update_managed_venv(
     channel: str, feed_base: str, artifact_base: str, remote_version: str
 ) -> None:
@@ -1012,6 +1031,12 @@ def _update_managed_venv(
     # credentials from a token-bearing KIROCREW_CDN_BASE.
     message = wheel_apply.shown_failure_text(str(failure), limit=None)
     if outcome.status == "busy":
+        if _gateway_holds_update_lock():
+            # Not a failure: the gateway restarts onto the update itself once it lands.
+            print("\n  ⏳ The running gateway is already installing an update and restarts onto")
+            print("     it once the install succeeds. If `kirocrew --version` has not changed")
+            print("     when it is done, run `kirocrew update` again.")
+            return
         print(f"\n  ⏳ {message}")
         print("     Another update (possibly the gateway's own) is in progress. Wait for it")
         print("     to finish, then run `kirocrew update` again.")

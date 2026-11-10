@@ -1899,6 +1899,14 @@ when no signed upgrade command can be named
 (`platform/update_layout.non_managed_pip_update_hint`), because re-running the
 installer would add a second copy.
 
+On the managed venv, an update that finds the update lock held exits 1 and says
+to wait and run it again, unless the holder is this home's running gateway.
+`wheel_engine.update_lock_holder_pid` names the holder from the kernel's flock
+record on Linux, and elsewhere from the pid an engine holder writes into the lock
+file while it holds it and clears on release (`cli.sh` writes none). When that pid
+is the gateway lock's holder, `kirocrew update` says the gateway is already
+installing an update and restarts onto it once the install succeeds, and exits 0.
+
 ### The release is the unit of install
 
 Each release pins exactly one KAS engine version (`acp/kas_pin.py`), and
