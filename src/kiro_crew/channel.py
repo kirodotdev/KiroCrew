@@ -498,6 +498,13 @@ class Channel:
         if not agent:
             return False
         agent.state = "done"
+        # Stop its loop as ``ChannelManager.close`` does. Left running, a working
+        # member wrote "listening" back over "done", kept consuming, and held its
+        # session until the gateway exited; close cannot reach it either, since it
+        # cancels only members still in the room. The loop's ``finally`` releases
+        # the session and keeps "done".
+        if agent._task and not agent._task.done():
+            agent._task.cancel()
         self._broadcast(
             "channel_agent_left",
             {
