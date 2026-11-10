@@ -285,6 +285,7 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
 #: the gate silently. Paths are relative to ``src/kiro_crew``.
 REFLEXIVE_TOOL_MODULES: frozenset[str] = frozenset(
     {
+        "mcp_apps.py",
         "mcp_computer.py",
         "mcp_crew_log.py",
         "mcp_cron.py",

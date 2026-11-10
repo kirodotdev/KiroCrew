@@ -43,6 +43,9 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # handler re-asserts ``internal_auth`` and hands it to the declaring app's own
         # route. One fixed core path for every app, so no app route is admitted here.
         "/api/app-tools/call",
+        # Its twin for a third-party app's declared tool: the ``kirocrew-apps``
+        # server posts it, and the handler resolves third-party declarations only.
+        "/api/app-tools/prompted-call",
         # External terminal grant redemption. Its only caller is the desktop
         # shell's main process, loopback + internal-secret; the browser holds
         # the grant but must never redeem it, so

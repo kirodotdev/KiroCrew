@@ -224,9 +224,11 @@ from kiro_crew.mcp_oauth_projection import (  # noqa: F401
     servers_with_discarded_oauth,
 )
 from kiro_crew.platform.governance import (
+    config_mounts_prompt_only_server,
     may_grant_builtin_at_gate_now,
     may_skip_gate_for_session,
     may_skip_gate_now,
+    ref_covers_prompt_only_server,
 )
 from kiro_crew.platform.tool_names import (
     canonical_kiro_cli_tool_name,
@@ -611,7 +613,11 @@ def _authored_allow_gate(session_key: str, governance_app: str | None) -> Callab
 
 
 def _ceiling_permitted(
-    allowed_tools: Any, agent_id: str, permits: Callable[[str], bool]
+    allowed_tools: Any,
+    agent_id: str,
+    permits: Callable[[str], bool],
+    *,
+    mounts_prompt_only: bool = False,
 ) -> list[str]:
     """``allowedTools`` with every entry the governance ceiling withholds removed.
 
@@ -624,6 +630,8 @@ def _ceiling_permitted(
 
     Each entry is asked of *permits* under Crew's name for it (``subagent`` as
     ``use_subagent``). It fails closed: what is dropped here keeps prompting.
+    With *mounts_prompt_only*, a wildcard covering a prompt-only server is
+    withheld too, so that server's calls keep prompting on any host.
     """
     if not isinstance(allowed_tools, list):
         return []
@@ -633,7 +641,9 @@ def _ceiling_permitted(
         if not isinstance(raw, str) or not raw.strip():
             continue
         entry = canonical_kiro_cli_tool_name(raw.strip())
-        if permits(entry):
+        if mounts_prompt_only and ref_covers_prompt_only_server(entry, include_patterns=True):
+            withheld.append(entry)
+        elif permits(entry):
             permitted.append(entry)
         else:
             withheld.append(entry)
@@ -739,6 +749,7 @@ def to_client_custom_agent(
     forward_ssh_auth_sock: bool = False,
     governance_app: str | None = None,
     scope_muted: frozenset[str] | None = None,
+    work_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -866,7 +877,13 @@ def to_client_custom_agent(
     # prompt for each of the calls it described.
     authored_gate = _authored_allow_gate(session_key, governance_app)
     permissions = allowed_tools_to_permissions(
-        _ceiling_permitted(allowed_tools_input, agent_id, authored_gate), agent_id=agent_id
+        _ceiling_permitted(
+            allowed_tools_input,
+            agent_id,
+            authored_gate,
+            mounts_prompt_only=config_mounts_prompt_only_server(spec, work_dir=work_dir),
+        ),
+        agent_id=agent_id,
     )
     # The built-ins the projection keeps at ``ask`` that the spec still granted:
     # Crew answers their permission requests itself, after its own checks. Kept
@@ -1316,6 +1333,7 @@ def build_kas_custom_agents(
     forward_ssh_auth_sock: bool = False,
     governance_app: str | None = None,
     scope_muted: frozenset[str] | None = None,
+    work_dir: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
@@ -1373,6 +1391,7 @@ def build_kas_custom_agents(
             forward_ssh_auth_sock=forward_ssh_auth_sock,
             governance_app=governance_app,
             scope_muted=scope_muted,
+            work_dir=work_dir,
             # Any key turns the relay on (its reference is shared), so a session
             # with none yet (a background or pooled runtime) still relays env.
             launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",

@@ -142,11 +142,46 @@ def govern_shared_template_view(agent: str, view: dict[str, Any]) -> frozenset[t
     return removed
 
 
-def _report(agent: str, removed: frozenset[tuple[str, str]]) -> None:
+def report_prompt_only_withheld(agent: str, refs: list[str]) -> None:
+    """Record that *agent*'s view drops *refs* because they cover a prompt-only server."""
+    _report(agent, frozenset(("allowedTools", ref) for ref in refs), prompt_only=True)
+
+
+def _report(
+    agent: str,
+    removed: frozenset[tuple[str, str]],
+    *,
+    prompt_only: bool = False,
+) -> None:
     """Say which grants *agent*'s kiro-cli view does not carry, and why. Best-effort."""
-    canonical = json.dumps(
-        [agent, sorted(removed)], ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
+    entries = ", ".join(
+        entry if where == "allowedTools" else f"{where} autoApprove {entry}"
+        for where, entry in sorted(removed)
+    )
+    if prompt_only:
+        message = (
+            f"agent {agent!r}: kiro-cli runs a Kiro Crew copy of its spec without these "
+            "auto-approvals because a mounted prompt-only server requires approval on every "
+            f"call: {entries}. The spec file itself is unchanged; the tools stay mounted and "
+            "their calls ask for approval."
+        )
+    else:
+        message = (
+            f"agent {agent!r}: kiro-cli runs a Kiro Crew copy of its spec without these "
+            f"auto-approvals, which the governance ceiling denies: {entries}. The spec file "
+            "itself is unchanged; the tools stay mounted and their calls ask for approval."
+        )
+    _emit_once(
+        [agent, sorted(removed)],
+        message,
+        operation=WITHHELD_OP,
+        source=f"shared-template-view:{agent}",
+    )
+
+
+def _emit_once(identity: list[Any], message: str, *, operation: str, source: str) -> None:
+    """Log and audit *message* once per process for *identity*. Best-effort."""
+    canonical = json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     key = hashlib.sha256(canonical).hexdigest()
     with _REPORTED_LOCK:
         if key in _REPORTED:
@@ -154,22 +189,13 @@ def _report(agent: str, removed: frozenset[tuple[str, str]]) -> None:
         if len(_REPORTED) >= _REPORTED_MAX:
             _REPORTED.clear()
         _REPORTED.add(key)
-    entries = ", ".join(
-        entry if where == "allowedTools" else f"{where} autoApprove {entry}"
-        for where, entry in sorted(removed)
-    )
-    message = (
-        f"agent {agent!r}: kiro-cli runs a Kiro Crew copy of its spec without these "
-        f"auto-approvals, which the governance ceiling denies: {entries}. The spec file "
-        "itself is unchanged; the tools stay mounted and their calls ask for approval."
-    )
     agent_mod.logger.warning("%s", message)
     try:
         agent_mod.sel().log_api_access(
             caller="system",
-            operation=WITHHELD_OP,
+            operation=operation,
             outcome="ok",
-            source=f"shared-template-view:{agent}",
+            source=source,
             resources=message,
         )
     except Exception:  # noqa: BLE001 -- the audit must not break the projection

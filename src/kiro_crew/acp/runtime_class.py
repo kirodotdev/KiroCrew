@@ -137,6 +137,7 @@ class AcpRuntime:
     # What a session start is built from: ``kiro_crew.acp.runtime_session_setup``.
     _session_work_dir = _rt_setup._session_work_dir
     _refuse_if_loader_unreachable = _rt_setup._refuse_if_loader_unreachable
+    _record_unmoded_prompted_call_launch = _rt_setup._record_unmoded_prompted_call_launch
     _refuse_over_ceiling_start = _rt_setup._refuse_over_ceiling_start
     _start_launch_name = _rt_setup._start_launch_name
     _kas_custom_agents = _rt_setup._kas_custom_agents
@@ -595,6 +596,10 @@ class AcpRuntime:
         # (e.g. session/prompt response signals turn completion and must reach the session)
         self._routed_requests: dict[int, str] = {}
         self._session_queues: dict[str, asyncio.Queue[JsonRpcMessage | None]] = {}
+        # The exact mode name sent for each live session and whether that send used
+        # a Crew-minted skill view or app launch copy. This launch-time record never
+        # changes when a later projection is adopted.
+        self._prompted_call_launches: dict[str, tuple[str, bool]] = {}
         # Whether the host's MCP connect queue is moving, across every session
         # on this process. Fed by the reader loop; read by the managed-readiness
         # barrier at its deadline (see acp/mcp_connect_progress.py).

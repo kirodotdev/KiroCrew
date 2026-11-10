@@ -21,7 +21,8 @@ Instance fields read: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
 ``_mcp_gateway_overlay``, ``_mcp_reports``, ``_member_context``, ``_model``, ``_open_mcp_report``,
 ``_pending_init_notifications``,
 ``_pid``, ``_pool_lookup``, ``_process``, ``_record_tree_in_background``,
-``_refuse_over_ceiling_start``, ``_remote_session_servers``, ``_remote_workspace_agents``,
+``_record_unmoded_prompted_call_launch``, ``_refuse_over_ceiling_start``,
+``_remote_session_servers``, ``_remote_workspace_agents``,
 ``_session_label_elements``, ``_start_collect_timeout``, ``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
 """
@@ -1305,6 +1306,8 @@ async def _finish_create_session(
     self._saw_kas_engine_refusal = False
     self._record_tree_in_background()
 
+    if not set_mode_ran:
+        self._record_unmoded_prompted_call_launch(session_id, active_agent)
     self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)
     return handle

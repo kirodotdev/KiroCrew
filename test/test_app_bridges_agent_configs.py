@@ -608,14 +608,16 @@ class TestDeclaredMcpToolsAreEnforced:
         )
         out = bridges._enforce_declared_mcp_tools({"name": "app--a"}, self._manifest(["spawn_run"]))
         policy = out["managedToolPolicy"]
-        assert policy["excludeServers"] == ["kirocrew-cron"]
+        assert policy["excludeServers"] == ["kirocrew-apps", "kirocrew-cron"]
         assert "cron_remove" not in policy["exclude"], "its names were never read"
 
-    def test_a_readable_universe_writes_no_server_withhold(self):
+    def test_a_readable_universe_withholds_only_the_open_ended_server(self):
+        """``kirocrew-apps`` lists whatever third-party apps are installed at call time,
+        so a scoped agent has it withheld whole; no readable server joins it."""
         from kiro_crew.apps import bridges
 
         out = bridges._enforce_declared_mcp_tools({"name": "app--a"}, self._manifest(["cron_add"]))
-        assert "excludeServers" not in out["managedToolPolicy"]
+        assert out["managedToolPolicy"]["excludeServers"] == ["kirocrew-apps"]
 
     @pytest.mark.parametrize("value", ["kirocrew-cron", None, ["kirocrew-cron", 3]])
     def test_a_malformed_authored_exclude_servers_is_left_for_the_gate(self, monkeypatch, value):
@@ -697,7 +699,7 @@ class TestDeclaredMcpToolsAreEnforced:
         assert len(events) == 1
         text = events[0]["resources"]
         assert "app scoped-app agent my-agent" in text
-        assert "withheld whole: [kirocrew-cron]" in text
+        assert "withheld whole: [kirocrew-apps, kirocrew-cron]" in text
         assert "more]" in text, "the tool list is bounded"
         assert len(text) < 1000
 

@@ -35,6 +35,7 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_TERMINATE,
     METHOD_SET_MODE,
 )
+from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 from kiro_crew.testing.wait import default_timeout
 
 
@@ -375,6 +376,31 @@ async def test_create_session_admits_spawn_agent_when_advertised():
     assert METHOD_SET_MODE not in methods
     assert METHOD_SESSION_TERMINATE not in methods
     assert handle.session_id == "s1"
+    assert "s1" not in rt._prompted_call_launches
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["create", "load"])
+async def test_an_unmoded_non_spec_backend_start_records_its_launch(path):
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_CODEX
+    rt._can_load_session = True
+    rt._expect_mcp_reports = False
+
+    async def _send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            return {"sessionId": "s1"}
+        return {"modes": {}}
+
+    rt._send_and_await = AsyncMock(side_effect=_send)  # type: ignore[method-assign]
+    with patch.object(AcpSessionHandle, "apply_session_permission_routing", AsyncMock()):
+        if path == "create":
+            handle = await rt.create_session(cwd="/work", mcp_servers=[])
+        else:
+            handle = await rt.load_session("/f.json", "s1", cwd="/work")
+
+    assert handle.session_id == "s1"
+    assert rt._prompted_call_launches["s1"] == ("kirocrew", False)
 
 
 @pytest.mark.asyncio
@@ -472,6 +498,41 @@ async def test_activate_mode_bracketed_allows_the_launched_agent_every_start():
     assert captured["params"]["modeId"] == "kirocrew"
     assert captured["kwargs"].get("translate") is False
     assert refreshed.spawn_agent_name == ""
+    assert rt._prompted_call_launches["s1"] == ("kirocrew", False)
+    rt._native_skill_projection = NativeSkillProjection(
+        aliases={"kirocrew": "kirocrew-skill-view-later"}
+    )
+    assert rt._prompted_call_launches["s1"] == ("kirocrew", False)
+
+
+@pytest.mark.asyncio
+async def test_activate_mode_records_an_app_launch_copy():
+    from kiro_crew.acp.skill_projection import NativeSkillProjection
+
+    rt, _, _ = _make_runtime()
+    rt._agent = "deploy"
+    rt._launch_agent = "kirocrew-app-launch-deploy"
+    rt._native_skill_projection = NativeSkillProjection(aliases={})
+    refreshed = NativeSkillProjection(aliases={})
+    rt._send_and_await = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    with patch(
+        "kiro_crew.acp.skill_projection.prepare_native_skill_projection",
+        return_value=refreshed,
+    ):
+        await rt._activate_mode_bracketed(
+            "s1",
+            "deploy",
+            budget=30.0,
+            payload_snapshot=None,
+            wire_registered=True,
+            mode_id="kirocrew-app-launch-deploy",
+        )
+
+    assert rt._prompted_call_launches["s1"] == (
+        "kirocrew-app-launch-deploy",
+        True,
+    )
 
 
 @pytest.mark.asyncio

@@ -153,6 +153,7 @@ MANAGED_STUB_FOLLOWERS: tuple[str, ...] = (
     "kirocrew-work",
     "kirocrew-crew-log",
     "kirocrew-debug",
+    "kirocrew-apps",
 )
 
 

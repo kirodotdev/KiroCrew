@@ -228,6 +228,7 @@ POST /api/browser/disconnect api_browser_harness_disconnect
 POST /api/computer-use/invoke api_computer_use_invoke
 POST /api/browser/op api_browser_op
 POST /api/app-tools/call api_app_agent_tool_call
+POST /api/app-tools/prompted-call api_prompted_app_tool_call
 POST /api/browser/handback api_browser_handback
 POST /api/browser/ask/poll api_browser_ask_poll
 POST /api/computer-use/frame api_computer_use_frame

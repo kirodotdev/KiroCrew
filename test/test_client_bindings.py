@@ -357,6 +357,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "pop_pending_oauth_requests": ("function", False, "92d6193dbe19", "client_mcp_array"),
     "process_instance": ("property", False, "bb418bb7ece8", "client_class"),
     "process_tree_confirmed_dead": ("property", False, "a6632a57e602", "client_class"),
+    "prompted_call_launch": ("function", False, "240a7dd88209", "client_start"),
     "reclaim": ("function", False, "b60c5fea256e", "client_lifecycle"),
     "refresh_available_models": ("function", True, "92d6193dbe19", "client_model_selection"),
     "refresh_process_tree": ("function", True, "b60c5fea256e", "client_lifecycle"),

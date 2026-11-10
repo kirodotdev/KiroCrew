@@ -73,6 +73,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_END_TURN,
 )
 from kiro_crew.agent_sdk import host_auth
+from kiro_crew.agent_sdk.prompted_calls import PromptedCallLaunch
 from kiro_crew.agent_sdk.steer_origin import STEER_ORIGIN_USER
 from kiro_crew.agent_sdk.tool_gate import ADAPTER_EXPOSED_CREDENTIAL_LEAVES
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
@@ -1625,6 +1626,19 @@ class AcpSessionProvider(LLMProvider):
     async def set_mode(self, agent_name: str) -> None:
         """Switch the active agent via session/set_mode."""
         await self._guarded(self._handle.set_mode(agent_name))
+
+    def prompted_call_launch(self) -> PromptedCallLaunch | None:
+        """Return the launch fact recorded when this session's mode was sent."""
+        launches = getattr(self._runtime, "_prompted_call_launches", {})
+        recorded = launches.get(self._handle.session_id)
+        if (
+            not isinstance(recorded, tuple)
+            or len(recorded) != 2
+            or not isinstance(recorded[0], str)
+            or not isinstance(recorded[1], bool)
+        ):
+            return None
+        return PromptedCallLaunch(recorded[1], self.backend)
 
     # ── State (mirrors AcpClient properties/attributes) ──
 

@@ -15,7 +15,7 @@ Instance fields written: ``_announced_children``, ``_announced_overflow``,
 ``_turn_active_sessions``.
 
 Instance fields read: ``_agent_capabilities``, ``_dead``, ``_mcp_reports``, ``_process``,
-``_record_keeping_sessions``, ``_start_collectors``.
+``_prompted_call_launches``, ``_record_keeping_sessions``, ``_start_collectors``.
 
 The chat turn gate scope also reads the runtime's backend and its chat turn lock,
 through the runtime it holds rather than through a self parameter.
@@ -141,6 +141,7 @@ def unregister_session(self: AcpRuntime, session_id: str) -> None:
     """Unregister a session queue (called by AcpSessionHandle.destroy)."""
     self._session_queues.pop(session_id, None)
     self._session_cwds.pop(session_id, None)
+    getattr(self, "_prompted_call_launches", {}).pop(session_id, None)
     self._mcp_reports().pop(session_id, None)
     self._switched_model_record().pop(session_id, None)
     self._session_activity_at.pop(session_id, None)

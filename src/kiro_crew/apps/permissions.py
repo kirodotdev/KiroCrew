@@ -83,6 +83,13 @@ def check_tool_permission(app_name: str, tool_name: str, manifest: AppManifest) 
 #: declared ``mcpTools`` list never derives them into the exclusion.
 _FRAMEWORK_REQUIRED_MANAGED_TOOLS: frozenset[str] = frozenset({"skill_search"})
 
+#: Managed servers whose tool names are not known when an app agent is
+#: materialized, so no name-based exclusion can cover them: ``kirocrew-apps``
+#: lists the tools of whatever third-party apps are installed and enabled at call
+#: time, and an app installed or enabled later does not re-materialize the agent.
+#: A scoped app agent has each of them withheld whole.
+_OPEN_ENDED_MANAGED_SERVERS: frozenset[str] = frozenset({"kirocrew-apps"})
+
 
 class ManagedToolExclusion(NamedTuple):
     """What an app agent's spec withholds from it, per :func:`managed_tool_exclusion`.
@@ -139,6 +146,10 @@ def managed_tool_exclusion(manifest: AppManifest) -> ManagedToolExclusion:
     the agent off from its own mapped skills. An author can still exclude one of
     these explicitly in the agent spec. A withheld server is withheld whole, these
     included: the framework cannot tell which tools that server would have served.
+
+    An open-ended server (:data:`_OPEN_ENDED_MANAGED_SERVERS`) is in ``servers`` too,
+    for the same reason: its tool names depend on what is installed when it is
+    called, not when the agent is materialized.
     """
     if not manifest.permissions.mcpTools:
         return ManagedToolExclusion([], [])
@@ -149,7 +160,9 @@ def managed_tool_exclusion(manifest: AppManifest) -> ManagedToolExclusion:
         for tool in universe - _FRAMEWORK_REQUIRED_MANAGED_TOOLS
         if not check_tool_permission(app_name, tool, manifest)
     )
-    return ManagedToolExclusion(tools, sorted(unreadable))
+    # An open-ended server's names are only those of the apps installed now, so
+    # it is withheld whole: see _OPEN_ENDED_MANAGED_SERVERS.
+    return ManagedToolExclusion(tools, sorted({*unreadable, *_OPEN_ENDED_MANAGED_SERVERS}))
 
 
 def _managed_tool_universe() -> set[str]:

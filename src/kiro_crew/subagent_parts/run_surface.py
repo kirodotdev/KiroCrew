@@ -36,13 +36,8 @@ if TYPE_CHECKING:
     )
 
 
-def has_live_shared_session(self: SubagentManager, session_key: str) -> bool:
-    """Recognize a shared child only while its exact runtime handle is live.
-
-    Run records survive completion/restart for display and continuation;
-    they are not session authority. The runtime's queue registry is what
-    destroy() unregisters, even when the parent process keeps running.
-    """
+def get_live_shared_provider(self: SubagentManager, session_key: str) -> "LLMProvider | None":
+    """Return the live shared provider for an exact child session key."""
     for info in self._agents.values():
         if info.done or info.reaped or not info._session_sharing:
             continue
@@ -53,8 +48,18 @@ def has_live_shared_session(self: SubagentManager, session_key: str) -> bool:
             continue
         runtime, handle = provider._runtime, provider._handle
         if runtime.is_alive() and runtime._session_queues.get(handle.session_id) is handle._queue:
-            return True
-    return False
+            return provider
+    return None
+
+
+def has_live_shared_session(self: SubagentManager, session_key: str) -> bool:
+    """Recognize a shared child only while its exact runtime handle is live.
+
+    Run records survive completion/restart for display and continuation;
+    they are not session authority. The runtime's queue registry is what
+    destroy() unregisters, even when the parent process keeps running.
+    """
+    return self.get_live_shared_provider(session_key) is not None
 
 
 def get(self: SubagentManager, agent_id: str) -> SubagentInfo | None:

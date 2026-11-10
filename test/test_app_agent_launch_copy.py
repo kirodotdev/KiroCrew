@@ -93,6 +93,30 @@ def test_the_copy_is_the_registered_spec_under_the_reserved_name(agents_dir):
     assert set(source["tools"]) <= set(copy["tools"])
 
 
+def test_a_wildcard_launch_copy_withholds_prompt_only_patterns_for_any_workspace(agents_dir):
+    _register(
+        agents_dir,
+        tools="*",
+        allowedTools=["*", "@*", "@kirocrew-*", "fs_read"],
+        mcpServers={},
+    )
+
+    publish_app_agent_launch(_APP, "deploy")
+
+    copy = json.loads(_launch_file(agents_dir).read_text())
+    assert copy["allowedTools"] == ["fs_read"]
+
+
+def test_a_non_wildcard_launch_copy_keeps_unrelated_patterns(agents_dir):
+    allowed = ["*", "@*", "@kirocrew-*"]
+    _register(agents_dir, tools=["fs_read"], allowedTools=allowed, mcpServers={})
+
+    publish_app_agent_launch(_APP, "deploy")
+
+    copy = json.loads(_launch_file(agents_dir).read_text())
+    assert copy["allowedTools"] == allowed
+
+
 def test_an_unchanged_spec_is_not_rewritten_and_a_changed_one_is(agents_dir):
     _register(agents_dir)
     first = publish_app_agent_launch(_APP, "deploy")
