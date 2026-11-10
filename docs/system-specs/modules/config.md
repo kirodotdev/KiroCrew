@@ -1868,11 +1868,19 @@ value comes back different from the unbounded coercion, the read logs a WARNING
 naming the DTO, the key, the stored value and the value used. `load()` runs the
 builders on every call, so each DTO, key and value warns once per disk read of the
 config files (`_REPORTED_CLAMPS`, cleared by `read_config_document` beside the
-validation that warns on the same read). A clamp outside `read`'s bounds is not
-reported this way: a coercer of its own (`_clamp_compact_wait_secs`,
-`_title_refresh_every_turns`), a direct `_safe_*` call, a `max()` or `min()` around a
-read, or a DTO's `__post_init__`; `_clamp_security_bounds` reports the fields it
-lists before the builders run. A `default_factory` field gives a
+validation that warns on the same read). A builder states a floor or ceiling as
+`read`'s bounds rather than as a `max()` or `min()` around the read or a clamp in the
+DTO's `__post_init__`, so the warning covers it. A coercer that clamps on its own
+passes `unclamped=`, the same reading without its clamp, and the read compares
+against that instead: `_clamp_compact_wait_secs`, `_title_refresh_every_turns` and the
+one `_crew_autocompact_pct` reads with (each keeps `0` as "use the default"), and the
+one for `knowledge.extraction_pool_size`. `_clamp_security_bounds` reports the fields
+it lists before the builders run, so those reach their builders in range, and
+`_load_background_hold_secs` logs its own clamp.
+Still clamped outside `read` and not reported: the channel
+`soft_threshold_pct`/`hard_threshold_pct` pair, a WhatsApp group's `cooldown_s`,
+`messaging.idle_reset_minutes` and `daily_reset_hour`, and the `agent` start widths
+(`session_start_concurrency` and its two siblings). A `default_factory` field gives a
 fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
 `__post_init__`, `from_raw` or `from_dict`, and a reader a builder calls (the MCP
 stub-override reader `_resolve_stub_overrides`, `_tailscale_config_from`,

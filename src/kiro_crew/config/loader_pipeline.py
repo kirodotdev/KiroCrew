@@ -1271,8 +1271,8 @@ def build_config(
         slack_dm_activation=_validate_activation(
             slack_data.get("dm_activation", top.default("slack_dm_activation"))
         ),
-        observe_max_messages=max(1, slack_top.read("observe_max_messages", _safe_int)),
-        observe_ttl_hours=max(0.0, slack_top.read("observe_ttl_hours", _safe_float)),
+        observe_max_messages=slack_top.read("observe_max_messages", _safe_int, 1),
+        observe_ttl_hours=slack_top.read("observe_ttl_hours", _safe_float, 0.0),
         _extra_sections=extra_sections,
     )
 

@@ -190,6 +190,22 @@ def _clamp_compact_wait_secs(raw: object, default: float) -> float:
     return value if value == 0 else max(_sections.COMPACT_WAIT_SECS_MIN, value)
 
 
+def _lane_weights_from(
+    raw: object, default: dict[str, int], lo: int | None = None, hi: int | None = None
+) -> dict[str, int]:
+    """``agent.lane_weights``: each named lane's weight as an int in [*lo*, *hi*].
+
+    A weight it cannot read takes 1; a non-dict takes *default*, the field's.
+    """
+    if not isinstance(raw, dict):
+        return default
+    return {
+        lane: _safe_int(weight, 1, lo, hi)
+        for lane, weight in raw.items()
+        if isinstance(lane, str) and lane
+    }
+
+
 _DEFAULT_MEMORY_MODES = frozenset({"persistent", "incognito", "temporary"})
 
 
@@ -921,15 +937,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         start_collect_timeout_secs=section.read("start_collect_timeout_secs", _safe_int, 10, 3600),
         # Fairness lanes (taskq/lanes.py): weights shape the share of
         # picks; the reserve keeps children startable under full parents.
-        lane_weights=(
-            {
-                lane: _safe_int(weight, 1, 1, 64)
-                for lane, weight in _lane_weights.items()
-                if isinstance(lane, str) and lane
-            }
-            if isinstance(_lane_weights := section.get("lane_weights"), dict)
-            else section.default("lane_weights")
-        ),
+        lane_weights=section.read("lane_weights", _lane_weights_from, 1, 64),
         child_reserve=section.read("child_reserve", _safe_int, 0, 8),
         # Shared recovery ladder schedule (recovery/policy.py bounds).
         recovery_backoff_base_secs=section.read(
@@ -1008,14 +1016,10 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             else section.default("log_level")
         ),
         bot_name=_sanitize_bot_name(section.get("bot_name")),
-        max_channels=section.get("max_channels"),
-        max_channel_agents=section.get("max_channel_agents"),
-        soft_stop_budget_secs=max(
-            SOFT_STOP_BUDGET_MIN,
-            min(
-                SOFT_STOP_BUDGET_MAX,
-                section.read("soft_stop_budget_secs", _safe_float),
-            ),
+        max_channels=section.read("max_channels", _safe_int, 1, 5),
+        max_channel_agents=section.read("max_channel_agents", _safe_int, 1, 10),
+        soft_stop_budget_secs=section.read(
+            "soft_stop_budget_secs", _safe_float, SOFT_STOP_BUDGET_MIN, SOFT_STOP_BUDGET_MAX
         ),
     )
 
@@ -1130,7 +1134,9 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         # hand-edited negative collapses to 0 (fallback) and an oversized value
         # is capped. Bounds are referenced via the module handle, not imported:
         # this module's top-level names are a frozen compatibility facade.
-        compact_wait_secs=section.read("compact_wait_secs", _clamp_compact_wait_secs),
+        compact_wait_secs=section.read(
+            "compact_wait_secs", _clamp_compact_wait_secs, unclamped=_safe_float
+        ),
         pool_size=_safe_int(
             session_data.get("pool_size", DEFAULT_POOL_SIZE),
             DEFAULT_POOL_SIZE,
@@ -1290,7 +1296,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         avatar=section.get("avatar"),
         merge_queued_messages=section.get("merge_queued_messages"),
         title_refresh_every_turns=section.read(
-            "title_refresh_every_turns", _title_refresh_every_turns
+            "title_refresh_every_turns", _title_refresh_every_turns, unclamped=_safe_int
         ),
         title_ticket_prefix=section.read("title_ticket_prefix", _safe_bool),
         upload_max_mb=section.read(
