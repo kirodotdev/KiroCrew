@@ -397,7 +397,9 @@ export function useSteerRetract({ slot, messages, transcriptAuthoritative = true
     if (state === 'retracted') {
       if (taken.action === 'edit') restoreAndSettle(taken)
       else settle(taken)
-    } else if (state === 'consumed' || state === 'requeued') {
+    } else if (state === 'consumed' || state === 'requeued' || state === 'superseded') {
+      // `superseded`: the requeued row already ran as its own drained turn, so
+      // nothing is held to give back.
       settle(taken)
     } else if (row?.meta?.steerRetract === false && row.meta.steerRetractExpired === true) {
       // A later turn withdrew the offer because this steer's turn ended without

@@ -94,7 +94,13 @@ _STEER_STATE_REQUEUED = "requeued"
 # (``STEER_STATE_RETRACTED``, same reason for the spelling): it never reached the
 # turn either.
 _STEER_STATE_RETRACTED = "retracted"
-_STEER_STATES_NOT_TAKEN = frozenset({_STEER_STATE_REQUEUED, _STEER_STATE_RETRACTED})
+# The ``meta.steerState`` of a requeued steer whose own turn has since written its
+# own row with the same text (``STEER_STATE_SUPERSEDED``, same reason for the
+# spelling): the text ran as that turn, not as a redirect of this one.
+_STEER_STATE_SUPERSEDED = "superseded"
+_STEER_STATES_NOT_TAKEN = frozenset(
+    {_STEER_STATE_REQUEUED, _STEER_STATE_RETRACTED, _STEER_STATE_SUPERSEDED}
+)
 
 # The ``meta.injectKind`` values of an ``inject`` row that continues the turn above
 # it rather than opening one: a recovery (a Resume press, an automatic retry) and a
@@ -206,9 +212,9 @@ def build_interrupted_turn_preamble(
     opened the interrupted turn, collecting the assistant text it had streamed.
     A mid-turn steer (:func:`_is_steer_row`) is walked past rather than taken as
     the opener, and is carried in the partial output, in the order it was sent,
-    under ``[Steered mid-turn]`` -- unless its ``steerState`` is ``requeued``,
-    which means the turn never took it and it runs as its own turn, or
-    ``retracted``, which means the person took it back before the turn read it.
+    under ``[Steered mid-turn]`` -- unless its ``steerState`` is ``requeued`` or
+    ``superseded``, which means the turn never took it and it runs as its own turn,
+    or ``retracted``, which means the person took it back before the turn read it.
     Returns "" when no opener is found. The caller mints the result AFTER the
     prompt's egress scrub (its markers are in ``_STRUCTURAL_MARKER_RES``); the
     payload is scrubbed here instead.

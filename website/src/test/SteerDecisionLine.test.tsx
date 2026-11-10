@@ -249,9 +249,13 @@ describe('a chosen steer the running turn did not take', () => {
     expect(screen.getByTestId('steer-decision-choice').className).toContain('truncate')
   })
 
-  it('says the full sentence on a superseded steer row, which draws no lifecycle line', () => {
-    renderRow({ decisions_strip: STEER_RECEIPT, steer: true, steerState: 'superseded' })
-    expect(line().textContent).toContain(SAID_FULL)
+  it('says only who chose on a superseded steer row, which keeps the requeued lifecycle line', () => {
+    // The transcript hides a superseded row; a surface that still draws it shows
+    // the requeued line, so the receipt does not repeat its outcome.
+    const { container } = renderRow({ decisions_strip: STEER_RECEIPT, steer: true, steerState: 'superseded' })
+    expect(line().textContent).toContain(SAID_SHORT)
+    expect(line().textContent).not.toContain('its own message')
+    expect(container.textContent?.match(/its own message/g)).toHaveLength(1)
     expect(line().getAttribute('data-ran-as-own-turn')).toBe('true')
   })
 
