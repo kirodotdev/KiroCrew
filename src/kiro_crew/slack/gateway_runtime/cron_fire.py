@@ -718,10 +718,10 @@ async def _acquire_with_model_fallback(
     *,
     execution: ExecutionContext | None = None,
     replace_execution: bool = False,
-) -> "tuple[LLMProvider, bool, bool, bool]":
+) -> "tuple[LLMProvider, bool, bool, bool, Any]":
     """get_or_create honoring job.model; if that model is
     unavailable, retry once with the registry default.
-    Returns (client, is_new, resumed, downgraded).
+    Returns (client, is_new, resumed, downgraded, claim_token).
 
     ``agent_id`` is the RESOLVED kiro agent mode (an alias must be
     collapsed via _resolve_cron_agent before this call), ``cwd``
@@ -736,6 +736,7 @@ async def _acquire_with_model_fallback(
     """
 
     assert self.sessions is not None
+    from kiro_crew.agent_sdk.spec_hooks import make_claim_token as _claim_token
     from kiro_crew.execution_context import (
         bind_session_execution,
         read_session_execution,
@@ -807,6 +808,10 @@ async def _acquire_with_model_fallback(
             extra_env=_cron_extra_env(job),
             cwd=cwd,
         )
+        # Minted the instant the claim returns, BEFORE the rebind await below: a
+        # hard Stop and a successor claim during that await cannot make the token
+        # name the successor. See spec_hooks re-projection.
+        _token = _claim_token(self.sessions, key)
         await _rebind_prepared_execution(client)
         # A config-option backend refuses a pin without raising and
         # stays on its default: the same downgrade as the except
@@ -816,6 +821,7 @@ async def _acquire_with_model_fallback(
             is_new,
             resumed,
             bool(job.model) and provider_model_pin_refused(client),
+            _token,
         )
     except Exception as model_exc:
         if not job.model:
@@ -842,8 +848,10 @@ async def _acquire_with_model_fallback(
             extra_env=_cron_extra_env(job),
             cwd=cwd,
         )
+        # Minted before the rebind await, as on the primary arm.
+        _token = _claim_token(self.sessions, key)
         await _rebind_prepared_execution(client)
-        return client, is_new, resumed, True
+        return client, is_new, resumed, True, _token
 
 
 def _retained_session_agent_mismatch(
