@@ -11,6 +11,7 @@ from named_cases_helpers import named_cases
 
 from kiro_crew.security import redact, redact_credentials
 from kiro_crew.security import redaction as _redaction
+from kiro_crew.security import redaction_entropy
 
 # The canonical AWS documentation example secret key, never a live credential.
 KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -267,6 +268,13 @@ def test_a_plural_route_link_fires_on_singular_routes(
     assert _redaction._text_contains_bare_secret(template.format(COMMIT))
 
 
+def _path_words_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Measure the route floor alone: `WidgetHubChatBridge/blobs/` also spells a path."""
+    off = redaction_entropy._SECRET_KEY_LEN + 1
+    monkeypatch.setattr(redaction_entropy, "_PATH_WORDS_MIN", off)
+    monkeypatch.setattr(redaction_entropy, "_PATH_WORDS_MIN_AT_CEILING", off)
+
+
 def _fires_on_a_seeded_commit(template: str) -> bool:
     rng = random.Random(template)
     for _ in range(200):
@@ -281,6 +289,7 @@ def test_a_plural_route_link_fires_when_twelve_digits_are_required(
     template: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A deeper `packages/<name>/` path leaves a firing window fewer than twelve commit digits."""
+    _path_words_off(monkeypatch)
     monkeypatch.setattr(_redaction, "_ROUTED_COMMIT_PIECE_MIN", 12)
     assert _fires_on_a_seeded_commit(template), template
 
@@ -294,6 +303,7 @@ def test_a_plural_route_link_fires_one_digit_above_the_floor(
     exactly eight commit digits, so eight is required and nine is not enough.
     """
     assert _redaction._ROUTED_COMMIT_PIECE_MIN == 8
+    _path_words_off(monkeypatch)
     monkeypatch.setattr(_redaction, "_ROUTED_COMMIT_PIECE_MIN", 9)
     assert _fires_on_a_seeded_commit(PLURAL_ROUTE_LINK_TEMPLATES[0])
 

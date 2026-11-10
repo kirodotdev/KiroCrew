@@ -157,6 +157,69 @@ _SECRET_MAX_VOWEL_RATIO = 0.30
 # vowel-ratio gate. Three is the knee: four leaves the reported paths redacted.
 _SECRET_MAX_SLASHES = 3
 
+# The third test a window CUT OUT OF A LONGER RUN is held to: a window that crosses
+# a `/` and is spelled like path components, not like a key. A Brazil workspace path
+# is `<ws>/src/<Package>/...` with a CamelCase package name, and a name carrying
+# digits and an acronym (`src/Lab126DSTDroidWorksApp/BrazilBuildTo`) clears every
+# gate on two separators: the acronym and digits hold the vowel ratio under its
+# ceiling and CamelCase keeps each lowercase run short. What the gates do not count
+# is the words. A word is a capital followed by two or more lowercase letters with
+# a vowel among them (`Lab`, `Droid`, `App`, `Folder`), which a random key rarely
+# spells, and the window is declined when it holds `_PATH_WORDS_MIN` of them, or
+# `_PATH_WORDS_MIN_AT_CEILING` of them when it carries exactly three separators, the
+# most the ceiling lets through. The second form covers
+# acronym-heavy components (`App/ECRUpload2/src/s3Put`), whose capitals and digits
+# take room in the window and count as no word. Measured on 300,000 uniformly random
+# key-shaped 40-char tokens, 0.14% hold a `/` and either form, against 0.36% for the
+# separator ceiling above. Five words alone cost 0.12% and leave 6% of acronym-heavy
+# workspace paths redacted; four words on two or more separators cost 0.29% for no
+# further path, and on any `/` 0.96%. An all-lowercase interior component (`/src/`)
+# was the other candidate and is NOT used: it declines every key that itself ends in
+# a route such as `/blob/`. On
+# 50,000 repository-relative paths placed under the reported workspace root, 43% were
+# redacted before and 11 after, each a run of exactly one key length, which no
+# fragment rule may read. Like the ceilings above this is asked only of a fragment
+# and only after the classifier has said yes, so a standalone key is never subject
+# to it. It is also asked only in a path run (`_in_a_path_run`): a key glued into
+# prose (`X<key>X`) supplies the run's only separators, so its words are not read.
+# A glued key is then missed only when its own 40 characters spell a path and it
+# sits in a path run, or carries three separators of its own: measured on 200,000
+# random keys, 0.05% at `/srv/ci/keys/X<key>X` and 0.01% at `X<key>X`.
+_PATH_WORDS_MIN = 5
+_PATH_WORDS_MIN_AT_CEILING = 4
+# Its own copy of the ceiling's value rather than a read of `_SECRET_MAX_SLASHES`,
+# so loosening the ceiling (as its knee tests do) does not move this rule with it.
+_PATH_WORDS_CEILING_SLASHES = 3
+_CAPITALISED_WORD_RE = re.compile(r"[A-Z][a-z]{2,}")
+_WORD_VOWEL_RE = re.compile(r"[aeiouAEIOU]")
+
+
+def _in_a_path_run(run_slashes: int, window: str) -> bool:
+    """Whether the run around *window* is a path, by separators the window alone cannot supply.
+
+    Only a separator OUTSIDE the window counts. A key glued into prose (``X<key>X``)
+    brings only its own separators, however many, so the word test is not asked.
+    """
+    return run_slashes > window.count("/")
+
+
+def _is_spelled_like_a_path(window: str) -> bool:
+    """Whether *window* crosses a ``/`` and holds enough capitalised words to be a path."""
+    slashes = window.count("/")
+    if not slashes:
+        return False
+    needed = (
+        _PATH_WORDS_MIN_AT_CEILING if slashes == _PATH_WORDS_CEILING_SLASHES else _PATH_WORDS_MIN
+    )
+    words = 0
+    for word in _CAPITALISED_WORD_RE.findall(window):
+        if _WORD_VOWEL_RE.search(word):
+            words += 1
+            if words >= needed:
+                return True
+    return False
+
+
 # The second ceiling a window CUT OUT OF A LONGER RUN is held to: it may not cross
 # the opening `/` of a routed commit and take eight of its digits. A permalink is
 # one run (`com/Owner/RepoName/blob/<commit>/src/file`), and its window straddling
@@ -557,6 +620,7 @@ def _bare_secret_window_starts(
     commit_starts = (
         [match.start("commit") for match in _ROUTED_COMMIT_RE.finditer(run)] if is_fragment else []
     )
+    run_slashes = run.count("/") if is_fragment else 0
     for start in range(len(run) - _SECRET_KEY_LEN + 1):
         if skip_spans and any(
             min(start + _SECRET_KEY_LEN, end) - max(start, begin) >= _HOST_ID_EXEMPT_OVERLAP
@@ -568,6 +632,7 @@ def _bare_secret_window_starts(
             continue
         if is_fragment and (
             window.count("/") > _SECRET_MAX_SLASHES
+            or (_in_a_path_run(run_slashes, window) and _is_spelled_like_a_path(window))
             or _crosses_into_a_routed_commit(start, commit_starts)
         ):
             # Key-shaped, but a fragment carrying a path's separators or a commit.
