@@ -112,6 +112,16 @@ with no app identity to check.
   as in use.
 - Sensitive paths are refused, and the destination directory is derived
   server-side (never supplied by the caller) and must not already exist.
+- **A refusal says why git refused.** A `repo` git cannot open as a work tree
+  is a 400 whose `code` names git's reason (`not_a_git_repository`,
+  `broken_gitfile` for a `.git` file naming a missing or invalid git directory,
+  `git_dubious_ownership`, `git_permission_denied`, else `git_probe_failed`)
+  and whose `detail` is git's own line for it, redacted, because the `gitdir:`
+  path git echoes is file content whoever can write the folder chose. The probe
+  runs in the C locale and reads every stderr line, skipping the sandbox
+  launcher's `sandbox: WARNING` advisories, so an advisory printed before git
+  runs never stands in for git's reason. The refusal is audited `denied`; a
+  probe that cannot spawn git is audited `error`.
 
 If the new session cannot be scoped to the worktree, the frontend deletes the
 session it just created rather than leaving an unscoped one behind; the worktree

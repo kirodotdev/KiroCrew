@@ -220,6 +220,23 @@ class TestProjectGitEndpoint:
         assert data["isRepoRoot"] is True
 
     @pytest.mark.asyncio
+    async def test_a_dot_git_file_naming_a_missing_directory_is_not_a_repo(
+        self, tmp_path, mock_sel
+    ):
+        """git refuses such a folder ("not a git repository: <path>"), so the answer
+        the follow-up card gates on must not call it a repository root: the card
+        would otherwise offer a worktree that every click fails to create."""
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        (broken / ".git").write_text(f"gitdir: {tmp_path / 'gone' / '.git' / 'worktrees' / 'x'}\n")
+        async with TestClient(TestServer(_make_app(str(broken)))) as client:
+            resp = await client.get("/api/project/git", params={"path": str(broken)})
+            data = await resp.json()
+        assert resp.status == 200
+        assert data["repo"] is False
+        assert "isRepoRoot" not in data
+
+    @pytest.mark.asyncio
     async def test_non_repo_reports_repo_false(self, tmp_path, mock_sel):
         plain = tmp_path / "plain"
         plain.mkdir()
