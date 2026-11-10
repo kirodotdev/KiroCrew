@@ -62,7 +62,8 @@ def handoff_gate_context() -> contextvars.Context:
     hold cannot block behind a maintenance window the holder is keeping open:
     the holder waits for the task's hold, the window waits for the holder, and
     the task waiting for the window would close the cycle until the window's
-    timeout.
+    timeout. A first hold taken once no hold is open waits for the window like
+    any other (``IngestionGate.ingestion_in_flight``).
     """
     ctx = contextvars.copy_context()
     ctx.run(_INGESTION_GATE_DEPTH.set, 0)

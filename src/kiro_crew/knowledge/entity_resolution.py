@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import unicodedata
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from .store import MAX_ENTITY_ALIAS_LEN
+from .store import MAX_ENTITY_ALIAS_LEN, MAX_ENTITY_ALIASES
 
 if TYPE_CHECKING:
     from .store import KnowledgeStore
+
+logger = logging.getLogger(__name__)
+
+# SQLite's LOWER(): find_entity's canonical leg folds ASCII letters only.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 # Short Latin names deliberately lose automatic alias merging: spelling alone
 # cannot distinguish a real short name from an abbreviation such as CR or BTS.
@@ -119,3 +126,72 @@ def resolve_entity(
         # incoming name already appears in that entity's persisted aliases.
         tier = min(tier or candidate_tier, candidate_tier)
     return resolved, tier
+
+
+def merge_split_entities(store: KnowledgeStore) -> int:
+    """Merge entity pairs an alias bridge now joins; return how many were merged.
+
+    Libraries ingested before aliases were stored hold one real-world entity as
+    two nodes; the pair appears once a later ingest attaches the alias to one of
+    them. A pair qualifies under the ingestion rule: one entity's stored alias is
+    the other's canonical name (``split_entity_candidates``), the types agree and
+    ``alias_merge_allowed`` holds; alias-to-alias overlap never pairs. Each of the
+    two must have no other such partner, in either direction, so an ambiguous or
+    chained group stays as it is, and no third entity of any type may answer to
+    the bridge, since it would take the merged name's lookup. An entity storing
+    ``MAX_ENTITY_ALIASES`` aliases counts as a partner but never merges: as with
+    ingestion's overflow rule, the cap may have dropped an alias naming a third
+    entity. The entity carrying the alias is kept and takes the other's mentions,
+    relations and description. A pair merges only when every alias of the other
+    is the kept entity's canonical name as ``find_entity`` matches it, exactly or
+    under SQLite's ASCII-only ``LOWER()``, and has no cased letter beyond ASCII,
+    so each stored name of the other that found either, in upper or lower case,
+    still finds the kept one; an alias is never carried over, since one the rule refused
+    (same script) would become a bridge on the next launch. A mutual pair keeps
+    the older row unless only the newer one's merge qualifies.
+    Run inside the store's ``maintenance_window``, so no ingest or bundle import
+    writes an entity, alias or mention meanwhile.
+    """
+    pairs = []
+    partners: dict[str, set[str]] = defaultdict(set)
+    holders: dict[str, set[str]] = defaultdict(set)
+    capped: set[str] = set()
+    for keeper, target, bridge in store.split_entity_candidates():
+        key = bridge.casefold()
+        holders[key] |= {keeper["id"], target["id"]}
+        if (keeper["entity_type"] or "concept") != (target["entity_type"] or "concept"):
+            continue
+        if not alias_merge_allowed(keeper["name"], target["name"], bridge):
+            continue
+        # Such an alias finds the keeper by its canonical name in upper or lower
+        # case, before and after; LOWER() folds no cased letter beyond ASCII.
+        name = keeper["name"].translate(_ASCII_LOWER)
+        keeps_names = all(
+            a.translate(_ASCII_LOWER) == name
+            and all(c.isascii() or c.lower() == c.upper() for c in a)
+            for a in target["aliases"]
+        )
+        pairs.append((keeper["id"], target["id"], key, keeps_names))
+        partners[keeper["id"]].add(target["id"])
+        partners[target["id"]].add(keeper["id"])
+        capped.update(e["id"] for e in (keeper, target) if len(e["aliases"]) >= MAX_ENTITY_ALIASES)
+    handled: set[str] = set()
+    merged = 0
+    for keep_id, target_id, key, keeps_names in pairs:
+        if not keeps_names or holders[key] != {keep_id, target_id}:
+            continue
+        # A mutual pair is listed twice; the keeper with the older row wins.
+        if keep_id in handled or partners[keep_id] != {target_id}:
+            continue
+        if partners[target_id] != {keep_id} or {keep_id, target_id} & capped:
+            continue
+        handled |= {keep_id, target_id}
+        try:
+            store.merge_entities(keep_id, target_id)
+        except Exception:  # noqa: BLE001 -- one pair must not stop the others
+            logger.warning("Split entity merge skipped for %s", target_id, exc_info=True)
+            continue
+        merged += 1
+    if merged:
+        logger.info("Merged %d split entity pair(s)", merged)
+    return merged

@@ -26,6 +26,7 @@ helpers this module reuses:
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from unittest.mock import MagicMock
 
@@ -36,6 +37,7 @@ from test_knowledge_delete_off_loop import _on_loop_call_sites
 
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.store import KnowledgeBundleError, KnowledgeStore
+from kiro_crew.testing.wait import async_wait_until, finished
 
 
 def test_delete_item_is_never_called_on_the_event_loop():
@@ -205,4 +207,53 @@ async def test_import_bundle_worker_error_still_reaches_the_typed_400(tmp_path, 
         assert body["code"] == "malformed_knowledge_bundle"
         assert "sources.properties" in body["error"]
     finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_import_bundle_waits_out_a_maintenance_window(tmp_path, monkeypatch):
+    """A bundle import writes entities and aliases, so it waits out a maintenance window.
+
+    The launch sweeps run in that window and act on what they read at its start:
+    the split-entity merge reads every candidate pair once and merges each later,
+    so an alias an import committed in between could make a cached pair ambiguous.
+    """
+    store = KnowledgeStore(str(tmp_path / "knowledge.db"))
+    gate = store._ingestion_gate
+    post: asyncio.Task | None = None
+    try:
+        imported = threading.Event()
+        real = store.import_bundle
+
+        def recording(*args, **kwargs):
+            imported.set()
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(store, "import_bundle", recording)
+
+        bundle = {
+            "items": [
+                {"id": "i1", "title": "t", "content": "c", "summary": "s", "item_type": "note"}
+            ]
+        }
+        async with TestClient(TestServer(_make_app(store))) as client:
+            with store.maintenance_window() as quiescent:
+                assert quiescent is True
+                post = asyncio.ensure_future(client.post("/api/knowledge/import", json=bundle))
+                # Parked on the gate, or already importing: either way past the point
+                # where waiting could still be the reason nothing has run.
+                await async_wait_until(
+                    lambda: imported.is_set() or bool(gate._cond._waiters),
+                    describe=lambda: f"imported={imported.is_set()} done={post.done()}",
+                )
+                held_off = not imported.is_set()
+            # Let the request end before the server closes, whichever way it went.
+            resp = await finished(post, "the import after the maintenance window closed")
+            assert held_off, "the import ran inside a maintenance window"
+            assert resp.status == 200
+            assert (await resp.json())["items_imported"] == 1
+        assert imported.is_set()
+    finally:
+        if post is not None and not post.done():
+            post.cancel()
         store.close()

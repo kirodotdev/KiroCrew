@@ -27,7 +27,7 @@ from kiro_crew.knowledge import ingestion as ingestion_mod
 from kiro_crew.knowledge import store as store_mod
 from kiro_crew.knowledge.ingestion import IngestionPipeline
 from kiro_crew.knowledge.store import KnowledgeStore
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # The store binds ``pysqlite3`` when it is installed, so both the raw reads and
 # the connect patch below go through the SAME module the store uses.
@@ -293,6 +293,10 @@ class _QuiescentStore:
         # not have the residue call raise and get swallowed as a sweep failure.
         return 0
 
+    def split_entity_candidates(self):
+        # Read by the split-entity merge the kicker runs in the same window.
+        return []
+
 
 class TestGatewayKick:
     def test_kick_runs_the_sweep_off_loop_as_a_tracked_task(self, monkeypatch):
@@ -336,6 +340,26 @@ class TestGatewayKick:
 
         asyncio.run(run())
         assert seen == ["orphans", "residue"]
+
+    def test_kick_merges_split_entities_in_the_window_after_the_sweeps(self):
+        seen: list[str] = []
+
+        class _Store(_QuiescentStore):
+            def reclaim_orphans(self):
+                seen.append("orphans")
+
+            def split_entity_candidates(self):
+                seen.append("split")
+                return []
+
+        state = SimpleNamespace(_knowledge_store=_Store(), _background_tasks=set())
+
+        async def run():
+            srv._kick_knowledge_orphan_reclaim(state)
+            await asyncio.gather(*state._background_tasks)
+
+        asyncio.run(run())
+        assert seen == ["orphans", "split"]
 
     def test_kick_does_not_build_a_store_nobody_constructed(self):
         built: list[int] = []
@@ -794,6 +818,71 @@ class TestHandoffJoinsTheHoldersAdmission:
         try:
             assert asyncio.run(scenario()) is False
         finally:
+            store._close_all_for_tests()
+
+    def test_a_first_hold_taken_once_every_hold_is_gone_waits_for_a_running_window(self, tmp_path):
+        """A sync task settles its claim, the handler lets go, and only then does
+        the task take its admitted first hold. With no hold open the window may
+        be running its body, so that hold waits until the window closes instead
+        of entering under it."""
+        store = KnowledgeStore(str(tmp_path / "k.db"))
+        pipeline = IngestionPipeline.__new__(IngestionPipeline)
+        pipeline.store = store
+        gate = store._ingestion_gate
+        body_running = threading.Event()
+        release_body = threading.Event()
+        entered = threading.Event()
+        window_result: list[bool] = []
+
+        def gate_state() -> tuple[int, int, bool]:
+            # (entrants parked on the gate, holds open, window pending or running)
+            with gate._cond:
+                return len(gate._cond._waiters), gate._ingesting, gate._maintenance
+
+        def open_window():
+            with store.maintenance_window() as quiescent:
+                window_result.append(quiescent)
+                body_running.set()
+                release_body.wait(default_timeout())
+
+        async def scenario() -> None:
+            go = asyncio.Event()
+
+            async def child() -> None:
+                await go.wait()
+                async with pipeline.ingestion_in_flight():
+                    entered.set()
+
+            window: threading.Thread | None = None
+            try:
+                async with pipeline.ingestion_in_flight():
+                    task = asyncio.create_task(
+                        child(), context=ingestion_mod.handoff_gate_context()
+                    )
+                    window = _run_in_thread(open_window)
+                    await async_wait_until(lambda: gate_state()[2], off_loop=True)
+                await async_wait_until(body_running.is_set)
+                go.set()
+                await async_wait_until(
+                    lambda: entered.is_set() or gate_state()[0] >= 1, off_loop=True
+                )
+                assert not entered.is_set(), "an admitted hold entered while the window body ran"
+                parked, holds, _ = await asyncio.to_thread(gate_state)
+                assert (parked, holds) == (1, 0), "the admitted hold is not parked on the gate"
+                release_body.set()
+                await await_until(task, what="the admitted hold after the window closed")
+                assert entered.is_set(), "the admitted hold never entered after the window closed"
+            finally:
+                release_body.set()
+                go.set()
+                if window is not None:
+                    window.join(default_timeout())
+            assert window_result == [True], "the window did not run its body"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            release_body.set()
             store._close_all_for_tests()
 
 

@@ -157,9 +157,9 @@ class IngestionGate:
     Ingestion writes a source in several autocommit steps, and the orphan
     sweep would read those half-states (a source without items, an entity
     without a mention) as orphans. ``ingestion_in_flight()`` brackets one
-    ingest (many may hold it); ``maintenance_window()`` waits until no holder
-    remains, and new ingests wait at entry meanwhile, so a stream of ingests
-    cannot starve the sweep.
+    ingest or ``.knowledge`` bundle import (many may hold it);
+    ``maintenance_window()`` waits until no holder remains, and new ingests
+    wait at entry meanwhile, so a stream of ingests cannot starve the sweep.
 
     The wait is bounded: if ingestion never drains inside ``timeout`` the
     window yields ``False``, the caller skips its sweep and the next launch
@@ -178,10 +178,14 @@ class IngestionGate:
         *admitted* is for a hold handed from a current holder to a task it
         starts: it skips the wait for a pending maintenance window, which
         would deadlock (the window waits for the parent, the parent for this
-        entry) until the window's timeout. An admitted hold still counts.
+        entry) until the window's timeout. It skips that wait only while some
+        hold is still open: the window cannot have started its body then, so
+        this hold is counted and the window waits for it too. Once every hold
+        is gone the window may be running, and an admitted entrant waits like
+        any other. An admitted hold still counts.
         """
         with self._cond:
-            while self._maintenance and not admitted:
+            while self._maintenance and not (admitted and self._ingesting):
                 self._cond.wait()
             self._ingesting += 1
         try:
@@ -565,6 +569,7 @@ class KnowledgeStore:
     entity_alias_index_ready = _entity_graph.entity_alias_index_ready
     find_entity = _entity_graph.find_entity
     entity_identity_candidates = _entity_graph.entity_identity_candidates
+    split_entity_candidates = _entity_graph.split_entity_candidates
     merge_entities = _entity_graph.merge_entities
     add_entity_relation = _entity_graph.add_entity_relation
     add_mention = _entity_graph.add_mention
