@@ -65,10 +65,11 @@ def _seed_attempts(session_id: str, log: CrewLog) -> None:
     is precisely the collision this field exists to prevent -- and the in-memory map
     cannot survive the restart that makes the collision possible.
 
-    NOT on every open. The scan is O(file) and runs on the single writer thread, so
-    seeding a session that already holds its counts would cost one full rescan per
-    open against a file that only grows -- paid by every other session's appends
-    too, since they queue behind it.
+    NOT on every open. The scan walks the whole file on the single writer thread
+    (decoding only the records that name ``turn/started``), so seeding a session
+    that already holds its counts would cost one full rescan per open against a
+    file that only grows -- paid by every other session's appends too, since they
+    queue behind it.
 
     Best-effort: a file this cannot read leaves the map empty, which degrades to
     the old behaviour rather than failing the resume.
@@ -76,7 +77,9 @@ def _seed_attempts(session_id: str, log: CrewLog) -> None:
     highest: dict[int, int] = {}
     try:
         # Like read_page, this best-effort scan keeps readable records; folds still refuse seq damage.
-        for entry in log.iter_from(1, strict_seq=False):
+        # Only records whose bytes hold the type as a JSON string are decoded, so the cost
+        # follows the turns, not the whole file; the type check below still decides.
+        for entry in log.iter_from(1, strict_seq=False, contains=b'"turn/started"'):
             if entry.type != "turn/started":
                 continue
             turn = entry.data.get("turn")

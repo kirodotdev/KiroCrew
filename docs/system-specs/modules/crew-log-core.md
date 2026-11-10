@@ -510,6 +510,8 @@ Only the writer can make that promise, since only it knows whether the entry sam
 
 The gate is on `iter_from` alone. `page` and `resolve` render history for a person or drill into a citation, where displaying an unfamiliar line is a missing detail rather than a corrupted fold, so neither takes a vocabulary and neither refuses.
 
+**A raw prefilter skips the decode, never the check that decides.** `iter_from(contains=b'...')` does not decode a record whose bytes lack the given bytes, for a caller that filters by entry type itself and so loses nothing (`_seed_attempts` passes `b'"turn/started"'`: its decode cost follows the turns, not the file). It is refused with `strict_seq=True`, whose advancing-seq check reads every record, and a log with more than one segment ignores it so the cross-segment boundary still compares each segment's last entry.
+
 ## 7. Append-only guarantee and damage
 
 A line is never rewritten. Exactly one mutation exists: on `open`, trailing bytes that are not a complete line are dropped. Termination decides which those are, so the rule needs no heuristic. Every append writes `line + "\n"` and fsyncs, so unterminated bytes that fail to parse are a crash artifact and go; unterminated bytes that *do* parse lost only their newline, so the record stays and the next append re-supplies the separator. A terminated line that does not parse is damage inside history: reads skip it, the file keeps it. Two readers of the same bytes therefore always agree.

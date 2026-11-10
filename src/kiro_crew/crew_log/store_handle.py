@@ -869,8 +869,17 @@ class CrewLog:
         strict_seq: bool = True,
         resume: "ResumePoint | None" = None,
         cursor: "ReadCursor | None" = None,
+        contains: bytes | None = None,
     ) -> Iterator[Entry]:
         """Every entry from *seq* onward, OLDEST first -- the shape a fold wants.
+
+        *contains* is a raw-bytes prefilter: a record whose bytes do not contain it is
+        not decoded and not yielded. Only for a caller that filters by entry type itself
+        and so loses nothing (``b'"turn/started"'`` can be in no record of another type
+        except as a data value, which the caller's own filter drops). Allowed only with
+        ``strict_seq=False``, because the advancing-seq check reads every record it
+        walks, and a log with more than one segment ignores it so the boundary check
+        still sees each segment's last entry.
 
         *known* is the reader DECLARING the types it can interpret, and passing
         it is what turns this read into a reconstruction rather than a listing.
@@ -954,6 +963,8 @@ class CrewLog:
         # one thing it must never be. :meth:`_resume_at` cannot see this: it is handed
         # the point and the bytes, and answers whether they agree, not what was asked.
         usable = resume if resume is not None and seq >= resume.seq else None
+        if contains is not None and strict_seq:
+            raise ValueError("contains= skips records, so it needs strict_seq=False")
         # Counted on a gateway thread only (see ``read_budget``): every record decoded,
         # and the part below *seq* that is decoded and never yielded.
         from kiro_crew.crew_log import read_budget
@@ -964,7 +975,9 @@ class CrewLog:
         # whole unit: it is cold, with delta 0, however much of it the caller keeps.
         top = opened is not None and opened[1] and usable is None
         try:
-            yield from self._walk_from(seq, known, strict_seq, usable, cursor, cuts, tally, top)
+            yield from self._walk_from(
+                seq, known, strict_seq, usable, cursor, cuts, tally, top, contains
+            )
         finally:
             read_budget.close_read(opened)
 
@@ -978,10 +991,12 @@ class CrewLog:
         cuts: int | None,
         tally: "Tally | None",
         top: bool = False,
+        contains: bytes | None = None,
     ) -> Iterator[Entry]:
         """:meth:`iter_from`'s walk, adding each decoded record to *tally* when given."""
         walked = 0
-        for entry, segment, at in self._iter_segments_located(resume=usable, cuts=cuts):
+        located = self._iter_segments_located(resume=usable, cuts=cuts, contains=contains)
+        for entry, segment, at in located:
             if tally is not None:
                 if top and not tally.records and entry.seq >= seq:
                     tally.cold = True
@@ -1101,6 +1116,7 @@ class CrewLog:
         *,
         resume: "ResumePoint | None" = None,
         cuts: int | None = None,
+        contains: bytes | None = None,
     ) -> "Iterator[tuple[Entry, str, int]]":
         """Every entry of every segment with its segment name and byte offset.
 
@@ -1134,6 +1150,10 @@ class CrewLog:
         # still in flight, and a reader that yields them can hand a fold an entry the
         # durable log never keeps. Older segments take no more appends.
         newest_end = self._durable_end(paths[-1]) if paths else None
+        if len(paths) > 1:
+            # The boundary check below compares each segment's first entry with the
+            # previous segment's LAST one, which a prefilter would skip.
+            contains = None
         from_index, from_offset = self._resume_at(paths, resume, newest_end, cuts)
         for index, path in enumerate(paths):
             if index < from_index:
@@ -1173,7 +1193,7 @@ class CrewLog:
             at_boundary = bool(index) and expected > 0
             end = newest_end if index == len(paths) - 1 else None
             begin = from_offset if index == from_index else 0
-            for entry, at in _iter_entries_located(path, end, start=begin):
+            for entry, at in _iter_entries_located(path, end, start=begin, contains=contains):
                 if at_boundary and entry.seq != expected:
                     raise CrewLogError(
                         f"segment {path.name} starts at seq {entry.seq}, but the "
