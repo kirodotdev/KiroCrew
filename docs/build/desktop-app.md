@@ -730,11 +730,28 @@ same way). Key details:
   bundled interpreter and each update replaces the whole bundle, so a channel
   SDK the build leaves out cannot be added later. Windows ships bytecode only
   for traced import closures, so its build traces `lark_oapi` too: the channel
-  imports it on the gateway loop.
+  imports it on the gateway loop. macOS does not trace it (see below), so a
+  macOS gateway with the Feishu channel on compiles it in memory at every start.
 - **Dashboard bundled** — the SPA is staged into
   `lib/python3.12/site-packages/kiro_crew/static/dist/` inside the bundle.
 - **Pruned** — `__pycache__`, test dirs, and unused stdlib (tkinter, idlelib,
   turtledemo, ensurepip, lib2to3) are removed to shrink the bundle.
+- **Precompiled after the prune.** Checked-hash `.pyc` files beside their
+  sources, never timestamp ones (extraction restamps sources, so a timestamp
+  cache would be rewritten in place). Linux compiles the whole tree. macOS
+  (`precompile_macos_backend` in `packaging/desktop-bytecode.sh`) compiles the
+  standard library, the `kiro_crew` package and the traced import closure of the
+  gateway, the CLI, the MCP gateway daemon and stub, and every stdio MCP server,
+  and nothing else: the signing service reads the whole app on every request,
+  and a cache for every module is 37% of the universal app's entries (on
+  0.12.1-rc.3 this set is 9.5k of its 35.6k caches, leaving 69.7k of its 97.1k
+  entries). The bundled interpreter refuses to write bytecode at all, through
+  `00-kirocrew-no-bytecode-writes.pth` in its site-packages, so a module outside
+  that set compiles in memory and nothing is written into the signed bundle,
+  including by processes that never see the shell's `PYTHONDONTWRITEBYTECODE`.
+  The build fails if a traced module lacks a valid cache, if the standard
+  library or `kiro_crew` is not covered, or if an interpreter started without
+  that variable would still write.
 
 ## How the app finds and launches the backend
 

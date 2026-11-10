@@ -144,14 +144,15 @@ Current status:
   that import closure beside its sources, plus the `lark_oapi` closure the Feishu
   channel imports on the gateway loop. Windows consumes those caches directly,
   avoiding the thousand-file cache-population burst that otherwise overlaps
-  Defender's post-install scanning. macOS and Linux still redirect bytecode out
-  of the signed/read-only app tree. The Windows caches are **unchecked**-hash,
+  Defender's post-install scanning. Linux redirects bytecode out of its
+  read-only app tree, and macOS forbids writing any into its signed one. The Windows caches are **unchecked**-hash,
   not checked. Both modes ignore mtime, which is the property that survives
   extraction restamping the sources, but a checked-hash pyc makes the loader read
   and hash each `.py` in *addition* to reading the `.pyc`, which costs many
   extra cold file opens and seconds of boot time on a cold file cache.
-  The macOS whole-tree caches remain checked-hash: a separate mechanism that does
-  not show this cost. The loading screen retains its extended
+  The macOS caches (its own traced closure, plus the standard library and the
+  `kiro_crew` package whole) are checked-hash: a codesigned bundle that does not
+  show this cost. The loading screen retains its extended
   Windows handoff window as a slow-machine fallback; a child exit or spawn error
   still fails immediately and includes the launch-log cause.
   `.github/scripts/test-windows-installer.ps1` starts the just-installed

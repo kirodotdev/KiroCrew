@@ -207,6 +207,8 @@ jobs:
               - 'website/electron/local-token.js'
               - 'website/electron/bundle-location.js'
               - 'packaging/build-desktop.sh'
+              # Sourced by build-desktop.sh; its coverage gate runs on Linux too.
+              - 'packaging/desktop-bytecode.sh'
               - 'scripts/stamp-distribution.sh'
               - '.github/workflows/build-desktop.yml'
             # Independent of the buckets above. Read only for a FORK pull

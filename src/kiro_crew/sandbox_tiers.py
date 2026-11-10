@@ -1104,8 +1104,8 @@ _SENSITIVE_ENV_PREFIXES: list[str] = [
 #    day under heavy subagent use). ``pycache_gc.prune_pycache`` bounds what
 #    the gateway's own tree still writes there.
 #  - PYTHONDONTWRITEBYTECODE: the packaged macOS app exports it instead of the
-#    prefix (its tree ships fully precompiled, see gateway-env.js), so the
-#    bundled interpreter never writes into the sealed .app. It is a statement
+#    prefix (its tree ships the caches it starts with, see gateway-env.js), so
+#    the bundled interpreter never writes into the sealed .app. It is a statement
 #    about OUR bundle, not about the user's Python: inherited by a foreign
 #    interpreter it silently disables bytecode caching for the user's own
 #    projects -- pytest's assertion rewriter falls back to rewriting in memory
