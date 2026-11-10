@@ -37,6 +37,7 @@ from kiro_crew.telegram.client import (
     TelegramInbound,
 )
 from kiro_crew.telegram.renderer import _split_markdown_bounded, md_to_telegram_html_safe
+from kiro_crew.telegram.renderer_display import _utf16_len
 
 logger = logging.getLogger(__name__)
 
@@ -364,7 +365,7 @@ class TelegramTransport(MessagingTransport):
         # may already be in the chat, so the send reports unconfirmed instead of
         # posting a second, plain copy.
         html_text = await asyncio.to_thread(md_to_telegram_html_safe, content)
-        if len(html_text) > TELEGRAM_MAX_TEXT:
+        if _utf16_len(html_text) > TELEGRAM_MAX_TEXT:
             # The caller splits by SOURCE length, and escaping and tags grow a part
             # past the cap. Split it again by rendered length, as the reply renderer
             # does, so each piece still goes out rendered rather than as raw markup.
@@ -383,7 +384,7 @@ class TelegramTransport(MessagingTransport):
                     if not last:
                         return ""
                 return last
-        if len(html_text) <= TELEGRAM_MAX_TEXT:
+        if _utf16_len(html_text) <= TELEGRAM_MAX_TEXT:
             err: dict[str, Any] = {}
             mid = await self._client.send_message(
                 int(conversation_id),

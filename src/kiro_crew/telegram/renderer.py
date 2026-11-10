@@ -120,6 +120,7 @@ from kiro_crew.telegram.renderer_display import (
     _may_exceed_rendered,
     _neutralize_md,
     _shrunk_limit,
+    _utf16_len,
 )
 from kiro_crew.telegram.renderer_tables import (
     _FENCE_LINE_RE,
@@ -384,8 +385,8 @@ def _md_to_telegram_html(text: str) -> str:
 
 
 def _rendered_len(source: str) -> int:
-    """Length of ``source`` once converted to Telegram HTML."""
-    return len(_md_to_telegram_html(source))
+    """Length of ``source`` once converted to Telegram HTML, in Telegram's UTF-16 units."""
+    return _utf16_len(_md_to_telegram_html(source))
 
 
 def _split_markdown_bounded(
@@ -954,9 +955,9 @@ class TelegramRenderer(Renderer):
         """
         html_text = _seal_table_fallback(text)
         replaced: int | None = None
-        if len(html_text) > self._rendered_limit():
+        if _utf16_len(html_text) > self._rendered_limit():
             html_text = _md_to_telegram_html(text)
-            if len(html_text) > self._rendered_limit():
+            if _utf16_len(html_text) > self._rendered_limit():
                 chunks = await asyncio.to_thread(self._degraded_table_chunks, text)
                 all_landed = True
                 for ch in chunks[:-1]:
@@ -973,7 +974,7 @@ class TelegramRenderer(Renderer):
                 # So it is graded again here, against what the reader can now see.
                 text = await asyncio.to_thread(self._seam_safe, text)
                 html_text = _seal_table_fallback(text)
-                if len(html_text) > self._rendered_limit():
+                if _utf16_len(html_text) > self._rendered_limit():
                     html_text = _md_to_telegram_html(text)
         return html_text, text, replaced
 
@@ -1340,7 +1341,7 @@ class TelegramRenderer(Renderer):
         src_cap = max(_MIN_SPLIT_LIMIT, rendered_cap - 128)
         while True:
             chunks = _split_markdown_table_aware(text, src_cap, src_cap)
-            worst = max((len(_seal_table_fallback(c)) for c in chunks), default=0)
+            worst = max((_utf16_len(_seal_table_fallback(c)) for c in chunks), default=0)
             if worst <= rendered_cap:
                 return chunks
             if src_cap <= _MIN_SPLIT_LIMIT:
@@ -1354,7 +1355,7 @@ class TelegramRenderer(Renderer):
         # headroom covers the <pre> wrapper on any piece that stays detected.
         out: list[str] = []
         for c in chunks:
-            if len(_seal_table_fallback(c)) > rendered_cap:
+            if _utf16_len(_seal_table_fallback(c)) > rendered_cap:
                 out.extend(_split_markdown_bounded(c, max(_MIN_SPLIT_LIMIT, rendered_cap - 64)))
             else:
                 out.append(c)
@@ -1381,7 +1382,7 @@ class TelegramRenderer(Renderer):
         """
         chunk = await asyncio.to_thread(self._seam_safe, chunk)
         html_text = _seal_table_fallback(chunk)
-        if len(html_text) > self._rendered_limit():
+        if _utf16_len(html_text) > self._rendered_limit():
             html_text = _md_to_telegram_html(chunk)
         stale_mid: int | None = None
         if self._stream_mid is not None:
@@ -1570,7 +1571,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _strip_steering,
         _utf16_chunks,
         _utf16_cut,
-        _utf16_len,
     )
     from kiro_crew.telegram.renderer_live import (  # noqa: F401
         _EDIT_THROTTLE_S,
