@@ -38,7 +38,7 @@ data "coder_workspace_owner" "me" {}
 resource "coder_agent" "main" {
   arch = data.coder_provisioner.me.arch
   os   = "linux"
-  dir  = "/home/coder"
+  dir  = "/workspace"
 
   # Commits made in the workspace carry the Coder user's name and email. No
   # credential is set here: git reaches GitHub through the Kiro Crew gateway.
@@ -76,8 +76,8 @@ resource "docker_image" "main" {
   keep_locally = true
 }
 
-# /home/coder survives stop and start (the checkout, .venv, node_modules); the
-# toolchain lives in the image, outside it.
+# The user's home, /workspace, survives stop and start (the checkout, .venv,
+# node_modules); the toolchain lives in the image, outside it.
 resource "docker_volume" "home_volume" {
   name = "coder-${data.coder_workspace.me.id}-home"
   lifecycle {
@@ -110,7 +110,7 @@ resource "docker_container" "workspace" {
     ip   = "host-gateway"
   }
   volumes {
-    container_path = "/home/coder"
+    container_path = "/workspace"
     volume_name    = docker_volume.home_volume.name
     read_only      = false
   }

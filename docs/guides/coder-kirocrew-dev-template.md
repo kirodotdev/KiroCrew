@@ -33,8 +33,9 @@ How it is put together:
   [`build/semgrep-requirements.txt`](assets/coder-kirocrew-dev/build/semgrep-requirements.txt).
   Nothing pipes a download into a shell.
 - The workspace runs as the non-root user `coder` (uid 1000) with no `sudo`.
-- `/home/coder` is a Docker volume that survives stopping and starting the
-  workspace, so a clone, its `.venv` and `node_modules` are still there. The
+- The user's home, `/workspace`, is a Docker volume that survives stopping
+  and starting the workspace, so a clone, its `.venv` and `node_modules` are
+  still there. The
   toolchain lives in the image under `/usr/local` and `/opt`, outside the
   volume, so a restart always gets the image's versions.
 - No credential is in the image or the template. git reaches GitHub through
@@ -74,7 +75,7 @@ needs, because it creates workspaces with `coder create --use-parameter-defaults
 2. In **Settings > Session Environments**, set **Coder URL** to your
    deployment, then **Add Coder profile**.
 3. Pick `kirocrew-dev` as the **Coder template**, and set **Working folder** to
-   a folder under the home volume, for example `/home/coder/KiroCrew`.
+   a folder in the home volume, for example `/workspace/KiroCrew`.
 4. **Save settings**, then **Check Coder connection**.
 5. In a new chat, pick the profile in the **Run this chat on** menu before the
    first message.
@@ -84,8 +85,8 @@ needs, because it creates workspaces with `coder create --use-parameter-defaults
 Ask the chat to clone the repository into the working folder and build it:
 
 ```bash
-git clone https://github.com/kirodotdev/KiroCrew.git /home/coder/KiroCrew
-cd /home/coder/KiroCrew
+git clone https://github.com/kirodotdev/KiroCrew.git /workspace/KiroCrew
+cd /workspace/KiroCrew
 make build
 ```
 

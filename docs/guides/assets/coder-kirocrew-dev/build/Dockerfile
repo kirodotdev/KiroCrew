@@ -21,8 +21,9 @@
 #
 # No credential, token or gh login is baked in: git reaches GitHub through the
 # Kiro Crew gateway's git proxy, and the Coder agent token arrives at run time
-# from main.tf. The toolchain lives outside /home/coder, so the home volume
-# (the checkout, .venv, node_modules) never shadows it and a restart keeps it.
+# from main.tf. The toolchain lives outside the user's home (/workspace), so
+# the home volume (the checkout, .venv, node_modules) never shadows it and a
+# restart keeps it.
 #
 # Works with the classic builder and BuildKit (no RUN --mount, no TARGETARCH).
 
@@ -63,7 +64,8 @@ RUN python3 -m venv /opt/semgrep \
     && ln -s /opt/semgrep/bin/pysemgrep /usr/local/bin/pysemgrep \
     && semgrep --version
 
-# Non-root user, uid 1000, matching main.tf's home volume at /home/coder.
-RUN useradd --create-home --uid 1000 --shell /bin/bash coder
+# Non-root user, uid 1000, whose home is main.tf's persistent volume at
+# /workspace.
+RUN useradd --home-dir /workspace --create-home --uid 1000 --shell /bin/bash coder
 USER coder
-WORKDIR /home/coder
+WORKDIR /workspace
