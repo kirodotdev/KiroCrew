@@ -616,6 +616,39 @@ class TestWatchdogLoop:
             svc.stop()
 
     @pytest.mark.asyncio
+    async def test_a_person_revoke_parks_the_campaign_instead_of_regranting(
+        self, _isolate: Path, fast_watchdog, sse, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Trust the app granted and a person then cleared on the SAME slot stays
+        cleared: the watchdog parks the campaign for re-authorization."""
+        from kiro_crew.apps.builtins.auto_research.campaign import agent_mode
+
+        monkeypatch.setattr(agent_mode, "_held_worker_trust", {})
+        cid = _campaign()
+        _running(cid)
+        slot_key = f"research-{cid}"
+        slot = SimpleNamespace(_trust=False, running=False)
+        agent_mode.grant_worker_trust(slot_key, slot)
+        slot._trust = False  # the person's revoke
+        state = SimpleNamespace(_slots={slot_key: slot})
+        assert await _drive_watchdog(
+            {"state": state},
+            lambda: _status(cid) == h.CampaignStatus.NEEDS_INPUT and "needs_input" in sse.types(),
+        )
+        assert slot._trust is False
+        qpath = h._campaign_dir(cid) / "questions.json"
+        assert "turned off" in json.loads(qpath.read_text())["question"]
+        # An answer in the guidance box clears the question and sets RUNNING without
+        # a Resume: the revoke still holds, so the campaign parks again.
+        qpath.unlink()
+        _running(cid)
+        assert await _drive_watchdog(
+            {"state": state},
+            lambda: _status(cid) == h.CampaignStatus.NEEDS_INPUT and qpath.exists(),
+        )
+        assert slot._trust is False
+
+    @pytest.mark.asyncio
     async def test_pending_question_pauses_an_attended_campaign(
         self, _isolate: Path, fast_watchdog, sse
     ):
