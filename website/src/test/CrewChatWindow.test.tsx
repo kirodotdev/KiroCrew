@@ -72,7 +72,7 @@ import {
 } from '../pages/chat/crew-window/crewWindowStore'
 import { crewModePreviewOn } from './crewModePreview'
 import { crewWindowSlot } from '../pages/chat/crew-window/crewWindowRenderers'
-import { DICTATION_NOTE, _resetDictationProvenance, markDictated } from '../chat-core/composer/dictationProvenance'
+import { DICTATION_NOTE, _resetDictationProvenance, isDictated, markDictated } from '../chat-core/composer/dictationProvenance'
 import { queryClient as globalQueryClient } from '../api/queryClient'
 
 class FakeEventSource {
@@ -609,6 +609,27 @@ describe('CrewChatWindow', () => {
       fireEvent.change(box, { target: { value: 'typed after' } })
       fireEvent.keyDown(box, { key: 'Enter' })
       await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'typed after', slot: 'k1' }]))
+    } finally {
+      globalQueryClient.removeQueries({ queryKey: ['sttConfig'] })
+      _resetDictationProvenance()
+    }
+  })
+
+  it('emptying the composer forgets the dictation, so a fresh typed message gets no note', async () => {
+    _resetDictationProvenance()
+    globalQueryClient.setQueryData(['sttConfig'], { enabled: true, dictation_note: true })
+    try {
+      renderWindow()
+      const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      await waitFor(() => expect(box).not.toBeDisabled())
+      markDictated(crewWindowSlot('cd-1', 'k1'))
+      fireEvent.change(box, { target: { value: 'spoken then deleted' } })
+      fireEvent.change(box, { target: { value: '' } })
+      expect(isDictated(crewWindowSlot('cd-1', 'k1'))).toBe(false)
+
+      fireEvent.change(box, { target: { value: 'typed instead' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat?ws=1', { message: 'typed instead', slot: 'k1' }]))
     } finally {
       globalQueryClient.removeQueries({ queryKey: ['sttConfig'] })
       _resetDictationProvenance()
