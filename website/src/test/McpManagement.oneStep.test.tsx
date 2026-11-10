@@ -87,7 +87,7 @@ function mount() {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={qc}>
-        <McpManagement initialAdvancedOpen />
+        <McpManagement />
       </QueryClientProvider>
     </MemoryRouter>,
   )
@@ -906,7 +906,7 @@ describe('enable all shareable', () => {
     render(
       <MemoryRouter>
         <QueryClientProvider client={qc}>
-          <McpManagement initialAdvancedOpen />
+          <McpManagement />
         </QueryClientProvider>
       </MemoryRouter>,
     )

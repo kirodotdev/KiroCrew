@@ -11301,6 +11301,7 @@
   },
   "nav": {
     "agent_capabilities": "맞춤 설정",
+    "mcp_servers": "MCP 서버",
     "artifacts": "아티팩트",
     "discover": "탐색",
     "library": "라이브러리",
@@ -11316,6 +11317,11 @@
     "crew_members": "Bot"
   },
   "pages": {
+    "mcpPage": {
+      "title": "MCP 서버",
+      "view_servers": "서버",
+      "view_sharing": "공유"
+    },
     "chatSteering": {
       "heading": "이 채팅의 스티어링",
       "intro": "스티어링 파일은 에이전트가 따르는 규칙입니다. {{productName}}이(가) 이 채팅에 전달될 것으로 예상하는 파일입니다.",
@@ -12059,10 +12065,8 @@
       "agent_capabilities": "맞춤 설정",
       "workflows_label": "워크플로",
       "workflows_description": "재사용 가능한 에이전트 워크플로를 만들고 편집하고 실행합니다",
-      "connections_description": "공식 서비스를 연결하고 사용자 지정 MCP 서버를 관리합니다",
       "powers_label": "Kiro Powers",
       "powers_description": "Kiro에 설치된 Powers 및 Agent Plugins 목록, 로드하지 않음",
-      "connections_label": "연결",
       "crews_description": "항상 켜져 있는 AI 에이전트",
       "crews_label": "Bot",
       "hooks_description": "프롬프트, 도구 호출, 세션 시작/중지 같은 에이전트 이벤트에서 자동으로 실행되는 셸 명령",
@@ -12531,7 +12535,7 @@
         "superseded": "로그인이 더 이상 유효하지 않습니다. 새 요청이 이를 대체했습니다. 가장 최근의 인증 버튼으로 로그인하세요.",
         "expired": "로그인이 더 이상 유효하지 않습니다. 이를 시작한 세션이 종료되었습니다. 새 인증 링크를 받으려면 메시지를 보내세요.",
         "timed_out": "로그인이 완료되기 전에 시간이 초과되었습니다. 새 인증 링크를 받으려면 메시지에서 이 서버 이름을 언급하세요.",
-        "failed_next_step": "다시 로그인하려면 맞춤 설정 → 연결 → MCP 서버를 여세요."
+        "failed_next_step": "다시 로그인하려면 MCP 서버를 여세요."
       },
       "notificationItem": {
         "acknowledged": "확인함",
@@ -14466,9 +14470,7 @@
       "connection_healthy": "연결이 정상입니다.",
       "connection_invalid": "{{provider}}에서 이 연결이 더 이상 유효하지 않다고 알려왔습니다.",
       "connection_unreachable": "{{provider}}에 연결 상태를 확인하기 위해 접근할 수 없었습니다.",
-      "connection_views": "연결 보기",
       "connections": "연결",
-      "mcp_management_heading": "MCP 관리",
       "could_not_load_status": "연결 상태를 불러올 수 없습니다. 카드가 최신 정보가 아닐 수 있습니다.",
       "disconnect": "연결 해제",
       "disconnect_census_incomplete": "구성 소스를 읽을 수 없어 다른 서버의 사용 여부를 확인할 수 없었기 때문에 저장된 권한이 유지되었습니다. 서버 구성을 확인한 후 다시 연결 해제하세요.",
@@ -14488,7 +14490,6 @@
       "grant_unproven_help": "{{provider}}의 저장된 로그인이 더 이상 작동하지 않습니다. 연결해서 다시 로그인하세요.",
       "invalid_return_address": "브라우저에서 http://127.0.0.1:PORT/…?code=… 주소 전체를 붙여넣으세요.",
       "managed_by_connections": "연결에서 관리",
-      "mcp_servers": "MCP 서버",
       "mint_failure_grant_unproven": "저장된 로그인을 확인할 수 없습니다. 다시 연결해 보세요.",
       "mint_failure_process_gone": "승인이 완료되기 전에 인증 프로세스가 중지되었습니다. 다시 연결해 보세요.",
       "mint_failure_kiro_cli_missing": "연결하려면 이 컴퓨터에 kiro-cli가 설치되어 있고 로그인되어 있어야 합니다. kiro-cli를 설치하고 kiro-cli login을 실행한 다음 다시 연결해 보세요.",
@@ -14524,7 +14525,6 @@
       "revoke_at_provider": "{{provider}}에서 취소",
       "search_services": "서비스 검색",
       "service_value_prop": "에이전트가 공식 MCP 서버를 통해 {{provider}}을(를) 사용할 수 있게 합니다.",
-      "services": "서비스",
       "services_available": "{{value}}개 사용 가능",
       "test_connection": "테스트",
       "test_blocked_by_sibling": "연결 테스트는 한 번에 하나만 실행됩니다 — {{provider}} 테스트 중",
@@ -14542,21 +14542,28 @@
       "waiting_for_approval": "승인 대기 중",
       "waiting_for_approval_address": "승인 주소를 기다리는 중… 에이전트가 다음에 연결할 때 여기에 표시됩니다 — 지금 인증을 시작하려면 아무 채팅 메시지나 보내세요.",
       "needs_configuration": "설정 필요",
-      "needs_configuration_help": "{{provider}}은(는) 최초 한 번만 설정하면 됩니다. \"OAuth 앱 구성\"을 누르면 안내형 설정 페이지가 열립니다. 거기서 저장하기 전까지는 아무것도 바뀌지 않으며, 나중에 제거할 수도 있습니다. {{provider}}에 앱을 등록하고 클라이언트 ID와 시크릿을 입력하는 과정을 안내합니다.",
+      "needs_configuration_help": "{{provider}}은(는) 최초 한 번만 설정하면 됩니다. ‘{{provider}} 설정’을 누르면 이 카드에서 설정이 열립니다. 저장하기 전까지는 아무것도 바뀌지 않으며, 나중에 제거할 수도 있습니다. {{provider}}에 앱을 등록하고 클라이언트 ID와 시크릿을 입력하는 과정을 안내합니다.",
       "backend_oauth_caveat": "Connect는 그대로 완료되며, {{provider}} 로그인은 이를 지원하는 채팅을 위해 저장됩니다. 일부 채팅은 아직 이런 종류의 로그인을 사용할 수 없어서 그곳에서는 도구가 작동하지 않을 수 있습니다.",
       "stored_sign_in_no_server": "이 컴퓨터에서 이미 {{provider}}에 로그인되어 있지만 {{productName}}이(가) 아직 이를 사용하도록 설정되지 않아 연결되지 않은 상태입니다. 연결을 누르면 설정되며, 가능하면 저장된 로그인을 사용합니다. 그래도 다시 로그인하라는 요청이 나올 수 있습니다.",
       "chat_use_label": "채팅에서",
       "chat_use_lacks_oauth": "지원하는 채팅을 위해 저장되었습니다. 일부 채팅은 아직 이런 종류의 로그인을 사용할 수 없습니다.",
       "chat_use_kas_sign_in": "채팅은 따로 로그인합니다. 채팅에서 {{word}}을(를) 한 번 입력하세요.",
-      "configure_oauth_app": "OAuth 앱 설정",
-      "prerequisite_github": "GitHub은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 GitHub OAuth 앱을(를) 사용합니다. GitHub 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_asana": "Asana은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Asana MCP 앱을(를) 사용합니다. Asana 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_gmail": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_google_drive": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_google_calendar": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_google_sheets": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_google_docs": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
-      "prerequisite_google_slides": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → OAuth 앱에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."
+      "set_up_provider": "{{provider}} 설정",
+      "google_entry_name": "Google",
+      "choose_google_products": "Google 제품 선택",
+      "google_entry_step_set_up": "먼저 아래에서 Google OAuth 앱을 설정하세요. 그런 다음 원하는 각 제품에서 연결을 누르세요.",
+      "google_entry_step_connect": "원하는 각 제품에서 연결을 누르세요. Google 로그인 페이지에 OAuth 앱 이름이 표시되며, 승인하면 계속됩니다.",
+      "google_redirect_uris": "리디렉션 URI (Google 제품마다 하나)",
+      "google_setup_script": "설정 스크립트",
+      "google_private_app_guide": "비공개 Google 앱 가이드",
+      "prerequisite_github": "GitHub은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 GitHub OAuth 앱을(를) 사용합니다. GitHub 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_asana": "Asana은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Asana MCP 앱을(를) 사용합니다. Asana 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_gmail": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_drive": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_calendar": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_sheets": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_docs": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다.",
+      "prerequisite_google_slides": "Google은(는) 동적 클라이언트 등록을 지원하지 않으므로 연결은 설정 → 연결에 등록한 Google OAuth 앱을(를) 사용합니다. Google 동의 화면에는 그 앱 이름이 표시됩니다. 승인하면 계속 진행됩니다."
     },
     "contextBreakdown": {
       "axis_turn_n": "{{n}}번째 턴",
@@ -15014,7 +15021,7 @@
         "mcp_concern_permission_mode": "에이전트 설정 파일이 요청하는 권한 모드 — {{name}}은(는) 자기 것을 씁니다",
         "mcp_concern_tool_allowlist": "에이전트 설정 파일이 허용하는 도구 — 그 목록은 여기서 아무것도 좁히지 않습니다",
         "mcp_deny_exception": "예외가 하나 있습니다. {{productName}} 자신의 서버, 예를 들어 kirocrew-core는 {{name}}에서도 도구 단위로 동작합니다.",
-        "mcp_deny_manage_link": "연결에서 MCP 서버 목록 열기",
+        "mcp_deny_manage_link": "MCP 서버 목록 열기",
         "mcp_deny_rule": "{{name}}에서 MCP 도구 하나를 끄면 끈 도구만이 아니라 같은 서버의 모든 도구가 멈춥니다.",
         "missing_components": "이 컴퓨터에 없음: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "새 세션은 이 에이전트를 사용합니다. 열려 있는 세션은 시작할 때의 에이전트를 유지합니다.",
@@ -15236,7 +15243,7 @@
         "crew_mode_desc_summary": "채팅의 작업을 크루에게 맡깁니다.",
         "crew_oauth": "{{productName}}의 GitHub 로그인",
         "crew_oauth_desc": "{{productName}}이(가) 직접 GitHub에 로그인합니다. 접근을 없애려면 연결에서 GitHub 연결을 해제하세요.",
-        "crew_oauth_desc_summary": "Kiro Agent 채팅이 GitHub 프로필, 조직, 공개 저장소를 사용하게 합니다. 켠 다음 맞춤 설정 > 연결에서 GitHub를 연결하세요.",
+        "crew_oauth_desc_summary": "Kiro Agent 채팅이 GitHub 프로필, 조직, 공개 저장소를 사용하게 합니다. 켠 다음 설정 > 연결에서 GitHub를 연결하세요.",
         "explore": "탐색",
         "explore_desc": "상단 바에 탐색을 추가합니다. 해 볼 기능, 진행 상황, 새 채팅의 오늘 해 보기 카드가 표시됩니다.",
         "explore_desc_summary": "상단 바에 사용해 볼 기능을 표시합니다.",
@@ -15980,7 +15987,7 @@
         "col_assessment": "평가",
         "col_evidence": "근거",
         "col_running_as": "실행 형태",
-        "connections_link": "Connections",
+        "connections_link": "MCP 서버",
         "how_measured": "서버는 {{productName}}이(가) 탐색할 때까지 측정되지 않음으로 표시되며, 대부분의 서버는 서로 다른 두 호출자에서도 측정해야 판정이 완성됩니다. 아래 버튼은 {{link}}의 MCP 서버 목록에 있는 모든 서버에 대해 이 두 단계를 실행합니다. 그곳에서 꺼져 있거나 탐색이 중단된 서버, env가 볼트 시크릿을 참조하는 서버, 다른 에이전트만 선언한 서버는 세지 않습니다.",
         "lede": "{{productName}}이(가) 각 서버에 대해 관찰할 수 있었던 내용과, 그것이 지금 서버가 실행되고 있는 형태와 어떻게 맞물리는지 보여 줍니다. 이 화면에서는 아무것도 바뀌지 않습니다 — 스위치는 ‘서버별 공유’ 아래에 있습니다.",
         "measure_failed": "측정이 도중에 중단되었습니다. 게이트웨이 로그를 확인하세요",
@@ -16117,7 +16124,6 @@
       "gb_value_approx": "약 {{value}} GB",
       "reload_confirm_body": "각 채팅은 에이전트를 다시 시작하고 대화는 유지합니다. 작업 중인 채팅은 건너뜁니다.",
       "review_approve": "검토 후 승인",
-      "advanced": "고급",
       "stale_banner_other": "열린 채팅 {{count}}개의 MCP가 완전히 공유되지 않음",
       "reload_button_other": "채팅 {{count}}개 다시 로드",
       "reload_skipped_other": "작업 중인 채팅 {{count}}개를 건너뛰었습니다.",
@@ -16386,8 +16392,8 @@
       },
       "mcpTab": {
         "share_refused_other": "공유하도록 설정한 서버 {{count}}개가 공유되지 않습니다: {{names}}. 실행하려면 승인이 필요해서 채팅마다 별도 사본이 실행됩니다.",
-        "share_refused_restart": "MCP 관리에서 각각 공유를 승인하세요. 그런 다음 게이트웨이를 다시 시작하면(설정 → 정보 → 게이트웨이 다시 시작) 새 채팅이 공유 사본을 사용합니다.",
-        "share_refused_review": "MCP 관리에서 검토",
+        "share_refused_restart": "MCP 서버에서 각각 공유를 승인하세요. 그런 다음 게이트웨이를 다시 시작하면(설정 → 정보 → 게이트웨이 다시 시작) 새 채팅이 공유 사본을 사용합니다.",
+        "share_refused_review": "MCP 서버에서 검토",
         "share_status_failed": "공유하도록 설정한 서버가 승인되었는지 확인하지 못했습니다.",
         "unreadable_file": "{{productName}}에서 {{file}} 파일을 읽을 수 없습니다. 이유: {{reason}}. 이 파일의 MCP 서버는 목록에 표시되지 않습니다.",
         "unreadable_files_failed": "건너뛴 MCP 구성 파일을 확인할 수 없습니다.",
@@ -17241,7 +17247,7 @@
         "resources": "리소스",
         "read_only_here": "여기서는 읽기 전용",
         "mcp_servers": "MCP 서버 — 외부 도구 연결",
-        "mcp_read_only_hint": "이 버전에서는 읽기 전용 — 서버는 맞춤 설정 → 연결에서 관리하세요",
+        "mcp_read_only_hint": "이 버전에서는 읽기 전용 — 서버는 MCP 서버에서 관리하세요",
         "none": "없음",
         "unsaved_changes": "저장되지 않은 변경 사항",
         "discard": "취소",
@@ -20627,8 +20633,6 @@
         "could_not_read_webhook_status": "Webhook 상태를 읽을 수 없습니다 — 게이트웨이가 실행 중인지 확인하세요"
       },
       "connectionsPanel": {
-        "title": "연결용 OAuth 앱",
-        "intro": "일부 제공자는 OAuth 클라이언트 자동 등록을 거부합니다. 아래 각 제공자에 대해 설정 가이드를 따라 공급업체 콘솔에 앱을 등록하고, 여기 표시된 리디렉션 URI를 그대로 해당 앱에 붙여 넣은 뒤, 앱의 클라이언트 ID와 시크릿을 입력하세요. 환경 변수로 설정된 값은 여기에 저장된 값보다 우선합니다.",
         "loading": "불러오는 중…",
         "none": "이 설치의 모든 제공업체는 OAuth 클라이언트를 직접 등록하므로 여기서 설정할 항목이 없습니다.",
         "load_failed": "OAuth 앱을 불러올 수 없음",
@@ -20659,6 +20663,7 @@
         "remove": "OAuth 앱 제거",
         "remove_client": "{{provider}} OAuth 앱 제거",
         "oauth_app": "OAuth 앱",
+        "oauth_app_google": "Gmail, Drive, Calendar, Sheets, Docs, Slides용 Google OAuth 클라이언트 하나",
         "oauth_app_search_description": "등록된 OAuth 앱이 필요한 제공자의 Client ID, 클라이언트 시크릿, 리디렉션 URI",
         "copy_failed": "클립보드에 복사할 수 없습니다. 리디렉션 URI를 선택해 직접 복사하세요.",
         "remove_confirm": "{{provider}} OAuth 앱을 제거하시겠습니까? 클라이언트 ID와 저장된 시크릿이 삭제되며, 다시 입력하기 전까지 {{provider}}은(는) 연결할 수 없습니다.",
@@ -21736,8 +21741,8 @@
         "description": "API 키와 자격 증명을 안전하게 저장"
       },
       "connections": {
-        "label": "OAuth 앱",
-        "description": "등록된 클라이언트가 필요한 제공업체용 OAuth 앱"
+        "label": "연결",
+        "description": "공식 서비스를 연결하고 OAuth 앱을 설정합니다"
       }
     },
     "secrets": {
@@ -21790,10 +21795,10 @@
       "delete_error": "시크릿을 삭제하지 못했습니다: {{error}}",
       "load_error": "시크릿을 불러오지 못했습니다: {{error}}",
       "wakatime_unused_hint": "WakaTime이 비활성화된 동안에는 사용되지 않습니다. WakaTime을 활성화하거나 이 항목을 삭제하세요.",
-      "connections_client_secret_description": "연결 OAuth 앱의 클라이언트 시크릿입니다. 설정 → OAuth 앱에서 관리합니다.",
-      "connections_client_secret_manage": "OAuth 앱에서 관리",
       "wakatime_oauth_tokens_description": "{{productName}}이(가) 보관하는 WakaTime 로그인 정보입니다. WakaTime 패널에서 관리합니다.",
-      "wakatime_oauth_tokens_manage": "WakaTime에서 관리"
+      "wakatime_oauth_tokens_manage": "WakaTime에서 관리",
+      "connections_client_secret_description": "연결 OAuth 앱의 클라이언트 시크릿입니다. 설정 → 연결에서 관리합니다.",
+      "connections_client_secret_manage": "연결에서 관리"
     }
   },
   "store": {

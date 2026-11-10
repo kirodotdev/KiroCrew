@@ -1701,7 +1701,7 @@ keys`. Three exclusions from that warning are named in code:
   back on startup via `load_voice_reply_config` (`slack/handler_runtime/voice.py`,
   and read by `telegram/transport_dispatch.py`). Captured and round-tripped like any unknown
   section, and NOT reported as unrecognized because the product wrote it itself.
-  `connections` is the second member: the Settings OAuth Apps form writes
+  `connections` is the second member: the Settings → Connections OAuth app form writes
   `connections.oauth_clients.<slug>.client_id`
   (`dashboard/handlers/connections.py`), which
   `connections/oauth_clients.py` reads back, and

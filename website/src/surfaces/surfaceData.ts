@@ -80,6 +80,10 @@ export const BUILTIN_SURFACE_NAV = {
     navId: 'capabilities', route: '/capabilities', label: surfaceMachineValue('Customize'),
     labelKey: 'nav.agent_capabilities', group: surfaceMachineValue('Bottom'),
   },
+  mcp: {
+    navId: 'mcp', route: '/mcp', label: surfaceMachineValue('MCP Servers'), labelKey: 'nav.mcp_servers',
+    group: surfaceMachineValue('Bottom'),
+  },
   settings: {
     navId: 'settings', route: '/settings', label: surfaceMachineValue('Settings'), labelKey: 'nav.settings',
     group: surfaceMachineValue('Bottom'),
@@ -96,7 +100,6 @@ export const BUILTIN_SURFACE_NAV = {
 export const CAPABILITY_SUB_ITEM_NAV: readonly { tab: string; labelKey: string; label: string }[] = [
   { tab: 'crews', labelKey: 'pages.capabilitiesPage.crews_label', label: surfaceMachineValue('Crews') },
   { tab: 'skills', labelKey: 'pages.capabilitiesPage.skills_label', label: surfaceMachineValue('Skills') },
-  { tab: 'mcp', labelKey: 'pages.capabilitiesPage.connections_label', label: surfaceMachineValue('Connections') },
   { tab: 'knowledge', labelKey: 'pages.capabilitiesPage.knowledge_label', label: surfaceMachineValue('Knowledge') },
   { tab: 'prompts', labelKey: 'pages.capabilitiesPage.prompts_label', label: surfaceMachineValue('Prompts') },
   { tab: 'steering', labelKey: 'pages.capabilitiesPage.steering_label', label: surfaceMachineValue('Steering files') },

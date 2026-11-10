@@ -6,7 +6,7 @@
  *   (Logs, System, Telemetry, Storage, Memory, Config, Debug Tools, Archive),
  *   every one listed with no consent gate in front of it
  * - MCP Management is not one of them: its old page key redirects to
- *   Customize → Connections → MCP Servers
+ *   the MCP Servers page
  * - There is no Developer Mode toggle and no Updates section
  * - The Feature Previews page holds the grouped preview cards, then Developer
  *   Tools, Agent MCP servers and (desktop only) Gateway
@@ -62,10 +62,10 @@ describe('DeveloperPanel', () => {
     expect(names).toEqual(PAGES)
   })
 
-  it('sends the old MCP Management page key to Customize → Connections → MCP Servers', async () => {
+  it('sends the old MCP Management page key to the Sharing view of the MCP Servers page', async () => {
     renderPanel('/settings/developer/mcp-pool')
     await waitFor(() =>
-      expect(screen.getByTestId('loc').textContent).toBe('/capabilities?tab=mcp&view=mcp-servers#mcp-management'),
+      expect(screen.getByTestId('loc').textContent).toBe('/mcp?view=sharing'),
     )
   })
 

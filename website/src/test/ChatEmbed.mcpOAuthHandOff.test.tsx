@@ -23,6 +23,7 @@ vi.mock('../app-sdk/index', () => ({
 }))
 
 import ChatEmbed from '../app-sdk/ChatEmbed'
+import { i18next } from '../i18n'
 
 const FAILED_SIGN_IN: ChatMessage = {
   role: 'mcp_oauth',
@@ -32,8 +33,9 @@ const FAILED_SIGN_IN: ChatMessage = {
   meta: { server_name: 'zzq-server', failed: true, error: 'token exchange refused' },
 }
 
-/** The shipped English next step for a failed sign-in with the hand-off off. */
-const NEXT_STEP = 'To sign in again, open Customize → Connections → MCP Servers.'
+/** The shipped English next step for a failed sign-in with the hand-off off,
+ *  read from the catalog so a page move updates it in one place. */
+const NEXT_STEP = i18next.t('pages.chat.mcpOAuthBanner.failed_next_step')
 
 let queryClient: QueryClient
 

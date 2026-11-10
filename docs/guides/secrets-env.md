@@ -43,7 +43,7 @@ with a missing credential.
 ### Route the server through the gateway
 
 The gateway is the only place a reference is resolved, so **route the server
-through the gateway**: in **Customize → Connections → MCP Servers** (MCP Management), turn routing on for
+through the gateway**: in **MCP Servers** (MCP Management), turn routing on for
 the server (this adds it to `mcp_gateway.stub_servers`). For the servers the
 default agent mounts (from either `mcp.json` above), an unrouted server with a
 `secret://` value is not started at all, and a warning names the env key —
@@ -51,8 +51,8 @@ rather than starting it with the literal `secret://` text as its credential.
 Routing takes effect at the next gateway start, as any routing change does,
 and the server stays off until then: it counts as routed only once the running
 gateway serves it. Switching the server on in MCP Management, or **Enable
-all**, does not start it before that either. In the MCP servers table under
-**Customize → Connections**, its row reads Outdated and states why: the
+all**, does not start it before that either. In the server table on the
+**MCP Servers** page (`/mcp`), its row reads Outdated and states why: the
 dashboard does not probe it, and the line names the env key that holds the
 `secret://` value. On a platform where the MCP
 gateway does not run, no reference can be resolved: put the credential in the
@@ -101,7 +101,7 @@ A stored Connections OAuth client secret,
 `connections_client_secret`, with `host` set to the provider slug. It is listed
 only once stored. The Secrets routes do not edit it: a write or delete of that
 name returns `409` with code `managed_by_connections`; change it under
-**Settings → OAuth Apps**.
+**Settings → Connections**.
 
 The two WakaTime OAuth read-auth entries appear in the catalog as kind
 `wakatime_oauth`: `WAKATIME_OAUTH_CLIENT_SECRET` and `WAKATIME_OAUTH_TOKENS`.

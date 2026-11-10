@@ -230,7 +230,7 @@ def _warn_unapproved_share_names(key: str, parsed: object) -> None:
     for name in unapproved_share_names(parsed):
         print(
             f"⚠️  {name} has no approved launch, so the gateway will not share it until "
-            "you approve it in Customize → Connections → MCP Servers.",
+            "you approve it in MCP Servers.",
             file=sys.stderr,
         )
 

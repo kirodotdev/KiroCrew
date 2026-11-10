@@ -93,7 +93,7 @@ def _connections_client_secret_owned(name: str) -> web.Response | None:
     return web.json_response(
         {
             "error": "this secret belongs to a Connections OAuth app; change it under "
-            "Settings → OAuth Apps",
+            "Settings → Connections",
             "code": "managed_by_connections",
             "slug": slug,
         },
@@ -289,7 +289,7 @@ def _managed_secret_catalog(
             name = GERRIT_GLOBAL_CREDENTIAL_NAME
         catalog.append({"name": name, "kind": _MANAGED_KIND_GERRIT_HTTP_CREDENTIAL, "host": host})
     # Connections OAuth client secrets. Listed only when STORED: the entry field
-    # lives on Settings → OAuth Apps, so the Secrets panel's job is to label an
+    # lives on Settings → Connections, so the Secrets panel's job is to label an
     # existing entry with its owner (not offer an empty slot), and keep a cleanup
     # from reading it as a stray user secret. ``host`` carries the provider slug,
     # the same way the Jira rows carry their host.

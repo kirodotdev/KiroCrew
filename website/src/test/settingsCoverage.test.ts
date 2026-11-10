@@ -79,10 +79,10 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id, or a SageMaker endpoint\'s name, region and profile, through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions-jev entry deep-links to',
   'ImportPanel.tsx': 'single action button launching the import wizard; no persistent settings',
   'InstanceFormFields.tsx': 'per-instance CRUD form fields (add/edit crew), not global settings',
-  'McpManagement.tsx': 'rendered in Customize → Connections → MCP Servers, not on a Settings tab — a settings deep link would be dead; its per-server switches are table rows keyed by server, not Settings* primitives',
-  'McpManagementAssessment.tsx': "McpManagement.tsx's read-only Sharing assessment view, rendered in Customize → Connections → MCP Servers, zero settings",
-  'McpManagementLaunchReview.tsx': "McpManagement.tsx's launch review and refused-row panels, per-server approvals rather than settings, rendered in Customize → Connections → MCP Servers",
-  'McpManagementHero.tsx': "McpManagement.tsx's hero, reload banner and approval card, rendered in Customize → Connections → MCP Servers, zero settings",
+  'McpManagement.tsx': 'rendered on the MCP Servers page (`/mcp`), not on a Settings tab — a settings deep link would be dead; its per-server switches are table rows keyed by server, not Settings* primitives',
+  'McpManagementAssessment.tsx': "McpManagement.tsx's read-only Sharing assessment view, rendered on the MCP Servers page (`/mcp`), zero settings",
+  'McpManagementLaunchReview.tsx': "McpManagement.tsx's launch review and refused-row panels, per-server approvals rather than settings, rendered on the MCP Servers page (`/mcp`)",
+  'McpManagementHero.tsx': "McpManagement.tsx's hero, reload banner and approval card, rendered on the MCP Servers page (`/mcp`), zero settings",
   'MobileLoginCard.tsx': 'mint-a-sign-in-link action card; the link it returns is a one-time credential, not a persistent setting',
   'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; zero controls, only a copy button',
   'PeoplePanel.tsx': 'read-only list of who has used this Crew and where access is managed; no setting and no control writes a config path',
@@ -413,14 +413,6 @@ describe('settings coverage gate — bare controls', () => {
  * skipped"; this pins each one so a new silent skip fails the build.
  */
 const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> = {
-  'ConnectionsPanel.tsx': {
-    count: 1,
-    reason:
-      'the shared-save switch on each Google card is labelled with the other Google ' +
-      'products the list returned ("Also save on Google Drive, …"), so there is no fixed ' +
-      'label; search reaches the card through the manual "OAuth app" entry, and the ' +
-      'switch sits inside that card',
-  },
   'BrowserLiveSection.tsx': {
     count: 1,
     reason:
@@ -442,6 +434,14 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'one mute switch per enabled app, labelled with that app\'s own display name; ' +
       'the set of apps is whatever is installed, so there is no fixed label to index. ' +
       'The rows sit on the Notifications Sources page beside each app\'s channels',
+  },
+  'OAuthAppPanel.tsx': {
+    count: 4,
+    reason:
+      'one OAuth app part per Connections card: Client ID, Client secret (two shapes) and ' +
+      'the Google entry\'s "Also save on …" switch. The card may be closed, so a generic ' +
+      'entry would highlight a hidden field; settingsManual.ts indexes one OAuth app entry ' +
+      'per provider (and one for Google), and that highlight opens the card first',
   },
   'SessionEnvironmentsCard.tsx': {
     count: 8,

@@ -162,7 +162,7 @@ quit the app fully and open it again:
 - **The encrypted vault (recommended for a credential).** Store the value in
   **Settings → Secrets** (here as `GITHUB_PAT`), change the server's value to
   `"secret://GITHUB_PAT"`, and turn routing on for the server in
-  **Customize → Connections → MCP Servers**. Routing is required: an unrouted
+  **MCP Servers**. Routing is required: an unrouted
   server with a `secret://` value is not started. Changing the value changes what
   the server launches, so approve the launch again on that page when it asks. The
   secret reaches that server's environment alone. See
