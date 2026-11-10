@@ -383,6 +383,7 @@ describe('Settings > Developer > Feature Previews', () => {
     'Send pending approvals to chat apps': true,
     'Agent Harness for worker chats': true,
     'Session Environments': true,
+    'Connected computers': true,
     'ACP runtime sharing': true,
     'Artifact Deploy': true,
     'Webhooks': true,
