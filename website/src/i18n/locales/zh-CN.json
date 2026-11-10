@@ -59,7 +59,7 @@
     "send_refused": "此会话未接受这个回答。",
     "send_unknown": "尚无法确认是否送达。回答已保留，请先检查会话再重试，以免重复发送。",
     "updated": "最后检查于 {{time}}",
-    "panel_load_failed": "无法加载仪表板面板。请重新加载页面重试。",
+    "panel_load_failed": "无法加载仪表板面板。请检查与网关的连接，然后重试。",
     "crewMain": {
       "not_recorded": "未记录",
       "unreadable": "无法读取",
@@ -12178,6 +12178,7 @@
         "workflow_runs_load_failed": "无法加载工作流运行"
       },
       "assistantMessage": {
+        "share_load_failed": "无法加载分享对话框",
         "applied_to_tasks": "已应用到任务",
         "copied": "已复制！",
         "copy": "复制",
@@ -12771,6 +12772,7 @@
         "retry": "重试"
       },
       "toolCallLine": {
+        "answers_load_failed": "无法加载回答。请检查与网关的连接，然后重试。",
         "diff_truncated": "diff 已截断",
         "edit_count_other": "{{count}} 处编辑",
         "edit_n_of_m": "第 {{n}} 处编辑，共 {{total}} 处",
@@ -13166,6 +13168,7 @@
         "export_failed": "无法生成分享卡片"
       },
       "crewLog": {
+        "tab_load_failed": "无法加载会话记录。请检查与网关的连接，然后重试。",
         "section_status": "状态",
         "section_usage": "用量",
         "section_timeline": "时间线",
@@ -13448,6 +13451,7 @@
         "outcome_undo": "想撤销，就让 {{name}} 恢复之前的仪表板。"
       },
       "browserLiveStage": {
+        "stage_load_failed": "无法加载代理浏览器视图。请检查与网关的连接，然后重试。",
         "bring_back": "收回到聊天",
         "by_you": "你的操作",
         "exit_full_screen": "退出全屏",
@@ -22016,6 +22020,7 @@
       "startingHeader": "正在准备 {{name}}"
     },
     "remoteFiles": {
+      "panelLoadFailed": "无法加载文件视图。请检查与网关的连接，然后重试。",
       "title": "{{name}} 上的文件",
       "refresh": "刷新",
       "selectHint": "选择文件即可查看。",
@@ -22065,6 +22070,7 @@
       "stoppedHint": "发送下一条消息时工作区会启动。空闲一小时后会自动停止。"
     },
     "remoteGit": {
+      "panelLoadFailed": "无法加载 Git 视图。请检查与网关的连接，然后重试。",
       "title": "{{name}} 上的 Git",
       "notRepo": "工作目录不是 Git 仓库。",
       "changes": "更改",

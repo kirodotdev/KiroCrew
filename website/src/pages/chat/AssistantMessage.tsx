@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
-import { lazy, Suspense } from 'react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
 import MessageActionMenuItems, { useMessageActionsFor, useMessageActionsLoadFailed } from '../../messageActions/MessageActionMenuItems'
@@ -13,6 +12,7 @@ import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
+import { lazyRetry } from '../../components/lazyRetry'
 import SelectionToolbar, { selectionTextFrom, useSelectionActions } from '../../components/SelectionToolbar'
 import { useAppSelectionActions } from '../../selectionActions/useAppSelectionActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
@@ -112,8 +112,14 @@ function SteerAckChip({ summary, entrance }: { summary: string; entrance: boolea
 const ROW_ACTION_CLS = 'text-muted hover:text-text p-0.5 rounded transition-colors disabled:opacity-50'
 
 /** Loaded on first open: the share dialog pulls in html-to-image, which no
- *  chat render path should pay for before the user actually shares. */
-const LazyShareMessageModal = lazy(() => import('./share/ShareMessageModal'))
+ *  chat render path should pay for before the user actually shares. A chunk
+ *  that fails to load shows one line under the message, with Try Again and
+ *  Reload page, and no hand-off, as for this message's other notices. */
+const LazyShareMessageModal = lazyRetry(() => import('./share/ShareMessageModal'), {
+  layout: 'inline',
+  title: () => i18nT('pages.chat.assistantMessage.share_load_failed'),
+  scope: 'share-message',
+})
 
 /** The footer's hover-reveal + touch-target contract, shared by the action row and the
     unavailable fork affordance that sits outside it. */
@@ -880,7 +886,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
         the menu (and the entry), but must not unmount the dialog with the
         user's edits in it — the modal shows a notice and withdraws its actions
         instead, and the user closes it when ready. */}
-    {shareOpen && <Suspense fallback={null}><LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} shareEnabled={shareEnabled} /></Suspense>}
+    {shareOpen && <LazyShareMessageModal onClose={() => setShareOpen(false)} messageText={steerCleaned} prevUserText={prevUserText} shareEnabled={shareEnabled} />}
   </div>
 })
 

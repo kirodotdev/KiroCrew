@@ -61,7 +61,7 @@
     "send_refused": "A sessão não aceitou esta resposta.",
     "send_unknown": "A entrega é incerta. Sua resposta foi preservada. Confira a sessão antes de tentar novamente para evitar envios duplicados.",
     "updated": "Última verificação: {{time}}",
-    "panel_load_failed": "Não foi possível carregar o Painel. Recarregue a página para tentar novamente.",
+    "panel_load_failed": "Não foi possível carregar o Painel. Verifique a conexão com o gateway e tente novamente.",
     "crewMain": {
       "not_recorded": "não registrado",
       "unreadable": "não foi possível ler",
@@ -12710,6 +12710,7 @@
         "workflow_runs_load_failed": "Não foi possível carregar as execuções de fluxo de trabalho"
       },
       "assistantMessage": {
+        "share_load_failed": "Não foi possível carregar a janela de compartilhamento",
         "applied_to_tasks": "Aplicado às tarefas",
         "copied": "Copiado!",
         "copy": "Copiar",
@@ -13379,6 +13380,7 @@
         "retry": "Tentar de novo"
       },
       "toolCallLine": {
+        "answers_load_failed": "Não foi possível carregar as respostas. Verifique a conexão com o gateway e tente novamente.",
         "diff_truncated": "diff truncado",
         "edit_count_many": "{{count}} edições",
         "edit_count_one": "{{count}} edição",
@@ -13798,6 +13800,7 @@
         "export_failed": "Não foi possível gerar o cartão de compartilhamento"
       },
       "crewLog": {
+        "tab_load_failed": "Não foi possível carregar o registro da sessão. Verifique a conexão com o gateway e tente novamente.",
         "section_status": "Estado",
         "section_usage": "Uso",
         "section_timeline": "Linha do tempo",
@@ -14082,6 +14085,7 @@
         "outcome_undo": "Para desfazer, peça para {{name}} restaurar o painel anterior."
       },
       "browserLiveStage": {
+        "stage_load_failed": "Não foi possível carregar a visualização do navegador do agente. Verifique a conexão com o gateway e tente novamente.",
         "bring_back": "Trazer de volta ao chat",
         "by_you": "Por você",
         "exit_full_screen": "Sair da tela cheia",
@@ -23086,6 +23090,7 @@
       "startingHeader": "Preparando {{name}}"
     },
     "remoteFiles": {
+      "panelLoadFailed": "Não foi possível carregar a visualização de arquivos. Verifique a conexão com o gateway e tente novamente.",
       "title": "Arquivos em {{name}}",
       "refresh": "Atualizar",
       "selectHint": "Selecione um arquivo para visualizá-lo.",
@@ -23135,6 +23140,7 @@
       "stoppedHint": "O workspace inicia com sua próxima mensagem. Ele para sozinho após uma hora ocioso."
     },
     "remoteGit": {
+      "panelLoadFailed": "Não foi possível carregar a visualização do Git. Verifique a conexão com o gateway e tente novamente.",
       "title": "Git em {{name}}",
       "notRepo": "O diretório de trabalho não é um repositório Git.",
       "changes": "Alterações",

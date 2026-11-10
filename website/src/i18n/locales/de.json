@@ -60,7 +60,7 @@
     "send_refused": "Die Sitzung hat diese Antwort nicht angenommen.",
     "send_unknown": "Die Zustellung ist ungewiss. Deine Antwort bleibt erhalten. Prüfe vor einem erneuten Versuch die Sitzung, um Doppelversand zu vermeiden.",
     "updated": "Zuletzt geprüft: {{time}}",
-    "panel_load_failed": "Das Dashboard-Panel konnte nicht geladen werden. Lade die Seite neu, um es erneut zu versuchen.",
+    "panel_load_failed": "Das Dashboard-Panel konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
     "crewMain": {
       "not_recorded": "nicht erfasst",
       "unreadable": "konnte nicht gelesen werden",
@@ -12444,6 +12444,7 @@
         "workflow_runs_load_failed": "Workflow-Ausführungen konnten nicht geladen werden"
       },
       "assistantMessage": {
+        "share_load_failed": "Teilen-Dialog konnte nicht geladen werden",
         "applied_to_tasks": "Auf Aufgaben angewendet",
         "copied": "Kopiert!",
         "copy": "Kopieren",
@@ -13075,6 +13076,7 @@
         "retry": "Erneut versuchen"
       },
       "toolCallLine": {
+        "answers_load_failed": "Die Antworten konnten nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
         "diff_truncated": "Diff gekürzt",
         "edit_count_one": "{{count}} Bearbeitung",
         "edit_count_other": "{{count}} Bearbeitungen",
@@ -13482,6 +13484,7 @@
         "export_failed": "Die Share-Karte konnte nicht erzeugt werden"
       },
       "crewLog": {
+        "tab_load_failed": "Das Sitzungsprotokoll konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
         "section_status": "Status",
         "section_usage": "Nutzung",
         "section_timeline": "Zeitachse",
@@ -13765,6 +13768,7 @@
         "outcome_undo": "Zum Rückgängigmachen bitte {{name}}, das vorherige Dashboard wiederherzustellen."
       },
       "browserLiveStage": {
+        "stage_load_failed": "Die Ansicht des Agent-Browsers konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
         "bring_back": "Zurück in den Chat",
         "by_you": "Von dir",
         "exit_full_screen": "Vollbild beenden",
@@ -22551,6 +22555,7 @@
       "startingHeader": "{{name}} wird eingerichtet"
     },
     "remoteFiles": {
+      "panelLoadFailed": "Die Dateiansicht konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
       "title": "Dateien auf {{name}}",
       "refresh": "Aktualisieren",
       "selectHint": "Wähle eine Datei aus, um sie anzuzeigen.",
@@ -22600,6 +22605,7 @@
       "stoppedHint": "Der Workspace startet mit deiner nächsten Nachricht. Nach einer Stunde Leerlauf stoppt er von selbst."
     },
     "remoteGit": {
+      "panelLoadFailed": "Die Git-Ansicht konnte nicht geladen werden. Prüfe die Verbindung zum Gateway und versuche es erneut.",
       "title": "Git auf {{name}}",
       "notRepo": "Das Arbeitsverzeichnis ist kein Git-Repository.",
       "changes": "Änderungen",

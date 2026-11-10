@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
@@ -28,16 +28,29 @@ import { runBelongsToSlot } from '../../apps/workflows/runModel'
 import { workflowRunsPollInterval } from './workflowRunsPoll'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
-import ErrorBoundary from '../../components/ErrorBoundary'
+import { lazyRetry } from '../../components/lazyRetry'
 import { slotRowByKey } from '../../store/slotIndex'
 
 // The crew log is a drill-in: six fold sections, their own i18n copy and the table
 // that draws each one, on a tab most sessions never open. Fetched on first open
 // rather than riding in the dashboard shell, the same shape `CapabilitiesPage` uses
-// for its templates tab and `DeveloperPanel` for the memory graph.
-const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
-// Remote-environment sessions only.
-const RemoteGitPanel = lazy(() => import('./RemoteGitPanel'))
+// for its templates tab and `DeveloperPanel` for the memory graph. A chunk that
+// fails to load (a stale chunk after a deploy) shows its notice in the tab, with
+// Try Again, and the rest of the dashboard stays up.
+const CrewLogTab = lazyRetry(() => import('./CrewLogPanel'), {
+  layout: 'page',
+  title: () => i18nT('pages.chat.crewLog.tab_load_failed'),
+  scope: 'crew-log',
+})
+// Remote-environment sessions only. A chunk that fails to load shows its notice
+// in the Git tab, with Try Again.
+// No hand-off: the chat composer and open files may hold unsaved drafts.
+const RemoteGitPanel = lazyRetry(() => import('./RemoteGitPanel'), {
+  layout: 'page',
+  title: () => i18nT('sessionEnvironments.remoteGit.panelLoadFailed'),
+  scope: 'remote-git',
+  askAgent: false,
+})
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
 import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
@@ -1296,9 +1309,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
         <div className="flex-1 min-h-0 overflow-hidden">
           {remoteEnvironmentName && slot ? (
             // A remote session's working tree is in its guest workspace.
-            <Suspense fallback={<ContentSkeleton rows={6} />}>
-              <RemoteGitPanel slot={slot} name={remoteEnvironmentName} />
-            </Suspense>
+            <RemoteGitPanel slot={slot} name={remoteEnvironmentName} loading={<ContentSkeleton rows={6} />} />
           ) : (
             <GitReposPanel slotKey={slot} onFileOpen={onFileOpen} />
           )}
@@ -1459,16 +1470,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           beside Logs and Context for the same reason they sit together: all
           three answer "what actually happened in THIS session", this one from
           the record the gateway wrote rather than from live client state. */}
-      {/* ErrorBoundary around the lazy chunk, matching CapabilitiesPage: a stale chunk
-          request after a deploy rejects, and without a local boundary that rejection
-          would replace the whole dashboard with the app-shell error screen. */}
-      {effectiveTab === 'crewlog' && (
-        <ErrorBoundary>
-          <Suspense fallback={<ContentSkeleton rows={6} />}>
-            <CrewLogTab key={slot} slot={slot} />
-          </Suspense>
-        </ErrorBoundary>
-      )}
+      {effectiveTab === 'crewlog' && <CrewLogTab key={slot} slot={slot} loading={<ContentSkeleton rows={6} />} />}
 
       {/* Session summary — the goal-level view of this session, so returning to
           it does not mean re-reading the transcript. */}

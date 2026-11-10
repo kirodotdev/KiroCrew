@@ -59,7 +59,7 @@
     "send_refused": "このセッションは回答を受け付けませんでした。",
     "send_unknown": "送信結果が不明です。回答は保持されています。重複送信を避けるため、再試行前にセッションを確認してください。",
     "updated": "最終確認 {{time}}",
-    "panel_load_failed": "ダッシュボードパネルを読み込めませんでした。ページを再読み込みして再試行してください。",
+    "panel_load_failed": "ダッシュボードパネルを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
     "crewMain": {
       "not_recorded": "記録なし",
       "unreadable": "読み取れませんでした",
@@ -12178,6 +12178,7 @@
         "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした"
       },
       "assistantMessage": {
+        "share_load_failed": "共有ダイアログを読み込めませんでした",
         "applied_to_tasks": "タスクに適用済み",
         "copied": "コピーしました！",
         "copy": "コピー",
@@ -12771,6 +12772,7 @@
         "retry": "再試行"
       },
       "toolCallLine": {
+        "answers_load_failed": "回答を読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
         "diff_truncated": "diff は切り詰められました",
         "edit_count_other": "{{count}} 件の編集",
         "edit_n_of_m": "編集 {{n}}/{{total}}",
@@ -13166,6 +13168,7 @@
         "export_failed": "共有カードを生成できませんでした"
       },
       "crewLog": {
+        "tab_load_failed": "セッション記録を読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
         "section_status": "状態",
         "section_usage": "使用量",
         "section_timeline": "タイムライン",
@@ -13448,6 +13451,7 @@
         "outcome_undo": "元に戻すには、{{name}} に前のダッシュボードに戻すよう頼んでね。"
       },
       "browserLiveStage": {
+        "stage_load_failed": "エージェントのブラウザー表示を読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
         "bring_back": "チャットに戻す",
         "by_you": "あなたの操作",
         "exit_full_screen": "全画面を終了",
@@ -22016,6 +22020,7 @@
       "startingHeader": "{{name}} を準備中"
     },
     "remoteFiles": {
+      "panelLoadFailed": "ファイルビューを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
       "title": "{{name}} 上のファイル",
       "refresh": "更新",
       "selectHint": "ファイルを選択すると表示されます。",
@@ -22065,6 +22070,7 @@
       "stoppedHint": "次のメッセージを送るとワークスペースが起動します。1 時間アイドル状態が続くと自動で停止します。"
     },
     "remoteGit": {
+      "panelLoadFailed": "Git ビューを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
       "title": "{{name}} の Git",
       "notRepo": "作業ディレクトリは Git リポジトリではありません。",
       "changes": "変更",
