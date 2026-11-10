@@ -447,8 +447,12 @@ async def test_install_refuses_to_write_through_a_symlinked_provider_dir(
     make_dir_link(skills_root / "covprov", outside)
     registry.register(_BundleProvider())
     request = _mk("POST", "/i", state=state, body={"provider": "covprov", "skill_id": "cov-skill"})
-    payload = _body(await h.api_skills_discover_install(request))
-    assert payload["file_count"] == 0
+    resp = await h.api_skills_discover_install(request)
+    payload = _body(resp)
+    # The refusal is a failed install, never a 200 that reports a skill with no files.
+    assert resp.status == 500, payload
+    assert payload["code"] == "bundle_write_failed"
+    assert payload.get("ok") is not True
     assert list(outside.iterdir()) == []
 
 

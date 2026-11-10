@@ -611,7 +611,11 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                 candidate.relative_to(skills_root)
             except ValueError:
                 logger.warning("Refusing bundle install outside skills root: %s", skill_dir)
-                return 0
+                # Raised, not returned: the caller turns an OSError into a failed
+                # install, and a plain return would report success with nothing written.
+                raise PermissionError(
+                    errno.EPERM, "the install path is outside the skills folder", key
+                ) from None
             # Link defense: if the skill dir itself is a link, every containment
             # check below resolves against the link TARGET, so a pre-planted one
             # would redirect the whole bundle write outside the skills root
@@ -646,8 +650,9 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
                     resolved_root.relative_to(skills_root)
                 except ValueError:
                     logger.warning("Refusing bundle write outside skills root: %s", skill_dir)
-                    stage.rmdir()
-                    return 0
+                    raise PermissionError(
+                        errno.EPERM, "the install path is outside the skills folder", key
+                    ) from None
                 written = 0
                 for rel_path, file_content in bundle:
                     if ".." in rel_path or rel_path.startswith("/") or rel_path.startswith("./.."):
