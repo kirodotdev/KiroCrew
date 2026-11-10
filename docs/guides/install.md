@@ -170,7 +170,13 @@ Once the wheel is in, the installer runs the new `kirocrew kas install` to
 download the [built-in KAS engine](#first-run) this release pins (about 55-70 MB
 for your platform). If that download fails, for example on a host with no
 access to the CDN, the install still succeeds and the installer prints the
-command to retry. Pass `--no-kas` (or set `KIROCREW_INSTALL_KAS=0`) to skip it:
+command to retry. On a host that cannot run the engine at all (no build for its
+platform, or a glibc older than the engine needs), Kiro Crew stays installed and
+the installer says why a chat on the default agent cannot start there in place
+of its next steps. A first install then exits 3; a re-run over an existing
+install, which is what `kirocrew update` does, exits 0. Pass `--no-kas` (or set
+`KIROCREW_INSTALL_KAS=0`) to skip the engine, for example on a host whose agent
+does not use it:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --no-kas
