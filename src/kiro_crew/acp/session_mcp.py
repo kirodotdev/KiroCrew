@@ -101,7 +101,6 @@ from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-export
     _UNREADABLE_TOO_DEEP,
     _UNREADABLE_TOO_LARGE,
     _UNREADABLE_UNOPENABLE,
-    _WIDE_BOMS,
     NativeSettingsUnreadable,
     SettingsReadRefusal,
     _named_path,
@@ -126,7 +125,7 @@ from kiro_crew.platform.governance import (
     registry_local_control_plane_permitted as _registry_local_control_plane_permitted,
 )
 from kiro_crew.template_mcp_additions import MERGED_MARK, merge_at_spawn
-from kiro_crew.user_json import loads_user_jsonc
+from kiro_crew.user_json import loads_user_jsonc, wide_bom_reason
 
 logger = logging.getLogger(__name__)
 
@@ -375,12 +374,11 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
         raise SettingsReadRefusal(*refusal)
     # A UTF-16 or UTF-32 mark (Windows PowerShell 5.1's ``>`` and ``Out-File``
     # default) is refused, not decoded, but with the one repair that fixes it.
-    for bom, family in _WIDE_BOMS:
-        if raw.startswith(bom):
-            raise SettingsReadRefusal(
-                f"MCP settings are saved as {family}",
-                f"it is saved as {family}; re-save it as UTF-8",
-            )
+    # The mark table and the reason wording live once in ``user_json`` so the
+    # default backend's readers and this kiro-cli path name the same cause.
+    _wide_reason = wide_bom_reason(raw)
+    if _wide_reason is not None:
+        raise SettingsReadRefusal("MCP settings cannot be read as UTF-8", _wide_reason)
     # Windows editors commonly save UTF-8 with a byte-order mark. Drop it before
     # the emptiness test so a BOM-only file reads as the empty file it is.
     raw = raw.removeprefix(codecs.BOM_UTF8)
