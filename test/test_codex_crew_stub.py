@@ -89,9 +89,17 @@ def test_session_bound_crew_stub_is_mounted_as_given(agents_dir, server, envelop
     _grant(agents_dir, server)
     stub = _stub(server, envelope=envelope)
     mounted = _mounted([stub])
-    assert mounted.get(server) == stub
-    # No Crew identity is added: the stub token is the only credential it carries.
-    assert [p["name"] for p in mounted[server]["env"]] == [STUB_SESSION_TOKEN_ENV]
+    # The element is the stub as given, plus the instance env that names its
+    # gateway for the broker fallback (control_plane_instance_env).
+    assert {k: v for k, v in mounted.get(server, {}).items() if k != "env"} == {
+        k: v for k, v in stub.items() if k != "env"
+    }
+    env = {p["name"]: p["value"] for p in mounted[server]["env"]}
+    assert env[STUB_SESSION_TOKEN_ENV] == stub["env"][0]["value"]
+    # No Crew identity is added: the stub token is the only credential it carries,
+    # and every other pair names the instance, not the session.
+    assert set(env) - {STUB_SESSION_TOKEN_ENV} <= {"KIROCREW_BOUND_PORT", "KIROCREW_HOME"}
+    assert "KIROCREW_BOUND_PORT" in env
 
 
 def test_every_crew_stub_mounts_together(agents_dir):
