@@ -42,6 +42,8 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "releasePaneForwards",
     "canSwitchToRemoteCrew",
     "switchToRemoteCrew",
+    "canRestartGateway",
+    "restartGateway",
     "onInstallDispatched",
     "onInstallFailed",
     "isInstallingUpdate",
@@ -68,6 +70,7 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
     "shutdown.js",
     "successor-handoff.js",
     "token-sources.js",
+    "user-restart.js",
   ]);
   const facade = fs.readFileSync(MODULE_PATH, "utf8");
   for (const owner of owners) {
@@ -454,6 +457,25 @@ test("unexpected child exits are visible but quit exits stay file-only", async (
   assert.ok(
     quitting.logs.some((line) => line.includes("gateway child exited code=0 signal=SIGTERM")),
   );
+});
+
+test("Settings' Restart gateway is not offered before the main window connects to the gateway this app spawned", async () => {
+  const mainWindow = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send() {} } };
+  const { supervisor, spawnCalls } = harness({ mainWindow });
+  assert.strictEqual(supervisor.canRestartGateway(mainWindow), false, "nothing spawned yet");
+  assert.strictEqual(await supervisor.start(), true);
+  assert.strictEqual(spawnCalls.length, 1);
+  // Spawned but not yet handed off: the boot connect still owns the gateway.
+  assert.strictEqual(supervisor.canRestartGateway(mainWindow), false);
+  assert.strictEqual(supervisor.restartGateway(mainWindow), "unavailable");
+});
+
+test("the child's exit during Settings' Restart gateway is an intended exit, not a crash or a stale bundle", () => {
+  // The stop runs with the restart flag set (user-restart.test.js pins that
+  // order); these are the two readers of the flag in the child's exit handler.
+  const source = fs.readFileSync(MODULE_PATH, "utf8");
+  assert.match(source, /const expectedExit = [^;]*\|\|\s*restartingGateway;/);
+  assert.match(source, /installingUpdate: installingUpdate \|\| switchingToRemote \|\| restartingGateway,/);
 });
 
 test("stopForUpdate is a filesystem-free no-op when no child exists and nothing was adopted", async () => {

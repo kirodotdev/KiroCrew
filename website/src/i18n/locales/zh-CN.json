@@ -17949,6 +17949,8 @@
         "restart_failed": "重启失败",
         "restart_gateway": "重启网关",
         "restart_row_note": "在不更新的情况下重启网关进程。活动会话会短暂断开。",
+        "desktop_restart_row_note": "在不更新的情况下，重启此应用在这台电脑上运行的网关。正在进行的回复会停止，网关恢复后应用会重新连接。",
+        "desktop_restart_unavailable": "应用暂时无法重启网关。请等待连接完成后再试。",
         "restarting": "正在重启…",
         "retry": "重试",
         "stable": "稳定版",

@@ -942,7 +942,7 @@ gateway off, or a non-loopback URL) does not ask in the first place.
 `setupWindowContents` passes the preload `--kc-remote-gateway`, decided by the
 same `isGatewayLocalForWindow` the gate reads, and the preload then withholds
 every bridge whose channels that gate refuses: `remoteCrewSetupAPI`,
-`crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
+`gatewayRestartAPI`, `crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
 `externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
 `updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
 a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
@@ -1107,6 +1107,29 @@ main window to the crew, so that crew's own setup runs where its agents will
 only while the port's gateway is this app's own child; an adopted gateway is not
 the app's to stop. If the gateway does not stop, nothing is saved and the app
 keeps using it. The way back is the failure dialog's Start Local Gateway, below.
+
+### Restart gateway in Settings → About
+
+The desktop app's About card has its own **Restart gateway** row for the
+gateway this app runs. After the confirm click the app stops that child with
+liveness recovery disarmed, starts a new one through the same respawn owner
+every recovery uses, and reconnects the main window to the page it was on
+(`runtime/gateway/user-restart.js`, over the `gateway:can-restart` and
+`gateway:restart` channels, both behind the local-dashboard gate). It does not
+call the gateway's `POST /api/restart`: that replaces the process in place with
+`os.execv`, so on macOS and Linux the port is down while the pid stays, and the
+liveness monitor reads a rebind slower than its three missed probes as a wedge
+and kills it; on Windows the exec starts a new process and exits the old one,
+so the app loses its child and no longer stops the gateway on quit. A restart
+through the app ends turns that are mid-reply the way quitting does; they keep
+their Resume button.
+
+The row shows only in the main window, connected (liveness armed) to a gateway
+this app spawned. An adopted gateway, a remote crew and a connection window get
+no row. While the row shows, the gateway-update body a policy-governed install
+renders draws no restart control of its own, so the card never shows two; on an
+adopted gateway that body keeps its own `POST /api/restart` control. This is the
+control `kirocrew restart` names when it refuses a gateway the app supervises.
 
 ### The gateway-failure dialog
 
@@ -1406,7 +1429,7 @@ The supervisor keeps every piece of gateway state in its own closure — the
 child, its ownership classification, the start-failure record, the liveness
 monitor and the update handoff — together with the spawn site, the port
 occupancy and identity probes, the launch and connect flows, and the choice of
-liveness recovery. It composes eleven owners under `runtime/gateway/` and hands
+liveness recovery. It composes the owners under `runtime/gateway/` and hands
 each only the host modules and state getters it reads, plus a setter for each
 state slot it changes: `launch-preflight.js` (which backend binary to run,
 whether the bundle is complete, the project directory, the AppImage sandbox
@@ -1424,9 +1447,9 @@ app through a successor that must serve first, whether the failure dialog may
 offer Start Local Gateway, and the HTTP identity, responder and readiness
 probes), `failure-dialog.js` (the gateway-failure and restart-required dialogs
 and the reveal before them and the token prompt), `shutdown.js` (the
-graceful, pre-update and tree-kill stops), and `reconnect.js` (the liveness
+graceful, pre-update and tree-kill stops), `reconnect.js` (the liveness
 recoveries that reconnect to an external or adopted gateway instead of killing
-it).
+it), and `user-restart.js` (Settings → About's Restart gateway).
 
 - Ensures `KIROCREW_HOME` (default `~/.kiro/crew`, overridable via the
   `KIROCREW_HOME` env var) exists, then spawns the backend with

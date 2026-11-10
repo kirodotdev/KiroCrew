@@ -253,6 +253,17 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("remoteCrewSetupAPI", {
   start: () => ipcRenderer.invoke("first-run:use-remote-crew"),
 });
 
+// Settings → About's Restart gateway, for the gateway this app runs.
+// `available` resolves true only where `restart` can work; `restart` resolves
+// "restarting" (the app then replaces this page with its splash and reconnects)
+// or "unavailable". Neither takes an argument: the main process decides from
+// the sender. Absent in plain browsers and in windows on another machine's
+// gateway, which this app does not run.
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("gatewayRestartAPI", {
+  available: () => ipcRenderer.invoke("gateway:can-restart"),
+  restart: () => ipcRenderer.invoke("gateway:restart"),
+});
+
 // Remote Crew panes reached through the app's managed SSH forward. Each pane
 // loads a port the crew's gateway opened on its own machine, so in client-only
 // mode the app's keeper must carry that port too. `forwardPorts` names the

@@ -18913,6 +18913,8 @@
         "restart_failed": "Falha ao reiniciar",
         "restart_gateway": "Reiniciar o gateway",
         "restart_row_note": "Reinicia o processo do gateway sem atualizar. As sessões ativas desconectam brevemente.",
+        "desktop_restart_row_note": "Reinicia o gateway que este app executa neste computador, sem atualizar. As respostas em andamento param, e o app se reconecta quando o gateway voltar.",
+        "desktop_restart_unavailable": "O app não pode reiniciar o gateway agora. Espere a conexão terminar e tente de novo.",
         "restarting": "Reiniciando...",
         "retry": "Tentar novamente",
         "stable": "Estável",

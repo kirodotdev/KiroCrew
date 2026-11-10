@@ -18431,6 +18431,8 @@
         "restart_failed": "Neustart fehlgeschlagen",
         "restart_gateway": "Gateway neu starten",
         "restart_row_note": "Startet den Gateway-Prozess neu, ohne zu aktualisieren. Aktive Sitzungen trennen sich kurz.",
+        "desktop_restart_row_note": "Startet das Gateway, das diese App auf diesem Computer ausführt, neu, ohne zu aktualisieren. Laufende Antworten brechen ab, und die App verbindet sich wieder, sobald das Gateway zurück ist.",
+        "desktop_restart_unavailable": "Die App kann ihr Gateway gerade nicht neu starten. Warte, bis die Verbindung steht, und versuch es dann noch einmal.",
         "restarting": "Wird neu gestartet…",
         "retry": "Wiederholen",
         "stable": "Stabil",
