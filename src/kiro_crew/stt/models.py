@@ -60,6 +60,7 @@ import hashlib
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -943,14 +944,29 @@ class ModelStore:
             if accepted is not None or refused:
                 return accepted
             self._set(step="downloading", model=model.name, total=model.size_bytes)
+            # The worker thread keeps running after a cancel (a thread cannot be
+            # cancelled), so its progress must stop being reported once the caller
+            # has gone, or it would write "downloading" back over the end state.
+            # The lock makes the check and the write one step, so a progress
+            # report that passed the check cannot land after the cancel's "failed".
+            abandoned = False
+            progress_lock = threading.Lock()
+
+            def _progress(done: int, total: int) -> None:
+                with progress_lock:
+                    if not abandoned:
+                        self._set(step="downloading", model=model.name, done=done, total=total)
+
             try:
-                path = await asyncio.to_thread(
-                    _download_blocking,
-                    model,
-                    lambda done, total: self._set(
-                        step="downloading", model=model.name, done=done, total=total
-                    ),
-                )
+                path = await asyncio.to_thread(_download_blocking, model, _progress)
+            except asyncio.CancelledError:
+                # Dictation awaits this download, and the dashboard cancels that work
+                # when the browser disconnects: without this the status stayed
+                # "downloading" at the last byte count until the next ensure().
+                with progress_lock:
+                    abandoned = True
+                    self._set(step="failed", model=model.name, error="download cancelled")
+                raise
             except Exception as exc:
                 logger.warning("Whisper model %s download failed: %s", model.name, exc)
                 self._set(step="failed", model=model.name, error=str(exc))
