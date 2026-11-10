@@ -149,9 +149,10 @@ class _Count:
     def __init__(self) -> None:
         self.calls: list = []
 
-    def wrap(self, real):
+    def wrap(self, real, only=None):
         def counted(*args, **kwargs):
-            self.calls.append(args)
+            if only is None or only(*args, **kwargs):
+                self.calls.append(args)
             return real(*args, **kwargs)
 
         return counted
@@ -300,8 +301,18 @@ def test_steady_listing_op_budget(tmp_path, monkeypatch) -> None:
     os.utime(d, ns=(_BASE_NS, _BASE_NS))
     env = _attach(ConversationLog(base_dir=d))
     env.log.list_sessions_indexed()
+
+    def _stat_under_dir(path, *_a, **_k) -> bool:
+        if isinstance(path, int):
+            return False
+        p = os.fspath(path)
+        return isinstance(p, str) and (p == str(d) or p.startswith(str(d) + os.sep))
+
     stats, scans, rows = _Count(), _Count(), _Count()
-    monkeypatch.setattr(os, "stat", stats.wrap(os.stat))
+    # The wrap is on the global os.stat, so a stat by any other thread in this
+    # process would be charged to this budget; count only the listing's own
+    # stats of the directory or a file under it.
+    monkeypatch.setattr(os, "stat", stats.wrap(os.stat, only=_stat_under_dir))
     monkeypatch.setattr(SessionListingIndex, "_scan", scans.wrap(SessionListingIndex._scan))
     monkeypatch.setattr(
         SessionCatalogProjection, "_listing_row", rows.wrap(SessionCatalogProjection._listing_row)
