@@ -1016,6 +1016,7 @@ const dashboardSlice = createSlice({
     // began before the save can carry the older token. The live-grant fields
     // (`yolo_expires_at`, `yolo_until_shutdown`) are deliberately NOT carried:
     // they change on every activation, and a stale expiry is worse than none.
+    // Never touches `connected`: only the socket helpers in gatewayConnectivity move it.
     sseStatus(state, action: PayloadAction<StatusData>) {
       const prev = state.status
       const next: StatusData = { ...action.payload }
@@ -1030,7 +1031,6 @@ const dashboardSlice = createSlice({
         next.disabled_approval_modes = prev.disabled_approval_modes
       }
       state.status = next
-      state.connected = true
       // Sync YOLO from backend (authoritative source)
       if (action.payload.yolo !== undefined) {
         state.approvalMode = action.payload.yolo ? 'yolo' : (state.approvalMode === 'yolo' ? 'normal' : state.approvalMode)
