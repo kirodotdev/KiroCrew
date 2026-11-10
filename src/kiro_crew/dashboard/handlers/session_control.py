@@ -1203,6 +1203,7 @@ async def api_session_control_read(request: web.Request) -> web.Response:
         return await crew_routes.handle_crew_call(request, "read", dict(request.query))
     state: DashboardState = request.app["state"]
     await sc.load_target_window(state, request.query.get("target") or "")
+    await sc.prewarm_app_reach(state)
     await sc.prewarm_enabled_check()
     try:
         target = (request.query.get("target") or "").strip()
@@ -1238,8 +1239,9 @@ async def api_session_control_summary(request: web.Request) -> web.Response:
         return refused
     # Same placement as `read`: query parsing is synchronous, and `read_summary`
     # runs its gate before its first await.
-    await sc.prewarm_enabled_check()
     state: DashboardState = request.app["state"]
+    await sc.prewarm_app_reach(state)
+    await sc.prewarm_enabled_check()
     try:
         target = (request.query.get("target") or "").strip()
         if not target:

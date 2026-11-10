@@ -860,7 +860,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
       api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
-      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [],
+      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
@@ -892,6 +892,27 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(screen.getByText(/Can approve tool calls in the background sessions it starts itself/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ workerAutoApprove: ['ownSlots'] })))
+  })
+
+  it('lists a held-back session reach verb and approves only that verb', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], reachableByUserSessions: ['read', 'send'] } },
+      approvedGrants: { api: [], events: [] },
+      userSessionReachGrant: { approved: ['read'], staged: ['send'] },
+    }))
+    renderDetail()
+    await loaded()
+    // The notice lists the held-back verb; the Permissions card lists both and marks only the held-back one.
+    expect(screen.getByTestId('staged-user-session-reach')).toHaveTextContent('Your chats can send messages to the sessions this app runs.')
+    const read = screen.getByTestId('user-session-reach-read')
+    const send = screen.getByTestId('user-session-reach-send')
+    expect(read).toHaveTextContent('Your chats can read the sessions this app runs.')
+    expect(read).not.toHaveTextContent('not approved')
+    expect(send).toHaveTextContent('Your chats can send messages to the sessions this app runs.')
+    expect(send).toHaveTextContent('not approved')
+    expect(screen.getByTestId('user-session-reach')).toHaveTextContent('reachableByUserSessions')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ reachableByUserSessions: ['send'] })))
   })
 
   it('offers no approval on a disabled app, whose enable would switch it on', async () => {

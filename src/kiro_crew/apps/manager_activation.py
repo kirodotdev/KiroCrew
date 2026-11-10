@@ -267,7 +267,8 @@ def enable_app(
         approved: dict[str, list[str]] = {}
         for family in STAGED_GRANT_FAMILIES:
             shown = {e for e in grants_consent.get(family, ()) if isinstance(e, str)}
-            # A family the stored set predates approves what is declared.
+            # A family the stored set predates approves what is declared. An
+            # explicit-only family is never absent here (``_parse_approved_grants``).
             kept = list(current_grants[family] if family in current_grants else declared[family])
             kept += [e for e in declared[family] if e in shown and e not in kept]
             approved[family] = kept

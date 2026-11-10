@@ -148,6 +148,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ALWAYS_STORED_FAMILIES,
         _APPROVE_DECLARED_KEY,
         _APPROVE_DECLARED_TEXT,
+        _EXPLICIT_ONLY_FAMILIES,
         _GRANT_AND_SCOPE_WIDENING,
         _GRANT_WIDENING,
         _SCOPE_WIDENING,
@@ -341,6 +342,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         message_action_grant_row,
     )
     from kiro_crew.apps.point_grants import (  # noqa: F401
+        explicit_only_grant_families,
         grant_source,
         point_grant_families,
     )
@@ -349,6 +351,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.apps.selection_action_grants import (  # noqa: F401
         selection_action_grant_row,
+    )
+    from kiro_crew.apps.user_session_reach import (  # noqa: F401
+        user_session_reach_grant_row,
     )
     from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
         WORKER_AUTO_APPROVE_GRANT_FAMILIES,

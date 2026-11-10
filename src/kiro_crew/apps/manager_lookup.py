@@ -41,6 +41,7 @@ from kiro_crew.apps.manifest import AppManifest, contain_command_agents
 from kiro_crew.apps.message_action_grants import message_action_grant_row
 from kiro_crew.apps.protected_app_state import owner_disabled
 from kiro_crew.apps.selection_action_grants import selection_action_grant_row
+from kiro_crew.apps.user_session_reach import user_session_reach_grant_row
 from kiro_crew.apps.worker_auto_approve import worker_auto_approve_grant_row
 from kiro_crew.platform_compat import is_link_or_junction
 
@@ -421,6 +422,7 @@ def list_apps() -> list[dict[str, Any]]:
             **composer_action_grant_row(entry.name, manifest_data),
             **selection_action_grant_row(entry.name, manifest_data),
             **worker_auto_approve_grant_row(entry.name, manifest_data),
+            **user_session_reach_grant_row(entry.name, manifest_data),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -464,6 +466,7 @@ def get_app(name: str) -> dict[str, Any] | None:
         **composer_action_grant_row(name, manifest_data),
         **selection_action_grant_row(name, manifest_data),
         **worker_auto_approve_grant_row(name, manifest_data),
+        **user_session_reach_grant_row(name, manifest_data),
         "manifest": manifest_data,
     }
     adoption_markers = _adoption_rows_context()
