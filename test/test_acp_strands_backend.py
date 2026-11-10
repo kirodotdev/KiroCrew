@@ -426,8 +426,8 @@ def _npm_strands(root: Path, version: str) -> str:
 
 
 def test_the_installed_release_is_read_from_its_manifest(tmp_path) -> None:
-    script = _npm_strands(tmp_path, "0.2.3")
-    assert strands_mod.strands_installed_version(script) == "0.2.3"
+    script = _npm_strands(tmp_path, "0.2.4")
+    assert strands_mod.strands_installed_version(script) == "0.2.4"
     assert strands_mod._strands_version_issue(script) == ""
 
 

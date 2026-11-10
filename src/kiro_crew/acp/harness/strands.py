@@ -2,7 +2,8 @@
 
 Kiro Crew runs the official Strands CLI (``@strands-agents/cli``) in its Python-project
 ACP mode: ``strands --acp-server --agent <project>``. Four things are this harness's
-own, each measured on the verified release (``STRANDS_VERIFIED_VERSION``):
+own, each measured on 0.2.3, whose code the verified release
+(``STRANDS_VERIFIED_VERSION``) ships unchanged:
 
 * **The project is Crew's gate module.** In this mode the CLI sends
   ``session/request_permission`` only for a Strands interrupt, and nothing in the CLI
@@ -415,7 +416,7 @@ def _strands_user_project() -> tuple[str, str]:
 
 
 #: The provider prefixes the pinned CLI's ``--model`` accepts
-#: (``provider/<model>``, ``tui/provider/environment.js`` in 0.2.3).
+#: (``provider/<model>``, ``tui/provider/environment.js``).
 STRANDS_PROVIDERS = frozenset(STRANDS_PROVIDER_CHOICES)
 
 

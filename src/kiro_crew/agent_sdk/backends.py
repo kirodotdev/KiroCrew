@@ -404,8 +404,9 @@ ACP_BACKEND_COPILOT = "copilot"
 # Strands interrupt, so Crew loads the project through its own gate module, which
 # raises one for every tool call -- see :data:`Routing.VERIFIED_GATE_EXTENSION`.
 #
-# VERIFIED RANGE: @strands-agents/cli 0.2.3 over strands-harness 0.3.3 /
-# strands-agents 1.63.0 (``test/fixtures/acp_frames/strands/``).
+# VERIFIED RANGE: @strands-agents/cli 0.2.4 over strands-harness 0.3.3 /
+# strands-agents 1.63.0. The captures (``test/fixtures/acp_frames/strands/``) were
+# taken on 0.2.3; the published 0.2.4 package differs from it only in its version.
 ACP_BACKEND_STRANDS = "strands"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
