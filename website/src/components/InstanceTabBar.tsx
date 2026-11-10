@@ -23,7 +23,7 @@
  * state + token auto-refresh countdown (host SSH expiry lives in the title bar,
  * not duplicated here).
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Fragment, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Fragment, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Home, Loader2, ChevronDown, Pin, Check } from 'lucide-react'
 import { api, type InstanceView } from '../api/client'
@@ -45,6 +45,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuItem,
+  DropdownMenuLabel,
 } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
@@ -56,10 +57,9 @@ import { fmtDuration as fmtDurationParts, fmtUnit, fmtNumber } from '../i18n/for
  * cleared only on an explicit disconnect) OR currently connected OR warm --
  * and only crews with a dashboard to switch to (`hasDashboardPane`): a
  * fargate crew's card carries its turn URL instead of a pane.
- * Exported as the single source of truth so App.tsx can decide whether the bar
- * is visible WITHOUT duplicating the rule -- the bar's visibility drives the
- * macOS traffic-light clearance (when shown, the bar is the topmost strip the
- * native lights sit over, so the clearance moves off the header onto the bar).
+ * Exported as the single source of truth so the viewport and the Cmd/Ctrl+digit
+ * chords list the same crews as the bar. The macOS traffic-light clearance does
+ * not follow the bar: the lights sit over the header the inline bar lives in.
  */
 export function visibleInstanceTabs(
   instances: InstanceView[],
@@ -492,6 +492,10 @@ export interface SwitcherEntry {
   pathParent?: string
 }
 
+/** More menu groups after the Crews (the Team Crews group). They are not
+ *  destinations: no pins, no stable order, no unread. `close` closes the menu. */
+export type SwitcherExtraGroups = (close: () => void) => ReactNode
+
 function SwitcherRow({
   entry,
   onSelect,
@@ -656,6 +660,7 @@ function SwitcherMenu({
   stableOrder,
   onToggleStableOrder,
   showStableOrderToggle,
+  extraGroups,
   open,
   onOpenChange,
   onInteractOutside,
@@ -670,6 +675,7 @@ function SwitcherMenu({
   stableOrder: boolean
   onToggleStableOrder: () => void
   showStableOrderToggle: boolean
+  extraGroups?: SwitcherExtraGroups
   /** Owned by `Switcher`, so the leading active chip opens this same menu. */
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -724,6 +730,13 @@ function SwitcherMenu({
               {/* Local is the user's own machine, not a crew: a rule separates it
                   from the remote list so the two never read as one flat set. */}
               {i === 1 ? <DropdownMenuSeparator /> : null}
+              {/* Group names only when another group follows; a menu of Local
+                  and SSH Crews alone stays exactly as it was. */}
+              {extraGroups && i < 2 ? (
+                <DropdownMenuLabel>
+                  {i18nT(i === 0 ? 'components.instanceTabBar.group_this_computer' : 'components.instanceTabBar.group_my_crews')}
+                </DropdownMenuLabel>
+              ) : null}
               <SwitcherRow
                 entry={entry}
                 onSelect={() => onSelect(entry.id)}
@@ -734,6 +747,7 @@ function SwitcherMenu({
             </Fragment>
           ))}
         </DropdownMenuRadioGroup>
+        {extraGroups ? extraGroups(() => onOpenChange(false)) : null}
         {/* A row-order preference, not a destination: it sits below the crew list
             behind a separator so it never reads as one more crew to switch to.
             `onSelect`'s preventDefault keeps the menu open — the user sees the
@@ -1092,10 +1106,13 @@ function Switcher({
   stableOrder: stableOrderProp,
   onToggleStableOrder: onToggleStableOrderProp,
   embedded = false,
+  extraGroups,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
   onSelect: (id: string | null) => void
+  /** Top-level bar only: an embedded pane never gets one (no Team Crew list leaves this computer). */
+  extraGroups?: SwitcherExtraGroups
   /** When provided (embedded pane), the pin set is driven by the parent's relayed
    *  model instead of this realm's localStorage — a remote pane lives in a
    *  separate cross-origin iframe whose store the parent cannot reach, so without
@@ -1200,6 +1217,7 @@ function Switcher({
         stableOrder={stableOrder}
         onToggleStableOrder={toggleStableOrder}
         showStableOrderToggle={!relayUnsupported}
+        extraGroups={extraGroups}
         open={menuOpen}
         onOpenChange={setMenuOpen}
         onInteractOutside={e => {
@@ -1311,7 +1329,13 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
 export default function InstanceTabBar({
   variant = 'strip',
   style,
-}: { variant?: 'strip' | 'inline'; style?: CSSProperties } = {}) {
+  extraGroups,
+}: {
+  variant?: 'strip' | 'inline'
+  style?: CSSProperties
+  /** Set only while those groups have something to show, which also keeps the bar up. */
+  extraGroups?: SwitcherExtraGroups
+} = {}) {
   const activeId = useAppSelector(s => s.instances.activeId)
   const warm = useAppSelector(s => s.instances.warm)
   const unread = useAppSelector(s => s.instances.unread)
@@ -1407,7 +1431,8 @@ export default function InstanceTabBar({
   const listFailure = !disabled && instancesQuery.error
     ? (errMessage(instancesQuery.error) || i18nT('components.instanceTabBar.instances_load_failed'))
     : null
-  if (disabled || (tabInstances.length === 0 && !listFailure)) return null
+  // Team Crews keep the bar up on their own, even with the instances feature off.
+  if (!extraGroups && (disabled || (tabInstances.length === 0 && !listFailure))) return null
 
   // Right-aligned tunnel-status cluster: the ACTIVE remote pane's connection
   // state + countdown to the next token auto-refresh. On the Local tab there is
@@ -1454,7 +1479,7 @@ export default function InstanceTabBar({
       aria-label={i18nT('components.instanceTabBar.instances')}
     >
       <div className={`tb-crew-grow flex items-center gap-1 min-w-0 ${variant === 'strip' ? 'flex-1' : ''}`}>
-        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} />
+        <Switcher entries={entries} activeId={activeId} onSelect={onSelect} extraGroups={extraGroups} />
         {/* Only a 403 (feature gated) used to be interpreted; every other
             listInstances failure was dropped and the bar simply showed no
             crews. askAgent on: the bar holds no draft. */}
