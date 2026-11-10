@@ -4569,7 +4569,15 @@ only when `_proven_death_cause` matches a registration-throttle line, the
 unavailable` signature (each of the last two adds its `kirocrew doctor` hint, and
 the first wins when both appear);
 otherwise the redacted last stderr line goes to DEBUG, and the card keeps its
-separate `stderr_tail` field.
+separate `stderr_tail` field. The reader's empty-read EOF branch composes that
+reason only after waiting for the exit under `_KILL_REAP_TIMEOUT`, because EOF
+usually lands before the reap and the reason is the text every pending request
+fails with. A status still unread when the wait ends reads `rc=<not reaped>`,
+never `rc=None`. A child that keeps running after closing its stdout is
+therefore marked dead `_KILL_REAP_TIMEOUT` after the EOF, not at it. Pinned by
+`test_observed_exit_retires_registry_entries_once_reaped` and
+`test_observed_exit_keeps_tracking_while_the_root_still_runs` in
+`test/test_acp_runtime_death.py`.
 
 **Death-log severity is a contract: expected teardowns are INFO, genuine deaths
 are WARNING.** `_mark_dead(reason, *, expected=False)` logs the single
@@ -4630,8 +4638,9 @@ the periodic sweep's next tick, bounded only by
 SIGKILLed background runtime stayed tracked for 293s). Both observed-EOF returns
 of the reader — the empty read, and `IncompleteReadError` while draining an
 oversize line — now call `_retire_tracking_after_exit`, which waits for the exit
-under the kill path's `_KILL_REAP_TIMEOUT`, amends the death summary with the
-measured code (logged as `reaped after an observed exit`, a literal template
+under the kill path's `_KILL_REAP_TIMEOUT`, amends a death summary marked before
+the reap (the oversize-line return, or an empty read whose own wait timed out)
+with the measured code (logged as `reaped after an observed exit`, a literal template
 distinct from the kill path's `reaped after kill`, because a log line that says
 "killed" must name who killed), re-probes `pid_exists`, and retires the ROOT's
 lines off the loop (`asyncio.to_thread`, since the untrack takes the file locks
