@@ -183,6 +183,31 @@ class TestLogout:
         assert home_store.resolve() is None
         assert "Signed out" in capsys.readouterr().out
 
+    def test_logout_over_a_store_the_os_refuses_fails_loudly(self, home_store, capsys, monkeypatch):
+        """macOS refusing secrets.enc must not read as an empty vault and a
+        successful sign-out while the credential stays on disk."""
+        import os
+        from pathlib import Path
+
+        home_store.save(_token())
+        store_path = os.fspath(home_store._vault._store_path)
+        real_stat = os.stat
+
+        def _stat(path, *args, **kwargs):
+            if os.fspath(path) == store_path:
+                raise PermissionError(errno.EPERM, "Operation not permitted", store_path)
+            return real_stat(path, *args, **kwargs)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(os, "stat", _stat)
+            # CPython 3.14's Path.exists: False on any OSError.
+            mp.setattr(Path, "exists", lambda self, **_: os.path.exists(self))
+            assert cli_kas.kas_cmd(_parse("logout")) == 1
+        err = capsys.readouterr().err
+        assert "sign-out did not complete" in err
+        assert "Operation not permitted" in err
+        assert home_store.resolve() is not None
+
 
 class _FakeService:
     """Scripted stand-in for KasLoginService: begin answers once, poll replays a list."""
