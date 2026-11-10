@@ -1357,18 +1357,20 @@ class DiscordRenderer(Renderer):
             # failed to send report as delivered, which is the exact
             # succeeded-with-no-reply case `delivery_failed` exists to catch.
             self._seals_attempted += 1
-            if self._stream_mid is not None:
-                if await self._client.edit_message(
-                    self._channel_id,
-                    self._stream_mid,
-                    placeholder,
-                    components=components,
-                ):
-                    self._seals_landed += 1
-                    self._tally_redactions(placeholder)
-            elif await self._client.send_message(
+            landed = self._stream_mid is not None and await self._client.edit_message(
+                self._channel_id,
+                self._stream_mid,
+                placeholder,
+                components=components,
+            )
+            # An edit that did not land falls through to a fresh send, as
+            # `_land_sealed` does: otherwise the live "🔧 tool…" frame is the
+            # turn's last word and the notice or option buttons never appear.
+            if not landed and await self._client.send_message(
                 self._channel_id, placeholder, components=components
             ):
+                landed = True
+            if landed:
                 self._seals_landed += 1
                 self._tally_redactions(placeholder)
             await self._maybe_send_redaction_notice()
