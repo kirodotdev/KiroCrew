@@ -1278,13 +1278,14 @@ def _doctor_skill_view_residue(agents_dir: Path) -> None:
     rewritten = counts.get("rewritten", 0)
     floor = "+" if counts.get("truncated", 0) else ""
     metadata_dir, _lease_dir = acp_driver.skill_view_sidecar_dirs()
-    warn = orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN or rewritten
+    backlog = orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN
+    warn = backlog or rewritten
     print(
         f"  skill-view residue: {'⚠️ ' if warn else '✅'} {orphans}{floor} ownership sidecar(s) in"
         f" {metadata_dir}/ with no alias, {locks}{floor} leftover alias .lock file(s),"
         f" {rewritten}{floor} alias(es) rewritten by another program"
     )
-    if orphans > _SKILL_VIEW_RESIDUE_WARN or locks > _SKILL_VIEW_RESIDUE_WARN:
+    if backlog:
         print(
             f"{render._INDENT}The gateway removes the ones it can prove are its own residue"
             f" (this home's sidecars, unheld empty locks) in bounded batches at boot and on"

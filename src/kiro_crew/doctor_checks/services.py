@@ -112,11 +112,7 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         return
 
     print(f"  session bus: ✅ {result.socket}")
-    user = (
-        os.environ.get("USER")
-        or os.environ.get("LOGNAME")
-        or str(getattr(os, "getuid", lambda: -1)())
-    )
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
     if cli_doctor._linger_enabled(user) is False:
         print("  linger:      ⚠️  disabled — the per-user systemd instance exits on logout,")
         print(f"               taking running pods with it. Fix: loginctl enable-linger {user}")

@@ -144,12 +144,10 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
         declared = ability_for(backend)
     except Exception:
         return
-    if not declared.projection:
+    if declared.projection != "no-channel":
         return
-    kind, channel, tracking = declared.projection, declared.channel, declared.tracking
+    channel, tracking = declared.channel, declared.tracking
     label = agents._backend_policy_label(backend)
-    if kind != "no-channel":
-        return
     print(f"  mcp projection: \u23f9 {label} carries none of Kiro Crew's own tools")
     render._print_wrapped(
         "This harness advertises no transport the session MCP array can use, so "
