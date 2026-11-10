@@ -1603,6 +1603,13 @@ async def start_dashboard(
 
     await migrate_folder_member_labels(state, cfg)
 
+    # Publish and start the gateway's shared memory task before the restore so
+    # the preparation overlaps it rather than following it. The restore awaits,
+    # so the task's worker can start now; state.ready stays False until the end
+    # of boot, and a turn waits on this task, not on ready.
+    if schedule_memory_preparation is not None:
+        state.memory_startup_task = schedule_memory_preparation()
+
     await _restore_dashboard_sessions(state, cfg)
 
     # Crew Mode's start pass (learn closed roots, move roots onto a conductor an
@@ -1674,11 +1681,6 @@ async def start_dashboard(
     # Boot-to-ready (rec #1): full dashboard init is complete and the server is
     # about to accept traffic. Privacy-safe — the only labels are the fixed
     # ``server``/``outcome`` enums. Best-effort; never blocks the return.
-    # Publish the gateway's shared memory task first and do not yield between
-    # these assignments. create_task cannot enter its restore/open worker until
-    # this coroutine yields back to the gateway after returning the ready state.
-    if schedule_memory_preparation is not None:
-        state.memory_startup_task = schedule_memory_preparation()
     state.ready = True
     record_boot_to_ready((time.time() - state.start_time) * 1000.0, server="dashboard")
     # Tells the NEXT boot that this instance got the whole startup battery
