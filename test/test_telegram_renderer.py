@@ -528,6 +528,21 @@ class TestRenderer:
         asyncio.run(r._rotate_on_length())
         assert "".join(r._buf).rstrip().endswith("```")
 
+    def test_rotation_keeps_a_real_closer_beside_an_inline_backtick_run(self) -> None:
+        # An inline ``` in prose makes the backtick count odd while every fence is
+        # closed, so a parity test would strip the genuine closer from the tail.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        src = (
+            "Wrap code in ``` fences.\n\n```python\n"
+            + "\n".join(f'    z{i} = a["k{i}"] & b<c>' for i in range(150))
+            + "\n```"
+        )
+        assert src.count("```") % 2 == 1, "fixture must carry an odd count"
+        r._buf = [src]
+        asyncio.run(r._rotate_on_length())
+        assert "".join(r._buf).rstrip().endswith("```")
+
     def test_streaming_strips_options_and_renders_keyboard(self) -> None:
         cli = self._drive(
             [
