@@ -76,7 +76,9 @@ let qc: QueryClient
 /** *chatSlot* stands in for the open chat pane, whose conversation holds the
  *  offer's row (guide `g1`, the id every fixture here uses). */
 function renderGuide(path: string, extra?: ReactNode, chatSlot: string | null = 'slot-A') {
-  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // The roster read retries on its own (`retryThroughRestart`); no backoff, so
+  // a failed roster read settles at once.
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } })
   return render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>

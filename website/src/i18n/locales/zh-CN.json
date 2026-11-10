@@ -21493,6 +21493,7 @@
     "open_capabilities": "查看能力",
     "section_capabilities": "能力",
     "band_directions": "行为指引",
+    "band_resources": "资源",
     "band_remove_stale": "打开此界面后，这个 Bot 的能力已发生变化。未移除任何内容；检查列表后，再次点击“移除”。"
   },
   "crewApprovalsEditor": {

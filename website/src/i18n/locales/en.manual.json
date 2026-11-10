@@ -11021,6 +11021,7 @@
     "switch_own_copy_title": "Switch away from this Bot's own copy?",
     "switch_own_copy_body": "This Bot is built from its own customized copy. Switching to a different template discards that copy — it can't be selected again.",
     "band_directions": "Behavior directions",
+    "band_resources": "Resources",
     "band_remove_stale": "This Bot's abilities changed since you opened this. Nothing was removed; check the list and press Remove again."
   },
   "crewApprovalsEditor": {

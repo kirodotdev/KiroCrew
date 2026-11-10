@@ -22008,6 +22008,7 @@
     "open_capabilities": "ক্ষমতা দেখো",
     "section_capabilities": "ক্ষমতা",
     "band_directions": "আচরণ-নির্দেশনা",
+    "band_resources": "রিসোর্স",
     "band_remove_stale": "তুমি এই দৃশ্য খোলার পর এই Bot-এর ক্ষমতা বদলে গেছে। কিছুই সরানো হয়নি; তালিকাটি দেখে আবার সরাও চাপো।"
   },
   "crewApprovalsEditor": {
