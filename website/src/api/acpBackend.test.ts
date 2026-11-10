@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, mcpServerDeny, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpBackendShortName, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, kasInUse, mcpServerDeny, mcpWholeServerDeny, reportsCredits, isKiroHarness } from './acpBackend'
 import type { AcpBackendProbe } from './client/config'
 
 describe('isKiroBackend', () => {
@@ -153,5 +153,22 @@ describe('acpBackendName / acpBackendShortName', () => {
     expect(acpBackendName({ id: ACP_BACKEND_KAS })).toBe('Kiro Agent')
     expect(acpBackendShortName(ACP_BACKEND_KAS)).toBe('Kiro Agent')
     expect(acpBackendName({ id: ACP_BACKEND_KIRO })).toBe('Kiro CLI')
+  })
+})
+
+describe('kasInUse', () => {
+  it('takes the gateway\'s answer when it sends one', () => {
+    expect(kasInUse({ agent: { acp_backend: 'kiro' }, kas_in_use: true })).toBe(true)
+    expect(kasInUse({ agent: { acp_backend: 'kas' }, kas_in_use: false })).toBe(false)
+  })
+
+  it('falls back to the main harness on a gateway that sends no answer', () => {
+    expect(kasInUse({ agent: { acp_backend: 'kas' } })).toBe(true)
+    expect(kasInUse({ agent: { acp_backend: '' } })).toBe(true)
+    expect(kasInUse({ agent: { acp_backend: 'kiro' } })).toBe(false)
+  })
+
+  it('reads a body with no agent section as naming no harness, not as KAS', () => {
+    expect(kasInUse({})).toBe(false)
   })
 })

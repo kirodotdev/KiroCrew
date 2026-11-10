@@ -38,6 +38,7 @@ from kiro_crew.dashboard.handlers.core_config_schema import _editable_config_spe
 from kiro_crew.dashboard.handlers.core_config_view import (
     _config_body,
     _hot_apply_after_write,
+    _kas_in_use,
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.metrics import provider as _metrics_provider
@@ -779,7 +780,7 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     },
                     status=503,
                 )
-    payload = _config_body(applied)
+    payload = _config_body(applied, await _kas_in_use(applied))
     if clamp_notice is not None:
         payload["clamp_notice"] = clamp_notice
     return web.json_response(payload)

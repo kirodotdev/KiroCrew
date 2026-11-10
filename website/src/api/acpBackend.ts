@@ -32,6 +32,8 @@ export const DEFAULT_ACP_BACKEND = ACP_BACKEND_KAS
 /** The slice of the config body this check reads. */
 export interface AcpBackendConfig {
   agent?: { acp_backend?: string }
+  /** Whether any session here runs on KAS, Bots included (`crewmate_harness.kas_runs_here`). */
+  kas_in_use?: boolean
 }
 
 /**
@@ -40,6 +42,17 @@ export interface AcpBackendConfig {
  */
 export function configuredAcpBackend(cfg: AcpBackendConfig): string {
   return cfg.agent?.acp_backend || DEFAULT_ACP_BACKEND
+}
+
+/**
+ * Whether anything on a LOADED config runs on KAS, and so signs in with the Kiro
+ * sign-in: the main harness, the Bot harness, or a Bot pinned to KAS. The gateway
+ * decides (`kas_in_use`); a gateway that predates the field is read by its main
+ * harness alone, and a body with no `agent` section names no harness at all, so
+ * it is not KAS. The one rule every Kiro sign-in shortcut is shown by.
+ */
+export function kasInUse(cfg: AcpBackendConfig): boolean {
+  return cfg.kas_in_use ?? (cfg.agent !== undefined && configuredAcpBackend(cfg) === ACP_BACKEND_KAS)
 }
 
 /**

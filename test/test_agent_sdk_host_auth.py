@@ -761,11 +761,14 @@ def test_the_kiro_signed_out_message_tells_the_user_to_send_again() -> None:
     kas = host_auth.signed_out_message("kas")
     assert kas != expected
     assert "kiro-cli login" not in kas
-    assert "Settings → Agent Harness → Kiro sign-in" in kas
+    assert "Settings → Agent Harness → Kiro Agent → Kiro sign-in" in kas
     assert kas.endswith("then send your message again.")
     # The standing (unprobed) remedy names the same path, in plain prose.
     remedy = host_auth.declaration_for("kas").sign_in_remedy
-    assert "Settings → Agent Harness → Kiro sign-in" in remedy and "kiro-cli login" not in remedy
+    assert (
+        "Settings → Agent Harness → Kiro Agent → Kiro sign-in" in remedy
+        and "kiro-cli login" not in remedy
+    )
     assert "start a new chat" not in remedy
 
 

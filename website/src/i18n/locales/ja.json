@@ -6375,7 +6375,8 @@
       "used_credits": "使用済み: {{used}} / {{total}}",
       "sign_out_or_switch": "設定でサインアウト・アカウント切り替え",
       "sign_out_link_config_unreadable": "設定を読み込めなかったため、サインアウトのリンクを表示できません。",
-      "switch_in_settings": "設定でアカウント切り替え"
+      "switch_in_settings": "設定でアカウント切り替え",
+      "bots_sign_in_in_settings": "設定で Bot の Kiro サインイン"
     },
     "artifactChatPanel": {
       "agent_chat": "エージェントチャット",
@@ -10835,6 +10836,9 @@
       "refused_title": "Kiro がサインインの更新を拒否しました",
       "refused_detail": "このサインインが失効すると、エージェントは停止します。動作を続けるには再度サインインしてください。",
       "refused_expired_detail": "再度サインインするまで、エージェントは動作できません。このサインインはすでに失効しています。",
+      "expired_detail_bots": "再度サインインするまで、Bot は動作できません。保存されたサインインは失効しており、更新できません。",
+      "refused_detail_bots": "このサインインが失効すると、Bot は停止します。動作を続けるには再度サインインしてください。",
+      "refused_expired_detail_bots": "再度サインインするまで、Bot は動作できません。このサインインはすでに失効しています。",
       "status_unavailable_detail": "サインイン設定を開いて Kiro のサインインを確認するか、エージェントに調べるよう依頼してください。",
       "config_unavailable": "ダッシュボードの設定を読み込めませんでした",
       "config_unavailable_detail": "ページを再読み込みしてもう一度お試しいただくか、エージェントに調査を依頼してください。",
@@ -12920,7 +12924,7 @@
         "code_channel_worktree_not_ready": "このコードチャンネルの worktree はまだ準備できていないため、メッセージは実行されませんでした。少し待ってからもう一度送信してください。",
         "remote_crew_read_only": "このチャットはリモートのクルーで実行されたため、現在は読み取り専用です。続けるにはクルー自身のセッションを開いてください。",
         "archive_failed_turn_cancelled": "実行中のターンをキャンセルした後、このタブのアーカイブに失敗しました。タブは残っていますが、そのターンは完了していません — 続けるにはメッセージをもう一度送信してください。",
-        "kas_signed_out": "Kiro にサインインしていません。「設定 → エージェントハーネス → Kiro サインイン」でサインインしてから、メッセージをもう一度送信してください。",
+        "kas_signed_out": "Kiro にサインインしていません。「設定 → エージェントハーネス → Kiro Agent → Kiro サインイン」でサインインしてから、メッセージをもう一度送信してください。",
         "kas_signed_out_sign_in_below": "Kiro にサインインしていません。下のボタンでサインインしてから、メッセージをもう一度送信してください。",
         "windows_spawn_blocked": "Windows がエージェントプログラム（{{binary}}）を起動できませんでした。このコンピューターの AppLocker、EDR 製品、またはグループポリシーがブロックした可能性があります。IT 管理者にこのファイルの許可を依頼してから、新しいチャットを開始してください。",
         "kas_route_relay": "エージェントは kiro-cli 経由で動いています。",

@@ -341,7 +341,7 @@ def test_raise_acp_error_type_and_tags(error, available, expected_text, expected
             "kas",
             True,
             "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro "
-            "sign-in, then send your message again.",
+            "Agent → Kiro sign-in, then send your message again.",
             id="host-auth-backend-tags-sign-in",
         ),
         pytest.param(

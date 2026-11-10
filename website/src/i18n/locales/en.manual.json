@@ -1956,7 +1956,8 @@
       "used_credits": "Used: {{used}} / {{total}}",
       "sign_out_or_switch": "Sign out or switch account in Settings",
       "sign_out_link_config_unreadable": "Could not load settings, so the sign-out link can’t be shown.",
-      "switch_in_settings": "Switch account in Settings"
+      "switch_in_settings": "Switch account in Settings",
+      "bots_sign_in_in_settings": "Kiro sign-in for bots in Settings"
     },
     "agentImportFlow": {
       "choose_sources": "Choose sources",
@@ -4868,6 +4869,9 @@
       "refused_title": "Kiro refused to renew your sign-in",
       "refused_detail": "Agents will stop when this sign-in expires. Sign in again to keep them running.",
       "refused_expired_detail": "Agents cannot run until you sign in again. This sign-in has already expired.",
+      "expired_detail_bots": "Bots cannot run until you sign in again. The stored sign-in expired and cannot be renewed.",
+      "refused_detail_bots": "Bots will stop when this sign-in expires. Sign in again to keep them running.",
+      "refused_expired_detail_bots": "Bots cannot run until you sign in again. This sign-in has already expired.",
       "status_unavailable_detail": "Open sign-in settings to check your Kiro sign-in, or ask the agent to look into it.",
       "config_unavailable": "Could not read the dashboard settings",
       "config_unavailable_detail": "Reload the page to try again, or ask the agent to look into it.",

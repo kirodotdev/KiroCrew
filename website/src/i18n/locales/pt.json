@@ -6387,7 +6387,8 @@
       "used_credits": "Usados: {{used}} / {{total}}",
       "sign_out_or_switch": "Sair ou trocar de conta nas Configurações",
       "sign_out_link_config_unreadable": "Não foi possível carregar as configurações, então o link para sair não pode ser mostrado.",
-      "switch_in_settings": "Trocar de conta nas Configurações"
+      "switch_in_settings": "Trocar de conta nas Configurações",
+      "bots_sign_in_in_settings": "Login do Kiro dos Bots nas Configurações"
     },
     "agentDropdownList": {
       "active_in_this_session": "Ativo nesta sessão",
@@ -11333,6 +11334,9 @@
       "refused_title": "O Kiro recusou renovar seu login",
       "refused_detail": "Os agentes param de ser executados quando este login expirar. Entre novamente para mantê-los em execução.",
       "refused_expired_detail": "Os agentes não podem ser executados até você entrar novamente. Este login já expirou.",
+      "expired_detail_bots": "Os Bots não podem ser executados até você entrar novamente. O login salvo expirou e não pode ser renovado.",
+      "refused_detail_bots": "Os Bots param de ser executados quando este login expirar. Entre novamente para mantê-los em execução.",
+      "refused_expired_detail_bots": "Os Bots não podem ser executados até você entrar novamente. Este login já expirou.",
       "status_unavailable_detail": "Abra as configurações de login para verificar seu login no Kiro ou peça ao agente para investigar.",
       "config_unavailable": "Não foi possível ler as configurações do painel",
       "config_unavailable_detail": "Recarregue a página para tentar novamente ou peça ao agente para verificar.",
@@ -13540,7 +13544,7 @@
         "code_channel_worktree_not_ready": "O worktree deste canal de código ainda não está pronto, então a mensagem não foi executada. Envie-a de novo em instantes.",
         "remote_crew_read_only": "Este chat rodou em uma crew remota e agora é somente leitura. Abra a sessão da própria crew para continuar.",
         "archive_failed_turn_cancelled": "Não foi possível arquivar esta aba depois que o turno em andamento foi cancelado. A aba foi mantida, mas esse turno não terminou — envie sua mensagem de novo para continuar.",
-        "kas_signed_out": "Você não entrou no Kiro. Entre em Configurações → Harness do agente → Login do Kiro e envie sua mensagem de novo.",
+        "kas_signed_out": "Você não entrou no Kiro. Entre em Configurações → Harness do agente → Kiro Agent → Login do Kiro e envie sua mensagem de novo.",
         "kas_signed_out_sign_in_below": "Você não entrou no Kiro. Entre abaixo e envie sua mensagem de novo.",
         "windows_spawn_blocked": "O Windows não conseguiu iniciar o programa do agente ({{binary}}). É provável que o AppLocker, um produto EDR ou uma política de grupo neste computador o tenha bloqueado. Peça ao seu administrador de TI para liberar esse arquivo e depois inicie um novo chat.",
         "kas_route_relay": "Seu agente roda pelo kiro-cli.",

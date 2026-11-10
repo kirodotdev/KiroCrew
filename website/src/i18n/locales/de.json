@@ -6219,7 +6219,8 @@
       "used_credits": "Verwendet: {{used}} / {{total}}",
       "sign_out_or_switch": "In den Einstellungen abmelden oder Konto wechseln",
       "sign_out_link_config_unreadable": "Einstellungen konnten nicht geladen werden, daher kann der Abmelde-Link nicht angezeigt werden.",
-      "switch_in_settings": "In den Einstellungen Konto wechseln"
+      "switch_in_settings": "In den Einstellungen Konto wechseln",
+      "bots_sign_in_in_settings": "Kiro-Anmeldung für Bots in den Einstellungen"
     },
     "agentDropdownList": {
       "active_in_this_session": "In dieser Sitzung aktiv",
@@ -11084,6 +11085,9 @@
       "refused_title": "Kiro hat die Erneuerung deiner Anmeldung abgelehnt",
       "refused_detail": "Agenten hören auf zu laufen, sobald diese Anmeldung abläuft. Melde dich erneut an, damit sie weiterlaufen.",
       "refused_expired_detail": "Agenten können erst wieder laufen, wenn du dich erneut anmeldest. Diese Anmeldung ist bereits abgelaufen.",
+      "expired_detail_bots": "Bots können erst wieder laufen, wenn du dich erneut anmeldest. Die gespeicherte Anmeldung ist abgelaufen und kann nicht erneuert werden.",
+      "refused_detail_bots": "Bots hören auf zu laufen, sobald diese Anmeldung abläuft. Melde dich erneut an, damit sie weiterlaufen.",
+      "refused_expired_detail_bots": "Bots können erst wieder laufen, wenn du dich erneut anmeldest. Diese Anmeldung ist bereits abgelaufen.",
       "status_unavailable_detail": "Öffne die Anmeldeeinstellungen, um deine Kiro-Anmeldung zu prüfen, oder bitte den Agenten, sich das anzusehen.",
       "config_unavailable": "Die Dashboard-Einstellungen konnten nicht gelesen werden",
       "config_unavailable_detail": "Lade die Seite neu, um es erneut zu versuchen, oder bitte den Agenten, sich das anzusehen.",
@@ -13230,7 +13234,7 @@
         "code_channel_worktree_not_ready": "Der Worktree dieses Code-Kanals ist noch nicht bereit, deshalb wurde die Nachricht nicht ausgeführt. Sende sie gleich noch einmal.",
         "remote_crew_read_only": "Dieser Chat lief auf einer entfernten Crew und ist jetzt schreibgeschützt. Öffne die eigene Sitzung der Crew, um weiterzumachen.",
         "archive_failed_turn_cancelled": "Das Archivieren dieses Tabs ist fehlgeschlagen, nachdem seine laufende Runde abgebrochen wurde. Der Tab wurde behalten, aber diese Runde wurde nicht beendet — sende deine Nachricht erneut, um fortzufahren.",
-        "kas_signed_out": "Nicht bei Kiro angemeldet. Melde dich unter Einstellungen → Agent-Harness → Kiro-Anmeldung an und sende dann deine Nachricht erneut.",
+        "kas_signed_out": "Nicht bei Kiro angemeldet. Melde dich unter Einstellungen → Agent-Harness → Kiro Agent → Kiro-Anmeldung an und sende dann deine Nachricht erneut.",
         "kas_signed_out_sign_in_below": "Nicht bei Kiro angemeldet. Melde dich unten an und sende dann deine Nachricht erneut.",
         "windows_spawn_blocked": "Windows hat das Agent-Programm ({{binary}}) nicht gestartet. Wahrscheinlich hat AppLocker, ein EDR-Produkt oder eine Gruppenrichtlinie auf diesem Computer es blockiert. Bitte deinen IT-Administrator, die Datei zuzulassen, und starte dann einen neuen Chat.",
         "kas_route_relay": "Dein Agent läuft über kiro-cli.",
