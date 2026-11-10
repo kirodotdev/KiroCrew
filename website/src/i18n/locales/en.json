@@ -5996,6 +5996,8 @@
       "skip_this_version": "Skip this version",
       "update_available": "Update available",
       "update_failed": "Update failed. Try again from Settings → About.",
+      "update_not_responding": "No progress for 5 minutes. You can close this. If the update finishes, the app will reload.",
+      "update_not_responding_required": "No progress for 5 minutes. If the update finishes, the app will reload.",
       "update_now": "Update now",
       "updating": "Updating…",
       "updating_and_restarting": "Updating and restarting…",

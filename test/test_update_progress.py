@@ -138,6 +138,17 @@ class TestUpdateProgressState:
         state.clear_update_progress()
         assert state._update_progress is None
 
+    def test_clear_broadcasts_an_empty_step_once(self, monkeypatch, tmp_path) -> None:
+        # The periodic status frame carries no update_progress, so a clear the
+        # clients never hear about leaves every tab on the last live step.
+        state = _make_state(monkeypatch, tmp_path)
+        calls: list[dict] = []
+        monkeypatch.setattr(state, "_broadcast", lambda note: calls.append(note))
+        state.push_update_progress("pulling", "Pulling…")
+        state.clear_update_progress()
+        state.clear_update_progress()
+        assert calls[1:] == [{"_type": "update_progress", "step": "", "detail": ""}]
+
     def test_broadcast_called_on_push(self, monkeypatch, tmp_path) -> None:
         state = _make_state(monkeypatch, tmp_path)
         calls: list[dict] = []

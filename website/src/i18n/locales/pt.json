@@ -9897,6 +9897,8 @@
       "this_version_is_below_minimum": "Esta atualização é obrigatória: versões anteriores à {{version}} não são mais compatíveis.",
       "update_available": "Atualização disponível",
       "update_failed": "Falha na atualização. Tente novamente em Configurações → Sobre.",
+      "update_not_responding": "Sem progresso há 5 minutos. Você pode fechar isto. Se a atualização terminar, o app será recarregado.",
+      "update_not_responding_required": "Sem progresso há 5 minutos. Se a atualização terminar, o app será recarregado.",
       "update_now": "Atualizar agora",
       "update_required": "Atualização obrigatória",
       "updating": "Atualizando…",

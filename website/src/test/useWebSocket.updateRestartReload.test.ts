@@ -159,6 +159,15 @@ describe('useWebSocket update-restart reload', () => {
     expect(sessionStorage.getItem(UPDATE_RESTART_LATCH_KEY)).toBeNull()
   })
 
+  it('an empty step is the gateway clearing progress: store goes null, latch disarms', () => {
+    const { ws } = mount()
+    act(() => { ws.simulateMessage({ type: 'update_progress', data: { step: 'restarting', detail: '' } }) })
+    expect(testStore.getState().dashboard.updateProgress).toEqual({ step: 'restarting', detail: '' })
+    act(() => { ws.simulateMessage({ type: 'update_progress', data: { step: '', detail: '' } }) })
+    expect(testStore.getState().dashboard.updateProgress).toBeNull()
+    expect(sessionStorage.getItem(UPDATE_RESTART_LATCH_KEY)).toBeNull()
+  })
+
   it('reloads once on reconnect after a latched restart', () => {
     vi.useFakeTimers()
     const { ws } = mount()

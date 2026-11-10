@@ -583,6 +583,80 @@ describe('UpdateFoundModal — gateway source', () => {
     await waitFor(() => expect(screen.getByText('zzq second attempt')).toBeInTheDocument())
   })
 
+  it('progress cleared after a live step with no failed frame ends the attempt', async () => {
+    // The worker clears the bar and returns when its fetch fails; a gateway
+    // that crashed mid-update comes back with no progress. Neither pushes
+    // `failed`, and the modal used to stay on "restarting…" with every exit
+    // disabled.
+    mockedApi.applyUpdate.mockResolvedValue({} as never)
+    const store = gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    act(() => { store.dispatch(setUpdateProgress({ step: 'pulling', detail: '' })) })
+    act(() => { store.dispatch(setUpdateProgress(null)) })
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.update_failed')),
+    ).toBeInTheDocument())
+    expect(screen.queryByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeNull()
+    expect(byName('components.updateFoundModal.update_now')).not.toBeDisabled()
+    expect(byName('components.updateFoundModal.dismiss')).not.toBeDisabled()
+  })
+
+  it('a clear before any live step of this attempt is not read as its end', async () => {
+    // The store can already hold null when the click lands; only a clear that
+    // follows this attempt's own live step ends it.
+    mockedApi.applyUpdate.mockResolvedValue({} as never)
+    const store = gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    act(() => { store.dispatch(setUpdateProgress(null)) })
+    expect(screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('components.updateFoundModal.update_failed'))).toBeNull()
+  })
+
+  it('after five quiet minutes the dismissals come back but the attempt stays open', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => { vi.useRealTimers() })
+    mockedApi.applyUpdate.mockResolvedValue({} as never)
+    const store = gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+    })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    // A healthy npm build can sit on one frame past the threshold.
+    act(() => { store.dispatch(setUpdateProgress({ step: 'building', detail: 'Building frontend (npm)…' })) })
+    await act(async () => { vi.advanceTimersByTime(5 * 60 * 1000 - 1000) })
+    expect(screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting'))).toBeInTheDocument()
+    expect(byName('components.updateFoundModal.dismiss')).toBeDisabled()
+    await act(async () => { vi.advanceTimersByTime(2000) })
+    await waitFor(() => expect(screen.getByTestId('update-found-stalled')).toBeInTheDocument())
+    expect(byName('components.updateFoundModal.dismiss')).not.toBeDisabled()
+    expect(byName('components.updateFoundModal.remind_me_tomorrow')).not.toBeDisabled()
+    // The worker may still be running: no second apply.
+    expect(byName('components.updateFoundModal.updating')).toBeDisabled()
+    // Its later failure still lands on this attempt.
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'zzq npm build failed late' })) })
+    await waitFor(() => expect(screen.getByText('zzq npm build failed late')).toBeInTheDocument())
+    expect(screen.queryByTestId('update-found-stalled')).toBeNull()
+    expect(byName('components.updateFoundModal.update_now')).not.toBeDisabled()
+  })
+
   it('handing the failure to the agent closes the modal so the chat it opens is visible', async () => {
     // The hand-off soft-navigates to chat UNDER this full-screen modal; left
     // open, the click would look like it did nothing.
@@ -771,6 +845,25 @@ describe('UpdateFoundModal — mandatory update (update_required)', () => {
       name: i18nT('components.askAgent.ask_the_agent'),
     })).not.toBeInTheDocument()
     expect(dialog()).toBeInTheDocument()
+  })
+
+  it('a stalled mandatory apply offers no close and shows the installer command', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => { vi.useRealTimers() })
+    mockedApi.applyUpdate.mockResolvedValue({} as never)
+    const store = gatewayStore({ ...requiredStatus, update_command: 'zzq installer --channel stable' })
+    await mount(undefined, store)
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    fireEvent.click(byName('components.updateFoundModal.update_now'))
+    await waitFor(() => expect(
+      screen.getByText(i18nT('components.updateFoundModal.updating_and_restarting')),
+    ).toBeInTheDocument())
+    act(() => { store.dispatch(setUpdateProgress({ step: 'building', detail: '' })) })
+    await act(async () => { vi.advanceTimersByTime(5 * 60 * 1000 + 1000) })
+    await waitFor(() => expect(screen.getByTestId('update-found-stalled').textContent)
+      .toBe(i18nT('components.updateFoundModal.update_not_responding_required')))
+    expect(screen.getByTestId('update-required-fallback-command').textContent)
+      .toBe('zzq installer --channel stable')
   })
 
   it('neither Escape nor a backdrop click closes it', async () => {
