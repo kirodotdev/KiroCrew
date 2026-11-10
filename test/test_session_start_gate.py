@@ -68,9 +68,10 @@ def _make_runtime(
     rt._pid = 4242
     rt._initialized = True
     rt._expect_mcp_reports = False
-    # Sub-second budgets through the cached seams production reads.
+    # Starts time out fast; a collector settles on what the test feeds it, so its
+    # budget is only a backstop. A test that needs the deadline sets its own.
     rt._session_start_timeout = 0.05
-    rt._start_collect_timeout = 0.4
+    rt._start_collect_timeout = _SETTLE_BACKSTOP
     # The over-ceiling check is a thread hop before the gate; these tests count the
     # loop yields between a start and its wire request, so it answers at once here
     # (test_acp_runtime_session_start covers the check itself).
@@ -463,6 +464,9 @@ async def test_a_settled_collector_leaks_no_frames_into_the_next_start(answer_la
     registration must not be folded into that diagnostic, which matches by
     server name and cannot tell two attempts apart."""
     rt, reader, _ = _make_runtime()
+    if not answer_late:
+        # Nothing answers this start: its collector settles at its deadline.
+        rt._start_collect_timeout = 0.4
     reader_task = await _start_reader(rt)
     try:
         with pytest.raises(AcpSessionStartTimeout) as first:
@@ -483,6 +487,8 @@ async def test_a_settled_collector_leaks_no_frames_into_the_next_start(answer_la
         assert not collector._staged_init, "a settled collector keeps no unclaimable frames"
         assert not rt._pending_init_notifications
 
+        # Nothing answers the next start: its collector settles at its deadline.
+        rt._start_collect_timeout = 0.4
         with pytest.raises(AcpSessionStartTimeout) as second:
             await rt.create_session(cwd="/w", mcp_servers=_roster("alpha"))
         assert "0/1 session-injected MCP server(s) reported" in str(second.value)
@@ -500,11 +506,6 @@ async def test_two_live_collectors_do_not_claim_each_others_frames():
     hold both frames -- and each adoption takes only the frames naming its own
     session."""
     rt, reader, _ = _make_runtime()
-    # Adoption is decided by frame routing, not the clock. The 0.4s collect budget
-    # is ~93% used by this test's real work (~0.37s), so a loaded shard would abandon
-    # both collectors. ``_SETTLE_BACKSTOP`` (30s) only ends a broken run, well under
-    # the suite's ``--timeout=120``.
-    rt._start_collect_timeout = _SETTLE_BACKSTOP
     reader_task = await _start_reader(rt)
     adopted: dict = {}
 
