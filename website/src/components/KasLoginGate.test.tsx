@@ -93,6 +93,21 @@ describe('KasLoginGate', () => {
     ).toBeInTheDocument()
   })
 
+  it('says what AWS Builder ID and company SSO are on their buttons', async () => {
+    renderWithProviders(<KasLoginGate />)
+
+    expect(
+      await screen.findByRole('button', { name: 'Continue with AWS Builder ID' }),
+    ).toHaveAccessibleDescription(
+      "A free personal sign-in for developers. You don't need an AWS account.",
+    )
+    expect(
+      screen.getByRole('button', { name: 'Continue with company SSO' }),
+    ).toHaveAccessibleDescription(
+      'For AWS IAM Identity Center. Use the access portal URL your company gave you, even if it signs you in through Okta or Microsoft Entra.',
+    )
+  })
+
   it('starts the device flow and shows the user code to approve', async () => {
     renderWithProviders(<KasLoginGate />)
 
