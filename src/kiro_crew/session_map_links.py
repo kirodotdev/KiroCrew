@@ -228,8 +228,10 @@ def set_slack_link(self: SessionMap, key: str, thread_ts: str, channel_id: str |
             if thread_ts:
                 if evicted:
                     self._thread_to_session[thread_ts] = key
-                else:
-                    self._thread_to_session.setdefault(thread_ts, key)
+                elif thread_ts not in self._thread_to_session:
+                    self._thread_to_session[thread_ts] = key
+                    # Rebuilt at load, so nothing is written, but readers must see it move.
+                    self._touch()
             # Only the eviction is a mutation on this branch now. The pause
             # is deliberately NOT touched here — see the docstring.
             if evicted:

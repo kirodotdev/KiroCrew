@@ -3461,6 +3461,22 @@ was one module, and only its code object names the owner file. A module-level na
 pins the bindings, the owners' import direction and the reach of every patch the tests make
 through the module.
 
+**Mutation generation.** `SessionMap.mutation_generation()` is a counter that moves after
+every in-memory change to the map. `_save()` moves it through `_touch()`, and the three
+writes that save nothing call `_touch()` themselves: `_ensure_entry` creating a blank
+entry, `set_slack_link` adding identical coordinates to a reverse index that lacks the
+thread, and
+`_reread_after_failed_load` adopting the file it re-read. So a
+reader that records the counter before reading the map and finds it unchanged later knows
+nothing it read has changed. `SessionManager.session_map_generation()` returns
+`(id(map), counter)`; the sidebar's channel-link memo keys on it (see
+learn-cron-dashboard.md, `dashboard/slot_row_memo.py`). The invariant has a source guard,
+`test_every_map_store_writer_moves_the_mutation_generation`: every function in
+`session_map*.py`, sync or async, that writes or rebinds `_data` or `_thread_to_session`,
+or writes an entry read out of them, must call `_save()` or `_touch()`, apart from `_load`
+and the helpers `_evict_rival_claimants` and `_rebuild_thread_index`, whose callers save or
+touch after them.
+
 ### Asking for a fresh conversation on a slot that stays open
 
 `POST /api/chat/slots/{slot}/reset-conversation` drops one slot's resume pointer
