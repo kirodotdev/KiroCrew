@@ -337,6 +337,11 @@ async def _ensure_session(self: DiscordClient) -> aiohttp.ClientSession:
     """Return the shared ClientSession, creating it once on demand
     (double-checked under a lock — REST calls run concurrently with the
     gateway loop)."""
+    if self._closed and (self._session is None or self._session.closed):
+        # close() has already closed the session (or is awaiting its close). A late caller (a typing loop,
+        # a queued drain) must not open a new one: nothing would ever close it,
+        # and the send would go out on a channel that was shut down.
+        raise aiohttp.ClientConnectionError("Discord client is closed")
     if self._session is None or self._session.closed:
         async with self._session_lock:
             if self._session is None or self._session.closed:
@@ -498,6 +503,8 @@ async def _api_request(
     that waits nothing is unaffected: the caller's own pre-send check is still
     the most recent reading when no time has passed.
     """
+    if self._closed and (self._session is None or self._session.closed):
+        return _failed(DISCORD_TRANSIENT, detail="client closed")
     session = await self._ensure_session()
     url = _API_BASE + path
     auth = {"Authorization": f"Bot {self._token}"}
