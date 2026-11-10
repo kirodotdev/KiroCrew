@@ -106,7 +106,8 @@ function followupPromptHasMore(prompt: string): boolean {
  * session with the item's prompt in its message box, and nothing is sent until
  * the person presses send. With "Send follow-ups with one click" on
  * (`startSends`), Start SENDS the prompt as the new session's first message,
- * so one click runs agent-authored text. Every item shows the first three
+ * so one click runs agent-authored text, and the person stays on this session
+ * while it runs. Every item shows the first three
  * lines of its prompt with no toggle, and Show prompt expands the rest
  * (rfc-followup-start-sends.md, Decision 3): the title and description are a
  * label the agent chose, and only the prompt is what runs.

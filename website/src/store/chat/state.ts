@@ -247,6 +247,8 @@ export interface ChatState {
    *  sets it. Read by `useAckCronNotesInView`: opening a cron run's chat is
    *  what marks its bell note read (#23564). */
   userOpen?: { key: string; seq: number; landed: boolean }
+  /** Bumped when a slot switch asks the chat page to leave Split View. */
+  leaveSplitSeq?: number
   /** Forks started in this window that will open their child when they
    *  succeed and `forkMayOpen` allows it. Creates are tracked by
    *  `foregroundCreateId`. While either is pending, the chat page does not

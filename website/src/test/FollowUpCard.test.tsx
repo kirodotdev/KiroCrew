@@ -72,6 +72,8 @@ describe('FollowUpCard', () => {
     const footer = screen.getByText(/fresh copy of this project, in a new folder next to it/i)
     expect(footer).toHaveTextContent(/Composer\. Run in a separate copy sends the prompt to a new session/)
     expect(footer).toHaveTextContent(/your current files and this session stay as they are/i)
+    // The run starts in the background, so the footer says the user stays put.
+    expect(footer).toHaveTextContent(/You stay where you are, and the new session shows in the sidebar\. Add to this session/)
     expect(footer).toHaveTextContent(/puts the prompt in your message box and sends nothing/i)
   })
 
@@ -237,7 +239,7 @@ describe('FollowUpCard', () => {
 
   it('keeps the one-click footer for an unscoped session free of git terms too', () => {
     setup({ projectDir: undefined, startSends: true })
-    expect(screen.getByText(/Run in new chat sends the prompt as the first message of a new chat\. Add to this session puts the prompt in your message box and sends nothing\.$/)).toBeInTheDocument()
+    expect(screen.getByText(/Run in new chat sends the prompt as the first message of a new chat\. You stay where you are, and the new session shows in the sidebar\. Add to this session puts the prompt in your message box and sends nothing\.$/)).toBeInTheDocument()
     expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
   })
 

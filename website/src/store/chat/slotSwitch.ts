@@ -72,8 +72,10 @@ import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
  *    `ChatState.userOpen`, which reads that chat's cron notes (#23564).
  *    Opt-IN and separate from `announceOnMissing`: some announced switches
  *    are the page's own (a late `?sid=` recovery, a forwarded nav intent), and
- *    those must never count as the user having looked. */
-export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; automatic?: boolean; requestSeq?: number; gesture?: boolean }
+ *    those must never count as the user having looked.
+ *  - `leaveSplit`: this open must replace Split View with the requested
+ *    session, because the grid may not contain it. */
+export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolean; announceOnMissing?: boolean; automatic?: boolean; requestSeq?: number; gesture?: boolean; leaveSplit?: boolean }
 
 /** The slot key of a `switchSlot` argument, in either spelling. Non-object
  *  values pass through untouched: a hand-rolled test dispatch can omit
@@ -493,6 +495,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // The user's open is recorded when it starts, so a leave while its
       // transcript is still loading drops it as well (#24080).
       if (switchArg?.gesture === true) state.userOpen = { key: target, seq: (state.userOpen?.seq ?? 0) + 1, landed: false }
+      if (switchArg?.leaveSplit === true) state.leaveSplitSeq = (state.leaveSplitSeq ?? 0) + 1
       if (target !== outgoingSlot) {
         state.lastChunkSeq = runs[safeKey(target)]?.lastChunkSeq
         state.lastChunkGen = runs[safeKey(target)]?.lastChunkGen

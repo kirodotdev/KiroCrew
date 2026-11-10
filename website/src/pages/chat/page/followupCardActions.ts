@@ -2,7 +2,7 @@ import { useRef, useCallback, useEffect, type Dispatch, type MutableRefObject, t
 import type { MoveSlotOptions } from '../../../hooks/useMoveSlotToFolder'
 import { store, type AppDispatch } from '../../../store'
 import type { ChatSlot } from '../../../types'
-import { type FollowupItem, setPendingInput, dismissFollowupItem, clearFolderSuggestion, setAgentSwitchNotice, captureForkOrigin, forkMayOpen, type ForkOrigin } from '../../../store/chatSlice'
+import { type FollowupItem, setPendingInput, dismissFollowupItem, clearFolderSuggestion, setAgentSwitchNotice, captureForkOrigin, forkMayOpen } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
 import { mergeIntoDraft } from '../../../utils/chatDrafts'
 import { i18nT } from '../../../i18n/t'
@@ -101,7 +101,7 @@ interface FollowupStartsOptions {
   currentSlot: ChatSlot | undefined
   followupTsRef: MutableRefObject<Record<string, { items: FollowupItem[]; ts: number; }>>
   followupBranchFor: (item: FollowupItem) => string
-  openFollowupSession: (item: FollowupItem, target: { project?: string; folderId?: string | null; originSlot: string | null; originTs: number | undefined; originIndex: number; startOrigin: ForkOrigin; mode: FollowupStartMode; fail: { notCreated: string; noSession: string; notSent: string; notSentKept: string; unconfirmed: string; unconfirmedHere: string; notOpened: string; notFocused: string; }; }) => Promise<void>
+  openFollowupSession: (item: FollowupItem, target: { project?: string; folderId?: string | null; originSlot: string | null; originTs: number | undefined; originIndex: number; mode: FollowupStartMode; started: string; fail: { notCreated: string; noSession: string; notSent: string; notSentKept: string; unconfirmed: string; notOpened: string; notFocused: string; }; }) => Promise<void>
   setActionError: Dispatch<SetStateAction<{ title?: string; message: string; preserveOnSwitch?: boolean } | null>>
 }
 
@@ -133,9 +133,9 @@ export function useFollowupStarts({
     originSlot: activeSlot,
     originTs: activeSlot ? followupTsRef.current[activeSlot]?.ts : undefined,
     // Where the user stood at the click, read before the route's first await
-    // (the worktree create). `forkMayOpen` against it is the same check every
-    // create and fork path uses: a session the user opened meanwhile, or a
-    // leave-and-return, is their choice and the finished start does not undo it.
+    // (the worktree create). A failed start compares it with where the user is
+    // now (`forkMayOpen`, the check every create and fork path uses) to tell
+    // whether the card that issued it is still on screen to show the error.
     startOrigin: captureForkOrigin(store.getState()),
     folderId: currentSlot?.folder_id,
   }), [activeSlot, currentSlot?.folder_id, followupTsRef])
@@ -181,33 +181,27 @@ export function useFollowupStarts({
       if (!path) throw new Error(res?.error || i18nT('pages.chatPage.worktree_creation_returned_no_path'))
       // The worktree exists from here on, so every failure names its path: the
       // create endpoint is idempotent for its own destination, so pressing the
-      // button again reuses this worktree instead of refusing it. When Start
-      // sends, the not-opened and not-focused messages arrive after the prompt
-      // was sent, so they point at the sidebar instead of a retry; when it
-      // pre-fills, the item stays on the card and a retry is offered.
-      const sends = mode === 'send'
+      // button again reuses this worktree instead of refusing it. Only a
+      // pre-fill switches to the new session, so only it can fail to open or
+      // focus it; its item stays on the card and a retry is offered.
       // The retry messages name the button that is on screen: one-click mode
       // labels it Run, the default labels it Start.
-      const button = sends
+      const button = mode === 'send'
         ? i18nT('components.followUpCard.run_in_separate_copy')
         : i18nT('components.followUpCard.start_in_new_worktree')
       await openFollowupSession(item, {
         ...origin,
         project: path,
         mode,
+        started: i18nT('pages.chatPage.followup_started_in_copy', { path }),
         fail: {
           notCreated: i18nT('pages.chatPage.followup_worktree_session_not_created', { path, button }),
           noSession: i18nT('pages.chatPage.followup_worktree_no_session_returned', { path, button }),
           notSent: i18nT('pages.chatPage.followup_worktree_prompt_not_sent', { path, button }),
           notSentKept: i18nT('pages.chatPage.followup_prompt_not_sent_session_kept'),
           unconfirmed: i18nT('pages.chatPage.followup_prompt_unconfirmed'),
-          unconfirmedHere: i18nT('pages.chatPage.followup_prompt_unconfirmed_here'),
-          notOpened: sends
-            ? i18nT('pages.chatPage.followup_worktree_sent_session_not_opened', { path })
-            : i18nT('pages.chatPage.followup_worktree_session_not_opened', { path }),
-          notFocused: sends
-            ? i18nT('pages.chatPage.followup_worktree_sent_session_not_focused', { path })
-            : i18nT('pages.chatPage.followup_worktree_session_not_focused', { path }),
+          notOpened: i18nT('pages.chatPage.followup_worktree_session_not_opened', { path }),
+          notFocused: i18nT('pages.chatPage.followup_worktree_session_not_focused', { path }),
         },
       })
     })
@@ -216,21 +210,21 @@ export function useFollowupStarts({
   // The route for a session that has no repository to branch: a plain new chat
   // in the spawning session's project directory (where a new chat starts by
   // default when it has none), with no git call at all. Pressing the button
-  // again after a failure opens another chat, so the not-opened and
-  // not-focused messages point at the sidebar instead of a retry.
+  // again after a failure opens another chat, so the pre-fill's not-opened
+  // and not-focused messages point at the sidebar instead of a retry.
   const followupStartInNewChat = useCallback(async (item: FollowupItem, index: number, mode: FollowupStartMode) => {
     const origin = followupOrigin(index)
     await runFollowupStart(item, origin, () => openFollowupSession(item, {
       ...origin,
       project: currentSlot?.project || undefined,
       mode,
+      started: i18nT('pages.chatPage.followup_started_in_chat'),
       fail: {
         notCreated: i18nT('pages.chatPage.followup_chat_not_created'),
         noSession: i18nT('pages.chatPage.followup_chat_not_created'),
         notSent: i18nT('pages.chatPage.followup_chat_prompt_not_sent'),
         notSentKept: i18nT('pages.chatPage.followup_prompt_not_sent_session_kept'),
         unconfirmed: i18nT('pages.chatPage.followup_prompt_unconfirmed'),
-        unconfirmedHere: i18nT('pages.chatPage.followup_prompt_unconfirmed_here'),
         notOpened: i18nT('pages.chatPage.followup_chat_not_focused'),
         notFocused: i18nT('pages.chatPage.followup_chat_not_focused'),
       },
