@@ -77,12 +77,12 @@ def _start_url_rejection(body: str, *, start_url: str, region: str) -> StartUrlR
             "access portal URL, which looks like https://your-company.awsapps.com/start."
         )
     else:
-        # A well-formed portal looked up in the wrong region gets this bare
-        # answer, the most likely cause a user can fix; AWS does not say so.
+        # A portal that does not exist and one looked up in the wrong region get
+        # this same bare answer, so the likelier slip, the start URL, comes first.
         advice = (
-            f"AWS refused to start a sign-in for {start_url!r} in region {region}. "
-            "This usually means the region is wrong: set Region to the region your "
-            "company's Identity Center is in, and check the start URL."
+            f"AWS found no Identity Center for {start_url!r} in region {region}. "
+            "Check the start URL for a typo; if it is right, set Region to the "
+            "region your company's Identity Center is in."
         )
     return StartUrlRejectedError(
         f"{advice} (AWS: {detail or 'invalid_request'})", names_start_url=names_start_url
