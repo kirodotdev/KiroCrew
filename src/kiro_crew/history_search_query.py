@@ -1142,6 +1142,24 @@ def _snippet_tiers(needles: Sequence[SearchNeedle], phrase: str) -> list[list[st
     return out
 
 
+def _source_offset(text: str, folded: str, folded_pos: int) -> int:
+    """The index in *text* of the character whose fold holds ``folded[folded_pos]``.
+
+    ``folded`` is ``text.casefold()``. A fold can be longer than its character
+    (``ß`` is ``ss``), so past the first such character an offset into the
+    folded text points further along than the same offset into *text*. Each
+    character folds on its own, so summing their fold lengths walks both.
+    """
+    if len(folded) == len(text):
+        return folded_pos
+    seen = 0
+    for index, char in enumerate(text):
+        seen += len(char.casefold())
+        if seen > folded_pos:
+            return index
+    return len(text)
+
+
 def tiered_first_hit(
     texts: Iterable[str], tiers: Sequence[Sequence[str]]
 ) -> tuple[str, int, str] | None:
@@ -1149,9 +1167,11 @@ def tiered_first_hit(
 
     The anchor is the first text holding a needle of the best tier any text
     holds; within that text the tier's needles are tried in order, as the flat
-    list always was. Positions are into ``text.casefold()``. Reading stops at
-    the first tier-0 hit, so a one-tier query reads exactly as far as its first
-    match. An ``OSError`` while reading ends the walk with the best hit so far.
+    list always was. The needle is found in ``text.casefold()``, and the
+    position is the index in ``text`` of the character it starts in, which is
+    where both callers cut their window. Reading stops at the first tier-0 hit,
+    so a one-tier query reads exactly as far as its first match. An ``OSError``
+    while reading ends the walk with the best hit so far.
     """
     best: tuple[int, str, int, str] | None = None
     try:
@@ -1163,7 +1183,7 @@ def tiered_first_hit(
                     None,
                 )
                 if hit is not None:
-                    best = (rank, text, *hit)
+                    best = (rank, text, _source_offset(text, folded, hit[0]), hit[1])
                     break
             if best is not None and best[0] == 0:
                 break
