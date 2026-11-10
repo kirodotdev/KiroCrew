@@ -750,7 +750,11 @@ The drain runs on EVERY gateway mode, not only where a dashboard exists. The das
 registers a cleanup hook, but a mode that builds no dashboard app never runs one and the
 gateway's hard exit skips `atexit`, so the drain also sits on the exit path itself --
 before the log queue is flushed, so its own warning about an incomplete drain still
-reaches the log. Calling it twice is a no-op.
+reaches the log. Calling it twice is a no-op. aiohttp stops at the first cleanup hook that
+raises, so every gateway cleanup step registered ahead of the drain (the Kiro services, the
+speech and decision models, the config watcher, the remote puller, the instance tunnels)
+logs its own failure instead of raising
+(`test_a_raising_cleanup_step_does_not_skip_the_crew_log_drain`).
 
 ## A step is one model call; a call index orders the tools
 
