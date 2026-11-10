@@ -489,7 +489,9 @@ def _cloud_iam_policy(args: argparse.Namespace) -> int:
 
     stdout stays one JSON document either way, so it can be piped straight into
     ``aws iam create-policy``. When the edition adds host policies, the plain form
-    says on stderr that a second policy is needed and how to print it.
+    says on stderr that a second policy is needed and how to print it, and the
+    ``--host-policies`` form says there when the addendum had no room for the read
+    a launch uses to check that the account holds them.
     """
     want_addendum = getattr(args, "host_policies", False)
     if not want_addendum:
@@ -507,6 +509,15 @@ def _cloud_iam_policy(args: argparse.Namespace) -> int:
             ui.fail("This build adds no host policies, so there is no second policy to apply.")
             return 1
         print(json.dumps(addendum, indent=2))
+        if not iam.grants_host_policy_read(addendum):
+            print(
+                "This build's host policy ARNs are too long for this policy to also let "
+                "the launcher read them within IAM's policy size limit, so it grants only "
+                "the attach. A launch therefore cannot check first that the account holds "
+                "them, and CloudFormation's attach still fails if one is missing. To get "
+                "that check, grant iam:GetPolicy on exactly these ARNs in a separate policy.",
+                file=sys.stderr,
+            )
         return 0
     if addendum is not None:
         print(
