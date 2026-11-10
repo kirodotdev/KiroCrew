@@ -299,12 +299,67 @@ class TestThePlanHidesTheDeclaredLeaves:
             staged = os.path.join(str(Path.home()), f"{prefix}/apps/.demo-data-tmp/tokens")
             assert f'(deny file-write* (literal "{staged}"))' in backend
 
-    def test_namespace_plans_no_parent_guard_for_a_declared_leaf(self, home):
-        """A mount moves with a renamed parent, so the namespace plan needs none."""
-        before = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+    @pytest.mark.parametrize("mode", _MODES)
+    def test_namespace_pins_every_parent_of_a_declared_leaf_against_rename(self, home, mode):
+        """A mount moves with a renamed parent, which frees the declared path.
+
+        This spawn's mask follows the rename, but the next spawn masks the declared
+        path, where nothing is left, and the file is plain at its new name. So every
+        parent is pinned (bound over itself), which the kernel refuses to rename. The
+        pins are their own list, bound after the masks, and the seal parents' pins
+        (bound before them) are as without a declaration.
+        """
+        before = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, mode)
         _install(home, "demo", ["tokens/oauth.json"])
-        after = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        after = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, mode)
+
+        pins = set(after.mask_parent_pins)
+        held = pins | set(after.runtime_ancestor_guards)
+        for prefix in _PREFIXES:
+            for parent in (
+                "apps",
+                "apps/demo",
+                "apps/demo/data",
+                "apps/demo/data/tokens",
+                "apps/.demo-data-tmp",
+                "apps/.demo-data-tmp/tokens",
+            ):
+                path = os.path.join(str(Path.home()), f"{prefix}/{parent}")
+                assert path in held, f"{parent} under {prefix} can be renamed"
+                assert parent == "apps" or path in pins
+        assert before.mask_parent_pins == ()
         assert after.runtime_ancestor_guards == before.runtime_ancestor_guards
+        # Only the entries: the declared leaf itself is masked, not pinned.
+        for target in _targets("apps/demo/data/tokens/oauth.json"):
+            assert target not in held
+
+    def test_namespace_leaves_the_parents_unpinned_for_the_leafs_own_backend(self, home):
+        """The backend that reads the leaf can create and remove the folder it lives in."""
+        _install(home, "demo", ["tokens/oauth.json"])
+        lifted = sandbox.app_declared_mask_targets("demo", builtin=False)
+        assert lifted, "the declaration lifted nothing, so this pins nothing"
+        backend = sandbox._spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE, "standard", extra_visible_dirs=lifted
+        )
+        agent = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+
+        for prefix in _PREFIXES:
+            tokens = os.path.join(str(Path.home()), f"{prefix}/apps/demo/data/tokens")
+            assert tokens in agent.mask_parent_pins, f"another spawn can rename {tokens}"
+            assert (
+                tokens not in backend.mask_parent_pins
+            ), f"the app's own backend cannot create {tokens}"
+
+    @_POSIX_ONLY
+    def test_namespace_launcher_payload_carries_the_parent_pins(self, home):
+        """The pins reach the launcher as their own list, apart from the seal parents."""
+        _install(home, "demo", ["secrets.json"])
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        payload = sandbox_plan.namespace_payload(plan)
+        for prefix in _PREFIXES:
+            data = os.path.join(str(Path.home()), f"{prefix}/apps/demo/data")
+            assert data in payload["mask_parent_pins"]
+            assert data not in payload["parent_pins"]
 
     def test_the_lifecycle_staging_spelling_is_masked_too(self, home):
         _install(home, "demo", ["secrets.json"])

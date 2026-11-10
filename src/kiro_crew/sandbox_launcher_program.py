@@ -154,6 +154,8 @@ class Launch:
         self.private_dir_ids = plan["private_dir_ids"]
         self.readonly_dirs = plan["readonly_dirs"]
         self.parent_pins = plan["parent_pins"]
+        #: The parents of the app-declared credential masks, pinned after every mask.
+        self.mask_parent_pins = plan["mask_parent_pins"]
         self.writable_dirs = plan["writable_dirs"]
         self.sensitive_files = plan["sensitive_files"]
         self.fail_closed_file_masks = plan["fail_closed_file_masks"]
@@ -516,7 +518,8 @@ def place_masks(launch):
     Windows are staged before anything is masked, the seals' parents are pinned before
     the seals, read-only seals land before the hides placed on top of them, carve-outs
     after the seals they punch through, the exposed files are restored into their empty
-    masks, and the single files and ``~/.ssh`` are masked last.
+    masks, the single files and ``~/.ssh`` are masked, and the parents of the
+    app-declared masks are pinned last, over masks already in place.
     """
     stage_private_windows(launch)
     pin_seal_parents(launch)
@@ -527,6 +530,7 @@ def place_masks(launch):
     verify_fail_closed_aliases(launch)
     mask_sensitive_files(launch)
     mask_ssh_keys(launch)
+    pin_mask_parents(launch)
 
 
 def run_child(launch, argv):
@@ -627,6 +631,7 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     _mount_private_tmpfs,
     _open_unreadable_stand_in,
     _pin_below_mask,
+    _pin_over_themselves,
     _retire_unreadable_stage,
     _seal_masked_dir_if_windowless,
     _stage_is_fresh_mount,
@@ -636,6 +641,7 @@ from kiro_crew.sandbox_launcher_parts.mask_stages import (  # noqa: E402
     mask_sensitive,
     mask_sensitive_files,
     mask_ssh_keys,
+    pin_mask_parents,
     pin_seal_parents,
     preread_exposed_files,
     restore_exposed_files,

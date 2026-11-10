@@ -268,7 +268,29 @@ def pin_seal_parents(launch):
     :func:`seal_readonly`, so every seal lands on its pin. An absent name is skipped; a
     name that reaches another object after the bind refuses the spawn.
     """
-    for d in sorted(launch.parent_pins, key=lambda p: (p.count("/"), p)):
+    _pin_over_themselves(launch, launch.parent_pins, "a parent of a read-only seal", deepest=False)
+
+
+def pin_mask_parents(launch):
+    """Bind each parent of an app-declared credential mask over itself, after every mask.
+
+    The same pin as :func:`pin_seal_parents`, for the same kernel rule, at the other end
+    of the stages. The gateway moves an app's ``data/`` into a new ``apps/<app>`` on an
+    update, from its own namespace, and a mount sits on the directory it was placed on:
+    a mask placed on a pin of the old folder would be reached by no later lookup. Pinned
+    after the masks, each pin (recursive) only adds a copy of them, and the original stays
+    on the outer mount, which the move keeps. Deepest first, for the same reason: each pin
+    then sits on the outer mount too, and a shallower pin bound later carries a copy of it
+    on its own root, so ``data/`` stays pinned through the replacement ``apps/<app>``.
+    """
+    _pin_over_themselves(
+        launch, launch.mask_parent_pins, "a parent of a credential mask", deepest=True
+    )
+
+
+def _pin_over_themselves(launch, pins, what, deepest):
+    """Bind each of *pins* over itself, in depth order; refuse if one moves meanwhile."""
+    for d in sorted(pins, key=lambda p: (-p.count("/") if deepest else p.count("/"), p)):
         target = d.encode()
         _pin_fd, _pin_target = _hold_seal_parent(launch, target)
         if _pin_target is None:
@@ -276,7 +298,7 @@ def pin_seal_parents(launch):
         try:
             _pin_id = os.fstat(_pin_fd)
             _mount_or_die(
-                launch, _pin_target, _pin_target, _MS_BIND | _MS_REC, "pinning seal parent %s" % d
+                launch, _pin_target, _pin_target, _MS_BIND | _MS_REC, "pinning %s %s" % (what, d)
             )
         finally:
             os.close(_pin_fd)
@@ -290,8 +312,8 @@ def pin_seal_parents(launch):
                 os.close(_post_fd)
         if not _same:
             sys.exit(
-                "sandbox: BLOCKED -- %s changed while it was being pinned, so a parent of a "
-                "read-only seal could not be held in place." % d
+                "sandbox: BLOCKED -- %s changed while it was being pinned, so %s could not "
+                "be held in place." % (d, what)
             )
 
 

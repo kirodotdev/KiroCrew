@@ -1372,8 +1372,10 @@ files under its own data directory in `credentialMasks`
 `apps/credential_masks.py` reads every shipped and installed manifest per spawn, and each
 entry, spelled `apps/<name>/data/<entry>`, is treated as a core `HIDDEN` leaf at the
 points that read one: `sandbox_argv._live_plan_host` adds it to the tier's masks, to
-`crew_hidden_dirs` and to the relocated-home targets, and on Seatbelt every parent of it to
-the literal rename guards (except on the spawn that lifts it); `sandbox_aliases._hidden_leaves`
+`crew_hidden_dirs` and to the relocated-home targets, and every parent of it to the rename
+guards on both backends (the literal guards on Seatbelt; on the namespace backend the
+launcher's `mask_parent_pins`, bound after every mask so a mask stays on the outer mount
+when the gateway moves the app's folders; except on the spawn that lifts it); `sandbox_aliases._hidden_leaves`
 and `_hardlink_refused_leaves` add it to the symlink, linked-component and hard-link passes,
 and a directory at a declared path refuses the spawn, because an entry names a file. Each entry is declared at the lifecycle's move-aside spelling too, and a record
 beside the app directory keeps it after a keep-data uninstall; only a manifest that reads

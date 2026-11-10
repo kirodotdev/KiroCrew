@@ -335,6 +335,7 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/crew/apps",
         "<ROOT>/crew/mcp",
     ],
+    "mask_parent_pins": [],
     "readonly_dirs": [
         "<ROOT>/crew/policy_cache",
         "<ROOT>/crew/run",

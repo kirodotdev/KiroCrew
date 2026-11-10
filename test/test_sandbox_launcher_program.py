@@ -67,6 +67,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "private_dir_ids": {},
         "readonly_dirs": [],
         "parent_pins": [],
+        "mask_parent_pins": [],
         "writable_dirs": [],
         "sensitive_files": [],
         "fail_closed_file_masks": [],
@@ -791,6 +792,7 @@ _CHILD_STAGES = (
     "verify_fail_closed_aliases",
     "mask_sensitive_files",
     "mask_ssh_keys",
+    "pin_mask_parents",
     "retire_stand_in_stage",
     "confirm_crew_home_aliases",
     "scrub_env",
@@ -836,6 +838,44 @@ class _SwappingLibc(RecordingLibc):
         os.rename(path, path + ".aside")
         os.mkdir(path)
         return 0
+
+
+def test_a_credential_mask_parent_is_bound_over_itself_recursively(tmp_path: Path) -> None:
+    """The same pin as a seal parent's, from its own list and its own (last) stage."""
+    parent = tmp_path / "home" / ".kiro" / "crew" / "apps" / "demo" / "data"
+    parent.mkdir(parents=True)
+    libc = RecordingLibc()
+    run = launch(
+        tmp_path,
+        payload(mask_parent_pins=[str(parent), str(tmp_path / "absent")]),
+        libc=libc,
+    )
+    program.pin_seal_parents(run)
+    assert libc.calls == []
+    program.pin_mask_parents(run)
+    ((call,),) = [libc.calls]
+    assert (call.target_path, call.flags) == (str(parent), _MS_BIND | _MS_REC)
+    assert call.source_id == call.target_id
+
+
+def test_credential_mask_parents_are_pinned_deepest_first_and_seal_parents_shallowest(
+    tmp_path: Path,
+) -> None:
+    """Deepest first keeps each mask-parent pin on the outer mount an app update keeps."""
+    app = tmp_path / "home" / ".kiro" / "crew" / "apps" / "demo"
+    data = app / "data"
+    data.mkdir(parents=True)
+    libc = RecordingLibc()
+    run = launch(
+        tmp_path,
+        payload(parent_pins=[str(data), str(app)], mask_parent_pins=[str(app), str(data)]),
+        libc=libc,
+    )
+    program.pin_seal_parents(run)
+    assert [call.target_path for call in libc.calls] == [str(app), str(data)]
+    libc.calls.clear()
+    program.pin_mask_parents(run)
+    assert [call.target_path for call in libc.calls] == [str(data), str(app)]
 
 
 def test_a_seal_parent_that_changes_while_it_is_pinned_refuses_the_spawn(tmp_path: Path) -> None:
