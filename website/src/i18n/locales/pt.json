@@ -18045,7 +18045,19 @@
         "default_template_overridden_notice": "Definido por um arquivo de configuração local, então não pode ser alterado aqui. Novas sessões usam {{effective}}.",
         "default_template_retry": "Tentar de novo",
         "default_template_overridden_file": "Arquivo: {{path}}",
-        "default_template_saved": "Salvo"
+        "default_template_saved": "Salvo",
+        "unlisted_title": "Arquivos não exibidos",
+        "unlisted_hint": "Estes arquivos em ~/.kiro/agents não estão na lista, mas cada um ainda ocupa o próprio nome de arquivo (sem .json ou .md), então nenhum agente personalizado novo pode usar esse nome. Corrija, renomeie ou exclua um arquivo para liberar o nome.",
+        "unlisted_reason_unreadable": "Não pode ser lido como especificação de agente: não é possível analisá-lo, tem um campo de tipo incorreto, é grande demais ou é um link que não é seguido.",
+        "unlisted_reason_duplicate": "Declara o nome “{{name}}”, que “{{file}}” já usa, então só esse arquivo aparece na lista.",
+        "unlisted_by_hand": "Renomeie ou exclua este arquivo em ~/.kiro/agents para liberar o nome.",
+        "unlisted_delete_aria": "Excluir “{{file}}”",
+        "unlisted_delete_confirm": "Excluir o arquivo “{{file}}”?",
+        "unlisted_delete_confirm_body": "Ele sai de ~/.kiro/agents com um backup terminado em .bak ao lado, e o nome fica livre para um agente personalizado novo.",
+        "unlisted_delete_confirm_body_duplicate": "Ele sai de ~/.kiro/agents com um backup terminado em .bak ao lado. “{{file}}” e o agente “{{name}}” continuam como estão, e o nome “{{stem}}” fica livre para um agente personalizado novo.",
+        "unlisted_delete_button": "Excluir arquivo",
+        "err_name_taken_unlisted": "Esse nome está ocupado pelo arquivo “{{file}}”, que a lista não exibe. Libere-o em “Arquivos não exibidos”, nesta aba.",
+        "err_name_taken_listed": "Esse nome está ocupado pelo arquivo “{{file}}”, que a lista exibe como “{{name}}” porque esse é o nome que ele declara. Altere o nome dentro do arquivo ou escolha outro nome."
       },
       "usageSeriesChart": {
         "layer_by": "Dividir por",

@@ -1169,6 +1169,13 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("api_agent_template_delete", "dashboard"),
         ("api_agent_template_delete", "dashboard"),
     ],
+    # The delete's lookup of an unreadable file by its exact stem labels
+    # itself as that delete; the roster re-reads only the files that back no
+    # shown row, to tell an unreadable one from a hidden duplicate.
+    "kiro_crew/dashboard/handlers/agent_templates_unlisted.py": [
+        ("api_agent_template_delete", "dashboard"),
+        ("api_agent_templates", "dashboard"),
+    ],
     "kiro_crew/dashboard/handlers/hooks_scripts.py": [("api_kiro_hooks", "dashboard")],
     # One read: the configured-server mint resolves the server's URL from the
     # owner's main spec, so the caller never supplies it.

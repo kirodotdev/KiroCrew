@@ -17135,7 +17135,19 @@
         "default_template_overridden_notice": "로컬 설정 파일이 지정하므로 여기서 변경할 수 없습니다. 새 세션은 {{effective}}을(를) 씁니다.",
         "default_template_retry": "다시 시도",
         "default_template_overridden_file": "파일: {{path}}",
-        "default_template_saved": "저장됨"
+        "default_template_saved": "저장됨",
+        "unlisted_title": "표시되지 않은 파일",
+        "unlisted_hint": "~/.kiro/agents의 이 파일들은 목록에 없지만, 각각 자기 파일 이름(.json 또는 .md 제외)을 계속 차지하므로 새 커스텀 에이전트가 그 이름을 쓸 수 없습니다. 이름을 비우려면 파일을 고치거나, 이름을 바꾸거나, 삭제하세요.",
+        "unlisted_reason_unreadable": "에이전트 정의로 읽을 수 없습니다. 구문 분석이 안 되거나, 필드 형식이 잘못되었거나, 너무 크거나, 따라가지 않는 링크입니다.",
+        "unlisted_reason_duplicate": "‘{{name}}’ 이름을 선언하지만 ‘{{file}}’이(가) 이미 그 이름을 쓰고 있어 목록에는 그 파일만 표시됩니다.",
+        "unlisted_by_hand": "이름을 비우려면 ~/.kiro/agents에서 이 파일의 이름을 바꾸거나 삭제하세요.",
+        "unlisted_delete_aria": "‘{{file}}’ 삭제",
+        "unlisted_delete_confirm": "파일 ‘{{file}}’을(를) 삭제하시겠습니까?",
+        "unlisted_delete_confirm_body": "~/.kiro/agents에서 빠지고 옆에 .bak으로 끝나는 백업이 남으며, 그 이름은 새 커스텀 에이전트가 쓸 수 있게 됩니다.",
+        "unlisted_delete_confirm_body_duplicate": "~/.kiro/agents에서 빠지고 옆에 .bak으로 끝나는 백업이 남습니다. ‘{{file}}’ 파일과 ‘{{name}}’ 에이전트는 그대로 남으며, 이름 ‘{{stem}}’은(는) 새 커스텀 에이전트가 쓸 수 있게 됩니다.",
+        "unlisted_delete_button": "파일 삭제",
+        "err_name_taken_unlisted": "그 이름은 목록에 표시되지 않는 파일 ‘{{file}}’이(가) 차지하고 있습니다. 이 탭의 ‘표시되지 않은 파일’에서 비우세요.",
+        "err_name_taken_listed": "그 이름은 파일 ‘{{file}}’이(가) 차지하고 있습니다. 이 파일이 선언한 이름이 ‘{{name}}’이라 목록에는 그 이름으로 표시됩니다. 파일 안의 이름을 바꾸거나 다른 이름을 고르세요."
       },
       "usageSeriesChart": {
         "layer_by": "구분 기준",
