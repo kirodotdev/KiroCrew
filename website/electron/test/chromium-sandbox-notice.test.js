@@ -49,6 +49,20 @@ describe("describeChromiumSandboxOff", () => {
     assert.ok(notice.detail.includes("does not install a kirocrew command"));
     assert.equal(notice.command, `'${CLI}' sandbox install-profile --path '${APPIMAGE}'`);
     assert.ok(notice.detail.includes(notice.command));
+    // The consequence and the action lead; the FUSE explanation follows.
+    assert.ok(notice.detail.startsWith("Agents cannot run"));
+    assert.ok(notice.detail.indexOf(notice.command) < notice.detail.indexOf("FUSE"));
+  });
+
+  // The .deb and .rpm put only `kirocrew-desktop` on PATH, so naming them as
+  // the way to get a `kirocrew` command would send the user to another
+  // `command not found`. The one-line install is what provides it.
+  it("names the one-line install, not a package, as the way to get kirocrew", () => {
+    for (const readSysctl of [() => "1\n", () => "0\n"]) {
+      const { detail } = describeChromiumSandboxOff({ ...ubuntuAppImage, readSysctl });
+      assert.ok(detail.includes("The one-line install puts kirocrew on your PATH"), detail);
+      assert.equal(detail.includes("packages do"), false, detail);
+    }
   });
 
   it("names no command when the restriction is not AppArmor's", () => {

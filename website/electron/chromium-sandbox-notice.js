@@ -40,12 +40,16 @@ const OTHER_CAUSES_URL =
 const MESSAGE = "Kiro Crew is running with Chromium's sandbox turned off";
 
 const WHY =
-  "An AppImage runs from a FUSE mount, where Chromium's own sandbox helper " +
-  "cannot work, so Chromium needs unprivileged user namespaces instead. ";
+  "Why: an AppImage runs from a FUSE mount, where Chromium's own sandbox " +
+  "helper cannot work, so Chromium needs unprivileged user namespaces " +
+  "instead. Without them the AppImage starts Kiro Crew with --no-sandbox.";
 
+// The packages put only `kirocrew-desktop` on PATH; the one-line install is
+// what provides `kirocrew` (docs/guides/install.md, "Which path on Linux").
 const NO_CLI_ON_PATH =
-  "The AppImage does not install a kirocrew command. The .deb and .rpm " +
-  "packages do, and they set up the sandbox for you.";
+  "The AppImage does not install a kirocrew command. The one-line install " +
+  "puts kirocrew on your PATH, and the .deb and .rpm packages set up the " +
+  "sandbox for you.";
 
 /**
  * Decide whether this launch needs the notice, and what it says.
@@ -70,26 +74,26 @@ function describeChromiumSandboxOff({ platform, env, argv, readSysctl, cliBin })
     return {
       message: MESSAGE,
       detail:
-        WHY +
-        "This system blocks them (kernel.apparmor_restrict_unprivileged_userns=1), " +
-        "so the AppImage started Kiro Crew with --no-sandbox. The same " +
-        "restriction stops agents from running.\n\n" +
-        "To fix both, run this in a terminal while Kiro Crew is open, then " +
-        "restart Kiro Crew. It asks for your password when it needs sudo, and " +
-        "it applies to the AppImage where it is now, so keep it there:\n\n" +
+        "Agents cannot run, and the app runs without Chromium's sandbox, " +
+        "because this system blocks unprivileged user namespaces " +
+        "(kernel.apparmor_restrict_unprivileged_userns=1).\n\n" +
+        "To fix both, run this command in a terminal while Kiro Crew is open, " +
+        "then restart Kiro Crew. Copy command puts it on your clipboard. It " +
+        "asks for your password when it needs sudo, and it applies to the " +
+        "AppImage where it is now, so keep the AppImage there:\n\n" +
         need.command +
-        "\n\nThe command uses the kirocrew CLI inside this app. " +
-        NO_CLI_ON_PATH,
+        "\n\n" + WHY + "\n\n" +
+        "The command uses the kirocrew CLI inside this app. " + NO_CLI_ON_PATH,
       command: need.command,
     };
   }
   return {
     message: MESSAGE,
     detail:
-      WHY +
-      "This system does not allow them, so the AppImage started Kiro Crew with " +
-      "--no-sandbox. The install guide lists the causes and how to fix each one.\n\n" +
-      NO_CLI_ON_PATH,
+      "The app runs without Chromium's sandbox, because this system does not " +
+      "allow unprivileged user namespaces. The install guide lists the causes " +
+      "and how to fix each one.\n\n" +
+      WHY + "\n\n" + NO_CLI_ON_PATH,
     command: "",
   };
 }

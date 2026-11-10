@@ -449,7 +449,8 @@ left as the user set it.
   CLI's `sandbox install-profile` command by absolute path, which fixes both
   this and the agent sandbox, with a Copy command button; otherwise it opens
   the install guide's other-causes section. Both say the AppImage installs no
-  `kirocrew` command. "Don't show this again" sets
+  `kirocrew` command and that the one-line install puts one on PATH (the
+  packages add only `kirocrew-desktop`). "Don't show this again" sets
   `chromiumSandboxNoticeDismissed` in `config.json`
   (`chromium-sandbox-notice.js`).
 - External links open in your default browser
