@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -633,3 +634,40 @@ class TestUpVerb:
             )
         err = capsys.readouterr().err
         assert "worktree build, not pod" in err and "ImportError: boom" in err
+
+    def test_up_broken_gateway_is_torn_down_when_the_journal_does_not_answer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """A stuck journalctl must not cost `up` the teardown of the unit it started."""
+        c = self._prep(tmp_path, monkeypatch)
+        monkeypatch.setattr(rt, "derive_port", lambda cfg, n: 7811)
+        monkeypatch.setattr(rt, "is_active", lambda cfg, n: False)
+        monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp(returncode=0))
+        monkeypatch.setattr(pod_cli, "_wait_healthy", lambda *_a, **_kw: -1)
+        monkeypatch.setattr(rt, "require_systemd", lambda: None)
+        real_run = rt.subprocess.run
+
+        def _run(argv, *a, **kw):
+            if argv and argv[0] == "journalctl":
+                raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+            return real_run(argv, *a, **kw)
+
+        monkeypatch.setattr(rt.subprocess, "run", _run)
+        stopped: list[str] = []
+        monkeypatch.setattr(rt, "stop_pod", lambda cfg, n: stopped.append(n) or _cp())
+        monkeypatch.setattr(rt, "halt_pod", lambda cfg, n: stopped.append(n) or _cp())
+        monkeypatch.setattr(pod_cli, "_audit", lambda *a, **k: None)
+        with pytest.raises(SystemExit):
+            pod_cli._up(
+                c,
+                argparse.Namespace(
+                    # flake-ok: ttl is the token lifetime `up` records, not a wait or deadline
+                    name="demo",
+                    json=False,
+                    seed="",
+                    ttl="2h",
+                    provision=False,
+                ),
+            )
+        assert stopped == ["demo"]
+        assert "could not read the pod journal" in capsys.readouterr().err
