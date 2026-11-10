@@ -10,7 +10,7 @@ endpoint's audit-and-refuse paths) are unmeasured there.
 So nothing here runs git. The boundary is injected at exactly two seams:
 ``_run_git`` (a table-driven stand-in returning canned
 ``subprocess.CompletedProcess`` values) and, for the endpoint tests,
-``_git_toplevel`` / ``_create_worktree_sync``. No subprocess is spawned, no
+``_toplevel_probe`` / ``_create_worktree_sync``. No subprocess is spawned, no
 network is touched, and every filesystem write lands under ``tmp_path`` or the
 autouse-isolated ``KIROCREW_HOME`` from ``conftest.py``.
 
@@ -33,6 +33,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from git_maintenance_helpers import git_maintenance_off_entries
 
+from kiro_crew import git_config_hooks
 from kiro_crew.dashboard.handlers import worktree as wt
 
 # ── injected git boundary ────────────────────────────────────────────────
@@ -54,12 +55,15 @@ class FakeGit:
         self.table = dict(table or {})
         self.default = default
         self.calls: list[tuple[tuple[str, ...], str]] = []
+        self.envs: list[dict[str, str] | None] = []
 
-    def __call__(self, args, cwd, *, stdout_decoder=None):
-        # ``stdout_decoder`` mirrors the real ``_run_git`` signature; the
-        # table's canned stdout is already a str, which every decoder passes
-        # through unchanged, so the double records the call and ignores it.
+    def __call__(self, args, cwd, *, stdout_decoder=None, env=None, scan_git_stderr=False):
+        # ``stdout_decoder`` and ``scan_git_stderr`` mirror the real ``_run_git``
+        # signature; the table's canned stdout is already a str, which every
+        # decoder passes through unchanged, and no hook-config scan runs here,
+        # so the double records the call and ignores both.
         self.calls.append((tuple(args), cwd))
+        self.envs.append(env)
         for prefix, result in self.table.items():
             if tuple(args[: len(prefix)]) == tuple(prefix):
                 return _proc(args, *result)
@@ -173,6 +177,26 @@ class TestRunGit:
         monkeypatch.setattr(wt, "sandboxed_spawn_argv", self._spawn())
         monkeypatch.setattr(wt.subprocess, "run", lambda argv, **kw: _proc(argv, 128, "", None))
         assert wt._run_git(["status"], str(tmp_path)).returncode == 128
+
+    def test_the_base_env_reaches_the_hook_scan_and_the_call(self, monkeypatch, tmp_path):
+        """The hook-config scan's git can be the one whose error the caller reads,
+        so it runs under the same environment as the call."""
+        seen: dict = {}
+
+        def scan(cwd, *, spawn_argv, mode, env=None):
+            seen["scan"] = env
+            return []
+
+        def spawn(argv, mode="standard", *, env=None, **kw):
+            seen["call"] = env
+            return list(argv), {}, None
+
+        monkeypatch.setattr(wt, "config_hook_disable_args_sandboxed", scan)
+        monkeypatch.setattr(wt, "sandboxed_spawn_argv", spawn)
+        monkeypatch.setattr(wt, "run_limited", lambda argv, **kw: _proc(argv, 0, b"", b""))
+        base = {"LC_ALL": "C", "LANGUAGE": "C"}
+        wt._run_git(["status"], str(tmp_path), env=base)
+        assert seen == {"scan": base, "call": base}
 
 
 # ── small pure helpers ───────────────────────────────────────────────────
@@ -304,6 +328,17 @@ class TestGitToplevel:
         root.mkdir()
         git.table = {("rev-parse",): (0, f"{root}\n", "")}
         assert wt._git_toplevel(str(root)) == os.path.realpath(str(root))
+        assert wt._toplevel_probe(str(root)) == (os.path.realpath(str(root)), "")
+
+    def test_the_probe_keeps_gits_stderr_and_runs_in_the_c_locale(self, git, monkeypatch):
+        """The classifier reads git's English words, and the credential scrub keeps
+        ``LANG``, so a localized host must not reach git's wording."""
+        monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+        monkeypatch.setenv("LANGUAGE", "de")
+        stderr = f"{_SSH_MASK_WARNING}\nfatal: not a git repository: /srv/gone\n"
+        git.table = {("rev-parse",): (128, "", stderr)}
+        assert wt._toplevel_probe("/srv/broken") == (None, stderr)
+        assert (git.envs[-1]["LC_ALL"], git.envs[-1]["LANGUAGE"]) == ("C", "C")
 
 
 class TestWorktreeBranches:
@@ -1358,7 +1393,7 @@ class TestEndpointValidation:
         expanded = os.path.expanduser(os.path.join("~", "proj"))
         if os.path.realpath(expanded) != os.path.realpath(str(proj)):
             pytest.skip("HOME is not honored by expanduser on this host")
-        monkeypatch.setattr(wt, "_git_toplevel", lambda p: os.path.realpath(p))
+        monkeypatch.setattr(wt, "_toplevel_probe", lambda p: (os.path.realpath(p), ""))
         monkeypatch.setattr(wt, "_create_worktree_sync", lambda root, branch: ({"ok": True}, 200))
         async with TestClient(TestServer(_make_app(str(proj)))) as client:
             resp = await client.post(
@@ -1378,7 +1413,7 @@ class TestEndpointGitBoundary:
         self, repo_dir, audit, monkeypatch
     ):
         monkeypatch.setattr(
-            wt, "_git_toplevel", MagicMock(side_effect=wt.SandboxUnavailable("no backend"))
+            wt, "_toplevel_probe", MagicMock(side_effect=wt.SandboxUnavailable("no backend"))
         )
         async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
             resp = await client.post(
@@ -1395,23 +1430,71 @@ class TestEndpointGitBoundary:
     async def test_a_spawn_failure_on_the_toplevel_probe_is_a_503(
         self, repo_dir, audit, monkeypatch, exc
     ):
-        monkeypatch.setattr(wt, "_git_toplevel", MagicMock(side_effect=exc))
+        monkeypatch.setattr(wt, "_toplevel_probe", MagicMock(side_effect=exc))
         async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(repo_dir), "branch": "feat/x"}
             )
             assert resp.status == 503
             assert (await resp.json())["error"] == "git is unavailable"
+        rows = [c.kwargs for c in audit.log_api_access.call_args_list]
+        assert [(r["operation"], r["outcome"]) for r in rows] == [("worktree_create", "error")]
+        assert rows[0]["error"].startswith("git is unavailable")
 
     @pytest.mark.asyncio
     async def test_a_non_repo_is_a_400(self, repo_dir, audit, monkeypatch):
-        monkeypatch.setattr(wt, "_git_toplevel", lambda p: None)
+        line = "fatal: not a git repository (or any of the parent directories): .git"
+        monkeypatch.setattr(wt, "_toplevel_probe", lambda p: (None, line))
         async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(repo_dir), "branch": "feat/x"}
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "Not a git repository"
+            body = await resp.json()
+        assert body == {
+            "error": "Not a git repository",
+            "code": "not_a_git_repository",
+            "detail": line,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_broken_gitfile_keeps_gits_reason_and_is_audited(
+        self, repo_dir, audit, monkeypatch
+    ):
+        """A ``.git`` file naming a missing directory is not answered as if the
+        folder had no repository: the cause and git's own line reach the card, and
+        the refusal is on the audit trail like every other refusal here."""
+        line = "fatal: not a git repository: /srv/gone/.git/worktrees/proj"
+        monkeypatch.setattr(wt, "_toplevel_probe", lambda p: (None, line))
+        async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
+            resp = await client.post(
+                "/api/worktree/create", json={"repo": str(repo_dir), "branch": "feat/x"}
+            )
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "broken_gitfile"
+        assert body["error"] != "Not a git repository"
+        assert body["detail"] == "fatal: not a git repository: /srv/gone/.git/worktrees/proj"
+        rows = [c.kwargs for c in audit.log_api_access.call_args_list]
+        assert [(r["operation"], r["outcome"]) for r in rows] == [("worktree_create", "denied")]
+        assert rows[0]["resources"] == f"repo={repo_dir}"
+        assert "broken_gitfile" in rows[0]["error"]
+        assert "/srv/gone/.git/worktrees/proj" in rows[0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_the_detail_is_redacted(self, repo_dir, audit, monkeypatch):
+        """git echoes the ``gitdir:`` line, which is file content anyone who can
+        write the folder chose, so it is redacted before it reaches the browser."""
+        monkeypatch.setattr(
+            wt, "_toplevel_probe", lambda p: (None, "fatal: not a git repository: /x/SECRET")
+        )
+        monkeypatch.setattr(wt, "redact_via_context", lambda text: text.replace("SECRET", "***"))
+        async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
+            resp = await client.post(
+                "/api/worktree/create", json={"repo": str(repo_dir), "branch": "feat/x"}
+            )
+            body = await resp.json()
+        assert body["detail"] == "fatal: not a git repository: /x/***"
 
     @pytest.mark.asyncio
     async def test_a_toplevel_above_every_grant_is_audited_and_refused(
@@ -1419,7 +1502,9 @@ class TestEndpointGitBoundary:
     ):
         nested = tmp_path / "proj" / "src"
         nested.mkdir(parents=True)
-        monkeypatch.setattr(wt, "_git_toplevel", lambda p: os.path.realpath(str(tmp_path / "proj")))
+        monkeypatch.setattr(
+            wt, "_toplevel_probe", lambda p: (os.path.realpath(str(tmp_path / "proj")), "")
+        )
         async with TestClient(TestServer(_make_app(str(nested)))) as client:
             resp = await client.post(
                 "/api/worktree/create", json={"repo": str(nested), "branch": "feat/x"}
@@ -1443,7 +1528,7 @@ class TestEndpointGitBoundary:
         unexercised.
         """
         inner = os.path.realpath(str(repo_dir / "inner"))
-        monkeypatch.setattr(wt, "_git_toplevel", lambda p: inner)
+        monkeypatch.setattr(wt, "_toplevel_probe", lambda p: (inner, ""))
         monkeypatch.setattr(wt, "is_sensitive_path", lambda p: os.path.realpath(p) == inner)
         async with TestClient(TestServer(_make_app(str(repo_dir)))) as client:
             resp = await client.post(
@@ -1455,10 +1540,173 @@ class TestEndpointGitBoundary:
         assert audit.log_api_access.call_args.kwargs["resources"] == f"root={inner}"
 
 
+#: The launcher's advisories, as it prints them before it execs git: ``~/.ssh`` is a
+#: dangling link (``mask_stages``), and an expose file it could not read.
+_SSH_MASK_WARNING = (
+    "sandbox: WARNING -- /home/u/.ssh is not a directory (a dangling link, or a link "
+    "to a file); nothing to hide there, continuing without the ssh key mask"
+)
+_EXPOSE_WARNING = (
+    "sandbox: WARNING \u2014 cannot read /home/u/.aws/config ([Errno 13] Permission denied: "
+    "'/home/u/.aws/config'); it will be ABSENT inside the sandbox. Anything depending on it "
+    "(e.g. credential_process in ~/.aws/config) will fail."
+)
+
+#: git's line for a ``.git`` file whose ``gitdir:`` names no git directory. Older git
+#: names the missing target; newer git (2.56 on CI) names the ``.git`` file itself.
+_DANGLING_GITFILE_WORDS = (
+    "not a git repository: ",
+    "gitfile does not point to a valid repository: ",
+)
+
+
+class TestNotARepoRefusal:
+    @pytest.mark.parametrize(
+        "line, code",
+        [
+            pytest.param(
+                "fatal: not a git repository (or any of the parent directories): .git",
+                "not_a_git_repository",
+                id="no_repository",
+            ),
+            pytest.param(
+                "fatal: not a git repository (or any parent up to mount point /)",
+                "not_a_git_repository",
+                id="no_repository_up_to_a_mount",
+            ),
+            pytest.param(
+                "fatal: not a git repository: /srv/gone/.git/worktrees/proj",
+                "broken_gitfile",
+                id="gitdir_target_missing",
+            ),
+            pytest.param(
+                "fatal: invalid gitfile format: /srv/proj/.git", "broken_gitfile", id="bad_gitfile"
+            ),
+            pytest.param(
+                "fatal: detected dubious ownership in repository at '/srv/proj'",
+                "git_dubious_ownership",
+                id="safe_directory",
+            ),
+            pytest.param(
+                "fatal: failed to stat '/srv/proj/.git': Permission denied",
+                "git_permission_denied",
+                id="permission",
+            ),
+            pytest.param("git failed", "git_probe_failed", id="anything_else"),
+        ],
+    )
+    def test_names_why_git_refused(self, line, code):
+        got, message, detail = wt._not_a_repo_refusal(line)
+        assert (got, detail) == (code, line)
+        assert message
+
+    def test_the_hook_scan_prefix_is_removed_so_gits_own_line_is_shown(self, monkeypatch, tmp_path):
+        """When the hook-config scan's git is the one that refuses, the probe reads
+        that git's own stderr, so the scan's wrapper never stands in for git's line;
+        every other caller of ``_run_git`` still gets the scan's one-line error."""
+        line = "fatal: detected dubious ownership in repository at '/srv/proj'"
+        monkeypatch.setattr(
+            wt, "sandboxed_spawn_argv", lambda argv, mode="standard", **kw: (list(argv), {}, None)
+        )
+        err = f"{line}\nTo add an exception for this directory, call:\n".encode()
+        monkeypatch.setattr(git_config_hooks, "_run", lambda argv, **kw: _proc(argv, 128, b"", err))
+        root, stderr = wt._toplevel_probe(str(tmp_path))
+        assert (root, stderr) == (None, err.decode())
+        code, _message, detail = wt._not_a_repo_refusal(stderr)
+        assert (code, detail) == ("git_dubious_ownership", line)
+        other = wt._run_git(["worktree", "list"], str(tmp_path)).stderr
+        assert other == f"fatal: could not list git hook config (128): {err.decode().strip()}"
+
+    @pytest.mark.parametrize(
+        "line, code",
+        [
+            pytest.param(
+                "fatal: not a git repository (or any parent up to mount point /)",
+                "not_a_git_repository",
+                id="plain",
+            ),
+            pytest.param(
+                "fatal: not a git repository: /srv/gone/.git/worktrees/proj",
+                "broken_gitfile",
+                id="broken_gitfile",
+            ),
+        ],
+    )
+    def test_a_launcher_warning_ahead_of_gits_line_is_not_the_reason(self, line, code):
+        stderr = (
+            f"{_SSH_MASK_WARNING}\n{line}\n"
+            "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n"
+        )
+        got, _message, detail = wt._not_a_repo_refusal(stderr)
+        assert (got, detail) == (code, line)
+
+    def test_a_hook_scan_tail_that_starts_inside_a_warning_is_not_the_reason(
+        self, monkeypatch, tmp_path
+    ):
+        """The hook-config scan keeps only the end of a stderr longer than its bound,
+        so git's line can follow a piece of a launcher advisory cut before its prefix,
+        here one naming another file's "Permission denied"."""
+        line = "fatal: not a git repository: /srv/g"
+        err = f"{_EXPOSE_WARNING}\n{line}\n".encode()
+        cut = err.index(b" cannot read")
+        monkeypatch.setattr(git_config_hooks, "_SCAN_STDERR_LIMIT", len(err) - cut)
+        monkeypatch.setattr(
+            wt, "sandboxed_spawn_argv", lambda argv, mode="standard", **kw: (list(argv), {}, None)
+        )
+        monkeypatch.setattr(git_config_hooks, "_run", lambda argv, **kw: _proc(argv, 128, b"", err))
+        root, stderr = wt._toplevel_probe(str(tmp_path))
+        assert root is None
+        assert "Permission denied" in stderr.splitlines()[0]
+        assert "sandbox: WARNING" not in stderr
+        code, _message, detail = wt._not_a_repo_refusal(stderr)
+        assert (code, detail) == ("broken_gitfile", line)
+
+    def test_a_launcher_line_with_no_git_line_is_the_detail(self):
+        exec_failure = "sandbox: FATAL -- cannot exec git (No such file or directory)"
+        code, _message, detail = wt._not_a_repo_refusal(f"{_SSH_MASK_WARNING}\n{exec_failure}\n")
+        assert (code, detail) == ("git_probe_failed", exec_failure)
+
+    def test_a_reason_after_a_long_path_is_read_before_the_detail_is_clipped(self):
+        """git can name its reason after the path ("failed to stat '<path>':
+        Permission denied"), so a path longer than the detail keeps must not hide it."""
+        line = f"fatal: failed to stat '/srv/{'x' * 400}/.git': Permission denied"
+        code, _message, detail = wt._not_a_repo_refusal(line)
+        assert (code, detail) == ("git_permission_denied", line)
+
+    @pytest.mark.asyncio
+    async def test_a_long_missing_gitdir_path_still_reads_as_a_broken_gitfile(
+        self, tmp_path, monkeypatch, audit
+    ):
+        """git's line for a ``.git`` file naming a missing directory opens with its
+        reason and ends with a path (on older git, that missing path), and the
+        hook-config scan is the git that says it. A path longer than that scan keeps
+        for display must not cut the reason off before the refusal is classified, in
+        the answer or in the audit row."""
+        monkeypatch.setattr(
+            wt, "sandboxed_spawn_argv", lambda argv, mode="standard", **kw: (list(argv), {}, None)
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        gone = tmp_path / ("gone-" + "x" * 220) / ".git" / "worktrees" / "project"
+        (project / ".git").write_text(f"gitdir: {gone}\n")
+        async with TestClient(TestServer(_make_app(str(project)))) as client:
+            resp = await client.post(
+                "/api/worktree/create", json={"repo": str(project), "branch": "feat/x"}
+            )
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "broken_gitfile"
+        assert body["detail"].startswith("fatal: ")
+        assert any(words in body["detail"] for words in _DANGLING_GITFILE_WORDS)
+        rows = [c.kwargs for c in audit.log_api_access.call_args_list]
+        assert [(r["operation"], r["outcome"]) for r in rows] == [("worktree_create", "denied")]
+        assert "broken_gitfile" in rows[0]["error"]
+
+
 class TestEndpointCreateOutcomes:
     @pytest.fixture(autouse=True)
     def _toplevel(self, monkeypatch):
-        monkeypatch.setattr(wt, "_git_toplevel", lambda p: os.path.realpath(p))
+        monkeypatch.setattr(wt, "_toplevel_probe", lambda p: (os.path.realpath(p), ""))
 
     @pytest.mark.asyncio
     async def test_success_is_audited_as_allowed(self, repo_dir, audit, monkeypatch, caplog):

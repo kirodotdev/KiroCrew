@@ -169,6 +169,7 @@ from kiro_crew.dashboard.chat_api.crew_steer import (  # noqa: F401
     record_crew_steer_later,
 )
 from kiro_crew.dashboard.chat_api.followup_card import (  # noqa: F401
+    _project_offers_no_worktree,
     _redact_followup_item,
     api_chat_slot_followup,
 )
