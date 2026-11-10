@@ -369,6 +369,12 @@ export interface ChatSlot extends TurnIdentityFields {
    * Not a turn: `running` stays false, so sends and queueing are unchanged;
    * only the chat's working indicator reads it. Absent from an older gateway. */
   preparing?: boolean
+  /** The greeting the agent's spec carries (`welcomeMessage`), capped and
+   * redacted by the gateway, while the chat has no row: an unstarted chat
+   * writes none, so the welcome page draws it from here. "" from the first row
+   * on, when the transcript's welcome row (`meta.kind` `agent_welcome`) carries
+   * it; absent from an older gateway. Plain text, never markdown or HTML. */
+  welcome_message?: string
   /** A cooperative Stop was declined moments ago (compaction); the next press
    * escalates to the force stop. Read from the same window the backend uses. */
   stop_declined?: boolean
