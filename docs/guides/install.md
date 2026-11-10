@@ -207,9 +207,8 @@ installed by the installer. Every release from `0.1.2` onward can be pinned.
 **These two releases will not be backfilled.** Signing an already-published
 digest today would create a fresh attestation for bytes that no signing
 pipeline produced, which asserts a provenance the project cannot re-establish
-after the fact. [SECURITY.md](../../SECURITY.md) already limits active support
-to the latest release, so the trust surface would widen for two releases that
-are several minor versions behind current `stable` and are supported by nobody.
+after the fact. Backfilling would also widen the trust surface for two releases
+that are several minor versions behind current `stable`.
 Their artifacts stay published and their `SHA256SUMS` stays fetchable for
 archival inspection, but the installer has no checksum-only path, so it will
 not install them.

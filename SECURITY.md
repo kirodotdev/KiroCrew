@@ -1,28 +1,11 @@
-# Security Policy
+## Reporting Security Issues
 
-## Reporting a Vulnerability
+Amazon Web Services (AWS) practices industry-standard Coodinated Vulnerability Disclosure (CVD) with the goal of reducing adversary advantage while a security vulnerability is being addressed. The [CERT® Guide to Coordinated Vulnerability Disclosure](https://certcc.github.io/CERT-Guide-to-CVD/tutorials/cvd_in_a_nutshell/) provides information about the CVD process, and outlines tools and practices that can help achieve this goal.
+  
+We kindly ask that you **do not** open a public GitHub issue to report security concerns.  
+  
+Instead, please submit the issue to the AWS Vulnerability Disclosure Program via [HackerOne](https://hackerone.com/aws_vdp) or send your report via [email](mailto:aws-security@amazon.com).  
+  
+For more details, visit the [AWS Vulnerability Reporting Page](http://aws.amazon.com/security/vulnerability-reporting/).  
 
-If you discover a potential security issue in this project, please **do not** create a public
-GitHub issue. Instead, report it privately:
-
-- **Email:** [kiro-crew-security-support@amazon.com](mailto:kiro-crew-security-support@amazon.com)
-- **Subject prefix:** `[SECURITY]`
-
-Please include:
-- A description of the vulnerability
-- Steps to reproduce
-- Potential impact
-- Suggested fix (if any)
-
-We will acknowledge your report within 48 hours and aim to provide a fix or mitigation within
-7 days for critical issues.
-
-## Supported Versions
-
-Only the latest release is actively supported with security patches. We recommend always
-running the most recent version.
-
-## Scope
-
-This policy covers the Kiro Crew source code and its bundled dependencies. It does not cover
-third-party services (LLM providers, etc.) that Kiro Crew connects to.
+Thank you in advance for collaborating with us to help protect our customers.
