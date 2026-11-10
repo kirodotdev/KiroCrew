@@ -218,10 +218,14 @@ export default function ErrorNotice({
    * of the width and the title and message wrap one or two words per line. Not
    * a container query: jsdom cannot evaluate one, so the pin would be
    * untestable, and `container-type` on the shared root would collapse a
-   * notice laid out in a shrink-to-fit context. Ignored by the inline variant
-   * and when `askAgent` is off.
+   * notice laid out in a shrink-to-fit context. `below-on-phone` is `below`
+   * under the `sm` breakpoint and `beside` from `sm` up, for a notice that spans
+   * a settings card: on a phone a beside hand-off squeezes the sentence into a
+   * narrow column. It is the one value the inline variant reads too, wrapping
+   * its row so the hand-off takes the line under the message. Otherwise ignored
+   * by the inline variant, and ignored when `askAgent` is off.
    */
-  actionPlacement?: 'beside' | 'below'
+  actionPlacement?: 'beside' | 'below' | 'below-on-phone'
   /**
    * Where the `message` sits relative to the `title`. `beside` (default) runs
    * the two as one sentence -- right when the message is the human-readable
@@ -331,6 +335,12 @@ export default function ErrorNotice({
   // The secondary line: smaller than the title, lighter than the lead, but still
   // the alert's own colour -- it is the failure's text, demoted, not a caption.
   const messageBelow = messagePlacement === 'below' && Boolean(title)
+  // Below `sm` the row wraps and the message takes all but the icon's (and the
+  // ✕'s) width, so the hand-off moves to the line under it; from `sm` up the
+  // row is the one-line `beside` shape.
+  // A message already on its own line under the title (`messageBelow`) keeps
+  // that shape; the two basis rules would otherwise contend for the span.
+  const phoneBelow = askAgent && actionPlacement === 'below-on-phone' && !messageBelow
 
   // One name for the dismiss control, read two ways: `aria-label` for the
   // accessibility tree and `title` as the tooltip, so a sighted user hovering
@@ -341,13 +351,13 @@ export default function ErrorNotice({
     return (
       <span
         role={announce ? 'alert' : undefined}
-        className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''} ${className}`}
+        className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''}${phoneBelow ? ' flex-wrap sm:flex-nowrap' : ''} ${className}`}
         id={id}
         data-testid={testId}
       >
         {showIcon && <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />}
         {title && <strong className="min-w-0 font-semibold" style={{ overflowWrap: 'anywhere' }}>{title}</strong>}
-        <span ref={messageRef} className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger-text' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
+        <span ref={messageRef} className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger-text' : ''}${phoneBelow ? ' grow basis-[calc(100%-2rem)] sm:grow-0 sm:basis-auto' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
         {askAgent && (
           <AskAgentButton
             report={report}
@@ -408,12 +418,14 @@ export default function ErrorNotice({
   return (
     <div
       role={announce ? 'alert' : undefined}
-      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger-text ${className}`}
+      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : phoneBelow ? 'flex-wrap sm:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger-text ${className}`}
       id={id}
       data-testid={testId}
     >
       {showIcon && <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />}
-      <div className={`min-w-0 flex-1 whitespace-pre-wrap${scrollMessage ? ' min-h-0 self-stretch flex flex-col' : ''}`} style={{ overflowWrap: 'anywhere' }}>
+      {/* `below-on-phone`: the text leaves room for the icon and the ✕ only, so
+          the hand-off (ordered last) wraps under it, indented past the icon. */}
+      <div className={`min-w-0 ${phoneBelow ? 'grow shrink basis-[calc(100%-3rem)] sm:flex-1' : 'flex-1'} whitespace-pre-wrap${scrollMessage ? ' min-h-0 self-stretch flex flex-col' : ''}`} style={{ overflowWrap: 'anywhere' }}>
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
@@ -436,14 +448,14 @@ export default function ErrorNotice({
           </div>
         )}
       </div>
-      {askAgent && actionPlacement === 'beside' && (
+      {askAgent && (actionPlacement === 'beside' || phoneBelow) && (
         <AskAgentButton
           report={report}
           message={message}
           onHandoff={onHandoff}
           onStage={onStage}
           label={askAgentLabel}
-          className="mt-[1px]"
+          className={phoneBelow ? `mt-[1px] order-last sm:order-none ${showIcon ? 'ml-[22px] sm:ml-0' : ''}` : 'mt-[1px]'}
         />
       )}
       {dismissLabelVisible

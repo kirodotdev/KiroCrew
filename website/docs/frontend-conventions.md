@@ -97,6 +97,9 @@ Other shared modules:
   constrain the text column's height while reserving room for the hand-off.
   `messagePlacement` is `'beside'` by default; `'below'` puts the raw message on
   its own line under a plain-language `title`, and is ignored without a `title`.
+  `actionPlacement="below-on-phone"` puts the hand-off under the message only
+  below `sm` and beside it from `sm` up, in both variants, so a notice that
+  spans a settings card keeps its sentence the row's width on a phone.
 - `Clickable.tsx` (accessible clickable div; see below)
 - `SegmentedControl.tsx` (sliding pill, Framer Motion) — see the switcher rule below.
   It is a WAI-ARIA radiogroup: each segment is `role="radio"` with `aria-checked`
