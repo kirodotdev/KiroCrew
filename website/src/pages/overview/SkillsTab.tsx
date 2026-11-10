@@ -1186,7 +1186,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
               {!approveRefusal && (
                 <div className="mt-1">
                   <AskAgentButton
-                    message={`${i18nT('pages.overview.skillsTab.scripts_fail_validation_warning')} (${p.name})`}
+                    message={`${i18nT('pages.overview.skillsTab.candidate_fails_validation_warning')} (${p.name})`}
                     label={i18nT('pages.overview.skillsTab.ask_agent_about_findings')}
                     tone="warn"
                   />
