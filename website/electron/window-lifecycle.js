@@ -1173,7 +1173,8 @@ function createWindowLifecycle(options) {
           window.close();
         }
         document.addEventListener('keydown', event => {
-          if (event.key === 'Enter') save();
+          // Enter on a focused button is that button's own press: Cancel must not save.
+          if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) save();
           if (event.key === 'Escape') window.close();
         });
       </script>
