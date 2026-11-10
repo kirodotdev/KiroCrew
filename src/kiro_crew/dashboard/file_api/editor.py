@@ -15,6 +15,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _CRED_RUN_REVERSED_RE,
+        _FILE_BUSY_ERROR,
         _FILE_DIFF_MAX_BYTES,
         _FILE_READ_CAP,
         _MAX_UPLOAD_BYTES,
@@ -164,6 +165,17 @@ async def api_file_read(request: web.Request) -> web.Response:
             session_key="dashboard", tool_name="file_read", outcome="success", resources=path
         )
         return web.Response(status=200, headers={"X-Path-Kind": "file"})
+    if outcome.kind == "busy":
+        # Another program holds the file without sharing it. The prefix logged
+        # the cause; the same read succeeds once that program closes the file.
+        _sel().log_tool_invocation(
+            session_key="dashboard",
+            tool_name="file_read",
+            outcome="failure",
+            resources=path,
+            error="file_busy",
+        )
+        return web.json_response({"error": _FILE_BUSY_ERROR, "code": "file_busy"}, status=503)
     try:
         if outcome.kind == "read_failed":
             raise OSError(f"file_read could not read {path}")

@@ -778,7 +778,7 @@ def _tail_log_file(path: Path, lines: int, follow: bool) -> None:
     try:
         while True:
             try:
-                fd = platform_compat.open_log_file_for_tail(path)
+                fd = platform_compat.open_file_for_shared_read(path)
             except FileNotFoundError:
                 if not follow:
                     raise
