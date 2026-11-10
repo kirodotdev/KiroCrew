@@ -3553,7 +3553,8 @@ because its per-turn note names it (`dashboard/page_offer.py`), and its tool
 description says to call it only when that note does. The worker's principles add one line: facts the
 Bot's Dashboard depends on are recorded as crew-log events, through the
 tools that record them. It also says its project directory is the Bot's
-own worktree on `crew/<crewmate>/<repo>`, to commit there and name further
+own worktree on `<prefix><crewmate>/<repo>` (`crew/` unless another prefix
+is set, shown by `git branch --show-current`), to commit there and name further
 branches under that prefix, to rebase onto the default branch itself when it
 needs that branch's changes, and to check a branch with `git merge-tree` before
 it pushes.
@@ -4382,15 +4383,24 @@ things here and leaves every other git step to the worker's prompt
    makes it at `<crewmate workspace>/worktrees/<crewmate slug>/<repo>-<hash>`
    (`path_for`: the slug keeps two Bots sharing a workspace apart, the
    hash two repositories sharing a name), on the branch
-   `crew/<crewmate slug>/<repo>` (`branch_for`), cut the first time from the
+   `<prefix><crewmate slug>/<repo>` (`branch_for`), cut the first time from the
    repository's default branch (`refs/remotes/origin/HEAD`, else `refs/heads/main`
    or `master`, else `HEAD`; full ref names, so a tag never stands in for the <!-- wokeignore:rule=master -->
    branch). After that a worktree git registers at that place is used as it is,
    on whatever branch the worker has checked out; one whose folder was deleted
    by hand is pruned and made again. A name segment the cleaning changed (or
    one over 40 characters) keeps a digest of the whole and is a legal git ref
-   component. A repository that contains the Bot's own workspace is not
-   one it was handed and gets none. Neither does one the edition works in place
+   component. The prefix is `agent.member_branch_prefix`, `crew/` unless set
+   (`crewmate_worktree.coerce_branch_prefix`, at config load): one trailing
+   `/` is optional, and every `/`-separated part must be one the cleaning keeps
+   as it is, else the default is used with a warning, so the branch is always a
+   legal name and the slug and repository stay its last two parts. It is read
+   from the config each turn: only a worktree made after a change takes the new
+   prefix (one made again after its folder was deleted included; its old branch
+   stays), and one that exists keeps its branch. A first part that names an
+   existing branch (`main/`) makes git refuse the cut, so that repository gets no
+   worktree, as for any refused one. A repository that contains the
+   Bot's own workspace is not one it was handed and gets none. Neither does one the edition works in place
    (`AgentRuntime.works_in_place(repo)` answers exactly `True` for its checkout
    root; platform-context.md): its build needs the checkout where it is, so no
    branch is cut, no folder is made, and the worker's project is left as it is.

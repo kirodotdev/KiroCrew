@@ -82,6 +82,7 @@ from kiro_crew.config.sections import (
     coerce_role_models,
 )
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX, SUBAGENT_TIMEOUT_MIN
+from kiro_crew.crewmate_worktree import coerce_branch_prefix
 from kiro_crew.session_start_sizing import AUTO as _SESSION_START_AUTO
 from kiro_crew.session_start_sizing import is_auto as _session_start_is_auto
 
@@ -867,6 +868,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # the `_validate_config_data` call. `_safe_bool` here is the
         # final guard for a real bool.
         member_dispatch=section.read("member_dispatch", _safe_bool),
+        member_branch_prefix=coerce_branch_prefix(section.get("member_branch_prefix")),
         # Default true; a present-but-malformed value is coerced to False upstream,
         # with the other fail-closed agent switches.
         conductor_own_child_verbs=section.read("conductor_own_child_verbs", _safe_bool),

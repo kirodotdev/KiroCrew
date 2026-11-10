@@ -1236,7 +1236,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
 - `AgentRuntime.works_in_place(repo: str) -> bool`: asked by
   `crewmate_worktree.ensure` with the real path of a repository's checkout root,
   before it makes a Bot worktree of it. Exactly `True` means the repository's build
-  needs its checkout where it is: the Bot gets no worktree of it (no `crew/` branch
+  needs its checkout where it is: the Bot gets no worktree of it (no branch
   is cut, no folder is made) and the worker's project is left where it was, as for
   a path in no repository (crew-mode.md, "Each Bot works in a git worktree of its
   own"). Asked off the event loop, so it may read the filesystem. Default `False`

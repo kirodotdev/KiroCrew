@@ -12,6 +12,7 @@ git work is the worker's own.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from config_loader_helpers import _load_from_dict
 from test_chat_agent_selection import _finished
 from test_crewmate_worker_approval import home  # noqa: F401
 from test_mate_worker_dispatch import _create, _fresh_create_budget, crewmate  # noqa: F401
@@ -274,6 +276,46 @@ def test_names_that_clean_alike_and_long_slugs_stay_apart(tmp_path):
     assert all(len(part) <= 40 for part in cw.branch_for(a, "/r/proj").split("/"))
     assert cw._name("short-slug") == "short-slug"
     assert cw._name("+++").startswith("repo-") and cw._name("+++") != cw._name("---")
+
+
+def test_a_new_worktree_takes_the_configured_prefix_and_an_existing_one_keeps_its_branch(
+    repo, tmp_path, monkeypatch
+):
+    """``agent.member_branch_prefix`` replaces ``crew/``; the slug and the repo stay last."""
+    ws = str(tmp_path / "ws-atlas")
+    scope, config = _scope_env(monkeypatch, ws)
+    config.agent.member_branch_prefix = "alice/"
+    got = scope.resolve_worker_project(config, "Atlas", repo, "")
+    assert got.branch == _git(got.path, "branch", "--show-current") == "alice/atlas/tasklog"
+    briar_ws = str(tmp_path / "ws-briar")
+    briar = cw.ensure("briar", briar_ws, repo)
+    assert (
+        cw.ensure("briar", briar_ws, repo, "alice/").branch == briar.branch == "crew/briar/tasklog"
+    )
+
+
+@pytest.mark.parametrize(
+    ("stored", "prefix", "warned"),
+    [
+        (None, "crew/", False),
+        ("", "crew/", False),
+        ("alice", "alice/", False),
+        ("alice/", "alice/", False),
+        ("users/alice", "users/alice/", False),
+        ("/", "crew/", True),
+        ("alice//", "crew/", True),
+        ("al ice/", "crew/", True),
+        ("a..b", "crew/", True),
+        ("x.lock/", "crew/", True),
+    ],
+)
+def test_the_configured_prefix_loads_as_a_legal_prefix_or_the_default(
+    stored, prefix, warned, caplog
+):
+    agent = {} if stored is None else {"member_branch_prefix": stored}
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.crewmate_worktree"):
+        assert _load_from_dict({"agent": agent}).agent.member_branch_prefix == prefix
+    assert ("member_branch_prefix" in caplog.text) is warned
 
 
 def test_the_branch_is_cut_from_main_when_the_checkout_sits_on_another_branch(repo, tmp_path):
@@ -577,7 +619,10 @@ def _scope_env(monkeypatch, ws):
 
     monkeypatch.setattr(members, "member_slug", lambda _n, _c: "atlas")
     monkeypatch.setattr(loader, "workspace_dir_for", lambda _w: ws)
-    return scope, SimpleNamespace(agents={"Atlas": SimpleNamespace(workspace="")})
+    return scope, SimpleNamespace(
+        agents={"Atlas": SimpleNamespace(workspace="")},
+        agent=SimpleNamespace(member_branch_prefix=cw.BRANCH_PREFIX),
+    )
 
 
 def test_only_a_crewmates_worker_is_scoped(monkeypatch):
@@ -601,7 +646,7 @@ def test_each_candidate_is_tried_in_turn(monkeypatch, tmp_path):
     hit = cw.CrewmateWorktree(repo="/r", path="/ws/wt/atlas/r", branch="crew/atlas/r", cwd="/ws/a")
     tried: list[str] = []
 
-    def ensure(_slug, _ws, candidate):
+    def ensure(_slug, _ws, candidate, _prefix):
         tried.append(candidate)
         if candidate == "/r/named":
             raise cw.WorktreeRefused("checkout filter")

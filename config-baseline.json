@@ -107,6 +107,7 @@
         "session_manager_chain": false,
         "peer_steer_loss_recovery": false,
         "member_dispatch": true,
+        "member_branch_prefix": "crew/",
         "conductor_own_child_verbs": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
@@ -1702,6 +1703,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "agent.member_branch_prefix",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Bot branch prefix",
+      "help": "The start of the git branch a bot's new worktree is cut on, before <bot>/<repo>: 'alice/' gives alice/reviewer/myservice. Each part between slashes may use only letters, digits, '.', '_' and '-', may not start or end with '.' or '-', has no '..' and no '.lock' ending, and is at most 40 characters; an empty or rejected value uses crew/. The first part must not be the name of a branch the repository has, such as main. Takes effect live for the next new worktree; one that exists keeps its branch, and one made again after its folder was deleted takes the current prefix.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "crew/"
     },
     {
       "path": "agent.conductor_own_child_verbs",

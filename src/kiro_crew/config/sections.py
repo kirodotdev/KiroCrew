@@ -503,6 +503,7 @@ from kiro_crew.constants import (
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
+from kiro_crew.crewmate_worktree import BRANCH_PREFIX as _BRANCH_PREFIX
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
 from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
 from kiro_crew.stt.limits import DEFAULT_IDLE_EVICT_SECS as _STT_DEFAULT_IDLE_EVICT_SECS

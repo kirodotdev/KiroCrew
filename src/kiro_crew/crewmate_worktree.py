@@ -7,9 +7,10 @@ model cannot do for itself here:
 
 * give each crewmate one worktree per repository (:func:`ensure`), at
   ``<crewmate workspace>/worktrees/<crewmate-slug>/<repo>-<hash>``
-  (:func:`path_for`), on its own branch ``crew/<crewmate-slug>/<repo>``
-  (:func:`branch_for`), cut from the repository's default branch the first time
-  and reused, as it is, after that; a repository the edition works in place
+  (:func:`path_for`), on its own branch ``<prefix><crewmate-slug>/<repo>``
+  (:func:`branch_for`; the prefix is ``agent.member_branch_prefix``, ``crew/``
+  unless set), cut from the repository's default branch the first time and
+  reused, as it is, after that; a repository the edition works in place
   (``AgentRuntime.works_in_place``) gets none, so the worker's project stays put;
 * point the worker's ``slot.project`` at it at the start of each turn
   (:mod:`kiro_crew.dashboard.crewmate_worktree_scope`), with the repository's
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 #: The folder under a crewmate's workspace that holds its worktrees.
 WORKTREES_DIR = "worktrees"
-#: Every crewmate branch starts with this, then the crewmate's slug.
+#: Every crewmate branch starts with this unless ``agent.member_branch_prefix`` names another.
 BRANCH_PREFIX = "crew/"
 
 # An absolute or home-relative path inside free text: a worker's brief.
@@ -103,9 +104,27 @@ def _name(text: str) -> str:
     return f"{clean[: _NAME_MAX - 9].rstrip('-.') or 'repo'}-{digest}"
 
 
-def branch_for(slug: str, repo: str) -> str:
-    """The branch a crewmate of *slug* works on in *repo*."""
-    return f"{BRANCH_PREFIX}{_name(slug)}/{_name(os.path.basename(repo))}"
+def coerce_branch_prefix(value: object) -> str:
+    """``agent.member_branch_prefix`` ending in ``/``; :data:`BRANCH_PREFIX` when unset or unusable.
+
+    Every ``/``-separated part (one trailing ``/`` allowed) must be one :func:`_name`
+    keeps as it is, so the branch is always a legal git name. Anything else is the
+    default, with a warning.
+    """
+    if not isinstance(value, str) or not value:
+        return BRANCH_PREFIX
+    parts = value.removesuffix("/").split(sep="/")
+    if all(_name(part) == part for part in parts):
+        return "/".join(parts) + "/"
+    logger.warning(
+        "agent.member_branch_prefix %r is not a legal branch prefix; using %r", value, BRANCH_PREFIX
+    )
+    return BRANCH_PREFIX
+
+
+def branch_for(slug: str, repo: str, prefix: str = BRANCH_PREFIX) -> str:
+    """The branch a crewmate of *slug* works on in *repo*: *prefix*, then its slug and the repo."""
+    return f"{prefix}{_name(slug)}/{_name(os.path.basename(repo))}"
 
 
 def _root(workspace_dir: str, slug: str) -> str:
@@ -278,7 +297,9 @@ def _works_in_place(repo: str) -> bool:
     )
 
 
-def ensure(slug: str, workspace_dir: str, path: str) -> CrewmateWorktree | None:
+def ensure(
+    slug: str, workspace_dir: str, path: str, prefix: str = BRANCH_PREFIX
+) -> CrewmateWorktree | None:
     """The crewmate's own worktree for the repository *path* is in, made if missing.
 
     ``None`` when *path* is in no git repository, in one that contains the
@@ -287,7 +308,8 @@ def ensure(slug: str, workspace_dir: str, path: str) -> CrewmateWorktree | None:
     where it is). Raises :class:`WorktreeRefused` when the gateway will not make it (a
     checkout filter, an unlistable worktree table, something else at the place).
     One git already registers at the place is used as it is, whatever branch the
-    worker has checked out there: that is the worker's own work.
+    worker has checked out there: that is the worker's own work. Only a worktree
+    made here takes *prefix* (:func:`branch_for`).
     """
     wt = _wt()
     repo = repo_root(path)
@@ -305,7 +327,7 @@ def ensure(slug: str, workspace_dir: str, path: str) -> CrewmateWorktree | None:
             if registered is not None:
                 # Its folder was deleted by hand: drop the stale registration.
                 wt._run_git(["worktree", "prune"], repo)
-            registered = branch_for(slug, repo)
+            registered = branch_for(slug, repo, prefix)
             _create(wt, repo, dest, registered, workspace_dir, slug)
     return CrewmateWorktree(
         repo=repo, path=dest, branch=registered, cwd=_mapped_cwd(wt, repo, dest, path)
