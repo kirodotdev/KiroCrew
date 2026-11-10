@@ -522,8 +522,8 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
             source="dashboard",
             resources=f"capability:{server_id}",
         )
-        message = (res.message or "install failed")[:500]
-        return web.json_response({"error": _redact_external(message)}, status=500)
+        message = _redact_external(res.message or "install failed")[:500]
+        return web.json_response({"error": message}, status=500)
 
     async with _get_config_lock():
         # Off the loop: _sync_mcp_to_agent takes bridges' synchronous _mcp_lock
