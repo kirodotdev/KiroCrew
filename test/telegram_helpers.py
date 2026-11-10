@@ -132,6 +132,8 @@ class FakeClient:
         self.deleted: list[int] = []
         #: When True, send_rich_message reports failure (server lacks the API).
         self.rich_fails = False
+        #: What a failed send_rich_message writes into a caller's ``err_out``.
+        self.rich_err: dict[str, Any] = {"error_code": 400, "description": "Bad Request"}
         #: (files, thread, silent) per multipart upload call.
         self.media_sent: list[tuple[Any, Any, bool]] = []
         #: When True, the upload reports failure so recovery can be observed.
@@ -225,10 +227,13 @@ class FakeClient:
         message_thread_id: Any = None,
         disable_notification: bool = False,
         reply_to_message_id: Any = None,
+        err_out: Any = None,
     ) -> Any:
         # flake-ok: pre-existing zero-length yield standing in for a network await, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0)  # yield like a real network await
         if self.rich_fails:
+            if err_out is not None:
+                err_out.update(self.rich_err)
             return None
         self._mid += 1
         self.rich_silent.append(disable_notification)
