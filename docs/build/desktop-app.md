@@ -705,6 +705,15 @@ same way). Key details:
   (`Scripts\kirocrew.cmd` is the `bin\` shim's copy). Native executables such as
   `uv.exe` stay as they are; a frozen launcher with no script payload fails the
   build. `test/test_build_desktop_windows_launcher.py` pins both writers.
+- **macOS/Linux `bin/` console scripts are relocatable** — pip writes every
+  console script in `bin/` (`httpx`, `tqdm`, `f2py`, ...) with a `#!` naming the
+  build machine's absolute `bin/python3.12` (or distlib's `/bin/sh` +
+  `'''exec' "<abs path>"` form for a long path), and `bin/` is on every agent's
+  `PATH`. `build_backend` runs `packaging/relocate_posix_scripts.py` right after
+  writing `bin/kirocrew` and before anything is signed; it swaps each such header
+  for one that drops `PYTHONPATH`/`PYTHONHOME` and execs the interpreter beside
+  the script with `-s -P`. Everything else in `bin/` stays byte-identical.
+  `test/test_build_desktop_posix_scripts.py` pins the rewrite and its wiring.
 - **Stdlib probes verified** — `stdlib_probe_gate` fails the build if any package
   the launcher's readiness check probes is missing from the pruned tree, so a
   drifted probe list breaks the build instead of every user's launch (see

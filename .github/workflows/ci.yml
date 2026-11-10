@@ -209,6 +209,8 @@ jobs:
               - 'packaging/build-desktop.sh'
               # Sourced by build-desktop.sh; its coverage gate runs on Linux too.
               - 'packaging/desktop-bytecode.sh'
+              # Run by build_backend to make bin/ console scripts relocatable.
+              - 'packaging/relocate_posix_scripts.py'
               - 'scripts/stamp-distribution.sh'
               - '.github/workflows/build-desktop.yml'
             # Independent of the buckets above. Read only for a FORK pull

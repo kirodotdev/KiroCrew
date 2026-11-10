@@ -379,6 +379,7 @@ jobs:
               # lane runs.
               - 'scripts/stamp-distribution.sh'
               - 'packaging/desktop-bytecode.sh'
+              - 'packaging/relocate_posix_scripts.py'
               - 'packaging/precompile_windows.py'
               - 'Makefile'
               - 'pyproject.toml'
