@@ -551,6 +551,8 @@ async def api_workflow_definition_run(request: web.Request) -> web.Response:
         return _error(error, "workflow_definition_not_found", 404)
     if out.get("unavailable"):
         return _error(error, "workflow_executor_unavailable", 503)
+    if out.get("app_disabled"):
+        return _error(error, "app_disabled", 409)
     return web.json_response(
         {
             "error": error,
