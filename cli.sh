@@ -1343,12 +1343,49 @@ else
   _write_marker python-mode system-pinned
 fi
 
+# When $BIN is off PATH, the line that adds it for the user's own shell
+# ($SHELL), ready to paste; a shell not named here keeps the general advice.
+# zsh reads its .zshrc from $ZDOTDIR when that is set.
+# bash on macOS opens login shells, which read only the first of
+# ~/.bash_profile, ~/.bash_login and ~/.profile that exists, never ~/.bashrc.
+_path_hint() {
+  case ":$PATH:" in
+    *":$BIN:"*) return 0 ;;
+  esac
+  _ph_shell="${SHELL:-}"
+  case "${_ph_shell##*/}" in
+    fish)
+      echo "$BIN is not on your PATH yet. To add it, run:"
+      echo "  fish_add_path \"$BIN\""
+      return 0
+      ;;
+    zsh)
+      _ph_rc="~/.zshrc"
+      if [ -n "${ZDOTDIR:-}" ]; then _ph_rc="$ZDOTDIR/.zshrc"; fi
+      ;;
+    bash)
+      _ph_rc="~/.bashrc"
+      if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+        _ph_rc="~/.bash_profile"
+        for _ph_f in .bash_profile .bash_login .profile; do
+          if [ -e "$HOME/$_ph_f" ]; then _ph_rc="~/$_ph_f"; break; fi
+        done
+      fi
+      ;;
+    *)
+      echo "Add $BIN to your PATH first (e.g. add it in your shell profile)."
+      return 0
+      ;;
+  esac
+  echo "$BIN is not on your PATH yet. To add it, run:"
+  printf '  %s\n' "printf '\\n%s\\n' 'export PATH=\"$BIN:\$PATH\"' >> $_ph_rc"
+  echo "then open a new terminal, or run this in the current one:"
+  echo "  export PATH=\"$BIN:\$PATH\""
+}
+
 echo ""
 echo "Installed kirocrew $VER (channel: $CHANNEL)."
-case ":$PATH:" in
-  *":$BIN:"*) : ;;
-  *) echo "Add $BIN to your PATH first (e.g. add it in your shell profile)." ;;
-esac
+_path_hint
 
 # The KAS engine this release pins. The just-installed CLI fetches it from the
 # project's CDN and verifies it against the pin the wheel carries, into the
