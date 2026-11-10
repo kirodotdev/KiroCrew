@@ -751,6 +751,29 @@ class TestRenderer:
         labels = [b["text"] for row in markups[0]["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
 
+    def test_options_only_keyboard_is_sent_when_the_placeholder_edit_fails(self) -> None:
+        # The live bubble can be gone (deleted by the user) or uneditable (the edit
+        # budget). The keyboard must then arrive in a new message, as the text seal
+        # already does, rather than be lost with the failed edit.
+        cli = FakeClient()
+        cli.edit_ok = False  # type: ignore[attr-defined]
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.dispatch(OutputEvent(kind=TOOL_CALL, tool_call_id="t", title="fs_read"))
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="[OPTIONS: A | B]"))
+            await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
+
+        asyncio.run(_go())
+        frame_mid = next(mid for mid, _, m in cli.edits if m)
+        sent_markups = [m for _, m in cli.sent if m]
+        assert len(sent_markups) == 1
+        labels = [b["text"] for row in sent_markups[0]["inline_keyboard"] for b in row]
+        assert labels == ["A", "B"]
+        # The stale tool frame is replaced, not left above the new message.
+        assert cli.deleted == [frame_mid]
+
     def test_complete_options_straddling_length_cut_stays_intact(self) -> None:
         # Codex finding: a COMPLETE trailing [OPTIONS: A | B] whose text
         # crosses the length-rotation boundary must be detached whole before
