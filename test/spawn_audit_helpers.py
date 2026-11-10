@@ -1302,7 +1302,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # (`/dev/fd/N`) of the snapshot it already validated and copied — a hostile
         # value can only name a bad input, never a second command, and the output
         # path (`_extract_segment`) is a gateway-chosen name under the snapshot dir,
-        # not agent input.
+        # not agent input. `_registered_clip` reuses `_extract_segment` to give a
+        # registered STT provider a WAV copy: same fixed flags, the input is the
+        # clip `transcribe_audio` already path-checked, and the output a fresh
+        # mkstemp name.
         "transcribe.py::_detect_silence_ends",
         "transcribe.py::_extract_segment",
         "transcribe_aws.py::_transcribe_aws",

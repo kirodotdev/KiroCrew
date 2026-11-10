@@ -686,6 +686,14 @@ class SttProvider(Protocol):
     mixed-language picker for it; the provider reads the candidates from
     ``stt_config.transcribe_language_identification`` itself.
 
+    :meth:`transcribe_file` gets the clip as it was recorded (webm from the
+    dashboard, ogg/Opus from Slack). A provider that reads only 16 kHz mono 16-bit
+    PCM WAV may set an optional ``needs_pcm_wav = True``. Core then converts any
+    other clip with its own audio decoder and passes the copy; with no decoder, a
+    container that decoder does not recognize by file suffix, or a clip over
+    ``transcribe._MAX_AUDIO_SECS`` (an hour), the transcription fails without
+    calling the provider.
+
     A streaming provider whose backend decides how long one session runs may set
     an optional ``owns_session_limit = True``. Core then applies no duration cap
     to its sessions and advertises no ``max_duration_ms``: the backend's limit is
