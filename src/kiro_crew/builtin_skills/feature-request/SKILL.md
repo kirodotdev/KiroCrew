@@ -96,6 +96,27 @@ Guide the user to describe:
 Don't force structure. Ask follow-up questions if the description is vague.
 Two to three exchanges is usually enough.
 
+**For a feature request, dig to the real need with a 5 Whys chain.** Reason
+from first principles: a request usually arrives as a solution ("add a button
+for X"), so set that solution aside and find the basic need underneath it. Ask
+"why?" one question at a time, and build each question from the user's last
+answer, not from a generic prompt:
+
+```text
+I want: a button to export my chat history.
+Why do you want to export chat history?
+  -> So I can share a session with a teammate.
+Why do you need to share a session with a teammate?
+  -> They need to see how I got the agent to fix a bug.
+```
+
+Stop as soon as an answer names who hits this, what they are trying to get
+done, and what it costs them today. Five is the most, not the goal. If an
+answer is still a solution or restates the feature, ask the next "why". Finish
+the chain before you search for duplicates (step 3) or draft (step 4): the root
+need is what both should be built from. Keep the questions and answers as the
+user gave them; the draft carries the chain. Bug reports skip this step.
+
 ### 3. Check for Duplicates
 
 Every `gh` call below targets Kiro Crew's own public repository — a fixed target on
@@ -157,7 +178,8 @@ Compose a clean title and markdown body from the conversation. Structure:
 
 ## Why
 
-[Why this matters / what problem it solves]
+[A bug: what it breaks for the user. A feature request: the 5 Whys chain
+from step 2, each question and its answer in order, ending at the root need]
 
 ## Additional Context
 
