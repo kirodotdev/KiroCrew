@@ -3238,17 +3238,25 @@ catalog's `cached_entries`) reads its file through `read_bytes_with_retry`. The
 writer replaces the file with `atomic_write` and no lock, so two store requests
 refreshing at once race every reader, and on Windows a read that overlaps the
 replace raises a sharing violation. Folding that into "no cache" would send
-`load_official_catalog` to fetch again, and an offline fetch would then overwrite a
-good cache with the failure sentinel. An absent or damaged file still reads as no
-cache.
+`load_official_catalog` to fetch again for a document it already has. An absent or
+damaged file still reads as no cache.
 
-That degradation is silent -- a failed fetch overwrites the on-disk cache with a
-failure sentinel and the seed listing renders with no error -- so the store
-header carries a manual refresh. `POST /api/app-store/refresh`
-(`handle_registry_refresh`) drops the on-disk caches of all three published
-documents (catalog, category order, editorial) via each module's
-`forget_cache()`, which clears a stale document and a `_fetchFailedAt` back-off
-sentinel in one unlink. The handler never fetches: the follow-up
+The catalog remembers a failed fetch in its own file beside the document
+(`official-catalog.failed.json`, read by `_failed_recently`), never in the
+document's place. When the saved document carries a `git` row the seed does not
+name, the listing also makes a fresh inventory fetch (`fetch_inventory_entries`),
+which fails offline even while the saved copy is still within `CACHE_TTL`. The
+memory then backs off later inventory fetches for `FAILURE_TTL`, and each listing
+keeps the saved copy's rows, less the catalog-only `git` rows only a fresh fetch
+can make installable. Only with no fresh document does the memory make
+`load_official_catalog` answer from the seed without a fetch.
+
+That degradation is silent -- once the saved document expires, a failed fetch
+leaves the seed listing with no error -- so the store header carries a manual
+refresh. `POST /api/app-store/refresh` (`handle_registry_refresh`) drops the
+on-disk caches of all three published documents (catalog, category order,
+editorial) via each module's `forget_cache()`, which clears a stale document and
+the `_fetchFailedAt` back-off memory. The handler never fetches: the follow-up
 `GET /api/apps/registry` pays the fetch on the cold-start path, so a refresh
 cannot behave differently from the load it repairs. It is a POST rather than a
 query parameter on the GET because cache deletion plus outbound fetches is a

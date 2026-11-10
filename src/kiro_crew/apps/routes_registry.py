@@ -170,9 +170,9 @@ async def handle_registry_refresh(request: web.Request) -> web.Response:
     Drops the on-disk caches of all three published documents (catalog,
     category order, editorial), so the NEXT ``GET /api/apps/registry`` is
     rebuilt from fresh fetches. This exists because the caches degrade
-    SILENTLY: a failed fetch overwrites the catalog cache with a failure
-    sentinel and the store quietly falls back to the seed listing, and without
-    an explicit refresh the user's only remedy is waiting out ``CACHE_TTL``.
+    SILENTLY: with no fresh catalog copy, a failed fetch is remembered and the
+    store quietly falls back to the seed listing, and without an explicit
+    refresh the user's only remedy is waiting out the back-off or the cache.
 
     Deliberately OUTSIDE ``/api/apps/``: token_auth's ``_app_owns_path``
     grants an app token implicit ownership of everything under
