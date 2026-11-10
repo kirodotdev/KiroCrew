@@ -25,15 +25,20 @@ _SUPERSEDED_STEER_CARRIED_KEYS = (
 )
 
 
-def _requeued_steer_row(slot: _ChatSlot, consumed: list[dict], next_msg: str) -> dict | None:
+def _requeued_steer_row(
+    slot: _ChatSlot, consumed: list[dict], next_msg: str, role: str
+) -> dict | None:
     """Return the requeued steer row a drained entry supersedes, or None.
 
     ``_requeue_unconsumed_steers`` names the row on the entry
     (``REQUEUED_STEER_ROW_MID_META``) when the steer was already persisted. It is
     superseded only when it still says exactly what this turn runs: the entry
-    drains alone, the row is a user steer row in the ``requeued`` state, and its
-    text equals ``next_msg``. Anything else returns None and both rows stay
-    visible, which is how every edited or merged send already renders.
+    drains alone, the row is a steer row in the ``requeued`` state with the
+    *role* the drain writes, and its text equals ``next_msg``. The drain passes
+    ``"user"`` for the person's or a peer's steer and ``"nudge"`` for an
+    automation steer, so the row drawn in the old row's place is the same kind
+    of row. Anything else returns None and both rows stay visible, which is how
+    every edited or merged send already renders.
     """
     if len(consumed) != 1:
         return None
@@ -48,7 +53,7 @@ def _requeued_steer_row(slot: _ChatSlot, consumed: list[dict], next_msg: str) ->
         if not isinstance(row_meta, dict) or row_meta.get("mid") != mid:
             continue
         if (
-            row.get("role") == "user"
+            row.get("role") == role
             and row_meta.get("steer") is True
             and row_meta.get("steerState") == STEER_STATE_REQUEUED
             and row.get("content") == next_msg

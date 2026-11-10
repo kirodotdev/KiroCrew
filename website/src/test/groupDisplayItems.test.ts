@@ -804,4 +804,65 @@ describe('superseded steer rows', () => {
     const { turns } = groupDisplayItems([msg('user', 'first'), steer('requeued')])
     expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
   })
+
+  // An automation steer (a work-ledger wake) is a `nudge` row, and the row its
+  // own queued turn writes is a `nudge` row too.
+  const WAKE = '[work-ledger wake] item=it_1 status=question'
+  const nudgeSteer = (steerState: string): ChatMessage =>
+    ({ role: 'nudge', content: WAKE, cls: 'msg msg-nudge',
+       meta: { steer: true, steerState, mid: 'm-1', supersededBy: 'm-2', nudge: { cycle: 4, loop_id: 'loop-1' } } } as unknown as ChatMessage)
+  const nudgeRow = (meta: Record<string, unknown>): ChatMessage =>
+    ({ role: 'nudge', content: WAKE, cls: 'msg msg-nudge', meta: { nudge: { cycle: 4, loop_id: 'loop-1' }, ...meta } } as unknown as ChatMessage)
+  const drawnContents = (turns: DisplayItem[], role: string): string[] =>
+    turns.flatMap(item => (item.kind === 'single' && item.msg.role === role ? [item.msg.content] : []))
+
+  it('does not draw a superseded nudge steer once its own nudge row has landed', () => {
+    const rows = [
+      msg('user', 'first'), msg('assistant', 'working'),
+      nudgeSteer('superseded'), msg('stop_event', 'Stopped'),
+      nudgeRow({ mid: 'm-2' }), msg('assistant', 'ok'),
+    ]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 2)).toBe(4)
+    expect(drawnContents(turns, 'nudge')).toEqual([WAKE])
+  })
+
+  it('hides a superseded nudge steer behind a later nudge row with no mid', () => {
+    const rows = [nudgeSteer('superseded'), nudgeRow({})]
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(1)
+    expect(drawnContents(groupDisplayItems(rows).turns, 'nudge')).toEqual([WAKE])
+  })
+
+  it('keeps a superseded nudge steer when only a user row repeats its text', () => {
+    // With the successor mid and without it: a person's row never stands in
+    // for an automation steer.
+    for (const meta of [{ mid: 'm-2' }, {}]) {
+      const rows = [nudgeSteer('superseded'),
+        ({ role: 'user', content: WAKE, cls: '', meta } as unknown as ChatMessage)]
+      const { turns } = groupDisplayItems(rows)
+
+      expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+      expect(drawnContents(turns, 'nudge')).toEqual([WAKE])
+      expect(drawnContents(turns, 'user')).toEqual([WAKE])
+    }
+  })
+
+  it('keeps a superseded user steer when only a nudge row repeats its text', () => {
+    for (const meta of [{ mid: 'm-2' }, {}]) {
+      const rows = [steer('superseded'),
+        ({ role: 'nudge', content: 'midway is updated', cls: 'msg msg-nudge', meta } as unknown as ChatMessage)]
+
+      expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+      expect(drawnUserContents(groupDisplayItems(rows).turns)).toEqual(['midway is updated'])
+    }
+  })
+
+  it('does not accept a nudge steer row with matching text and successor mid', () => {
+    const rows = [nudgeSteer('superseded'), nudgeRow({ mid: 'm-2', steer: true })]
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+    expect(drawnContents(groupDisplayItems(rows).turns, 'nudge')).toEqual([WAKE, WAKE])
+  })
 })

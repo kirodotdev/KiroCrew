@@ -677,3 +677,55 @@ describe('a warm or switch page captured before a requeued steer drained', () =>
     expect((cache ?? []).filter(m => m.role === 'queued').map(m => m.meta?.queueId)).toEqual(['q-other'])
   })
 })
+
+describe('an automation steer row (`nudge`) against a stale page', () => {
+  // A work-ledger wake steered into a running turn is a `nudge` row with
+  // `meta.steer`, and the row its own queued turn writes is a `nudge` row too.
+  const STEER_TS = '2026-08-25T08:31:00Z'
+  const STEER_MID = 'm-nudge-steer'
+  const WAKE = '[work-ledger wake] item=it_1 status=question'
+  const NUDGE = { cycle: 4, loop_id: 'loop-1' }
+  const nudgeSteer = (steerState: string): Row => ({
+    role: 'nudge', content: WAKE, cls: 'msg msg-nudge', ts: STEER_TS,
+    meta: steerState === 'superseded'
+      ? { mid: STEER_MID, steer: true, steerState, supersededBy: 'm-fresh', nudge: NUDGE }
+      : { mid: STEER_MID, steer: true, steerState, nudge: NUDGE },
+  })
+  const successor: Row = {
+    role: 'nudge', content: WAKE, cls: 'msg msg-nudge', ts: '2026-08-25T08:40:00Z', meta: { mid: 'm-fresh', nudge: NUDGE },
+  }
+  const nudgeMids = (rows: { role: string; meta?: Record<string, unknown> }[] | undefined) =>
+    (rows ?? []).filter(m => m.role === 'nudge').map(m => [m.meta?.mid, m.meta?.steerState])
+
+  it('a refresh drops a page that still shows the nudge steer requeued, and its drained queue entry', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [
+      ...olderServerRows(6), nudgeSteer('superseded'), successor,
+    ], false), 'r-seed', KEY))
+    store.dispatch(refreshSlot.fulfilled({
+      ...slotPayload(KEY, [...olderServerRows(6), nudgeSteer('requeued')], false),
+      queue: [
+        { queueId: 'q-wake', content: WAKE, ts: '2026-08-25T08:35:00Z' },
+        { queueId: 'q-other', content: 'sent from another tab', ts: '2026-08-25T08:36:00Z' },
+      ],
+    }, 'r-stale', KEY))
+
+    const chat = store.getState().chat
+    expect(nudgeMids(chat.messages)).toEqual([[STEER_MID, 'superseded'], ['m-fresh', undefined]])
+    expect(chat.messages.filter(m => m.role === 'queued').map(m => m.meta?.queueId)).toEqual(['q-other'])
+  })
+
+  it('a switch keeps a consumed nudge steer over a snapshot captured while it was written', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), nudgeSteer('consumed')], false), 'seed', KEY))
+    store.dispatch(switchSlot.pending('req-stale', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [
+      nudgeSteer('written'),
+      { role: 'assistant', content: 'newer reply', cls: 'msg msg-a', ts: '2026-08-25T08:50:00Z', meta: { mid: 'm-new-N' } },
+    ], true), 'req-stale', KEY))
+
+    expect(nudgeMids(store.getState().chat.messages)).toEqual([[STEER_MID, 'consumed']])
+  })
+})

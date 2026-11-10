@@ -1004,9 +1004,11 @@ async def _start_next_queued_turn(
     # row still holds exactly the text this turn runs: an edited card, a merge
     # with later sends, or a redaction that changed the text keep both rows,
     # because then the old row holds different text from what runs. And only when
-    # this drain writes a `user` row: typed text that opens with a cron or
-    # sub-agent prefix drains as an event row, and hiding the old row would leave
-    # no copy drawn as the person's own words.
+    # this drain writes a row of the old row's own role: a `user` row for the
+    # person's or a peer's steer, a `nudge` row for an automation steer (a
+    # work-ledger wake). Typed text that opens with a cron or sub-agent prefix
+    # drains as an event row, and hiding the old row would leave no copy drawn as
+    # the person's own words.
     _drains_as_user = not (
         is_cron
         or is_subagent
@@ -1017,7 +1019,9 @@ async def _start_next_queued_turn(
         or is_workflow_followup
     )
     superseded_steer_row = (
-        _requeued_steer_row(slot, consumed, next_msg) if _drains_as_user else None
+        _requeued_steer_row(slot, consumed, next_msg, "nudge" if is_automation_steer else "user")
+        if _drains_as_user or is_automation_steer
+        else None
     )
     if _drains_as_user:
         # A user message after the last completion takes over from the armed
