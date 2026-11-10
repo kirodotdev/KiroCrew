@@ -317,6 +317,10 @@ USER_SELECTABLE_KINDS = frozenset({"markdown", "text", "json", "svg"})
 
 
 def _validate_kind(kind: str) -> str:
+    # Checked first, as in _validate_source: a list or object is unhashable, so
+    # the set lookup below would raise TypeError instead of the 400 error.
+    if not isinstance(kind, str):
+        raise ArtifactValidationError(f"kind must be str, got {type(kind).__name__}")
     if kind not in ALLOWED_KINDS:
         raise ArtifactValidationError(
             f"invalid kind {kind!r}: must be one of {sorted(ALLOWED_KINDS)}"
