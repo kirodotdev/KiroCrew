@@ -46,6 +46,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# The backend bytecode steps (bytecode_coverage_gate, precompile_macos_backend).
+. "$ROOT/packaging/desktop-bytecode.sh"
+
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 # Git Bash / MSYS on Windows reports MINGW64_NT-10.0-... / MSYS_NT-...;
 # normalize to "windows" so the branches below read naturally.
@@ -682,72 +685,38 @@ LAUNCH
   # After pruning, so it validates what actually ships.
   stdlib_probe_gate "$out"
 
-  # Compile the WHOLE shipped tree as checked-hash pycs, then let the runtime
-  # forbid writing any.
+  # Ship hash-based bytecode beside the sources, never TIMESTAMP bytecode.
   #
-  # This is what keeps the signed .app's seal intact. codesign seals every file
-  # under Contents/, so bytecode written there after signing invalidates the
-  # signature and Gatekeeper refuses the app as "damaged" -- which is what
+  # The prune above deletes the TIMESTAMP pycs pip left behind, and deleting
+  # them is not squeamishness -- a timestamp pyc records the mtime of the source
+  # it was built from, `ditto` restamps sources at extraction, so every shipped
+  # timestamp pyc is guaranteed to look stale on the user's machine and be
+  # rewritten in place. On macOS that rewrite IS the corruption: codesign seals
+  # every file under Contents/, so bytecode written there after signing
+  # invalidates the signature and Gatekeeper refuses the app as "damaged" (what
   # managed Macs report, because their policy re-evaluates instead of reusing a
-  # cached accept verdict.
+  # cached accept verdict). CHECKED_HASH validates against contents, so an
+  # extraction-restamped source still matches.
   #
-  # Deliberately the whole tree, not the traced startup closure the Windows lane
-  # ships. The pipeline signs a COMPLETE bundle, so nothing on a user's machine
-  # has any business writing into it -- and a module left uncompiled is exactly
-  # what creates the reason to. Windows can afford the narrower closure because
-  # Authenticode seals no resource tree, so a later write there is harmless; on
-  # macOS an uncovered module is a latent signature break, so coverage has to be
-  # total rather than measured.
-  #
-  # The MODE is the other half. The prune above deletes the TIMESTAMP pycs pip
-  # left behind, and deleting them is not squeamishness -- a timestamp pyc
-  # records the mtime of the source it was built from, `ditto` restamps sources
-  # at extraction, so every shipped timestamp pyc is guaranteed to look stale on
-  # the user's machine and be rewritten in place. That rewrite IS the corruption.
-  # CHECKED_HASH validates against contents, so an extraction-restamped source
-  # still matches.
-  #
-  # `-q -f`: quiet, and force so nothing is skipped on a stale timestamp cache.
-  # A failure to compile one module must not fail the build -- compileall exits
-  # non-zero on a syntax error in any file it walks, including vendored samples
-  # that are not importable on this interpreter -- so the exit code is reported
-  # and tolerated while the coverage assertion below is what actually gates.
-  log "Precompiling the shipped tree as checked-hash pycs ($(basename "$out"))…"
-  env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
-    "$out/bin/python3.12" -s -m compileall -q -f \
-    --invalidation-mode checked-hash "$out/lib" \
-    || echo "    compileall reported errors (unimportable vendored samples are expected)"
-
-  # Coverage gate: the point of the exercise is that the runtime never needs to
-  # write, so a tree that shipped without caches would silently reintroduce the
-  # defect the moment PYTHONDONTWRITEBYTECODE is honoured.
-  "$out/bin/python3.12" -s - "$out/lib" <<'COVERAGE'
-import os, sys
-root = sys.argv[1]
-missing = []
-for dirpath, dirnames, filenames in os.walk(root):
-    if os.path.basename(dirpath) == "__pycache__":
-        continue
-    cache = os.path.join(dirpath, "__pycache__")
-    for name in filenames:
-        if not name.endswith(".py"):
-            continue
-        stem = name[:-3]
-        if not any(
-            f.startswith(stem + ".") and f.endswith(".pyc")
-            for f in (os.listdir(cache) if os.path.isdir(cache) else ())
-        ):
-            missing.append(os.path.join(dirpath, name))
-if missing:
-    print(f"    {len(missing)} module(s) shipped without a bytecode cache", file=sys.stderr)
-    for path in missing[:10]:
-        print(f"      {os.path.relpath(path, root)}", file=sys.stderr)
-    # A handful of unimportable vendored samples is tolerable; a wholesale miss
-    # means compileall did not run and every launch would want to write.
-    if len(missing) > 50:
-        print("ERROR: bytecode coverage is too low to forbid runtime writes", file=sys.stderr)
-        raise SystemExit(1)
-COVERAGE
+  # macOS ships caches for the standard library and the traced startup closure
+  # only, and bars the bundled interpreter from writing any other: see
+  # precompile_macos_backend. Linux keeps the whole tree compiled.
+  if [ "$OS" = "darwin" ]; then
+    precompile_macos_backend "$out"
+  else
+    # `-q -f`: quiet, and force so nothing is skipped on a stale timestamp
+    # cache. A failure to compile one module must not fail the build --
+    # compileall exits non-zero on a syntax error in any file it walks,
+    # including vendored samples that are not importable on this interpreter --
+    # so the exit code is reported and tolerated while the coverage gate is what
+    # actually gates.
+    log "Precompiling the shipped tree as checked-hash pycs ($(basename "$out"))…"
+    env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
+      "$out/bin/python3.12" -s -m compileall -q -f \
+      --invalidation-mode checked-hash "$out/lib" \
+      || echo "    compileall reported errors (unimportable vendored samples are expected)"
+    bytecode_coverage_gate "$out" "$out/lib" ""
+  fi
 
   echo "    $(basename "$out") size: $(du -sh "$out" 2>/dev/null | cut -f1)"
 }
@@ -873,11 +842,12 @@ build_backend_windows() {
   # checked-hash pyc makes the loader read and hash each .py in ADDITION to the
   # .pyc, which measured 43.55 MB and 1639 extra cold file opens per boot -- a
   # median 12.5 s on a cold file cache. Both hash modes ignore mtime, which is
-  # the property this needs; only the re-read is dropped. The posix tree above
-  # stays checked-hash: it is a different mechanism (whole tree, codesigned) and
-  # does not show the symptom. lark_oapi is traced too: the Feishu channel
+  # the property this needs; only the re-read is dropped. The POSIX trees above
+  # are checked-hash: a codesigned macOS bundle and a Linux package, neither of
+  # which shows the symptom. lark_oapi is traced too: the Feishu channel
   # imports its ~11k modules on the gateway loop, and compiling them there on
-  # the first start stalls that loop.
+  # the first start stalls that loop. (macOS leaves it out; see
+  # precompile_macos_backend.)
   log "Precompiling Windows gateway startup modules ($(basename "$out"))…"
   env PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 PYTHONPATH= \
     "$out/python.exe" -s "$ROOT/packaging/precompile_windows.py" \

@@ -366,8 +366,12 @@ jobs:
               # macOS app left the macos-15 leg uninstantiated on a PR. `ci.yml`'s
               # own filter has the qualified form; this copy had drifted.
               - 'packaging/build-desktop.sh'
-              # Also run by that script, so it is a packaging input too.
+              # Also run by that script, so they are packaging inputs too: the
+              # bytecode steps it sources and the closure helper the macOS
+              # lane runs.
               - 'scripts/stamp-distribution.sh'
+              - 'packaging/desktop-bytecode.sh'
+              - 'packaging/precompile_windows.py'
               - 'Makefile'
               - 'pyproject.toml'
               - 'setup.cfg'
