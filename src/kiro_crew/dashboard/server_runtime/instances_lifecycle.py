@@ -199,7 +199,10 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
             unregister_pre_exec_stop()
         manager = getattr(state, "instances_manager", None)
         if manager is not None:
-            await manager.shutdown()
+            try:
+                await manager.shutdown()
+            except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+                logger.warning("Instance tunnel shutdown failed", exc_info=True)
 
     async def _crew_log_drain(app_: web.Application) -> None:
         """Write out the session's log buffered appends before the process goes.
