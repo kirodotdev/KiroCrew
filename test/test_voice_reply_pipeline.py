@@ -624,8 +624,10 @@ class TestStitchMp3s:
         allocated = _capture_mkstemp(monkeypatch)
         proc = _mock_subprocess(returncode=0)
         proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+        argv: list = []
 
         async def fake_exec(*cmd, **kwargs):
+            argv.extend(cmd)
             return proc
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
@@ -636,6 +638,7 @@ class TestStitchMp3s:
         proc.communicate.assert_awaited()
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
+        assert not os.path.exists(argv[argv.index("-i") + 1])  # the list file
 
     @pytest.mark.asyncio
     async def test_empty_output_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
@@ -725,6 +728,38 @@ class TestStitchMp3s:
         proc.wait.assert_not_awaited()
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_chunk_paths_go_in_a_list_file_not_the_command_line(self, monkeypatch) -> None:
+        """Windows refuses a command line over 32,767 characters, which one
+        ``concat:`` argument naming every chunk passes at about 630 chunks."""
+        allocated = _capture_mkstemp(monkeypatch)
+        paths = [f"/chunks/{i}.mp3" for i in range(649)] + ["/chunks/it's.mp3"]
+        seen: dict = {}
+
+        async def fake_exec(*cmd, **kwargs):
+            listing = cmd[cmd.index("-i") + 1]
+            seen["argv"], seen["listing"] = cmd, listing
+            if os.path.isfile(listing):
+                with open(listing, encoding="utf-8") as f:
+                    seen["lines"] = f.read().splitlines()
+            with open(cmd[-1], "wb") as f:
+                f.write(b"stitched-mp3-data")
+            return _mock_subprocess(returncode=0)
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(paths)
+
+        try:
+            assert result == allocated[0]
+            assert not any(p in arg for arg in seen["argv"] for p in paths)
+            assert seen.get("lines") == [f"file '/chunks/{i}.mp3'" for i in range(649)] + [
+                "file '/chunks/it'\\''s.mp3'"
+            ]
+            assert not os.path.exists(seen["listing"])
+        finally:
+            if allocated and os.path.exists(allocated[0]):
+                os.unlink(allocated[0])
 
 
 class TestSynthesizeSpeechDoesNotSwallowARefusal:
