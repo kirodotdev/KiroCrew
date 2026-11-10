@@ -737,6 +737,10 @@ def _stand_in_identity(stand_in):
     """
     try:
         fd = os.open(stand_in, os.O_RDONLY | _O_PATH | os.O_NOFOLLOW)
+        try:
+            st = os.fstat(fd)
+        finally:
+            os.close(fd)
     except OSError as exc:
         sys.exit(
             "sandbox: BLOCKED -- cannot pin the stand-in %s this launcher just "
@@ -744,10 +748,6 @@ def _stand_in_identity(stand_in):
             "Lower agent.sandbox to run without this control deliberately."
             % (os.fsdecode(stand_in), exc)
         )
-    try:
-        st = os.fstat(fd)
-    finally:
-        os.close(fd)
     return (st.st_dev, st.st_ino)
 
 
