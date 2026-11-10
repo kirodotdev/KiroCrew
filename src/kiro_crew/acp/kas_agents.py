@@ -1576,10 +1576,10 @@ def build_kas_custom_agents(
     with no prompt, and its path is appended to *prompt_unread_out* for the
     session-start notice.
 
-    One entry: KAS registers the injected agent, it then surfaces as a mode, and
-    the ordinary ``session/set_mode`` activation can select it. Without this the
-    session stays on KAS's own default mode and the operator's prompt and tool
-    configuration have no effect.
+    One entry, *agent_id*'s: KAS registers it, it surfaces as a mode, and the
+    ordinary ``session/set_mode`` activation selects it; the harness appends the
+    agents its sub-agent tool may name (:mod:`kiro_crew.acp.kas_subagent_targets`).
+    Without this the session stays on KAS's own default mode.
 
     A prompt-less spec is projected with ``"prompt": ""``, so it runs on KAS's
     own default prompt as it does on kiro-cli; only ``kirocrew-lite`` gets the

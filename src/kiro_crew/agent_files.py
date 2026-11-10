@@ -216,9 +216,12 @@ def kas_wire_agent_id(agent_id: str) -> str:
     advertised modes read back), so the rest of Kiro Crew keeps the crewmate's
     own id and kiro-cli, which reserves none of these, never sees the alias.
 
-    A session registers exactly one agent, so the alias cannot meet a second
-    entry of the same id in its batch; an on-disk spec that happens to carry it
-    is replaced by the wire definition (the ``kirocrew-conductor`` row above).
+    Only a session's own agent is sent under an alias: a sub-agent target with a
+    reserved id is not registered, and one named like the alias is dropped
+    (:mod:`kiro_crew.acp.kas_subagent_targets`), so the alias cannot meet a
+    second entry of the same id in its batch; an on-disk spec that happens to
+    carry it is replaced by the wire definition (the ``kirocrew-conductor`` row
+    above).
     """
     if agent_id in KAS_RESERVED_AGENT_IDS:
         return f"{agent_id}{KAS_WIRE_ID_SUFFIX}"
