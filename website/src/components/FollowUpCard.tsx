@@ -77,16 +77,26 @@ export interface FollowUpCardProps {
 const PROMPT_PREVIEW_LINES = 3
 const PROMPT_PREVIEW_CHARS = 240
 
-/** The collapsed card's text: the first PROMPT_PREVIEW_LINES lines, cut at
- *  PROMPT_PREVIEW_CHARS, with a trailing ellipsis that says more is hidden. */
+/** The prompt's lines from the first one with text. The send trims the prompt,
+ *  so leading blank lines never reach the new session, and counting them would
+ *  fill the preview with nothing but the ellipsis. */
+function followupPromptLines(prompt: string): string[] {
+  const lines = prompt.split('\n')
+  const first = lines.findIndex(line => line.trim() !== '')
+  return first < 0 ? [] : lines.slice(first)
+}
+
+/** The collapsed card's text: the first PROMPT_PREVIEW_LINES lines with text,
+ *  cut at PROMPT_PREVIEW_CHARS, with a trailing ellipsis that says more is hidden. */
 function followupPromptPreview(prompt: string): string {
-  const head = prompt.split('\n').slice(0, PROMPT_PREVIEW_LINES).join('\n')
+  const head = followupPromptLines(prompt).slice(0, PROMPT_PREVIEW_LINES).join('\n')
   return `${head.slice(0, PROMPT_PREVIEW_CHARS).trimEnd()}…`
 }
 
 /** Whether the collapsed card hides any of the prompt, so it needs Show prompt. */
 function followupPromptHasMore(prompt: string): boolean {
-  return prompt.split('\n').length > PROMPT_PREVIEW_LINES || prompt.length > PROMPT_PREVIEW_CHARS
+  const lines = followupPromptLines(prompt)
+  return lines.length > PROMPT_PREVIEW_LINES || lines.join('\n').length > PROMPT_PREVIEW_CHARS
 }
 
 /**
