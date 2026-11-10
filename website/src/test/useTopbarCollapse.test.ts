@@ -483,6 +483,18 @@ describe('index.css measured ladders', () => {
     expect(s).not.toMatch(/\.tb-metrics-notice\{[^}]*(width:0|overflow:hidden)/)
   })
 
+  it('folds the offline notice to its dot only at the last actions rung', async () => {
+    // The cause in words outranks every other readout, so it is the last thing
+    // the ladder takes, and only visually: the sr-only set keeps the text.
+    const s = await css()
+    expect(s).toMatch(/\.tb-measured\.tbr-6 \.tb-right \.tb-offline-notice-msg\{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect\(0,0,0,0\);white-space:nowrap;border-width:0\}/)
+    expect(s).not.toMatch(/\.tbr-[1-5] [^{]*\.tb-offline-notice-msg/)
+    // Its icon goes with the text, so the capsule's red dot is the one mark left.
+    // The same sr-only set, not display:none: each rung has one display:none rule.
+    expect(s).toMatch(/\.tb-measured\.tbr-6 \.tb-right \.tb-offline-notice > svg\{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect\(0,0,0,0\);white-space:nowrap;border-width:0\}/)
+    expect(s).not.toMatch(/\.tbr-[1-5] [^{]*\.tb-offline-notice >/)
+  })
+
   it('lets pinned chips go icon-only once their names are hidden', async () => {
     // A connected chip keeps a 5ch floor for its name (InstanceTabBar.tsx); with
     // the name hidden at rung tbl-2 that floor would only hold blank width.

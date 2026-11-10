@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { offlineReason } from '../shell/appShell'
+import { offlineReason } from '../utils/offlineReason'
 import en from '../i18n/locales/en.manual.json'
 
 describe('offlineReason', () => {
