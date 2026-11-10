@@ -24,17 +24,24 @@ if TYPE_CHECKING:
 
 
 def _doctor_managed_service_policy(issues: list[str]) -> None:
-    """Surface installed service definitions that predate launch-class policy."""
+    """Surface installed service definitions that predate launch-class policy, and
+    a loaded systemd unit that lags this build's (the lines `service status`
+    prints, :func:`kiro_crew.service.controller.stale_unit_notes`)."""
     state = cli_doctor.service_controller.installed_service_has_managed_marker()
     if state is None:
         return
     print("\nManaged Service")
     if state:
         print("  watchdog:    ✅ managed-service policy marker installed")
-        return
-    print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
-    print("               Fix: run `kirocrew service install` once, then restart the service")
-    issues.append("managed service definition is outdated")
+    else:
+        print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
+        print("               Fix: run `kirocrew service install` once, then restart the service")
+        issues.append("managed service definition is outdated")
+    notes = cli_doctor.service_controller.stale_unit_notes()
+    for note in notes:
+        print(f"  unit:        ⚠️  {note}")
+    if notes:
+        issues.append("managed service unit lags this build")
 
 
 def _doctor_pod_session_bus(issues: list[str]) -> None:

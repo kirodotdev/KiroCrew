@@ -886,7 +886,11 @@ When another gateway already serves the same data home, the unit exits 78 and
 goes `failed` once instead of restarting, because the unit's
 `RestartPreventExitStatus=` names that code. A unit file without that directive
 keeps relaunching against the refusal; re-run `kirocrew service install` to
-rewrite it. See [Service Management](../system-specs/modules/cli.md#service-management)
+rewrite it. A unit installed before v0.10.0 on systemd 219 (Amazon Linux 2,
+RHEL 7) has the same fix: its restart cap sits where 219 does not read it, so a
+gateway that fails at boot restarts without end. `kirocrew service status` and
+`kirocrew doctor` name either one. See
+[Service Management](../system-specs/modules/cli.md#service-management)
 in the CLI spec for the details.
 
 ### SELinux-enforcing hosts with kirocrew under `$HOME`

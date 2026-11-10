@@ -1782,6 +1782,7 @@ order is the one `test_cli_doctor_refactor_report.py` freezes.
 25. **Ledgers (advisory)**: one count of every entry `kirocrew ledger-sweep` lists with its default 30-day window (`ledger_sweep.DEFAULT_OLDER_THAN_DAYS`): finished stores plus unreadable, linked or unaddressable stores listed for a human. The `ledgers:` row says the command lists N ledgers (or nothing), without claiming every entry is finished or idle, and names the command to review them (`doctor_checks/workload._doctor_ledger_backlog`). It calls the read-only `ledger_sweep.scan()`, never purges and prints no per-ledger detail, which stays in the dry run. It takes no `issues` list, so a listed ledger never fails doctor, and a ledger root that cannot be read prints one `could not check` row instead of ending the run.
 26. **Service launch (advisory)**: the `service runs:` row follows the installed service definition (`service.controller.installed_unit_path`) to the program it finally executes, the first word of the systemd unit file's last `ExecStart=` (an operator's drop-in is not read) or, on macOS, the `exec` target of the launcher the plist's `ProgramArguments[0]` runs, and prints its resolved path (`doctor_checks/install._doctor_service_launch`). A definition whose program is, or leads through, the shared `~/.local/bin/kirocrew` launcher follows whatever a source clone's `install.sh` or `kirocrew setup` repoints it at, so the service runs that clone from its next restart. When the resolved program lies in a Kiro Crew source checkout (a directory with both `.git` and `src/kiro_crew`) and the host also has the managed wheel install (`crew-venv-current/bin/kirocrew`, or the legacy `crew-venv`, from `wheel_engine_layout.managed_venv_layout`), the row warns, names both paths and says to run `service install` with the wheel install's `kirocrew`, or to use Dev Fleet's Make live for a deliberate checkout. A checkout with the Dev Fleet live-target pointer set is reported as one and not warned on, and so is a checkout on a host with no managed wheel install, which is a development host. Silent when no service is installed; a definition whose program cannot be read prints a `could not read` row. Read-only, never an issue and never part of the exit code.
 27. **Agent spec `allowedCommands` (silent when every entry reads)**: when the main or the Bot role runs KAS or claude, where Kiro Crew's own gate answers a spec's `toolsSettings` shell `allowedCommands` and refuses what they do not match under `denyByDefault`, one `allowed cmd:` row per entry its reader (`platform/allowed_commands.py`) refuses, in the user-level specs and the project's, naming the agent, the entry and why (`doctor_checks/agents._doctor_unreadable_allowed_commands`). Each such entry allows nothing, so a scheduled job refuses a command kiro-cli would run; the row is an issue. The agent and the entry are spec text, shown through `_safe_display`. On kiro-cli alone the row is not printed: kiro-cli reads the entries itself.
+28. **Managed service (silent when no service is installed)**: the `watchdog:` row says whether the installed definition carries the managed-service marker (`service.controller.installed_service_has_managed_marker`), and one `unit:` row per way a loaded systemd unit lags this build's unit, each naming its scope and remedy (`service.controller.stale_unit_notes`, the lines `kirocrew service status` prints; see Service Management). A definition without the marker is one issue, and any lagging unit is one more (`doctor_checks/services._doctor_managed_service_policy`).
 
 One flag is a MODE rather than a check and short-circuits before the list above runs, because it does not answer "is this install healthy": `--bundle` collects the redacted diagnostics zip and prints no health report. It ends with a prefilled `Open a GitHub issue` link whose `version`, `channel` dropdown answer and create-time `channel:` label all come from ONE resolver, `release_channel.provenance()` (shared with the dashboard's Report-a-problem link, which prints the same fields plus the free-form ones): the version is the PUBLIC release version — a repackager's four-part `BUILD_VERSION` stamp such as `0.7.0.5` is folded onto `0.7.0` (`changelog.release_of_build`), while the release pipeline's own spellings (`0.7.0-insider.4`, `0.7.0rc7`, a nightly stamp) are the public identity and stay — and the channel is the lane the build can PROVE from three sources that must agree: the `$KIROCREW_HOME/channel` record when it names a lane, a prerelease marker in the installed distribution's metadata version when it describes the same release (a repackaged insider build keeps its `rc` marker there after the stamp has removed it from `__version__`; PLAIN metadata proves nothing, because the desktop lanes pip-install the checkout and stamp only `__version__`, leaving `pyproject.toml`'s bare version in the dist-info of every lane), and `__version__` itself unless it is a build stamp, which says nothing about its lane. No claim, or claims that disagree (a stable record over a promoted `rc` build, a lane switch not yet updated onto), prefills the form's own `Not sure` and attaches NO `channel:` label, because a create-time label outlives whatever the reporter later picks and a guessed Stable is exactly how packaged insider reports arrived mislabelled (#13168). The raw stamp, the distribution version and the record are recorded in the bundle's private `versions.txt` and `manifest.json` instead. Doctor is otherwise read-only, which is why the ledger cleanup sweep is its own command (`kirocrew ledger-sweep`, see the command table and [session-work-ledger](session-work-ledger.md#cleanup)) rather than a second mode here.
 
@@ -2224,7 +2225,14 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
 1. If a systemd/launchd service is active **and** the caller did not pass
    `--port` explicitly (see Service Management), stop it via the service
    manager and return — without this branch, SIGTERM-by-port would be
-   racing the manager's auto-restart.
+   racing the manager's auto-restart. On systemd, whose `systemctl stop`
+   returns once the unit's processes are gone, it then reads `gateway.lock`:
+   a live holder (a gateway started by hand beside a crash-looping unit)
+   prints `Stopped kirocrew service, but pid N still holds <lock>`, names
+   `kirocrew stop` again and the manual command, leaves that process and
+   the MCP gateway daemon running and exits 1. An indeterminate lock probe
+   makes no claim. launchd is not checked: `bootout` returns before the
+   agent's gateway exits, so its lock may still be that gateway's.
    Then, with or without `--port`, refuse a gateway the desktop app
    supervises (`_refuse_desktop_supervised`): the app is another manager
    and starts its gateway again after a stop. Exit 1, nothing signalled,
@@ -2548,7 +2556,7 @@ its owners, and new work for each part goes to its module:
 | Module | Owns |
 |---|---|
 | `service/linux_unit.py` | the unit and overrides-file paths (`UNIT_PATH`, `ENV_FILE_PATH`), the `sd_booted(3)` directory (`_SYSTEMD_BOOTED_DIR`) both install and uninstall read, the service account (user, group, uid, home, linger) and `render_unit` |
-| `service/linux_systemctl.py` | privilege (`_privilege_prefix`, `_sudo_run`, `ServiceInstallError`), `_systemctl` in either scope, and one scope's unit state (`_UnitState`, `_unit_state`, `_stale_unit_line`) |
+| `service/linux_systemctl.py` | privilege (`_privilege_prefix`, `_sudo_run`, `ServiceInstallError`), `_systemctl` in either scope, and one scope's unit state (`_UnitState`, `_unit_state`, `_stale_unit_lines`) |
 | `service/linux_install.py` | `install`: the root-owned unit and overrides-file writes, the SELinux refusal and its user-unit remedy, and the AppArmor profile install and removal |
 | `service/linux_uninstall.py` | `uninstall`: the ownership decision `_owned_unit`, the per-scope teardown arms and `UninstallReport` |
 
@@ -2680,7 +2688,12 @@ pins the contract.
     non-fatal warning naming `loginctl enable-linger <user>` when it detects
     linger off for the service account, beside the headless-auth warning above;
     it is advisory and never changes the install outcome.
-  - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`.
+  - Crash-loop safety: `StartLimitBurst=3 StartLimitIntervalSec=300`
+    (`linux_unit.START_LIMIT_BURST` / `START_LIMIT_INTERVAL_SECS`), under both
+    `[Unit]` and `[Service]`: systemd 219 reads them only from `[Service]`, so a
+    unit written before v0.10.0, which carries them under `[Unit]` alone,
+    keeps 219's own 5 starts in 10 seconds there, which `RestartSec=10` never
+    reaches.
   - No core files: `LimitCORE=0`. With `core_pattern` piped to
     `systemd-coredump`, a crashed gateway cannot exit, or restart, until its
     core has streamed, which can take that service's whole 5-minute cap. It
@@ -2780,7 +2793,17 @@ pins the contract.
     per-user unit, add it under `[Service]` in the reported `FragmentPath` and
     `systemctl --user daemon-reload`, never sudo). An answer with no such
     property line makes no claim. It is read-only: nothing is rewritten and no
-    daemon-reload runs. Rewriting the unit in place is not done.
+    daemon-reload runs. Rewriting the unit in place is not done. A second read
+    asks for the LOADED start-rate cap (`StartLimitBurst` plus
+    `StartLimitIntervalUSec`, or 219's `StartLimitInterval` in raw
+    microseconds): a cap other than 3 starts in 300 seconds gets its own line
+    naming the loaded cap, the unit's and the same remedy (for the per-user
+    unit, the two `StartLimit*` lines under `[Service]`), and an answer without
+    both properties makes no claim. `kirocrew doctor` repeats these lines, each
+    naming its scope, as `unit:` rows of its Managed Service section
+    (`service.controller.stale_unit_notes`; empty off systemd). The gateway
+    does not print them at start: that would be a manager read before the
+    socket binds on every launch.
   - **Two scopes, both visible.** `install` writes the system unit only, but
     the SELinux refusal hands the operator a per-user unit
     (`render_unit(user_scope=True)`, managed with `systemctl --user`), so

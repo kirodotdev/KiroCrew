@@ -363,6 +363,14 @@ def service_alias_holder() -> "linux.AliasHolder | None":
     return None
 
 
+def stale_unit_notes() -> list[str]:
+    """One line per way an installed systemd unit lags this build's unit, with
+    its remedy (:func:`linux.stale_unit_notes`); empty off systemd."""
+    if current_platform() == Platform.SYSTEMD:
+        return linux.stale_unit_notes()
+    return []
+
+
 class ServiceStopRefused(RuntimeError):
     """The service manager refused to stop a running unit.
 

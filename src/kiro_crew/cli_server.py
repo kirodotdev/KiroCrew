@@ -908,6 +908,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _pid_exited,
         _process_path,
         _refuse_desktop_supervised,
+        _refuse_if_gateway_outlived_service_stop,
         _refuse_if_lock_held,
         _refuse_lock_holder,
         _refuse_service_alias,
