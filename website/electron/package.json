@@ -216,6 +216,7 @@
       "gateway-stop.js",
       "gateway-wait.js",
       "sandbox-profile.js",
+      "chromium-sandbox-notice.js",
       "windows-port.js",
       "home-dir.js",
       "local-token.js",
