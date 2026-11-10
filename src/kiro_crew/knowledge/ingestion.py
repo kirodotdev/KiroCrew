@@ -643,6 +643,18 @@ class IngestionPipeline:
             "UPDATE ingestion_jobs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
             (str(exc)[:2000], datetime.now().isoformat(), job_id))
         db.commit()
+        self._mark_source_failed(source_id, content_hash)
+
+    def _mark_source_failed(self, source_id: str, content_hash: str) -> None:
+        """Stamp the source ``error`` and forget *content_hash* when it holds it.
+
+        A source an ingest creates stores the document's hash up front, and the
+        unchanged-hash check skips any later ingest of that same text. Kept after
+        a failed or rolled-back ingest, it would make every retry of the same
+        document a no-op, leaving the source with no items until the text
+        changes. A source that already held another hash keeps it. Synchronous:
+        run it inside the caller's off-loop hop.
+        """
 
         # A delta under the store's write lock, never a snapshot rewrite: a
         # concurrent pause or scan stamp on the same row must survive.
@@ -1035,9 +1047,8 @@ class IngestionPipeline:
                     self.store.db.execute(
                         "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
                         (datetime.now().isoformat(), job_id))
-                    self.store.db.execute(
-                        "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
                     self.store.db.commit()
+                    self._mark_source_failed(source_id, content_hash)
 
                 await run_to_completion(_mark_failed)
             except Exception:  # noqa: BLE001 - never mask the original error
@@ -1226,7 +1237,7 @@ class IngestionPipeline:
                 # empty group, which the doc-state recovery paths treat as "re-
                 # attempt", so the next scan restores a complete copy.
                 self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self._mark_source_failed(source_id, content_hash)
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? WHERE id = ?",
                 (_job_status(processed, total), processed, now, job_id))
@@ -1371,10 +1382,17 @@ class IngestionPipeline:
                 extractions = await self.extractor.extract_batch(chunk_contents)
         except Exception as exc:
             # The LTS harness refusal fails the job (see ingest_file); any
-            # other extraction error keeps its existing path.
+            # other extraction error keeps its job row as before, but still
+            # forgets this ingest's hash so the same text can be retried.
             if _is_harness_refusal(exc):
                 await run_to_completion(functools.partial(
                     self._record_harness_refusal, job_id, source_id, content_hash, exc))
+            else:
+                try:
+                    await run_to_completion(functools.partial(
+                        self._mark_source_failed, source_id, content_hash))
+                except Exception:  # noqa: BLE001 - never mask the original error
+                    logger.warning("failed to mark source %s failed", source_id, exc_info=True)
             raise
 
         # What THIS call wrote, collected at the write itself rather than
@@ -1459,7 +1477,7 @@ class IngestionPipeline:
                 # duplicate-gate attacher, or that attacher keeps a truncated
                 # document its unchanged hash never lets a rescan repair.
                 self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self._mark_source_failed(source_id, content_hash)
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
                 (_job_status(processed, total), total, processed, now, job_id))
