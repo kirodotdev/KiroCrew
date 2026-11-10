@@ -432,7 +432,7 @@ in-product recommendations (feature tips, the Explore panel, feature videos):
 
 | Metric | Attributes |
 |---|---|
-| `kirocrew.tips.feedback` | `action`, `source` (`curated` / `catalog` / `generated` / `other`), `feature` (a shipped feature doc name or `other`) |
+| `kirocrew.tips.feedback` | `action`, `source` (`curated` / `catalog` / `generated` / `other`), `feature` (a shipped curated tip id, a shipped feature doc name, or `other`) |
 | `kirocrew.feature_video.status` | `status` (`seen` / `dismissed` / `other`), `feature` (a shipped feature key or `other`) |
 | `kirocrew.milestone.panel_opened`, `.starter_clicked`, `.skipped`, `.mark_all_done`, `.notice_shown`, `.features_completed` | catalog milestone ids and closed enums only |
 | `kirocrew.milestone.reached` | `group`, `milestone`, `via`, `recommended_by` (`tip` / `explore` / `video` / `several` / `none`) |

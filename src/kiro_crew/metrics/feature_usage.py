@@ -39,6 +39,7 @@ disk write, no network call, no log line.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 
@@ -351,15 +352,33 @@ TIP_ACTION_VALUES: tuple[str, ...] = (
 TIP_SOURCE_VALUES: tuple[str, ...] = ("curated", "catalog", "generated", OTHER)
 
 
-def tip_feature_label(doc: object) -> str:
-    """*doc* when it is a doc in ``TIP_DOC_ALLOWLIST``, else ``other``.
+@functools.lru_cache(maxsize=1)
+def shipped_curated_tip_ids() -> frozenset[str]:
+    """The ids of the tips shipped in the package's ``data/tips_curated.json``.
 
-    The allowlist is the set of shipped, user-facing feature docs, so a value it
-    admits names a public doc and nothing the user wrote.
+    Read through the tips module's own loader of the packaged file, never from
+    the live tips cache: an edition can replace the curated pool, and its ids
+    are not a closed list. Empty when the file cannot be read.
+    """
+    from kiro_crew.tips import _load_curated_tips
+
+    return frozenset(t["id"] for t in _load_curated_tips())
+
+
+def tip_feature_label(feature: object) -> str:
+    """*feature* when it names a shipped tip or doc, else ``other``.
+
+    Kept when it is a doc in ``TIP_DOC_ALLOWLIST`` (the shipped, user-facing
+    feature docs) or the id of a tip shipped in ``tips_curated.json``. Both are
+    lists this package ships, so a kept value names nothing the user wrote.
     """
     from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 
-    return doc if isinstance(doc, str) and doc in TIP_DOC_ALLOWLIST else OTHER
+    if not isinstance(feature, str) or not feature:
+        return OTHER
+    if feature in TIP_DOC_ALLOWLIST or feature in shipped_curated_tip_ids():
+        return feature
+    return OTHER
 
 
 def record_tip_feedback(action: object, source: object, feature: object) -> None:
