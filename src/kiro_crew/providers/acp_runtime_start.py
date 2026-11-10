@@ -40,6 +40,7 @@ from kiro_crew.acp.client import (
     sandbox_init_failure_for_runtime,
 )
 from kiro_crew.acp.kas_cli_settings import default_model_notice, kiro_cli_default_model
+from kiro_crew.acp.kas_engine_refusal import AcpKasEngineRefused, kas_engine_refused
 from kiro_crew.acp.kas_extract_repair import AcpKasExtractBroken
 from kiro_crew.acp.mcp_session_report import (
     McpSessionReport,
@@ -422,6 +423,21 @@ def _kas_extract_failure(runtime: AcpRuntime) -> AcpKasExtractBroken | None:
     return None
 
 
+def _kas_engine_refusal(runtime: AcpRuntime, backend: str) -> AcpKasEngineRefused | None:
+    """Translate a KAS startup death that kiro-cli's v3 refusal caused, or None.
+
+    Checked on every startup-death path beside :func:`_delegate_launch_failure`,
+    for the same reason: kiro-cli refusing its v3 engine on this host is
+    deterministic, so a respawn only reproduces it. The translation records the
+    refusal as this host's verdict (:func:`kas_engine_refused`), which moves the
+    next session off KAS, and raises a non-retryable error naming it. KAS starts
+    only, by a positive test, so the Kiro path compares and stops (H13).
+    """
+    if backend == ACP_BACKEND_KAS and runtime.saw_kas_engine_refusal():
+        return kas_engine_refused()
+    return None
+
+
 def _member_session_key(self: AcpProvider) -> str:
     """This session's key when it is a member DM on a dispatch-capable backend.
 
@@ -767,6 +783,12 @@ async def _start_kiro_runtime_impl(
         kas_extract_failure = _kas_extract_failure(runtime)
         if kas_extract_failure is not None:
             raise kas_extract_failure from exc
+        # kiro-cli refusing its v3 engine on this host is the same kind of fact,
+        # and on all three paths too: recorded as the host's verdict so the next
+        # start leaves KAS, and shown as itself rather than as a process death.
+        kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
+        if kas_refusal is not None:
+            raise kas_refusal from exc
         # kiro-cli can exit during initialize when not authenticated —
         # surface an actionable login prompt (parity with AcpClient) rather
         # than a generic runtime-death error.
@@ -948,6 +970,9 @@ async def _start_kiro_runtime_impl(
                     kas_extract_failure = _kas_extract_failure(runtime)
                     if kas_extract_failure is not None:
                         raise kas_extract_failure from exc
+                    kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
+                    if kas_refusal is not None:
+                        raise kas_refusal from exc
                     if runtime.saw_not_logged_in():
                         signed_out = host_auth.signed_out_message(self._client.backend)
                         if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
@@ -986,6 +1011,9 @@ async def _start_kiro_runtime_impl(
                 kas_extract_failure = _kas_extract_failure(runtime)
                 if kas_extract_failure is not None:
                     raise kas_extract_failure from exc
+                kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
+                if kas_refusal is not None:
+                    raise kas_refusal from exc
                 if runtime.saw_not_logged_in():
                     signed_out = host_auth.signed_out_message(self._client.backend)
                     if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:

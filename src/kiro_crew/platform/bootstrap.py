@@ -518,20 +518,9 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     return ctx
 
 
-#: The notice a host on a too-old kiro-cli gets when KAS is configured. Logged at
-#: WARNING, and the same reason rides on the KAS row of the dashboard's backend
-#: panel through ``agent_sdk.backends.host_unservable_reason``.
-KAS_CLI_FLOOR_NOTICE = (
-    "KAS is selected, but {reason}. Kiro Crew is using kiro-cli instead. "
-    "Update kiro-cli and restart Kiro Crew to use KAS."
-)
-
-#: The same notice when KAS is only the default (no backend field that names KAS is
-#: stored): the user never chose KAS, so the notice must not say they did.
-KAS_CLI_FLOOR_DEFAULT_NOTICE = (
-    "KAS is the default backend, but {reason}. Kiro Crew is using kiro-cli instead. "
-    "Update kiro-cli and restart Kiro Crew to use KAS."
-)
+# The floor's two KAS fallback notices (``KAS_CLI_FLOOR_NOTICE`` and
+# ``KAS_CLI_FLOOR_DEFAULT_NOTICE``) live in ``agent_sdk.backends``: that leaf logs
+# them too, for a process outside the gateway, and never imports this package.
 
 #: The notice when the user picked Kiro CLI: the pick runs on KAS only while
 #: kiro-cli offers its v3 engine, so on this kiro-cli it keeps the v2 launch.
@@ -548,13 +537,18 @@ KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE = (
 )
 
 
-def _unknown_verdict_reason() -> str:
-    """Why the floor's probe had no answer, as one clause. Stats only; never raises."""
+def _unknown_verdict_reason(*, start: bool = False) -> str:
+    """Why the floor's probe had no answer, as one clause. Stats only; never raises.
+
+    *start* is whether the help probe answered and the v3 start after it did not.
+    """
     from kiro_crew.agent_sdk.drivers.acp import kiro_cli_spawn_binary
 
     binary = kiro_cli_spawn_binary()
     if binary is None:
         return "no trusted kiro-cli was found"
+    if start:
+        return f"`{binary} acp --agent-engine v3` did not finish"
     return f"`{binary} acp --help` did not run"
 
 
@@ -576,8 +570,24 @@ def apply_kas_cli_floor(
     leaves KAS selected and a Kiro CLI pick on kiro-cli's v2 launch: the floor never
     acts on a fact it could not establish. For a Kiro CLI pick that unknown is still
     logged (:data:`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`), so a pick that stays on v2
-    says why. Only a probe that ran and names the v3
-    engine moves a Kiro CLI pick onto KAS (``confirm_kiro_cli_offers_kas``).
+    says why. A Kiro CLI pick moves onto KAS
+    (``confirm_kiro_cli_offers_kas``) only after a probe that ran and names the v3
+    engine AND one start of that engine kiro-cli did not refuse
+    (``kas_engine_start_verdict``): kiro-cli lists v3 in its help even on a host
+    where it then refuses to run it, and that refusal is a gap like any other, so
+    KAS is marked unservable and the pick keeps the v2 launch. The start runs once
+    per kiro-cli install, on the pinned install only (a kiro-cli reached only
+    through ``PATH`` is never started outside the sandbox, so its help verdict
+    stands until a refusal is on record for it); its verdict, and every refusal a
+    KAS runtime met at its own start, are kept in the data home
+    (``acp.kas_engine_refusal``). With no stored pick at stake nothing is started:
+    a refusal on record for this kiro-cli is a gap the same way, so a defaulted or
+    chosen KAS falls back before the first chat, and otherwise the help probe
+    alone confirms and a later refusal at a KAS start withdraws it. Neither gap
+    marks anything for a KAS whose next spawn takes the bundle route chosen
+    automatically (``agent_sdk.kas_bundle.kas_route``, asked only before marking):
+    that spawn never runs kiro-cli. A Kiro CLI pick is not asked, as the route
+    rule always keeps it on the relay.
 
     Called by the gateway alone, after :func:`bootstrap_context`, so it reads the
     policy-narrowed set. Not part of ``bootstrap_context`` itself: that runs in
@@ -595,7 +605,12 @@ def apply_kas_cli_floor(
         resolve_selected_backend,
         selectable_backends,
     )
-    from kiro_crew.agent_sdk.backends import confirm_kiro_cli_offers_kas, kiro_cli_pick_backend
+    from kiro_crew.agent_sdk.backends import (
+        KAS_CLI_FLOOR_DEFAULT_NOTICE,
+        KAS_CLI_FLOOR_NOTICE,
+        confirm_kiro_cli_offers_kas,
+        kiro_cli_pick_backend,
+    )
     from kiro_crew.crewmate_harness import bots_may_run_on_kas
 
     agent = cfg.agent
@@ -616,9 +631,19 @@ def apply_kas_cli_floor(
         return None
     if ACP_BACKEND_KAS not in selectable_backends():
         return None
-    from kiro_crew.agent_sdk import kas_engine_verdict
+    from kiro_crew.agent_sdk import kas_bundle, kas_engine_start_verdict, kas_engine_verdict
 
     offers_kas, reason = kas_engine_verdict()
+    start_unknown = False
+    if offers_kas:
+        # The help lists v3 even where kiro-cli then refuses to run it. The user's
+        # own pick moves only on proof the engine runs here (one start per kiro-cli
+        # install, kept in the data home); without a pick, a refusal already on
+        # record for this kiro-cli is enough, and nothing is started for it.
+        started, refusal = kas_engine_start_verdict(start=kiro_pick)
+        if kiro_pick or started is False:
+            offers_kas, reason = started, refusal
+            start_unknown = started is None
     if offers_kas:
         # Positive evidence only: from here a Kiro CLI pick moves to the KAS path
         # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
@@ -630,7 +655,9 @@ def apply_kas_cli_floor(
     if reason is None:
         if not kiro_pick:
             return None
-        notice = KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE.format(reason=_unknown_verdict_reason())
+        notice = KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE.format(
+            reason=_unknown_verdict_reason(start=start_unknown)
+        )
         logger.warning(notice)
         return notice
     if governance_floor_backend() == ACP_BACKEND_KAS:
@@ -643,6 +670,12 @@ def apply_kas_cli_floor(
         notice = KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason)
         logger.warning(notice)
         return notice
+    if not kiro_pick and kas_bundle.kas_route().bundle:
+        # The next KAS spawn takes Kiro Crew's own engine, chosen automatically
+        # because kiro-cli cannot run a session (``acp.kas_route``). That spawn never
+        # runs kiro-cli, so neither its help gap nor a refusal on record is a fact
+        # about this host's KAS. A Kiro CLI pick always keeps the relay (rule 2).
+        return None
     mark_backend_unservable(ACP_BACKEND_KAS, reason)
     agent.acp_backend = resolve_selected_backend(agent.acp_backend)
     parts = []

@@ -11,7 +11,7 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_pending_init_notifications``,
 ``_kas_extract_server_path``, ``_pending_requests``, ``_routed_requests``, ``_saw_auth_failure``,
-``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
+``_saw_delegate_launch_failure``, ``_saw_kas_engine_refusal``, ``_saw_sandbox_init_failure``,
 ``_stall_turn_sessions``, ``_stderr_lines``,
 ``_stdin_stall_death``.
 
@@ -31,7 +31,8 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew import platform_compat, runtime_death
-from kiro_crew.acp import kas_extract_repair, runtime_process_tree
+from kiro_crew.acp import kas_engine_refusal, kas_extract_repair, runtime_process_tree
+from kiro_crew.acp.kas_engine_refusal import is_kas_engine_refusal_output
 from kiro_crew.acp.session_handle import AcpRuntimeDead
 from kiro_crew.acp.transport_errors import (
     is_auth_failure_output,
@@ -410,6 +411,18 @@ def saw_delegate_launch_failure(self: AcpRuntime) -> bool:
     buffer.
     """
     return self._saw_delegate_launch_failure
+
+
+def saw_kas_engine_refusal(self: AcpRuntime) -> bool:
+    """True if this runtime's child died because kiro-cli refused its v3 engine here.
+
+    Lets a KAS start translate the death into the host verdict and its message
+    (``acp.kas_engine_refusal``) instead of the generic "process exited" card the
+    retry ladder then reproduces on a host that refuses identically. Parity with
+    :meth:`saw_delegate_launch_failure`, including reading the latch rather than
+    the ring buffer.
+    """
+    return self._saw_kas_engine_refusal
 
 
 def redacted_stderr_tail(self: AcpRuntime) -> str:
@@ -977,6 +990,21 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                     found = kas_extract_repair.server_path_from_stderr(text)
                     if found:
                         self._kas_extract_server_path = found
+                # Same sink and the same pre-initialize window again: kiro-cli
+                # prints its refusal of the v3 engine before ``initialize`` and
+                # exits, so the line names this child's startup and nothing later.
+                if (
+                    is_kas_engine_refusal_output(text)
+                    and not self._first_session_ready
+                    and not self._saw_kas_engine_refusal
+                ):
+                    self._saw_kas_engine_refusal = True
+                    if self.acp_backend == ACP_BACKEND_KAS:
+                        # The host's verdict is recorded here, at the one sink every
+                        # KAS start's stderr passes, so it lands whoever spawned this
+                        # runtime (a session, the background one-liners, a companion)
+                        # and the next start leaves KAS instead of repeating it.
+                        await kas_engine_refusal.record_refused_kas_start()
                 if self.recording_allowed and logger.isEnabledFor(logging.DEBUG):
                     # Child stderr can echo a credential (a failed login prints
                     # the header it sent); redact before the cut so a token

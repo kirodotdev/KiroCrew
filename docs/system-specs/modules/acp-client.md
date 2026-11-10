@@ -4586,7 +4586,74 @@ the cause. An operator's `KIROCREW_KIRO_BIN` is never second-guessed
 resolver hands it through: on Windows that is its `realpath`, which turns an 8.3
 short name such as `RUNNER~1` into the long one. A kiro-cli
 that cannot run the v3 engine is still the gateway floor's (KAS marked unservable,
-Kiro CLI selected), tracked in issue 26629.
+Kiro CLI selected) where the next KAS spawn takes the relay, tracked in issue
+26629. That includes a kiro-cli whose
+`acp --help` lists v3 but whose `acp --agent-engine v3` exits with "V3 is
+currently not supported on this system." before `initialize`
+(`acp/kas_engine_refusal.py`, one signature for every reader). Two places learn
+it. The floor, before it moves a stored Kiro CLI pick onto KAS, starts the v3
+engine of the kiro-cli a session spawn runs once, with stdin and stdout on
+`/dev/null` (`agent_sdk.kas_engine_start_verdict` over
+`kiro_cli.kas_relay_start_output`, 30 s cap; a healthy engine exits at EOF, about
+ten seconds measured on kiro-cli 3.1.0). The start runs outside the sandbox, so it
+runs only the pinned install's own path (`kas_engine_start_binary`); a kiro-cli
+reached only through `PATH` is never started, its record alone is read, and with
+nothing recorded its help verdict stands. The start runs in an empty private
+directory and leads its own process group, so a timed-out start is killed with
+the engine it launched, and a pick whose start did not finish stays on the v2
+launch with the unknown notice. A refusal is a
+gap like any other: KAS marked unservable, the pick kept on the v2 launch, the
+notice logged. Neither gap marks anything where the next KAS spawn takes the
+bundle route, configured or chosen automatically, because that spawn never runs
+kiro-cli: the floor asks the route (`agent_sdk.kas_bundle.kas_route`) just before
+it would mark KAS, for KAS roles with no stored Kiro CLI pick (rule 2 keeps a pick
+on the relay, so it is not asked), so a healthy host never pays for the route
+read. Every KAS runtime, whatever spawned it (a chat session, the
+background one-liners, a companion, doctor), records the same verdict from its
+pre-`initialize` stderr latch (`AcpRuntime._drain_stderr` →
+`kas_engine_refusal.record_refused_kas_start`): KAS marked unservable (not where
+KAS is the governance floor), the v3 evidence withdrawn
+(`revoke_kiro_cli_offers_kas`, so a promoted pick loads as Kiro CLI again), the
+KAS install probe evicted and the config watcher woken for a forced reload, so
+the next session takes the Kiro CLI launch instead of the same relay. A companion
+runtime's spawn retry stops on it (`agent_sdk.kas_start_was_refused`, so the
+application-side companion module stays off `kiro_crew.acp`). On top of that, all
+three startup-death paths of `providers/acp_runtime_start.py` read the latch and
+raise the non-retryable `AcpKasEngineRefused` instead of the generic "process
+exited" card. Both verdicts outlive the process: `kas_engine_start.json` in the
+data home keeps, per kiro-cli binary identity (path, mtime, size, keyed like the
+start check, so a runtime's refusal on a `PATH`-only kiro-cli is kept for that
+binary), whether its v3 engine started or was refused, so the start runs once per
+kiro-cli install, not
+once per process, and a new kiro-cli is checked again. The floor reads that
+record without starting anything when no stored pick is at stake, so after a
+restart a defaulted or chosen KAS on a refusing kiro-cli falls back before the
+first chat; otherwise it confirms from the help text alone. In an LTS build, where
+KAS is the governance floor and is never marked, the boot gate reads the same
+record on the relay route (`lts_boot.kas_unrunnable`, after a help verdict that is
+not a gap) as a hint, never as proof: a recorded refusal runs ONE fresh bounded v3
+start (`kas_engine_start_verdict(start=False, revalidate=True)`, which bypasses the
+in-process start cache). Only a refusal that start meets refuses a gateway start
+whose main sessions run KAS, and otherwise is kept in memory for the boot so each KAS
+session is refused at its own start (`lts_boot.refuse_unstartable_kas`), as a help
+gap is. A record that no longer reproduces is rewritten and the boot goes on, so an
+entry an agent wrote cannot refuse a gateway start; a `PATH`-only kiro-cli is never
+started, so a record for it proves nothing there.
+A process outside the
+gateway (`kirocrew chat`, `kirocrew run`, eval, consolidation) reads the same
+record before its config load, in `ensure_kiro_cli_kas_verdict`, when its stored
+backend runs KAS (the default or `"kas"`, `acp_backend_stored_runs_kas`) off the
+configured bundle route: a refusal on record marks KAS unservable there too (not
+where KAS is the governance floor, nor where the next KAS spawn takes the bundle
+route automatically: `kas_bundle.kas_route` is asked only once a refusal is on
+record) and logs the floor's notice, so the next `kirocrew chat`
+starts on Kiro CLI instead of spawning the refused relay again. The record is an
+ordinary sandbox-visible leaf: an entry an agent wrote can only keep KAS off (the
+Kiro CLI launch the policy already allows) or cost one refused start, which
+records the truth again. `kirocrew doctor`'s engine row reads the floor's own
+verdicts for a stored Kiro CLI pick; otherwise it reads the verdict for the binary
+its help row read, starting the engine only when none is recorded. Either way it
+prints the refusal as the engine gap.
 The decision is per spawn, so a later kiro-cli install or sign-in moves the next
 process back. It is never silent: `kas_route.note_spawn_route` logs each change
 of route (WARNING when automatic) and keeps the last spawn's route in a process

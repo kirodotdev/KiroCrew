@@ -883,6 +883,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         acp_backend_declared,
         acp_backend_overlay_owned,
         acp_backend_stored_as_kiro,
+        acp_backend_stored_runs_kas,
         coerce_config_field,
         coerce_dict_section,
         config_content_stamp,
