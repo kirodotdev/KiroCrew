@@ -386,6 +386,8 @@ or write them).
 | `kirocrew policy validate` | Load-check the policy + all profiles |
 | `kirocrew policy explain SCOPE ITEM` | Explain one tool/scope decision for a surface |
 | `kirocrew policy explain SCOPE ITEM --session-key K --agent A --app APP` | Scope the explanation to a surface |
+| `kirocrew policy explain SCOPE ITEM --json` | Print the explanation as one JSON object |
+| `kirocrew policy explain --batch FILE` | Explain each JSON Lines request in FILE (`-` = stdin) in one run, one JSON answer per line |
 | `kirocrew policy profile NAME` | Show a profile by name |
 | `kirocrew policy source` | Show whether this host fetches its policy from a central source |
 | `kirocrew policy fetch` | Fetch the central policy now and apply it if usable (`--force` re-downloads, ignoring cached validators) |

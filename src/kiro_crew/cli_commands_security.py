@@ -19,6 +19,7 @@ import re
 import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from kiro_crew.cli_commands_memory import _finding_store_suffix
 from kiro_crew.config import config_dir
@@ -31,6 +32,9 @@ from kiro_crew.security import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.terminal_safe import safe_terminal_line
+
+if TYPE_CHECKING:
+    from kiro_crew.platform.governance import GovernanceCeiling
 
 _TIME_SELECTOR_RE = re.compile(r"(?i)\A(?P<value>\d+)(?P<unit>[smhdw])\Z")
 
@@ -289,16 +293,8 @@ def _policy(args: argparse.Namespace) -> None:
     effective ceiling.  No mutation — purely diagnostic, so it is MCP-safe.
     """
     from kiro_crew.platform.context import current_context
-    from kiro_crew.platform.governance import (
-        CAPABILITY,
-        SCOPE_CATALOG,
-        gate_decision,
-        resolve,
-    )
-    from kiro_crew.platform.governance_profiles import (
-        get_store_profile,
-        resolve_active_scope,
-    )
+    from kiro_crew.platform.governance import CAPABILITY, SCOPE_CATALOG
+    from kiro_crew.platform.governance_profiles import get_store_profile
 
     action = getattr(args, "policy_action", None)
     ceiling = getattr(current_context(), "governance", None)
@@ -382,6 +378,16 @@ def _policy(args: argparse.Namespace) -> None:
         print("✅ valid")
 
     elif action == "explain":
+        batch = getattr(args, "batch", None)
+        if (batch is None and args.item is None) or (batch is not None and args.scope is not None):
+            print(
+                "Usage: kirocrew policy explain <scope> <item> [--json] | --batch FILE|-",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        if batch is not None:
+            _explain_batch(ceiling, batch, args.session_key, args.agent, args.app)
+            return
         scope = args.scope
         if scope not in SCOPE_CATALOG:
             print(
@@ -389,17 +395,16 @@ def _policy(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        profile = resolve_active_scope(args.session_key, agent=args.agent, app=args.app)
-        decision = resolve(ceiling, profile, scope, args.item)
-        verdict = "ALLOWED" if decision.permitted else "DENIED"
-        print(f"{verdict}: {scope} → {args.item!r}")
+        record = _explain_record(ceiling, scope, args.item, args.session_key, args.agent, args.app)
+        if getattr(args, "json", False):
+            print(json.dumps(record))
+            return
+        print(f"{record['verdict']}: {scope} → {args.item!r}")
         print(f"   surface session: {args.session_key!r}")
-        print(f"   active profile : {profile.name if profile else '(none — policy only)'}")
-        print(f"   rule/layer     : {decision.rule} / {decision.layer or '—'}")
-        print(f"   reason         : {decision.reason}")
-        # Also show the raw title-classified path (mirrors the live gate).
-        gate = gate_decision(ceiling, profile, args.item)
-        print(f"   gate verdict   : {'ALLOWED' if gate.permitted else 'DENIED'} ({gate.reason})")
+        print(f"   active profile : {record['profile'] or '(none — policy only)'}")
+        print(f"   rule/layer     : {record['rule']} / {record['layer'] or '—'}")
+        print(f"   reason         : {record['reason']}")
+        print(f"   gate verdict   : {record['gate_verdict']} ({record['gate_reason']})")
 
     elif action == "profile":
         prof = get_store_profile(args.name)
@@ -424,6 +429,94 @@ def _policy(args: argparse.Namespace) -> None:
             "Usage: kirocrew policy {show|validate|explain <scope> <item>|"
             "profile <name>|source|fetch}"
         )
+
+
+def _explain_record(
+    ceiling: GovernanceCeiling | None, scope: str, item: str, session_key: str, agent: str, app: str
+) -> dict[str, object]:
+    """One ``policy explain`` answer: the inputs, then every value its text form prints."""
+    from kiro_crew.platform.governance import gate_decision, resolve
+    from kiro_crew.platform.governance_profiles import resolve_active_scope
+
+    profile = resolve_active_scope(session_key, agent=agent, app=app)
+    decision = resolve(ceiling, profile, scope, item)
+    # The item read as a tool's display title with no arguments, as the gate reads a title.
+    gate = gate_decision(ceiling, profile, item)
+    return {
+        "scope": scope,
+        "item": item,
+        "session_key": session_key,
+        "agent": agent,
+        "app": app,
+        "verdict": "ALLOWED" if decision.permitted else "DENIED",
+        "profile": profile.name if profile else None,
+        "rule": decision.rule,
+        "layer": decision.layer,
+        "reason": decision.reason,
+        "explicit_deny": decision.explicit_deny,
+        "gate_verdict": "ALLOWED" if gate.permitted else "DENIED",
+        "gate_reason": gate.reason,
+    }
+
+
+def _explain_batch(
+    ceiling: GovernanceCeiling | None, source: str, session_key: str, agent: str, app: str
+) -> None:
+    """``policy explain --batch``: one JSON answer per JSON Lines request, in one boot.
+
+    The surface flags are the defaults for a request that leaves those keys out, and
+    other keys are ignored, so a caller may keep its expected verdict on the line. Every
+    record carries its request's line number. A line that is not a request, or names an
+    unknown scope, prints an error record and the run goes on; the command exits 1 after
+    the last line if any did.
+    """
+    from kiro_crew.hooks import safe_read_file
+    from kiro_crew.platform.governance import SCOPE_CATALOG
+
+    # A caller-supplied path goes through the sensitive-path gate, like the CLI's other reads.
+    try:
+        text = sys.stdin.read() if source == "-" else safe_read_file(source)
+    except PermissionError:
+        print(
+            "Refusing to read the batch file: it is protected or resolves to a sensitive location.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from None
+    except (OSError, UnicodeDecodeError) as exc:
+        reason = "it is not UTF-8 text" if isinstance(exc, UnicodeDecodeError) else exc.strerror
+        print(f"Cannot read the batch file: {reason}", file=sys.stderr)
+        raise SystemExit(1) from None
+    failed = False
+    # Split on newlines only: splitlines() would also break a JSON string holding U+2028.
+    for number, line in enumerate(text.split("\n"), 1):
+        if not line.strip():
+            continue
+        try:
+            request = json.loads(line)
+            fields = [
+                request["scope"],
+                request["item"],
+                request.get("session_key", session_key),
+                request.get("agent", agent),
+                request.get("app", app),
+            ]
+        except (ValueError, KeyError, TypeError):
+            fields = []
+        record: dict[str, object]
+        if not fields or not all(isinstance(value, str) for value in fields):
+            record = {
+                "line": number,
+                "error": "expected a JSON object with string scope and item "
+                "(and string session_key, agent, app when given)",
+            }
+        elif fields[0] not in SCOPE_CATALOG:
+            record = {"line": number, "error": f"unknown scope {fields[0]!r}"}
+        else:
+            record = {"line": number, **_explain_record(ceiling, *fields)}
+        failed = failed or "error" in record
+        print(json.dumps(record))
+    if failed:
+        raise SystemExit(1)
 
 
 def _print_policy_source() -> None:

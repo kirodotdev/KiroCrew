@@ -1542,7 +1542,7 @@ class TestPolicyCli:
 
     def test_explain_known_scope_prints_verdicts(self, capsys: pytest.CaptureFixture[str]) -> None:
         decision = SimpleNamespace(
-            permitted=False, rule="deny", layer="policy", reason="pinned off"
+            permitted=False, rule="deny", layer="policy", reason="pinned off", explicit_deny=True
         )
         gate = SimpleNamespace(permitted=True, reason="title allowed")
         with (
@@ -1591,7 +1591,7 @@ class TestPolicyCli:
             patch(
                 "kiro_crew.platform.governance.resolve",
                 return_value=SimpleNamespace(
-                    permitted=True, rule="allow", layer=None, reason="default"
+                    permitted=True, rule="allow", layer=None, reason="default", explicit_deny=False
                 ),
             ),
             patch(
@@ -1611,6 +1611,67 @@ class TestPolicyCli:
             )
         out = capsys.readouterr().out
         assert "ALLOWED: s" in out and "(none — policy only)" in out and "allow / —" in out
+
+    def test_explain_batch_answers_each_line_as_single_json_explain_does(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """One ``--batch`` run answers every request exactly as one ``--json`` call each
+        would, and a bad line is an error record that does not stop the run."""
+        from kiro_crew.platform.governance import parse_profile
+
+        profile = parse_profile({"name": "ci", "commands": {"mode": "deny", "deny": ["curl *"]}})
+        items = ("git status", "curl https://example.com")
+        batch = tmp_path / "checks.jsonl"
+        batch.write_text(
+            "".join(json.dumps({"scope": "commands", "item": item}) + "\n" for item in items)
+            + '{"scope": "nope.scope", "item": "x"}\n'
+            + "not json\n"
+            + '{"scope": "commands", "item": "x", "agent": 5}\n',
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "kiro_crew.platform.context.current_context",
+                return_value=SimpleNamespace(governance=None),
+            ),
+            patch(
+                "kiro_crew.platform.governance_profiles.resolve_active_scope",
+                return_value=profile,
+            ),
+        ):
+            for item in items:
+                cc._policy(
+                    _ns(
+                        policy_action="explain",
+                        scope="commands",
+                        item=item,
+                        session_key="cli_chat",
+                        agent="",
+                        app="",
+                        json=True,
+                    )
+                )
+            singles = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+            with pytest.raises(SystemExit) as exc:
+                cc._policy(
+                    _ns(
+                        policy_action="explain",
+                        scope=None,
+                        item=None,
+                        session_key="cli_chat",
+                        agent="",
+                        app="",
+                        batch=str(batch),
+                    )
+                )
+        assert exc.value.code == 1
+        answers = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert [s["verdict"] for s in singles] == ["ALLOWED", "DENIED"]
+        assert [s["gate_verdict"] for s in singles] == ["ALLOWED", "DENIED"]
+        assert [s["explicit_deny"] for s in singles] == [False, True]
+        assert answers[:2] == [{"line": n, **s} for n, s in enumerate(singles, 1)]
+        assert answers[2] == {"line": 3, "error": "unknown scope 'nope.scope'"}
+        assert [(a["line"], "error" in a) for a in answers[3:]] == [(4, True), (5, True)]
 
     def test_profile_missing(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
