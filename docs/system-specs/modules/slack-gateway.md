@@ -1148,7 +1148,7 @@ Each channel can have its own activation mode controlling when the bot responds:
 | `mention` | Only respond when @mentioned; continue in thread replies if bot has active session |
 | `observe` | Passively record all messages with deep history buffer; respond only when @mentioned (like `mention` but with richer context) |
 | `off` | Ignore all messages completely — no history recorded |
-| `review` | Generate a response and show the owner an ephemeral draft to approve before it is posted. Set in config only; `!channel` accepts `always\|mention\|observe\|off` |
+| `review` | Generate a response and show the owner an ephemeral draft to approve before it is posted. Approve takes the draft from the store before posting, so a double press posts once, and puts it back when Slack answers the post with an error (`SlackApiError`), so the same buttons can retry; a dropped connection may have posted it, so the draft stays gone. Set in config only; `!channel` accepts `always\|mention\|observe\|off` |
 
 **Defaults**: DMs (`D`-prefix) default to `always`. Group channels (`C`/`G`-prefix) default to `mention`.
 

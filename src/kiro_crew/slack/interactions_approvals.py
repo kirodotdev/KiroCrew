@@ -161,7 +161,9 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
         return
     channel, thread_ts, draft_key = parsed
 
-    from kiro_crew.slack.handler import _review_drafts_get, _review_drafts_pop
+    from slack_sdk.errors import SlackApiError
+
+    from kiro_crew.slack.handler import _review_drafts_get, _review_drafts_pop, _review_drafts_set
 
     _, requester = _review_drafts_get(draft_key)
     if not _can_act_on_review_draft(caller, requester):
@@ -179,9 +181,17 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     if not draft:
         logger.warning("Review approve: no draft found for %s", draft_key)
         return
+    original = draft
     draft, _ = redact_exfiltration_urls(draft)
     draft, _ = redact_credentials(draft)
-    await _orch.slack.post_message(channel, draft, thread_ts)
+    try:
+        await _orch.slack.post_message(channel, draft, thread_ts)
+    except SlackApiError:
+        # Popped first so a double press cannot post twice; put it back when
+        # Slack answered with an error, so the buttons still on screen can
+        # retry. Only then: a dropped connection may have posted it already.
+        _review_drafts_set(draft_key, original, _requester)
+        raise
     # Approving a draft posts it publicly to the channel, so this egress carries
     # the same silent-corruption hazard as the streaming reply path: the two lines
     # above replaced a credential or a suspicious URL in the draft with a
