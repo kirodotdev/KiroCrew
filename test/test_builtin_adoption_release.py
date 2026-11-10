@@ -7,6 +7,7 @@ the ``mcp-<pkg>`` refusal and the config key's validation.
 from __future__ import annotations
 
 import ast
+import codecs
 import json
 import sys
 import types
@@ -706,6 +707,19 @@ def test_a_tree_that_needs_a_build_step_is_refused(tmp_path, build_input):
     assert pinned_tree_refusal(pin, manifest, tree) is None
     (tree / build_input).write_text("{}", encoding="utf-8")
     assert pinned_tree_refusal(pin, manifest, tree) == "tree_requires_build"
+
+
+def test_a_marked_manifest_declaring_default_enabled_is_still_refused(tmp_path):
+    # The raw read must accept a byte-order-marked app.json like the parse does, or
+    # its `defaultEnabled` reads as absent.
+    from kiro_crew.apps.builtin_adoption_checks import pinned_tree_refusal
+    from kiro_crew.apps.manifest import AppManifest
+
+    pin, _, tree = _pin_and_manifest(tmp_path, defaultEnabled=True)
+    path = tree / "app.json"
+    path.write_bytes(codecs.BOM_UTF8 + path.read_bytes())
+    manifest = AppManifest.from_json_file(path)
+    assert pinned_tree_refusal(pin, manifest, tree) == "pinned_feature_unsupported"
 
 
 def test_a_name_a_core_table_keys_on_is_refused(tmp_path):

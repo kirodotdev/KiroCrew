@@ -9,7 +9,6 @@ name tables E10 consults are read from their owning modules.
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 from pathlib import Path
@@ -18,6 +17,7 @@ from typing import Any
 from kiro_crew.apps.builtin_adoption_mcp import adopted_mcp_servers_refusal
 from kiro_crew.apps.builtin_adoption_pins import AdoptionPin
 from kiro_crew.apps.builtin_adoption_state import GrantPlan
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def core_named_apps() -> frozenset[str]:
 
 def _raw_manifest(tree_root: Path) -> dict[str, Any]:
     try:
-        raw = json.loads((tree_root / "app.json").read_text(encoding="utf-8"))
+        raw = loads_user_json((tree_root / "app.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
         return {}
     return raw if isinstance(raw, dict) else {}
