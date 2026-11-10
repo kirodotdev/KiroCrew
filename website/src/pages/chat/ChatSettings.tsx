@@ -33,6 +33,11 @@ export const CONTENT_WIDTH: Record<ContentWidth, { messages: string; input: stri
 
 export interface ChatConfig {
   contentWidth: ContentWidth
+  /** Widen transcript tables into the pane's spare width. Set by any table's
+   *  own Widen / Narrow button and followed by every table, so the choice holds
+   *  across tables and reloads. Default false: a table keeps the reading
+   *  column's width until the reader asks. */
+  widenTables: boolean
   historyExpanded: boolean
   showTimestamps: boolean
   showTurnStats: boolean
@@ -164,7 +169,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -186,6 +191,7 @@ export function loadChatConfig(): ChatConfig {
     const stored = JSON.parse(localStorage.getItem(LS_KEY) || '{}')
     const cfg = { ...DEFAULTS, ...stored, sendOnEnter: migrateSendMode(stored.sendOnEnter) }
     if (!(cfg.contentWidth in CONTENT_WIDTH)) cfg.contentWidth = 'compact'
+    if (typeof cfg.widenTables !== 'boolean') cfg.widenTables = false
     // Map legacy fileChipStyle values onto the current set:
     //   'tooltip'                                 → 'minimal'
     //   'pebble' / 'full' / 'compact'             → 'expanded'

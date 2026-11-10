@@ -8226,6 +8226,7 @@
       "narrow_table": "Tabelle schmaler machen",
       "expand_table_word": "Breiter",
       "collapse_table_word": "Schmaler",
+      "table_width_not_saved": "Die Tabellenbreite konnte in diesem Browser nicht gespeichert werden",
       "diagram_source": "Diagrammquelltext",
       "copy_failed": "Kopieren fehlgeschlagen",
       "mermaid_render_failed": "Dieses Diagramm konnte nicht gerendert werden. Stattdessen wird der Quelltext angezeigt.",

@@ -8432,6 +8432,7 @@
       "narrow_table": "Estrechar tabla",
       "expand_table_word": "Ensanchar",
       "collapse_table_word": "Estrechar",
+      "table_width_not_saved": "No se pudo guardar el ancho de la tabla en este navegador",
       "diagram_source": "Código fuente del diagrama",
       "copy_failed": "Error al copiar",
       "mermaid_render_failed": "No se pudo renderizar este diagrama. Se muestra el código fuente en su lugar.",

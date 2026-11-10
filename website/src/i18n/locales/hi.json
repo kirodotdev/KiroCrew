@@ -8226,6 +8226,7 @@
       "narrow_table": "तालिका संकरी करो",
       "expand_table_word": "चौड़ा करो",
       "collapse_table_word": "संकरा करो",
+      "table_width_not_saved": "इस ब्राउज़र में तालिका की चौड़ाई सहेजी नहीं जा सकी",
       "diagram_source": "आरेख स्रोत",
       "copy_failed": "कॉपी विफल",
       "mermaid_render_failed": "यह आरेख रेंडर नहीं किया जा सका। इसके बजाय स्रोत दिखाया जा रहा है।",

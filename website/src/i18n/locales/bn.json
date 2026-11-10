@@ -8226,6 +8226,7 @@
       "narrow_table": "টেবিলটি সরু করো",
       "expand_table_word": "চওড়া করো",
       "collapse_table_word": "সরু করো",
+      "table_width_not_saved": "এই ব্রাউজারে টেবিলের প্রস্থ সংরক্ষণ করা যায়নি",
       "diagram_source": "ডায়াগ্রামের সোর্স",
       "copy_failed": "কপি ব্যর্থ",
       "mermaid_render_failed": "এই ডায়াগ্রামটি রেন্ডার করা যায়নি। এর পরিবর্তে সোর্স দেখানো হচ্ছে।",

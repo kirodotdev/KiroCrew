@@ -8432,6 +8432,7 @@
       "narrow_table": "Restringi tabella",
       "expand_table_word": "Allarga",
       "collapse_table_word": "Restringi",
+      "table_width_not_saved": "Impossibile salvare la larghezza della tabella in questo browser",
       "diagram_source": "Codice sorgente del diagramma",
       "copy_failed": "Copia non riuscita",
       "mermaid_render_failed": "Impossibile visualizzare questo diagramma. Viene mostrato il codice sorgente.",

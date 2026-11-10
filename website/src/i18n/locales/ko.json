@@ -8020,6 +8020,7 @@
       "narrow_table": "표 좁히기",
       "expand_table_word": "넓히기",
       "collapse_table_word": "좁히기",
+      "table_width_not_saved": "이 브라우저에 표 너비를 저장하지 못했습니다",
       "diagram_source": "다이어그램 소스",
       "copy_failed": "복사 실패",
       "mermaid_render_failed": "이 다이어그램을 렌더링할 수 없습니다. 대신 소스를 표시합니다.",
