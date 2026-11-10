@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { test, describe } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
@@ -23,7 +24,7 @@ const ROOT = path.join(__dirname, "..");
  *  guards names both probes in prose. The `[^:]` guard keeps `http://` inside a
  *  string literal from reading as the start of a line comment. */
 function code(file) {
-  return fs.readFileSync(path.join(ROOT, file), "utf8")
+  return readSource(path.join(ROOT, file), "utf8")
     .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/.*$/gm, "$1");

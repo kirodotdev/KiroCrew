@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -10,8 +11,8 @@ const path = require("node:path");
 // a capture whose lifecycle hook is not wired is silently discarded with no error
 // anywhere. `stopForQuit` shipped exported and unit-tested but wired to nothing,
 // which is the exact failure these assertions exist to prevent recurring.
-const MAIN = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-const WINDOW_LIFECYCLE = fs.readFileSync(
+const MAIN = readSource(path.join(__dirname, "..", "main.js"), "utf8");
+const WINDOW_LIFECYCLE = readSource(
   path.join(__dirname, "..", "window-lifecycle.js"),
   "utf8",
 );
@@ -56,7 +57,7 @@ describe("cage trace lifecycle wiring", () => {
     // Guards the general shape rather than the two instances above: every stop
     // method the module exports must be reachable from a lifecycle owner, so adding a third
     // one and forgetting to wire it fails here instead of in production silence.
-    const traceSrc = fs.readFileSync(path.join(__dirname, "..", "cage-trace.js"), "utf8");
+    const traceSrc = readSource(path.join(__dirname, "..", "cage-trace.js"), "utf8");
     const exported = [...traceSrc.matchAll(/async (stopFor\w+)\s*\(/g)].map((m) => m[1]);
     assert.ok(exported.length >= 2, `expected the stopFor* family, got ${exported.join(", ")}`);
     for (const name of exported) {

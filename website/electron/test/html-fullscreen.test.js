@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -207,7 +208,7 @@ describe("window lifecycle actually attaches the bridge", () => {
   // The defect was absent WIRING, so the unit tests above would all pass while
   // the app stayed broken if the window owner never called it. This pins the
   // call site at the boundary that creates and persists dashboard windows.
-  const WINDOW_LIFECYCLE_JS = fs.readFileSync(
+  const WINDOW_LIFECYCLE_JS = readSource(
     path.join(__dirname, "..", "window-lifecycle.js"),
     "utf8",
   );

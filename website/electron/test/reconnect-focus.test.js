@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 // Regression tests for #6373: the desktop app stole window focus on every
 // gateway reconnect. The liveness-recovery paths (remote-tunnel reconnect,
 // adopted-gateway recovery, wedged-gateway respawn) called win.show()
@@ -83,13 +84,13 @@ describe("revealWindowForConnect", () => {
 });
 
 describe("gateway supervisor wiring (source pins)", () => {
-  const MAIN_JS = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
-  const IPC_REGISTRAR_JS = fs.readFileSync(
+  const MAIN_JS = readSource(path.join(__dirname, "..", "main.js"), "utf8");
+  const IPC_REGISTRAR_JS = readSource(
     path.join(__dirname, "..", "ipc-registrar.js"),
     "utf8",
   );
   const SUPERVISOR_JS = SUPERVISOR_FILES
-    .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
+    .map((file) => readSource(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
 
   // Supervisor-owned functions are nested one level inside the factory. Their

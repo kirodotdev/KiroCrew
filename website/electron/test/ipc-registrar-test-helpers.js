@@ -1,3 +1,4 @@
+const { readFileSync: readSource } = require("./source-with-owners");
 // Shared by ipc-registrar.test.js and its ipc-registrar.*.test.js parts. (Not a
 // *.test.js file, so `node --test test/*.test.js` does not run it.)
 //
@@ -15,9 +16,9 @@ const Module = require("node:module");
 
 const ROOT = path.join(__dirname, "..");
 const MODULE_PATH = path.join(ROOT, "ipc-registrar.js");
-const SOURCE = fs.readFileSync(MODULE_PATH, "utf8");
-const MAIN_SOURCE = fs.readFileSync(path.join(ROOT, "main.js"), "utf8");
-const GATEWAY_SOURCE = fs.readFileSync(
+const SOURCE = readSource(MODULE_PATH, "utf8");
+const MAIN_SOURCE = readSource(path.join(ROOT, "main.js"), "utf8");
+const GATEWAY_SOURCE = readSource(
   path.join(ROOT, "gateway-supervisor.js"),
   "utf8",
 );
@@ -28,14 +29,14 @@ const GATEWAY_SOURCE = fs.readFileSync(
 // the main process. A channel passed through a variable is not seen here.
 const PRELOAD_FILES = fs.readdirSync(ROOT)
   .filter((name) => name.endsWith(".js"))
-  .filter((name) => /\bipcRenderer\b/.test(fs.readFileSync(path.join(ROOT, name), "utf8")))
+  .filter((name) => /\bipcRenderer\b/.test(readSource(path.join(ROOT, name), "utf8")))
   .filter((name) => name !== "ipc-registrar.js");
 
 function preloadChannels() {
   const invoked = new Set();
   const sent = new Set();
   for (const name of PRELOAD_FILES) {
-    const text = fs.readFileSync(path.join(ROOT, name), "utf8");
+    const text = readSource(path.join(ROOT, name), "utf8");
     for (const [, kind, channel] of text.matchAll(/ipcRenderer\.(invoke|send|sendSync)\(\s*"([^"]+)"/g)) {
       (kind === "invoke" ? invoked : sent).add(channel);
     }
@@ -50,7 +51,7 @@ function channelsRegisteredOutsideRegistrar() {
   const owned = new Set();
   for (const name of fs.readdirSync(ROOT)) {
     if (!name.endsWith(".js") || name === "ipc-registrar.js" || PRELOAD_FILES.includes(name)) continue;
-    const text = fs.readFileSync(path.join(ROOT, name), "utf8");
+    const text = readSource(path.join(ROOT, name), "utf8");
     for (const [, channel] of text.matchAll(/\b(?:ipcMain|\.ipc)\.(?:on|once|handle)\(\s*"([^"]+)"/g)) {
       owned.add(channel);
     }
