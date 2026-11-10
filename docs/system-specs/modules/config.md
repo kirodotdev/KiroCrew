@@ -3547,6 +3547,7 @@ class MemoryConfig:
     writes_enabled: bool = True      # off = the same automatic writers persistence_enabled stops, while injection and memory_recall continue (read-only memory)
     lesson_extraction_enabled: bool = True  # off = consolidation (default and member stores) and the task runner save no extracted lessons; other writes and learn_add continue
     kind_routing: str = "off"        # off | shadow | enforce: whether consolidation tags each project.* write with a kind (fact/event/state) and what it does with it; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log; unknown values read as off (memory_kind_routing.py)
+    lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; unknown values read as off (memory_origin_gate.py)
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
     inject_lessons_per_turn: bool = False  # on follow-up messages, add up to 3 matching lessons the session was not shown; requires inject_lessons
