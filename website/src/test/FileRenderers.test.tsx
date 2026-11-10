@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { columnLetter, detectFileType, HtmlViewer, JsonlViewer, OfficeViewer, SheetViewer } from '../components/FileRenderers'
@@ -307,6 +307,62 @@ describe('OfficeViewer', () => {
     expect(screen.getByRole('img', { name: 'Slide 2 of 3' })).toBeInTheDocument()
     // The card's actions stay reachable beneath the pager.
     expect(screen.getByText('Download original')).toBeInTheDocument()
+  })
+
+  it('keeps keyboard focus on the slide pager when Previous or Next goes disabled', async () => {
+    stubByUrl({
+      '/api/file-office-slides': {
+        body: {
+          status: 'ready', digest: 'd'.repeat(64), count: 2, truncated: false,
+          slides: [{ n: 1, width: 1280, height: 720 }, { n: 2, width: 1280, height: 720 }],
+        },
+      },
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/roadmap.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slides')).toBeInTheDocument()
+    })
+    const next = screen.getByRole('button', { name: 'Next slide' })
+    const prev = screen.getByRole('button', { name: 'Previous slide' })
+    // Next onto the last slide disables Next, so focus moves to Previous.
+    act(() => { next.focus() })
+    fireEvent.click(next)
+    expect(next).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(prev))
+    // The arrow key back onto the first slide disables Previous, so focus moves to Next.
+    fireEvent.keyDown(prev, { key: 'ArrowLeft' })
+    expect(prev).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(next))
+    // A key pressed on a thumbnail pages without moving focus off it.
+    const thumb = screen.getByRole('option', { name: 'Slide 1 of 2' })
+    act(() => { thumb.focus() })
+    fireEvent.keyDown(thumb, { key: 'End' })
+    expect(next).toBeDisabled()
+    expect(document.activeElement).toBe(thumb)
+  })
+
+  it('moves no focus later for a slide key that turned no slide', async () => {
+    stubByUrl({
+      '/api/file-office-slides': {
+        body: {
+          status: 'ready', digest: 'd'.repeat(64), count: 2, truncated: false,
+          slides: [{ n: 1, width: 1280, height: 720 }, { n: 2, width: 1280, height: 720 }],
+        },
+      },
+    })
+    renderWithQuery(<OfficeViewer filePath="/home/user/decks/roadmap.pptx" />)
+    await waitFor(() => {
+      expect(screen.getByTestId('office-slides')).toBeInTheDocument()
+    })
+    const next = screen.getByRole('button', { name: 'Next slide' })
+    // Home on the first slide turns no slide.
+    act(() => { next.focus() })
+    fireEvent.keyDown(next, { key: 'Home' })
+    // Focus leaves the pager, then the pager re-renders for another reason.
+    act(() => { next.blur() })
+    fireEvent.error(screen.getByRole('img', { name: 'Slide 1 of 2' }))
+    expect(screen.getByTestId('office-slide-load-error')).toBeInTheDocument()
+    expect(document.activeElement).toBe(document.body)
   })
 
   it('keeps a failed Open on the compact card in its own row above the two file actions', async () => {

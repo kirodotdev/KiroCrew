@@ -12,6 +12,7 @@ import { sendErrorToChat } from '../utils/errorReport'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useIsDark } from '../hooks/useIsDark'
 import { usePinchZoom, wheelZoomFactor } from '../hooks/usePinchZoom'
+import { usePagerFocus } from '../hooks/usePagerFocus'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { pathBasename } from '../utils/pathBasename'
 import { AUDIO_EXTS, VIDEO_EXTS } from '../utils/mediaExts'
@@ -1071,6 +1072,8 @@ function SlidePager({ filePath, filename, manifest, onRerender }: {
     el?.scrollIntoView?.({ block: 'nearest', inline: 'center' })
   }, [current])
   const go = useCallback((delta: number) => setCurrent(c => Math.min(count, Math.max(1, c + delta))), [count])
+  const pager = usePagerFocus()
+  const { pressedPrev, pressedNext } = pager
   // Arrow / Page / Home / End paging while focus is anywhere inside the pager
   // (the prev/next buttons and the thumbnails are its focusable parts). Bound
   // on the container as a native listener: the keys belong to the pager as a
@@ -1081,14 +1084,14 @@ function SlidePager({ filePath, filename, manifest, onRerender }: {
     const root = rootRef.current
     if (!root) return
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(-1) }
-      else if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); go(1) }
-      else if (e.key === 'Home') { e.preventDefault(); setCurrent(1) }
-      else if (e.key === 'End') { e.preventDefault(); setCurrent(count) }
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(-1); pressedPrev() }
+      else if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); go(1); pressedNext() }
+      else if (e.key === 'Home') { e.preventDefault(); setCurrent(1); pressedPrev() }
+      else if (e.key === 'End') { e.preventDefault(); setCurrent(count); pressedNext() }
     }
     root.addEventListener('keydown', onKeyDown)
     return () => root.removeEventListener('keydown', onKeyDown)
-  }, [go, count])
+  }, [go, count, pressedPrev, pressedNext])
   const slideLabel = (n: number) => i18nT('components.fileRenderers.slide_n_of_count', { n, count })
   return (
     <div ref={rootRef} role="group" aria-label={filename} className="h-full flex flex-col bg-bg-elevated rounded-md border border-border overflow-hidden" data-testid="office-slides">
@@ -1126,16 +1129,18 @@ function SlidePager({ filePath, filename, manifest, onRerender }: {
           first line and the file actions drop to a second, both fully visible. */}
       <div className="shrink-0 flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 border-t border-border bg-bg">
         <button
+          ref={pager.prevRef}
           type="button"
-          onClick={() => go(-1)}
+          onClick={() => { go(-1); pressedPrev() }}
           disabled={current <= 1}
           aria-label={i18nT('components.fileRenderers.slide_previous')}
           className="p-1 rounded text-muted hover:text-text disabled:opacity-40 disabled:cursor-default cursor-pointer bg-transparent border-none"
         ><ChevronLeft size={16} aria-hidden="true" /></button>
         <span className="text-xs text-text tabular-nums whitespace-nowrap" aria-live="polite">{slideLabel(current)}</span>
         <button
+          ref={pager.nextRef}
           type="button"
-          onClick={() => go(1)}
+          onClick={() => { go(1); pressedNext() }}
           disabled={current >= count}
           aria-label={i18nT('components.fileRenderers.slide_next')}
           className="p-1 rounded text-muted hover:text-text disabled:opacity-40 disabled:cursor-default cursor-pointer bg-transparent border-none"

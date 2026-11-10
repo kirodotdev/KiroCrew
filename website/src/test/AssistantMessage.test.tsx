@@ -215,6 +215,24 @@ describe('AssistantMessage', () => {
     expect(screen.queryByTitle('Next version')).not.toBeInTheDocument()
   })
 
+  it('keeps keyboard focus on the version arrows when Previous or Next goes disabled', () => {
+    const variants = [{ content: 'v1' }, { content: 'v2' }]
+    render(<AssistantMessage content="v2" isStreaming={false} variants={variants} variantIdx={1} />)
+    const prev = screen.getByTitle('Previous version')
+    const next = screen.getByTitle('Next version')
+    // Previous onto the first version disables it, so focus moves to Next.
+    act(() => { prev.focus() })
+    fireEvent.click(prev)
+    expect(screen.getByText('1/2')).toBeInTheDocument()
+    expect(prev).toBeDisabled()
+    expect(document.activeElement).toBe(next)
+    // Next back onto the last version disables it, so focus moves to Previous.
+    fireEvent.click(next)
+    expect(screen.getByText('2/2')).toBeInTheDocument()
+    expect(next).toBeDisabled()
+    expect(document.activeElement).toBe(prev)
+  })
+
   it('disables variant arrows when slotRunning', () => {
     const variants = [{ content: 'v1' }, { content: 'v2' }, { content: 'v3' }]
     render(<AssistantMessage content="v2" isStreaming={false} variants={variants} variantIdx={1} onSwitchVariant={() => {}} slotRunning={true} />)
