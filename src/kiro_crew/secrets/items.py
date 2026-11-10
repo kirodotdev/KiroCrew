@@ -179,8 +179,9 @@ def _has_userinfo(href: str) -> bool:
 
 #: Per type, the fields a listing never shows. On an update of an item of the
 #: same type, one of these left OUT of the request keeps its stored value, so
-#: an edit form that cannot show them does not erase them. Sending it as ""
-#: clears it.
+#: an edit form that cannot show them does not erase them. Sending ``notes``
+#: as "" clears it; ``password`` and a note's ``text`` are required, so ""
+#: for either is refused (``missing_field``).
 KEPT_WHEN_ABSENT: dict[str, tuple[str, ...]] = {
     ITEM_TYPE_SECRET: (),
     ITEM_TYPE_LOGIN: (FIELD_PASSWORD, FIELD_NOTES),

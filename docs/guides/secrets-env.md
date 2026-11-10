@@ -74,8 +74,8 @@ and a new name may not contain `#` (one stored earlier still resolves whole).
 `.env` reads `secret://NAME` as a whole name.
 
 To change a login without retyping its password, send the fields you change and
-leave `password` and `notes` out: each keeps its stored value. Send one
-as `""` to clear it.
+leave `password` and `notes` out: each keeps its stored value. Send `notes`
+as `""` to clear it; `password` is required and cannot be cleared.
 
 ### Route the server through the gateway
 

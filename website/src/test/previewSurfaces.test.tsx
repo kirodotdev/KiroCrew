@@ -53,6 +53,7 @@ import {
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
+  PREVIEW_SECRETS_VAULT,
   readPreviewFlag,
   setPreviewFlag,
 } from '../utils/previewFlags'
@@ -538,7 +539,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(16)
+      expect(screen.getAllByRole('switch')).toHaveLength(17)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
@@ -555,7 +556,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(16) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(17) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })
@@ -599,6 +600,14 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(approvals.getAttribute('aria-checked')).toBe('false')
     await act(async () => { approvals.click() })
     expect(localStorage.getItem(PREVIEW_BRIDGE_APPROVALS)).toBe('1')
+  })
+
+  it('offers the Secrets vault redesign switch, off by default', async () => {
+    renderTab()
+    const vault = screen.getByRole('switch', { name: /^secrets vault redesign$/i })
+    expect(vault.getAttribute('aria-checked')).toBe('false')
+    await act(async () => { vault.click() })
+    expect(localStorage.getItem(PREVIEW_SECRETS_VAULT)).toBe('1')
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {

@@ -115,9 +115,7 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data["names"] == ["DB_PASS", "TEST_KEY"]
-                assert data["managed"] == []
-                assert [item["type"] for item in data["items"]] == ["secret", "secret"]
+                assert data == {"names": ["DB_PASS", "TEST_KEY"], "managed": []}
 
     @pytest.mark.asyncio
     async def test_empty_vault(self, empty_vault_dir: Path) -> None:
@@ -132,7 +130,7 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"names": [], "items": [], "managed": []}
+                assert data == {"names": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_classifies_only_actual_jira_vault_consumers(self, tmp_path: Path) -> None:
@@ -239,7 +237,7 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {"names": [], "items": [], "managed": []}
+                assert await response.json() == {"names": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_single_whitespace_jira_entry_is_ignored(self, tmp_path: Path) -> None:
@@ -261,7 +259,7 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {"names": [], "items": [], "managed": []}
+                assert await response.json() == {"names": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_config_failure_keeps_names_and_reports_managed_error(
@@ -281,9 +279,7 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                data = await response.json()
-                assert [item["name"] for item in data.pop("items")] == ["DB_PASS", "TEST_KEY"]
-                assert data == {
+                assert await response.json() == {
                     "names": ["DB_PASS", "TEST_KEY"],
                     "managed": [],
                     "managed_error": True,
@@ -315,7 +311,6 @@ class TestApiSecretsList:
                 assert response.status == 200
                 assert await response.json() == {
                     "names": [],
-                    "items": [],
                     "managed": [],
                     "managed_error": True,
                 }

@@ -10602,6 +10602,8 @@
         "chat_runtime_sharing": "Share one background program across chats",
         "chat_runtime_sharing_desc": "Chats reply one at a time, so a long reply in one chat makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
         "chat_runtime_sharing_desc_summary": "Saves computer memory by running several chats in one background program. Chats can't see each other's messages, but they reply one at a time. Turn it off and each new chat gets its own program again.",
+        "secrets_vault": "Secrets vault redesign",
+        "secrets_vault_desc": "Shows Secrets as a list beside the open item, and lets you save logins and notes.",
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "Lets a chat hand tasks to a crew and track them on a Board.",
         "crew_mode_desc_summary": "Hands a chat's tasks to a crew.",

@@ -1415,6 +1415,13 @@
       "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
     },
     {
+      "id": "developer.secrets-vault-redesign",
+      "label": "Secrets vault redesign",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.secrets-vault-redesign",
+      "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes."
+    },
+    {
       "id": "developer.send-pending-approvals-to-chat-apps",
       "label": "Send pending approvals to chat apps",
       "tab": "developer",
@@ -1866,14 +1873,14 @@
       "id": "secrets.jira-api-token",
       "label": "Jira API token",
       "tab": "secrets",
-      "route": "/settings/secrets/JIRA_API_TOKEN?highlight=secrets.jira-api-token",
+      "route": "/settings/secrets?highlight=secrets.jira-api-token",
       "description": "Authenticates Jira issue lookups for the configured instance."
     },
     {
       "id": "secrets.wakatime-api-key",
       "label": "WakaTime API key",
       "tab": "secrets",
-      "route": "/settings/secrets/WAKATIME_API_KEY?highlight=secrets.wakatime-api-key",
+      "route": "/settings/secrets?highlight=secrets.wakatime-api-key",
       "description": "Authenticates coding-activity sync when WakaTime is enabled."
     },
     {

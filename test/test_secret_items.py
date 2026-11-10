@@ -141,7 +141,7 @@ def test_updating_a_login_keeps_the_fields_the_request_leaves_out(tmp_path: Path
         "password": "pw-1",
         "notes": "n",
     }
-    # Sent as "", a field is cleared.
+    # Sent as "", notes are cleared.
     asyncio.run(vault.set_item_with_revision("GITHUB", "login", {**edit, "notes": ""}))
     stored = vault.get_items_many(["GITHUB"])["GITHUB"]
     assert stored is not None
@@ -238,9 +238,40 @@ def _app() -> web.Application:
     return app
 
 
+@pytest.fixture
+def vault_preview_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn on ``dashboard.feature_previews.secrets_vault``, which adds ``items``."""
+    import kiro_crew.dashboard.handlers.secrets as handlers
+
+    monkeypatch.setattr(handlers, "_secrets_vault_preview_on", lambda: True)
+
+
+@pytest.mark.asyncio
+async def test_preview_off_lists_names_only_without_decrypting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Off, the listing is the shape it had before typed items: no ``items`` and
+    # no decrypt. A missing key would fail any decrypt, yet the list answers.
+    import kiro_crew.dashboard.handlers.secrets as handlers
+
+    monkeypatch.setattr(handlers, "_secrets_vault_preview_on", lambda: False)
+    monkeypatch.setattr(handlers, "config_dir", lambda: str(tmp_path))
+    vault = SecretVault(tmp_path)
+    await vault.set_item_with_revision("GITHUB", "login", _LOGIN)
+    await vault.set("PLAIN", "sk-1")
+    vault._key_path.unlink()
+    async with TestClient(TestServer(_app())) as client:
+        resp = await client.get("/api/secrets")
+        assert resp.status == 200
+        body = await resp.json()
+    assert set(body) == {"names", "managed"}
+    assert body["names"] == ["GITHUB", "PLAIN"]
+    assert "zezhexu" not in json.dumps(body)
+
+
 @pytest.mark.asyncio
 async def test_post_typed_item_then_list_shows_public_fields_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vault_preview_on: None
 ) -> None:
     import kiro_crew.dashboard.handlers.secrets as handlers
 
@@ -275,8 +306,38 @@ async def _exercise_typed_round_trip(client: TestClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_wakatime_oauth_tokens_entry_refuses_a_typed_write_and_lists_no_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vault_preview_on: None
+) -> None:
+    # Main's rule: the generic routes refuse WAKATIME_OAUTH_TOKENS with 409. A
+    # typed write (login, note, or a secret sent as fields) takes the same route,
+    # so it is refused the same way and the flow's entry is left untouched.
+    import kiro_crew.dashboard.handlers.secrets as handlers
+    from kiro_crew.config.loader import CRED_WAKATIME_OAUTH_TOKENS
+
+    monkeypatch.setattr(handlers, "config_dir", lambda: str(tmp_path))
+    SecretVault(tmp_path)._set_sync(CRED_WAKATIME_OAUTH_TOKENS, '{"access_token": "at-1"}')
+    async with TestClient(TestServer(_app())) as client:
+        for body in (
+            {"name": CRED_WAKATIME_OAUTH_TOKENS, "type": "login", "fields": _LOGIN},
+            {"name": CRED_WAKATIME_OAUTH_TOKENS, "type": "note", "fields": {"text": "x"}},
+            {"name": CRED_WAKATIME_OAUTH_TOKENS, "type": "secret", "fields": {"value": "x"}},
+        ):
+            resp = await client.post("/api/secrets", json=body)
+            assert resp.status == 409, body
+            assert (await resp.json())["code"] == "managed_by_wakatime_oauth"
+        resp = await client.get("/api/secrets")
+        listing = await resp.json()
+    row = {item["name"]: item for item in listing["items"]}[CRED_WAKATIME_OAUTH_TOKENS]
+    assert row["type"] == "secret" and row.get("fields") is None
+    assert "at-1" not in json.dumps(listing)
+    stored = SecretVault(tmp_path).get(CRED_WAKATIME_OAUTH_TOKENS)
+    assert stored is not None and stored.reveal() == '{"access_token": "at-1"}'
+
+
+@pytest.mark.asyncio
 async def test_an_item_that_no_longer_decrypts_is_listed_as_corrupt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vault_preview_on: None
 ) -> None:
     import kiro_crew.dashboard.handlers.secrets as handlers
 
@@ -298,7 +359,7 @@ async def test_an_item_that_no_longer_decrypts_is_listed_as_corrupt(
 
 @pytest.mark.asyncio
 async def test_a_missing_key_fails_the_list_instead_of_marking_items_corrupt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vault_preview_on: None
 ) -> None:
     import kiro_crew.dashboard.handlers.secrets as handlers
 
@@ -311,7 +372,7 @@ async def test_a_missing_key_fails_the_list_instead_of_marking_items_corrupt(
 
 @pytest.mark.asyncio
 async def test_a_truncated_key_fails_the_list_instead_of_marking_items_corrupt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vault_preview_on: None
 ) -> None:
     import kiro_crew.dashboard.handlers.secrets as handlers
 
@@ -323,7 +384,7 @@ async def test_a_truncated_key_fails_the_list_instead_of_marking_items_corrupt(
 
 @pytest.mark.asyncio
 async def test_another_full_length_key_fails_the_list_instead_of_marking_items_corrupt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, vault_preview_on: None
 ) -> None:
     import kiro_crew.dashboard.handlers.secrets as handlers
 
