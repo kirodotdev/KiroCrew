@@ -29,6 +29,7 @@ from kiro_crew import _facade_mirror
 #   ``manager_builtins`` -- Built-in apps: registration, default-on backfill, orphans, migrated cleanup.
 #   ``manager_external`` -- register_external_app: the record of a self-managed app.
 #   ``manager_uninstall`` -- uninstall_app and the agent.apps_trusted grant it drops and restores.
+#   ``manager_local_copy`` -- make_local_copy: turn a marketplace app into the owner's own local app.
 #   ``manager_lookup`` -- list_apps, get_app, enablement reads, and which installed app owns an agent.
 #   ``manager_adopt`` -- adopting a builtin-owned record onto its own repository, recovering one, and sweeping an update's leftovers.
 
@@ -42,6 +43,7 @@ _OWNERS = (
     "kiro_crew.apps.manager_builtins",
     "kiro_crew.apps.manager_external",
     "kiro_crew.apps.manager_uninstall",
+    "kiro_crew.apps.manager_local_copy",
     "kiro_crew.apps.manager_lookup",
     "kiro_crew.apps.manager_adopt",
 )
@@ -116,6 +118,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         install_app,
         registry_source_repository,
         update_app,
+    )
+    from kiro_crew.apps.manager_local_copy import (  # noqa: F401
+        LOCAL_COPY_PREFIX,
+        _copy_in_place,
+        _refuse,
+        make_local_copy,
     )
     from kiro_crew.apps.manager_lookup import (  # noqa: F401
         TASK_RUNNER_APP,
@@ -322,6 +330,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         contain_command_agents,
         cron_permission_error,
         is_reserved_app_name,
+    )
+    from kiro_crew.apps.market_source import (  # noqa: F401
+        is_market_source,
     )
     from kiro_crew.apps.message_action_grants import (  # noqa: F401
         message_action_grant_row,

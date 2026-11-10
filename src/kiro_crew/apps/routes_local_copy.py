@@ -18,8 +18,7 @@ import json
 
 from aiohttp import web
 
-from kiro_crew.apps.manager_install import app_lifecycle_lock
-from kiro_crew.apps.manager_local_copy import make_local_copy
+from kiro_crew.apps.manager import app_lifecycle_lock, make_local_copy
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
 

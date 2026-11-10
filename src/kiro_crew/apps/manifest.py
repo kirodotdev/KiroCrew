@@ -271,6 +271,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "disable",
         "enable",
         "frames",
+        "local-copy",
         "manifest",
         "migrate-cleanup",
         "open",

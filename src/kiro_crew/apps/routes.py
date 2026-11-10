@@ -84,6 +84,7 @@ from kiro_crew.apps.manager import (
     install_app,
     is_app_enabled,
     list_apps,
+    make_local_copy,
     refresh_app_config_keys,
     register_external_app,
     resolve_mcp_backend_url,
@@ -375,9 +376,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _provider_is_configured,
         _stamp_installed_trust_repository,
         collect_publish_providers,
-    )
-    from kiro_crew.apps.routes_local_copy import (  # noqa: F401
-        make_local_copy,
     )
     from kiro_crew.apps.routes_proxy import (  # noqa: F401
         _PROXY_HOP_HEADERS,
