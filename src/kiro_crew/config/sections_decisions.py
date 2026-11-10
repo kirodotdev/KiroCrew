@@ -233,6 +233,17 @@ class DecisionProviderConfig:
             "are floored to 1ms rather than disabling the timeout.",
         ),
     )
+    gpu: bool = field(
+        default=False,
+        metadata=_meta(
+            "Plumb GPU",
+            "When true, and this machine's NVIDIA driver can run a CUDA build of "
+            "the pinned torch, Plumb-4B installs that build and loads on the GPU. "
+            "False, the default, keeps the CPU build and the CPU device. Written "
+            "only by the owner-only decisions provider route. A value that is not "
+            "a boolean reads as false, which keeps the CPU path.",
+        ),
+    )
 
 
 @dataclass
@@ -387,6 +398,7 @@ class DecisionsConfig:
                 raw_provider.get("timeout_ms", DecisionProviderConfig.timeout_ms),
                 DecisionProviderConfig.timeout_ms,
             ),
+            gpu=_safe_bool(raw_provider.get("gpu", False), False),
         )
 
         return cls(

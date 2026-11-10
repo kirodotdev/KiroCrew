@@ -5980,7 +5980,8 @@
           "endpoint": "https://api.typesafe.ai/v1/systemone",
           "api_key": "secret://TYPESAFE_API_KEY",
           "model": "jev-latest",
-          "timeout_ms": 1000
+          "timeout_ms": 1000,
+          "gpu": false
         },
         "nudge_wake": {
           "provider": "auto",
@@ -6079,7 +6080,8 @@
         "endpoint": "https://api.typesafe.ai/v1/systemone",
         "api_key": "secret://TYPESAFE_API_KEY",
         "model": "jev-latest",
-        "timeout_ms": 1000
+        "timeout_ms": 1000,
+        "gpu": false
       }
     },
     {
@@ -6137,6 +6139,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1000
+    },
+    {
+      "path": "decisions.provider.gpu",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Plumb GPU",
+      "help": "When true, and this machine's NVIDIA driver can run a CUDA build of the pinned torch, Plumb-4B installs that build and loads on the GPU. False, the default, keeps the CPU build and the CPU device. Written only by the owner-only decisions provider route. A value that is not a boolean reads as false, which keeps the CPU path.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "decisions.nudge_wake",

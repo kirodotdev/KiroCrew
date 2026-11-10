@@ -243,11 +243,11 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'advertise a row that the capabilities.decisions ceiling can withdraw',
   },
   'DecisionsProviderPicker.tsx': {
-    counts: { input: 1, Input: 1 },
+    counts: { input: 1, Input: 1, Checkbox: 1 },
     reason:
-      'the provider radio group and the SageMaker endpoint fields: not a config path ' +
+      'the provider radio group, the SageMaker endpoint fields and Plumb\'s GPU switch: not a config path ' +
       '(the choice is written through the owner-only provider route as a preset id, ' +
-      'or as an endpoint name, region and profile the gateway checks), and they sit ' +
+      'as an endpoint name, region and profile the gateway checks, or as {"gpu": bool}), and they sit ' +
       'inside the card the developer.decisions-jev entry deep-links to',
   },
   'DisplayPanel.tsx': {

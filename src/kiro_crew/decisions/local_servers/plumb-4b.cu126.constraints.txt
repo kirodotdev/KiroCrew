@@ -1,0 +1,23 @@
+# Exact pins for torch's CUDA dependencies on the cu126 index, used with plumb-4b.requirements.txt
+# when the GPU switch selects that index. Resolved for Python 3.12 on x86_64 and aarch64
+# manylinux_2_28 (both resolve the same set). torch's local version keeps PyPI's build out.
+cuda-bindings==12.9.10
+cuda-pathfinder==1.8.6
+cuda-toolkit==12.6.3
+nvidia-cublas-cu12==12.6.4.1
+nvidia-cuda-cupti-cu12==12.6.80
+nvidia-cuda-nvrtc-cu12==12.6.85
+nvidia-cuda-runtime-cu12==12.6.77
+nvidia-cudnn-cu12==9.10.2.21
+nvidia-cufft-cu12==11.3.0.4
+nvidia-cufile-cu12==1.11.1.6
+nvidia-curand-cu12==10.3.7.77
+nvidia-cusolver-cu12==11.7.1.2
+nvidia-cusparse-cu12==12.5.4.2
+nvidia-cusparselt-cu12==0.7.1
+nvidia-nccl-cu12==2.29.3
+nvidia-nvjitlink-cu12==12.9.86
+nvidia-nvshmem-cu12==3.4.5
+nvidia-nvtx-cu12==12.6.77
+torch==2.14.1+cu126
+triton==3.8.0
