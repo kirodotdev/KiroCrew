@@ -819,3 +819,23 @@ userland forward proxy that validates the socket after connect. Choosing the
 mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
 privilege model, and fail-open vs fail-closed when the layer is unavailable), so
 it is tracked as a design item on #17748 rather than shipped here.
+
+**A sandboxed command's detached descendants are not bound to its lifetime
+([#5883](https://github.com/kirodotdev/KiroCrew/issues/5883)).** The Linux
+launcher unshares only the user and mount namespaces. It deliberately adds no
+PID namespace: an earlier PID-namespace version broke session identity, which is
+keyed on host pids, and seccomp denies the host-wide `kill(-1)` broadcast
+instead. A process that detaches from a sandboxed command, such as a build
+daemon (the Gradle or Kotlin daemon, `mvnd`, the Bazel server), keeps running
+after the command and can outlive its agent runtime's teardown, under the
+confinement it was spawned with (on Linux, inside the sandbox's mount
+namespace). A later `agent.sandbox` change does not re-confine it. On Linux
+with systemd, the agent-scope reaper keeps an intentional detached server left
+after its agent runtime exits
+([session.md § Reaping abandoned agent scopes](../system-specs/modules/session.md#reaping-abandoned-agent-scopes)).
+A later build that connects to it runs under that confinement, not its own.
+Only Gradle has a guard, on Linux: the launcher adds
+`-Dorg.gradle.daemon=false` to `GRADLE_OPTS`. No other tool has one and the
+macOS path has none, because each guard covers one tool and the class is
+open-ended. Stopping the daemon (`gradle --stop`, `mvnd --stop`,
+`bazel shutdown`) ends it. **Status: ACCEPTED.**
