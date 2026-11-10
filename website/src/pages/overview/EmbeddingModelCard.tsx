@@ -150,7 +150,8 @@ export function embedModelErrorCode(err: unknown): string {
 
 const POLL_MS = 2000
 
-export default function EmbeddingModelCard() {
+/** `onDirtyChange` is true while the path field holds an edit not yet applied. */
+export default function EmbeddingModelCard({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
   const queryClient = useQueryClient()
   const embeddingRead = useQuery({
     queryKey: ['member-memory', 'default', 'embedding-status'],
@@ -264,6 +265,8 @@ export default function EmbeddingModelCard() {
   // reapply is wanted. Any other path is a model change. The label never gates
   // the button: the disabled guards below are the same for both readings.
   const samePath = !!status && path.trim() === (status.model_path || '')
+  const dirty = touched && !samePath
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
 
   const check = useCallback(async () => {
     const p = path.trim()
