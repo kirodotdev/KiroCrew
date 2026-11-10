@@ -1400,7 +1400,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // background poll below reads latched state for free. A user-driven Refresh
   // must still hit the host, so it arms this flag for exactly one fetch.
   const forceProbe = useRef(false)
-  // Set once the app has rendered from a resolved status. An LTS relock
+  // Set once the app has rendered after a status answer. An LTS relock
   // then keeps the app mounted and adds RelockNotice beside it.
   const appShown = useRef(false)
   const statusQuery = useQuery({
@@ -1544,10 +1544,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // This also removes the first-run flash at its root: rendering the
   // setup-branded shell here would show first-run setup on every launch for as
   // long as the gateway's two kiro-cli subprocesses take to answer.
-  // Only an admission from a resolved status counts: the app also renders while
-  // the status is still unknown, and a lock found then must not leave it mounted.
+  // Any admission after the first status answer counts, a failed read included;
+  // a lock found before that answer must not leave the app mounted.
   const app = (extra?: ReactNode) => {
-    if (statusQuery.data) appShown.current = true
+    if (!statusQuery.isPending) appShown.current = true
     return <>{children}{extra}</>
   }
   if (statusQuery.isPending) {
