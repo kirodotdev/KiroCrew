@@ -192,7 +192,9 @@ jobs:
     # every input they need, which is the whole of #2645.
     continue-on-error: ${{ inputs.soft_fail_arm64 == true && matrix.soft_fail_eligible == true }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # The universal macOS leg builds and merges both backends (about 97k files)
+    # and can need more than 60 minutes on GitHub's macos-15 runners.
+    timeout-minutes: 90
     strategy:
       max-parallel: 4
       fail-fast: false
