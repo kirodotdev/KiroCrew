@@ -845,7 +845,14 @@ def _url_payload_command(n: int) -> str:
 #: in ``paths_lists`` and the degraded-config check in ``paths.py``: kiro-cli's
 #: permission rule files stay on the write fence while the owner opts in, including
 #: when the config read cannot establish that choice.
-_PACKAGE_LINE_BUDGET = 36_840
+#: Raised by 51, from 36,840, to 36,891, for one false-refusal fix and one
+#: diagnostic: ``exfil_bash._inert_line_allows`` (the ``-d @`` date carve-out across
+#: a chain, pipe, quoted ``$(…)`` or locale prefix; ``printf``, an escape, a ``#``
+#: or a long or deeply nested line keeps the deny) and
+#: ``exfil_bash.audit_bash_exfiltration`` (each exfil refusal names its rule and
+#: span); the ``exfil`` facade manifest lists the new name. No deny pattern or rule
+#: is removed. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_891
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
