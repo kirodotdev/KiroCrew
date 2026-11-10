@@ -3298,7 +3298,12 @@ cap on the assistant text. A steer marked `requeued` is left out, because it
 runs as the next prompt (see "Context restore after a soft cancel" in
 `docs/architecture/design-notes/soft-stop.md`). The flag
 `_Session.prev_turn_cancelled` (set by `SessionManager.stop_turn` on
-soft-cancel success) gates the one-shot re-injection.
+soft-cancel success) gates the one-shot re-injection. The shared channel pipeline and
+Telegram, which persist the new message only after the restore, pass
+`newest_request=True`: a request after the newest `stop_event` marker is then the
+stopped one, and the marker an older surface's Stop (a channel Stop writes none).
+The dashboard leaves it off, because a drained queue row can already follow its
+own marker; Slack keeps its existing call.
 
 ## Session Lifecycle
 

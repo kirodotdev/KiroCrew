@@ -43,6 +43,7 @@ from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_REPLY_ZH,
     COMPACT_TIMED_OUT_REPLY_ZH,
+    arm_cancelled_turn,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     context_recycle_warning_zh,
@@ -554,6 +555,7 @@ class WeixinDispatcher:
                         # timeout means the cancel WAS written and the ack has not
                         # landed yet, which is what "正在停止" already describes.
                         ack = _STOPPING
+                        arm_cancelled_turn(self.sessions, session_key, outcome)
                     elif outcome == "no_turn":
                         # The provider disagrees with is_busy: the turn finished in
                         # between. Nothing is running, and saying so is accurate.

@@ -2964,14 +2964,28 @@ the way a Stop does.
 
 ### Cancelled-turn context restore
 
-`_Session.prev_turn_cancelled` is a one-shot flag with two writers. `stop_turn()`
-sets it only on an `acked` soft cancel (step 4 above). `cancel_owned_turn()` sets
+`_Session.prev_turn_cancelled` is a one-shot flag. `stop_turn()`
+sets it only on an `acked` soft cancel (step 4 above). The channel Stop paths that
+cancel the provider directly (`messaging.commands.stop_running_turn` for Discord,
+Telegram and Teams, and the Feishu, iMessage, Webex, WeCom and Weixin handlers) set it
+through `messaging.turn_bracket.arm_cancelled_turn`, and only when `cancel` returned
+`acked` or `timeout`: a `no_turn` or `error` stopped nothing. `cancel_owned_turn()` sets
 it before the provider cancel starts, so every outcome it attempts (`acked`,
 `timeout`, `error`, `no_turn`) leaves the flag set; see "Owner-fenced deadline
 cancel" below. The next prompt handler (dashboard `_run_chat`, Slack
-`handle_message`) reads and clears it, then calls
+`handle_message`, and the shared channel pipeline `messaging.dispatch.ChannelTurns`
+through `TurnBracket.take_cancelled_turn`, and Telegram's own turn engine
+`telegram/dispatch/turn_engine.py`, inline as Slack does) reads and clears it, then calls
 `context.build_cancelled_turn_preamble(conversation_log, session_key)` to
-re-inject the cancelled user prompt and partial assistant output. This is
+re-inject the cancelled user prompt and partial assistant output. The shared
+pipeline takes it once per message (a compaction replay reuses the same restore),
+takes it on a monitor wake too, as the dashboard does (the wake's own rows would
+otherwise read as the stopped request on the next message), passes
+`user_text_range` so quick prompts, image paths and skill triggers read only the typed
+text (as Slack does), and
+gives it back when the turn is refused before the prompt is sent
+(`EmbedAdmissionTimeout`, the turn ceiling, shutdown, a sender no longer admitted,
+a stale wake). Telegram gives it back on the same refusals it has. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
 

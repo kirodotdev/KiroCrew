@@ -85,6 +85,7 @@ from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_TEXT,
+    arm_cancelled_turn,
     compact_unsupported_backend,
     compact_unsupported_reply,
     context_recycle_warning,
@@ -1094,8 +1095,9 @@ class WebexDispatcher:
             # a session with no live provider, not for a provider missing it.
             if provider is not None:
                 try:
-                    await provider.cancel(wait_ack_timeout=0)
+                    outcome = await provider.cancel(wait_ack_timeout=0)
                     cancelled_turn = True
+                    arm_cancelled_turn(self.sessions, session_key, outcome)
                 except Exception:
                     logger.warning("Webex /stop: cancel failed for %s", session_key, exc_info=True)
         async with self._queue.lock:
