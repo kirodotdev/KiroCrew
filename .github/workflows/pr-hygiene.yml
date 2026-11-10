@@ -2,9 +2,9 @@ name: PR Hygiene
 
 # PR Hygiene judges the PR's title and body, so it runs in a workflow of its own
 # that hears `edited`: an author clears a red title or description by editing
-# it, and the edit re-judges it. code-review.yml hears `edited` too, for base
-# retargets: docs/ci/ci-and-reviews.md, "code-review.yml: the deterministic
-# pre-gate".
+# it, and the edit re-judges it. code-review.yml skips `edited`; readiness holds
+# a retarget through the base its run records: docs/ci/ci-and-reviews.md,
+# "code-review.yml: the deterministic pre-gate".
 #
 # A PR Readiness lane (`pr-hygiene.yml|PR Hygiene` in pr-readiness.yml): a red
 # here reds the PR.
