@@ -22,7 +22,7 @@ export const PRESET_JEV = 'jev'
 /** The picker's id for a SageMaker endpoint; the gateway's `PRESET_SAGEMAKER`. */
 export const PRESET_SAGEMAKER = 'sagemaker'
 /** What the SageMaker option asks to install when the gateway has no boto3. */
-const BOTO3_INSTALL = "pip install 'boto3>=1.34,<2'"
+const BOTO3_INSTALL = 'pip install "boto3>=1.34,<2"'
 const EMPTY_SAGEMAKER: DecisionsSageMakerTarget = { endpoint_name: '', region: '', profile: '' }
 
 const sameSageMaker = (a: DecisionsSageMakerTarget, b: DecisionsSageMakerTarget | null | undefined) =>

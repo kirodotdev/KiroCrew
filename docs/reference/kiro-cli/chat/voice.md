@@ -47,7 +47,7 @@ download their selected model. For a source install, add the recognizer to the e
 gateway:
 
 ```bash
-pip install 'pywhispercpp>=1.5,<2'
+pip install "pywhispercpp>=1.5,<2"
 ```
 
 Compressed input still needs an authenticated FFmpeg decoder for WebM, M4A, and
