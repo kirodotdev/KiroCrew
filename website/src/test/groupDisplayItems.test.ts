@@ -7,7 +7,11 @@
  * same items, and the running flag must land on exactly one element.
  */
 import { describe, it, expect } from 'vitest'
-import { groupDisplayItems, applyRunningState } from '../pages/chat/groupDisplayItems'
+import {
+  applyRunningState,
+  groupDisplayItems,
+  supersededSuccessorIdx,
+} from '../pages/chat/groupDisplayItems'
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
 
@@ -725,5 +729,79 @@ describe('groupDisplayItems — turn-dispatching inject rows', () => {
     const holder = turns.find(t => rowsOf(t).includes('continuation'))
     expect(holder && isTurn(holder)).toBe(true)
     expect(rowsOf(holder as DisplayItem)).toEqual(['a', 't', 'continuation', 't2', 'b'])
+  })
+})
+
+describe('superseded steer rows', () => {
+  const steer = (steerState: string): ChatMessage =>
+    ({ role: 'user', content: 'midway is updated', cls: '',
+       meta: { steer: true, steerState, mid: 'm-1', supersededBy: 'm-2' } } as unknown as ChatMessage)
+  const successor = (content: string, meta: Record<string, unknown> = {}): ChatMessage =>
+    ({ role: 'user', content, cls: '', meta: { mid: 'm-2', ...meta } } as unknown as ChatMessage)
+  const userTexts = (turns: DisplayItem[]): string[] =>
+    JSON.stringify(turns).match(/"role":"user","content":"[^"]*"/g) ?? []
+  const drawnUserContents = (turns: DisplayItem[]): string[] =>
+    turns.flatMap(item =>
+      item.kind === 'single' && item.msg.role === 'user' ? [item.msg.content] : [],
+    )
+
+  it('does not draw a requeued steer once its own turn has written a row', () => {
+    // The steer row, the soft stop that ended the turn, then the queued turn's
+    // own row with the same text: the transcript holds both, the reader sees one.
+    const { turns } = groupDisplayItems([
+      msg('user', 'first'), msg('assistant', 'working'),
+      steer('superseded'), msg('stop_event', 'Stopped'),
+      msg('user', 'midway is updated'), msg('assistant', 'ok'),
+    ])
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+
+  it('keeps a forked superseded steer when unrelated text carries its successor mid', () => {
+    const rows = [steer('superseded'), successor('different fork message')]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+    expect(drawnUserContents(turns)).toEqual(['midway is updated', 'different fork message'])
+  })
+
+  it('does not accept a steer row with matching text and successor mid', () => {
+    const rows = [steer('superseded'), successor('midway is updated', { steer: true })]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(-1)
+    expect(drawnUserContents(turns)).toEqual(['midway is updated', 'midway is updated'])
+  })
+
+  it('skips a false mid match and finds the real successor later', () => {
+    const rows = [
+      steer('superseded'),
+      successor('different fork message'),
+      successor('midway is updated'),
+    ]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 0)).toBe(2)
+    expect(drawnUserContents(turns)).toEqual(['different fork message', 'midway is updated'])
+  })
+
+  it('hides it when the successor already carries its server mid', () => {
+    const rows = [
+      msg('user', 'first'), steer('superseded'), msg('stop_event', 'Stopped'),
+      successor('midway is updated'),
+    ]
+    const { turns } = groupDisplayItems(rows)
+
+    expect(supersededSuccessorIdx(rows, 1)).toBe(3)
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+
+  it('still draws a superseded steer when its successor is not in the list, as in a fork made above it', () => {
+    const { turns } = groupDisplayItems([msg('user', 'first'), steer('superseded'), msg('assistant', 'done')])
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+
+  it('still draws a requeued steer whose turn has not run yet', () => {
+    const { turns } = groupDisplayItems([msg('user', 'first'), steer('requeued')])
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
   })
 })
