@@ -325,7 +325,7 @@ class DiscordRenderer(Renderer):
             else None
         )
         sealed = bool(self._segment_text().strip()) or components is not None
-        await self._seal_current(components=components)
+        await self._seal_rotated_part(components=components, extract_uploads=True)
         clean_summary = _neutralize_md(summary)
         if clean_summary:
             chip: str | None = "> ↪️ " + clean_summary
@@ -566,20 +566,24 @@ class DiscordRenderer(Renderer):
         self._buf = [tail + protocol_suffix]
         self._delivery_text = None
 
-    async def _seal_rotated_part(self) -> None:
-        """Seal one length-rotation part, and mark its place when it never landed.
+    async def _seal_rotated_part(
+        self, *, components: list[dict] | None = None, extract_uploads: bool = False
+    ) -> None:
+        """Seal one part whose text is dropped next, and mark its place when it never landed.
 
-        A rotation drops the part's text once it is sealed and moves on, so a part
-        whose every send failed is gone for good while the parts after it still go
-        out. Without a mark the reader sees the parts on either side of the gap as
-        one continuous answer. A part with nothing to send attempts nothing and
-        gets no mark; a part whose fallback send landed is delivered and gets none.
+        A length rotation and a steer boundary both drop the part's text once it is
+        sealed and move on, so a part whose every send failed is gone for good while
+        the parts after it still go out. Without a mark the reader sees the parts on
+        either side of the gap as one continuous answer. A part with nothing to send
+        attempts nothing and gets no mark; a part whose fallback send landed is
+        delivered and gets none. ``components`` and ``extract_uploads`` pass through
+        to :meth:`_seal_current`; a steer seal is semantic, so it extracts.
 
         The notice is not counted as a delivery: ``delivery_failed`` stays about
         whether any of the reply reached the reader.
         """
         attempted = self._seals_attempted
-        if await self._seal_current(extract_uploads=False):
+        if await self._seal_current(components=components, extract_uploads=extract_uploads):
             return
         if self._seals_attempted == attempted:
             return
