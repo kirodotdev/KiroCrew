@@ -241,6 +241,8 @@ class DiscordClient:
         self._seq: int | None = None
         self._session_id: str = ""
         self._resume_url: str = ""
+        # Failed reconnects since the last READY or RESUMED (see _gateway_loop).
+        self._failures_since_session = 0
         self._hb_acked = True
         self._ws: Any = None  # WS handle; aiohttp generics vary across versions
         # Live turn tasks — prevent GC of in-flight handlers.
@@ -1112,6 +1114,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OP_RECONNECT,
         _OP_RESUME,
         _RESUME_CLOSE_CODE,
+        _RESUME_FAILURES_BEFORE_IDENTIFY,
         _WS_HEARTBEAT_SECS,
         _command_options,
         _find_button_label,
