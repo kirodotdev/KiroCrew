@@ -161,6 +161,20 @@ describe('ChatPane dictation note', () => {
     expect(lastSendTurnOpts!.message).toBe('typed follow-up')
   })
 
+  it('emptying the composer forgets the dictation, so a fresh typed message gets no note', async () => {
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as unknown as Response)
+    renderPane('member-empty', { running: false })
+    const box = await composer()
+    markPane('member-empty')
+    fireEvent.change(box, { target: { value: 'spoken then deleted' } })
+    fireEvent.change(box, { target: { value: '' } })
+    expect(isPaneDictated('member-empty')).toBe(false)
+
+    send(box, 'typed instead')
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect(lastSendTurnOpts!.message).toBe('typed instead')
+  })
+
   it('a steer into a running turn carries the note at the end of its one text', async () => {
     renderPane('member-steer', { running: true })
     const box = await composer()
