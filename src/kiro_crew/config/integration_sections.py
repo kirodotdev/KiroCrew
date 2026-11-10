@@ -37,6 +37,7 @@ from kiro_crew.instances.constants import (
     RECOVER_BACKOFF_MAX_CEILING_SECS as _RECOVER_BACKOFF_CEILING,
 )
 from kiro_crew.instances.constants import WARM_SET_CAP_AUTO as _WARM_SET_CAP_AUTO
+from kiro_crew.remote_control.defaults import REMOTE_CONTROL_ON_BY_DEFAULT
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -1103,7 +1104,7 @@ class TunnelConfig:
         ),
     )
     relay_enabled: bool = field(
-        default=False,
+        default=REMOTE_CONTROL_ON_BY_DEFAULT,
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "

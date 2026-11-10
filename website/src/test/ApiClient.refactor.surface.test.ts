@@ -35,6 +35,7 @@ const API_KEY_ORDER = [
   'onboardingImportApply', 'onboardingImportState', 'securityStats', 'securityPosture',
   'mobileLoginLink', 'mobileConnectMethods', 'tailnetStatus', 'tailnetMobile',
   'tailnetMobileConfigure', 'tailnetMobilePublish', 'tailnetMobileUnpublish', 'tailnetMobileQr',
+  'remoteControl', 'turnOffRemoteControl',
   'deniedCommands', 'toggleBuiltinDeniedCommand', 'setDeniedCommandsDisableAll', 'addUserDeniedCommand',
   'toggleUserDeniedCommand', 'editUserDeniedCommand', 'deleteUserDeniedCommand', 'redactionAllowedHosts', 'redactionAllowHost',
   'redactionRevokeHost', 'listTrustedApps', 'trustApp', 'untrustApp',

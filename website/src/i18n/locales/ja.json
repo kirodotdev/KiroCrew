@@ -20169,6 +20169,20 @@
         "scan_status_poll_failing": "コードがスキャンされたか確認できませんでした。再試行しています。",
         "groups_unavailable": "このアカウントが参加しているグループを読み込めませんでした。"
       },
+      "remoteControlCard": {
+        "title": "リモートコントロール",
+        "on": "リモートコントロールはオンです。Kiro アカウントを使って、ほかのデバイスから {{productName}} にアクセスできます。",
+        "restart_to_connect": "リモートコントロールはオンに設定されていますが、接続されていません。接続するには {{productName}} を再起動してください。",
+        "locked": "リモートコントロールはこのビルドで管理されているため、ここではオンにできません。",
+        "turn_off": "オフにする",
+        "turning_off": "オフにしています…",
+        "off_saved": "リモートコントロールはオフです。再度オンにするまでオフのままです。",
+        "turn_on_hint": "再度オンにするには、{{productName}} が実行されているマシンのターミナルで <command/> を実行し、{{productName}} を再起動してください。",
+        "turn_off_disconnects": "オフにすると、ほかのデバイスは数秒以内に切断されます。",
+        "turn_off_needs_terminal": "あとで再度オンにするには、{{productName}} が実行されているマシンのターミナルで <command/> を実行し、{{productName}} を再起動してください。",
+        "turn_off_failed": "リモートコントロールをオフにできませんでした",
+        "load_failed": "リモートコントロールの設定を読み込めませんでした"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "サインインコードを承認してください",

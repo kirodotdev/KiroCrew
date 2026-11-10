@@ -21181,6 +21181,20 @@
         "scan_status_poll_failing": "No se pudo comprobar si el código fue escaneado. Se sigue intentando.",
         "groups_unavailable": "No se pudieron cargar los grupos a los que se ha unido esta cuenta."
       },
+      "remoteControlCard": {
+        "title": "Control remoto",
+        "on": "El control remoto está activado. Tu cuenta de Kiro puede acceder a {{productName}} desde tus otros dispositivos.",
+        "restart_to_connect": "El control remoto está configurado como activado, pero no está conectado. Reinicia {{productName}} para conectarlo.",
+        "locked": "Esta compilación gestiona el control remoto y no se puede activar aquí.",
+        "turn_off": "Desactivar",
+        "turning_off": "Desactivando…",
+        "off_saved": "El control remoto está desactivado. Seguirá así hasta que lo vuelvas a activar.",
+        "turn_on_hint": "Para volver a activarlo, ejecuta <command/> en una terminal de la máquina que ejecuta {{productName}} y luego reinicia {{productName}}.",
+        "turn_off_disconnects": "Al desactivarlo, tus otros dispositivos se desconectan en unos segundos.",
+        "turn_off_needs_terminal": "Para volver a activarlo más adelante, ejecuta <command/> en una terminal de la máquina que ejecuta {{productName}} y luego reinicia {{productName}}.",
+        "turn_off_failed": "No se pudo desactivar el control remoto",
+        "load_failed": "No se pudo leer la configuración del control remoto"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Aprueba tu código de inicio de sesión",

@@ -11198,6 +11198,20 @@
         "who_can_message_the_bot": "Who can message the agent",
         "wxid": "wxid_…"
       },
+      "remoteControlCard": {
+        "title": "Remote Control",
+        "on": "Remote Control is on. Your Kiro account can reach {{productName}} from your other devices.",
+        "restart_to_connect": "Remote Control is set to on but not connected. Restart {{productName}} to connect.",
+        "locked": "Remote Control is managed by this build and cannot be turned on here.",
+        "turn_off": "Turn off",
+        "turning_off": "Turning off…",
+        "off_saved": "Remote Control is off. It stays off until you turn it back on.",
+        "turn_on_hint": "To turn it on again, run <command/> in a terminal on the machine running {{productName}}, then restart {{productName}}.",
+        "turn_off_disconnects": "Turning it off disconnects your other devices within a few seconds.",
+        "turn_off_needs_terminal": "To turn it back on later, run <command/> in a terminal on the machine running {{productName}}, then restart {{productName}}.",
+        "turn_off_failed": "Couldn't turn Remote Control off",
+        "load_failed": "Couldn't read the Remote Control setting"
+      },
       "remoteCrewPanel": {
         "added_by_you": "Added by you",
         "approve_your_code": "Approve your sign-in code",

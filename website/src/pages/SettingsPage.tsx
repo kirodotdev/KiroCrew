@@ -5,6 +5,7 @@ import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
+import { RemoteControlCard } from './settings/RemoteControlCard'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
 import { PeoplePanel } from './settings/PeoplePanel'
 import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
@@ -332,7 +333,12 @@ export default function SettingsPage() {
         )}
         {tab === 'computer-use' && <GuideTrustRootRegion><ComputerUsePanel /></GuideTrustRootRegion>}
         {tab === 'webhooks' && <WebhooksPanel />}
-        {tab === 'instances' && <RemoteCrewPanel key={crewAddLinkSeq} />}
+        {tab === 'instances' && (
+          <>
+            <RemoteControlCard />
+            <RemoteCrewPanel key={crewAddLinkSeq} />
+          </>
+        )}
         {tab === 'people' && sharedCrewPreview && <PeoplePanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
