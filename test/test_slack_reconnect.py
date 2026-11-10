@@ -191,6 +191,22 @@ def test_reconnect_recomputes_enabled_and_hoists_new_credentials(seams) -> None:
     assert seams.propagate_calls == [False]
 
 
+def test_reconnect_drops_the_previous_bots_shared_user_confirmations(seams) -> None:
+    # slack.shared_access: a confirmation the old bot gave (maybe in another
+    # workspace) does not survive new credentials.
+    from kiro_crew.slack import shared_access
+
+    old = object()
+    shared_access.install(old)
+    shared_access._verdicts["U0FRIEND01"] = object()  # type: ignore[assignment]
+    try:
+        _run(_Orch())
+        assert shared_access._client is not old
+        assert "U0FRIEND01" not in shared_access._verdicts
+    finally:
+        shared_access.reset()
+
+
 def test_reconnect_closes_the_old_socket_before_the_handshake(seams) -> None:
     orch = _Orch()
     _run(orch)

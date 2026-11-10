@@ -188,6 +188,27 @@ async def test_a_shared_user_is_refused_in_a_bound_code_channel(env: Env) -> Non
     assert env.slack.ephemerals == [] and env.slack.posts == []
 
 
+async def test_a_shared_users_dropped_message_in_a_code_channel_is_audited(env: Env) -> None:
+    _bind(env)
+    rows = MagicMock()
+    with patch("kiro_crew.slack.events.sel", return_value=rows):
+        handle = await _route_shared(env, _plain("C0CODE"), is_mention=False)
+    handle.assert_not_called()
+    denied = [
+        c.kwargs for c in rows.log_api_access.call_args_list if c.kwargs.get("outcome") == "denied"
+    ]
+    assert denied == [
+        {
+            "caller": OWNER,
+            "operation": "slack.message",
+            "outcome": "denied",
+            "source": "slack",
+            "resources": "channel=C0CODE",
+            "error": "code channel is owner-only",
+        }
+    ]
+
+
 async def test_a_shared_user_cannot_answer_a_card_in_a_code_channel(env: Env) -> None:
     from kiro_crew.slack.code_channels.routing import options_answer_permitted
 

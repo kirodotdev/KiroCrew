@@ -56,6 +56,9 @@ before, and the switch is off by default. When per-person execution is built,
 this exception can end: a listed person would run as their own linked account,
 or, while unlinked, as the guest account or not at all (R10).
 
+Until then, refusing the owner-data tools in a shared user's turn is the
+follow-up [#30678](https://github.com/kirodotdev/KiroCrew/issues/30678).
+
 ## Who counts
 
 An ID counts only once Slack confirms it with `users.info`: same workspace as the
@@ -65,7 +68,9 @@ checked by the gateway before its first event counts. A confirmation is kept 10
 minutes, a refusal 1 minute. The list and the switch are read on every event, so a
 removal or switch-off stops the person's next message. A message already admitted
 still meets every owner-only refusal below: the gateway keeps treating anyone it
-admitted as a shared user that way until it restarts.
+admitted as a shared user that way until it restarts. That memory is in the process
+only: after a restart, a removed person is refused because the list no longer names
+them.
 
 ## The owner-only line (a judgment call)
 
@@ -94,7 +99,7 @@ reach the owner's data for them too:
 |---|---|
 | `list_sessions`, `search_chat_history`, `get_chat_session` (`all_workspaces`) | Read the owner's other conversations |
 | `memory_recall`, `learn_add` / `learn_remove`, memory writes | Read saved memory; a lesson they add reaches the owner's later sessions |
-| `artifact_*`, `workflow_run`, `spawn_run`, cron tools | Read and change artifacts, run work, manage schedules |
+| `artifact_*`, `workflow_run`, `spawn_run`, `task_run`, cron tools | Read and change artifacts, run work, manage schedules; a schedule set up in their turn can keep running as the owner after they are removed |
 | Shell and file tools, with the sandbox off | Edit `config.json`, this list included (the sandbox seals it read-only) |
 
 `is_allowed_user` stays the owner check it is on main. A shared user is admitted
@@ -117,3 +122,9 @@ Every admission and refusal is a security event log row with the Slack user ID a
 no message text (`slack.message` with `resources=shared_access` on an admission;
 the existing denial rows otherwise). Switch and list writes are
 `slack.shared_access.switch|add|remove`.
+
+## Not a goal
+
+- Removing the inert `slack.allowed_users`, `!allowlist` and `/kirocrew @user`
+  surface, so that only one list of Slack users remains. That is a separate
+  take-away change, with its own reader sweep.

@@ -158,21 +158,37 @@ def _live_shared() -> Any:
 def _live_matches(stored: dict[str, Any]) -> bool:
     """Whether the gateway's live config now holds *stored*.
 
-    False when the watcher deferred the write (another ``slack.*`` field is
-    malformed), so a removal the caller is told about has not taken effect.
+    False when the gateway kept the earlier value: config.local.json overrides it,
+    or this process read the ``slack`` section as unreadable (the watcher defers
+    until a restart). A removal the caller is told about has then not taken effect.
     """
     live = _live_shared()
     return live.enabled == stored["enabled"] and list(live.user_ids) == stored["user_ids"]
 
 
+def _unread() -> list[str]:
+    """``["slack"]`` when this process once read the ``slack`` section as unreadable, else [].
+
+    That is the one observation the Slack watcher waits on (its applier defers while
+    ``slack`` is degraded), and the loader keeps it until the gateway restarts. A whole-
+    file marker is left out: the watcher does not consult it, and it can be the memory
+    of a tear since repaired. Names only, never a value.
+    """
+    from kiro_crew.config.resolution import observed_degraded_sections
+
+    return ["slack"] if "slack" in observed_degraded_sections() else []
+
+
 def _not_applied(caller: str, operation: str) -> web.Response:
-    return _deny(
-        caller,
-        operation,
-        "saved, but the gateway has not applied it: fix the other Slack settings in config.json",
-        status=409,
-        code="not_applied",
+    # Its own literal body, not _deny's: it carries `unread` beside the code.
+    msg = (
+        "saved, but the gateway has not applied it: config.local.json overrides it,"
+        " or the slack section was unreadable (restart to apply)"
     )
+    sel().log_api_access(
+        caller=caller, operation=operation, outcome="denied", source="dashboard", error=msg
+    )
+    return web.json_response({"error": msg, "code": "not_applied", "unread": _unread()}, status=409)
 
 
 async def api_shared_access_put(request: web.Request) -> web.Response:

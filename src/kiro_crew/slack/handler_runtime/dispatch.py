@@ -126,7 +126,13 @@ async def _dispatch_before_turn(turn: _SlackTurn) -> bool:
     # ── Shared users (slack.shared_access) send no harness `/` command and no
     #    privacy modifier: both are the owner's. Before the linked-thread hand-off,
     #    which would carry a `/` command into the owner's dashboard chat. ──
-    if shared_command_refused(user_id, text):
+    # Judged on what the user typed: ingested text leads with an attachment's
+    # absolute temp path and carries file contents (``spool_text``).
+    if shared_command_refused(
+        user_id,
+        text if turn.spool_text is None else turn.spool_text,
+        modifiers=interpret_commands,
+    ):
         sel().log_api_access(
             caller=user_id,
             operation="slack.owner_command",

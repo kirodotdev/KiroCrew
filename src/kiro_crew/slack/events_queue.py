@@ -35,8 +35,6 @@ from kiro_crew.slack.handler import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
     handle_message,
-    is_allowed_user,
-    is_shared_user,
     is_yolo_mode,
     slack_cfg,
 )
@@ -606,8 +604,12 @@ async def _dispatch_queued(
         # A confirmation that aged out while the message waited is asked again,
         # so only a real removal drops it.
         await prime_shared_user(_q_sender, orch)
+    # Read through the handler at call time: interactions imports this module early,
+    # and a module-level binding would split the events facade's copy of the name.
+    from kiro_crew.slack import handler as slack_handler
+
     if kwargs.get("shared_sender") and not (
-        is_allowed_user(_q_sender) or is_shared_user(_q_sender)
+        slack_handler.is_allowed_user(_q_sender) or slack_handler.is_shared_user(_q_sender)
     ):
         sel().log_api_access(
             caller=_q_sender,

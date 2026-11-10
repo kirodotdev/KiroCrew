@@ -1180,6 +1180,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_sessions import _clear_session_dismissed  # noqa: F401
     from kiro_crew.slack.interactions_sessions import _outside_code_channel  # noqa: F401
     from kiro_crew.slack.interactions_sessions import _record_session_dismissed  # noqa: F401
+    from kiro_crew.slack.interactions_sessions import _shared_stop_refused  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _REVIEW_AUTH_DENIED_MSG  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _REVIEW_ROOT_SUFFIX  # noqa: F401
     from kiro_crew.slack.interactions_approvals import _can_act_on_review_draft  # noqa: F401

@@ -198,6 +198,36 @@ def test_a_write_the_gateway_did_not_apply_is_not_reported_as_done(
     assert status == 409 and body["code"] == "not_applied"
 
 
+@pytest.mark.parametrize(
+    "observed, named",
+    [
+        ({"slack"}, ["slack"]),
+        ({"slack", "*", "*config.json"}, ["slack"]),
+        # A whole-file marker the Slack watcher never consults (a repaired tear), and
+        # another section it never waits on, name nothing.
+        ({"*", "*config.json"}, []),
+        ({"publish"}, []),
+        (set(), []),
+    ],
+)
+def test_an_unapplied_write_names_what_kiro_crew_could_not_read_and_nothing_else(
+    env: dict, monkeypatch: pytest.MonkeyPatch, observed: set, named: list
+) -> None:
+    from kiro_crew.config import resolution
+
+    token = "xoxb-" + "1" * 12 + "-" + "2" * 12 + "-SECRETVALUE"
+    loader.config_path().write_text(
+        json.dumps({"slack": {"bot_token": token, "owner_id": OWNER}}), encoding="utf-8"
+    )
+    monkeypatch.setattr(resolution, "_OBSERVED_DEGRADED_SECTIONS", set(observed))
+    monkeypatch.setattr(mod, "_live_matches", lambda stored: False)
+    status, body = _call(env, "PUT", "/api/slack/shared-access", {"enabled": False})
+    assert status == 409 and body["code"] == "not_applied"
+    # Paths only: a section or file name, never a value from the file.
+    assert body["unread"] == named
+    assert token not in json.dumps(body) and OWNER not in json.dumps(body)
+
+
 def test_a_removed_id_is_checked_with_slack_again_when_re_listed(env: dict) -> None:
     shared_access.install(env["web"])  # the page checks with the gateway's own bot
     _call(env, "POST", "/api/slack/shared-access/users", {"user_id": FRIEND})

@@ -235,17 +235,24 @@ The owner can let other people use the bot: Settings → Messaging Channels → 
 Anyone on the list acts **as the owner**. Their turns run with the owner's files,
 Git and cloud credentials and connected tools, and they can see and act in any
 Slack thread they are part of. Through the agent's own tools they can also read
-the owner's other conversations and saved memory, and change what Kiro
-remembers (lessons and memories feed the owner's later sessions too). Only add
-people you trust. The page shows this warning, and turning the switch on needs
-an explicit confirm.
+the owner's other conversations and this Crew's saved memory, and change what
+this Crew remembers (lessons and memories feed the owner's later sessions too). The agent's
+own cron, task and spawn tools also still run as the owner in their turns, even
+though the `run` and cron keywords are refused to them, and a schedule they set
+up that way keeps running as the owner after they are removed: to stop one, open
+**Schedule** in the dashboard and delete it. Only add people you trust. The page
+shows this warning, and turning the switch on needs an explicit confirm. The page
+doesn't turn it on while anyone on the list isn't confirmed by Slack: remove them,
+or fix what their row says, first.
 
 - **Who counts.** Each Slack member ID on the list is checked with Slack
   (`users.info`) before it is used: same workspace as the bot (`auth.test`), a
   person rather than a bot or app, not deactivated, and not the owner. The page
   refuses an ID that fails, and shows each person's name next to their ID. An ID
   added with `kirocrew config` gets the same check from the gateway before its
-  first message counts. A confirmation is re-checked every 10 minutes.
+  first message counts. A confirmation is re-checked every 10 minutes, and a
+  refusal after a minute: an ID that stays on the list gets access as soon as
+  Slack confirms it, so remove an ID to keep that person out.
 - **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
   `!title`, `!compact`, answer question cards, answer the tool-approval
   prompts their own turns post, and send or edit the review-mode draft of their
@@ -259,7 +266,8 @@ an explicit confirm.
   slash command; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
   keywords (the agent's own schedule tools are not narrowed, see below); Slack
   settings and the manifest; and code channels (a shared
-  user's messages and card answers in one are refused, quietly, and they cannot
+  user's messages and card answers in one are refused, quietly in a bound channel
+  and with a private "not authorized" note in one not yet bound, and they cannot
   open one). Other buttons answer a shared user with "Only the bot owner can do
   that."
 - **Changes apply to the next event.** Removing someone, or turning the switch
@@ -275,8 +283,9 @@ an explicit confirm.
   `slack.shared_access.*`.
 
 The owner-only line is a judgment call recorded in the design note
-(`docs/request-for-change/rfc-slack-shared-access.md`); the agent itself still runs with the owner's tools in a shared user's turn, so a
-tool call the owner would allow is allowed for them too, including the Crew tools
+(`docs/request-for-change/rfc-slack-shared-access.md`); the agent itself still
+runs with the owner's tools in a shared user's turn, so a tool call the owner
+would allow is allowed for them too, including the Crew tools
 that list sessions, read transcripts and memory, save lessons, and manage
 artifacts and schedules.
 

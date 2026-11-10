@@ -119,7 +119,8 @@ from kiro_crew.slack.code_channels.creation import PERSON_SUBTYPES
 from kiro_crew.slack.code_channels.routing import Gate as CodeChannelGate
 from kiro_crew.slack.code_channels.routing import dispatch as code_channel_dispatch
 from kiro_crew.slack.code_channels.routing import inbound_gate as code_channel_gate
-from kiro_crew.slack.code_channels.routing import is_bound_code_channel, shared_user_refused_in
+from kiro_crew.slack.code_channels.routing import is_bound_code_channel
+from kiro_crew.slack.code_channels.shared_refusal import shared_message_dropped, shared_stop_refused
 from kiro_crew.slack.code_channels.store import store as code_channel_store
 from kiro_crew.slack.enterprise import trusted_bot_admission, validated_self_user_id
 from kiro_crew.slack.files import (
@@ -149,7 +150,6 @@ from kiro_crew.slack.handler import (
     set_owner_id,
     set_tracking_channels,
     set_yolo_mode,
-    shared_user_refused_for_session,
     slack_cfg,
 )
 from kiro_crew.slack.interactions import dispatch as dispatch_interactive
@@ -905,18 +905,8 @@ async def _route_message(
     # is authorized against the channel's ORIGIN conversation (the gate audits
     # every decision). Everywhere else this is PASS and nothing below changes.
     # Code channels stay the owner's: a shared user is refused in a bound one and
-    # cannot open one (the dispatch below is skipped for them). Refused quietly,
-    # with the audit row only: a channel member posts many messages that are not
-    # for the bot, and a reply to each would be noise.
-    if _shared_sender and await asyncio.to_thread(shared_user_refused_in, channel):
-        sel().log_api_access(
-            caller=sender_id,
-            operation="slack.message",
-            outcome="denied",
-            source="slack",
-            resources=f"channel={channel}",
-            error="code channel is owner-only",
-        )
+    # cannot open one (the dispatch below is skipped for them).
+    if _shared_sender and await shared_message_dropped(sender_id, channel):
         return
 
     # A code channel has no held queue: a message read with no client waits for
@@ -1263,17 +1253,9 @@ async def _route_message(
             # therefore acks where the !stop was typed -- inside its thread if it
             # had one, at channel root otherwise -- the same split the turn uses.
             stop_post_ts = thread_ts if _flat_stop_key else session_key
-        # A shared user (slack.shared_access) stops nothing in a code channel's
-        # session: the key this Stop acts on is the one checked, after it is final.
-        if is_shared_listed(sender_id):
-            _stop_owner = orch.sessions.get_session_for_thread(thread_ts or msg_ts)
-            for _key in {session_key, str(_stop_owner or "")}:
-                if await shared_user_refused_for_session(
-                    sender_id, _key, thread_ts or msg_ts, channel
-                ):
-                    return
-            if orch.sessions.get_session_for_thread(thread_ts or msg_ts) != _stop_owner:
-                return  # relinked while checking: the next !stop is judged afresh
+        # A shared user stops nothing in a code channel's session (key checked once final).
+        if await shared_stop_refused(orch, sender_id, session_key, thread_ts or msg_ts, channel):
+            return
         # Recorded BEFORE the liveness checks: a turn between its abandoned
         # attempt and its compaction replay has no session at this moment, and
         # an interaction-originated turn has no registered task either; the
@@ -1693,7 +1675,7 @@ async def _route_message(
                     spool_attachments=_spool_attachments,
                     spool_voice_memos=_spool_voice_memos,
                     had_voice_input=_had_voice_input,
-                    **_queue_tags(sender_id, channel),
+                    **_queue_tags(sender_id, channel, shared=_shared_sender),
                 ),
             )
         )
