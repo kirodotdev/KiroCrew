@@ -57,13 +57,16 @@ export function useFollowupCardActions({
   // (row menu, drag-to-folder, new-chat-in-folder) already funnels through, so
   // the optimistic update and its guarded rollback are inherited rather than
   // re-implemented here. Both answers clear the card by the ts it rendered with,
-  // for the same reason the follow-up actions do. The card passes the folder id
-  // its dropdown currently shows — the suggestion by default, or whatever the
-  // user picked instead.
+  // for the same reason the follow-up actions do. Accepting clears it only once
+  // the gateway has acknowledged the move: a refused move rolls back and the move
+  // hook reports why, so the card stays to be answered again. The card passes the
+  // folder id its dropdown currently shows — the suggestion by default, or
+  // whatever the user picked instead.
   const folderSuggestionAccept = useCallback((folderId: string) => {
     if (!activeSlot || !folderSuggestion) return
-    moveSlotToFolder(activeSlot, folderId)
-    dispatch(clearFolderSuggestion({ slot: activeSlot, ts: folderSuggestion.ts }))
+    const slot = activeSlot
+    const ts = folderSuggestion.ts
+    moveSlotToFolder(slot, folderId, { onCommitted: () => dispatch(clearFolderSuggestion({ slot, ts })) })
   }, [activeSlot, folderSuggestion, moveSlotToFolder, dispatch])
 
   const folderSuggestionDecline = useCallback(() => {

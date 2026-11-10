@@ -11192,6 +11192,9 @@
     },
     "frameLinkBridge": {
       "openHost": "打开 {{host}}"
+    },
+    "useMoveSlotToFolder": {
+      "move_refused": "会话未能移动。"
     }
   },
   "lib": {

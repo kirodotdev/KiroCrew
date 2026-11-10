@@ -6578,6 +6578,9 @@
     },
     "frameLinkBridge": {
       "openHost": "Open {{host}}"
+    },
+    "useMoveSlotToFolder": {
+      "move_refused": "The session was not moved."
     }
   },
   "pages": {

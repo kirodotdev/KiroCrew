@@ -11692,6 +11692,9 @@
     },
     "frameLinkBridge": {
       "openHost": "Abrir {{host}}"
+    },
+    "useMoveSlotToFolder": {
+      "move_refused": "La sesión no se movió."
     }
   },
   "lib": {

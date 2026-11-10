@@ -11442,6 +11442,9 @@
     },
     "frameLinkBridge": {
       "openHost": "{{host}} খোলো"
+    },
+    "useMoveSlotToFolder": {
+      "move_refused": "সেশনটি সরানো যায়নি।"
     }
   },
   "lib": {
