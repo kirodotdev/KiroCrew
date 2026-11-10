@@ -37,6 +37,70 @@ def _derive_phase(spec_dir: Path) -> str:
     return "new"
 
 
+#: Reasons a spec's on-disk home no longer matches what the index recorded.
+STALE_WORKTREE_MISSING = "worktree_missing"
+STALE_BRANCH_CHANGED = "branch_changed"
+STALE_SPEC_MISSING = "spec_missing"
+
+
+def _checked_out_branch(working_dir: Path) -> str | None:
+    """The branch checked out in ``working_dir``, read from ``HEAD`` without git.
+
+    Handles both a plain checkout (``.git`` directory) and a linked worktree
+    (``.git`` is a ``gitdir:`` file). ``None`` when it cannot be determined or HEAD
+    is detached, so a caller never reports a change it did not observe.
+    """
+    dot_git = working_dir / ".git"
+    try:
+        if dot_git.is_file():
+            first = dot_git.read_text(encoding="utf-8", errors="replace").strip()
+            if not first.startswith("gitdir:"):
+                return None
+            git_dir = Path(first.split(":", 1)[1].strip())
+            if not git_dir.is_absolute():
+                git_dir = working_dir / git_dir
+        else:
+            git_dir = dot_git
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "ref: refs/heads/"
+    return head[len(prefix) :] if head.startswith(prefix) else None
+
+
+def _stale_reason(meta: dict) -> str:
+    """``""`` when the spec's home is intact, else why it is stale.
+
+    A spec created with a worktree lives inside it. If that worktree is removed, or
+    a different branch is checked out so the spec files are not there, the spec used
+    to be reported as a brand-new one (phase ``new``); this names the real cause.
+    BLOCKING (a few stats and one small read) -- call via ``asyncio.to_thread``.
+    """
+    working_dir = Path(str(meta.get("working_dir", "")))
+    spec_dir = Path(str(meta.get("spec_dir", "")))
+    if not working_dir.is_dir():
+        return STALE_WORKTREE_MISSING
+    expected = str(meta.get("worktree_branch", "") or "")
+    if expected:
+        current = _checked_out_branch(working_dir)
+        if current is not None and current != expected:
+            return STALE_BRANCH_CHANGED
+    if not spec_dir.is_dir():
+        return STALE_SPEC_MISSING
+    return ""
+
+
+def _stale_reasons(index: dict) -> dict[str, str]:
+    """``{name: reason}`` for every stale spec in ``index`` (intact ones omitted)."""
+    out: dict[str, str] = {}
+    for name, meta in index.items():
+        if isinstance(meta, dict):
+            reason = _stale_reason(meta)
+            if reason:
+                out[name] = reason
+    return out
+
+
 def _read_spec_files(spec_dir: Path) -> tuple[dict, dict, list[dict]]:
     """Read the documents once, returning ``(files, docs, tasks)``.
 
