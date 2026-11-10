@@ -22,6 +22,7 @@ from kiro_crew.dashboard import websocket_hub as _ws_hub
 from kiro_crew.dashboard.chat_utils import effective_session_key, subagent_event_slot
 from kiro_crew.dashboard.kiro_relay.caller import RELAY_TEAMMATE_WS_FLAG, is_relay_teammate
 from kiro_crew.dashboard.origin import check_origin
+from kiro_crew.dashboard.slot_list_pass import shared_slot_list
 from kiro_crew.dashboard.slot_retention import note_foreground
 from kiro_crew.dashboard.state import (
     PERSISTED_SUBAGENT_REPLAY_KEEP,
@@ -55,6 +56,7 @@ from kiro_crew.dashboard.ws_event_scope import (
     slots_envelope_extras,
     visible_subagent_slot_keys,
 )
+from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
 from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: callers import them from here
     SIDE_CLOSED_EVENT,
     SIDE_KIND,
@@ -66,6 +68,7 @@ from kiro_crew.dashboard.ws_side_frames import (  # noqa: F401 -- re-exported: c
     broadcast_side_result,
     broadcast_thread_reply,
 )
+from kiro_crew.dashboard.ws_snapshot_hold import hold_frames, release_held
 from kiro_crew.dashboard.ws_subagent_send import (  # noqa: F401 (re-exported)
     SUBAGENT_REPLAY_BATCH_THRESHOLD,
     _send_subagent_replay,
@@ -776,7 +779,7 @@ async def _serve_ws(
     )
 
     owner_request = is_owner_dashboard_request(request)
-    ws = web.WebSocketResponse(heartbeat=30)
+    ws = LagTolerantWebSocketResponse(heartbeat=30)
     await ws.prepare(request)
 
     # Warm the self-managed GitLab allowlist BEFORE the first serialization.
@@ -830,6 +833,11 @@ async def _serve_ws(
             await ws.close(code=WSCloseCode.POLICY_VIOLATION, message=b"app disabled")
             return ws
 
+    # Registered before the slot list below is awaited: the tab sends its catch-up
+    # reads as soon as the handshake is answered, so a change after one of them must
+    # reach this socket. The hub holds those frames until the connect snapshot is out
+    # (``ws_snapshot_hold``), so the snapshot stays the first frame.
+    hold_frames(ws)
     state.register_ws(ws, owner=owner_request)
     registered.append(ws)
 
@@ -889,8 +897,10 @@ async def _serve_ws(
     _app_replay_slots: list[str] = []
     try:
         is_dashboard_user = ws.get("_is_dashboard_user", False)
-        all_slots = state.serialize_slots(
-            include_check_status=owner_request, dashboard_user=is_dashboard_user
+        # Shared with the connects and slot-list GETs of a reconnect storm (see
+        # slot_list_pass), not one full serialization on the loop each.
+        all_slots = await shared_slot_list(
+            state, include_check_status=owner_request, dashboard_user=is_dashboard_user
         )
         if is_dashboard_user:
             slots_data = all_slots
@@ -970,7 +980,11 @@ async def _serve_ws(
             exc.add_note(_slots_serialization_note(slots_data, path="ws-connect-snapshot"))
             logger.warning("slots connect snapshot failed to serialize", exc_info=True)
             raise
-        await ws.send_str(snapshot_payload)
+        snapshot_send = asyncio.ensure_future(ws.send_str(snapshot_payload))
+        # The held frames queue right behind the snapshot, before it drains, so a tab
+        # that stops reading it still fills the buffer the hub's stall check reads.
+        release_held(ws)
+        await snapshot_send
         # After the snapshot (the first frame by contract): ask a capable tab for its watch.
         if ws.get(_ws_hub.FOLD_DELTA_WS_FLAG, False):
             hello = {"type": _ws_hub.FOLD_HELLO_FRAME, "data": _ws_hub.fold_hello_payload(ws)}
@@ -1039,6 +1053,8 @@ async def _serve_ws(
                     )
     except Exception:
         pass
+    # A connect whose snapshot failed still gets the frames held for it.
+    release_held(ws)
 
     # Background task: push dashboard status periodically
     async def _push_status() -> None:
