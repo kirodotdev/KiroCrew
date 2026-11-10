@@ -241,8 +241,14 @@ class TestDeploy:
 
     def test_a_denied_host_policy_attach_names_the_second_policy(self, host_agent, monkeypatch):
         self._stub(monkeypatch, (255, "", "Failed to create/update the stack"))
-        with pytest.raises(aws.AWSError, match="iam-policy --host-policies"):
+        with pytest.raises(aws.AWSError, match="iam-policy --host-policies") as exc:
             self._deploy()
+        # The first launcher policy already grants the attach it allows, so the
+        # second policy leads, and no grant line sends the operator back to the first.
+        assert str(exc.value).startswith(
+            "cloudformation deploy failed: this build attaches host policies"
+        )
+        assert exc.value.missing_action is None
 
     def test_without_host_policies_the_hint_is_not_added(self, monkeypatch):
         self._stub(monkeypatch, (255, "", "Failed to create/update the stack"))
