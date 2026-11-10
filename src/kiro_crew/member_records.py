@@ -2,9 +2,10 @@
 
 Three record kinds govern a crewmate and are written only by the gateway, on a person's
 action: its permanent rules (``member-rules/``), its goals (``member-goals/``) and its DM
-thread binding (``member-bindings/``), one ``<slug>.json`` each. Two more hold the owner's
-decisions about each installed app (``app-grants/`` and ``app-disabled/``,
-``apps.protected_app_state``); they never had an old layout. They live in the
+thread binding (``member-bindings/``), one ``<slug>.json`` each. Three more hold the
+owner's decisions about each installed app and the secret the gateway issued it
+(``app-grants/``, ``app-disabled/`` and ``app-secrets/``, ``apps.protected_app_state``);
+they never had an old layout. They live in the
 top-level ``<data home>/member-records/`` directory, which the OS sandbox masks in every
 mode (``sandbox_leaves._CREW_HIDDEN_LEAVES``) and the agent file tools refuse
 (``security.paths_lists._CREW_SECRET_LEAVES``). Nothing that runs inside a sandbox reads
@@ -50,6 +51,7 @@ RECORD_KINDS: tuple[str, ...] = (
     "member-bindings",
     "app-grants",
     "app-disabled",
+    "app-secrets",
 )
 
 #: The kinds the one-time move carries from ``trust/``: the ones an older build kept

@@ -139,3 +139,41 @@ class TestAppDataDir:
         # Path so the assertion holds on Windows separators too.
         assert str(Path.home() / ".kiro" / "crew") in str(d)
         assert "apps" in str(d)
+
+
+class TestAppSecretSource:
+    def test_a_spawned_backend_uses_the_gateway_injected_secret(self, tmp_path, monkeypatch):
+        # With the Gateway-injected env set, it is the only source: no file is read.
+        from kirocrew_client.client import _read_app_secret
+
+        secret_dir = tmp_path / "member-records" / "app-secrets"
+        secret_dir.mkdir(parents=True)
+        (secret_dir / "demo").write_text("on-disk\n", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+        monkeypatch.setenv("KIROCREW_PROXY_SECRET", "injected")
+        monkeypatch.delenv("KIROCREW_APP_NAME", raising=False)
+        assert _read_app_secret("demo") == ""
+        monkeypatch.setenv("KIROCREW_APP_NAME", "other")
+        assert _read_app_secret("demo") == ""
+        monkeypatch.setenv("KIROCREW_APP_NAME", "demo")
+        assert _read_app_secret("demo") == "injected"
+
+    def test_a_self_managed_app_reads_the_store_only_outside_a_sandbox(self, tmp_path, monkeypatch):
+        # No injected secret: outside a sandbox the Gateway's store is read; inside one
+        # the same read returns "". The app directory's old file is never read.
+        from kirocrew_client.client import _read_app_secret
+
+        secret_dir = tmp_path / "member-records" / "app-secrets"
+        secret_dir.mkdir(parents=True)
+        (secret_dir / "demo").write_text("stored\n", encoding="utf-8")
+        (tmp_path / "apps" / "legacy").mkdir(parents=True)
+        (tmp_path / "apps" / "legacy" / ".app_secret").write_text("old\n", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_PROXY_SECRET", raising=False)
+        monkeypatch.delenv("KIROCREW_APP_NAME", raising=False)
+        monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+        assert _read_app_secret("demo") == "stored"
+        assert _read_app_secret("legacy") == ""
+        monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
+        assert _read_app_secret("demo") == ""

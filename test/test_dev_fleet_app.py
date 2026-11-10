@@ -1141,10 +1141,28 @@ def test_app_secret_loader_does_not_cache_empty(monkeypatch, tmp_path):
     """A missing secret must NOT be cached: it may be provisioned after the
     backend starts (install race). Empty-cache would 401 forever."""
     monkeypatch.setattr(http_api_mod, "_APP_SECRET", None)
+    monkeypatch.delenv("KIROCREW_PROXY_SECRET", raising=False)
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     assert mod._load_app_secret() == ""
     assert mod._APP_SECRET is None  # emptiness NOT latched
+    from kiro_crew.apps import protected_app_state
+
+    protected_app_state.write_app_secret(mod.APP_NAME, "s3cr3t\n")
+    assert mod._load_app_secret() == "s3cr3t"  # picked up on retry
+
+
+def test_app_secret_loader_prefers_the_spawn_env(monkeypatch, tmp_path):
+    """Sandboxes mask the gateway's store, so the injected copy is the source; the app
+    directory's file of an older build is never read."""
+    from kiro_crew.apps import protected_app_state
+
+    monkeypatch.setattr(http_api_mod, "_APP_SECRET", None)
+    monkeypatch.delenv("KIROCREW_PROXY_SECRET", raising=False)
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     sdir = tmp_path / "apps" / mod.APP_NAME
     sdir.mkdir(parents=True)
-    (sdir / ".app_secret").write_text("s3cr3t\n")
-    assert mod._load_app_secret() == "s3cr3t"  # picked up on retry
+    (sdir / ".app_secret").write_text("legacy\n")
+    assert mod._load_app_secret() == ""
+    protected_app_state.write_app_secret(mod.APP_NAME, "stored")
+    monkeypatch.setenv("KIROCREW_PROXY_SECRET", "injected")
+    assert mod._load_app_secret() == "injected"

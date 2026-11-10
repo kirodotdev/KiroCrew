@@ -80,7 +80,81 @@ def register_external_app(
     start_disabled: bool = False,
     version_checked: bool = False,
 ) -> AppResult:
+    """Register a self-managed app; see :func:`_register_external_app`.
+
+    A registration that issued a new secret and then failed, by a refusal or an
+    exception, delivered no secret, so the one it stored is removed: left in place it
+    would stop the next registration issuing and returning one.
+    """
+    issued: list[str] = []
+    try:
+        result = _register_external_app(
+            name,
+            version,
+            display_name,
+            issued=issued,
+            source=source,
+            manifest_data=manifest_data,
+            origin=origin,
+            resources=resources,
+            lifecycle=lifecycle,
+            source_repository=source_repository,
+            start_disabled=start_disabled,
+            version_checked=version_checked,
+        )
+    except BaseException:
+        if issued:
+            _forget_undelivered_secret(name, issued[0])
+        raise
+    if issued and not result.ok:
+        _forget_undelivered_secret(name, issued[0])
+    return result
+
+
+def _forget_undelivered_secret(name: str, issued: str) -> None:
+    """Remove *issued* from the store unless another registration replaced it since.
+
+    Under this app's record lock and the store's lock, so a registration that ran
+    after the failed one released its record lock is never undone by it.
+    """
+    try:
+        hold_app_record_lock(name)
+        with protected_app_state.app_secrets_lock():
+            if protected_app_state.read_app_secret(name) == issued:
+                protected_app_state.forget_app_secret(name)
+    except (OSError, ValueError):
+        logger.warning("could not undo the failed registration of %s", name, exc_info=True)
+    # A proxy request during the failed call may have cached the removed value; the
+    # proxy reads the store again on its next request.
+    try:
+        # circular import: kiro_crew.apps.routes imports from kiro_crew.apps.manager
+        # at module load, so it cannot be imported at the top of this file.
+        from kiro_crew.apps.routes import invalidate_app_secret_cache
+
+        invalidate_app_secret_cache(name)
+    except ImportError:
+        logger.warning("could not clear the proxy cache of %s", name, exc_info=True)
+
+
+@holds_app_record_locks
+def _register_external_app(
+    name: str,
+    version: str,
+    display_name: str,
+    *,
+    issued: list[str],
+    source: str = "",
+    manifest_data: dict[str, Any] | None = None,
+    origin: str = "external",
+    resources: str = "app",
+    lifecycle: str = "app",
+    source_repository: str = "",
+    start_disabled: bool = False,
+    version_checked: bool = False,
+) -> AppResult:
     """Register a self-managed app with Kiro Crew's app system.
+
+    *issued* gets the new secret once it is stored, for the caller's cleanup.
 
     ``version_checked=True`` says the caller already asked the governance
     ``app_versions`` list off the loop (``admission.app_version_refusal``), so
@@ -297,6 +371,25 @@ def register_external_app(
             ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
         )
     prior_owner_disabled = protected_app_state.owner_disabled(name)
+    # Generate app secret only for new registrations — preserve existing secrets
+    from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
+
+    # The stored one, never the app directory's: a secret from before the store is not
+    # carried over, so a re-registration issues a new one. Checked and written under
+    # the store's lock, so a concurrent issuer for this app cannot overwrite it, and
+    # before any record is written, so a held lock or a store fault refuses cleanly
+    # (the registry install calls this on the loop, where the lock is tried once).
+    try:
+        with protected_app_state.app_secrets_lock():
+            is_new_secret = not (existing and protected_app_state.read_app_secret(name))
+            secret = generate_app_secret() if is_new_secret else ""
+            if is_new_secret:
+                write_app_secret(name, secret)
+                issued.append(secret)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not store the app secret of {name!r}: {exc}"
+        )
     approved_grants: dict[str, list[str]] | None
     if not manifest_data:
         if existing:
@@ -434,14 +527,9 @@ def register_external_app(
     # Ensure data directory exists
     app_data_dir(name)
 
-    # Generate app secret only for new registrations — preserve existing secrets
-    from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
-
-    secret_path = dest / ".app_secret"
-    is_new_secret = not (existing and secret_path.is_file())
+    # The store holds the app's secret on both branches, so an older build's file is dead.
+    protected_app_state.remove_legacy_secret(dest / ".app_secret")
     if is_new_secret:
-        secret = generate_app_secret()
-        write_app_secret(name, secret)
         if not existing and meta.enabled:
             # A first registration is an owner-authenticated install+enable (the
             # route requires an owner dashboard request), so it records the owner-
@@ -450,18 +538,19 @@ def register_external_app(
             # agent-writable installed.json.
             if not grant_host_exec(name):
                 # The record is written; enabling it (the "already enabled" path)
-                # retries the marker, which a re-registration would not.
+                # retries the marker, which a re-registration would not. This refusal
+                # delivers no secret, so the caller removes it and the registration
+                # after that enable issues and returns a new one.
                 return AppResult(
                     ok=False,
                     name=name,
                     error=(
                         f"registered {name}, but could not record that the owner "
                         "enabled it; free up space or fix the data folder's "
-                        "permissions, then enable the app in the App Store"
+                        "permissions, then enable the app in the App Store and "
+                        "register it again"
                     ),
                 )
-    else:
-        secret = ""
 
     action = "updated" if existing else "registered"
     logger.info(

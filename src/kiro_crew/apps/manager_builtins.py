@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.discovery import discover_builtin_apps
 from kiro_crew.apps.manager_activation import _app_activation_denied
 from kiro_crew.apps.manager_records import (
@@ -875,16 +876,15 @@ def register_builtin_apps() -> int:
         # loopback mcpServers URL (self-managed apps) — both go through the
         # proxy, which 502s without a secret, so both must get one.
         if _app_declares_backend(app_data):
-            secret_path = dest / ".app_secret"
-            if not secret_path.is_file():
-                # circular import: token_auth → app_secret_store → manager
-                # token_auth imports app_secret_store, which transitively
-                # imports the manager module's app-directory helpers.
-                # Importing at module scope here would create a cycle, so
-                # we defer to the function body.
-                from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
-
-                write_app_secret(name, generate_app_secret())
+            # Only the stored secret counts (``protected_app_state``): one left in the
+            # app directory by an older build is not carried over, and boot runs
+            # before any backend that would hold it. A store that cannot be read or
+            # written is logged: the proxy and the token exchange refuse until it is.
+            try:
+                if protected_app_state.issue_app_secret_if_absent(name):
+                    protected_app_state.remove_legacy_secret(app_dir(name) / ".app_secret")
+            except (OSError, ValueError):
+                logger.warning("could not issue the proxy key of %s", name, exc_info=True)
             # Invalidate the proxy secret cache so the newly-written (or
             # pre-existing) secret is picked up on the next request.
             try:

@@ -36,6 +36,7 @@ from kiro_crew.apps.job_sdk import forget_sdk, get_sdk, reconcile_all, register_
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, approved_manifest_permissions, list_apps
 from kiro_crew.apps.module_loader import clear_all_shutdown_callables
+from kiro_crew.apps.protected_app_state import app_secret_path
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.executors import subprocess_executor
@@ -80,7 +81,7 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
 
     Folds ONLY hook-relevant inputs so a metadata write that does not touch hook
     code never forces a reload: the app version, a digest of the declared hook
-    source files' (path, mtime, size), the ``.app_secret`` mtime (a reinstall
+    source files' (path, mtime, size), the app secret's mtime (a reinstall
     rotates it, and the live module must pick up the new secret), and the
     approved events in ``approvedGrants`` (approving them changes what the hook context's
     event bus may publish, and the bus is built once per load). Deliberately
@@ -98,7 +99,7 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
       no-op it was promised. The signature answers "did the hook CODE change",
       not "is the app on".
 
-    Blocking: it ``stat``s the declared hook files and ``.app_secret``. On the
+    Blocking: it ``stat``s the declared hook files and the app secret. On the
     gateway event loop (the dashboard enable/disable handlers, the boot pass) it
     must be reached via :func:`compute_hook_signature`, which offloads it; the
     reconcile loop runs it inside its own ``to_thread`` step. Kept here, beside
@@ -127,8 +128,8 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
         except OSError:
             digest ^= hash((rel, 0, 0)) & mask
     try:
-        secret_mtime = (root / ".app_secret").stat().st_mtime_ns
-    except OSError:
+        secret_mtime = app_secret_path(name).stat().st_mtime_ns
+    except (OSError, ValueError):
         secret_mtime = 0
     return (
         str(app_info.get("version", "")),

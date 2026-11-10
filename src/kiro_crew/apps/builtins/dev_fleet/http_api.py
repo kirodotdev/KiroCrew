@@ -22,25 +22,26 @@ _APP_SECRET: str | None = None
 
 
 def _load_app_secret() -> str:
-    """Load the app secret for proxy HMAC verification (once)."""
+    """Load the app secret for proxy HMAC verification (once).
+
+    The gateway hands it to this backend as ``KIROCREW_PROXY_SECRET``; that is the source
+    under a sandbox, which masks the store the gateway keeps it in
+    (``apps.protected_app_state``). The store is read only when the variable is absent
+    (a hand-launched backend outside a sandbox).
+    """
     global _APP_SECRET
     if _APP_SECRET is not None:
         return _APP_SECRET
-    from kiro_crew.config.loader import config_dir
+    injected = os.environ.get("KIROCREW_PROXY_SECRET", "").strip()
+    if injected:
+        _APP_SECRET = injected
+        return _APP_SECRET
+    from kiro_crew.apps import protected_app_state
 
-    secret_path = config_dir() / "apps" / APP_NAME / ".app_secret"
-    if secret_path.is_file():
-        _APP_SECRET = secret_path.read_text().strip()
-    else:
-        # Fallback: try the apps dir from manager
-        try:
-            from kiro_crew.apps.manager import app_dir
-
-            alt = app_dir(APP_NAME) / ".app_secret"
-            if alt.is_file():
-                _APP_SECRET = alt.read_text().strip()
-        except Exception:
-            pass
+    try:
+        _APP_SECRET = protected_app_state.read_app_secret(APP_NAME) or None
+    except OSError:
+        pass
     # Do NOT cache emptiness: the secret may be provisioned after this
     # backend starts (install race) — retry on the next request, matching
     # the gateway-side _get_app_secret semantics.

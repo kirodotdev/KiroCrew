@@ -13,6 +13,7 @@ import pytest
 from app_manager_helpers import app_home_fixture  # noqa: F401 - fixture
 
 from kiro_crew import platform_compat
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.manager import (
     InstalledApp,
     _read_installed,
@@ -277,8 +278,6 @@ class TestBuiltinSecretForMcpServers:
         FAILS before the fix (condition was `backend.entryPoint` only), passes
         after (condition is `_app_declares_backend`).
         """
-        from kiro_crew.apps.manager import app_dir
-
         mcp_only = {
             "name": "mcp-only-app",
             "version": "1.0.0",
@@ -289,12 +288,10 @@ class TestBuiltinSecretForMcpServers:
             "mcpServers": {"mcp-only-app": {"url": "http://127.0.0.1:7778/mcp"}},
         }
         self._register_only(monkeypatch, [mcp_only])
-        assert (app_dir("mcp-only-app") / ".app_secret").is_file()
+        assert protected_app_state.read_app_secret("mcp-only-app")
 
     def test_no_backend_builtin_gets_no_secret(self, tmp_path, app_home, monkeypatch):
         """A builtin with no backend of any kind must NOT get a secret."""
-        from kiro_crew.apps.manager import app_dir
-
         no_backend = {
             "name": "no-backend-app",
             "version": "1.0.0",
@@ -304,7 +301,7 @@ class TestBuiltinSecretForMcpServers:
             "defaultEnabled": False,
         }
         self._register_only(monkeypatch, [no_backend])
-        assert not (app_dir("no-backend-app") / ".app_secret").is_file()
+        assert not protected_app_state.read_app_secret("no-backend-app")
 
 
 class TestBuiltinDoesNotClobberUserInstall:
@@ -496,7 +493,7 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
         manager.register_builtin_apps()  # must not raise
 
         # It registers, it just gets no secret — there is no reachable backend.
-        assert not (manager.app_dir("bad-url-app") / ".app_secret").is_file()
+        assert not protected_app_state.read_app_secret("bad-url-app")
 
     def test_a_valid_loopback_url_is_unaffected(self):
         from kiro_crew.apps.manager import resolve_mcp_backend_url

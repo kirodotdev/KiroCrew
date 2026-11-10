@@ -21,6 +21,7 @@ from apps_routes_coverage_helpers import APP, _install, _make_app, _setup_env
 
 import kiro_crew.apps.routes as routes_mod
 import kiro_crew.apps.routes_proxy as routes_proxy
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.manager import enable_app
 from kiro_crew.apps.proxy_auth import (
     PROXY_NONCE_HEADER,
@@ -86,10 +87,10 @@ async def test_the_backend_receives_no_token_and_the_signatures_verify(
 ) -> None:
     """A real proxy hop: the backend's request-target carries no ``token`` and both
     the v1 and the v2 signature verify over the target it received."""
-    home = _setup_env(tmp_path, monkeypatch)
+    _setup_env(tmp_path, monkeypatch)
     _install(tmp_path)
     enable_app(APP)
-    (home / "apps" / APP / ".app_secret").write_text("proxy-key", encoding="utf-8")
+    protected_app_state.write_app_secret(APP, "proxy-key")
     invalidate_app_secret_cache(APP)
 
     seen: dict[str, Any] = {}

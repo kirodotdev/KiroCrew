@@ -2796,7 +2796,7 @@ channel the operator cannot mute.
 
 **In-process, and therefore both HTTP guards replicated.** `POST
 /api/notifications/push` is unreachable here, twice over. It authenticates with an app
-token whose secret lives at `~/.kiro/crew/apps/<name>/.app_secret`, and
+token whose secret lives at `~/.kiro/crew/member-records/app-secrets/<name>`, and
 `register_builtin_apps` writes that file only for a manifest declaring
 `backend.entryPoint`; this app declares `backend.routes`, so no secret exists (verified
 on disk — `dev-fleet`/`file-explorer`/`workflows` have one, this app does not). And even

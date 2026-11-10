@@ -479,6 +479,12 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         protected_app_state.set_owner_disabled(name, False)
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's disable record", exc_info=True)
+    # Its issued secret goes only now too, so a refused uninstall keeps the app working.
+    # One left behind is replaced when an app under this name is installed again.
+    try:
+        protected_app_state.forget_app_secret(name)
+    except OSError:
+        logger.warning("could not remove an uninstalled app's proxy key", exc_info=True)
     refresh_app_config_keys()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 

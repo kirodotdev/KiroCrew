@@ -135,6 +135,30 @@ def _owner_enable_unrecorded(name: str) -> AppResult:
     )
 
 
+def _reissue_legacy_secret(name: str, external: bool = False) -> AppResult | None:
+    """Issue a stored secret to an app that has only one from an older build.
+
+    See :func:`protected_app_state.issue_app_secret_if_absent`. Runs on every owner
+    enable, before any success is reported and before a disabled record reads enabled.
+    Returns the refusal when the store cannot be read or written.
+
+    An *external* app is issued none here: the gateway spawns no backend to hand it
+    over, so only its owner's registration, which returns the secret it issues, can
+    deliver one. Its old file is still removed once a secret is stored.
+    """
+    legacy = app_dir(name) / ".app_secret"
+    try:
+        if external:
+            if protected_app_state.read_app_secret(name):
+                protected_app_state.remove_legacy_secret(legacy)
+            return None
+        protected_app_state.issue_app_secret_if_absent(name, legacy)
+    except (OSError, ValueError):
+        logger.warning("could not reissue the proxy key of %s on enable", name, exc_info=True)
+        return _owner_enable_unrecorded(name)
+    return None
+
+
 @holds_app_record_locks
 def enable_app(
     name: str,
@@ -237,6 +261,12 @@ def enable_app(
                 error_code="session_approval_consent_required",
             )
 
+    # Every enable path below reports success, the "already enabled" one and a
+    # grant approval included, so an app an older build gave only a file secret is
+    # issued its stored one first.
+    refused = _reissue_legacy_secret(name, external=meta.origin == "external")
+    if refused is not None:
+        return refused
     current_grants = _effective_approved_grants(name, meta) if grants_consent is not None else None
     approve_grants = grants_consent is not None and current_grants is not None
     # A pending record still needs the consent written, even when it reads

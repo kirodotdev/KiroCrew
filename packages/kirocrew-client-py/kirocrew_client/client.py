@@ -17,12 +17,11 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Awaitable
+from typing import Any, AsyncIterator, Awaitable, Callable
 from urllib.parse import quote, urlparse
 
 import aiohttp
-
-from kirocrew_client.errors import KiroCrewError, ErrorCode, http_error
+from kirocrew_client.errors import ErrorCode, KiroCrewError, http_error
 from kirocrew_client.ws_client import WsClient
 
 logger = logging.getLogger(__name__)
@@ -137,12 +136,26 @@ _SLOT_SCOPED_APPROVAL_MODES = frozenset({"normal", "trust_reads", "trust"})
 
 
 def _read_app_secret(app_name: str) -> str:
-    """Read the per-app secret from disk. Returns empty string if unavailable."""
+    """The per-app secret the Gateway handed over, or an empty string if none.
+
+    The Gateway sets ``KIROCREW_PROXY_SECRET`` with ``KIROCREW_APP_NAME`` in the env of
+    a backend it spawns for *app_name*; an external app's operator can set the same two
+    from the secret the owner's registration returned. Only when that variable is unset
+    AND the process is outside a Kiro Crew sandbox (no ``KIROCREW_SANDBOX_ACTIVE``), as
+    for a self-managed app the operator runs, is the Gateway's own store
+    ``member-records/app-secrets/<name>`` read. Agent sandboxes mask that directory,
+    and the app's own ``apps/<name>/`` tree is never read.
+    """
+    injected = os.environ.get("KIROCREW_PROXY_SECRET", "").strip()
+    if injected:
+        return injected if os.environ.get("KIROCREW_APP_NAME") == app_name else ""
+    if os.environ.get("KIROCREW_SANDBOX_ACTIVE"):
+        return ""
     home = os.environ.get("KIROCREW_HOME", str(Path.home() / ".kiro" / "crew"))
-    secret_path = Path(home) / "apps" / app_name / ".app_secret"
+    secret_path = Path(home) / "member-records" / "app-secrets" / app_name
     try:
         return secret_path.read_text(encoding="utf-8").strip()
-    except (OSError, FileNotFoundError):
+    except OSError:
         return ""
 
 
@@ -221,11 +234,11 @@ class KiroCrewClient:
             self._on_auth_expired = on_auth_expired
 
     async def _auto_refresh_token(self) -> str:
-        """Exchange the on-disk app secret for a fresh token."""
+        """Exchange the app secret for a fresh token."""
         return await _exchange_app_token(self.base_url, self.app_name, self._app_secret)
 
     async def authenticate(self) -> bool:
-        """Bootstrap app auth by exchanging the on-disk secret for a token.
+        """Bootstrap app auth by exchanging the app secret for a token.
 
         Call once after construction if no explicit token was provided.
         No-op if the client already has a token or no app secret is available.

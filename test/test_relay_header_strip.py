@@ -22,6 +22,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.dashboard import handlers
@@ -226,7 +227,7 @@ class TestAppProxyNeverForwardsARelayHeader:
         app_dir = home / "apps" / "proxy-app"
         app_dir.mkdir(parents=True)
         _floor_monkeypatch.setenv("KIROCREW_HOME", str(home))
-        (app_dir / ".app_secret").write_text(self._SECRET)
+        protected_app_state.write_app_secret("proxy-app", self._SECRET)
         (app_dir / "installed.json").write_text(
             json.dumps(
                 {

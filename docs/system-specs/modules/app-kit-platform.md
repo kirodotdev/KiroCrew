@@ -2540,7 +2540,9 @@ change to the default lesson store, never its text, and no read grant with it
 
 **An app backend subscribes the way its page does.** The gateway hands a backend
 it spawns `KIROCREW_GATEWAY_ORIGIN` and `KIROCREW_PROXY_SECRET`, which is the
-app's `.app_secret`; `POST /api/apps/<name>/token` with that value as
+secret the gateway issued the app (`member-records/app-secrets/<name>`, masked from
+every sandbox, so this variable is the backend's only source); `POST
+/api/apps/<name>/token` with that value as
 `X-App-Secret` returns the same app-scoped token the page uses (only while the
 owner-enable marker the gateway sealed is present, see dashboard-token-auth), and
 `/api/ws`
@@ -5700,8 +5702,9 @@ Writers: `apps/backend.py`, `apps/backend_runtime/`.
 ## 22. The app directory's gateway-owned root entries are never the source's
 
 Two root entries of an installed app directory belong to the gateway, not to the
-app that shipped the tree: `.app_secret`, the per-app credential
-`write_app_secret` generates, and `data/`, which an install puts back from the
+app that shipped the tree: `.app_secret`, where an older build kept the per-app
+credential `write_app_secret` generates (it now goes to
+`member-records/app-secrets/<name>`, a leftover file is read by nothing, and it is removed once the store holds the app's secret), and `data/`, which an install puts back from the
 preserved previous directory (an update's own, a default uninstall's leftover, or
 a crashed sibling's `.{name}-data-tmp`). The install copy (`_copy_app_tree`)
 carries whatever the source put under those names — it keeps an in-tree symlink

@@ -27,6 +27,7 @@ from apps_backend_coverage_helpers import (
 
 import kiro_crew.apps.backend as bmod
 from conftest import requires_symlinks
+from kiro_crew.apps import protected_app_state
 from kiro_crew.testing.wait import wait_until
 
 # Node / npm binary resolution
@@ -752,7 +753,8 @@ class TestSpawnEnvironment:
         """minimal_env() strips these, so the explicit forwards are the contract."""
 
         (spawn_root / "server.py").write_text("x = 1\n")
-        (spawn_root / ".app_secret").write_text("  s3cr3t  \n")
+        monkeypatch.setenv("KIROCREW_HOME", str(spawn_root.parent / "home"))
+        protected_app_state.write_app_secret("envapp", "  s3cr3t  \n")
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", "/checkout")
         monkeypatch.setenv("KIROCREW_EDITION_DIR", "/edition")
         monkeypatch.setenv("KIROCREW_DEVFLEET_REPO", "/opt/kirocrew")

@@ -13,8 +13,8 @@ that looks deliberate while doing nothing.
 **Why in-process, and what that obliges us to replicate.** The HTTP producer
 endpoint (``POST /api/notifications/push``) is unreachable from here, twice over.
 First, it authenticates with an app token whose secret lives at
-``~/.kiro/crew/apps/<name>/.app_secret``, and ``register_builtin_apps`` writes that
-file only for a manifest declaring ``backend.entryPoint``. This app declares
+``~/.kiro/crew/member-records/app-secrets/<name>``, and ``register_builtin_apps`` writes
+that file only for a manifest declaring ``backend.entryPoint``. This app declares
 ``backend.routes`` — an in-gateway route module — so no secret exists (verified on
 disk: ``dev-fleet``/``file-explorer``/``workflows`` have one, this app does not).
 Second, even with a secret, a handler that HTTP-calls its own gateway needs an auth

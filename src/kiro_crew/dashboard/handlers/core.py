@@ -1196,7 +1196,8 @@ async def api_app_token(request: web.Request) -> web.Response:
                 # about which check failed. The second sentence is the upgrade path.
                 "hint": (
                     "The app must be enabled by the owner. An app installed before "
-                    "this version must be turned off and on once in the App Store."
+                    "this version must be turned off and on once in the App Store; "
+                    "an external app must be registered again."
                 ),
             },
             status=403,

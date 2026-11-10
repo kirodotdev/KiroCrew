@@ -903,8 +903,13 @@ The `Returns` column describes the response shape. It is not a TypeScript type:
 no TypeScript client ships, so `SlotInfo`, `GatewayStatus`, `SystemInfo` and
 their siblings are response-shape names rather than importable types.
 
-When `app_name` is set and no explicit auth is provided, the Python client reads
-the app secret from `~/.kiro/crew/apps/{name}/.app_secret`. For a remote Gateway,
+When `app_name` is set and no explicit auth is provided, the Python client takes
+the app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` names that app.
+The Gateway sets both for a backend it spawns. When `KIROCREW_PROXY_SECRET` is unset and
+the process runs outside a Kiro Crew sandbox (a self-managed app the operator runs), it
+reads `~/.kiro/crew/member-records/app-secrets/{name}`, which every sandbox masks. It
+never reads the app's own `apps/{name}/` tree.
+For a remote Gateway,
 call `await client.authenticate()` before the first request; the context manager
 does not exchange the secret automatically. The same exchange refreshes a token
 after a 401/403 response.
@@ -1787,9 +1792,12 @@ KiroCrewClient(
 )
 ```
 
-With `app_name` set and no `token` or `on_auth_expired`, the client reads the
-app secret from `$KIROCREW_HOME/apps/{name}/.app_secret` (`KIROCREW_HOME`
-defaults to `~/.kiro/crew`).
+With `app_name` set and no `token` or `on_auth_expired`, the client takes the
+app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` equals `app_name`
+(a backend the Gateway spawned). Only when that variable is unset and the process is
+outside a Kiro Crew sandbox (no `KIROCREW_SANDBOX_ACTIVE`) does it read
+`$KIROCREW_HOME/member-records/app-secrets/{name}` (`KIROCREW_HOME` defaults to
+`~/.kiro/crew`). Every sandboxed spawn masks that directory.
 
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
@@ -2300,9 +2308,15 @@ Security and lifecycle:
   `KIROCREW_SPAWNED` and this spawn's `KIROCREW_SPAWN_INSTANCE`. A child process
   your backend starts must inherit both and stay in the backend's session group,
   or it is not reaped.
-- The per-app secret lives on disk at `<KIROCREW_HOME>/apps/<name>/.app_secret`, written
-  owner-only `0600` (owner-only DACL on Windows) by the gateway.
-- If no `.app_secret` exists, the gateway injects neither the secret nor anything derived from
+- The per-app secret lives on disk at `<KIROCREW_HOME>/member-records/app-secrets/<name>`,
+  written owner-only `0600` (owner-only DACL on Windows) by the gateway. Every sandboxed
+  process, your backend included, sees that directory masked: read the secret from
+  `KIROCREW_PROXY_SECRET`. An app installed before this store has only
+  `apps/<name>/.app_secret`, which the gateway no longer reads: the gateway issues a new
+  stored secret when it next spawns the backend, and an external app gets one, in the
+  response, on its next registration. Once the new secret is stored, the old file is
+  removed.
+- If no app secret exists, the gateway injects neither the secret nor anything derived from
   it (including the proof); a secret-less backend is otherwise unchanged.
 - `KIROCREW_GATEWAY_ORIGIN` is fail-closed: it is present only when the gateway has real
   evidence of the port it bound. A gateway that has not exported a valid `KIROCREW_BOUND_PORT`

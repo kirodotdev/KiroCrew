@@ -909,20 +909,21 @@ def validate_app_secret(app_name: str, provided_secret: str) -> bool:
     (``apps.host_exec_grants``): a sealed, top-level directory only the unsandboxed
     gateway writes, on an owner-authenticated enable or first owner registration,
     and every disable and uninstall revokes. Files under the agent-writable
-    ``apps/{app_name}/`` (``installed.json``, ``app.json``) are never enough. With the
-    marker present, the secret is compared in constant time against
-    ``apps/{app_name}/.app_secret``.
+    ``apps/{app_name}/`` (``installed.json``, ``app.json``, ``.app_secret``) are never
+    enough. With the marker present, the secret is compared in constant time against
+    the one the gateway issued (``write_app_secret``), kept in ``member-records/``,
+    which no sandbox can read or write (``apps.protected_app_state``). A store that
+    cannot be read mints nothing.
     """
     # circular import: apps.manager imports write_app_secret from token_auth
+    from kiro_crew.apps import protected_app_state
     from kiro_crew.apps.host_exec_grants import host_exec_granted
-    from kiro_crew.config.loader import config_dir
 
     if not provided_secret or not host_exec_granted(app_name):
         return False
-    secret_path = config_dir() / "apps" / app_name / ".app_secret"
     try:
-        stored = secret_path.read_text(encoding="utf-8").strip()
-    except (OSError, FileNotFoundError):
+        stored = protected_app_state.read_app_secret(app_name)
+    except OSError:
         return False
     if not stored:
         return False
@@ -930,57 +931,17 @@ def validate_app_secret(app_name: str, provided_secret: str) -> bool:
 
 
 def write_app_secret(app_name: str, secret: str) -> None:
-    """Write an app secret to ``~/.kiro/crew/apps/{app_name}/.app_secret``.
+    """Issue *secret* to *app_name*: stored owner-only in ``member-records/app-secrets/``.
 
-    Creates the directory if needed and sets file mode to 0o600.
+    Never in the app's own directory, which sandboxes can read; the app's backend gets
+    it as ``KIROCREW_PROXY_SECRET`` and an app run outside a sandbox reads it from the
+    store (``kirocrew_client``). Raises ``OSError`` (or ``ValueError`` for a name the
+    store cannot hold), so a caller never reports a secret it did not store.
     """
-    from kiro_crew.config.loader import config_dir
-    from kiro_crew.owner_only_files import mkdirs_owner_only
+    # circular import: apps.manager imports write_app_secret from token_auth
+    from kiro_crew.apps import protected_app_state
 
-    secret_dir = config_dir() / "apps" / app_name
-    mkdirs_owner_only(secret_dir)  # apps/ and apps/<name>/ are born 0700
-    secret_path = secret_dir / ".app_secret"
-    # os.O_TRUNC truncates any pre-existing file BEFORE the DACL tightens,
-    # then restrict_to_owner locks it down while it is still empty, then we
-    # write the secret bytes. This ordering matters on Windows because the
-    # lockdown replaces the file's DACL rather than being set at create time —
-    # if we wrote first the secret would sit under the parent-inherited DACL
-    # until that call landed. On failure we unlink the just-created empty file (mirroring
-    # dashboard/server.py:_write_secret_file) so we don't leave a zero-byte
-    # .app_secret under the default DACL that a later successful write
-    # (which does not re-inherit on O_TRUNC) could then populate.
-    # The file is the gateway's own: a link planted at its path is removed, never
-    # written through, and O_NOFOLLOW refuses one planted after that check, so the
-    # unsandboxed gateway cannot be aimed at another file (e.g. a sealed leaf).
-    if secret_path.is_symlink():
-        secret_path.unlink()
-    fd = os.open(
-        str(secret_path),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
-    try:
-        # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
-        # OSError, which would defeat the cleanup-and-reraise below for this
-        # app secret. On POSIX applies chmod 0o600 by path; on
-        # Windows an owner-only DACL (fchmod doesn't exist on
-        # Windows, where an IS_POSIX no-op would let per-app secrets
-        # land readable by other local users).
-        platform_compat.restrict_to_owner(secret_path)
-        with os.fdopen(fd, "w") as f:
-            fd = -1  # fdopen took ownership; skip the redundant close below
-            f.write(secret)
-    except Exception:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        try:
-            secret_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+    protected_app_state.write_app_secret(app_name, secret)
 
 
 def _evict_expired() -> None:

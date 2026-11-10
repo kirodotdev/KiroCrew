@@ -418,3 +418,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.teardown import (  # noqa: F401
         stop_app_hooks_for_uninstall,
     )
+
+if TYPE_CHECKING:  # a module an owner binds and the facade serves, not an owner
+    from kiro_crew.apps import protected_app_state  # noqa: F401

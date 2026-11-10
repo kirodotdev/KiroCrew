@@ -28,6 +28,7 @@ from gateway_appkit_endpoints_helpers import (  # noqa: F401 -- the fixture is r
     app_env_fixture,
 )
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.dashboard.chat import api_chat_slot_context
@@ -551,7 +552,7 @@ class TestReverseProxy:
         app_dir = home / "apps" / "proxy-app"
         app_dir.mkdir(parents=True)
         self._secret = "test-secret-abc123"
-        (app_dir / ".app_secret").write_text(self._secret)
+        protected_app_state.write_app_secret("proxy-app", self._secret)
         manifest = {
             "name": "proxy-app",
             "version": "1.0.0",

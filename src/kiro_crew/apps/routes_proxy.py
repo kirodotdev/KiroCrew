@@ -21,9 +21,9 @@ import aiohttp
 import yarl
 from aiohttp import web
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.backend import get_app_backend_port
 from kiro_crew.apps.manager import (
-    apps_dir,
     get_app_manifest,
     is_app_enabled,
     resolve_mcp_backend_url,
@@ -75,16 +75,21 @@ _app_secret_cache: dict[str, str] = {}
 
 
 def _get_app_secret(name: str) -> str:
-    """Read the app secret, using an in-memory cache.
+    """Read the app secret the gateway issued, using an in-memory cache.
 
-    Empty values are NOT cached — the secret may be provisioned after
-    the first proxy attempt (e.g. install-from-source race).
+    From ``member-records/app-secrets/`` (``protected_app_state``), never the app's own
+    directory, which a sandbox can write. Empty values are NOT cached — the secret may
+    be provisioned after the first proxy attempt (e.g. install-from-source race). A
+    store that cannot be read gives no secret, so the request is refused.
     """
     cached = _app_secret_cache.get(name)
     if cached:
         return cached
-    path = apps_dir() / name / ".app_secret"
-    secret = path.read_text().strip() if path.is_file() else ""
+    try:
+        secret = protected_app_state.read_app_secret(name)
+    except OSError:
+        logger.warning("could not read the proxy key of app %s", name, exc_info=True)
+        secret = ""
     if secret:
         _app_secret_cache[name] = secret
     return secret

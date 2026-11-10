@@ -756,7 +756,7 @@ class TestCopyAppTree:
         if secret_installed:
             secret.write_text("s3cret", encoding="utf-8")
         else:
-            secret.unlink()
+            secret.unlink(missing_ok=True)  # the gateway's own is in member-records/
 
         v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
         (v2 / "ui").mkdir()

@@ -36,6 +36,7 @@ from kiro_crew import md_notebook_state as _md_notebook_state
 from kiro_crew import platform_compat
 from kiro_crew.apps import builtin_host_grants as _host_grants
 from kiro_crew.apps import deps_boot as _deps_boot_module
+from kiro_crew.apps import protected_app_state as _protected_app_state
 from kiro_crew.apps.execution import (
     app_execution_denied,
     is_builtin_app,
@@ -894,11 +895,17 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # HMAC-SHA256(secret, origin) the backend recomputes to confirm the origin
     # value was minted by the gateway that alone holds this secret, rather than
     # an inherited or spoofed env value. The proof is injected ONLY when the
-    # secret is readable AND the origin was injected above; a missing
-    # .app_secret is tolerated as before and yields neither the secret nor the
-    # proof (a secret-less legacy backend gets the origin only).
+    # secret is readable AND the origin was injected above; a missing secret is
+    # tolerated as before and yields neither the secret nor the proof (a
+    # secret-less legacy backend gets the origin only). The secret is the one the
+    # gateway issued, in member-records/ (protected_app_state), which the sandbox
+    # this backend runs in masks: this variable is how the backend gets it. An app
+    # an older build gave only apps/<name>/.app_secret is issued a new one here,
+    # before anything holds it, so it keeps working across the upgrade.
     try:
-        _proxy_secret = (root / ".app_secret").read_text().strip()
+        _proxy_secret = _protected_app_state.issue_app_secret_if_absent(
+            app_name, root / ".app_secret"
+        )
         if _proxy_secret:
             env["KIROCREW_PROXY_SECRET"] = _proxy_secret
             if gateway_origin:
@@ -907,7 +914,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                     gateway_origin.encode("utf-8"),
                     hashlib.sha256,
                 ).hexdigest()
-    except OSError:
+    except (OSError, ValueError):
         pass
     # Expose the provisioned deps dir (pip --target, above) to the child.
     # PYTHONPATH rather than an interpreter switch: it is honored identically

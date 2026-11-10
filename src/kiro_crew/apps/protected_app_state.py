@@ -13,10 +13,16 @@ file tools refuse (:mod:`kiro_crew.member_records`):
 * ``app-disabled/<app>`` -- present while the owner's disable of the app stands. Every
   read of an app's ``installed.json`` reports the app disabled while it exists, whatever
   the file says; only the owner-authenticated enable and an uninstall remove it.
+* ``app-secrets/<app>`` -- the secret the gateway issued the app, which trades for its
+  app token (``dashboard.token_auth_tokens.validate_app_secret``) and keys the proxy's
+  HMAC. ``member-records/`` is created and masked before every spawn
+  (``sandbox_precreate``), so an app installed while a sandbox runs still gets its
+  secret where that sandbox cannot look. The app's own backend gets it as
+  ``KIROCREW_PROXY_SECRET`` (``apps/backend.py``).
 
-Inside a sandbox the directory is masked, so a read there finds neither record: an
-approved set reads as empty and no disable is seen. Authorization is decided in the
-gateway, which reads both.
+Inside a sandbox the directory is masked, so a read there finds no record: an
+approved set reads as empty, no disable is seen and no secret is found. Authorization
+is decided in the gateway, which reads them all.
 
 This module imports nothing from the ``apps.manager`` family, so its lowest owner can
 call it.
@@ -25,7 +31,9 @@ call it.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
+import secrets
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -35,15 +43,20 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform_lock_compat import acquire_lock, open_create_or_existing, release_lock
 
-#: Record kinds under ``member-records/``; both are in ``member_records.RECORD_KINDS``.
+logger = logging.getLogger(__name__)
+
+#: Record kinds under ``member-records/``; all are in ``member_records.RECORD_KINDS``.
 APP_GRANTS_KIND = "app-grants"
 APP_DISABLED_KIND = "app-disabled"
+APP_SECRETS_KIND = "app-secrets"
 
 #: Written in ``app-grants/`` once every app's set has been carried over from the app
 #: tree. Once it exists a missing record means nothing is approved.
 GRANTS_IMPORT_MARKER = ".imported-from-app-tree"
 #: Held from the import's marker check to its marker write, across threads and processes.
 _GRANTS_IMPORT_LOCK = ".importing"
+#: Held across a check-then-issue of an app secret (:func:`app_secrets_lock`).
+_SECRETS_LOCK = ".issuing"
 
 
 def _record_path(kind: str, app_name: str, suffix: str) -> Path:
@@ -162,3 +175,92 @@ def forget_grants(app_name: str) -> None:
     """
     with contextlib.suppress(ValueError):
         grants_path(app_name).unlink(missing_ok=True)
+
+
+def app_secret_path(app_name: str) -> Path:
+    """Where *app_name*'s secret lives. Raises ``ValueError`` for an unsafe name."""
+    return _record_path(APP_SECRETS_KIND, app_name, "")
+
+
+def read_app_secret(app_name: str) -> str:
+    """The secret the gateway issued *app_name*, or ``""`` when it has none.
+
+    A name this store cannot hold has none. Any other read fault raises, so a caller
+    deciding whether to mint or sign refuses rather than reading it as absent.
+    """
+    try:
+        path = app_secret_path(app_name)
+    except ValueError:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+
+
+def write_app_secret(app_name: str, secret: str) -> None:
+    """Store *secret* as *app_name*'s, owner-only. Raises ``OSError`` or ``ValueError``."""
+    path = app_secret_path(app_name)
+    mkdirs_owner_only(path.parent)
+    atomic_write(path, secret, restrict_to_owner=True)
+
+
+@contextlib.contextmanager
+def app_secrets_lock() -> Iterator[None]:
+    """Serialize a check-then-issue of any app's secret, across threads and processes.
+
+    Innermost: nothing else is acquired while it is held.
+    """
+    directory = member_records.records_dir(APP_SECRETS_KIND)
+    mkdirs_owner_only(directory)
+    fd = open_create_or_existing(
+        directory / _SECRETS_LOCK, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
+    try:
+        acquire_lock(fd, exclusive=True)
+        try:
+            yield
+        finally:
+            release_lock(fd)
+    finally:
+        os.close(fd)
+
+
+def issue_app_secret_if_absent(app_name: str, legacy_file: Path | None = None) -> str:
+    """*app_name*'s stored secret, first issuing a NEW one when it has none.
+
+    With *legacy_file* (the ``.app_secret`` an older build wrote in the app directory),
+    one is issued only when that file exists. The file is never copied: a sandbox can
+    read and replace it, so the app gets a secret only the gateway knows, and once the
+    store holds one the file is removed (never followed through a link). Called where
+    nothing holds a secret yet (a backend about to be spawned, the owner's enable, boot
+    registration). Under :func:`app_secrets_lock`, so concurrent callers all get the
+    same secret. Returns ``""`` when none is issued. Raises ``OSError``/``ValueError``.
+    """
+    with app_secrets_lock():
+        stored = read_app_secret(app_name)
+        if not stored and (legacy_file is None or legacy_file.is_file()):
+            stored = secrets.token_hex(32)
+            write_app_secret(app_name, stored)
+    if stored and legacy_file is not None:
+        remove_legacy_secret(legacy_file)
+    return stored
+
+
+def remove_legacy_secret(legacy_file: Path) -> None:
+    """Remove the ``.app_secret`` an older build left, which trades for nothing.
+
+    Called once the store holds the app's secret, so a dead credential does not stay
+    readable in every sandbox. A link is removed, never followed. A failure leaves only
+    that dead file, so it is logged, never raised.
+    """
+    try:
+        legacy_file.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("could not remove %s", legacy_file, exc_info=True)
+
+
+def forget_app_secret(app_name: str) -> None:
+    """Remove *app_name*'s secret, once its uninstall committed. Raises ``OSError``."""
+    with contextlib.suppress(ValueError):
+        app_secret_path(app_name).unlink(missing_ok=True)
