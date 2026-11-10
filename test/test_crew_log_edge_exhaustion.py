@@ -322,9 +322,10 @@ def test_oversize_raw_entry_is_refused_immediately_not_retried(caplog):
     assert emit.dropped_writes() == 1
     assert emit.buffered_writes() == 0
 
-    # A good write after it still works.
+    # A good write after it still works, and the marker admitting the loss leads it.
     emit.on_turn_completed(SESSION, 1, stop_reason="end_turn")
-    assert _body()[-1]["type"] == "turn/completed"
+    assert_drained()
+    assert [e["type"] for e in _body()][-2:] == ["write/dropped", "turn/completed"]
 
 
 def test_oversize_body_is_chunked_not_refused():

@@ -362,8 +362,8 @@ def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
     could not write. Reaching that point means the writer is wedged, and the handles
     those jobs would have written through are being dropped in this same call -- so
     keeping them would leave the writer retrying entries against a crew log this
-    process has stopped believing in. A successful wait makes the discard a no-op,
-    which is every call that is not recovering from a wedge. The writer is retired
+    process has stopped believing in. A successful wait leaves only parked loss debt to
+    discard, which is every call that is not recovering from a wedge. The writer is retired
     while still installed, so a job that queues follow-on work during that wait queues
     it into the writer being retired rather than building a new one.
 
@@ -1275,7 +1275,8 @@ def _child_gone_probe(session_id: str) -> "Callable[[str], bool] | None":
     then shows an opener with no match while the registry omits the child. Closing on that reading puts a synthesised ``unknown`` ahead of the
     real outcome and leaves both standing in a file nothing rewrites. The debt
     set is the exact record of what is still owed -- queued, claimed by the
-    writer, retained, and owed loss markers alike -- and it is the one source
+    writer, retained, and owed loss markers alike, bar a parked one no pass will
+    write -- and it is the one source
     here carrying no bound that
     could shed a pending child, which the manager's completed-run retention does
     carry. An entry a hard ceiling refuses is absent from the debt set, which is
