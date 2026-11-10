@@ -1163,8 +1163,15 @@ Scopes the page to a single source. Composes with the existing `type`, `status`,
   in-group pager derives its page count from it, so a global total would break
   the pager math.
 - `source_id=__none__` selects items with no source (`source_id` NULL or empty).
-- Applied in both branches of `list_items`: as a SQL predicate in the list
-  branch, and via `_matches_source` after ranking in the hybrid-search branch.
+- A named source selects what it **holds**, the same union `/source-counts`
+  counts: items it owns plus items it is a location of in `source_locations`
+  after a duplicate collapse. A source holding only located items therefore
+  lists them under its badge instead of an empty group. A scoped page labels
+  each row from that source's own state (`_attach_file_paths(scope_source=)`),
+  so a located item shows the holder's file name, never the owner's.
+- Applied in both branches of `list_items`: as a SQL predicate
+  (`_HELD_BY_SOURCE`) in the list branch, and via `_matches_source` with the
+  source's located ids after ranking in the hybrid-search branch.
 - Because the hybrid-search branch filters *after* the retriever has ranked
   globally, a scoped search escalates its candidate pool
   (`_search_until_exhausted`: `_SCOPED_SEARCH_START` doubling to
