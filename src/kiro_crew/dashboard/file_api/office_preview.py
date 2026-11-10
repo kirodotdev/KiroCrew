@@ -11,6 +11,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _BLOCK_STRUCTURAL_KEYS,
+        _FILE_BUSY_ERROR,
         _MAX_UPLOAD_BYTES,
         _OFFICE_PREVIEW_CAP,
         _OFFICE_PREVIEWABLE_EXT,
@@ -415,6 +416,9 @@ async def api_file_office_preview(request: web.Request) -> web.Response:
                 },
                 status=413,
             )
+        if code == "file_busy":
+            _log("failure", res, "file_busy")
+            return web.json_response({"error": _FILE_BUSY_ERROR, "code": "file_busy"}, status=503)
         # read_failed: the residual code.
         _log("failure", res)
         return web.json_response(

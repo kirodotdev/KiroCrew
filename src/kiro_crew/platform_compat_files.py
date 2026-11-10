@@ -666,12 +666,24 @@ def remove_with_retry(path: str | os.PathLike, *, retry_hint: str) -> None:
 _WIN_FILE_SHARE_READ_WRITE_DELETE = 0x00000001 | 0x00000002 | 0x00000004
 
 
-def open_log_file_for_tail(path: str | os.PathLike) -> int:
-    """Open a binary read fd without blocking the log writer's rename/rotation.
+def open_file_for_shared_read(path: str | os.PathLike) -> int:
+    """Open a binary read fd that every other holder of the file can share.
 
-    Windows CRT opens omit FILE_SHARE_DELETE. This separate log-only helper
-    permits rotation even during a read; security pinning helpers must not.
-    The caller owns the returned descriptor and must close it.
+    Windows CRT opens grant FILE_SHARE_READ | FILE_SHARE_WRITE and omit
+    FILE_SHARE_DELETE, so they are a sharing violation against any program
+    that holds the file with delete access: Word and Excel hold every open
+    document that way, and a log writer that rotates by rename does too.
+    ``CreateFileW`` here grants all three, so the open succeeds whenever the
+    holder shares reading, and this handle never blocks that holder's own
+    rename, replace or delete. A holder that does not share reading still
+    refuses the open; the raised ``OSError`` carries its ``winerror`` (32 or
+    33, :data:`_SHARING_VIOLATION_WINERRORS`) for the caller to report.
+
+    It follows a link at the name, as ``os.open`` does, so a caller that must
+    refuse one checks the name first. Never use it to pin a path: another
+    process can rename or delete the name while this handle is held. POSIX
+    has no share modes; it is a plain read-only open there. The caller owns
+    the returned descriptor and must close it.
     """
     if IS_POSIX:
         return os.open(os.fspath(path), os.O_RDONLY)
