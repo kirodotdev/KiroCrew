@@ -536,6 +536,11 @@ def _fresh_update_ownership(_floor_monkeypatch):
     _floor_monkeypatch.setattr(update_ownership, "_deferred_restart_until", None)
     _floor_monkeypatch.setattr(update_ownership, "_restart_refusal", None)
     _floor_monkeypatch.setattr(update_ownership, "_refusal_probe_clears", True)
+    from kiro_crew import update_restart_ready
+
+    # The "restart to use it" note is process-wide too: one test's staged update
+    # must not light the next test's status frame.
+    _floor_monkeypatch.setattr(update_restart_ready, "_current", None)
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"

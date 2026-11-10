@@ -14,7 +14,7 @@ import asyncio
 import os
 import threading
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from wheel_update_test_helpers import wire_wheel_apply
@@ -80,15 +80,13 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ManagedVenvLayout
     return managed
 
 
-def _orchestrator(monkeypatch: pytest.MonkeyPatch) -> tuple[GatewayOrchestrator, AsyncMock]:
+def _orchestrator(monkeypatch: pytest.MonkeyPatch) -> GatewayOrchestrator:
     cfg = KiroCrewConfig()
     with patch.object(cfg, "load_credentials", return_value={"KIROCREW_OWNER_ID": "U1"}):
         orch = GatewayOrchestrator(cfg, no_dashboard=True, no_crons=True, no_open=True)
     orch.dashboard_state = None
     orch.sessions = None
-    restart = AsyncMock()
-    monkeypatch.setattr(orch, "_restart_after_update", restart)
-    return orch, restart
+    return orch
 
 
 def _claim(shadow: Path) -> None:
@@ -101,9 +99,9 @@ def _claim(shadow: Path) -> None:
 async def test_the_served_venv_is_never_moved_while_the_new_tree_builds(
     layout: ManagedVenvLayout, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from kiro_crew.platform.wheel_engine import respawn_executable
+    from kiro_crew import update_restart_ready
 
-    orch, restart = _orchestrator(monkeypatch)
+    orch = _orchestrator(monkeypatch)
     before = _served_snapshot(layout.legacy)
     during: list[bool] = []
 
@@ -126,38 +124,38 @@ async def test_the_served_venv_is_never_moved_while_the_new_tree_builds(
     promoted = layout.versioned_tree(_VERSION)
     assert layout.stable_link.resolve() == promoted.resolve()
     assert promoted.parent == layout.legacy.parent, "the new tree is a sibling"
-    restart.assert_awaited_once_with(respawn_executable)
+    # Staged for the next restart a person chooses; the running gateway is not restarted.
+    note = update_restart_ready.current()
+    assert note is not None and note.version == _VERSION
 
 
 @pytest.mark.asyncio
-async def test_a_gateway_running_through_the_link_restarts_before_it_builds(
+async def test_a_gateway_running_through_the_link_builds_nothing_and_restarts_nothing(
     layout: ManagedVenvLayout, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Promoting under it would swap its own modules while a busy restart waits."""
+    """Promoting under it would swap its own modules, and getting off the link is a restart."""
+    from kiro_crew import update_restart_ready
     from kiro_crew.platform import wheel_apply
-    from kiro_crew.platform.wheel_engine import respawn_executable
 
-    orch, restart = _orchestrator(monkeypatch)
+    orch = _orchestrator(monkeypatch)
     monkeypatch.setattr(wheel_apply, "relaunch_before_apply", lambda: True)
     built: list[Path] = []
     monkeypatch.setattr(
         wheel_engine, "build_shadow_venv", lambda _wheel, shadow, *_a, **_kw: built.append(shadow)
     )
 
-    await orch._auto_apply_wheel_update("stable", _VERSION, mandatory=True, mandatory_key="k")
+    await orch._auto_apply_wheel_update("stable", _VERSION, mandatory=True)
 
-    assert built == [], "nothing is built until the gateway is off the link"
+    assert built == [], "nothing is built while the gateway loads through the link"
     assert layout.stable_link.resolve() == layout.legacy.resolve()
-    restart.assert_awaited_once_with(respawn_executable)
-    assert orch._pending_update_mandatory is True, "a floor keeps its grace across retries"
-    assert orch._pending_update_mandatory_key == "k"
+    assert update_restart_ready.current() is None
 
 
 @pytest.mark.asyncio
 async def test_a_cancelled_apply_leaves_the_stable_link_on_the_old_tree(
     layout: ManagedVenvLayout, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    orch, restart = _orchestrator(monkeypatch)
+    orch = _orchestrator(monkeypatch)
     before = _served_snapshot(layout.legacy)
     building = threading.Event()
 
@@ -185,7 +183,6 @@ async def test_a_cancelled_apply_leaves_the_stable_link_on_the_old_tree(
 
     assert layout.stable_link.resolve() == layout.legacy.resolve()
     assert _served_snapshot(layout.legacy) == before
-    restart.assert_not_awaited()
     # Only an unpromoted sibling is left, set aside for the next apply's sweep.
     leftovers = sorted(os.listdir(layout.legacy.parent))
     assert leftovers == sorted(

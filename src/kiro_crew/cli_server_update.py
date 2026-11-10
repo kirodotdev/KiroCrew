@@ -124,6 +124,30 @@ def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
     sys.exit(1)
 
 
+def _untracked_collisions(proj: str, target: str, env: dict[str, str]) -> list[str] | None:
+    """Paths *target* adds that already exist in the checkout untracked, or ``None`` if unreadable.
+
+    A path the target adds is absent from HEAD, so an entry on disk there is an
+    untracked (or ignored) file that a hard reset would overwrite.
+    """
+    try:
+        added = subprocess.run(
+            ["git", "diff", "--name-only", "-z", "--diff-filter=A", "HEAD", target],
+            cwd=proj,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if added.returncode != 0:
+        return None
+    root = Path(proj)
+    names = [n.decode("utf-8", "surrogateescape") for n in added.stdout.split(b"\0") if n]
+    return [n for n in names if os.path.lexists(root / n)]
+
+
 def _update(force: bool = False) -> None:
     """Update Kiro Crew — dispatches based on install layout.
 
@@ -513,6 +537,22 @@ def _update(force: bool = False) -> None:
     if _exec_config:
         print(f"  🛡️  Update refused: {_exec_config}, which git would run during the reset.")
         print("      Remove it from the checkout's git config, then retry.")
+        sys.exit(1)
+
+    collisions = _untracked_collisions(proj, target, _git_env)
+    if collisions is None:
+        print("  ❌ Could not check for untracked files the update would overwrite")
+        sys.exit(1)
+    if collisions:
+        # `git reset --hard` replaces an untracked file at a path the target adds
+        # without a word, and the `??` lines skipped above never named it.
+        print("  ❌ Refusing to update: untracked files would be overwritten:")
+        for name in collisions[:10]:
+            print(f"      {name}")
+        print(
+            "  ❌ Update refused: move or remove these untracked files: "
+            + ", ".join(collisions[:10])
+        )
         sys.exit(1)
 
     _snapshot_memory_or_exit()

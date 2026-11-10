@@ -2,17 +2,15 @@
 
 A Remote Crew "Update" or "Restart" must not stop the crew's running turns and
 subagents. The remote job runs ``restart --when-idle``, which asks the crew's own gateway
-(``POST /api/restart/when-idle`` -> ``GatewayOrchestrator._restart_gate_when_idle``)
-whether a restart would interrupt work, using the census the gateway's own
-scheduled update waits on. These tests pin the gate, its route and the CLI.
+(``POST /api/restart/when-idle``) whether a restart would interrupt work. The route
+READS the one quiescence census: no pause, no hold, no restart. These tests pin the
+route and the CLI.
 """
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
-import sys
 import urllib.error
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -20,41 +18,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew import cli_restart_idle as idle_cli
-from kiro_crew import cli_server, cli_server_stop
+from kiro_crew import cli_server, cli_server_stop, quiescence, restart_admission
 from kiro_crew.dashboard.handlers import restart_gate
 from kiro_crew.service import controller as service_controller
-from kiro_crew.session_parts import claims as _claims
 from kiro_crew.slack import gateway
-
-
-class _Sessions:
-    """The admission half of ``SessionManager`` the gate drives."""
-
-    def __init__(self, *, closed: bool = False) -> None:
-        self.admission_closed = closed
-        self.update_restart_fenced = False
-        self.paused = 0
-        self.resumed = 0
-
-    async def pause_turn_admission_for_update(self) -> bool:
-        self.paused += 1
-        self.admission_closed = True
-        return True
-
-    async def resume_turn_admission_after_update(self) -> bool:
-        self.resumed += 1
-        self.admission_closed = False
-        return True
-
-
-def _orchestrator(counts: tuple[int, int], sessions: _Sessions | None) -> object:
-    orch = object.__new__(gateway.GatewayOrchestrator)
-    orch.sessions = sessions
-    orch._background_tasks = set()
-    orch._restart_gate_hold = None
-    orch._in_flight_work_counts = lambda: counts
-    orch._schedule_inbound_replay = MagicMock()
-    return orch
 
 
 @pytest.fixture(autouse=True)
@@ -64,339 +31,12 @@ def _no_shutdown():
     gateway.shutdown_event.clear()
 
 
-@pytest.mark.asyncio
-class TestGate:
-    async def test_busy_reopens_admission_and_reports_the_counts(self):
-        sessions = _Sessions()
-        orch = _orchestrator((2, 3), sessions)
-
-        assert await orch._restart_gate_when_idle() == (False, 2, 3)
-
-        assert (sessions.paused, sessions.resumed) == (1, 1)
-        assert sessions.admission_closed is False
-        orch._schedule_inbound_replay.assert_called_once_with()
-        assert orch._restart_gate_hold is None
-
-    async def test_a_dashboard_policy_apply_in_flight_is_busy(self, monkeypatch):
-        """The restart's shutdown would cancel that installer mid-install."""
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        installer = SimpleNamespace(done=lambda: False)
-        updates = SimpleNamespace(policy_applies_in_flight=lambda: [installer])
-        monkeypatch.setitem(sys.modules, "kiro_crew.dashboard.handlers.updates", updates)
-
-        assert await orch._restart_gate_when_idle() == (False, 0, 1)
-
-        assert sessions.admission_closed is False
-        assert orch._restart_gate_hold is None
-
-    async def test_a_dashboard_git_update_in_flight_is_busy(self):
-        """Cut off before its reinstall, it leaves a tree with uninstalled dependencies."""
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        running = SimpleNamespace(get_name=lambda: "dashboard-update", done=lambda: False)
-        finished = SimpleNamespace(get_name=lambda: "dashboard-update", done=lambda: True)
-        other = SimpleNamespace(get_name=lambda: "something-else", done=lambda: False)
-        orch.dashboard_state = SimpleNamespace(_background_tasks=[running, finished, other])
-
-        assert await orch._restart_gate_when_idle() == (False, 0, 1)
-
-        assert sessions.admission_closed is False
-        assert orch._restart_gate_hold is None
-
-    async def test_idle_keeps_admission_paused_for_the_restart(self):
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-
-        assert await orch._restart_gate_when_idle() == (True, 0, 0)
-
-        assert (sessions.paused, sessions.resumed) == (1, 0)
-        assert sessions.admission_closed is True
-        assert orch._restart_gate_hold in orch._background_tasks
-        orch._restart_gate_hold.cancel()
-
-    async def test_a_restart_that_never_comes_reopens_admission(self):
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        orch._RESTART_GATE_HOLD_SECS = 0.0
-
-        await orch._restart_gate_when_idle()
-        await orch._restart_gate_hold
-
-        assert sessions.resumed == 1
-        assert sessions.admission_closed is False
-
-    async def test_a_hold_an_update_restart_fenced_is_left_alone(self):
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        orch._RESTART_GATE_HOLD_SECS = 0.0
-
-        await orch._restart_gate_when_idle()
-        sessions.update_restart_fenced = True
-        await orch._restart_gate_hold
-
-        assert sessions.resumed == 0
-
-    async def test_asking_again_while_a_restart_is_approved_is_busy_and_keeps_the_hold(self):
-        sessions = _Sessions()
-        counts = [(0, 0)]
-        orch = _orchestrator((0, 0), sessions)
-        orch._in_flight_work_counts = lambda: counts[0]
-        await orch._restart_gate_when_idle()
-        first = orch._restart_gate_hold
-        # A turn queued after the first answer: a second ask sees it.
-        counts[0] = (1, 0)
-
-        assert await orch._restart_gate_when_idle() == (False, 1, 0)
-
-        # The approval stands: same hold, admission still paused, nothing reopened.
-        assert orch._restart_gate_hold is first and not first.done()
-        assert sessions.admission_closed is True and sessions.resumed == 0
-        assert sessions.paused == 1
-        first.cancel()
-        await asyncio.gather(first, return_exceptions=True)
-
-    async def test_an_update_apply_waits_out_a_restart_the_gate_approved(self):
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        orch._mandatory_update_deferred_at = None
-        orch._mandatory_update_deferred_key = None
-        orch._update_apply_deferred = False
-        await orch._restart_gate_when_idle()
-        hold = orch._restart_gate_hold
-
-        assert await orch._prepare_auto_update_apply(mandatory=False) is False
-
-        # Deferred without releasing the gate's pause or its hold.
-        assert orch._update_apply_deferred is True
-        assert orch._restart_gate_hold is hold and not hold.done()
-        assert sessions.resumed == 0 and sessions.admission_closed is True
-        assert orch._update_pause_holder == "restart_gate"
-        hold.cancel()
-        await asyncio.gather(hold, return_exceptions=True)
-
-    async def test_a_gate_ask_that_queues_behind_an_apply_answers_busy(self):
-        """The gate read admission open, then the apply took the pause first."""
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        orch._mandatory_update_deferred_at = None
-        orch._mandatory_update_deferred_key = None
-        real_pause = sessions.pause_turn_admission_for_update
-
-        async def _apply_wins_the_lock():
-            sessions.pause_turn_admission_for_update = real_pause
-            assert await orch._prepare_auto_update_apply(mandatory=False) is True
-            return await real_pause()
-
-        sessions.pause_turn_admission_for_update = _apply_wins_the_lock
-
-        assert await orch._restart_gate_when_idle() == (False, 0, 0)
-
-        # The apply's pause is left alone and no hold was started.
-        assert sessions.resumed == 0 and sessions.admission_closed is True
-        assert orch._update_pause_holder == "auto_update"
-        assert orch._restart_gate_hold is None
-
-    async def test_an_apply_that_queues_behind_the_gate_defers(self):
-        """The apply waited for the lock while the gate paused and answered idle."""
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        orch._mandatory_update_deferred_at = None
-        orch._mandatory_update_deferred_key = None
-        real_pause = sessions.pause_turn_admission_for_update
-        verdicts = []
-
-        async def _gate_wins_the_lock():
-            sessions.pause_turn_admission_for_update = real_pause
-            verdicts.append(await orch._restart_gate_when_idle())
-            return await real_pause()
-
-        sessions.pause_turn_admission_for_update = _gate_wins_the_lock
-
-        assert await orch._prepare_auto_update_apply(mandatory=False) is False
-
-        assert verdicts == [(True, 0, 0)]
-        assert orch._update_pause_holder == "restart_gate"
-        assert sessions.resumed == 0
-        orch._restart_gate_hold.cancel()
-        await asyncio.gather(orch._restart_gate_hold, return_exceptions=True)
-
-    async def test_an_update_apply_runs_once_the_hold_is_over(self):
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        orch._mandatory_update_deferred_at = None
-        orch._mandatory_update_deferred_key = None
-        orch._RESTART_GATE_HOLD_SECS = 0.0
-        await orch._restart_gate_when_idle()
-        await orch._restart_gate_hold
-
-        assert await orch._prepare_auto_update_apply(mandatory=False) is True
-
-    async def test_a_pause_someone_else_holds_is_busy_and_untouched(self):
-        sessions = _Sessions(closed=True)
-        orch = _orchestrator((0, 1), sessions)
-
-        assert await orch._restart_gate_when_idle() == (False, 0, 1)
-
-        assert (sessions.paused, sessions.resumed) == (0, 0)
-        assert sessions.admission_closed is True
-
-    async def test_a_stop_under_way_is_busy(self):
-        sessions = _Sessions()
-        orch = _orchestrator((0, 0), sessions)
-        gateway.shutdown_event.set()
-
-        assert await orch._restart_gate_when_idle() == (False, 0, 0)
-        assert sessions.paused == 0
-
-
-class _RealAdmission:
-    """``SessionManager``'s own update pause and resume, on just the state they use.
-
-    The fake above counts calls; this one keeps the real re-entrant semantics,
-    so a test can tell whether one resume reopens a pause taken twice.
-    """
-
-    pause_turn_admission_for_update = _claims.pause_turn_admission_for_update
-    resume_turn_admission_after_update = _claims.resume_turn_admission_after_update
-
-    def __init__(self) -> None:
-        self._lock = asyncio.Lock()
-        self._closing = False
-        self._update_pause_owned = False
-        self.update_restart_fenced = False
-
-    @property
-    def admission_closed(self) -> bool:
-        return self._closing
-
-
-def _apply_ready(orch) -> None:
-    orch._mandatory_update_deferred_at = None
-    orch._mandatory_update_deferred_key = None
-    orch._update_apply_deferred = False
-    orch._update_pause_holder = None
-    orch.dashboard_state = None
-
-
-@pytest.mark.asyncio
-class TestSharedPause:
-    """The idle gate and an automatic apply share one pause (``_update_pause_holder``)."""
-
-    async def test_one_resume_reopens_a_pause_taken_twice(self):
-        sessions = _RealAdmission()
-
-        assert await sessions.pause_turn_admission_for_update() is True
-        assert await sessions.pause_turn_admission_for_update() is True
-        assert await sessions.resume_turn_admission_after_update() is True
-
-        assert sessions.admission_closed is False
-        # A second resume has nothing left to release.
-        assert await sessions.resume_turn_admission_after_update() is False
-
-    async def test_a_deferred_apply_then_an_idle_gate_wait_leaves_admission_open(self):
-        sessions = _RealAdmission()
-        counts = [(1, 2)]
-        orch = _orchestrator((0, 0), sessions)
-        orch._in_flight_work_counts = lambda: counts[0]
-        orch._RESTART_GATE_HOLD_SECS = 0.0
-        _apply_ready(orch)
-
-        # A mandatory apply defers for the running work, and the gate asks while
-        # it is still running: both release the pause they took.
-        assert await orch._prepare_auto_update_apply(mandatory=True) is False
-        assert orch._update_apply_deferred is True
-        assert sessions.admission_closed is False
-        assert await orch._restart_gate_when_idle() == (False, 1, 2)
-        assert sessions.admission_closed is False
-        # The work ends; the gate answers idle, and no restart comes.
-        counts[0] = (0, 0)
-        assert await orch._restart_gate_when_idle() == (True, 0, 0)
-        assert sessions.admission_closed is True
-        await orch._restart_gate_hold
-
-        assert sessions.admission_closed is False
-        assert sessions._update_pause_owned is False
-        assert orch._update_pause_holder is None
-
-    @pytest.mark.parametrize("gate_counts", [(1, 0), (0, 0)])
-    async def test_a_gate_pause_queued_inside_a_deferring_apply(self, gate_counts):
-        """The gate's re-entrant pause lands between the apply's busy census and its resume.
-
-        The lock is FIFO: the apply's pause, then the gate's (which read admission
-        open before the apply took it), then the apply's resume. The pause is
-        still the apply's when the gate's returns, so the gate answers busy and
-        leaves it, and the apply's one resume reopens admission.
-        """
-        sessions = _RealAdmission()
-        census = iter([(1, 0), gate_counts])
-        orch = _orchestrator((0, 0), sessions)
-        orch._in_flight_work_counts = lambda: next(census)
-        _apply_ready(orch)
-
-        await sessions._lock.acquire()
-        apply = asyncio.create_task(orch._prepare_auto_update_apply(mandatory=True))
-        await asyncio.sleep(0)
-        gate = asyncio.create_task(orch._restart_gate_when_idle())
-        await asyncio.sleep(0)
-        sessions._lock.release()
-        deferred, verdict = await asyncio.gather(apply, gate)
-
-        assert deferred is False
-        assert verdict == (False, *gate_counts)
-        assert orch._restart_gate_hold is None
-        assert sessions.admission_closed is False
-        assert sessions._update_pause_owned is False
-        assert orch._update_pause_holder is None
-
-    async def test_a_gate_pause_queued_inside_another_gate_asks_resume_is_busy(self):
-        """Two overlapping asks: the first is busy, the work ends before the second counts."""
-        sessions = _RealAdmission()
-        census = iter([(1, 0), (0, 0)])
-        orch = _orchestrator((0, 0), sessions)
-        orch._in_flight_work_counts = lambda: next(census)
-        _apply_ready(orch)
-
-        await sessions._lock.acquire()
-        first = asyncio.create_task(orch._restart_gate_when_idle())
-        await asyncio.sleep(0)
-        second = asyncio.create_task(orch._restart_gate_when_idle())
-        await asyncio.sleep(0)
-        sessions._lock.release()
-        verdicts = await asyncio.gather(first, second)
-
-        # The second must not answer idle on a pause the first is reopening.
-        assert verdicts == [(False, 1, 0), (False, 0, 0)]
-        assert orch._restart_gate_hold is None
-        assert sessions.admission_closed is False
-        assert orch._update_pause_holder is None
-
-    async def test_an_apply_pause_queued_inside_a_busy_gate_answer_defers(self):
-        """The mirror: the apply's pause lands between the gate's busy census and its resume."""
-        sessions = _RealAdmission()
-        census = iter([(0, 1), (0, 0)])
-        orch = _orchestrator((0, 0), sessions)
-        orch._in_flight_work_counts = lambda: next(census)
-        _apply_ready(orch)
-
-        await sessions._lock.acquire()
-        gate = asyncio.create_task(orch._restart_gate_when_idle())
-        await asyncio.sleep(0)
-        apply = asyncio.create_task(orch._prepare_auto_update_apply(mandatory=False))
-        await asyncio.sleep(0)
-        sessions._lock.release()
-        verdict, ran = await asyncio.gather(gate, apply)
-
-        # Not admitted to run while the gate's resume reopens admission under it.
-        assert verdict == (False, 0, 1)
-        assert ran is False and orch._update_apply_deferred is True
-        assert sessions.admission_closed is False
-        assert sessions._update_pause_owned is False
-        assert orch._update_pause_holder is None
+def _census(**counts) -> quiescence.Quiescence:
+    return quiescence.Quiescence(**counts)
 
 
 def _request(
-    gate, *, remote: str = "127.0.0.1", internal: bool = True, body: object = None
+    probe, *, remote: str = "127.0.0.1", internal: bool = True, body: object = None
 ) -> MagicMock:
     req = MagicMock()
     req.remote = remote
@@ -405,7 +45,7 @@ def _request(
     req.json = AsyncMock(return_value=body)
     # A bare MagicMock.get is truthy and would pass the auth-mark check vacuously.
     req.get = ({"internal_auth": True} if internal else {"user": "member"}).get
-    req.app = {"state": SimpleNamespace(_restart_idle_gate=gate)}
+    req.app = {"state": SimpleNamespace(_quiescence_probe=probe)}
     return req
 
 
@@ -417,29 +57,90 @@ def _no_identity_ask() -> str:
 
 @pytest.mark.asyncio
 class TestRoute:
-    @pytest.mark.parametrize("managed", [True, False])
-    async def test_answers_the_gates_verdict(self, monkeypatch, managed):
-        async def _gate():
-            return False, 1, 2
+    """The route READS the census: it pauses nothing, holds nothing and restarts nothing."""
 
-        monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: managed)
-        monkeypatch.setattr(restart_gate, "service_identity", _no_identity_ask)
+    async def test_an_idle_gateway_answers_idle_and_pauses_nothing(self):
+        probe = MagicMock(return_value=_census())
 
-        resp = await restart_gate.api_restart_when_idle(_request(_gate))
+        resp = await restart_gate.api_restart_when_idle(_request(probe))
 
         assert resp.status == 200
-        assert json.loads(resp.body) == {
-            "idle": False,
-            "turns": 1,
-            "background": 2,
-            "service_managed": managed,
-        }
+        body = json.loads(resp.body)
+        assert (body["idle"], body["turns"], body["background"]) == (True, 0, 0)
+        probe.assert_called_once_with(quiet_window_secs=quiescence.QUIET_WINDOW_SECS)
 
-    async def test_a_service_only_ask_is_answered_without_the_gate_off_the_service(
+    async def test_a_busy_gateway_answers_the_counts_with_queued_work_folded_in(self):
+        probe = MagicMock(
+            return_value=_census(turns=2, background=1, queued_messages=3, pending_approvals=1)
+        )
+
+        resp = await restart_gate.api_restart_when_idle(_request(probe))
+
+        body = json.loads(resp.body)
+        assert (body["idle"], body["turns"], body["background"]) == (False, 2, 5)
+
+    async def test_a_commit_ask_takes_the_restart_admission_unforced(self, monkeypatch):
+        probe = MagicMock(return_value=_census())
+        admit = AsyncMock(return_value=restart_admission.RestartAdmission(True, "", _census()))
+        req = _request(probe, body={"commit": True})
+        req.app["state"]._restart_admission = admit
+        req.app["state"]._restart_release = AsyncMock()
+        try:
+            resp = await restart_gate.api_restart_when_idle(req)
+
+            assert json.loads(resp.body)["idle"] is True
+            admit.assert_awaited_once_with(force=False)
+            probe.assert_not_called()
+            # The hold it armed lets go on release, and only then.
+            released = await restart_gate.api_restart_when_idle(
+                _request(probe, body={"release": True})
+            )
+            assert json.loads(released.body)["released"] is False
+            req.app["state"]._restart_release.assert_not_awaited()
+            req2 = _request(probe, body={"release": True})
+            req2.app["state"] = req.app["state"]
+            released = await restart_gate.api_restart_when_idle(req2)
+            assert json.loads(released.body)["released"] is True
+            req.app["state"]._restart_release.assert_awaited_once()
+        finally:
+            restart_gate._cancel_commit_hold(req.app["state"])
+
+    async def test_a_commit_ask_refused_for_work_answers_busy_with_the_counts(self):
+        probe = MagicMock(return_value=_census())
+        census = _census(turns=2, background=1)
+        admit = AsyncMock(
+            return_value=restart_admission.RestartAdmission(
+                False, restart_admission.REASON_BUSY, census
+            )
+        )
+        req = _request(probe, body={"commit": True})
+        req.app["state"]._restart_admission = admit
+
+        resp = await restart_gate.api_restart_when_idle(req)
+
+        body = json.loads(resp.body)
+        assert (body["idle"], body["turns"], body["background"]) == (False, 2, 1)
+        assert getattr(req.app["state"], "_restart_commit_hold", None) is None
+
+    async def test_a_commit_ask_without_an_admission_seam_is_503(self):
+        probe = MagicMock(return_value=_census())
+
+        resp = await restart_gate.api_restart_when_idle(_request(probe, body={"commit": True}))
+
+        assert resp.status == 503
+
+    async def test_a_chat_typed_into_recently_is_not_idle(self):
+        probe = MagicMock(return_value=_census(since_input_secs=10.0))
+
+        resp = await restart_gate.api_restart_when_idle(_request(probe))
+
+        assert json.loads(resp.body)["idle"] is False
+
+    async def test_a_service_only_ask_is_answered_without_the_census_off_the_service(
         self, monkeypatch
     ):
-        async def _gate():
-            raise AssertionError("no admission pause for a restart that goes elsewhere")
+        def _gate(**_kw):
+            raise AssertionError("no census for a restart that goes elsewhere")
 
         monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: False)
         monkeypatch.setattr(restart_gate, "service_identity", lambda: "other")
@@ -457,87 +158,21 @@ class TestRoute:
             "service_identity": "other",
         }
 
-    async def test_a_service_only_ask_reaches_the_gate_on_the_service(self, monkeypatch):
-        async def _gate():
-            return True, 0, 0
-
-        monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: True)
-        # The marker answers alone: the service manager is not asked.
-        monkeypatch.setattr(restart_gate, "service_identity", _no_identity_ask)
-
-        resp = await restart_gate.api_restart_when_idle(
-            _request(_gate, body={"service_managed_only": True})
-        )
-
-        assert json.loads(resp.body) == {
-            "idle": True,
-            "turns": 0,
-            "background": 0,
-            "service_managed": True,
-        }
-
-    async def test_a_legacy_unit_whose_main_pid_is_this_gateway_counts_as_the_service(
-        self, monkeypatch
-    ):
-        """A unit from before the marker existed: its main pid proves it runs this gateway."""
-
-        async def _gate():
-            return True, 0, 0
-
-        monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: False)
-        monkeypatch.setattr(restart_gate, "service_identity", lambda: "service")
-
-        resp = await restart_gate.api_restart_when_idle(
-            _request(_gate, body={"service_managed_only": True})
-        )
-
-        assert json.loads(resp.body) == {
-            "idle": True,
-            "turns": 0,
-            "background": 0,
-            "service_managed": True,
-            "service_identity": "service",
-        }
-
-    async def test_an_unproven_identity_asks_the_gate_and_says_so(self, monkeypatch):
-        """No marker and no answer from the service manager is not proof of another gateway."""
-        asked: list[bool] = []
-
-        async def _gate():
-            asked.append(True)
-            return True, 0, 0
-
-        monkeypatch.setattr(restart_gate, "launched_as_managed_service", lambda: False)
-        monkeypatch.setattr(restart_gate, "service_identity", lambda: "unknown")
-
-        resp = await restart_gate.api_restart_when_idle(
-            _request(_gate, body={"service_managed_only": True})
-        )
-
-        assert asked == [True]
-        assert json.loads(resp.body) == {
-            "idle": True,
-            "turns": 0,
-            "background": 0,
-            "service_managed": False,
-            "service_identity": "unknown",
-        }
-
     @pytest.mark.parametrize(
         "body", [[], {"service_managed_only": 1}, {"other": True}, {"service_managed_only": "yes"}]
     )
-    async def test_a_malformed_body_is_400_before_the_gate(self, body):
-        async def _gate():
-            raise AssertionError("the gate must not run for a malformed body")
+    async def test_a_malformed_body_is_400_before_the_census(self, body):
+        def _gate(**_kw):
+            raise AssertionError("the census must not be read for a malformed body")
 
         resp = await restart_gate.api_restart_when_idle(_request(_gate, body=body))
 
         assert resp.status == 400
         assert json.loads(resp.body)["code"] == "invalid_body"
 
-    async def test_a_caller_off_the_host_is_refused_before_the_gate(self):
-        async def _gate():
-            raise AssertionError("the gate must not run for a remote caller")
+    async def test_a_caller_off_the_host_is_refused_before_the_census(self):
+        def _gate(**_kw):
+            raise AssertionError("the census must not be read for a remote caller")
 
         resp = await restart_gate.api_restart_when_idle(
             _request(_gate, remote="10.0.0.9", internal=False)
@@ -547,8 +182,8 @@ class TestRoute:
         assert json.loads(resp.body)["code"] == "restart_gate_not_local"
 
     async def test_a_loopback_cookie_caller_without_the_secret_is_refused(self):
-        async def _gate():
-            raise AssertionError("the gate must not run without the internal secret")
+        def _gate(**_kw):
+            raise AssertionError("the census must not be read without the internal secret")
 
         resp = await restart_gate.api_restart_when_idle(_request(_gate, internal=False))
 
@@ -560,6 +195,46 @@ class TestRoute:
 
         assert resp.status == 503
         assert json.loads(resp.body)["code"] == "restart_gate_unavailable"
+
+
+class _Reservation:
+    def release(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_an_envelope_that_is_not_a_person_typing_does_not_refill_the_typing_window():
+    """Slack admits every raw envelope (reactions, bot traffic) before knowing the sender."""
+    from kiro_crew.messaging.dispatch_admission import admit_inbound_callback
+
+    sessions = SimpleNamespace(reserve_inbound_callback=_Reservation)
+
+    assert await admit_inbound_callback(
+        sessions, channel_type="slack", route=None, human_input=False
+    )
+    ledger = quiescence._ledger(sessions, create=False)
+    assert ledger is None or ledger.last_input_at is None
+
+    assert await admit_inbound_callback(sessions, channel_type="slack", route=None)
+    ledger = quiescence._ledger(sessions, create=False)
+    assert ledger is not None and ledger.last_input_at is not None
+
+
+def test_the_slack_socket_listener_admits_envelopes_without_counting_them_as_typing():
+    import ast
+    import inspect
+
+    from kiro_crew.slack import events
+
+    calls = [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(events)))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "admit_inbound_callback"
+    ]
+    assert calls
+    for call in calls:
+        flag = {k.arg: k.value for k in call.keywords}.get("human_input")
+        assert isinstance(flag, ast.Constant) and flag.value is False
 
 
 def test_the_route_is_a_strict_internal_path():
@@ -590,9 +265,18 @@ def cli(monkeypatch):
     monkeypatch.setattr(idle_cli, "resolve_client_port", lambda port: port or 5476)
     asks: list[bool] = []
 
-    def _ask(port, *, service_only=False):
+    commits: list[bool] = []
+    releases: list[int] = []
+
+    def _ask(port, *, service_only=False, commit=False, release=False):
+        if release:
+            releases.append(port)
+            return idle_cli._Verdict("busy")
         asks.append(service_only)
-        return answers.pop(0)
+        commits.append(commit)
+        # The last scripted answer repeats: an idle answer is asked a second time
+        # before the restart, and most tests script one.
+        return answers.pop(0) if len(answers) > 1 else answers[0]
 
     monkeypatch.setattr(idle_cli, "_ask_gate", _ask)
     # No probe of the host's real service manager from a unit test.
@@ -601,12 +285,95 @@ def cli(monkeypatch):
     monkeypatch.setattr(service_controller, "service_alias_holder", lambda: None)
     monkeypatch.setattr(cli_server_stop, "desktop_app_supervisor", lambda *a, **k: None)
     monkeypatch.setattr(cli_server, "_restart", lambda port: restarts.append(port))
-    return SimpleNamespace(clock=clock, answers=answers, restarts=restarts, asks=asks)
+    return SimpleNamespace(
+        clock=clock,
+        answers=answers,
+        restarts=restarts,
+        asks=asks,
+        commits=commits,
+        releases=releases,
+    )
 
 
 class TestCli:
     def test_waits_while_busy_and_restarts_once_idle(self, cli):
         cli.answers.extend([idle_cli._Verdict("busy", 1, 0), idle_cli._Verdict("idle")])
+
+        idle_cli._restart_when_idle(None)
+
+        assert cli.restarts == [None]
+        assert cli.clock.sleeps == [idle_cli.POLL_SECS]
+
+    def test_a_turn_admitted_after_the_idle_answer_is_not_restarted_over(self, cli):
+        """The census is a snapshot: the idle answer is asked again before the restart."""
+        cli.answers.extend([idle_cli._Verdict("idle"), idle_cli._Verdict("busy", 1, 0)])
+
+        with pytest.raises(SystemExit) as exc:
+            idle_cli._restart_when_idle(None, max_wait_secs=0)
+
+        assert exc.value.code == idle_cli.EXIT_BUSY
+        assert cli.restarts == []
+        assert len(cli.asks) == 2
+
+    def test_only_the_confirming_ask_takes_the_pause_and_fence(self, cli):
+        cli.answers.append(idle_cli._Verdict("idle"))
+
+        idle_cli._restart_when_idle(None, max_wait_secs=0)
+
+        assert cli.commits == [False, True]
+        assert cli.releases == []
+
+    def test_a_legacy_gateway_rejecting_the_commit_ask_falls_back_to_one_step(
+        self, cli, monkeypatch
+    ):
+        """A gateway older than the two-step check answers 400 to the committing ask."""
+        cli.answers.append(idle_cli._Verdict("idle"))
+        inner = idle_cli._ask_gate
+
+        def _legacy(port, *, service_only=False, commit=False, release=False):
+            if commit:
+                raise idle_cli._CommitUnsupported()
+            return inner(port, service_only=service_only, commit=commit, release=release)
+
+        monkeypatch.setattr(idle_cli, "_ask_gate", _legacy)
+
+        idle_cli._restart_when_idle(None, max_wait_secs=0)
+
+        assert cli.restarts == [None]
+        # Whatever the ask may have taken is released, and a restart that then
+        # succeeds is not released again.
+        assert cli.releases == [5476]
+
+    def test_a_restart_that_fails_after_the_commit_reopens_admission(self, cli, monkeypatch):
+        cli.answers.append(idle_cli._Verdict("idle"))
+
+        def _refused(_port):
+            raise SystemExit(1)
+
+        monkeypatch.setattr(cli_server, "_restart", _refused)
+
+        with pytest.raises(SystemExit):
+            idle_cli._restart_when_idle(7000, max_wait_secs=0)
+
+        assert cli.releases == [7000]
+
+    def test_a_restart_that_succeeds_does_not_release(self, cli, monkeypatch):
+        cli.answers.append(idle_cli._Verdict("idle"))
+
+        def _done(_port):
+            raise SystemExit(0)
+
+        monkeypatch.setattr(cli_server, "_restart", _done)
+
+        with pytest.raises(SystemExit):
+            idle_cli._restart_when_idle(7000, max_wait_secs=0)
+
+        assert cli.releases == []
+
+    def test_a_turn_admitted_after_the_idle_answer_is_waited_on(self, cli):
+        cli.answers.extend(
+            [idle_cli._Verdict("idle"), idle_cli._Verdict("busy", 1, 0), idle_cli._Verdict("idle")]
+        )
 
         idle_cli._restart_when_idle(None)
 
@@ -713,7 +480,7 @@ class TestCli:
         idle_cli._restart_when_idle(None)
 
         assert cli.restarts == [None]
-        assert cli.asks == [True]
+        assert cli.asks == [True, True]
 
     def test_a_desktop_app_gateway_is_refused_before_the_gate_pauses_turns(
         self, cli, monkeypatch, capsys
@@ -764,7 +531,7 @@ class TestCli:
 
         idle_cli._restart_when_idle(None)
 
-        assert cli.asks == [False]
+        assert cli.asks == [False, False]
 
     def test_an_explicit_port_needs_no_service_proof(self, cli, monkeypatch):
         monkeypatch.setattr(idle_cli, "_service_active", lambda: True)
@@ -854,12 +621,6 @@ class TestCli:
         assert exc.value.code == idle_cli.EXIT_GATE_REFUSED
         assert cli.restarts == []
 
-    def test_the_default_wait_is_the_gateways_mandatory_deferral_ceiling(self):
-        assert (
-            idle_cli.DEFAULT_MAX_WAIT_SECS
-            == gateway.GatewayOrchestrator._MANDATORY_UPDATE_MAX_DEFER_SECS
-        )
-
 
 class _Resp(io.BytesIO):
     def __enter__(self):
@@ -919,6 +680,21 @@ class TestAskGate:
     def test_an_older_gateway_is_unsupported(self, monkeypatch, status):
         self._answer(monkeypatch, _http_error(status, {"error": "Token required"}))
         assert idle_cli._ask_gate(5476).state == "unsupported"
+
+    @pytest.mark.parametrize("status", [400, 404])
+    def test_the_commit_ask_rejected_by_a_legacy_gateway_is_commit_unsupported(
+        self, monkeypatch, status
+    ):
+        sent: list = []
+        self._answer(monkeypatch, _http_error(status, {"error": "bad body"}), sent)
+        with pytest.raises(idle_cli._CommitUnsupported):
+            idle_cli._ask_gate(5476, commit=True)
+        assert sent == [{"commit": True}]
+
+    def test_a_400_to_the_plain_ask_still_fails(self, monkeypatch):
+        self._answer(monkeypatch, _http_error(400, {"error": "bad body"}))
+        with pytest.raises(idle_cli._GateFailed):
+            idle_cli._ask_gate(5476)
 
     def test_the_gates_own_refusal_fails(self, monkeypatch):
         self._answer(monkeypatch, _http_error(403, {"code": "restart_gate_not_local"}))

@@ -349,26 +349,16 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_drain_update_callback_work",
             "async method",
-            "(self, *, timeout: 'float | None') -> 'bool'",
-        ),
-        (
-            "_prepare_auto_update_apply",
-            "async method",
-            "(self, *, mandatory: 'bool', mandatory_key: 'str' = '') -> 'bool'",
+            "(self, *, timeout: 'float | None', include_turns: 'bool' = True) -> 'bool'",
         ),
         ("_finish_auto_update_apply", "async method", "(self) -> 'None'"),
-        ("_restart_gate_when_idle", "async method", "(self) -> 'tuple[bool, int, int]'"),
-        ("_restart_gate_held", "method", "(self) -> 'bool'"),
-        ("_release_restart_gate_hold", "async method", "(self) -> 'None'"),
         ("_wheel_apply_module", "staticmethod", "() -> 'Any'"),
-        ("_dashboard_policy_applies", "staticmethod", "() -> \"list['asyncio.Task[Any]']\""),
         (
             "_settle_update_work",
             "async method",
             "(self, update_task: \"'asyncio.Task[None] | None'\") -> 'None'",
         ),
         ("_run_update_checks", "async method", "(self) -> 'None'"),
-        ("_retry_pending_update_restart", "async method", "(self) -> 'bool'"),
         ("_check_for_updates", "async method", "(self) -> 'None'"),
         (
             "_auto_update_effect",
@@ -377,24 +367,13 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_publish_provider_update_state", "method", "(self, result: 'object') -> 'None'"),
         ("_check_for_updates_via_provider", "async method", "(self, provider: 'object') -> 'None'"),
-        (
-            "_restart_after_update_claimed",
-            "async method",
-            "(self, launcher: 'str | None', exe: 'str | None') -> 'None'",
-        ),
         ("_check_for_updates_legacy", "async method", "(self) -> 'None'"),
-        (
-            "_restart_after_update_body",
-            "async method",
-            "(self, respawn: 'Callable[[], str]') -> 'None'",
-        ),
     ),
     "update_apply": (
-        ("_auto_apply_update", "async method", "(self, *, mandatory: 'bool' = False) -> 'None'"),
         (
             "_auto_apply_wheel_update",
             "async method",
-            "(self, channel: 'str', version: 'str', *, mandatory: 'bool' = False, mandatory_key: 'str' = '') -> 'None'",
+            "(self, channel: 'str', version: 'str', *, mandatory: 'bool' = False) -> 'None'",
         ),
         (
             "_notice_wheel_update_once",
@@ -1321,10 +1300,8 @@ _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
     "session_store_for_turn": frozenset(
         {"gateway", "heartbeat_turns", "nudge_channel_fire", "subagent_injection"}
     ),
-    "create_subprocess_": frozenset({"gateway", "install_repair", "update_apply"}),
-    "isolated_python_argv": frozenset({"install_repair", "update_apply"}),
-    "respawn_executable": frozenset({"update_apply", "update_schedule"}),
-    "reexec_python_module": frozenset({"update_schedule"}),
+    "create_subprocess_": frozenset({"gateway", "install_repair"}),
+    "isolated_python_argv": frozenset({"install_repair"}),
     "_running_script_ids.add": frozenset({"cron_exec"}),
     "caused_by_this_session": frozenset({"runtime_charge"}),
     "note_shared_death": frozenset({"runtime_charge"}),

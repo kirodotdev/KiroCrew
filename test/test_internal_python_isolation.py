@@ -42,9 +42,9 @@ _INTERNAL_PYTHON_SPAWN_SITES = (
     ("mcp_gateway/rewriter_spec.py", "_build_stub_entry"),
     ("pod/unit.py", "_kirocrew_argv"),
     ("slack/gateway_runtime/install_repair.py", "_check_missing_deps"),
-    ("slack/gateway_runtime/update_apply.py", "_auto_apply_update"),
     ("testing/harness.py", "_launch_gateway"),
     ("testing/harness.py", "spawn_feature_gateway"),
+    ("update_boot_apply.py", "_run_apply_child"),
 )
 
 

@@ -120,6 +120,11 @@ def status_snapshot(
     update_auto_effect: str = "unknown",
     update_auto_manual_only: bool = False,
     update_bundled_by_app: bool = False,
+    update_restart_ready: bool = False,
+    update_restart_ready_version: str = "",
+    update_restart_ready_reason: str = "",
+    update_armed_version: str | None = None,
+    pending_apply_error: str | None = None,
     version_display: str = "",
     bundle_id: str = "",
     background_turns: dict[str, int] | None = None,
@@ -231,6 +236,16 @@ def status_snapshot(
         # Whether the desktop app bundles this gateway; see
         # ``update_capability.bundled_by_desktop_app``.
         "update_bundled_by_app": update_bundled_by_app,
+        # An update waits for a restart a person chooses: staged beside the running
+        # install, or the served bundle gone. The unattended paths never restart a
+        # running gateway, so this is how the dashboard learns there is one to take.
+        "update_restart_ready": update_restart_ready,
+        "update_restart_ready_version": update_restart_ready_version,
+        "update_restart_ready_reason": update_restart_ready_reason,
+        # Armed for the next start (a click on Update), and how the last boot-time
+        # apply ended: ``kiro_crew.update_next_start``.
+        "update_armed_version": update_armed_version,
+        "pending_apply_error": pending_apply_error,
         "update_last_checked_at": update_last_checked_at,
         "update_check_interval_secs": update_check_interval_secs,
         # Mandatory-update verdict (enterprise governance pin OR the release

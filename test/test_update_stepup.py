@@ -1190,11 +1190,11 @@ class TestApproveEndpoint:
 
         restarted: list[object] = []
 
-        async def fake_restart(state: object, *, resolver: object) -> bool:
-            assert resolver is wheel_engine.respawn_executable
+        async def fake_restart(state: object, **kwargs: object) -> bool:
             restarted.append(state)
             return True
 
+        from kiro_crew import update_restart_ready
         from kiro_crew.platform import wheel_apply, wheel_engine
 
         monkeypatch.setattr(wheel_engine, "apply_wheel_update", fake_apply)
@@ -1211,7 +1211,11 @@ class TestApproveEndpoint:
             await task
         assert len(applied) == 1
         assert applied[0]["expected_version"] == "9.9.9"
-        assert restarted, "a promoted update must restart the gateway"
+        assert restarted == [], "an approved update never restarts the running gateway"
+        note = update_restart_ready.current()
+        assert note is not None
+        assert (note.reason, note.version) == (update_restart_ready.REASON_STAGED, "9.9.9")
+        req.app["state"].push_refresh.assert_any_call("update_available")
         # Single-use: the nonce file is gone.
         assert update_stepup.read_pending() is None
         _assert_update_lock_free()
@@ -1457,7 +1461,7 @@ class TestApproveEndpoint:
         for task in list(req.app["state"]._background_tasks):
             await task
         assert audited == ["granted", "success"]
-        restart.assert_awaited_once()
+        restart.assert_not_awaited()
         other.cancel()
         _assert_update_lock_free()
 

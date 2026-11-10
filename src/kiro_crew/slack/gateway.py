@@ -147,7 +147,6 @@ from kiro_crew.cron import (
     agent_sequence_dispatches,
     build_cron_session_context,
     effective_wake_budget,
-    stop_cron_before_restart,
 )
 from kiro_crew.cron_script import delivery_fingerprint, run_command_sandboxed, run_script_sandboxed
 from kiro_crew.cron_service.fields import (  # noqa: F401
@@ -257,7 +256,7 @@ from kiro_crew.executors import (
     subprocess_executor,
 )
 from kiro_crew.frontend import build_frontend_async
-from kiro_crew.gateway_restart import resolve_restart_launcher, supervisor_reentry
+from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.gateway_shutdown_budget import (
     GRACEFUL_SHUTDOWN_SECS,
     PERSISTENCE_DRAIN_GRACE_SECS,
@@ -375,7 +374,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.parent_turns import ledger_of, note_turn_landed, settle_turn
-from kiro_crew.platform import boot_platform, release_apply
+from kiro_crew.platform import boot_platform
 from kiro_crew.platform.bootstrap import apply_kas_cli_floor
 from kiro_crew.platform.context import (
     PlatformCompositionError,
@@ -404,23 +403,17 @@ from kiro_crew.platform.update_capability import (
     AutoUpdateEffect,
     auto_update_effect,
 )
-from kiro_crew.platform.update_fetch import fetch_and_pin_upstream
 from kiro_crew.platform.update_governance import (
-    commits_ahead,
     git_command_env,
-    hidden_worktree_edits,
     is_primary_branch,
     loggable_path,
-    repo_exec_config_reason,
     resolve_remote_url,
-    tracks_upstream,
     update_blocked_reason,
 )
 from kiro_crew.pre_exec_stops import run_pre_exec_stops
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER
-from kiro_crew.restart_session_close import close_sessions_for_restart
-from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
+from kiro_crew.safety_override import safety_override
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     create_subprocess_limited,
@@ -437,7 +430,6 @@ from kiro_crew.security import (
 )
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.sel import flush_audit_queue, flush_audit_queue_before_hard_exit, sel
-from kiro_crew.service.common import restart_command_hint
 from kiro_crew.session import (
     HEARTBEAT_KEY,
     SessionBusyError,
@@ -814,14 +806,7 @@ class GatewayOrchestrator:
     _update_check_task: "asyncio.Task[None] | None"
     _profile_watch_task: "asyncio.Task[None] | None"
     _update_apply_deferred: bool
-    _restart_gate_hold: "asyncio.Task[None] | None"
     _update_pause_holder: str | None
-    _pending_update_respawn: Callable[[], str] | None
-    _pending_update_mandatory: bool
-    _pending_update_mandatory_key: str
-    _pending_update_version: str
-    _mandatory_update_deferred_at: float | None
-    _mandatory_update_deferred_key: str | None
     _wheel_update_noticed: set[str]
     _mcp_gateway_manager: GatewayManager | None
     # A manager whose start failed, held while ``_mcp_gateway_start_retry``
@@ -1126,11 +1111,6 @@ class GatewayOrchestrator:
     # Auto-update
     # ------------------------------------------------------------------
 
-    @update_ownership.owning(update_ownership.Step.RESTART)
-    async def _restart_after_update(self, respawn: Callable[[], str]) -> None:
-        """Restart into an applied update, owning the restart step while it runs."""
-        await GatewayOrchestrator._restart_after_update_body(self, respawn)
-
     # gateway_runtime/install_repair.py
     _DEP_INSTALL_TIMEOUT_SECS = _install._DEP_INSTALL_TIMEOUT_SECS
     _KIRO_CLI_VERSION_TIMEOUT_SECS = _install._KIRO_CLI_VERSION_TIMEOUT_SECS
@@ -1147,28 +1127,17 @@ class GatewayOrchestrator:
     _live_update_handler_tasks = _upd_sched._live_update_handler_tasks
     _drain_update_callback_work = _upd_sched._drain_update_callback_work
     _UPDATE_BUSY_RETRY_SECS = _upd_sched._UPDATE_BUSY_RETRY_SECS
-    _MANDATORY_UPDATE_MAX_DEFER_SECS = _upd_sched._MANDATORY_UPDATE_MAX_DEFER_SECS
     _UPDATE_DRAIN_TIMEOUT_SECS = _upd_sched._UPDATE_DRAIN_TIMEOUT_SECS
-    _prepare_auto_update_apply = _upd_sched._prepare_auto_update_apply
     _finish_auto_update_apply = _upd_sched._finish_auto_update_apply
-    _RESTART_GATE_HOLD_SECS = _upd_sched._RESTART_GATE_HOLD_SECS
-    _restart_gate_when_idle = _upd_sched._restart_gate_when_idle
-    _restart_gate_held = _upd_sched._restart_gate_held
-    _release_restart_gate_hold = _upd_sched._release_restart_gate_hold
     _wheel_apply_module = staticmethod(_upd_sched._wheel_apply_module)
-    _dashboard_policy_applies = staticmethod(_upd_sched._dashboard_policy_applies)
     _settle_update_work = _upd_sched._settle_update_work
     _run_update_checks = _upd_sched._run_update_checks
-    _retry_pending_update_restart = _upd_sched._retry_pending_update_restart
     _check_for_updates = _upd_sched._check_for_updates
     _auto_update_effect = _upd_sched._auto_update_effect
     _publish_provider_update_state = _upd_sched._publish_provider_update_state
     _check_for_updates_via_provider = _upd_sched._check_for_updates_via_provider
-    _restart_after_update_claimed = _upd_sched._restart_after_update_claimed
     _check_for_updates_legacy = _upd_sched._check_for_updates_legacy
-    _restart_after_update_body = _upd_sched._restart_after_update_body
     # gateway_runtime/update_apply.py
-    _auto_apply_update = _upd_apply._auto_apply_update
     _auto_apply_wheel_update = _upd_apply._auto_apply_wheel_update
     _notice_wheel_update_once = _upd_apply._notice_wheel_update_once
 

@@ -11,6 +11,7 @@ import { useIsPolicyGoverned } from '../utils/updateSwitches'
 import { Download, X, Copy, Check } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
+import { WorkConfirmDeclined } from '../utils/workInFlight'
 import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
@@ -74,8 +75,9 @@ type Candidate = {
    *  that is only behind its upstream), so the text names no version. */
   sameAsRunning?: boolean
   notes?: string
-  /** Gateway only: which action the primary slot offers. */
-  affordance?: 'apply' | 'arm' | 'command'
+  /** Gateway only: which action the primary slot offers. `restart`: the new version
+   *  is already installed beside the running one, and only a restart is left. */
+  affordance?: 'apply' | 'arm' | 'command' | 'restart'
   command?: string
 }
 
@@ -103,6 +105,16 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   const gwCanArm = useAppSelector(s => s.dashboard.status?.update_can_arm)
   const gwCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
   const gwRequired = useAppSelector(s => s.dashboard.status?.update_required === true)
+  // The unattended paths never restart a running gateway: a staged update waits
+  // for the person's restart, and this is where they take it.
+  const gwRestartReady = useAppSelector(s => s.dashboard.status?.update_restart_ready === true)
+  // The person armed the update: it applies at the next start, never while the
+  // gateway runs. Only their own restart (or quit) brings it in.
+  const gwArmedVersion = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
+  // The last boot-time apply failed and the old version is running.
+  const gwApplyError = useAppSelector(s => s.dashboard.status?.pending_apply_error) || ''
+  // A policy `updates` provider owns this install's update (its own command).
+  const gwManagedByCommand = useAppSelector(s => s.dashboard.status?.update_managed_by === 'command')
   const gwMinVersion = useAppSelector(s => s.dashboard.status?.update_min_version) || ''
   // True when the policy provider governs this bundled install.
   // Read from the main-process-confirmed update-state (useIsPolicyGoverned).
@@ -172,7 +184,8 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
         source: 'gateway', version: gwVersion,
         displayVersion: gwVersionDisplay || gwVersion,
         sameAsRunning: gwVersion === runningVersion,
-        affordance: afford, command: gwCommand,
+        affordance: gwRestartReady || (afford === 'apply' && !!gwArmedVersion) ? 'restart' : afford,
+        command: gwCommand,
       }
     }
   }
@@ -293,24 +306,43 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   }
 
   const gwApply = useMutation({
-    mutationFn: () => api.applyUpdate(),
+    // Update ARMS the update for the next start and restarts nothing; Restart goes
+    // through the client's one work-in-flight confirmation (`api/client/updates.ts`).
+    // The intent is fixed by the click (the mutate variable), never re-read from the
+    // affordance: a status frame that reports the update armed flips the affordance
+    // to 'restart' while the arm's own response is still on its way.
+    mutationFn: (kind: 'arm' | 'restart') => (kind === 'restart' ? api.restartGateway() : api.applyUpdate()),
     // The attempt may already have ended on a terminal step that beat the
     // answer here; re-raising the restarting latch then would hide the
-    // failure that just rendered.
-    onSuccess: () => { if (attemptRef.current) setRestarting(true) },
-    onError: (e: unknown) => {
-      // Same contract as the About panel's apply: a bare network failure is
-      // the gateway restarting out from under the POST — the success path —
-      // and only a real server rejection (ApiError) is worth surfacing. A
-      // rejection means no worker ran, so the attempt is over.
-      if (e instanceof ApiError) {
+    // failure that just rendered. An armed update has nothing more to wait for.
+    onSuccess: (_data, kind) => {
+      if (kind === 'arm') endAttempt()
+      else if (attemptRef.current) setRestarting(true)
+    },
+    onError: (e: unknown, kind) => {
+      // The person declined the "work is running" confirmation: a quiet cancel.
+      if (e instanceof WorkConfirmDeclined) {
         endAttempt()
-        setApplyError(e.message || i18nT('components.updateFoundModal.update_failed'))
+        return
+      }
+      // A bare network failure is the gateway restarting out from under the
+      // POST (the success path) only for a Restart request. Arming restarts
+      // nothing, so there a transport failure is a plain failure to surface;
+      // a server rejection (ApiError) means no worker ran. Either way the
+      // attempt is over, so Dismiss and retry come back.
+      if (e instanceof ApiError || kind === 'arm') {
+        endAttempt()
+        setApplyError(
+          (e instanceof ApiError && e.message) || i18nT('components.updateFoundModal.update_failed'),
+        )
       } else if (attemptRef.current) {
         setRestarting(true)
       }
     },
   })
+
+  // Take the armed update back: the next start applies nothing.
+  const gwCancelArm = useMutation({ mutationFn: () => api.disarmUpdate() })
 
   // Any dismissal is a snooze, never a plain close: an un-persisted dismiss
   // would re-interrupt on the next reload, and nagging is the one behaviour
@@ -423,10 +455,10 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
       // `downloaded` — the state change also closes this modal by itself.
       getUpdateApi()?.download?.()
       setDismissedVersion(candidate.version)
-    } else if (candidate.affordance === 'apply') {
+    } else if (candidate.affordance === 'apply' || candidate.affordance === 'restart') {
       setApplyError('')
       beginAttempt()
-      gwApply.mutate()
+      gwApply.mutate(candidate.affordance === 'restart' ? 'restart' : 'arm')
     }
   }
 
@@ -573,6 +605,40 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             testId="update-found-persist-error"
           />
           {restarting && <p className="mt-2 text-[12px] text-muted">{i18nT('components.updateFoundModal.updating_and_restarting')}</p>}
+          {candidate.affordance === 'restart' && !restarting && (
+            <p data-testid="update-restart-ready-note" className="mt-2 text-[12px] text-muted">
+              {gwArmedVersion && !gwRestartReady
+                ? i18nT('components.updateFoundModal.update_armed_note')
+                : i18nT('components.updateFoundModal.update_installed_restart_note')}
+              {gwArmedVersion && (
+                <button
+                  type="button"
+                  data-testid="update-cancel-armed"
+                  className="ml-2 underline text-muted hover:text-text bg-transparent border-none p-0 text-[12px] cursor-pointer"
+                  onClick={() => gwCancelArm.mutate()}
+                  disabled={gwCancelArm.isPending}
+                >
+                  {i18nT('components.updateFoundModal.cancel_update')}
+                </button>
+              )}
+            </p>
+          )}
+          <ErrorNotice
+            variant="inline"
+            className="mt-2"
+            message={gwApplyError ? i18nT('components.updateFoundModal.update_apply_failed', { error: gwApplyError }) : null}
+            askAgent={!required}
+            onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+            testId="update-apply-error-note"
+          />
+          <ErrorNotice
+            variant="inline"
+            className="mt-2"
+            message={gwCancelArm.isError ? i18nT('components.updateFoundModal.cancel_update_failed') : null}
+            askAgent={!required}
+            onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+            testId="update-cancel-armed-error"
+          />
           {!required && (
           <p className="mt-2 text-[12px] flex items-center gap-3">
             {/* One full-sentence key, not a prefix + link-text pair: the link
@@ -594,7 +660,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
               onClick={skip}
               disabled={restarting || persist.isPending}
             >
-              {i18nT('components.updateFoundModal.skip_this_version')}
+              {candidate.source === 'gateway' && gwManagedByCommand
+                ? i18nT('components.updateFoundModal.dont_remind_me_about_version', { version: candidate.displayVersion })
+                : i18nT('components.updateFoundModal.skip_this_version')}
             </button>
           </p>
           )}
@@ -634,7 +702,9 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
                   ? i18nT('components.updateFoundModal.download')
                   : restarting || gwApply.isPending
                     ? i18nT('components.updateFoundModal.updating')
-                    : i18nT('components.updateFoundModal.update_now')}
+                    : candidate.affordance === 'restart'
+                      ? i18nT('components.updateFoundModal.restart_to_update')
+                      : i18nT('components.updateFoundModal.update_when_i_restart')}
               </button>
             )}
         </div>

@@ -26,7 +26,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "about.update-the-gateway-automatically",
     "label": "Update the gateway automatically",
     "labelKey": "pages.settings.aboutPanel.automatic_updates",
-    "description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
+    "description": "Updates are downloaded automatically and take effect the next time you restart Kiro Crew. Nothing restarts by itself. When off, it stays on its current version.",
     "tab": "about",
     "type": "toggle",
     "occurrence": 1,

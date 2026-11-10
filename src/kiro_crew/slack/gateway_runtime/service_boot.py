@@ -89,7 +89,6 @@ if TYPE_CHECKING:
         shutdown_event,
         start_dashboard,
         subprocess_executor,
-        supervisor_reentry,
         timezone,
         warm_backend,
         warn_unreadable_tracked_channels,
@@ -717,9 +716,12 @@ async def _init_dashboard(self: GatewayOrchestrator) -> None:
         self.dashboard_state.slack_client = self.slack
     if self.dashboard_state:
         self.dashboard_state.no_crons = self._no_crons  # dashboard mode
-        # ``kirocrew restart --when-idle`` asks this before it restarts.
-        self.dashboard_state._restart_idle_gate = self._restart_gate_when_idle
-        self.dashboard_state._restart_gate_held = self._restart_gate_held
+        # The dashboard restart takes the scheduler's pause, drain and fence, and
+        # ``kirocrew restart --when-idle`` and the restart confirm read the one
+        # quiescence census.
+        from kiro_crew import restart_admission
+
+        restart_admission.wire(self.dashboard_state, self)
     if self.dashboard_state and not self._test_mode:
         # Told once, after the KAS floor answers: a Kiro CLI pick now runs on KAS.
         from kiro_crew import kiro_on_kas_notice
@@ -858,6 +860,15 @@ async def run(self: GatewayOrchestrator) -> None:
         )
         print(f"❌ Cannot run the signing key preflight: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+
+    # An update a person armed applies HERE, at the start, before the listeners bind
+    # and before any session is restored: nothing is serving, so nothing is cut. A
+    # successful apply re-execs and does not return; a failure leaves the old
+    # version running and the error for the dashboard (``pending_apply_error``).
+    # Never at shutdown (decision entry "updates never restart a running gateway").
+    from kiro_crew.update_boot_apply import apply_armed_update_at_boot
+
+    await apply_armed_update_at_boot()
 
     # Clean up orphaned kiro-cli processes from previous runs
     from kiro_crew.session import cleanup_orphaned_sessions
@@ -1553,16 +1564,16 @@ async def run(self: GatewayOrchestrator) -> None:
     _bg_session_task.add_done_callback(self._background_tasks.discard)
 
     # Stale-asset watchdog: detects when an update prunes the running
-    # install's static assets and triggers graceful shutdown so the
-    # supervisor can restart a fresh process. It first drains in-flight
-    # backend turns (count_in_flight) so active work isn't killed
-    # mid-prompt by the restart, and stays up when its supervisor could
-    # not relaunch it (supervisor_reentry).
+    # install's static assets. It never exits the gateway: it keeps serving and
+    # records "update ready, restart to use it" for the dashboard to show.
     _watchdog = asyncio.create_task(
         run_stale_asset_watchdog(
             shutdown_event,
-            count_in_flight=self._count_in_flight_work,
-            reentry_check=supervisor_reentry,
+            on_change=lambda: (
+                self.dashboard_state.push_refresh("update_available")
+                if self.dashboard_state
+                else None
+            ),
         )
     )
     self._background_tasks.add(_watchdog)

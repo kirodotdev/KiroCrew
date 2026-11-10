@@ -1993,14 +1993,13 @@ reported failed. The keys and the command contract are in
 If the `apply_command` installs into a new versioned tree and prunes the old one,
 it deletes the interpreter the running gateway was launched from. The gateway then
 has nothing to re-enter, and it says so rather than trying: the restart is refused
-while every session is still answerable, and on the orchestrator path it is
-deferred. Restore the interpreter and the deferred update finishes on its own.
+while every session is still answerable, and the boot-time apply of an armed
+update (`update_boot_apply`) refuses to exec for the same reason, records
+`pending_apply_error` and starts the version it has.
 When the pruned tree also held the served dashboard bundle, the stale-asset
-watchdog does not wait for that repair: it exits so a supervisor relaunches the
-gateway through its own command, but only when that command can start the
-gateway (`supervisor_reentry`, for example a stable link that points at the new
-tree) and no update chose to stay up instead of restarting. Otherwise it keeps
-the gateway up on its loaded code and logs why
+watchdog does not exit the gateway, because no unattended path restarts a running
+gateway: it keeps serving on its loaded code, logs one CRITICAL line and shows the
+"Update ready" notice so a person restarts it
 ([slack-gateway](../system-specs/modules/slack-gateway.md)).
 
 What it will not do is drain first and find out afterwards. That was the old

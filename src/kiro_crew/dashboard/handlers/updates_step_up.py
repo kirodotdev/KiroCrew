@@ -15,7 +15,7 @@ import time
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.updates_apply import _restart_gateway
+from kiro_crew import update_restart_ready
 from kiro_crew.dashboard.handlers.updates_check import _do_update_check
 from kiro_crew.dashboard.handlers.updates_verdict import (
     _display_local_version,
@@ -488,8 +488,9 @@ async def api_update_approve(request: web.Request) -> web.Response:
     nonce from the data home. On success the apply runs as a background task
     through :func:`kiro_crew.platform.wheel_apply.run_wheel_apply`, the path the
     gateway's unattended apply runs too: shadow build + verify + promote (all
-    off-loop), then the shared gateway restart, with progress on the same SSE
-    feed the git apply uses. A shutdown or an exec restart stops it first.
+    off-loop), then STAGES the promoted tree ("update ready, restart to use it"):
+    it never restarts the gateway. Progress goes on the update SSE feed. A
+    shutdown or an exec restart stops it first.
     """
     if not _loopback_peer(request):
         return web.json_response(
@@ -514,7 +515,6 @@ async def api_update_approve(request: web.Request) -> web.Response:
         check_release_version,
         hold_update_lock,
         release_update_lock,
-        respawn_executable,
     )
 
     # A policy-defined command provider OWNS updates on this host, and its
@@ -691,8 +691,17 @@ async def api_update_approve(request: web.Request) -> web.Response:
                 state.push_update_progress("failed", remedy)
                 state.push_refresh("update_failed")
                 return
-            logger.info("In-app wheel update to v%s promoted; restarting", pending.version)
-            await _restart_gateway(state, resolver=respawn_executable)
+            # Promoted and approved by a person on the host, and STAGED only: a
+            # running gateway is never restarted for an update (decision entry
+            # "updates never restart a running gateway"). The new version starts at
+            # the next stop or restart a person chooses.
+            logger.info(
+                "In-app wheel update to v%s promoted; it starts at the next restart",
+                pending.version,
+            )
+            update_restart_ready.mark(update_restart_ready.REASON_STAGED, version=pending.version)
+            state.push_update_progress("done", f"v{pending.version} installed. Restart to use it.")
+            state.push_refresh("update_available")
             return
         if outcome.status == "cancelled":
             # A deliberate stop (a shutdown, an exec), not a failed install: no

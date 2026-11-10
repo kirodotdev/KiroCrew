@@ -1,7 +1,6 @@
 """Stops that must run before an in-place restart replaces this process image.
 
-Both in-app restarts (the dashboard's ``_restart_gateway`` and the update
-coordinator's ``GatewayOrchestrator._restart_after_update_claimed``) end in
+The in-app restart (the dashboard's ``_restart_gateway``) ends in
 ``os.execv``. The exec skips every aiohttp cleanup hook but keeps the pid, so a
 child process one of those hooks would have stopped still names this process as
 its live parent after the exec, and the new image cannot tell it from its own.

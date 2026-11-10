@@ -193,7 +193,7 @@ describe('changelog modal apply affordance', () => {
       preloadedState: wheelState({ update_can_apply: true }),
     })
 
-    expect(await screen.findByText('Update Now')).toBeTruthy()
+    expect(await screen.findByText('Update when I restart')).toBeTruthy()
     expect(screen.queryByTestId('modal-update-command')).toBeNull()
   })
 
@@ -206,7 +206,7 @@ describe('changelog modal apply affordance', () => {
     })
 
     await waitFor(() => expect(screen.getByTestId('chat-page')).toBeTruthy())
-    expect(screen.queryByText('Update Now')).toBeNull()
+    expect(screen.queryByText('Update when I restart')).toBeNull()
     expect(screen.queryByTestId('modal-update-command')).toBeNull()
   })
 })
