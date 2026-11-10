@@ -30,6 +30,7 @@ from kiro_crew.dashboard.refresh_tokens import (
     generate_refresh_token,
     refresh_cookie_name,
     refresh_token_boot,
+    refresh_token_embed_parent_port,
     refresh_token_owner_minted,
     refresh_token_peer_key,
     refresh_token_requires_peer,
@@ -678,6 +679,12 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     carried_owner_mint = refresh_token_owner_minted(refresh_token)
     if carried_owner_mint:
         _carried_claims["owner_mint"] = "1"
+    # An Instances pane session's parent port, carried for the same reason: the
+    # remote builds its CSP ``frame-ancestors`` from the access cookie's claim,
+    # so a rotated cookie without it blanks the framed pane on its next load.
+    carried_embed_parent_port = refresh_token_embed_parent_port(refresh_token)
+    if carried_embed_parent_port:
+        _carried_claims["embed_parent_port"] = carried_embed_parent_port
     # The key the checks above proved this request satisfies. Taken from the
     # presented credential rather than re-derived from the resolved peer, for the
     # same reason ``carried_boot`` is: the rotated pair then says what the
@@ -708,6 +715,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         require_peer=require_peer,
         peer_key=bound_peer_key,
         owner_mint=carried_owner_mint,
+        embed_parent_port=carried_embed_parent_port,
     )
 
     public_payload = {
