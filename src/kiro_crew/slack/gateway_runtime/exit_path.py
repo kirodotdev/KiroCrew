@@ -10,7 +10,7 @@ Orchestrator fields read: ``_adaptive_controller``, ``_auto_migrate_task``,
 ``_inbound_replay_task``, ``_marker_clear_pending``, ``_marker_write_task``,
 ``_memory_repair_stop``, ``_memory_repair_task``, ``_memory_startup``,
 ``_model_download_task``, ``_profile_watch_task``, ``_sign_in_refresher_task``,
-``_socket_client``, ``_update_check_task``, ``cron_svc``, ``dashboard_state``,
+``_socket_client``, ``_test_mode``, ``_update_check_task``, ``cron_svc``, ``dashboard_state``,
 ``heartbeat_svc``, ``sessions``, ``subagent_mgr``, ``task_runner``.
 Orchestrator fields written: ``_force_exit_claimed`` (by the signal-handler install).
 
@@ -300,9 +300,10 @@ async def _stop_services_and_sessions(
     """The teardown ``_shutdown`` runs once AutoNudge has drained.
 
     Cancelled handlers first, then cron and heartbeat, the MCP broker, the
-    session, channel and dashboard closes, and last the subagent store and
-    memory startup those closes release. Only then is the closed AutoNudge
-    service withdrawn from its process-wide singleton. ``eager_spawns`` are the
+    session, channel and dashboard closes, then the subagent store and memory
+    startup those closes release and the unwinding dashboard turns. Only then is
+    the closed AutoNudge service withdrawn from its process-wide singleton, and
+    last comes one prune of this home's unused skill views. ``eager_spawns`` are the
     speculative session starts ``_shutdown`` stopped before its first await;
     they are awaited here with the session closes.
     """
@@ -389,8 +390,8 @@ async def _stop_services_and_sessions(
 
     # close_all() above ended every ACP session, so a dashboard turn that was
     # mid-reply is now unwinding, and it saves the text its user watched stream
-    # before it ends; the hard exit after this method would beat the save. Last,
-    # so the steps above keep their share of the shutdown deadline.
+    # before it ends; the hard exit after this method would beat the save. After
+    # the closes, so the steps above keep their share of the shutdown deadline.
     await wait_for_unwinding_turns(self.dashboard_state)
     # Keep the closed service reachable until every dashboard handler and
     # connection is gone. A slot close admitted during teardown must reach
@@ -400,6 +401,16 @@ async def _stop_services_and_sessions(
     # both withdraw the singleton only after the same teardown boundary.
     if self.autonudge_svc:
         self.autonudge_svc._unpublish()
+    # Last, as it is best-effort: a runtime whose kill completed released its
+    # skill views, but each release prunes on a daemon thread that the hard exit
+    # can cut, and a data home stopped and then deleted has no next boot to drain
+    # them. One more prune, awaited and bounded by the projection's own lock
+    # ceiling. Skipped in test mode like the boot drain, so the offline E2E gate
+    # never touches the real agents directory.
+    if not getattr(self, "_test_mode", False):
+        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+        await asyncio.to_thread(acp_driver.prune_skill_view_aliases_at_stop)
 
 
 def _write_marker_worker(self: GatewayOrchestrator, run_marker: Any, port: int) -> None:

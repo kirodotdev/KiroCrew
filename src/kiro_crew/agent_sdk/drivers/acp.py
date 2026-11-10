@@ -80,6 +80,7 @@ __all__ = [
     "run_kiro_native_commands",
     "settings_default_model",
     "drain_skill_view_aliases",
+    "prune_skill_view_aliases_at_stop",
     "skill_view_alias_census",
     "skill_view_sidecar_dirs",
     "skill_view_source_agent",
@@ -1321,6 +1322,17 @@ def drain_skill_view_aliases() -> int:
     from kiro_crew.acp.skill_projection import drain_stale_aliases
 
     return drain_stale_aliases()
+
+
+def prune_skill_view_aliases_at_stop() -> int:
+    """One bounded prune of the unused skill-view aliases this data home owns; never raises.
+
+    For a gateway that is stopping, after its sessions ended. Returns how many
+    aliases were removed.
+    """
+    from kiro_crew.acp.skill_projection import prune_stale_aliases_at_stop
+
+    return prune_stale_aliases_at_stop()
 
 
 def skill_view_source_agent(name: str) -> str | None:

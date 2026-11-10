@@ -694,6 +694,25 @@ def test_boot_drain_clears_a_backlog_past_the_per_spawn_cap(native_tree, monkeyp
     assert not any(alias.exists() or meta.exists() for alias, meta in backlog)
 
 
+def test_the_stop_prune_removes_released_views_in_one_pass_and_keeps_a_held_one(
+    native_tree, monkeypatch
+):
+    """A stopping gateway's one awaited prune retires this home's views no projection
+    holds, so a home deleted after it stops leaves none behind."""
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text(
+        json.dumps({"name": "custom", "prompt": "held"}), encoding="utf-8"
+    )
+    held = projection.prepare_native_skill_projection(project)
+    backlog = _released_backlog(agents, project, 3)
+    # The exact count assumes the walk ends on the backlog, not on the clock.
+    _hold_the_prune_clock(monkeypatch)
+
+    assert projection.prune_stale_aliases_at_stop() == 3
+    assert not any(alias.exists() or meta.exists() for alias, meta in backlog)
+    assert _alias_file(agents, held).exists()
+
+
 def test_boot_drain_keeps_aliases_a_live_projection_holds(native_tree, monkeypatch):
     _home, agents, project = native_tree
     (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")

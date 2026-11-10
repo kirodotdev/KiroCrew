@@ -100,6 +100,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         census_projected_aliases,
         census_projection_residue,
         drain_stale_aliases,
+        prune_stale_aliases_at_stop,
     )
     from kiro_crew.acp.skill_projection_parts.inheritance_overlay import (  # noqa: F401
         _ABSENT_SETTINGS,
