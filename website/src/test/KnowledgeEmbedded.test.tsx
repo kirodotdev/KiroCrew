@@ -6,9 +6,10 @@
  * strip. Standalone mode keeps the original chrome byte-for-byte.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
+import { scopeOpen } from '../guide/liveRegistry'
 
 const mockKnowledgeApi = vi.fn()
 vi.mock('../pages/knowledge/api', () => ({
@@ -54,5 +55,30 @@ describe('KnowledgePage — embedded mode', () => {
     mount(<KnowledgePage />)
     expect(screen.getByText('Knowledge Library')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /help/i })).toBeInTheDocument()
+  })
+})
+
+describe('KnowledgePage — find_ui reveal scope for the Sources view', () => {
+  // The find_ui guide to Add Source has a step whose scope is
+  // `open:knowledge.sources-tab`. The page owns that scope, so the step can
+  // tell "Sources is open" from "Add Source has not loaded yet".
+  it('reports closed on the list view, open on Sources, and drops the report on unmount', () => {
+    const { unmount } = mount(<KnowledgePage embedded />)
+    expect(scopeOpen('open:knowledge.sources-tab')).toBe(false)
+    fireEvent.click(screen.getByRole('tab', { name: /^sources$/i }))
+    expect(scopeOpen('open:knowledge.sources-tab')).toBe(true)
+    unmount()
+    expect(scopeOpen('open:knowledge.sources-tab')).toBeNull()
+  })
+
+  it('the marked Sources tab keeps its place in the arrow-key focus order', () => {
+    mount(<KnowledgePage embedded />)
+    const listTab = screen.getByRole('tab', { name: /list view/i })
+    act(() => { listTab.focus() })
+    fireEvent.keyDown(listTab, { key: 'End' })
+    fireEvent.keyDown(screen.getByRole('tab', { name: /^settings$/i }), { key: 'ArrowLeft' })
+    const sourcesTab = screen.getByRole('tab', { name: /^sources$/i })
+    expect(document.activeElement).toBe(sourcesTab)
+    expect(sourcesTab).toHaveAttribute('data-ui-location', 'knowledge.sources-tab')
   })
 })

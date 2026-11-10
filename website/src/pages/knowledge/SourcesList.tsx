@@ -7,6 +7,7 @@ import BedrockKbLiveChip from './BedrockKbLiveChip'
 import IgnorePatternsEditor from './IgnorePatternsEditor'
 import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
 import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel, displaySyncStatus } from './knowledgeUtils'
@@ -814,7 +815,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
           queryClient.invalidateQueries({ queryKey: ['knowledge-config'] })
           setFolderOpen(false); setFolderNeedsPath(false)
           setShowAdd(true)
-        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
+        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80" {...uiLocation('knowledge.add-source')}>{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
 
       {showAdd && (

@@ -3892,8 +3892,9 @@ Bot's side panel (`members.panel`, `MembersPage`, the scope of the header
 opener that reveals its Dashboard tab, `members.dashboard-tab`), `menu:`
 scopes of the sessions list and create menus, the artifacts add menu, the
 terminal and side-panel menus, the Bots add menu and switcher, App Store
-sources, the composer add menu, the notifications sheet, and the Connections
-MCP tab (`open:connections.mcp-servers-tab`). A scope with no owner mounted reads
+sources, the composer add menu, the notifications sheet, the Connections
+MCP tab (`open:connections.mcp-servers-tab`), and Knowledge's Sources view
+(`open:knowledge.sources-tab`, `KnowledgePage`). A scope with no owner mounted reads
 `unknown` and a step on it keeps its `reach` fallback (a later target on
 screen). A reporter of a runtime predicate is `useGuidePredicate(id, value)`
 (`ChatPage` reports both sessions-toggle predicates, `App` reports
