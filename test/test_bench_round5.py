@@ -177,8 +177,10 @@ def test_a_null_embedding_after_readiness_aborts_the_run(tmp_path: Path) -> None
     assert calls["n"] >= 2, "the run should have got past the first fragment"
 
 
-def test_a_healthy_run_is_unaffected(tmp_path: Path) -> None:
+def test_a_healthy_run_is_unaffected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Otherwise the suite could pass by making the harness refuse everything."""
+    # One fake vector for every text trips FAISS's near-duplicate check.
+    monkeypatch.setattr("kiro_crew.vector_memory._HAS_FAISS", False)
     loaded = ingest_instance(
         _instance(),
         db_path=tmp_path / "ok.db",
