@@ -391,6 +391,7 @@ while the other 503s. Concretely:
 | Vector memory / embeddings | works — embeddings run **in-process** through the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`), which loads the Qwen3-Embedding-0.6B GGUF from `~/.kiro/crew/models`. No remote endpoint, no Docker and no Ollama server is involved on any platform |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply | works out of the box on the default `system` provider: it drives `System.Speech` through Windows PowerShell 5.1, needs no install, and deliberately does NOT route through `wrap_argv`, so the missing sandbox backend does not block it. `polly` DOES route through `wrap_argv` and therefore runs unconfined under this platform's default; declare `sandbox_allow_unsandboxed_exec=false` and synthesis returns no audio, with the log naming that setting |
+| Launching a cloud crew | `kirocrew cloud launch` works. The dashboard's **Set up a new one** launcher does not: it needs a Linux or macOS gateway, and the tab says so instead of checking AWS. See [Launch a cloud crew from Windows](#launch-a-cloud-crew-from-windows) |
 | `kirocrew cloud` tunnel (remote dashboard) | works — `kirocrew cloud connect` (alias `tunnel`) forwards the dashboard over an AWS Systems Manager session, not OpenSSH, so there is no SSH client requirement. It needs the AWS [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) on the machine you run `kirocrew cloud connect` from. The built-in installer covers macOS/Linux only, so on Windows install the plugin from AWS's page yourself |
 | Instances SSH tunnel (`ssh -N -L` transport) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP server tool listing (dashboard MCP page, `kirocrew doctor`) | **built-in servers work, no opt-in** — `kirocrew-core` / `-cron` / `-computer` are probed for real: their command line is derived entirely inside the package (never user-config text), so the first-party carve-out spawns the handshake probe unconfined (env-scrubbed, SEL-audited as `unconfined`) even with no sandbox backend. When that probe cannot run (a transient sandbox failure, a governance sandbox floor, or a customized command for the server), the listing falls back to reading the package's own tool declaration and logs a WARNING noting that `ok` then means "declared" rather than "handshake succeeded". A **third-party** server has no declaration to read and never gets the carve-out, so its listing needs the `agent.sandbox_allow_unsandboxed_exec` opt-in — its binary is named by config and spawning it is what the sandbox exists to confine. The third-party server itself is unaffected: kiro-cli launches it from the agent config without this probe, so its tools still work in chat |
@@ -401,6 +402,43 @@ while the other 503s. Concretely:
 | Remote dispatch (feature preview, OFF by default) | works, except the **CPU-load** check — the headroom reading takes CPU load from the Unix load average (`os.getloadavg`), which Windows does not have, so `GET /api/chat/headroom` answers `load_per_cpu: null` here. A missing reading never refuses, so a work-item create on a Windows crew is refused `crew_busy` naming `cpu` only when the running agents already fill the execution cap, and a hub never skips a Windows crew for CPU load. The memory and disk checks are unaffected |
 
 The not-yet items are tracked as Windows feature-parity follow-ups.
+
+## Launch a cloud crew from Windows
+
+The dashboard's cloud launcher (**Settings → Remote Crew → Set up a new one**)
+needs a Linux or macOS gateway. On a Windows gateway that tab says so and runs no
+AWS check, so it never reports your AWS profile as wrong. There are two ways to
+launch from a Windows PC.
+
+**From PowerShell, with no admin rights.** `kirocrew cloud launch` is the same
+launcher as a terminal wizard, and it runs on Windows. It needs the AWS CLI v2 and
+the AWS [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+on this PC. From a clone, `install.ps1` installs both and then starts the wizard.
+The crew it launches joins your Remote Crew list like one launched from the
+dashboard.
+
+**From the dashboard, inside WSL.** This runs a second, Linux install of Kiro Crew
+next to the Windows one. The Windows install, its data and its saved crews stay as
+they are.
+
+1. In PowerShell run as administrator, run `wsl --install`, then restart Windows.
+   This installs WSL 2 with Ubuntu, and it is the step that needs administrator
+   rights and a restart.
+2. Open **Ubuntu** from the Start menu and create the Linux user it asks for.
+3. Inside Ubuntu, install the AWS CLI v2 and the Session Manager plugin for Linux,
+   then set up your profile there with `aws configure sso` or `aws configure`.
+   Ubuntu has its own `~/.aws` and does not read the Windows one.
+4. Install Kiro Crew inside Ubuntu with the
+   [one-line installer](install.md#a-one-line-install-fastest), install Kiro CLI
+   as [First run](install.md#first-run) describes, then run `kirocrew setup` and
+   `kirocrew gateway`.
+5. Open the dashboard URL the gateway prints in your Windows browser. WSL 2
+   forwards `localhost` to Windows by default. Then open **Settings → Remote Crew
+   → Set up a new one**.
+
+The WSL gateway listens on port 5476, the same default as the Windows desktop
+app. Quit the desktop app first, or start the WSL gateway on another port with
+`KIROCREW_PORT=5477 kirocrew gateway`.
 
 ## Secret-at-rest posture on Windows
 

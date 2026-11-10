@@ -1344,6 +1344,18 @@ persisted in the config dir — normally nothing, since nothing there could have
 created a job, though a config dir carried over from a POSIX host still reports
 its real jobs.
 
+**On a Windows gateway the Set-up tab shows one notice, not the AWS checklist.**
+`RemoteCrewWindowsNotice` replaces the built-in lane's prerequisites card and
+launch form when the gateway platform reads `windows` (`useGatewayPlatform`), or
+when the preflight answers `400 posix_host_required` (the platform signal may not
+be cached yet). A known-Windows gateway does not send the preflight at all. The
+refusal comes before any AWS call, so the notice says the profile was not checked
+and never shows the credentials row, Ask the agent, or a disabled Launch. It names
+the two ways forward: `kirocrew cloud launch` in PowerShell, which runs on
+Windows, and a gateway inside WSL. It links the guide in
+[windows-install.md](../../guides/windows-install.md#launch-a-cloud-crew-from-windows).
+A lane an edition draws itself keeps its own form.
+
 **A host with no sandbox answers `503 sandbox_unavailable`, not a 500.** Every
 AWS CLI call goes through `cloud.aws.run_aws`, which wraps it with `wrap_argv`.
 On a host with no sandbox backend and `allow_unsandboxed_exec` unset that raises
