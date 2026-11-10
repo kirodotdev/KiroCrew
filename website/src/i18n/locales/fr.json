@@ -13536,7 +13536,8 @@
         "windows_spawn_blocked": "Windows n’a pas pu démarrer le programme de l’agent ({{binary}}). AppLocker, un produit EDR ou une stratégie de groupe sur cet ordinateur l’a probablement bloqué. Demande à ton administrateur informatique d’autoriser ce fichier, puis lance une nouvelle discussion.",
         "kas_route_relay": "Ton agent passe par kiro-cli.",
         "kas_route_bundle": "Ton agent tourne sur le moteur de {{productName}}.",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "L’abonnement à la ressource {{subscription}} sur {{server}} a atteint ses {{limit}} réveils pour le {{day}} (UTC) et reste en pause jusqu’au jour UTC suivant. Les mises à jour d’ici là sont regroupées en un seul réveil après la pause."
       },
       "turnBlock": {
         "earlier_step_many": "{{count}} étapes précédentes",

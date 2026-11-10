@@ -12916,7 +12916,8 @@
         "windows_spawn_blocked": "Windows がエージェントプログラム（{{binary}}）を起動できませんでした。このコンピューターの AppLocker、EDR 製品、またはグループポリシーがブロックした可能性があります。IT 管理者にこのファイルの許可を依頼してから、新しいチャットを開始してください。",
         "kas_route_relay": "エージェントは kiro-cli 経由で動いています。",
         "kas_route_bundle": "エージェントは {{productName}} 独自のエンジンで動いています。",
-        "kas_route_lead": "{{route}}{{message}}"
+        "kas_route_lead": "{{route}}{{message}}",
+        "resource_wake_budget_paused": "{{server}} のリソース購読 {{subscription}} は {{day}}（UTC）の起動上限 {{limit}} 回に達したため、次の UTC 日まで一時停止しています。その間の更新は、停止明けに 1 回の起動にまとめられます。"
       },
       "turnBlock": {
         "earlier_step_other": "以前の {{count}} ステップ",

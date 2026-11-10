@@ -13226,7 +13226,8 @@
         "windows_spawn_blocked": "Windows एजेंट प्रोग्राम ({{binary}}) शुरू नहीं कर सका। संभवतः इस कंप्यूटर पर AppLocker, किसी EDR प्रोडक्ट या ग्रुप पॉलिसी ने इसे ब्लॉक किया है। अपने IT एडमिन से इस फ़ाइल को अनुमति देने को कहो, फिर नई चैट शुरू करो।",
         "kas_route_relay": "तुम्हारा एजेंट kiro-cli से चलता है।",
         "kas_route_bundle": "तुम्हारा एजेंट {{productName}} के अपने इंजन पर चलता है।",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "{{server}} पर संसाधन सदस्यता {{subscription}} ने {{day}} (UTC) के लिए अपनी {{limit}} वेक-अप की सीमा पूरी कर ली है और अगले UTC दिन तक रुकी रहेगी। इस बीच के अपडेट रुकावट के बाद एक ही वेक-अप में जोड़ दिए जाएँगे।"
       },
       "turnBlock": {
         "earlier_step_one": "{{count}} पिछला चरण",

@@ -915,10 +915,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ORPHANED_LEASES_MAX,
         _RELEASE_STUB_SENTINEL,
         _RESOURCE_SUBSCRIPTIONS_MAX_PER_STUB,
-        _RESOURCE_URI_MAX_LEN,
         _RESOURCES_SUBSCRIBE_METHOD,
         _RESOURCES_UNSUBSCRIBE_METHOD,
         _RESOURCES_UPDATED_NOTIFICATION,
+        RESOURCE_URI_MAX_LEN,
         _is_success_response,
     )
     from kiro_crew.mcp_gateway.backend_liveness import (  # noqa: F401
