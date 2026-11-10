@@ -107,6 +107,7 @@ async def _run_inner_impl(
     setattr(info, "_session_id", "")
     setattr(info, "_session_provider", "")
     setattr(info, "_session_cwd", "")
+    setattr(info, "_session_codex_home", "")
     # Mark the real start of execution BEFORE any await so the startup
     # watchdog measures from here, not from registration (which may include
     # an arbitrary spawn-approval wait). Must be the first statement.

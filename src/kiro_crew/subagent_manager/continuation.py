@@ -1336,8 +1336,9 @@ class ContinuationCoordinator(ManagerComponent):
 
         Returns whether the session files were disposed (``True`` when there
         was no sid to dispose). A backend whose store has no delete route here,
-        or a Claude session with no trusted recorded cwd, answers ``False`` and
-        the caller reports ``not_disposed`` instead of ``released``.
+        a Claude session with no trusted recorded cwd, or a Codex session with no
+        trusted recorded store answers ``False`` and the caller reports
+        ``not_disposed`` instead of ``released``.
 
         Demoting the persisted source of truth matters: with the disk fallback in
         place, a stale ``keep=True`` would re-warm the continuable cache after
@@ -1349,6 +1350,7 @@ class ContinuationCoordinator(ManagerComponent):
         # Not an ``_impl``, so it keeps this module's globals: import at call
         # time, which also keeps ``patch.object(subagent, ...)`` effective.
         from ..agent_sdk.claude_transcripts import is_claude_provider_label
+        from ..agent_sdk.codex_transcripts import is_codex_provider_label
         from ..subagent import _cleanup_session_files_sync, logger, update_state
 
         try:
@@ -1358,14 +1360,18 @@ class ContinuationCoordinator(ManagerComponent):
         if not sid:
             return True
         try:
-            if is_claude_provider_label(provider_label):
-                # Claude Code files a transcript under its working directory, so
-                # its delete needs the cwd the gateway recorded for this session.
+            if is_claude_provider_label(provider_label) or is_codex_provider_label(provider_label):
+                # Claude Code files a transcript under its working directory, and
+                # codex under the CODEX_HOME its child ran with, so each delete
+                # needs what the gateway recorded for this session.
                 from ..subagent_persistence import trusted_cleanup_identity_record
 
                 record = trusted_cleanup_identity_record(conv_id, sid, f"subagent:{conv_id}")
                 cwd = str((record or {}).get("cwd") or "")
-                return bool(_cleanup_session_files_sync(sid, provider_label, cwd=cwd))
+                codex_home = str((record or {}).get("codex_home") or "")
+                return bool(
+                    _cleanup_session_files_sync(sid, provider_label, cwd=cwd, codex_home=codex_home)
+                )
             return bool(_cleanup_session_files_sync(sid, provider_label))
         except Exception:
             logger.debug("release_conversation: file cleanup failed", exc_info=True)

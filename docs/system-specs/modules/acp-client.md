@@ -5403,6 +5403,72 @@ in the gateway's own environment (for a systemd user unit,
 with no seed, and gives up the isolation from other `codex app-server`
 processes that this section exists for.
 
+### Codex: a disposable session's rollout
+
+`codex app-server` writes one rollout per thread under `CODEX_HOME`:
+`sessions/YYYY/MM/DD/rollout-YYYY-MM-DDTHH-MM-SS-<thread id>.jsonl`, with the
+local creation time in the name. Two other names hold the same text. The
+`local_thread_store_compression` feature rewrites an idle rollout in place as
+`.jsonl.zst`. `thread/archive` moves the file to `archived_sessions/<same name>`.
+codex-acp 2.3.0 answers `session/delete` with that archive for a client that does
+not declare the AIR `sessionIndex` capability, so no ACP verb removes the text.
+All three names were observed on codex 0.164.0.
+
+Crew deletes every rollout file for the thread id in both trees wherever it
+deletes the kiro-cli replay log (`agent_sdk/codex_transcripts.py`,
+`delete_codex_session_files`):
+
+- the shutdown of an incognito or temporary chat, and every other caller of
+  `AcpProvider.cleanup_session` (`providers/acp_lifecycle.py`, on
+  `is_codex_backend`, off the loop);
+- the subagent tombstone prune and `spawn_release`
+  (`subagent_persistence._cleanup_session_files_sync` for `PROVIDER_LABEL_CODEX`);
+- the teardown of a session handle on the shared runtime
+  (`AcpSessionHandle._cleanup_transcript`, `acp/session_handle_lifecycle.py`), for
+  an incognito or temporary session only. That covers a subagent of such a chat,
+  `new_conversation` and a late-start teardown, none of which reach
+  `AcpProvider.cleanup_session`. A persistent session keeps its rollout, because
+  `session/load` replays it. The handle asks the harness rather than the backend
+  id: `CodexHarness.teardown` names the delete in
+  `TeardownPolicy.delete_disposable_record`, and every other harness leaves it
+  `None` and keeps the kiro-cli transcript sweep.
+
+The root is the `CODEX_HOME` the child ran with, else `~/.codex`. The child's
+environment is the gateway's with the session's `extra_env` (a cron job's `env`, a
+workflow run's) merged over it, and `agent.env` refuses `CODEX_HOME`. So the root is
+the gateway's `CODEX_HOME` unless that `extra_env` sets one, or sets `HOME` on POSIX
+when no `CODEX_HOME` applies. The shutdown and the shared-runtime teardown read the
+client's or the runtime's `extra_env` (`codex_home(env_overrides)`). A subagent run
+on the shared runtime takes its parent's `extra_env`, and the prune and
+`spawn_release` have no session to ask. So the run records the resolved root as
+`codex_home` in its trusted cleanup identity at spawn
+(`subagent_manager/turn_session.py`, `capture_cleanup_identity`), and a Codex record
+without it deletes nothing and answers not done. The cleanup follows a link
+at the root or in a directory that contains the root, as codex does. It deletes
+nothing and answers not done in these cases:
+
+- the id is not a lower-case UUID;
+- `CODEX_HOME` is relative;
+- a subagent record has no `codex_home`;
+- the root, or a directory that contains it, is a link or junction whose target is
+  missing, so the store comes back when the target does;
+- `sessions`, `archived_sessions` or a date directory is a link or junction;
+- a file name that matches is a link or is not a regular file;
+- the store cannot be read.
+
+A failed unlink, or a rollout that a second scan still finds, also answers not
+done. In each of these cases the prune keeps its retry record and `spawn_release`
+answers `not_disposed`. The cleanup removes no directory, and it never touches a
+persistent session's rollout.
+
+Codex keeps text from the conversation in SQLite too, and this cleanup does not
+delete it. The thread's row in the state database (`state_5.sqlite`, with
+`title`, `first_user_message` and `preview`) is in the per-process
+`CODEX_SQLITE_HOME` described above. That directory is reclaimed only after its
+process is dead, so a subagent's row on a shared runtime stays until that runtime
+ends. codex 0.164.0 also writes `thread_history_1.sqlite` for a thread in the
+`paginated` history mode.
+
 
 ### Native adapter compaction lifecycle
 

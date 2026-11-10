@@ -421,6 +421,17 @@ class TeardownPolicy:
     local_only: bool = False
     """Unregister without the destructive verb unless privacy requires deletion."""
 
+    delete_disposable_record: Callable[[str, Mapping[str, str] | None], bool] | None = None
+    """Crew's own delete of a disposable session's record, for a host whose verb keeps it.
+
+    ``None`` means the verb, or the kiro-cli transcript sweep the shared runtime
+    already runs, answers for the record. codex evicts and keeps the rollout under
+    ``CODEX_HOME``, so its harness names the rollout delete here. The shared
+    runtime calls it for an incognito or temporary session with the session id
+    and the runtime's ``extra_env``, which can move the store the child wrote.
+    Returns whether the cleanup completed.
+    """
+
 
 # ── Unroutable permission answer ──
 

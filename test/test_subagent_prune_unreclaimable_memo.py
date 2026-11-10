@@ -193,3 +193,27 @@ def test_a_run_that_left_by_another_route_is_forgotten(cleanup_calls):
     assert _sweep() == 0
 
     assert "gone" not in sp._UNRECLAIMABLE_MEMO
+
+
+def test_a_codex_identity_has_a_route_only_with_its_recorded_store():
+    """The answer the sweep remembers is the one the cleanup itself gives."""
+    from kiro_crew.acp.types import PROVIDER_LABEL_CODEX
+
+    assert sp._identity_cleanup_has_route(PROVIDER_LABEL_CODEX, "") is False
+    assert sp._cleanup_session_files_sync("sid-x", PROVIDER_LABEL_CODEX) is False
+    assert sp._identity_cleanup_has_route(PROVIDER_LABEL_CODEX, "/recorded/codex-home") is True
+
+
+def test_an_unchanged_codex_run_with_no_recorded_store_is_evaluated_once(cleanup_calls):
+    """A Codex run recorded before its store was recorded cannot be cleaned by a retry."""
+    from kiro_crew.acp.types import PROVIDER_LABEL_CODEX
+
+    _seed_delivered("codex-no-store", PROVIDER_LABEL_CODEX)
+
+    assert _sweep() == 0
+    assert _sweep() == 0
+
+    assert cleanup_calls == [
+        ("sid-codex-no-store", PROVIDER_LABEL_CODEX)
+    ], "the run was evaluated again"
+    assert sp._agent_dir("codex-no-store").exists()

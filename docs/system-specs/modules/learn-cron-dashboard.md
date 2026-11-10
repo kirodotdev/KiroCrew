@@ -140,7 +140,12 @@ read from the newest `rate_limits` block in the tails of the most recently writt
 and `weekly` its `secondary`, each `{used_percent, resets_at, window_minutes,
 stale}`; `stale` is true once `resets_at` has passed, so an old percent is not shown
 as current. `captured_at` is the line's timestamp and `source_mtime` the log's
-modification time. With no logs, or none holding a block, `codex` is `null`. Only
+modification time. With no logs, or none holding a block, `codex` is `null`, unless
+this gateway process already read a block from the same `sessions/` directory: a
+disposable Codex session deletes its rollout at teardown, so the last reading is
+kept in memory and returned with `stale` judged again. The kept reading also wins
+over a block that a surviving log recorded before it, compared by `captured_at`, or
+by `source_mtime` when either reading has no `captured_at`. Only
 `rollout-*.jsonl` files are opened and a link at that name is refused, so `auth.json`
 is not read.
 
