@@ -613,6 +613,28 @@ and it refuses only the long tail of values. Only consolidation is bound: owner
 edits, imports, the dashboard and lessons keep the byte ceiling alone
 ([Semantic Memory](#semantic-memory)).
 
+A refused value is carried to the same session's next pass instead:
+`_audit_oversized_semantic` also adds each one, whole, with its key and length, to
+the session's refused-value note, the `memory_meta` row
+`consolidation_refused_semantic:<session>` (`_update_refused_semantic_note`), under
+the same hold, so the note lands exactly when the audit row does; an entry already in
+the note is not added twice. The session's next consolidation prompt lists the note
+under `## Semantic Values Refused Last Pass`, after the semantic table and outside its
+cap, and asks the model to propose a fact that is still true again as separate keys
+within the bound. Each value has passed `validate_semantic` (the byte ceiling and the
+injection check), as every row the table shows has. Once that pass has written its
+answer, the entries it showed are dropped under a publication hold, so a value
+refused again unchanged is not listed again, while a shortened value still over the
+bound is a new entry; a pass that ends before its writes keeps the note. A note keeps
+at most `_MAX_REFUSED_SEMANTIC_NOTES` (5) values, newest kept, which bounds the
+section; a write that drops older values says so in one warning naming their count
+and keys. Each change deletes, in the same commit, every session's note left
+`_REFUSED_SEMANTIC_NOTE_DAYS` (30) days without a write, by the store's clock. That
+prune aside, only the session's own passes, which its lease runs one at a time, change
+its row, and only that session is shown it, so a refusal on a session's last pass is still never proposed again. A note
+that cannot be written is logged and skipped, its statement rolled back under the
+store lock so the pass goes on. There is no dashboard view of it.
+
 The prompt's `## Current Semantic Memory` block is bounded too, on BOTH passes
 (the preference-only pass builds the same block): the active table is read
 whole, in key-ordered pages of 500 (`_semantic_snapshot_in_pages`, keyset
