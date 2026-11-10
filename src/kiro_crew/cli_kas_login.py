@@ -218,6 +218,28 @@ def _login(args: argparse.Namespace) -> int:
         return 130
 
 
+def _unreachable(lead: str, exc: BaseException) -> str:
+    """*lead*, the host and why in plain words, then what to do next.
+
+    The library's own text is the reason only when it is none of the causes
+    :func:`kiro_crew.asset_downloader.network_failure_cause` names, or when the
+    exception carries no host: aiohttp's connect timeout names it only in its
+    text (``Connection timeout to host <url>``).
+    """
+    # Local for the reason _run_device_login gives: `--help` must not pay for it.
+    from kiro_crew.asset_downloader import network_failure_cause
+
+    host = getattr(exc, "host", "")
+    if host:
+        why = f" ({host}): {network_failure_cause(exc) or exc}"
+    else:
+        why = f": {str(exc) or network_failure_cause(exc)}"
+    return (
+        f"❌ {lead}{why}.\n"
+        "   Nothing was stored. Check your network connection, then run the command again."
+    )
+
+
 async def _run_device_login(
     store: Any, *, provider: str, start_url: str, region: str, replaces: str = ""
 ) -> int:
@@ -257,7 +279,7 @@ async def _run_device_login(
             print(f"❌ the sign-in service refused to start a sign-in: {exc}", file=sys.stderr)
             return 1
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            print(f"❌ could not reach the sign-in service: {exc}", file=sys.stderr)
+            print(_unreachable("could not reach the sign-in service", exc), file=sys.stderr)
             return 1
         # Line-buffered on purpose: the cloud sign-in reads these two lines out of
         # a log this process writes under nohup, where stdout is block-buffered.
@@ -274,8 +296,9 @@ async def _run_device_login(
                 # The service absorbs a few dropped polls itself; past its budget
                 # the outage is real, and the user gets a line, not a traceback.
                 print(
-                    f"❌ lost contact with the sign-in service while waiting for approval: "
-                    f"{exc}; nothing was stored. Run the command again.",
+                    _unreachable(
+                        "lost contact with the sign-in service while waiting for approval", exc
+                    ),
                     file=sys.stderr,
                 )
                 return 1

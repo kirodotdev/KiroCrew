@@ -391,7 +391,10 @@ def _read_json_url(url: str, opener: Any, *, sha256: str | None = None) -> Any:
     except (OSError, ValueError) as exc:
         # ValueError is urllib's answer to a url it cannot parse (an unclosed
         # IPv6 bracket in a hand-typed --url), the same refusal as an unreachable one.
-        raise KasBundleError(f"could not fetch {asset_downloader.redact_url(url)}: {exc}") from exc
+        why = asset_downloader.network_failure_cause(exc) or exc
+        raise KasBundleError(
+            f"could not download the KAS engine from {asset_downloader.redact_url(url)}: {why}"
+        ) from exc
     if len(body) > _MANIFEST_MAX_BYTES:
         raise KasBundleError(f"{asset_downloader.redact_url(url)} is too large to be a manifest")
     if sha256 is not None and hashlib.sha256(body).hexdigest() != sha256:
