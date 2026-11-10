@@ -811,7 +811,29 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 574, from 36,018, for the ssh floor's self-host read of a glob verb
+#: (the execute-position reader is its own owner, ``argv_floor_exec``):
+#: a verb glob with a directory part always keeps host matching, a bare glob only
+#: in execute position (``_executed_program_indices`` over
+#: ``argv_rules._split_commands_indexed``), so a bare glob that only sits in a
+#: program's operands, a comment or a ``case`` arm is a filename, not a self-host;
+#: and ``_array_element_indices`` (reusing ``_array_literals`` beside
+#: ``_array_assignments``), so a bare glob inside an array literal
+#: (``files=( s* *.* )``) is an element, not an executed verb (an opener in a comment
+#: opens nothing, and a separator or comment word ends the elements); and
+#: ``_substitution_positions``, so a word inside ``$( … )`` or backticks
+#: (``n=$(ls s* *.*)``) belongs to the substitution's own frame; and
+#: ``argv_floor_exec._text_without_data_heredocs``, which reads the one heredoc reader
+#: ``shell_commands.read_commands`` and leaves out of the execute-position read a heredoc
+#: body that is certainly data: a quoted tag, a statement that expands nothing, and a
+#: known reader in a known form in every pipe segment. A literal verb in a body is always
+#: read. A glob naming several ssh-family programs is refused outright wherever
+#: it may run. ``argv_floor_exec._proven_operand_indices`` leaves listed data
+#: programs' operands alone; its companion ``_runner_operand_indices`` keeps
+#: unlisted runners subject to the refusal. No multi-program option walk is needed.
+#: A redirect's ``&`` or ``|`` glued to a word (``>&cat``) does not end a command.
+#: Re-measured.
+_PACKAGE_LINE_BUDGET = 36_592
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

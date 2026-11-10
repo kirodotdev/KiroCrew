@@ -26,9 +26,15 @@ import re
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
+from .argv_floor_exec import (
+    _proven_operand_indices,
+    _runner_operand_indices,
+    _text_without_data_heredocs,
+)
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
 from .argv_floor_self import (
     _quoted_assignment_scripts,
+    _self_frames,
     _self_token_frames,
     _static_substitution_output,
 )
@@ -100,9 +106,27 @@ _HOSTNAME_VARIABLE_FORMS: tuple[str, ...] = ("$hostname", "${hostname}")
 _FLAT_SUBSTITUTION_RE = re.compile(r"\$\(([^()`$]*)\)|`([^`()$]*)`")
 
 
+_GATE_WORD_SPLIT_RE = re.compile(r"[\s;&|()`]+")
+#: The same words with a bracket class (``[s)]``) kept whole.
+_GATE_BRACKET_WORD_RE = re.compile(r"(?:\[[^\]\s]*\]|[^\s;&|()`])+")
+
+
 def _glob_can_name_ssh_verb(probe: str) -> bool:
-    """True when a glob word in *probe* can expand to an ssh-family program."""
-    for word in probe.split():
+    """True when a glob word in *probe* can expand to an ssh-family program.
+
+    Words end at blanks and at the characters that start a command (``;`` ``&``
+    ``|`` a parenthesis or a backtick), so a verb glued to a substitution opener
+    (``$(s?h``, ``x=$(s?h``) or a separator (``true;s?h``) is still a word.  Three
+    readings are joined, so each finer one only adds words: the blank-separated
+    words, the words cut at those characters, and the same cut with a bracket
+    class kept whole (``s[s\\)]h``, alone or glued to an opener).
+    """
+    words = {
+        *probe.split(),
+        *_GATE_WORD_SPLIT_RE.split(probe),
+        *_GATE_BRACKET_WORD_RE.findall(probe),
+    }
+    for word in words:
         if not _GLOB_CHARS.intersection(word):
             continue
         base = word.rsplit("/", 1)[-1]
@@ -120,7 +144,14 @@ def _glob_can_name_ssh_verb(probe: str) -> bool:
 _EXPANSION_DEFAULT_RE = re.compile(r"\$\{[^{}:]*:[-=+?]([^{}]+)\}")
 
 
-_SSH_FAMILY_VERBS: frozenset[str] = frozenset({"ssh", "scp", "sftp", "rsync"})
+#: The ssh-family programs. Where bash may run a glob that can name several of
+#: them, the walk refuses it outright. Where the
+#: glob is proven to be another program's operand (``git add s* README.md``), and
+#: for a word of only ``*``, it is read as the FIRST of them in this order, so no
+#: set order (and no hash seed) decides the reading.  scp comes first: its reading
+#: refuses a copy to this host through such a glob, which an ssh reading allows.
+_SSH_FAMILY_VERB_ORDER: tuple[str, ...] = ("scp", "ssh", "sftp", "rsync")
+_SSH_FAMILY_VERBS: frozenset[str] = frozenset(_SSH_FAMILY_VERB_ORDER)
 
 
 # Verbs that place a copy (or a link) of their SOURCE operand at their
@@ -590,16 +621,48 @@ def _ssh_family_verb(token: str) -> "str | None":
 
     Path-qualified (``/usr/bin/ssh``) and Windows (``ssh.exe``) spellings
     resolve to the bare verb.  A glob basename that CAN expand to one
-    (``s?h``, see ``_GLOB_CHARS``) resolves to the verb it can name.
+    (``s?h``, see ``_GLOB_CHARS``) resolves to the verb it can name.  A glob that
+    can name several (``s*``: ssh, scp, sftp) resolves to the first of them in
+    ``_SSH_FAMILY_VERB_ORDER``, the same one in every process.
     """
     base = _ssh_verb_basename(token)
     if base in _SSH_FAMILY_VERBS:
         return base
-    if _GLOB_CHARS.intersection(base):
-        for verb in _SSH_FAMILY_VERBS:
-            if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
-                return verb
-    return None
+    names = _ssh_glob_names(token)
+    return names[0] if names else None
+
+
+def _ssh_glob_names(token: str) -> "tuple[str, ...]":
+    """The ssh-family programs a glob *token* can name, in ``_SSH_FAMILY_VERB_ORDER``.
+
+    Empty for a word with no glob character in its basename.
+    """
+    base = _ssh_verb_basename(token)
+    if not _GLOB_CHARS.intersection(base):
+        return ()
+    return tuple(
+        verb
+        for verb in _SSH_FAMILY_VERB_ORDER
+        if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base)
+    )
+
+
+def _rsync_env_reaches_self(
+    pending: "dict[str, str]", exported: "dict[str, str]", carried_self: bool, nested: "bool | None"
+) -> bool:
+    """True if the ``RSYNC_RSH`` / ``RSYNC_CONNECT_PROG`` an rsync here runs opens a self channel.
+
+    rsync execs the value as its remote shell (or daemon proxy) FROM HERE.  An
+    unexported value (*pending*) applies only to this simple command; an
+    *exported* one persists, so it is the fallback when nothing is pending.  With
+    neither in this frame, a self-targeting value carried from an EARLIER frame
+    (*carried_self*, inherited into this nested payload) decides.
+    """
+    for env_name in ("rsync_rsh", "rsync_connect_prog"):
+        env_val = pending.get(env_name, exported.get(env_name))
+        if env_val is not None and _is_ssh_to_self(env_val, nested):
+            return True
+    return not pending and not exported and carried_self
 
 
 # ssh_config keywords that SET the destination.  ``-o hostname=…`` rewrites
@@ -744,7 +807,9 @@ def _command_value_names_self_endpoint(value: str) -> bool:
     return False
 
 
-def _routing_option_key_value_targets_self(key: str, value: str) -> bool:
+def _routing_option_key_value_targets_self(
+    key: str, value: str, nested: "bool | None" = None
+) -> bool:
     """True if ssh option *key* routes *value* to this host.
 
     ``-o`` may be GLUED to the keyword (``-ohostname=…``), so a leading ``o`` in
@@ -762,11 +827,13 @@ def _routing_option_key_value_targets_self(key: str, value: str) -> bool:
     if key in _SSH_ROUTING_OPTION_KEYS:  # "hostname" (proxyjump handled above)
         return _operand_targets_self(value)
     if key in _SSH_COMMAND_OPTION_KEYS:
-        return _is_ssh_to_self(value) or _command_value_names_self_endpoint(value)
+        return _is_ssh_to_self(value, nested) or _command_value_names_self_endpoint(value)
     return False
 
 
-def _routing_option_value_targets_self(token: str, *, value_slot: bool) -> bool:
+def _routing_option_value_targets_self(
+    token: str, *, value_slot: bool, nested: "bool | None" = None
+) -> bool:
     """True if *token* carries a routing option value naming this host.
 
     Covers the ``key=value`` spelling, the config-style WHITESPACE spelling
@@ -784,12 +851,12 @@ def _routing_option_value_targets_self(token: str, *, value_slot: bool) -> bool:
             # getopt bundles valueless flags in FRONT of the option letter:
             # ``-voHostname=x`` is ``-v`` + ``-o Hostname=x``.
             key = key.lstrip(_SSH_VALUELESS_SHORT_FLAGS)
-        if _routing_option_key_value_targets_self(key, value):
+        if _routing_option_key_value_targets_self(key, value, nested):
             return True
     elif value_slot:
         parts = token.strip().split(None, 1)
         if len(parts) == 2 and _routing_option_key_value_targets_self(
-            parts[0].lstrip("-"), parts[1]
+            parts[0].lstrip("-"), parts[1], nested
         ):
             return True
     if token.startswith("-"):
@@ -871,7 +938,7 @@ _CALL_WRAPPER_WORDS: frozenset[str] = frozenset(
 )
 
 
-def _function_call_binds_self(text: str) -> bool:
+def _function_call_binds_self(text: str, nested: "bool | None" = None) -> bool:
     """True if a bound (def, call) pair opens an ssh channel to this host."""
     # The caller hands over masked text: a quoted ``{`` rides as a sentinel
     # byte while its closing ``}`` stays literal, which breaks the DEF
@@ -926,7 +993,7 @@ def _function_call_binds_self(text: str) -> bool:
                 if i <= 9:
                     bound = bound.replace('"$%d"' % i, arg)
                     bound = bound.replace("$%d" % i, arg)
-            if bound != body and _is_ssh_to_self(bound):
+            if bound != body and _is_ssh_to_self(bound, nested):
                 return True
     return False
 
@@ -934,11 +1001,28 @@ def _function_call_binds_self(text: str) -> bool:
 def _reaches_self_over_ssh(text_lower: str) -> bool:
     """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
     read whole: the separator mask would turn a script's own separators into data."""
-    return any(map(_is_ssh_to_self, [text_lower, *_quoted_assignment_scripts(text_lower)]))
+    live = _quoted_assignment_scripts(_text_without_data_heredocs(text_lower))
+    return (
+        any(map(_is_ssh_to_self, [text_lower, *live]))
+        # A script that only a data heredoc body holds is not run: a bare glob
+        # verb in it is a filename.
+        or any(
+            _is_ssh_to_self(s, False)
+            for s in _quoted_assignment_scripts(text_lower)
+            if s not in live
+        )
+    )
 
 
-def _is_ssh_to_self(text_lower: str) -> bool:
+def _is_ssh_to_self(text_lower: str, glob_verbs_execute: "bool | None" = None) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
+
+    Only the execute-position read of a bare glob verb (``s?h local*``) leaves out a
+    heredoc body that is certainly data (``argv_floor_exec._text_without_data_heredocs``).
+    With *glob_verbs_execute* unset and such a body present, the whole text is walked
+    with that read off (every bare glob verb is a filename) and the text without
+    those bodies with it on, so a literal verb in a heredoc body is read exactly as
+    it is without the cut.
 
     Structural for the same reason the other floors are: the target hides
     behind options, redirects, quoting, and prefixes.  The argv walk is
@@ -982,6 +1066,14 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     the shell-builtin export spellings (``declare -x``/``typeset -x``), which
     are not leading-assignment syntax and so are not modeled by the walk.
     """
+    if glob_verbs_execute is None:
+        without_data = _text_without_data_heredocs(text_lower)
+        if without_data != text_lower:
+            return _is_ssh_to_self(text_lower, False) or _is_ssh_to_self(without_data, True)
+        glob_verbs_execute = True
+    # A value this walk scans as a command line of its own keeps the "glob verbs
+    # are filenames" read; with the read on, it decides for itself.
+    nested = None if glob_verbs_execute else False
     # Collapse empty expansions in the SOURCE so the gate and tokenization both
     # read the spliced-out spelling (``s$()sh localhost`` -> ``ssh localhost``).
     text_lower = _EMPTY_EXPANSION_RE.sub("", text_lower)
@@ -1031,10 +1123,36 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     probe = _resolve_param_defaults(probe)
     if not any(verb in probe for verb in _SSH_FAMILY_VERBS) and not _glob_can_name_ssh_verb(probe):
         return False
+    # Judge execution on each payload's own source, before its parent's quoted
+    # separators are masked. A shell's script argument is not a program basename.
+    if glob_verbs_execute:
+        for source, _ in _self_frames(text_lower):
+            # A nested shell interprets separators quoted by its parent.
+            own_source = source if source == text_lower else _unmask_separators(source)
+            frame = _shell_normalizer._self_tokens(_mask_quoted_separators(own_source))
+            payloads = set(_shell_normalizer._nested_shell_payloads(frame))
+            proven = _proven_operand_indices(frame)
+            runners = _runner_operand_indices(frame)
+            programs = _argv_programs(frame)
+            frame_disqualified = _shell_normalizer._data_consumer_command_disqualified(frame)
+            for i, word in enumerate(frame):
+                if word in payloads:
+                    continue
+                # All-star operands include cron fields; only a command word
+                # is refused outright. A leading all-star cron field is a
+                # command word too when this text is submitted as shell text.
+                if not word.rstrip(";&|\n").strip("*") and i in proven:
+                    continue
+                if len(_ssh_glob_names(word)) < 2 or (i in proven and i not in runners):
+                    continue
+                if not _data_consumer_exempt(
+                    i, word, programs, frame, command_disqualified=frame_disqualified
+                ):
+                    return True
     # Bind one level of function-call arguments (``f(){ ssh "$1"
     # id; }; f localhost``) and recurse on the bound body -- the literal call
     # argument is the destination the walk below cannot see through ``$1``.
-    if _function_call_binds_self(text_lower):
+    if _function_call_binds_self(text_lower, nested):
         return True
     # A self-targeting ``RSYNC_RSH`` set in one frame is inherited by
     # LATER frames (an exported value, or a command-scoped prefix on a command
@@ -1053,8 +1171,14 @@ def _is_ssh_to_self(text_lower: str) -> bool:
     # frames (a copy staged in a wrapper payload reaches its siblings); a
     # copy staged in an EARLIER command line is the documented residual.
     bound_program_verbs: "dict[str, str]" = {}
-    for tokens in _self_token_frames(text_lower):
+    frames = _self_token_frames(text_lower)
+    for tokens in frames:
         programs = _argv_programs(tokens)
+        data_operands = (
+            _proven_operand_indices(tokens) - _runner_operand_indices(tokens)
+            if glob_verbs_execute
+            else set(range(len(tokens)))
+        )
         # A leading ``RSYNC_RSH=<cmd>`` environment assignment selects rsync's
         # remote shell exactly like ``-e``/``--rsh``, but rides BEFORE the verb
         # so the operand walk below never sees it.  When rsync runs live, that
@@ -1091,19 +1215,17 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
             verb = _ssh_family_verb(token)
-            # A verb read through a bare glob (``s?h``, a lone ``*``) expands only
-            # in the working directory, so it already spends the one filesystem
-            # expansion this floor models and a glob operand after it is not read
-            # as this host.  Two wildcard words in a row are every five-field cron
-            # schedule (``0 * * * *``), and a working directory that expands both
-            # into a self connection also makes a lone ``*`` that whole command
-            # line, which no static floor reads.  A verb glob with a directory part
-            # (``/usr/bin/s?h``) expands outside it, so its operands keep glob
-            # host matching.
+            # Only proven data operands suppress host glob matching. Unknown
+            # positions may run the glob. Path globs retain their existing host
+            # checks because they expand outside the working directory. All-star
+            # words remain exempt so cron schedules keep their existing reading.
             glob_verb = (
                 verb is not None
                 and _ssh_verb_basename(token) != verb
-                and not any(sep in token for sep in "/\\")
+                and (
+                    not token.strip("*")
+                    or (not any(sep in token for sep in "/\\") and i in data_operands)
+                )
             )
             if verb is None and bound_program_verbs:
                 stripped_prog = token.strip("\"'")
@@ -1204,23 +1326,17 @@ def _is_ssh_to_self(text_lower: str) -> bool:
             # and terminates.
             if xargs_prefix_index is not None and xargs_prefix_index < i:
                 rebuilt = _xargs_here_string_rebuild(verb, tokens, xargs_prefix_index, i)
-                if rebuilt is not None and _is_ssh_to_self(rebuilt):
+                if rebuilt is not None and _is_ssh_to_self(rebuilt, nested):
                     return True
             # rsync execs a pending ``RSYNC_RSH`` / ``RSYNC_CONNECT_PROG``
             # value as its remote shell (or daemon proxy) FROM HERE, so a
             # value that opens a channel to this host is a self dial.
             # An unexported value applies only to this simple command; an
             # exported one persists, so fall back to it when nothing is pending.
-            if verb == "rsync":
-                for env_name in ("rsync_rsh", "rsync_connect_prog"):
-                    env_val = rsync_rsh_pending.get(env_name, rsync_rsh_exported.get(env_name))
-                    if env_val is not None and _is_ssh_to_self(env_val):
-                        return True
-                # With neither a pending nor an exported value in THIS
-                # frame, fall back to a self-targeting value carried from an
-                # EARLIER frame (inherited into this nested payload).
-                if not rsync_rsh_pending and not rsync_rsh_exported and rsync_rsh_carried_self:
-                    return True
+            if verb == "rsync" and _rsync_env_reaches_self(
+                rsync_rsh_pending, rsync_rsh_exported, rsync_rsh_carried_self, nested
+            ):
+                return True
             positional_pending = verb in ("ssh", "sftp")
             option_shadow = False  # previous token was an option that may take a value
             value_shadow = False  # previous token was an option that CONSUMES a value
@@ -1252,7 +1368,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     rsh_value_pending = False
                     option_shadow = False
                     value_shadow = False
-                    if _is_ssh_to_self(stripped):
+                    if _is_ssh_to_self(stripped, nested):
                         return True
                 elif proxyjump_value_pending:
                     # The detached value of ``-J``: a ProxyJump hop
@@ -1280,7 +1396,8 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         # the DNS layer inside the check).
                         if checkable and _operand_targets_self(
                             _unmask_separators(remainder),
-                            host_position=positional_pending and not value_shadow,
+                            host_position=positional_pending
+                            and (not value_shadow or value_shadow_ambiguous),
                             match_globs=not glob_verb,
                         ):
                             return True
@@ -1310,7 +1427,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     # a generic ``--opt=value`` (rsync ``--exclude=localhost``)
                     # names data, not a destination.
                     if _routing_option_value_targets_self(
-                        _unmask_separators(stripped), value_slot=True
+                        _unmask_separators(stripped), value_slot=True, nested=nested
                     ):
                         return True
                     # rsync runs its ``-e``/``--rsh`` value as the remote-shell
@@ -1328,11 +1445,11 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         if stripped == "--rsh":
                             rsh_value_pending = True
                         elif stripped.startswith("--rsh="):
-                            if _is_ssh_to_self(stripped.partition("=")[2]):
+                            if _is_ssh_to_self(stripped.partition("=")[2], nested):
                                 return True
                         elif not stripped.startswith("--") and "e" in bare_opt:
                             attached = bare_opt.partition("e")[2]
-                            if attached and _is_ssh_to_self(attached):
+                            if attached and _is_ssh_to_self(attached, nested):
                                 return True
                             if not attached:
                                 rsh_value_pending = True
@@ -1422,7 +1539,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                     ):
                         return True
                     if _routing_option_value_targets_self(
-                        _unmask_separators(stripped), value_slot=option_shadow
+                        _unmask_separators(stripped), value_slot=option_shadow, nested=nested
                     ):
                         return True
                     if not value_shadow:
@@ -1444,6 +1561,6 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         # precedence as the in-walk rsync check: pending, else exported.
         for env_name in ("rsync_rsh", "rsync_connect_prog"):
             carried_now = rsync_rsh_pending.get(env_name, rsync_rsh_exported.get(env_name))
-            if carried_now is not None and _is_ssh_to_self(carried_now):
+            if carried_now is not None and _is_ssh_to_self(carried_now, nested):
                 rsync_rsh_carried_self = True
     return False

@@ -74,12 +74,14 @@ logger = logging.getLogger(__name__)
 #   ``argv_floor_self`` -- the product's own subcommand floors and the credential-mint
 #   predicates
 #   ``argv_floor_hosts`` -- the names and addresses the ssh floor counts as this host
+#   ``argv_floor_exec`` -- which words of a frame bash runs as a program
 #   ``argv_floor_ssh`` -- the ssh self-target floor
 #   ``argv_floor_git`` -- release detection and the protected-branch push target
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.security.argv_floor_self",
     "kiro_crew.security.argv_floor_hosts",
+    "kiro_crew.security.argv_floor_exec",
     "kiro_crew.security.argv_floor_ssh",
     "kiro_crew.security.argv_floor_git",
 )  # the loop below imports them in this order
@@ -92,6 +94,27 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.security.argv_floor_exec import (  # noqa: F401
+        _COMPOUND_WORDS,
+        _GH_STDIN_READERS,
+        _GIT_STDIN_READERS,
+        _GLOB_OPERAND_PROGRAMS,
+        _PLAIN_HEREDOC_READERS,
+        _PLAIN_PATH_RE,
+        _READER_PROGRAM_RE,
+        _REDIRECT_RE,
+        _cut_words,
+        _executed_program_indices,
+        _glued_operator,
+        _has_words,
+        _is_plain_path,
+        _proven_operand_indices,
+        _reads_stdin_as_data,
+        _runner_operand_indices,
+        _statement_is_plain,
+        _substitution_positions,
+        _text_without_data_heredocs,
+    )
     from kiro_crew.security.argv_floor_git import (  # noqa: F401
         _AMBIGUOUS_REFS,
         _AMBIGUOUS_REFSPEC_RE,
@@ -222,12 +245,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FLAT_SUBSTITUTION_RE,
         _FUNCTION_BIND_CAP,
         _FUNCTION_DEF_RE,
+        _GATE_BRACKET_WORD_RE,
+        _GATE_WORD_SPLIT_RE,
         _HOSTNAME_SUBSTITUTION_HINTS,
         _HOSTNAME_VARIABLE_FORMS,
         _LINE_ASSIGNMENT_RE,
         _QUOTED_SEP_SENTINELS,
         _RSYNC_RSH_ASSIGN_RE,
         _SSH_COMMAND_OPTION_KEYS,
+        _SSH_FAMILY_VERB_ORDER,
         _SSH_FAMILY_VERBS,
         _SSH_FORWARD_OPT_LETTERS,
         _SSH_ROUTING_OPTION_KEYS,
@@ -250,16 +276,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolve_line_assignments,
         _routing_option_key_value_targets_self,
         _routing_option_value_targets_self,
+        _rsync_env_reaches_self,
         _ssh_family_verb,
+        _ssh_glob_names,
         _ssh_verb_basename,
         _unmask_separators,
     )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
+    from kiro_crew.security import argv_rules as _argv_rules  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
-    from kiro_crew.security.denied_rules import (  # noqa: F401
-        _GIT_PUBLISH_UNGATED,
-    )
+    from kiro_crew.security.denied_rules import _GIT_PUBLISH_UNGATED  # noqa: F401
     from kiro_crew.security.host_addresses import (  # noqa: F401
         _darwin_interface_addresses,
         _linux_netlink_addresses,
@@ -317,7 +344,4 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _substitution_depth_delta,
         _xargs_here_string_rebuild,
     )
-    from kiro_crew.security.vocabulary import (  # noqa: F401
-        _KILL_BY_NAME_PROGRAMS,
-        _SELF_NAME_RE,
-    )
+    from kiro_crew.security.vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE  # noqa: F401

@@ -103,7 +103,7 @@ class TestSandboxEscapeSshSelf:
         assert is_safe_user_regex(_rule_pattern(self._RULE))
 
     def test_refusal_note_is_actionable(self):
-        """The note carries the three facts a refused caller needs.
+        """The note carries the facts a refused caller needs.
 
         A first-contact refusal is a PENDING classification, so the note must
         say so and tell the caller the action that resolves it (retry the same
@@ -142,6 +142,12 @@ class TestSandboxEscapeSshSelf:
         )
         assert "(3) FORWARDED port" in note
         assert "per-rule toggle in Settings" in note
+        # A glob pair is refused for what it could expand to, so waiting never
+        # clears it: the note must say so and name what does.
+        assert "(4) GLOB words" in note
+        assert "Retrying does not help" in note
+        assert "Write the pair without backticks or pass the text from a file" in note
+        assert "quote the heredoc tag" in note
         # One line: the note is the refusal's second line, which the recovery
         # card and the suite's ``_denied_by`` split on.
         assert "\n" not in note
@@ -732,24 +738,155 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh 127.0.0.? id") == self._RULE
         assert _denied_by("ssh remo?e.example.com id") is None
 
+    def test_a_glob_that_can_name_several_programs_refuses_self_hosts(self, monkeypatch):
+        # A multi-program glob in command position is refused before reading its host.
+        monkeypatch.setattr(
+            _argv_floor, "_resolved_host_verdict", lambda host, **_kw: host == "lvh.me"
+        )
+        assert _denied_by("s* lvh.me id") == self._RULE
+        assert _denied_by("s* -v lvh.me id") == self._RULE
+        assert _denied_by("s* -R 2222:lvh.me:22 far.example.test id") == self._RULE
+        assert _denied_by("s* -R2222:lvh.me:22 far.example.test id") == self._RULE
+
+    def test_a_glob_that_can_name_several_programs_refuses_remote_hosts(self, monkeypatch):
+        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", lambda host, **_kw: False)
+        assert _denied_by("s* example.test id") == self._RULE
+        assert _denied_by("s* -R 2222:example.test:22 example.test id") == self._RULE
+
+    @pytest.mark.parametrize("flag", ["-X", "-x"])
+    def test_an_option_only_one_program_reads_a_value_for_keeps_host_checks(
+        self, monkeypatch, flag
+    ):
+        # sftp's ``-X`` takes a value and ssh's does not, so ``s* -X lvh.me id``
+        # run as ssh connects to ``lvh.me``.  No option table decides the reading
+        # of such a glob, so the word after it is read as a host.
+        monkeypatch.setattr(
+            _argv_floor, "_resolved_host_verdict", lambda host, **_kw: host == "lvh.me"
+        )
+        assert _denied_by("s* %s lvh.me id" % flag) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "git add s* README.md",
+            "git add * CHANGELOG.md",
+            "ls * notes.md",
+            "cp *.py dist/notes.v2",
+            "git add src/* README.md",
+            "tar -czf handoff.tgz src/* pyproject.toml",
+            "git diff --stat -- src/* CHANGELOG.md",
+            "ruff check s* setup.py",
+        ],
+    )
+    def test_a_glob_in_another_programs_operands_never_reaches_the_dns_layer(
+        self, monkeypatch, cmd
+    ):
+        # The resolver refuses every name it does not know, as on a cache miss, so
+        # a dotted file name that reached the DNS layer would be refused.
+        consulted: "list[str]" = []
+
+        def _refuse_unknown(host, **_kw):
+            consulted.append(host)
+            return True
+
+        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _refuse_unknown)
+        assert _denied_by(cmd) is None, cmd
+        assert consulted == [], (cmd, consulted)
+
+    def test_a_literal_scp_verb_keeps_its_file_reading(self, monkeypatch):
+        # Only a glob gains ssh's host checks.  A literal scp keeps its own
+        # reading: a ``host:path`` operand is checked, a bare word is a file.
+        consulted: "list[str]" = []
+
+        def _self_only(host, **_kw):
+            consulted.append(host)
+            return host == "lvh.me"
+
+        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _self_only)
+        assert _denied_by("scp ./f lvh.me:out") == self._RULE
+        consulted.clear()
+        assert _denied_by("scp lvh.me ./out") is None
+        assert "lvh.me" not in consulted
+
     @pytest.mark.parametrize(
         "text",
         [
-            "* *",
             "0 * * * *",
             "0 9 * * 1-5",
             "*/15 * * * *",
             "it runs on the cron schedule 0 * * * * (top of every hour).",
-            # The residual this costs: a bare glob verb and its glob host both
-            # expand in a working directory the caller filled, which already
-            # makes a lone ``*`` the whole connection.
-            "s?h local*",
+            # A bare glob that is a file operand of a known data program
+            # (``argv_floor_exec._GLOB_OPERAND_PROGRAMS``) expands to files, not an ssh
+            # program.
+            "tar -czf handoff.tgz s* *.*",
+            "zip -r handoff.zip s* *.*",
+            "git add s* *.*",
+            "git status --short -- r* l*",
+            "git ls-files -- '*sh' '*.*'",
+            "tar -czf sources.tgz *c 1*",
+            "dir /b r* *.*",
+            "tar.exe -czf handoff.tgz s* *.*",
+            "gzip -9 s* *.1",
+            "dir s* *.*",
+            "get-childitem -path s* *.*",
+            "attrib -r s* *.*",
+            "gtar -czf handoff.tgz s* *.*",
+            "sha1sum s* *.*",
+            "shasum -a 256 s* *.*",
+            "chgrp -R staff s* *.*",
+            # git and tar read their operands as repo/file names, never a
+            # program they exec, so an ssh-verb glob among them with a glob
+            # host after it is two file names, not a connection.  (git's own
+            # scp-like remote and tar's host:file transport are a separate
+            # floor gap that predates this rule: the floor models only literal
+            # ssh/scp/sftp/rsync verbs, and these forms read the same on main.)
+            "git add s?h local*",
+            "git clone s?h local*:x",
+            "git ls-remote s* local*:x",
+            "tar -czf x.tgz s?h local*",
+            "tar -cf local*:out.tar s* l*",
+            # A command-running wrapper resolves to the real program, so a data
+            # program behind one keeps the file reading.
+            "time tar -czf handoff.tgz s* *.*",
+            "nice -n 10 tar -czf backup.tgz s* *.*",
+            "sudo tar -czf /var/backups/handoff.tgz s* *.*",
+            'cd "$wt" && time git add s* *.*',
+            # A redirect's ``&`` and a quoted separator start no command.
+            "ls -l >&s* *.*",
+            "grep -c 'a;s*' *.*",
+            # A glob in a trailing comment is never run; a comment opens at ``#``
+            # and the words after it are not a command.
+            "tar -czf handoff.tgz src # s* *.* go in the next archive",
+            "git add -A src # s* l* stay untracked for now",
+            # A separator glued inside a comment's word starts no command.
+            "tar -czf archive.tgz src # example;s?h local* id",
+            "echo hi #note;s?h local* id",
+            'for f in s* *.*; do wc -l "$f"; done',
+            # A ``case`` arm pattern ``s*)`` sits in command position after ``;;``
+            # but bash never runs it as a program.
+            'case "$f" in *.md) ;; s*) wc -l *.* ;; esac',
+            'for f in *; do case "$f" in docs) ls docs ;; s*) tar -czf "$f.tgz" *.* ;; esac; done',
         ],
     )
     def test_a_glob_host_after_a_glob_verb_is_not_this_host(self, text):
         # One filesystem expansion per connection: two wildcard words in a row
         # are every five-field cron schedule, not ``ssh localhost``.
         assert _denied_by(text) is None, text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # A glob that can name ssh or sftp after a program outside the data
+            # list keeps its host checks: such a program may run it, and a name
+            # missing from ``argv_floor_exec._GLOB_OPERAND_PROGRAMS`` only refuses.  The
+            # later ``*.*`` or ``l*`` can match this host, so these are refused.
+            "pre-commit run --files s* *.*",
+            "npx prettier --check s* *.*",
+            "python3 -m zipfile -c handoff.zip s* *.*",
+        ],
+    )
+    def test_a_glob_after_a_program_outside_the_data_list_keeps_host_checks(self, text):
+        assert _denied_by(text) == self._RULE, text
 
     @pytest.mark.parametrize(
         "cmd",
@@ -772,6 +909,415 @@ class TestSandboxEscapeSshSelf:
     )
     def test_one_glob_beside_a_literal_still_names_this_host(self, cmd):
         assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # In a directory holding files named ``ssh`` and ``localhost`` (an
+            # agent can create both), the shell expands each of these into an
+            # ssh connection to this host.
+            "s?h -F /dev/null local* id",
+            "s?h local*",
+            "s?h local* id",
+            "s[s]h local* id",
+            "?sh local* id",
+            "ss* local* id",
+            "s?h -F /dev/null 127.* id",
+            "s[s]h 127.* id",
+            "?sh -F /dev/null localhos? id",
+            "s?h ::? id",
+            # A command-running wrapper EXECUTES the glob it is handed, so the
+            # self-host after it still counts (the wrapper set is the repo's own
+            # resolver, not a list in this floor).
+            "env s?h local* id",
+            "nohup s?h local* id",
+            "timeout 5 s?h -F /dev/null local* id",
+            "sudo s?h local* id",
+            "time s?h local* id",
+            "nice -n 10 s?h local* id",
+            "xargs s?h local* id",
+            "true; s?h local* id",
+            # A complete backtick substitution earlier on the line opens and
+            # closes inside its own word, so the glob verb after it is still run.
+            "echo `date`; s?h local* id",
+            "x=`hostname`; s?h -F /dev/null local* id",
+            "echo $(date); s?h local* id",
+            # The glob verb is the program of a command substitution, a subshell,
+            # or the command after a glued separator: bash still runs it.
+            "echo $(s?h local* id)",
+            "x=$(s?h local* id)",
+            "echo `s?h local* id`",
+            'echo "`s?h local* id`"',
+            "(s?h local* id)",
+            "true;s?h local* id",
+            "true&&s?h local* id",
+            # The separator is glued after an argument, or a wrapper follows it.
+            "cd /tmp;s?h local* id",
+            "echo 'x'&&s?h local* id",
+            "cd /tmp|s?h local* id",
+            "cd /tmp;sudo s?h local* id",
+            # A newline ends a comment, and the tokens carry it as a lone ``;``.
+            "echo hi # note\ns?h local* id",
+            # An array opener and closer that sit in comments pair nothing: the
+            # glob verb between them is a command line.
+            "# a=(\ns?h local* id\n# )",
+            # So a spaced ``;`` inside a comment reads the same: a known over-block.
+            "tar -czf archive.tgz src # example ; s?h local* id",
+            "cat <<EOF > f\n$(s?h local* id)\nEOF",
+            # A quoted backtick is data to bash, and the tokens have lost their
+            # quotes: a command between two of them is still in execute position.
+            "echo '`'; s?h -F /dev/null local* id; echo '`'",
+            "echo '`'; env s?h -F /dev/null local* id; echo '`'",
+            "echo '`'; s[s]h 127.* id; echo '`'",
+            "echo 'a`'; true && s?h local* id; echo '`b'",
+            # A literal backtick in a quoted assignment before the verb opens no
+            # substitution: the verb still runs, bare or behind a wrapper.
+            "x='`foo' s?h -F /dev/null local* id",
+            "env x='`foo' s?h -F /dev/null local* id",
+            "x='`foo' sudo s?h -F /dev/null local* id",
+            "x='`foo' timeout 5 s?h -F /dev/null local* id",
+            "x='a`foo' s[s]h -F /dev/null 127.* id",
+            # Control: the ``$(`` twin, where the quoted parenthesis is masked.
+            "x='$(foo' s?h -F /dev/null local* id",
+            # Inside a real substitution, a command after a separator runs too.
+            "n=$(true; s?h local* id)",
+            # An opener that never closes (here inside a comment) ends its
+            # effect at the first separator too.
+            "echo hi # see $( for more\ns?h local* id",
+            "n=`ls x | s?h local* id`",
+            # A bracket glob whose class holds a character that starts a command
+            # is still one word to bash, and can still name ssh.
+            "s[s\\)]h localhost id",
+            "s[s')']h localhost id",
+            "s[s\\`]h localhost id",
+            "s[s\\;]h -F /dev/null localhost id",
+            "echo $(s[s\\)]h localhost id)",
+            "true;s[s\\)]h localhost id",
+        ],
+    )
+    def test_a_glob_host_after_a_bare_ssh_verb_glob_is_this_host(self, cmd):
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A verb glob with a directory part expands outside the working
+            # directory, so it names the real ssh client wherever the shell
+            # runs it -- including where the execute-position walk does NOT mark
+            # it run: a ``find -exec``/``-execdir`` subcommand, behind a leading
+            # redirect, behind a tracer like ``strace``/``watch``, or behind a
+            # ``sudo -E`` the floor reads lowercased. The host glob beside it
+            # still names this host.
+            "find . -maxdepth 0 -exec /usr/bin/s?h -F /dev/null local* id \\;",
+            "find . -execdir /usr/bin/s?h local* id \\;",
+            "2>/dev/null /usr/bin/s?h local* id",
+            "> /dev/null /usr/bin/s?h local* id",
+            "strace /usr/bin/s?h local* id",
+            "watch /usr/bin/s?h local* id",
+            "sudo -E /usr/bin/s?h 127.* id",
+            # The same ``sudo -E`` with a BARE glob: the shared resolver reads
+            # ``-E`` as an option, not sudoedit, so the glob stays in program
+            # position and the host glob is read.
+            "sudo -E s?h 127.* id",
+            # Excluding array ELEMENTS from execute position does not disable the
+            # path-qualified floor: a directory-part glob inside an array with a
+            # self-host operand after it is still read as this host.
+            "arr=( /usr/bin/s?h local* )",
+        ],
+    )
+    def test_path_qualified_or_executed_glob_verb_still_names_this_host(self, cmd):
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A bash array literal: ``files=(`` reads as an assignment and the
+            # glob lands in the resolver's program slot, but it is an array
+            # element bash never runs, so ``_array_element_indices`` takes it
+            # out of execute position and the glob host after it is a filename.
+            'files=( s* *.* ); printf "%s\\n" "${files[@]}"',
+            'targets=( r* l* ); tar -czf handoff.tgz "${targets[@]}"',
+            # ``declare -a``/``local -a`` prefixes do not change the reading.
+            "declare -a a=( s* *.* )",
+            "local -a a=( s* *.* )",
+            # A path part in a bare array has no self-host operand after it, so
+            # the restored floor checks it and finds nothing to match.
+            "arr=( /usr/bin/s?h )",
+        ],
+    )
+    def test_a_glob_in_an_array_literal_is_not_an_executed_verb(self, cmd):
+        assert _denied_by(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A command substitution assigned to a variable: the resolver steps
+            # over ``n=$(ls`` as an assignment and would take the substitution's
+            # first operand for the program.  The substitution is read as its
+            # own frame, where ``ls``/``sha256sum`` is the program.
+            "n=$(ls s* *.* | wc -l)",
+            "files=$(ls s* l*)",
+            "hashes=$(sha256sum s* *.*)",
+            "count=$(ls r* *.* 2>/dev/null | wc -l)",
+        ],
+    )
+    def test_a_glob_inside_a_command_substitution_is_not_an_executed_verb(self, cmd):
+        assert _denied_by(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A heredoc body that a known data reader receives is text, so a glob
+            # in it is not an executed verb.
+            "gh pr create --title 'ssh floor: execute-position glob read' --body-file - <<'EOF'\n"
+            "r* l* in a git status pathspec stay allowed.\nEOF",
+            "git commit -F - <<'EOF'\ns* *.* stay plain files\nEOF",
+            "cat <<'EOF' > notes.txt\nr* l* stay allowed.\nEOF",
+            "tee notes.txt <<'EOF'\nr* l*\nEOF",
+            "jq . <<'EOF'\nr* l*\nEOF",
+            # A pipeline made only of data readers still only reads the body.
+            "cat <<'EOF' | gh pr create --title t --body-file -\nr* l* stay files\nEOF",
+            "cat <<'EOF' | git commit -F -\nr* l* stay files\nEOF",
+            "cat <<'EOF' | tee notes.txt | jq .\nr* l* stay files\nEOF",
+            # A command after ``&&``/``||`` on the tag line is checked on its own;
+            # the body still goes only to the command that holds the tag.
+            "git commit -F - <<'EOF' && git log -1 --stat\nr* l* stay files\nEOF",
+            "cat > docs/notes.md <<'EOF' && git add docs/notes.md\nr* l* stay files\nEOF",
+            "cat <<'EOF' > notes.md || echo failed\nr* l* stay files\nEOF",
+            # A quoted path that expands nothing is a plain path too.
+            "cat > \"docs/notes.md\" <<'EOF'\nr* l* stay files\nEOF",
+            "cat > 'docs/my notes.md' <<'EOF'\nr* l* stay files\nEOF",
+            "cat <<'EOF' >>\"docs/notes.md\"\nr* l* stay files\nEOF",
+            # A colon in a bare path is a file name (a timestamp), never a remote
+            # ``host:path``: the shell writes the redirect target locally.
+            "cat <<'EOF' > docs/2026-11-12T00:00:00.md\nr* l* stay files\nEOF",
+            "cat > notes-10:30.md <<'EOF'\nr* l* stay files\nEOF",
+            "cat <<'EOF' > localhost:notes.md\nr* l* stay files\nEOF",
+            # A scan this walk starts on a value inside a data body (a function's
+            # bound body, an rsync remote shell, a nested script) keeps the read
+            # that a bare glob verb there is a filename.
+            "cat <<'EOF' > notes.txt\nf(){ s?h \"$1\" id; }; f local*\nEOF",
+            "cat <<'EOF' > notes.txt\nrsync -e 's?h local*' a b\nEOF",
+            "cat <<'EOF' > notes.txt\nRSYNC_RSH='s?h local*' rsync a b\nEOF",
+            "cat <<'EOF' > notes.txt\nbash -c 'x=1; s?h local* id'\nEOF",
+            "git commit -F - <<'EOF' && bash\ns?h local* id\nEOF",
+            # Windows spellings match their base name.
+            "git.exe commit -F - <<'EOF'\nr* l* stay files\nEOF",
+            "cat.exe <<'EOF' > notes.txt\nr* l* stay files\nEOF",
+            "cat.exe <<'EOF' | gh.exe issue create --body-file -\nr* l* stay files\nEOF",
+            # A heredoc written inside a data body is text, like the rest of it.
+            "gh issue create --title t --body-file - <<'EOF'\nrepro: cat <<'X' | bash\nr* l*\nEOF",
+            # The one heredoc reader (``read_commands``) parses a tag glued to its
+            # neighbour and a comment on the tag line, so these read as cat data.
+            "cat<<'EOF' >f\nr* l* stay files\nEOF",
+            "cat <<'EOF'>f\nr* l* stay files\nEOF",
+            "cat <<'EOF' > f # note\nr* l* stay files\nEOF",
+            # A backslash-newline before the tag line joins, so the tag's own line
+            # reads as the whole logical command: a data reader still reads the body.
+            "gh pr create --title t \\\n  --body-file - <<'EOF'\nr* l* stay files\nEOF",
+            "git commit \\\n  -F - <<'EOF'\nfix: x\n\ns* *.* stay plain files\nEOF",
+            "cd repo && \\\n  cat <<'EOF' > f\nr* l* stay files\nEOF",
+            # Only a line that is the tag alone closes the body; a body line that
+            # merely holds the tag word is still body text.
+            "cat <<'EOF' > f\nsay EOF then\ns?h local* id\nEOF",
+            "cat <<'EOF' > f\nhi\nEOF x\ns?h local* id\nEOF",
+            "cat <<'EOF' > f\nhi\nx EOF\ns?h local* id\nEOF",
+        ],
+    )
+    def test_a_heredoc_body_read_as_data_is_not_an_executed_verb(self, cmd):
+        assert _denied_by(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Every consumer that is not a known data reader may RUN the body, so
+            # the body keeps today's reading.  ``ssh localhost`` runs it on this
+            # host, which is the escape itself.
+            "ssh localhost <<'EOF'\nuptime\nEOF",
+            "bash <<'EOF'\ns?h local* id\nEOF",
+            "bash <<EOF\ns?h local* id\nEOF",
+            "sh -s <<'EOF'\ns?h local* id\nEOF",
+            "python - <<'EOF'\ns?h local* id\nEOF",
+            "xargs sh <<'EOF'\ns?h local* id\nEOF",
+            "sudo -s <<'EOF'\ns?h local* id\nEOF",
+            "env sh <<'EOF'\ns?h local* id\nEOF",
+            # A data reader whose output feeds a shell on the tag's line runs it.
+            "cat <<'EOF' | bash\ns?h local* id\nEOF",
+            # The command after a data body is still a command.
+            "cat <<'EOF' > notes.txt\nr* l*\nEOF\ns?h local* id",
+            # No closing tag: fail closed.
+            "cat <<'EOF'\ns?h local* id",
+            # A command typed on the tag's own line runs; a typed ``;`` must not be
+            # mistaken for the newline that starts the body.
+            "cat <<'EOF' > x ; s?h local* id\nhi\nEOF",
+            "cat <<'EOF' > x; s?h local* id\nhi\nEOF",
+            "cat <<'EOF' ; s?h local* id\nhi\nEOF",
+            "cat <<'EOF' && s?h local* id\nhi\nEOF",
+            "cat <<'EOF' & s?h local* id\nhi\nEOF",
+            "git commit -F - <<'EOF' && s?h local* id\nr* l* stay files\nEOF",
+            "cat <<'EOF' > x || s?h local* id\nr* l* stay files\nEOF",
+            # One pipe segment that is not a data reader runs the body.
+            "cat <<'EOF' | xargs sh\ns?h local* id\nEOF",
+            "cat <<'EOF' | gh pr create --body-file - | bash\ns?h local* id\nEOF",
+            "cat <<'EOF' | s?h local* id\nr* l* stay files\nEOF",
+            "cat <<'EOF' |& bash\ns?h local* id\nEOF",
+            "cat <<'EOF' | $(echo bash)\ns?h local* id\nEOF",
+            # A Windows spelling of a shell is still a shell.
+            "bash.exe <<'EOF'\ns?h local* id\nEOF",
+            "cat.exe <<'EOF' | bash.exe\ns?h local* id\nEOF",
+            "git.exe commit -F - <<'EOF' && s?h local* id\nr* l* stay files\nEOF",
+            # A tag line that continues an earlier line: ``bash`` is the program.
+            "bash \\\ncat <<'EOF'\ns?h local* id\nEOF",
+            # A heredoc inside a data body is text, so its tag cannot reach past the
+            # outer close; the line after the outer close is a command.
+            "gh issue create --body-file - <<'EOF'\ncat <<'X' > f\nEOF\ns?h local* id\nX",
+            "cat <<'EOF' > g\ngit commit -F - <<'X'\nEOF\ns?h local* id\nX",
+            # A ``<<`` in a comment is no heredoc; the lines after it still run.
+            "cat <<'A' > f # <<B\nhi\nA\nbash <<'B'\ns?h local* id\nB",
+            "cat f # <<B\nbash <<'B'\ns?h local* id\nB",
+            # A backslash-newline INSIDE a quoted-tag body is literal, so it never
+            # moves the close: the body ends at its own ``EOF`` and the glob runs.
+            "gh pr create --body-file - <<'EOF'\nr* l* \\\nEOF\ns?h local* id\nEOF",
+            # A literal verb in a heredoc body is read as it is without the cut,
+            # whatever reads the body: bash runs a substitution in an unquoted
+            # body, a process substitution hands the body to a shell, and a git
+            # alias set on the command line runs one.
+            "cat <<EOF > f\n$(ssh -F /dev/null localhost id)\nEOF",
+            "git commit -F - <<EOF\n`ssh -F /dev/null 127.0.0.1 id`\nEOF",
+            "cat <<'EOF' > >(bash)\nssh -F /dev/null localhost id\nEOF",
+            "bash <(cat <<'EOF'\nssh -F /dev/null localhost id\nEOF\n)",
+            "git -c alias.x='!sh' x <<'EOF'\nssh -F /dev/null localhost id\nEOF",
+            "cat <<'EOF' > run.sh\nssh -F /dev/null localhost id\nEOF",
+            # A glob verb stays executed unless the body is certainly data:
+            # the tag is quoted,
+            "cat <<EOF > f\ns?h local* id\nEOF",
+            # the statement expands nothing and redirects only to a plain path,
+            "cat <<'EOF' > >(bash)\ns?h local* id\nEOF",
+            "cat <<'EOF' | tee >(bash)\ns?h local* id\nEOF",
+            "bash <(cat <<'EOF'\ns?h local* id\nEOF\n)",
+            "cat <<'EOF' > $out\ns?h local* id\nEOF",
+            "tee $out <<'EOF'\ns?h local* id\nEOF",
+            "cat \"$f\" - <<'EOF'\ns?h local* id\nEOF",
+            "cat <<'EOF' > \"$out\"\ns?h local* id\nEOF",
+            "cat <<'EOF' > `mktemp`\ns?h local* id\nEOF",
+            "cat <<'EOF' > \"docs/`date`.md\"\ns?h local* id\nEOF",
+            "cat <<'EOF' > \"docs/*.md\"\ns?h local* id\nEOF",
+            "cat <<'EOF' > 'a$b.md'\ns?h local* id\nEOF",
+            "cat <<'EOF' > 'a`b.md'\ns?h local* id\nEOF",
+            "cat <<'EOF' > \"a\nb.md\"\ns?h local* id\nEOF",
+            # A bare path with an escaped space or another character outside the
+            # plain set is not read as plain: a known over-block, the quoted
+            # form of the same path is allowed.
+            "cat <<'EOF' > my\\ notes.md\ns?h local* id\nEOF",
+            "cat <<'EOF' > a,b.md\ns?h local* id\nEOF",
+            # A colon target changes nothing for a body that is not certainly data
+            # or for a literal verb in the body.
+            "cat <<EOF > docs/10:30.md\ns?h local* id\nEOF",
+            "cat <<'EOF' > docs/10:30.md\nssh localhost id\nEOF",
+            'cat <<\'EOF\' > "docs/a""b.md"\ns?h local* id\nEOF',
+            # The same nested values outside a data body are still run.
+            "cat <<'EOF' > notes.txt\nhello\nEOF\nf(){ s?h \"$1\" id; }; f local*",
+            "cat <<'EOF' > notes.txt\nhello\nEOF\nbash -c 'x=1; s?h local* id'",
+            "cat <<'EOF' | bash\nf(){ s?h \"$1\" id; }; f local*\nEOF",
+            "cat <<'EOF' 2>&1\ns?h local* id\nEOF",
+            "( echo x; cat <<'EOF'\ns?h local* id\nEOF\n) | bash",
+            "{ echo x; cat <<'EOF'\ns?h local* id\nEOF\n} | bash",
+            "if true; then\ncat <<'EOF'\ns?h local* id\nEOF\nfi | bash",
+            # and every segment is a known reader in a known form: no git or gh
+            # alias, extension, global option or config in the environment.
+            "git x <<'EOF'\ns?h local* id\nEOF",
+            "git -c alias.x='!sh' x <<'EOF'\ns?h local* id\nEOF",
+            "git -c core.editor=true commit -F - <<'EOF'\ns?h local* id\nEOF",
+            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!sh' "
+            "git commit -F - <<'EOF'\ns?h local* id\nEOF",
+            "git commit <<'EOF'\ns?h local* id\nEOF",
+            "gh some-ext <<'EOF'\ns?h local* id\nEOF",
+            "gh pr create --title t <<'EOF'\ns?h local* id\nEOF",
+            "./cat <<'EOF'\ns?h local* id\nEOF",
+            "sudo tee f <<'EOF'\ns?h local* id\nEOF",
+        ],
+    )
+    def test_a_heredoc_body_a_consumer_may_run_still_names_this_host(self, cmd):
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A spaced, ``|``-alternated ``case`` arm: ``s*`` sits after ``;;``
+            # and is not the word ending in ``)``, so the arm guard misses it,
+            # and no existing reader tells a case pattern from a command word.
+            'for f in *; do case "$f" in docs ) ls docs ;; s* | r* ) wc -l *.* ;; esac; done',
+            # The same spaced, alternated pattern in the FIRST arm, right after ``in``.
+            'case "$f" in s* | r* ) wc -l *.* ;; esac',
+            # An array literal re-tokenized inside a ``bash -c`` payload: the
+            # element ``*.*`` reads as an rsync glob that the cross-frame walk
+            # carries, which the per-command array-element read does not reach.
+            "bash -c 'files=( s* *.* ); tar -czf handoff.tgz \"${files[@]}\"'",
+            # ``sudo -e``/``sudoedit`` opens files in an editor and runs no
+            # program, so the shared resolver's program slot (the glob after it)
+            # is a filename, not a verb.  The resolver reads literal ssh/scp/etc
+            # verbs the same on every floor, so the edit-mode exception is not
+            # carried there; the floor over-reads the operand instead.
+            "cd /etc/ssh && sudo -e s* *.*",
+            # An assignment from a backtick substitution: backticks are not read
+            # (the tokens cannot tell a quoted one from a live one), so the
+            # resolver steps over ``n=`ls`` and takes the first operand for the
+            # program.  The ``$( )`` form of the same command is allowed.
+            "n=`ls s* *.* | wc -l`",
+            # A real multi-line array: its elements end at the newline, so a glob
+            # verb and a glob host on their own line are read as a command.
+            "a=(\ns?h local* id\n)",
+        ],
+    )
+    def test_known_overblock_of_rare_shell_grammar_is_refused(self, cmd):
+        # KNOWN OVER-BLOCK, owner decision -- not asserting this is CORRECT.
+        # ``_executed_program_indices`` reads a glob that bash never runs as a
+        # program (a spaced/alternated ``case`` arm pattern, an array element
+        # reached only across a ``bash -c`` payload, or a ``sudo -e`` edit-mode
+        # operand), so a glob host after it is read as this host and the command
+        # is refused.  main allows all of these.  They fail SAFE (a false
+        # refusal of rare syntax, no ssh-to-self, no privilege boundary); no
+        # existing parser tells these positions from a command word, so the fix
+        # is held for an owner decision rather than chased with more argv-walk
+        # guards.  This test pins the current refusal so that fix flips it
+        # visibly.
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    def test_a_text_the_heredoc_reader_cannot_read_is_walked_whole(self):
+        # A command nested too deep for ``read_commands`` must not raise out of the
+        # gate: the cut removes nothing and the whole text is walked.
+        from kiro_crew.security.argv_floor_exec import _text_without_data_heredocs as cut
+
+        deep = 'echo "<<marker"'
+        for _ in range(1000):
+            deep = 'echo "$(' + deep + ')"'
+        assert cut(deep) == deep
+
+    def test_only_a_body_that_is_certainly_data_is_cut_from_the_text(self):
+        # ``read_commands`` is the one heredoc reader; the floor cuts a body only
+        # when every condition holds.  This pins what the cut removes and leaves.
+        from kiro_crew.security.argv_floor_exec import _text_without_data_heredocs as cut
+
+        body = "\ns?h local* id\neof"
+        for kept in (
+            "bash <<'eof'",  # not a reader
+            "cat <<eof",  # unquoted tag
+            "cat <<'eof' | bash",  # one segment is not a reader
+            "cat <<'eof' > $f",  # expands a variable
+            "cat <<'eof' > >(bash)",  # process substitution
+            "git x <<'eof'",  # an aliasable subcommand
+            "gh some-ext <<'eof'",  # an extension
+        ):
+            assert "s?h" in cut(kept + body), kept
+        assert "s?h" in cut("cat <<'eof'\ns?h local* id")  # never closed
+        for gone in (
+            "cat <<'eof' > f",
+            "tee -a notes.txt <<'eof'",
+            "git commit -f - <<'eof'",
+            "gh pr create --title 't (x)' --body-file - <<'eof'",
+            "cat <<'eof' | gh issue create --body-file -",
+        ):
+            assert "s?h" not in cut(gone + body), gone
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1068,3 +1614,43 @@ class TestSandboxEscapeSshSelf:
         # textual layers decide these without it).
         assert _denied_by("ssh -- localhost") == self._RULE
         assert _denied_by("ssh -v -- 127.0.0.1 id") == self._RULE
+
+
+@pytest.mark.parametrize(
+    "tokens, executed",
+    [
+        # Program position, and nothing else.
+        (["s?h", "local*", "id"], {0}),
+        (["tar", "-czf", "x.tgz", "s*", "*.*"], {0}),
+        # A command-running wrapper resolves to the real program it runs.
+        (["env", "s?h", "local*"], {1}),
+        (["sudo", "tar", "-czf", "x", "s*"], {1}),
+        (["time", "git", "add", "s*", "*.*"], {1}),
+        (["nice", "-n", "10", "tar", "s*"], {3}),
+        (["timeout", "5", "s?h", "local*"], {2}),
+        # Two commands: each contributes its own executed program.
+        (["cd", "x", "&&", "time", "git", "add", "s*"], {0, 4}),
+        # A comment opens at '#'; its words are never a command.
+        (["tar", "-czf", "x.tgz", "src", "#", "s*", "*.*"], {0}),
+        # A case arm pattern ending in ')' in command position is not a program.
+        (["s*)", "wc", "-l", "*.*"], set()),
+        # sudo -e (sudoedit) runs no program, but the shared resolver carries no
+        # edit-mode exception, so it reads the operand after it as the program:
+        # a known over-block that fails safe (pinned above).
+        (["sudo", "-e", "s*", "*.*"], {2}),
+        # An array literal's elements are never an executed program.
+        (["files=(", "s*", "*.*", ")"], set()),
+        (["arr=(", "/usr/bin/s?h", ")"], set()),
+        # A word inside a command substitution belongs to the substitution's frame.
+        (["n=$(ls", "s*", "*.*)"], set()),
+        # Backticks are not read: the word after a backtick opener stays executed.
+        (["n=`ls", "s*", "*.*`"], {1}),
+        (["x=`foo", "s?h", "local*", "id"], {1}),
+        # A word that holds a whole backtick pair does not open a span.
+        (["echo", "`date`;", "s?h", "local*", "id"], {0, 2}),
+    ],
+)
+def test_executed_program_indices_marks_only_run_positions(tokens, executed):
+    from kiro_crew.security.argv_floor_exec import _executed_program_indices
+
+    assert _executed_program_indices(tokens) == executed
