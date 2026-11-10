@@ -452,6 +452,26 @@ describe('CrewEditorNextDialog — section rail', () => {
     }
   })
 
+  it.each([
+    { command: 'C:\\tools\\mcp-server.exe', shown: 'mcp-server.exe' },
+    { command: '/usr/local/bin/mcp-server', shown: 'mcp-server' },
+  ])('shows only the file name of an MCP server command $command', async ({ command, shown }) => {
+    const row: CapabilityRow = {
+      section: 'mcpServers', id: 'local-tool', label: 'local-tool', state: 'local', present: true,
+      value: { command }, managed: false, shared_reference: false, remove: { section: 'mcpServers', id: 'local-tool' },
+    }
+    mockCaps.get.mockResolvedValue({
+      ...CAPS_VIEW, mode: 'mate', template: { ...CAPS_VIEW.template, name: 'c0ffee12', scope: 'mate' },
+      worker: { rows: [row] },
+    })
+    mockKit.get.mockResolvedValue({ member: 'oncall', revision: 'r1' })
+    const dialog = await openNew()
+    fireEvent.click(await within(dialog).findByTestId('next-rail-builtFrom'))
+    const bandRow = within(await within(dialog).findByTestId('next-band-added')).getByTestId('next-band-added-row')
+    expect(within(bandRow).getByText(shown)).toBeInTheDocument()
+    expect(bandRow).not.toHaveTextContent(command)
+  })
+
   it('removes an added capability through the capabilities remove op', async () => {
     const row = (section: CapabilityRow['section'], id: string, state: CapabilityRow['state']): CapabilityRow => ({
       section, id, label: id, state, present: true, value: true, managed: false, shared_reference: false,
