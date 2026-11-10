@@ -84,9 +84,15 @@ def _slot_identity_moved(name: str, slot_key: str) -> bool:
 
 
 async def _ensure_worker_slot(
-    state: Any, name: str, meta: dict, *, adopt_closed: bool = True
+    state: Any, name: str, meta: dict, *, adopt_closed: bool = True, scope: bool = True
 ) -> Any:
     """Materialize this spec's worker slot, SCOPED, and return it.
+
+    ``scope=False`` is the ownership-only read used when the spec's working directory
+    is gone: it applies the same foreign-slot refusal but never creates a slot and
+    never stamps ``project``/``model``/title. It returns this app's existing slot, or
+    ``None`` (nothing of ours, or a foreign owner -- the caller tells them apart by
+    whether ``state.get_slot`` still holds a slot under the key).
 
     The single place a spec slot comes into existence. It exists because
     ``get_or_create_slot`` only stamps ``app`` on NEWLY created slots, and
@@ -150,9 +156,13 @@ async def _ensure_worker_slot(
             return None
         slot = existing
         created = False
+    elif not scope:
+        return None
     else:
         slot = state.get_or_create_slot(name=slot_key, app=APP_NAME)
         created = True
+    if not scope:
+        return slot
     # The indexed working_dir is NOT trusted input. It is app state on disk, and
     # the agent this app runs can be talked into rewriting files -- so a rewritten
     # index entry would become the worker's cwd on the next message, and relative
