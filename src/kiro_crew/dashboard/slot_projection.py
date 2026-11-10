@@ -156,24 +156,33 @@ class SlotProjection:
             source_link_path_markers,
             source_ref_label,
         )
-        from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
+        from kiro_crew.dashboard.source_providers.contract import (
+            canonical_source_identity_key,
+            source_ref_identity_key,
+        )
         from kiro_crew.dashboard.source_providers.links import iter_source_url_candidates
 
         # Identities the user has explicitly unlinked from this session. The set
         # is keyed on the serialized identity, so a dismissed change stays gone
-        # no matter which URL shape re-mentions it. Snapshotting it as a frozenset
+        # no matter which URL shape re-mentions it. Each key is folded the way
+        # the identity is, so a key stored under a mixed-case GitHub spelling
+        # still matches. Snapshotting it as a frozenset
         # keeps the loop's membership test cheap and immune to a concurrent mutate.
         # Read defensively: this scanner is a staticmethod designed to run against
         # a bare ``object.__new__``-built slot that supplies only the fields the
         # walk reaches, so a slot that never ran ``__init__`` (and thus has no
         # dismissed set) must read as "nothing dismissed" rather than raise.
-        dismissed = frozenset(getattr(slot, "_dismissed_source_links", ()) or ())
+        dismissed = frozenset(
+            map(canonical_source_identity_key, getattr(slot, "_dismissed_source_links", ()) or ())
+        )
         # Keys added under an in-flight (uncommitted) unlink transaction are NOT
         # yet suppressed: publishing them here would let a concurrent broadcast
         # show a chip removed before its guarded write commits (and possibly
         # rolled back). Subtract them so the chip stays visible until commit.
         # Read defensively for the same bare-slot reason as ``dismissed`` above.
-        _txn_pending = frozenset(getattr(slot, "_dismissed_txn_pending", ()) or ())
+        _txn_pending = frozenset(
+            map(canonical_source_identity_key, getattr(slot, "_dismissed_txn_pending", ()) or ())
+        )
         if _txn_pending:
             dismissed = dismissed - _txn_pending
 
