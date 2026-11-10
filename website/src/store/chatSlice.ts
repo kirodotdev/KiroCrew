@@ -424,6 +424,10 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     }
     if (state.slotState === 'idle') bumpRunEpoch(state, slot)
     state.slotState = 'streaming'
+    // A live frame proves a turn is running, even one started elsewhere
+    // (Slack, cron) before any `slots` running frame lands. Without it
+    // `selectContinuable` offers Resume beside Stop (#34409).
+    state.slotRunning = true
     state._wsChunkedDuringFetch = true
     countLiveFrame(state)
     // Drop only the empty "Thinking…" placeholder; keep content-bearing
@@ -529,6 +533,8 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
   if (role === 'tool') {
     if (state.slotState === 'idle') bumpRunEpoch(state, slot)
     state.slotState = 'tool_running'
+    // Same as `chunk`: the turn is running (#34409).
+    state.slotRunning = true
     // Insert tool before any trailing streaming message so
     // chat_segment can still find and finalize it with redacted text.
     let insertIdx = state.messages.length
