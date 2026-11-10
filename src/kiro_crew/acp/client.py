@@ -236,6 +236,7 @@ from kiro_crew.acp.harness import pi as pi_mod  # noqa: F401
 from kiro_crew.acp.harness import process_adapter_for  # noqa: F401
 from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan  # noqa: F401
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS  # noqa: F401
+from kiro_crew.acp.kas_extract_repair import AcpKasExtractBroken  # noqa: F401
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch  # noqa: F401
 from kiro_crew.acp.liveness import (  # noqa: F401
     EVIDENCE_SAMPLING,

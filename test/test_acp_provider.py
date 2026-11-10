@@ -1139,6 +1139,7 @@ class TestStartKiroRuntimeResume:
         # failure in this file into a sandbox verdict.
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         # The shared translation settles the stderr drain before it reads
         # the latch, so this has to be awaitable: a plain MagicMock raises
         # "object MagicMock can't be used in 'await' expression".
@@ -1183,6 +1184,7 @@ class TestStartKiroRuntimeResume:
         mock_runtime.saw_not_logged_in = MagicMock(return_value=False)
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         mock_runtime.settle_stderr = AsyncMock()
         # Backend-authored text can carry a line break and a terminal escape;
         # neither may reach the log line, which must stay one line.
@@ -1237,6 +1239,7 @@ class TestStartKiroRuntimeResume:
         mock_runtime.saw_not_logged_in = MagicMock(return_value=False)
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         mock_runtime._stderr_task = asyncio.ensure_future(asyncio.sleep(3600))
         settle_entered = asyncio.Event()
 
@@ -1319,6 +1322,7 @@ class TestKiroStartupMetric:
         mock_runtime.saw_not_logged_in = MagicMock(return_value=bool(spawn_exc))
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         mock_runtime.settle_stderr = AsyncMock()
         mock_runtime.kill = AsyncMock()
         mock_runtime.create_session = AsyncMock(return_value=mock_handle)
@@ -1368,6 +1372,7 @@ class TestKiroStartupMetric:
         mock_runtime.saw_not_logged_in = MagicMock(return_value=True)
         mock_runtime.saw_sandbox_init_failure = MagicMock(return_value=False)
         mock_runtime.saw_delegate_launch_failure = MagicMock(return_value=False)
+        mock_runtime.kas_extract_broken_message = MagicMock(return_value="")
         mock_runtime.settle_stderr = AsyncMock()
         mock_runtime.kill = AsyncMock()
         rec = _CapturingRecorder()
