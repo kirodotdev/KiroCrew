@@ -47,6 +47,7 @@ from kiro_crew.security import (
     redact_and_truncate,
 )
 from kiro_crew.security.credential_sources import credential_records
+from kiro_crew.security.exfil import EXFIL_RULE_REASON_SUFFIXES
 from kiro_crew.security.redaction import (
     _OUTLOOK_HOSTS,
     _chat_mail_link_spans,
@@ -604,6 +605,17 @@ def _blank_spans(text: str, spans: Iterable[tuple[int, int]]) -> str:
     return "".join(out) + text[last:]
 
 
+def _without_reasons(text: str) -> str:
+    """``text`` without the fixed reason after each blocked-link tag, matched whole.
+
+    A delta cut can trip a different rule than the whole text, so the two copies
+    can carry different reason words, and those words are table text, never reply text.
+    """
+    for reason in EXFIL_RULE_REASON_SUFFIXES:
+        text = text.replace("]" + reason, "]")
+    return text
+
+
 def _kept_removed_values(
     saved: str,
     per_delta: str,
@@ -612,15 +624,21 @@ def _kept_removed_values(
 ) -> list[str]:
     """The removed values ``saved`` holds more often than ``per_delta`` does.
 
+    The counts skip the fixed reason after each blocked-link tag
+    (:func:`_without_reasons`) in both texts and in the value, since a value a
+    credential pass cut across a blocked link holds the tag and its reason too.
     A value whose every occurrence in ``saved`` lies wholly inside one of
     ``links`` (:func:`_outlook_link_spans`) is a piece of a link the final
     passes keep, not a value coming back, so it is not counted. One occurrence
-    anywhere else and the value is judged as before.
+    anywhere else and the value is judged as before. ``links`` are offsets into
+    ``saved`` as given, so that check reads the raw text and the raw value.
     """
+    bare_saved, bare_delta = _without_reasons(saved), _without_reasons(per_delta)
     return [
         v
         for v in removed
-        if saved.count(v) > per_delta.count(v) and not _only_inside(saved, v, links)
+        if bare_saved.count(_without_reasons(v)) > bare_delta.count(_without_reasons(v))
+        and not _only_inside(saved, v, links)
     ]
 
 
@@ -664,8 +682,9 @@ _LINK_PLACEHOLDER_RE = re.compile(
 def _blank_tags(text: str) -> str:
     """``text`` with every placeholder set off as its own run: the credential tag
     blanked, a blocked-link placeholder replaced by its domain alone (the reader
-    sees the domain). Text glued to a placeholder becomes a run of its own."""
-    text = text.replace(REDACTED_CREDENTIAL_TAG, " ")
+    sees the domain). Text glued to a placeholder becomes a run of its own. The
+    fixed reason after a tag is dropped (:func:`_without_reasons`)."""
+    text = _without_reasons(text).replace(REDACTED_CREDENTIAL_TAG, " ")
     return _LINK_PLACEHOLDER_RE.sub(lambda m: f" {m.group(1)} ", text)
 
 

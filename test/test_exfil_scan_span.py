@@ -22,7 +22,7 @@ from kiro_crew.security.exfil import (
 # 56 base64 characters: past the 40-char blob bar on its own.
 _BLOB = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9w"
 _EVIL = "evil.example.com"
-_TAG = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{_EVIL}]"
+_TAG = f"{EXFILTRATION_REDACTION_TAG_PREFIX}{_EVIL}] (random-looking query, may be legitimate)"
 # Assembled so no literal key id sits in source.
 _KEY_ID = "AKIA" + "IOSFODNN7EXAMPLE"
 

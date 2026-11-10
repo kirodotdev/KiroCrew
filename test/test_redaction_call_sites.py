@@ -55,7 +55,7 @@ def test_egress_helper_removes_the_url_whole(name: str) -> None:
     helper = dict(_helpers())[name]
     out = helper(_TEXT)
     assert "collector.example/c?" not in out
-    assert "[REDACTED: suspicious URL to collector.example]" in out
+    assert "[REDACTED: suspicious URL to collector.example] (credential)" in out
 
 
 @pytest.mark.parametrize("name", [n for n, _ in _helpers()])

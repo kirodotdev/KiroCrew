@@ -492,7 +492,10 @@ def test_restore_of_two_links_leaves_an_unallowed_host_and_a_withheld_record() -
     out, left = restore_allowed_links(
         text, records, frozenset({"reviews.corp.example"}), ordered=True
     )
-    assert out == f"a {_LONG} b [REDACTED: suspicious URL to sink.example-other.net] c {second}"
+    assert (
+        out
+        == f"a {_LONG} b [REDACTED: suspicious URL to sink.example-other.net] (long query, may be legitimate) c {second}"
+    )
     assert [r["domain"] for r in left] == ["sink.example-other.net"]
     # One of the host's two records keeps no address: neither placeholder is restored.
     withheld = [

@@ -167,13 +167,13 @@ _SD_CUT = security_helpers._JWT.rindex(".") + 10  # inside the signature
     [
         pytest.param(
             ["Link: " + _URL[:_CUT], _URL[_CUT:] + " . done"],
-            [f"Link: [REDACTED: suspicious URL to {_HOST}] . done"],
+            [f"Link: [REDACTED: suspicious URL to {_HOST}] (credential) . done"],
             ("X-Amz-", "TTTT", "bbbb"),
             id="presigned-link-cut-inside-its-query",
         ),
         pytest.param(
             ["ready\nLink: " + _URL[:_CUT], _URL[_CUT:] + "\n"],
-            ["ready\n", f"Link: [REDACTED: suspicious URL to {_HOST}]\n"],
+            ["ready\n", f"Link: [REDACTED: suspicious URL to {_HOST}] (credential)\n"],
             ("X-Amz-", "TTTT", "bbbb"),
             id="a-finished-line-goes-out-while-the-cut-link-waits",
         ),

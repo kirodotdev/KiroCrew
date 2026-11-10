@@ -4,7 +4,8 @@ The pattern that finds a URL in text, the query patterns that flag a
 credential-like payload, the percent-encoding detector, the decode bound, the
 hard credential markers scanned across the whole path and query, and the
 structural validator that lets an S3 presigned URL's own signature fields
-through. The classifier that applies them, ``_exfil_url_warning``, stays in
+through, and the placeholder a blocked URL becomes with the fixed reason that
+follows it for each rule id. The classifier that applies them, ``_exfil_url_warning``, stays in
 :mod:`kiro_crew.security.exfil` with the exempt-host lookup it consults.
 
 :mod:`kiro_crew.security.exfil` is the import path of every name defined here.
@@ -312,3 +313,44 @@ _HARD_CREDENTIAL_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+# ── The placeholder a blocked URL becomes ──
+
+#: Stable PREFIX of the substitution ``exfil.redact_exfiltration_urls`` writes in
+#: place of a suspicious URL. The full tag interpolates the redacted URL's
+#: domain, and a fixed reason follows it (:func:`exfiltration_redaction_tag`), so unlike the
+#: constant credential tags it cannot be equality-compared -- which is why it is
+#: a PREFIX constant and deliberately NOT a member of
+#: :data:`kiro_crew.security.redaction.CREDENTIAL_REDACTION_TAGS` (see that
+#: tuple's docstring). A consumer that must detect this rewriter's
+#: substitutions (the dashboard chat notice) prefix-counts THIS
+#: constant; the substitution below is built from it so the two can never
+#: drift.
+EXFILTRATION_REDACTION_TAG_PREFIX = "[REDACTED: suspicious URL to "
+
+#: The reason a placeholder names, by rule id: fixed words, never URL text, so a
+#: reader can tell a likely secret from a heuristic false positive.
+EXFIL_RULE_LABELS: dict[str, str] = {
+    "exfil_hard_credential": "credential",
+    "exfil_fixed_credential": "credential",
+    "exfil_encoded_credential": "encoded credential",
+    "exfil_decode_saturated": "heavy encoding, may be legitimate",
+    "exfil_percent_encoding": "heavy encoding, may be legitimate",
+    "exfil_query_length": "long query, may be legitimate",
+    "exfil_query_pattern": "random-looking query, may be legitimate",
+}
+
+#: The exact text a reason adds after the tag. Readers compare it whole, never parse it.
+EXFIL_RULE_REASON_SUFFIXES: tuple[str, ...] = tuple(
+    sorted({f" ({label})" for label in EXFIL_RULE_LABELS.values()})
+)
+
+
+def exfiltration_redaction_tag(domain: str, rule: str | None) -> str:
+    """``[REDACTED: suspicious URL to <domain>] (<reason>)``; no reason for an unknown rule.
+
+    The tag keeps its old shape, so every reader of it is unchanged.
+    """
+    label = EXFIL_RULE_LABELS.get(rule or "")
+    return f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]{f' ({label})' if label else ''}"

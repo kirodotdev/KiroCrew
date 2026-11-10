@@ -83,8 +83,8 @@ class TestCollectorRecordsMatchRedaction:
         cleaned, _, records = redact_exfiltration_urls_with_records(f"see {first} and {second} .")
 
         assert cleaned == (
-            f"see [REDACTED: suspicious URL to {_DOMAIN}] and "
-            f"[REDACTED: suspicious URL to {_DOMAIN}] ."
+            f"see [REDACTED: suspicious URL to {_DOMAIN}] (long query, may be legitimate) and "
+            f"[REDACTED: suspicious URL to {_DOMAIN}] (long query, may be legitimate) ."
         )
         assert len(records) == 2
 
@@ -286,7 +286,10 @@ class TestExistingCallersUnaffected:
         cleaned2, warnings2, _ = redact_exfiltration_urls_with_records(text)
 
         assert (cleaned, warnings) == (cleaned2, warnings2)
-        assert f"{EXFILTRATION_REDACTION_TAG_PREFIX}{_DOMAIN}]" in cleaned
+        assert (
+            f"{EXFILTRATION_REDACTION_TAG_PREFIX}{_DOMAIN}] (long query, may be legitimate)"
+            in cleaned
+        )
 
 
 class TestPersistenceAttachesRecords:
