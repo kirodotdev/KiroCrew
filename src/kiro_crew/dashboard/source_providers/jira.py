@@ -524,4 +524,6 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         "comments": comments,
         "linkedChanges": _jira_linked_changes(fields, base_url),
         "partialSections": partial_sections,
+        # The comments ride the one issue read, so no section read can fail alone.
+        "failedSections": [],
     }

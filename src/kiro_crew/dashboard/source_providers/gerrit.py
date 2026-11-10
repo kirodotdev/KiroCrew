@@ -890,6 +890,7 @@ async def _fetch_change(ref: SourceRef) -> dict[str, Any]:
     async def work(client: _Client) -> dict[str, Any]:
         detail = await client.detail()
         partial: list[str] = []
+        failed: list[str] = []
         state = _lifecycle(detail)
         current_sha, current_revision = _current_revision(detail)
         pinned = client.revision != "current"
@@ -922,7 +923,7 @@ async def _fetch_change(ref: SourceRef) -> dict[str, Any]:
                 if isinstance(value, SourceProviderNotConfigured):
                     raise value
                 _log_degradation(section, ref, value)
-                projection._mark_partial(partial, section)
+                projection._mark_failed(partial, failed, section)
         if isinstance(mergeable, BaseException):
             if isinstance(mergeable, SourceProviderNotConfigured):
                 raise mergeable
@@ -989,6 +990,7 @@ async def _fetch_change(ref: SourceRef) -> dict[str, Any]:
             "comments": discussion,
             "files": rows,
             "partialSections": partial,
+            "failedSections": failed,
         }
 
     return await _with_client(ref, work)

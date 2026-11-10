@@ -124,6 +124,8 @@ export interface IssueSource {
   linkedChanges: IssueLinkedChange[]
   /** Sections potentially incomplete because a provider request failed or hit a limit. */
   partialSections?: string[]
+  /** The subset of `partialSections` whose provider read failed (not a limit). */
+  failedSections?: string[]
 }
 
 /** A single contributor to an app's source repository (GitHub only, v1).
@@ -151,4 +153,6 @@ export interface PullRequestSource {
   comments: PullRequestComment[]; files: PullRequestFile[]
   /** Sections potentially incomplete because a provider request failed or hit a page/output limit. */
   partialSections?: string[]
+  /** The subset of `partialSections` whose provider read failed (not a page/output limit). */
+  failedSections?: string[]
 }
