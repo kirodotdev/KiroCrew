@@ -230,11 +230,19 @@ class SessionRegistryState:
     #: won race) or with its reservation.
     spawning_reservations: set[object] = field(default_factory=set)
     #: Per key, the event a speculative (eager) allocation sets when it returns,
-    #: registered or not, and that allocation's start priority. A real claim of
-    #: no higher priority that finds no live session but finds this waits for it
-    #: and claims what it registered, instead of cold-starting a second process
-    #: for the same key. Removed by the call that added it.
-    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority]] = field(default_factory=dict)
+    #: registered or not, its start priority, whether it is a resume prefetch
+    #: (``speculative_resume``) and its reservation token. A real claim that
+    #: finds no live session but finds this waits for it and claims what it
+    #: registered, instead of cold-starting a second process for the key: when
+    #: of no higher priority, or when the start is a resume prefetch past its
+    #: spawn door (token in ``spawning_reservations``). Removed by its caller.
+    speculative_starts: dict[str, tuple[asyncio.Event, StartPriority, bool, object]] = field(
+        default_factory=dict
+    )
+    #: Tokens of BACKGROUND resume prefetches a person's claim found short of
+    #: their spawn door and started itself: each stands down at that door
+    #: (``SpeculativeResumeRefused``). Removed with the announcement.
+    superseded_speculative_starts: set[object] = field(default_factory=set)
     #: Per fenced key, a receipt for every start the fence caught past its spawn
     #: door and whose reservation was then removed WHILE the fence was still up:
     #: the start returned during the ending caller's passes, its registration

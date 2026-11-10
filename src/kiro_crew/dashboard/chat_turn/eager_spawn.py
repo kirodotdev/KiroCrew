@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import resource_status
 from kiro_crew.agent_capabilities import CapabilityError
@@ -438,6 +438,7 @@ def schedule_eager_spawn(
     *,
     allow_resume: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    on_ended: Callable[[Exception | None], None] | None = None,
 ) -> "asyncio.Task | None":
     """Speculatively create *slot*'s session ahead of its first message.
 
@@ -457,9 +458,14 @@ def schedule_eager_spawn(
     agent/project switch handlers reset the session themselves.
 
     ``start_priority`` is FOREGROUND only from a handler serving the dashboard
-    owner's own slot action (create, agent or project switch), where the person is
-    about to type; the focus-driven resume prefetch, reloads and app callers stay
-    BACKGROUND (rule: ``kiro_crew.start_priority``).
+    owner's own slot action (create, agent or project switch, the tab menu's
+    Reload), where the person is about to type; the focus-driven resume prefetch,
+    the other reloads and app callers stay BACKGROUND (rule:
+    ``kiro_crew.start_priority``).
+
+    ``on_ended`` is called once the start has ended without being cancelled,
+    with the exception that failed it or ``None``; a reload reads it to say how
+    its respawn went. It is not called when this returns ``None``.
 
     The flag is read from the live-config watcher's adopted snapshot, a plain
     attribute read, and there is deliberately no disk fallback behind it: this
@@ -507,9 +513,14 @@ def schedule_eager_spawn(
             allow_resume=allow_resume,
             signal_generation=_arm_generation,
             start_priority=start_priority,
+            on_ended=on_ended,
         )
     )
     slot._eager_spawn_task = task
+    # A resume start whose signal waits on its end (a reload's respawn): a focus
+    # frame keeps it. A focus's own prefetch reports to nobody, so another
+    # window's focus still re-arms it (``ws._handle_slot_focused``).
+    slot._eager_spawn_reported_resume = allow_resume and on_ended is not None
     return task
 
 
@@ -563,6 +574,7 @@ async def _eager_spawn(
     allow_resume: bool = False,
     signal_generation: float | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    on_ended: Callable[[Exception | None], None] | None = None,
 ) -> None:
     """Debounce, re-validate, then create the slot's session and release it.
 
@@ -582,7 +594,13 @@ async def _eager_spawn(
        registered. For eligible V1 sessions, a first message arriving during
        the handshake blocks on the same semaphore and reuses the created
        session.
+
+    ``on_ended`` (see ``schedule_eager_spawn``) is called on every exit but a
+    cancel: a cancelled start was replaced by a newer slot signal or stopped by
+    the shutdown, and has nothing to report.
     """
+    failure: Exception | None = None
+    cancelled = False
     try:
         # The arm generation as of this slot signal. ``schedule_eager_spawn``
         # reads it synchronously at signal arrival (create_task only queues
@@ -885,19 +903,29 @@ async def _eager_spawn(
                 # cancelled -- gives the reserved allowance back.
                 _release_prefetch_reservation(session_key)
     except asyncio.CancelledError:
+        cancelled = True
         raise
     except SessionClosingError:
         # Same shutdown race as _on_session_closing: the gateway began
         # closing while the speculative spawn was mid-start. Not a failure —
         # the allocation path already reaped the half-started provider.
         logger.info("Eager spawn for %s aborted — gateway is shutting down", slot.key)
-    except Exception:
+    except Exception as exc:
         # Logged, not counted: the agent-start failures that count toward the
         # background-start cap were already noted at the allocation itself
         # (``_spawn_admitted_prefetch``); everything else reaching here -- a
         # pending-reset consume, a selection write, admission bookkeeping --
         # spawned no agent and must not stop background starts.
+        failure = exc
         logger.warning("Eager spawn failed for slot %s", slot.key, exc_info=True)
+    finally:
+        if on_ended is not None and not cancelled:
+            try:
+                on_ended(failure)
+            except Exception:
+                logger.warning(
+                    "Eager spawn: the end callback for slot %s failed", slot.key, exc_info=True
+                )
 
 
 async def _spawn_admitted_prefetch(
@@ -991,7 +1019,10 @@ async def _spawn_admitted_prefetch(
         # or a failed speculative LOAD (allow_resume path: F2 fell
         # back / mapping vanished / provider switch), rejected before
         # registration so no claimable fallback session exists. Both
-        # end the same way: the first real message handles it.
+        # end the same way: the first real message handles it. The same
+        # refusal stands down a resume start a person's message took over
+        # before it reached its spawn door (``get_or_create``): that
+        # message starts the agent itself.
         logger.info("Eager spawn: %s left to first turn (refused)", session_key)
         return
     sessions.release(session_key)

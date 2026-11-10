@@ -769,7 +769,7 @@ project_lists | api_favorite_projects | async function | (request: 'web.Request'
 project_lists | api_favorite_project_add | async function | (request: 'web.Request') -> 'web.Response'
 project_lists | api_favorite_project_remove | async function | (request: 'web.Request') -> 'web.Response'
 session_relaunch | api_chat_slot_reload | async function | (request: 'web.Request') -> 'web.Response'
-session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str', after_reset_in_lock: 'Callable[[str], Awaitable[None]] | None' = None) -> 'web.Response'
+session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str', after_reset_in_lock: 'Callable[[str], Awaitable[None]] | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>) -> 'web.Response'
 session_relaunch | api_chat_slot_workspace | async function | (request: 'web.Request') -> 'web.Response'
 session_relaunch | api_chat_slot_project | async function | (request: 'web.Request') -> 'web.Response'
 slot_approval | _internal_session_approval_refusal | async function | (request: 'web.Request', operation: 'str') -> "'web.Response | None'"
