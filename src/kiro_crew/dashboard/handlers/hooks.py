@@ -714,6 +714,7 @@ async def _run_hook_inner(
         identity_grant_covers_child,
     )
     from kiro_crew.llm_helpers import _steer_host_deny
+    from kiro_crew.messaging.driver import strip_steering_markers
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK  # noqa: F811
 
     execution: ExecutionContext = (
@@ -993,7 +994,8 @@ async def _run_hook_inner(
     except Exception:
         logger.debug("usage row (webhook) persist failed", exc_info=True)
 
-    return result_text
+    # kiro-cli's [STEERING steer-…] ack is protocol, not the result.
+    return strip_steering_markers(result_text)
 
 
 async def _run_hook_agent(
