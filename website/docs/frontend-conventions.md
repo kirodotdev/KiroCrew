@@ -117,6 +117,9 @@ Other shared modules:
   in an `InstantTip` on hover and on keyboard focus; use it instead of
   `truncate` plus a native `title`, which the macOS desktop app often does not
   paint and no browser shows on focus),
+  `useCutRowTip.tsx` (the same bubble for a list of rows that are themselves
+  the focus stops, such as picker options: one bubble per list, opened only on
+  a row where a `truncate` line is cut off),
   `MarkdownRenderer.tsx` (the markdown renderer, with highlight.js
   syntax highlighting; its owners are mapped [below](#the-markdown-renderer)),
   `TypewriterText.tsx`
