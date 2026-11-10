@@ -1051,6 +1051,15 @@ second read through `_mixed_internal_api_paths()` so an edition's mixed paths jo
 it — so the headless server (below) binds to the **same** sets and the two
 entrypoints cannot drift.
 
+Connected computers (feature preview `connected_computers`) adds no internal
+path. No HTTP route creates or widens a sharing grant, whatever the caller
+holds (a dashboard session, the internal secret, an agent IPC capability):
+native consent runs on the stdio pipe between the desktop app's main process
+and the `kirocrew connected-computer desktop-host` child it spawned (see
+[providers](providers.md), Connected computers desktop host). The local routes
+it adds only list or narrow (`GET .../local/grants`,
+`DELETE .../local/grants/{grant_id}`, `POST .../local/off`), owner only.
+
 #### `start_api_server()` — headless (`--slack-only`) parity
 
 The `--slack-only` gateway starts `start_api_server()` instead of

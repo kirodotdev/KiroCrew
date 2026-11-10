@@ -150,6 +150,15 @@ disconnect. The Secrets routes do not edit it: a write or delete of that name
 returns `409` with code `managed_by_wakatime_oauth`; remove it with
 `POST /api/wakatime/oauth/disconnect`.
 
+Connected computers keeps its own state in two vault entries:
+`CONNECTED_COMPUTERS_LOCAL` (this computer's shares, its install identity and
+the queued remote revokes) and `CONNECTED_COMPUTERS_DEVICES` (the computers
+enrolled with this gateway). Each is one JSON document that feature writes by
+compare-and-swap. The Secrets routes leave both out of the listing and refuse a
+write or delete of either name with `409` and code
+`managed_by_connected_computers`; change sharing under
+**Settings → Connected computers** or with `kirocrew connected-computer`.
+
 When a stored integration name is one the runtime will not read, the response
 also carries an `unused` list of `{name, reason}` entries. The reasons are
 `wakatime_disabled` (`WAKATIME_API_KEY` stored while WakaTime is off),

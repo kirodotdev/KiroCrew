@@ -610,10 +610,10 @@ gateway expects of it, and the gateway itself only checks each exposed name
   disabled server, and a server whose `disabledTools` is unreadable or longer than 512.
   Nothing ticked means nothing exposed; a plain stdio server the user ticks IS exposed, so
   the feature is never met by refusing them all.
-- **Tools turned off locally**: a server with
+- **Tools turned off locally** (`connected_computers/mcp_filter.py`): a server with
   `disabledTools` is exposed with that list snapshotted, and the connector on the computer
   keeps those tools off whatever the gateway sends. Each entry is read as kiro-cli reads
-  it (the rule of `cron_script_mcp._tool_is_switched_off` in this repository):
+  it (`mcp_filter.tool_is_turned_off`, the one copy of the rule, which `cron_script_mcp._tool_is_switched_off` also calls):
   exactly, and an entry with `*` or `?` also as an `fnmatchcase` glob, so `delete_*` keeps
   `delete_repo` off; a glob holding `{`, `}` or `\` covers every tool. It forwards each request line
   re-encoded (so a duplicate `name` key cannot smuggle a turned-off tool), answers a

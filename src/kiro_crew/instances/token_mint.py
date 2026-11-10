@@ -585,7 +585,15 @@ _LEADER_SCRIPT = (
 )
 
 
-def under_group_leader(argv: list[str]) -> list[str]:
+# The same leader for a caller that writes ssh's stdin. An asynchronous list in
+# a shell without job control reads ``/dev/null``, so the caller's stdin is first
+# copied to fd 3 and handed to the backgrounded ssh explicitly.
+_LEADER_SCRIPT_STDIN = "exec 3<&0; " + _LEADER_SCRIPT.replace(
+    '"$@" & c=$!; ', '"$@" <&3 3<&- & c=$!; '
+)
+
+
+def under_group_leader(argv: list[str], *, keep_stdin: bool = False) -> list[str]:
     """*argv* (an ssh command line) run under a POSIX shell that ends what ssh leaves.
 
     ssh runs a host's ``ProxyCommand`` in ssh's own process group, and on exit
@@ -611,7 +619,8 @@ def under_group_leader(argv: list[str]) -> list[str]:
     head = argv[0] if argv else ""
     if not (os.path.isabs(head) and os.path.isfile(head) and os.access(head, os.X_OK)):
         return list(argv)
-    return [_LEADER_SHELL, "-c", _LEADER_SCRIPT, _LEADER_NAME, *argv]
+    script = _LEADER_SCRIPT_STDIN if keep_stdin else _LEADER_SCRIPT
+    return [_LEADER_SHELL, "-c", script, _LEADER_NAME, *argv]
 
 
 async def spawn_one_shot_ssh(
@@ -621,14 +630,16 @@ async def spawn_one_shot_ssh(
     stdin: int | None = None,
     stdout: int | None = asyncio.subprocess.PIPE,
     stderr: int | None = asyncio.subprocess.PIPE,
+    keep_stdin: bool = False,
 ) -> asyncio.subprocess.Process:
     """Spawn a one-shot ssh run (mint, remote run, probe) under its group leader.
 
     *argv* and *env* come from :func:`ssh_spawn_argv_env`, so the ssh head and
-    the ``PATH`` are the ones resolved for ssh itself.
+    the ``PATH`` are the ones resolved for ssh itself. Pass *keep_stdin* when the
+    caller writes a request to ssh's stdin: without it ssh reads ``/dev/null``.
     """
     return await asyncio.create_subprocess_exec(
-        *under_group_leader(argv),
+        *under_group_leader(argv, keep_stdin=keep_stdin),
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,

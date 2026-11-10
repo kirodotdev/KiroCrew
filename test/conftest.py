@@ -378,6 +378,9 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
 from conftest_resets_acp import (  # noqa: E402,F401 -- bound for pytest and importers
     _reset_kas_agent_config_error_reports,
 )
+from conftest_resets_connected_computers import (  # noqa: E402,F401 -- bound for pytest and importers
+    _reset_connected_computers_state,
+)
 from conftest_resets_decisions import (  # noqa: E402,F401 -- bound for pytest and importers
     _fresh_decision_provider_error_warnings,
 )
