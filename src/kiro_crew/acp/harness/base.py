@@ -667,6 +667,28 @@ class HarnessAdapter(LaunchAdapter):
         unchanged, which is what keeps its wire byte-identical.
         """
 
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """The ``session/new`` / ``session/load`` params to send, and the agent to activate.
+
+        Asked after the runtime built the request and before it goes out. This
+        default sends what the runtime built and activates the agent the caller asked
+        for, so it returns BOTH of the caller's objects unchanged, and the request
+        stays byte-identical to one built without this seam. KAS
+        (:class:`~kiro_crew.acp.harness.kas.KasHarness`) also names its injected
+        agent as the mode a ``session/new`` starts in, and still activates the
+        caller's agent. A host may reshape the request or return a different agent
+        to activate. Raising ``AcpRuntimeError`` here refuses the start before
+        anything is sent.
+        """
+        return params, agent
+
     def activation_refusal(self, agent: str, resp: dict[str, Any]) -> str | None:
         """Why *agent* must NOT be activated on the session *resp* just opened, or ``None``.
 

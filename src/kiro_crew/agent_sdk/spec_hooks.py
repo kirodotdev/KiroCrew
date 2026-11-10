@@ -1633,12 +1633,19 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
     with no spec on disk (a KAS built-in mode) has no spec hooks, so only the Hooks
     page's hooks count; a spec that exists but cannot be read answers True:
     re-projecting is the safe direction. A crewmate's worker is read
-    as the provider's own session's merged spec (:func:`_agent_spec`).
+    as the provider's own session's merged spec (:func:`_agent_spec`). Each entry
+    of the batch is checked on its own, a registered sub-agent target's included:
+    its calls run inside this agent's turn under its own entry's permissions.
     """
     if not capabilities_of(provider).crew_fires_spec_hooks:
         return False
     approved = getattr(provider, "kas_auto_approved_capabilities", None)
-    if not approved:
+    if approved is None:
+        return False
+    from kiro_crew.acp.kas_subagent_targets import registered_unprompted
+
+    parts = registered_unprompted(approved, getattr(provider, "kas_registered_agents", None))
+    if not parts:
         return False
     agent_id = session_agent(provider, agent_id)
     if not agent_id:
@@ -1658,12 +1665,16 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
 
         # A built-in mode with no spec: only the Hooks page's hooks count.
         spec = _agent_spec(agent_id, None, session_key)
-        covered = hook_gated_capabilities(
-            pre_tool_hook_matchers(agent_id, spec),
-            mcp_servers=approved_mcp_servers(approved),
-            mcp_tool_names=cached_mcp_tool_names,
-        )
-        return hook_gated_auto_approved(covered, approved)
+        matchers = pre_tool_hook_matchers(agent_id, spec)
+        still: set[str] = set()
+        for part in parts:
+            covered = hook_gated_capabilities(
+                matchers,
+                mcp_servers=approved_mcp_servers(part),
+                mcp_tool_names=cached_mcp_tool_names,
+            )
+            still |= hook_gated_auto_approved(covered, part)
+        return still
 
     try:
         still_approved = await asyncio.to_thread(_covered)

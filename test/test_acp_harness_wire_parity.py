@@ -65,7 +65,8 @@ _MCP_ROSTER: list[dict[str, Any]] = [
     {"name": "kirocrew-core", "command": "pinned-core"},
     {"name": "kirocrew-cron", "command": "pinned-cron"},
 ]
-_KAS_AGENTS = [{"name": _AGENT, "prompt": "pinned"}]
+# Carries its id, as every projected entry does: KAS's session/new names it as the mode.
+_KAS_AGENTS = [{"id": _AGENT, "name": _AGENT, "prompt": "pinned"}]
 # Advertised so set_mode is reached on both paths rather than skipped: the mode
 # activation request is part of what session start puts on the wire.
 # The per-session identity token, pinned. Minted from ``secrets`` in production,
@@ -324,6 +325,20 @@ def test_kas_golden_carries_the_custom_agent_envelope() -> None:
     for method in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD):
         meta = by_method[method]["_meta"]
         assert meta["kiro"]["customAgents"] == _KAS_AGENTS, method
+
+
+def test_kas_golden_names_the_mode_on_session_new_only() -> None:
+    """KAS's session/new names the injected agent as the mode it starts in.
+
+    Pinned positively for the same reason as the envelope above. A resumed
+    session already has its mode, so session/load names none, and set_mode
+    still follows both.
+    """
+    stored = json.loads(_golden_path("kas").read_text(encoding="utf-8"))
+    by_method = {entry["method"]: entry["params"] for entry in stored["requests"]}
+    assert by_method[METHOD_SESSION_NEW]["_meta"]["kiro"]["modeId"] == _AGENT
+    assert "modeId" not in by_method[METHOD_SESSION_LOAD]["_meta"]["kiro"]
+    assert by_method[METHOD_SET_MODE]["modeId"] == _AGENT
 
 
 def test_kiro_golden_carries_no_custom_agent_envelope() -> None:
