@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
+from sidecar_fault_helpers import fail_one_sidecar_read
 
 from kiro_crew import agent_state
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_path
@@ -106,6 +107,27 @@ async def test_fork_copies_model_managed(tmp_path):
 
     assert resp.status == 200
     assert agent_state.get_model_managed("crew-a") is True
+
+
+@pytest.mark.asyncio
+async def test_fork_a_failed_model_read_fails_and_unwinds(tmp_path, monkeypatch):
+    """One unreadable sidecar read of the source's flag is not "unset". A copy
+    with no flag stops tracking the shipped default, so the fork answers
+    bookkeeping_failed and leaves no copy behind instead of reporting success."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _write_template(agents_dir, "mytemplate")
+    _seed_config("crew-a", "mytemplate")
+    agent_state.set_model_managed("mytemplate", True)
+    fail_one_sidecar_read(monkeypatch, "get_model_managed", "mytemplate")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_fork(_fork_request("mytemplate", {"crew": "crew-a"}))
+
+    assert resp.status == 500
+    assert json.loads(resp.text)["code"] == "bookkeeping_failed"
+    assert not (agents_dir / "crew-a.json").exists()
+    assert KiroCrewConfig.load().agents["crew-a"].kiro_agent == "mytemplate"
 
 
 @pytest.mark.asyncio

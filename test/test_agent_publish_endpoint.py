@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
+from sidecar_fault_helpers import fail_one_sidecar_read
 
 from kiro_crew import agent_state
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
@@ -180,6 +181,26 @@ async def test_publish_copies_model_tracking(tmp_path):
 
     assert resp.status == 200
     assert agent_state.get_model_managed("published") is False
+
+
+@pytest.mark.asyncio
+async def test_publish_a_failed_model_read_fails_and_unwinds(tmp_path, monkeypatch):
+    """One unreadable sidecar read of the copy's flag is not "unset". A template
+    with no flag stops tracking the shipped default, so publish answers
+    bookkeeping_failed and leaves no shared template behind."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _seed_private_copy(agents_dir, "c", "c", "kirocrew")
+    agent_state.set_model_managed("c", True)
+    fail_one_sidecar_read(monkeypatch, "get_model_managed", "c")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_publish(_publish_request("c", {"crew": "c", "name": "published"}))
+
+    assert resp.status == 500
+    assert json.loads(resp.text)["code"] == "bookkeeping_failed"
+    assert not (agents_dir / "published.json").exists()
+    assert KiroCrewConfig.load().agents["c"].kiro_agent == "c"
 
 
 @pytest.mark.asyncio

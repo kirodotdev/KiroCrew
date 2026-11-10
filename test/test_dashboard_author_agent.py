@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sidecar_fault_helpers import fail_one_sidecar_read
 
 from kiro_crew import agent, agent_state
 from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
@@ -655,6 +656,30 @@ def test_a_rebuild_preserves_the_pinned_model_and_skill_mappings(
     # Governed grants were still regenerated from the shipped spec.
     assert refreshed["name"] == "kirocrew-dashboard-author"
     assert _is_installers(target) is True
+
+
+def test_a_rebuild_with_a_failed_sidecar_read_keeps_the_pinned_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable sidecar is unknown ownership, not "no pin". Writing the shipped
+    model would destroy a pin recorded nowhere else, so the rebuild carries the spec's model,
+    and the next readable rebuild still finds the pin."""
+    rig = _Rig(tmp_path, monkeypatch)
+    agent.rebuild_agent_config()
+    target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
+    spec = rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)
+    spec["model"] = "claude-user-pinned"
+    target.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+    agent_state.set_model_managed("kirocrew-dashboard-author", False)
+    agent_state.set_managed_digest("kirocrew-dashboard-author", agent_state.spec_digest(spec))
+
+    with monkeypatch.context() as faulted:
+        fail_one_sidecar_read(faulted, "get_model_managed", "kirocrew-dashboard-author")
+        worker_agent._install_dashboard_author_agent()
+    assert rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)["model"] == "claude-user-pinned"
+
+    worker_agent._install_dashboard_author_agent()
+    assert rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)["model"] == "claude-user-pinned"
 
 
 def test_a_rebuild_does_not_carry_a_pinned_model_from_an_unconfirmed_file(

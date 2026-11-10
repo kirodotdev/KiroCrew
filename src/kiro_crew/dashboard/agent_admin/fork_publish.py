@@ -248,7 +248,7 @@ async def api_agent_fork(request: web.Request) -> web.Response:
                         agent_state.set_fork_info(
                             copy_name, forked_from=source_name, private_to=crew  # type: ignore[arg-type]
                         )
-                        managed = agent_state.get_model_managed(source_name)
+                        managed = agent_state.get_model_managed(source_name, strict=True)
                         if managed is not None:
                             agent_state.set_model_managed(copy_name, managed)
                     except Exception:
@@ -572,7 +572,7 @@ async def api_agent_publish(request: web.Request) -> web.Response:
         def _record_publish_model() -> None:
             # The clean-slate prune already ran in the create step, before
             # the file existed; only the source's model tracking is copied.
-            managed = agent_state.get_model_managed(source_name)
+            managed = agent_state.get_model_managed(source_name, strict=True)
             if managed is not None:
                 agent_state.set_model_managed(new_name, managed)  # type: ignore[arg-type]
 
