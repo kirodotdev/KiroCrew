@@ -702,11 +702,13 @@
       return result;
     },
 
-    // Scroll a ref into view and return its centre in CSS pixels.
-    resolve: function (ref) {
+    // Scroll a ref into view (unless `scroll` is false) and return its centre in CSS pixels.
+    resolve: function (ref, scroll) {
       var el = lookup(ref);
       if (!el) return { ok: false, code: "ref_stale" };
-      try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
+      if (scroll !== false) {
+        try { el.scrollIntoView({ block: "center", inline: "center" }); } catch (e) {}
+      }
       var r = el.getBoundingClientRect();
       if (!r || (r.width === 0 && r.height === 0)) return { ok: false, code: "ref_stale" };
       var off = docOffset(el);
