@@ -349,6 +349,20 @@ describe('NeedsMeHoverCard', () => {
     expect((screen.getByTestId('needs-me-reply') as HTMLTextAreaElement).value).toBe('half typed')
   })
 
+  it('a press outside closes the card even while a draft holds it, and reopening brings the draft back', async () => {
+    mount()
+    hover('gate')
+    const box = await screen.findByTestId('needs-me-reply')
+    fireEvent.change(box, { target: { value: 'half typed' } })
+    box.focus()
+    fireEvent.pointerDown(screen.getByTestId('needs-me-card'))
+    expect(screen.getByTestId('needs-me-card')).toBeTruthy()
+    fireEvent.pointerDown(document.body)
+    await waitFor(() => expect(screen.queryByTestId('needs-me-card')).toBeNull())
+    hover('gate')
+    expect((await screen.findByTestId('needs-me-reply') as HTMLTextAreaElement).value).toBe('half typed')
+  })
+
   it('lists a question card in full with no action button', async () => {
     store.dispatch(setQuestionCard({ slot: 'ask', ask_id: 'a1', questions: [{ question: 'Which tone should the notes use for the release?', options: [{ label: 'Short list' }, { label: 'Paragraphs' }] }] }))
     mount()
