@@ -553,7 +553,7 @@ with a message before any request, and a given N always reads that version.
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
-| `POST` | `/api/artifacts/{slug}/publish/reprobe-notice` | Re-ask the destination whether a delivery notice still applies (`publish_sync.reprobe_notice`) and clear it once the copy is genuinely being served. READ-ONLY at the destination: it resolves through the drive's read path, never the create-capable one, so a re-check cannot provision infrastructure or rewrite a bucket policy |
+| `POST` | `/api/artifacts/{slug}/publish/reprobe-notice` | Re-ask the destination whether a delivery notice still applies and clear it only after the condition clears (`publish_sync.reprobe_notice`). READ-ONLY at the destination: it resolves through the drive's read path, never the create-capable one, so a re-check cannot provision infrastructure or rewrite a bucket policy |
 | `POST` | `/api/artifacts/{slug}/pull-latest` | Pull the tracked upstream (`?source=publication\|origin\|auto`) into a NEW local snapshot via `publish_sync.pull_upstream`; ungated ingress |
 | `GET` | `/api/artifacts/{slug}/upstream-status` | Cheap metadata-only drift check (`publish_sync.upstream_status`); best-effort, never blocks on the network |
 | `POST` | `/api/artifacts/{slug}/overwrite-remote` | Force-push local content over an upstream-ahead remote (`publish_sync.overwrite_upstream`); **egress — gated by `_publish_governance_denied` on the resolved `publication.provider`** |
@@ -798,10 +798,15 @@ treats the version push as best-effort: its re-publish branch runs
 and returns normally — so the route answers 200 with a publication whose remote
 content is stale. A non-empty (non-whitespace) `last_error` is therefore an error
 outcome carrying the provider's own already-redacted message; whitespace-only
-stays success, because the core writes `""` to clear the field. A publish that
-SUCCEEDED but whose link is not usable yet (e.g. CloudFront still rolling out)
-records that status on the separate `publication.notice` field, never
-`last_error` — so it does not render the publish as failed or withhold the URL.
+stays success, because the core writes `""` to clear the field. A publish or
+visibility change that SUCCEEDED but whose link needs a warning records that status
+on the separate `publication.notice` field, never `last_error`. The paired
+`notice_code` selects the dashboard copy: `rolling_out`, `distribution_disabled`,
+`origin_mismatch`, or the generic `unknown` fallback. An origin mismatch warns that
+the link may serve different content and directs the user to fix the distribution
+origin in the AWS console. The warning does not render the publish as failed or
+withhold the URL. A visibility provider returns a `(notice_text, notice_code)` pair
+when the completed change creates a new warning; `None` clears an older notice.
 
 ### An artifact that is already published
 
