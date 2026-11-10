@@ -407,6 +407,12 @@ export interface McpTempRefusal {
   cause: 'sealed' | 'unclassifiable' | 'check-failed'
 }
 
+/** Why a KAS chat does not use the sign-in an MCP row holds or offers:
+ *  `chat`, the row's sign-in runs on kiro-cli, so the chat signs in itself;
+ *  `again`, the row's sign-in is saved for KAS chats, but the grant it holds now
+ *  is kiro-cli's only, so signing in again here is what reaches them. */
+export type McpKasChatSignIn = 'chat' | 'again'
+
 export interface McpServer {
   name: string; command: string; args?: string[]
   url?: string
@@ -433,6 +439,10 @@ export interface McpServer {
    *  table may offer the in-place sign-in on it. Absent or false for a server
    *  an agent, a session or a hand edit added. */
   ownerSignIn?: boolean
+  /** Set by the gateway only while chats run on KAS, on a row that asked for
+   *  OAuth whose sign-in a KAS chat would not use (see `McpKasChatSignIn`).
+   *  Absent: no caveat. */
+  kasChatSignIn?: McpKasChatSignIn
   /** Spec-declared temp keys the probe refused (path already redacted); the
    *  probe ran with the managed temp instead. Absent when nothing was refused. */
   tempRefusals?: McpTempRefusal[]
