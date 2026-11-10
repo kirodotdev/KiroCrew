@@ -1,7 +1,8 @@
 """The notification bridge's action binding: a bridged reply resolves a live decision.
 
-RFC ``rfc-notification-bridge-actions.md``, phase B4a. Nothing here is wired to a
-transport: no chat app can reach it until a later phase registers a reader.
+RFC ``rfc-notification-bridge-actions.md``, phases B4a and B4c. The one reader is
+the Slack Approve and Deny buttons on a pending-approval note, behind the
+default-off ``bridge_approvals`` preview (:func:`actions_enabled`).
 
 A pending decision (a tool-approval prompt's future) is BOUND to a token when the
 bridge posts it, and the posted message is LINKED to that token, so a press on the
@@ -63,6 +64,29 @@ def bridge_clock() -> float:
     caller passes its own ``ttl_s`` and the expiry tests drive this seam instead.
     """
     return time.monotonic()
+
+
+#: The Slack ``action_id`` prefix of a bridged action button; the answer follows
+#: it (``bridge_action_approve``) and the button's ``value`` is the token.
+SLACK_ACTION_PREFIX = "bridge_action_"
+
+
+def actions_enabled(cfg: Any = None) -> bool:
+    """Whether a bridged action may be offered or resolve anything. Default off.
+
+    It reads the ``bridge_approvals`` feature preview from *cfg*, or from the live
+    config when none is given. Any failure reads as off, so no answer is given.
+    """
+    try:
+        if cfg is None:
+            from kiro_crew.config import KiroCrewConfig
+
+            cfg = KiroCrewConfig.load()
+        from kiro_crew.notifications.bridge_approval_note import enabled
+
+        return enabled(cfg)
+    except Exception:
+        return False
 
 
 class ActionOutcome(str, Enum):

@@ -18,12 +18,74 @@ from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.notifications.bridge import BridgeTransportUnavailable
-from kiro_crew.notifications.bridge_approval_note import SLACK_CARD_KEY, is_pending_approval_note
+from kiro_crew.notifications.bridge_actions import SLACK_ACTION_PREFIX
+from kiro_crew.notifications.bridge_approval_note import (
+    ACTION_TOKEN_KEY,
+    APPROVAL_DETAIL_KEY,
+    SLACK_CARD_KEY,
+    is_pending_approval_note,
+)
 from kiro_crew.slack.format import SLACK_MAX_TEXT, escape_mrkdwn
 from kiro_crew.slack.retry import open_dm_with_retry
 
 #: The marker a critical note's first line carries.
 _CRITICAL_MARKER = ":rotating_light:"
+
+#: Slack's limit on a section block's text. A longer last part is posted as the
+#: message text with the buttons alone in its blocks.
+_SECTION_MAX = 3000
+
+
+def _redact(text: str) -> str:
+    from kiro_crew.security.exfil import redact_exfiltration_urls
+    from kiro_crew.security.redaction import redact_credentials
+
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    return text
+
+
+def _detail_blocks(detail: str) -> list[dict[str, Any]]:
+    """What the call will run, drawn by the native approval card's own renderer.
+
+    Redacted first (``redact_note`` covers only the title and body), then
+    ``approval_card.approval_detail_blocks`` escapes it for Slack's mrkdwn parser,
+    breaks backtick runs so nothing closes the code fence, and cuts it to the
+    section limit. Lazy: that module imports the Slack handler facade.
+    """
+    from kiro_crew.slack.approval_card import approval_detail_blocks, bounded_scan
+
+    return approval_detail_blocks("", bounded_scan(detail, _redact))
+
+
+def action_blocks(text: str, token: str, detail: str) -> list[dict[str, Any]]:
+    """The Block Kit for a pending approval: its text, what will run, then Approve and Deny.
+
+    *detail* is the call's input (or its title when it has none), redacted and
+    shown above the buttons so the owner sees what an Approve runs. Each button's
+    ``action_id`` names its answer and its ``value`` is the token, so the press
+    handler reads both from what Slack sends back. The token appears in no text
+    block.
+    """
+    buttons = [
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": label},
+            "style": style,
+            "action_id": f"{SLACK_ACTION_PREFIX}{choice}",
+            "value": token,
+        }
+        for choice, label, style in (
+            ("approve", "Approve", "primary"),
+            ("deny", "Deny", "danger"),
+        )
+    ]
+    blocks: list[dict[str, Any]] = []
+    if text and len(text) <= _SECTION_MAX:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
+    blocks += _detail_blocks(detail)
+    blocks.append({"type": "actions", "elements": buttons})
+    return blocks
 
 
 def _text(note: Mapping[str, Any], field: str) -> str:
@@ -61,8 +123,10 @@ def render_slack_parts(note: Mapping[str, Any]) -> list[str]:
 class SlackBridgeSink:
     """Deliver bridged notes to the owner's Slack DM.
 
-    *state* is the gateway's ``DashboardState``; only its ``slack_client`` and
-    ``owner_id`` are read.
+    *state* is the gateway's ``DashboardState``; only its ``slack_client``,
+    ``owner_id`` and ``bridge_actions`` are read. A pending-approval note carrying
+    an action token gets Approve and Deny buttons under its last part, and the
+    posted message is linked to the token.
     """
 
     transport = "slack"
@@ -83,7 +147,23 @@ class SlackBridgeSink:
         channel = await open_dm_with_retry(client, owner, context="Notification bridge")
         if not channel:
             raise BridgeTransportUnavailable("slack returned no DM channel for the owner")
+        parts = render_slack_parts(note)
+        token = note.get(ACTION_TOKEN_KEY) if is_pending_approval_note(note) else ""
+        detail = note.get(APPROVAL_DETAIL_KEY)
+        # No buttons without what they approve: an Approve the owner cannot read
+        # is not consent.
+        has_detail = isinstance(detail, str) and bool(detail.strip())
+        token = token if isinstance(token, str) and has_detail else ""
+        # The buttons ride on the last part, so they sit under the whole note.
+        last = parts.pop() if token and parts else ""
         # In order; a failed part raises, so the delivery is audited as an error
         # rather than completed with its tail missing.
-        for part in render_slack_parts(note):
+        for part in parts:
             await client.post_message(channel, part)
+        if token:
+            ts = await client.post_blocks(
+                channel, action_blocks(last, token, str(detail)), last or "Approval needed"
+            )
+            registry = getattr(self._state, "bridge_actions", None)
+            if registry is not None and ts:
+                registry.link_message(self.transport, f"{channel}:{ts}", token)
