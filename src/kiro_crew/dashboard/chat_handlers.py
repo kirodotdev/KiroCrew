@@ -213,6 +213,7 @@ from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     resume_slot_from_history,
 )
 from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
+    _report_reload_respawn,
     api_chat_slot_project,
     api_chat_slot_reload,
     api_chat_slot_workspace,
@@ -587,9 +588,12 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     row_mid,
 )
 from kiro_crew.dashboard.system_notices import (  # noqa: F401
+    SESSION_RELOAD_DEFERRED_TEXT,
     SESSION_RELOAD_KIND,
+    SESSION_RELOAD_READY_TEXT,
     SESSION_SWITCH_KIND,
     is_system_notice,
+    session_reload_failed_notice,
     session_switch_notice,
 )
 from kiro_crew.dashboard.token_auth import folder_principal  # noqa: F401

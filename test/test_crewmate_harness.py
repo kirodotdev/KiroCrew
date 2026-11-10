@@ -724,11 +724,14 @@ class TestAHarnessChangeReloadsTheLiveChat:
         assert (chat.slot.model, chat.slot.reasoning_effort) == ("", "")
         assert chat.slot._deferred_model_switch_key == ""
         assert chat.slot.jev_route is False
-        # The transcript stays, plus one notice.
+        # The transcript stays, plus one notice and the row saying how the
+        # respawn ended.
         assert chat.slot.messages[: len(before)] == before
-        assert len(chat.slot.messages) == len(before) + 1
-        assert chat.slot.messages[-1]["meta"]["kind"] == "session_reload"
-        assert "new agent harness" in chat.slot.messages[-1]["content"]
+        assert len(chat.slot.messages) == len(before) + 2
+        notice, outcome = chat.slot.messages[-2:]
+        assert notice["meta"]["kind"] == "session_reload"
+        assert "new agent harness" in notice["content"]
+        assert outcome["meta"]["kind"] == "session_reload"
 
     @pytest.mark.asyncio
     async def test_an_unchanged_harness_reloads_nothing(self, chat):
