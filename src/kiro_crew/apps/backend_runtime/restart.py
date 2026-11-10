@@ -19,7 +19,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 from kiro_crew import shutdown_event as _gateway_shutdown_event
-from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.admission import (
+    admission_audit_error,
+    admission_audit_resources,
+    app_admission_denied,
+    builtin_admission_exempt,
+)
 from kiro_crew.apps.backend_runtime import _FACADE, _facade
 from kiro_crew.apps.backend_runtime.pidfile import _forget_app_pid_if
 from kiro_crew.apps.backend_runtime.ports import _allocated_ports
@@ -39,7 +44,12 @@ from kiro_crew.apps.backend_runtime.tracking import (
     app_backend_lifecycle_flock,
 )
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
-from kiro_crew.apps.manager import _app_activation_denied, _read_installed, get_app_manifest
+from kiro_crew.apps.manager import (
+    _app_activation_denied,
+    _read_installed,
+    app_dir,
+    get_app_manifest,
+)
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_profiles import GOVERNANCE_ERROR_REASON
 from kiro_crew.sel import sel
@@ -118,12 +128,13 @@ def _activation_denied(app_name: str, action: str) -> ActivationVerdict:
             or denied.startswith("governance evaluation error:"),
         )
     installed = _read_installed(app_name)
-    if installed is None or installed.origin != "builtin":
+    if installed is None or not builtin_admission_exempt(app_name, installed.origin):
         try:
             admission_denied = app_admission_denied(
                 app_name,
                 manifest=get_app_manifest(app_name),
                 action=action,
+                app_root=app_dir(app_name),
             )
         except Exception as exc:  # noqa: BLE001 — admission uncertainty is a hard denial
             return ActivationVerdict(denied=f"admission re-vet error: {exc}")
@@ -386,8 +397,8 @@ def _restart_exited_backend(ap: AppProcess, returncode: int | None) -> bool:
                     caller="gateway",
                     operation="app_backend_restart",
                     outcome="denied",
-                    resources=app_name,
-                    error=verdict.denied,
+                    resources=admission_audit_resources(verdict.denied, app_name),
+                    error=admission_audit_error(verdict.denied),
                 )
             except Exception as exc:  # noqa: BLE001 — denial remains fail-closed
                 logger.debug("SEL audit failed for app %s restart deny: %s", app_name, exc)
@@ -547,8 +558,8 @@ def revive_lost_app_backends() -> None:
                 caller="gateway",
                 operation="app_backend_restart",
                 outcome=outcome,
-                resources=f"{app_name} backstop",
-                error=refusal or "",
+                resources=admission_audit_resources(refusal or "", f"{app_name} backstop"),
+                error=admission_audit_error(refusal or ""),
             )
         except Exception as exc:  # noqa: BLE001 — the decision stands without its audit line
             logger.debug("SEL audit failed for app %s backstop: %s", app_name, exc)

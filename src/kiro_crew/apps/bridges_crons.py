@@ -650,6 +650,17 @@ def _report_pending_reenable(app_name: str, job_name: str, pending: list[str]) -
     )
 
 
+def _cron_restore_denied(app_name: str) -> str | None:
+    """The boot cron restore's execution decision for *app_name* (blocking)."""
+    source_manifest, app_root = _registration_source(app_name)
+    return _registration_denied(
+        app_name,
+        action="cron_boot_restore",
+        app_root=app_root,
+        manifest=source_manifest,
+    )
+
+
 def _admitted_app_cron_defs(app_name: str) -> tuple[list[dict[str, Any]], Path]:
     """The cron definitions the central execution decision admits for *app_name*,
     with the bundle root their ``script`` specs resolve against.
@@ -664,9 +675,19 @@ def _admitted_app_cron_defs(app_name: str) -> tuple[list[dict[str, Any]], Path]:
         app_name,
         action="cron_register",
         app_root=app_root,
+        manifest=manifest,
     ):
         return [], app_root
     if shipped_builtin_app_root(app_name) is not None:
+        if manifest is None:
+            return [], app_root
+        defs, _ = _cron_defs_from_manifest(app_name, manifest)
+        return defs, app_root
+    from kiro_crew.apps.admission import signed_packages_required
+
+    if signed_packages_required():
+        # Under the fleet signature policy the jobs come from the manifest the
+        # check above verified, never from the app-writable ``app-crons.json``.
         if manifest is None:
             return [], app_root
         defs, _ = _cron_defs_from_manifest(app_name, manifest)
@@ -1136,9 +1157,9 @@ async def reconcile_app_crons_for_execution(cron_service: Any) -> list[str]:
 
     def _restore_denied(name: str) -> bool:
         # Source resolution enumerates shipped app directories and reads manifests,
-        # so the whole admission decision runs off the event loop.
-        _, root = _registration_source(name)
-        return bool(_registration_denied(name, action="cron_boot_restore", app_root=root))
+        # and under the signature policy the gate hashes the package, so the whole
+        # admission decision runs off the event loop.
+        return bool(_cron_restore_denied(name))
 
     def _record_unreadable(name: str) -> bool:
         from kiro_crew.apps.manager import app_enabled_state

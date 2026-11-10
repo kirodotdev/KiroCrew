@@ -373,6 +373,7 @@ async def teardown_app_runtime(
                     setup.get("onDisableTimeout"), app_name=name, field_name="onDisableTimeout"
                 ),
                 action="on_disable",
+                manifest=record.get("manifest") or {},
             )
             if script_output.get("failed"):
                 raw = str(script_output.get("output", ""))[:200]

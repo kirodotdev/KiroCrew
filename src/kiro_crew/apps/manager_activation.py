@@ -14,7 +14,13 @@ import json
 import logging
 
 from kiro_crew.apps import protected_app_state
-from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.admission import (
+    admission_audit_error,
+    admission_audit_resources,
+    admission_refusal_text,
+    app_admission_denied,
+    builtin_admission_exempt,
+)
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
 from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
 from kiro_crew.apps.manager_records import (
@@ -178,17 +184,20 @@ def enable_app(
     # defaultEnabled=False, so a require_signature / non-empty allowlist policy
     # would otherwise make every core app permanently un-enableable. The gate
     # governs third-party install/enable, not first-party code — exempt builtins.
-    if meta.origin != "builtin":
-        denied = app_admission_denied(name, manifest=get_app_manifest(name), action="enable")
+    # Under a signature policy the exemption also needs a shipped package.
+    if not builtin_admission_exempt(name, meta.origin):
+        denied = app_admission_denied(
+            name, manifest=get_app_manifest(name), action="enable", app_root=app_dir(name)
+        )
         if denied:
             sel().log_api_access(
                 caller="app_enable",
                 operation="admission",
                 outcome="rejected",
-                resources=f"name={name!r}",
-                error=denied,
+                resources=admission_audit_resources(denied, f"name={name!r}"),
+                error=admission_audit_error(denied),
             )
-            return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
+            return AppResult(ok=False, name=name, error=admission_refusal_text(denied))
 
     # Deny before enabled metadata or any route-level registration, dependency,
     # lifecycle-script, hook, or backend side effect can occur.

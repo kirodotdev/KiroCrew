@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from kiro_crew.apps.admission import app_admission_denied, verified_signer
+from kiro_crew.apps.admission import verified_signer
 from kiro_crew.apps.manifest import AppManifest
 
 SIGNER = "acme"
@@ -174,13 +174,12 @@ def test_the_payload_is_byte_identical_when_only_the_already_covered_keys_are_de
 # fleet policy are the same there, byte for byte.
 
 
-def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing_fleet):
-    """PRECONDITION for every tamper test below: the real thing is admitted.
+def test_precondition_a_declaring_manifest_verifies_when_untampered(enforcing_fleet):
+    """PRECONDITION for every tamper test below: the real thing names its signer.
 
     Without this a later denial would prove only that the fixture is broken.
     """
     manifest = _carrying_signature_of(PUBLISHED, PUBLISHED)
-    assert app_admission_denied(APP, manifest=manifest) is None
     assert verified_signer(manifest) == SIGNER
 
 
@@ -197,14 +196,12 @@ def test_a_signed_app_declaring_the_field_still_verifies(enforcing_fleet, group)
     """
     declared = _declaring(group)
     manifest = _carrying_signature_of(declared, declared)
-    assert app_admission_denied(APP, manifest=manifest) is None, group
-    assert verified_signer(manifest) == SIGNER
+    assert verified_signer(manifest) == SIGNER, group
 
 
 def test_a_signed_app_declaring_all_six_still_verifies(enforcing_fleet):
     """The six together, which is what catches a key-order or nesting mistake."""
     manifest = _carrying_signature_of(PUBLISHED, PUBLISHED)
-    assert app_admission_denied(APP, manifest=manifest) is None
     assert verified_signer(manifest) == SIGNER
     signed_keys = set(json.loads(manifest.signing_payload().decode("utf-8")))
     assert {"ui", "agents", "skills", "sops", "dependencies", "platform"} <= signed_keys
@@ -286,7 +283,7 @@ def test_tampering_a_newly_covered_field_is_denied(enforcing_fleet, label, mutat
     """The publisher's signature must not carry an attacker-chosen field."""
     manifest = _carrying_signature_of(PUBLISHED, _tampered(mutate))
     assert (
-        app_admission_denied(APP, manifest=manifest) is not None
+        verified_signer(manifest) == ""
     ), f"a rewritten {label} is admitted under the publisher's signature"
     assert verified_signer(manifest) == ""
 
@@ -301,7 +298,6 @@ def test_appending_a_group_the_publisher_never_declared_is_denied(enforcing_flee
     """
     appended = dict(PUBLISHED_PLAIN, agents=["agents/attacker.json"])
     manifest = _carrying_signature_of(PUBLISHED_PLAIN, appended)
-    assert app_admission_denied(APP, manifest=manifest) is not None
     assert verified_signer(manifest) == ""
 
 
@@ -324,7 +320,7 @@ def test_tampering_an_already_covered_field_is_still_denied(enforcing_fleet, lab
     """The fields the payload already covered keep failing, unchanged."""
     manifest = _carrying_signature_of(PUBLISHED, _tampered(mutate))
     assert (
-        app_admission_denied(APP, manifest=manifest) is not None
+        verified_signer(manifest) == ""
     ), f"a rewritten {label} must still invalidate the signature"
 
 

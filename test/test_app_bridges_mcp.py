@@ -55,6 +55,62 @@ class TestMCPRegistration:
         data = json.loads(mcp_path.read_text(encoding="utf-8"))
         assert "test-app:my-mcp" in data["mcpServers"]
 
+    def test_the_signature_policy_keeps_a_python_server_off_in_folder_bytecode(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """A stdio Python server gets ``-B -X pycache_prefix`` and the env under the
+        policy; without it the registered entry carries neither."""
+        import kiro_crew.apps.bridges as bmod
+        from kiro_crew.apps import admission
+
+        mcp_path = tmp_path / "mcp.json"
+        monkeypatch.setattr(bmod, "_mcp_json_path", lambda: mcp_path)
+        src = _make_app_source(
+            tmp_path, mcpServers={"tools": {"command": "python3", "args": ["server.py"]}}
+        )
+        (src / "server.py").write_text("print('server')\n", encoding="utf-8")
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+
+        def _entry() -> dict:
+            _register_mcp_servers("test-app", manifest)
+            return json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]["test-app:tools"]
+
+        off = _entry()
+        assert "-B" not in off.get("args", [])
+        assert "PYTHONPYCACHEPREFIX" not in (off.get("env") or {})
+
+        monkeypatch.setattr(admission, "signed_packages_required", lambda: True)
+        on = _entry()
+        flags = admission.signed_pycache_flags(on["env"]["PYTHONPYCACHEPREFIX"])
+        assert on["args"][:3] == flags
+        assert on["args"][3:] == off.get("args", [])
+        assert on["command"] == off["command"]
+        assert on["env"]["PYTHONPYCACHEPREFIX"] == flags[2].removeprefix("pycache_prefix=")
+
+    def test_the_signature_policy_leaves_a_console_script_server_as_authored(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """``python-lsp-server`` is not a Python interpreter: no ``-B``/``-X`` is added."""
+        import kiro_crew.apps.bridges as bmod
+        from kiro_crew.apps import admission
+
+        mcp_path = tmp_path / "mcp.json"
+        monkeypatch.setattr(bmod, "_mcp_json_path", lambda: mcp_path)
+        src = _make_app_source(
+            tmp_path, mcpServers={"lsp": {"command": "python-lsp-server", "args": ["--stdio"]}}
+        )
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        monkeypatch.setattr(admission, "signed_packages_required", lambda: True)
+        _register_mcp_servers("test-app", manifest)
+        entry = json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]["test-app:lsp"]
+        assert entry.get("args") == ["--stdio"]
+
     def test_stdio_declared_env_path_is_expanded(self, tmp_path, app_env, monkeypatch):
         """This file is consumed by kiro-cli (per-key env), so an app manifest
         naming a PATH fragment must be emitted complete. See env.emit_env."""
@@ -1099,7 +1155,9 @@ class TestUnreadableManifestIsNotASilentRegistration:
         import kiro_crew.apps.bridges as brmod
 
         monkeypatch.setattr(brmod, "_registration_source", lambda n: (None, brmod.Path(".")))
-        monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: None)
+        monkeypatch.setattr(
+            brmod, "_registration_denied", lambda name, action, app_root, manifest=None: None
+        )
 
         collected: list[str] = []
         assert brmod.reregister_app_mcp_servers("app", io_failures=collected) == []
@@ -1114,7 +1172,9 @@ class TestUnreadableManifestIsNotASilentRegistration:
             "_registration_source",
             lambda n: (SimpleNamespace(mcpServers={}, agents=[]), brmod.Path(".")),
         )
-        monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: None)
+        monkeypatch.setattr(
+            brmod, "_registration_denied", lambda name, action, app_root, manifest=None: None
+        )
 
         collected: list[str] = []
         assert brmod.reregister_app_mcp_servers("app", io_failures=collected) == []
@@ -1133,7 +1193,9 @@ class TestScrubDoesNotRematerializeAgents:
 
         manifest = SimpleNamespace(mcpServers={"srv": {"command": "x"}}, agents=["a.json"])
         monkeypatch.setattr(brmod, "_registration_source", lambda n: (manifest, brmod.Path(".")))
-        monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: None)
+        monkeypatch.setattr(
+            brmod, "_registration_denied", lambda name, action, app_root, manifest=None: None
+        )
         monkeypatch.setattr(
             brmod,
             "_register_mcp_servers",
@@ -1154,7 +1216,9 @@ class TestScrubDoesNotRematerializeAgents:
 
         manifest = SimpleNamespace(mcpServers={"srv": {"command": "x"}}, agents=[])
         monkeypatch.setattr(brmod, "_registration_source", lambda n: (manifest, brmod.Path(".")))
-        monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: "revoked")
+        monkeypatch.setattr(
+            brmod, "_registration_denied", lambda name, action, app_root, manifest=None: "revoked"
+        )
         removed: list[str] = []
         monkeypatch.setattr(brmod, "_deregister_mcp_servers", lambda n: (removed.append(n), 1)[1])
         monkeypatch.setattr(

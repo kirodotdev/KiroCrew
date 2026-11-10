@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import Iterator
 
 from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
-from kiro_crew.apps.admission import app_admission_denied
+from kiro_crew.apps.admission import (
+    admission_audit_error,
+    admission_audit_resources,
+    admission_refusal_text,
+    app_admission_denied,
+)
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
@@ -226,16 +231,16 @@ def install_app(
 
     # Admission: the app allowlist/ban/signature gate INSTALL, not just
     # activation, so a banned / non-allowlisted app never lands on disk.
-    denied = app_admission_denied(name, manifest=manifest, action="install")
+    denied = app_admission_denied(name, manifest=manifest, action="install", app_root=source)
     if denied:
         sel().log_api_access(
             caller="app_install",
             operation="admission",
             outcome="rejected",
-            resources=f"name={name!r}",
-            error=denied,
+            resources=admission_audit_resources(denied, f"name={name!r}"),
+            error=admission_audit_error(denied),
         )
-        return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
+        return AppResult(ok=False, name=name, error=admission_refusal_text(denied))
 
     # Check if already installed — reject, use update_app() or uninstall first
     hold_app_record_lock(name)
@@ -572,16 +577,16 @@ def update_app(
 
     # Admission: re-gate on update so a policy that tightens after install
     # (e.g. an app is later banned) blocks a subsequent update in place.
-    denied = app_admission_denied(name, manifest=manifest, action="update")
+    denied = app_admission_denied(name, manifest=manifest, action="update", app_root=source)
     if denied:
         sel().log_api_access(
             caller="app_update",
             operation="admission",
             outcome="rejected",
-            resources=f"name={name!r}",
-            error=denied,
+            resources=admission_audit_resources(denied, f"name={name!r}"),
+            error=admission_audit_error(denied),
         )
-        return AppResult(ok=False, name=name, error=f"blocked by admission policy: {denied}")
+        return AppResult(ok=False, name=name, error=admission_refusal_text(denied))
 
     # Consent to session-approval control is captured at install/enable, but the
     # route guard reads the LIVE manifest. Without this check a routine update

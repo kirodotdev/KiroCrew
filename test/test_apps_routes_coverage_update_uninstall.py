@@ -870,6 +870,7 @@ class TestUninstallRefusals:
             timeout: int = 30,
             extra_env: dict[str, str] | None = None,
             action: str = "lifecycle_script",
+            manifest: object = None,
         ) -> dict[str, Any]:
             seen_env.update(extra_env or {})
             return {

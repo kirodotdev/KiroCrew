@@ -97,7 +97,7 @@ def _harness(monkeypatch):
     def fake_get_app(name):
         return state["current"].get(name)
 
-    def fake_denied(name):
+    def fake_denied(name, manifest=None):
         return state["denied"]
 
     monkeypatch.setattr(hr, "on_app_enable", fake_enable)
@@ -1200,7 +1200,7 @@ async def test_reimport_failure_leaves_signature_unset_for_retry(monkeypatch):
     monkeypatch.setattr(hr, "on_app_enable", boom_enable)
     monkeypatch.setattr(hr, "on_app_disable", ok_disable)
     monkeypatch.setattr(hr, "get_app", lambda name: current.get(name))
-    monkeypatch.setattr(hr, "hook_enable_denied", lambda name: "")
+    monkeypatch.setattr(hr, "hook_enable_denied", lambda name, manifest=None: "")
     await hr.reconcile_once([current["watchtower"]])
     assert calls == ["watchtower"]
     assert hi.loaded_hook_signature("watchtower") is None

@@ -54,23 +54,14 @@ def main(argv: list[str]) -> None:
         raise SystemExit(2)
     deps_dir = argv[0]
     # CPython-parity placement, established BEFORE site processing: the
-    # plain launch puts the LAUNCH ENTRY (script dir / "" for -c / cwd for
-    # -m) at sys.path[0] and PYTHONPATH entries after it - so the deps go
-    # AFTER the launch entry, or an app-local module colliding with a
-    # dependency name would resolve to the DEPENDENCY under the shim while
-    # resolving to the app's own file in a plain launch. Under -P/-I
-    # (sys.flags.safe_path) the plain launch inserts NO launch entry at
-    # all - the shim must not restore what those flags exist to remove.
-    # The order must be final before addsitedir runs: a .pth import line
-    # executes DURING site processing and caches whatever it resolves in
-    # sys.modules, beyond the reach of any later reordering.
-    safe_path = bool(getattr(sys.flags, "safe_path", False))
-    if argv[1] == "-m":
-        launch = [] if safe_path else [os.getcwd()]
-    elif argv[1] == "-c":
-        launch = [] if safe_path else [""]
-    else:
-        launch = [] if safe_path else [os.path.dirname(os.path.abspath(argv[1]))]
+    # plain launch puts the LAUNCH ENTRY at sys.path[0] and PYTHONPATH
+    # entries after it - so the deps go AFTER the launch entry, or an
+    # app-local module colliding with a dependency name would resolve to the
+    # DEPENDENCY under the shim while resolving to the app's own file in a
+    # plain launch. The order must be final before addsitedir runs: a .pth
+    # import line executes DURING site processing and caches whatever it
+    # resolves in sys.modules, beyond the reach of any later reordering.
+    launch = launch_entries(argv[1:])
     deps_entry = os.path.abspath(deps_dir)
     sys.path[:0] = [*launch, deps_entry]
     _anchor = len(launch) + 1
@@ -85,12 +76,36 @@ def main(argv: list[str]) -> None:
     _pth_added = sys.path[before:]
     del sys.path[before:]
     sys.path[_anchor:_anchor] = _pth_added
-    if argv[1] == "-m":
-        module, rest = argv[2], argv[3:]
+    run_target(argv[1:])
+
+
+def launch_entries(target: list[str]) -> list[str]:
+    """The ``sys.path`` entry a plain launch of *target* puts first, as a list.
+
+    The script's directory, ``""`` for ``-c`` or the working directory for ``-m``.
+    Under ``-P``/``-I`` (``sys.flags.safe_path``) the plain launch inserts none, and
+    a shim must not restore what those flags exist to remove.
+    """
+    if getattr(sys.flags, "safe_path", False):
+        return []
+    if target[0] == "-m":
+        return [os.getcwd()]
+    if target[0] == "-c":
+        return [""]
+    return [os.path.dirname(os.path.abspath(target[0]))]
+
+
+def run_target(argv: list[str]) -> None:
+    """Run ``<script.py> | -m <module> | -c <code>`` with the argv a plain launch gives it.
+
+    The caller has already put :func:`launch_entries` on ``sys.path``.
+    """
+    if argv[0] == "-m":
+        module, rest = argv[1], argv[2:]
         sys.argv = [module, *rest]
         runpy.run_module(module, run_name="__main__", alter_sys=True)
-    elif argv[1] == "-c":
-        code, rest = argv[2], argv[3:]
+    elif argv[0] == "-c":
+        code, rest = argv[1], argv[2:]
         # `python -c` parity: sys.argv[0] is the literal "-c", and the code
         # runs in a REAL __main__ module registered in sys.modules with the
         # standard main-module globals (__spec__/__package__/__loader__ are
@@ -117,7 +132,7 @@ def main(argv: list[str]) -> None:
         exec(  # noqa: S102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
             compile(code, "<string>", "exec"), mod.__dict__
         )
-    elif os.name == "nt" and argv[1].lower().endswith(".exe"):
+    elif os.name == "nt" and argv[0].lower().endswith(".exe"):
         # pip's EMBEDDED Windows launcher: a native exe with the console
         # script appended as a ZIP archive (zipfile reads it directly - the
         # central directory sits at EOF). Extract the __main__.py stub and
@@ -128,7 +143,7 @@ def main(argv: list[str]) -> None:
         # shim), and it must take the script dispatch below - this arm's
         # execv fallback would restart its shebang interpreter WITHOUT the
         # deps path.
-        target, rest = argv[1], argv[2:]
+        target, rest = argv[0], argv[1:]
         if not zipfile.is_zipfile(target):
             # Not a launcher after all (the resolver gates on is_zipfile,
             # but the file can change between resolution and launch): a
@@ -157,11 +172,11 @@ def main(argv: list[str]) -> None:
             compile(code, target, "exec"), mod.__dict__
         )
     else:
-        target, rest = argv[1], argv[2:]
+        target, rest = argv[0], argv[1:]
         # Direct-script parity: `python script.py` puts the script's own
-        # directory at sys.path[0] (established above, before site
-        # processing); runpy.run_path does NOT, so a script importing a
-        # sibling module would break under the shim.
+        # directory at sys.path[0] (the caller put launch_entries there);
+        # runpy.run_path does NOT, so a script importing a sibling module
+        # would break under the shim.
         sys.argv = [target, *rest]
         runpy.run_path(target, run_name="__main__")
 

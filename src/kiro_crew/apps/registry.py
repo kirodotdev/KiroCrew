@@ -140,7 +140,14 @@ async def _run_app_build(
         # by the bare name "npm".
         npm = shutil.which("npm")
         if npm:
-            build_cmds.append([npm, "install"])
+            from kiro_crew.apps.admission import signed_npm_install_argv
+
+            # Off the loop: reads the admission policy. The build keeps its devDependencies.
+            build_cmds.append(
+                await asyncio.to_thread(
+                    signed_npm_install_argv, [npm, "install"], build_dir, ci_argv=[npm, "ci"]
+                )
+            )
             try:
                 pkg = json.loads((build_dir / "package.json").read_text("utf-8"))
                 if (pkg.get("scripts") or {}).get("build"):
@@ -779,6 +786,7 @@ if _typing.TYPE_CHECKING:
         Callable,
         StreamingLogLines,
         _adoption_pending,
+        _install_script_env,
         _install_script_platform_refusal,
         _official_entry,
         _redact_log_via_context,
@@ -806,6 +814,9 @@ if _typing.TYPE_CHECKING:
         _downgrade_refusal,
         _refuse_identity_mismatch,
         _report_retained_stale_checkouts,
+        admission_audit_error,
+        admission_audit_resources,
+        admission_refusal_text,
         app_admission_denied,
         sel,
     )

@@ -67,7 +67,11 @@ class TestLifecycleHookResolution:
 
         from kiro_crew.apps.lifecycle import LifecycleDispatcher
 
-        src = inspect.getsource(LifecycleDispatcher._invoke)
+        # `_invoke` hands the hook to `_invoke_prepared` once the signed-load prep has
+        # run off the loop, so the dispatch path is the two bodies together.
+        src = inspect.getsource(LifecycleDispatcher._invoke) + inspect.getsource(
+            LifecycleDispatcher._invoke_prepared
+        )
         assert "_resolve_hook(" in src
         # A CALL, not a mention — the explanatory comment names the function.
         assert "load_app_module(" not in src, (

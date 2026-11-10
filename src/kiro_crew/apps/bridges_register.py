@@ -213,6 +213,7 @@ def register_app(
         app_name,
         action="resource_register",
         app_root=app_root,
+        manifest=manifest,
     )
     if denied:
         # Re-registration can happen after an operator tightens policy. Scrub
@@ -308,7 +309,9 @@ def refresh_app_agents(app_name: str, io_failures: list[str] | None = None) -> l
     # same execution decision, or a revoked app's agents (and the MCP servers
     # merged into them) would be rewritten and become dispatchable again. On
     # denial, scrub any stale materialized agents and register nothing.
-    if _registration_denied(app_name, action="resource_register", app_root=app_root):
+    if _registration_denied(
+        app_name, action="resource_register", app_root=app_root, manifest=manifest
+    ):
         _deregister_agents(app_name)
         return []
     return _register_agents(app_name, manifest, app_root, io_failures=io_failures)

@@ -6,15 +6,27 @@ namespaced keys to prevent collisions between apps.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import contextvars
 import importlib.machinery
 import importlib.util
 import logging
 import os
 import sys
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.apps.admission import verified_signed_files
 from kiro_crew.apps.execution import app_execution_denied, is_builtin_app
+from kiro_crew.apps.signed_first import (
+    _owning_root,
+    _source_only_path_hook,
+    _source_only_roots,
+    _SourceOnlyLoader,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -58,6 +70,89 @@ _http_app_grants: dict[str, tuple[int, bool]] = {}
 #: an unload+re-enable, the stale v1 callable is ignored rather than applied to
 #: tear down the freshly loaded v2 worker (it would leave v2 running).
 _app_load_generation: dict[str, int] = {}
+
+
+@dataclass(frozen=True)
+class SignedLoadPrep:
+    """The blocking half of switching one app root signed-first, computed ahead.
+
+    *root* is the resolved app root, *listed* the verified ``signedFiles`` (None
+    without the fleet signature policy) and *stale* the importer-cache keys whose
+    directories resolve under *root*, which must be rebuilt by the signed-first hook.
+    """
+
+    app_name: str
+    root: str
+    listed: frozenset[str] | None
+    stale: tuple[str, ...]
+
+
+def prepare_signed_load(app_name: str, app_dir: Path) -> SignedLoadPrep | None:
+    """Read the verified inventory and resolve the importer-cache keys (blocking).
+
+    None when nothing would change: no signature policy and the root is not
+    signed-first already.
+    """
+    root = os.path.realpath(app_dir)
+    listed = verified_signed_files(app_name)
+    if listed is None and root not in _source_only_roots:
+        return None
+    stale = tuple(
+        key
+        for key in list(sys.path_importer_cache)
+        if isinstance(key, str)
+        and (os.path.realpath(key) == root or os.path.realpath(key).startswith(root + os.sep))
+    )
+    return SignedLoadPrep(app_name, root, listed, stale)
+
+
+def _apply_signed_load(prep: SignedLoadPrep | None) -> None:
+    """Switch the prepared root signed-first or back to stock. No I/O."""
+    if prep is None:
+        return
+    if prep.listed is not None:
+        _source_only_roots[prep.root] = prep.listed
+        if _source_only_path_hook not in sys.path_hooks:
+            sys.path_hooks.insert(0, _source_only_path_hook)
+    else:
+        _source_only_roots.pop(prep.root, None)
+    for key in prep.stale:
+        sys.path_importer_cache.pop(key, None)
+
+
+#: No prep handed in this context.
+_NOT_HANDED: object = object()
+
+#: A prep an async caller computed off the loop (:func:`signed_load_off_loop`), read
+#: by the next :func:`load_app_module` of that app in the same context.
+_handed_prep: contextvars.ContextVar[SignedLoadPrep | None | object] = contextvars.ContextVar(
+    "kirocrew_signed_load_prep", default=_NOT_HANDED
+)
+
+
+@contextlib.asynccontextmanager
+async def signed_load_off_loop(app_name: str, app_dir: Path) -> AsyncIterator[None]:
+    """Compute :func:`prepare_signed_load` in a worker thread for a load in this block.
+
+    For a caller on the event loop: the verified-inventory read and the realpath scan
+    of the importer cache are blocking I/O, so they run off the loop, and the
+    :func:`load_app_module` inside the block applies the result without repeating them.
+    """
+    prep = await asyncio.to_thread(prepare_signed_load, app_name, app_dir)
+    token = _handed_prep.set(prep)
+    try:
+        yield
+    finally:
+        _handed_prep.reset(token)
+
+
+def _prep_for(app_name: str, app_resolved: Path) -> SignedLoadPrep | None:
+    """The prep handed for *app_name*, else one computed here (a caller off the loop)."""
+    handed = _handed_prep.get()
+    if handed is None or (isinstance(handed, SignedLoadPrep) and handed.app_name == app_name):
+        return handed  # type: ignore[return-value]
+    return prepare_signed_load(app_name, app_resolved)
+
 
 #: Per-app install directories this process loaded third-party hook code from,
 #: as normalized absolute path strings (both the path as given and its resolved
@@ -447,11 +542,19 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
                 "full gateway privileges."
             )
         _warn_third_party_execution(app_name)
+        # Under the fleet signature policy the verified .py runs, never a cached
+        # .pyc beside it. Off, the stock loaders, as before.
+        _apply_signed_load(_prep_for(app_name, app_resolved))
         # Recorded before the body runs: a body that registers its real package
         # name and then raises still leaves modules the next unload must find.
         _record_app_source_root(app_name, app_dir, app_resolved)
 
-    spec = importlib.util.spec_from_file_location(unique_name, str(file_path))
+    loader = (
+        _SourceOnlyLoader(unique_name, str(file_path))
+        if third_party and _owning_root(str(app_resolved)) is not None
+        else None
+    )
+    spec = importlib.util.spec_from_file_location(unique_name, str(file_path), loader=loader)
     if spec is None or spec.loader is None:
         raise ImportError(f"Failed to create module spec for {file_path}")
 
@@ -568,6 +671,14 @@ def unload_app_modules(app_name: str) -> int:
     """
     synthetic = _app_module_keys(app_name)
     real_name = _app_real_name_keys(app_name)
+    # The next load decides again, under the policy as it then stands.
+    # No I/O: the roots are recorded in both spellings, and a finder cached under an
+    # alias spelling only reads an empty list once its root is dropped (stock search).
+    for root in _app_source_roots.get(app_name, ()):
+        if _source_only_roots.pop(root, None) is not None:
+            for key in [k for k in list(sys.path_importer_cache) if isinstance(k, str)]:
+                if key == root or key.startswith(root + os.sep):
+                    sys.path_importer_cache.pop(key, None)
     for k in synthetic:
         del sys.modules[k]
     for k in real_name:

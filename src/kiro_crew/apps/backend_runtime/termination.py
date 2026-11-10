@@ -370,6 +370,10 @@ def stop_app_backend(
                 )
             except Exception as exc:
                 logger.debug("SEL audit failed for sigkill_escalation %s: %s", app_name, exc)
+        # The spawn's bytecode cache dir goes with it (nothing held without the policy).
+        from kiro_crew.apps.admission import release_pycache_dir
+
+        release_pycache_dir(f"backend:{app_name}")
         if (
             _retry_if_serving is not None
             and ap.port
@@ -433,6 +437,10 @@ def stop_app_backend(
         # stop dropped the record and left that server running. Same drain as the
         # startup-failure branch: the identity recorded at spawn on Windows, the
         # spawn-instance vouch on POSIX, nothing aimed at a bare number.
+        # The spawn's bytecode cache dir goes with it (nothing held without the policy).
+        from kiro_crew.apps.admission import release_pycache_dir
+
+        release_pycache_dir(f"backend:{app_name}")
         gone = _drain_exited_root_tree(app_name, ap.proc, ap.pid_start_time, ap.spawn_instance)
         # The same refusal the live-root branch makes above, on the same grounds and
         # under the same condition: a WITHDRAWN ceiling cannot be told the app was

@@ -1096,6 +1096,12 @@ Examples:
         action="store_true",
         help="Install the converted app after writing it",
     )
+    app_sign = app_sub.add_parser(
+        "sign",
+        help="Sign an app directory's manifest and files (key from KIROCREW_APP_SIGNING_KEY)",
+    )
+    app_sign.add_argument("source", help="Path to app directory containing app.json")
+    app_sign.add_argument("--signer", required=True, help="Publisher id in the fleet's trust_keys")
     app_sub.add_parser("list", help="List installed apps")
     app_enable = app_sub.add_parser("enable", help="Enable an installed app")
     app_enable.add_argument("name", help="App name to enable")

@@ -19,6 +19,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.apps.admission import admission_audit_error, admission_audit_resources
 from kiro_crew.apps.backend import start_app_backend, stop_app_backend
 from kiro_crew.apps.bridges import register_app_crons_with_service
 from kiro_crew.apps.manager import (
@@ -220,8 +221,8 @@ async def handle_update_app(request: web.Request) -> web.Response:
                     caller="dashboard",
                     operation="app_update",
                     outcome="failed",
-                    resources=name,
-                    error=reg_install.get("error", ""),
+                    resources=admission_audit_resources(reg_install.get("error", ""), name),
+                    error=admission_audit_error(reg_install.get("error", "")),
                 )
                 return web.json_response(reg_install, status=400)
             # Live read, not the pre-update ``info`` snapshot: ``update_app`` drops
@@ -304,8 +305,8 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 caller="dashboard",
                 operation="app_update",
                 outcome="failed",
-                resources=name,
-                error=up_result.error,
+                resources=admission_audit_resources(up_result.error, name),
+                error=admission_audit_error(up_result.error),
             )
             failed_body = up_result.to_dict()
             if restore_refused:
@@ -482,8 +483,8 @@ async def handle_register_external(request: web.Request) -> web.Response:
             caller="dashboard",
             operation="app_register_external",
             outcome="failed",
-            resources=name,
-            error=result.error,
+            resources=admission_audit_resources(result.error, name),
+            error=admission_audit_error(result.error),
         )
         return web.json_response(result.to_dict(), status=400)
     sel().log_api_access(
@@ -621,8 +622,8 @@ async def handle_install_app(request: web.Request) -> web.Response:
                 caller="dashboard",
                 operation="app_install",
                 outcome="failed",
-                resources=source,
-                error=result.error,
+                resources=admission_audit_resources(result.error, source),
+                error=admission_audit_error(result.error),
             )
             return web.json_response(result.to_dict(), status=400)
         invalidate_app_secret_cache(result.name)

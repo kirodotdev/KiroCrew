@@ -93,6 +93,27 @@ class TestBootAdmissionRevet:
             "_read_installed",
             lambda _name: SimpleNamespace(origin="builtin"),
         )
+        # Under a signature policy the exemption needs a package this build ships,
+        # whose manifest (as the builtin install writes it) names what the app runs.
+        from kiro_crew.apps import execution
+
+        (tmp_path / "app.json").write_text(
+            json.dumps(
+                {
+                    "name": "core-builtin",
+                    "version": "1.0.0",
+                    "displayName": "Core",
+                    "description": "A shipped builtin.",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            execution,
+            "shipped_builtin_app_root",
+            lambda name: tmp_path if name == "core-builtin" else None,
+        )
         bmod.start_enabled_app_backends()
         # Builtin is exempt from the gate — start_app_backend was invoked for it.
         assert "core-builtin" in started
@@ -333,6 +354,44 @@ class TestGatewayOriginInjection:
         monkeypatch.setattr(bmod.subprocess, "Popen", _spy_popen)
         result = bmod.start_app_backend(app_name)
         return result, captured.get("env")
+
+    def test_the_signature_policy_keeps_the_backend_off_in_folder_bytecode(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """Under the policy the Python backend gets ``-B -X pycache_prefix`` and the env;
+        without it the argv and env carry neither."""
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.apps import admission
+
+        name = self._install_backend_app(tmp_path)
+        captured: list[tuple[list[str], dict]] = []
+
+        def _spy_popen(*a, **k):
+            captured.append((list(a[0]), dict(k.get("env") or {})))
+            raise OSError("captured child argv; stop before the real spawn")
+
+        monkeypatch.setattr(bmod, "wrap_argv", lambda argv, **kw: (list(argv), None))
+        monkeypatch.setattr(bmod.subprocess, "Popen", _spy_popen)
+        bmod.start_app_backend(name)
+        off_argv, off_env = captured[-1]
+        assert "-B" not in off_argv
+        assert not any(arg.startswith("pycache_prefix=") for arg in off_argv)
+        assert "PYTHONPYCACHEPREFIX" not in off_env and "PYTHONDONTWRITEBYTECODE" not in off_env
+
+        monkeypatch.setattr(admission, "signed_packages_required", lambda: True)
+        monkeypatch.setattr(admission, "installed_package_refusal", lambda *a, **k: None)
+        bmod.start_app_backend(name)
+        on_argv, on_env = captured[-1]
+        flags = admission.signed_pycache_flags(on_env["PYTHONPYCACHEPREFIX"])
+        # The spawn may run through a launcher shim (``python -I -S -c <shim>`` on Linux)
+        # ahead of the backend's own argv, so find the flags where the backend's
+        # interpreter takes them: right after it, before the entry script.
+        at = next((i for i in range(len(on_argv)) if on_argv[i : i + len(flags)] == flags), None)
+        assert at is not None, on_argv
+        assert at < next(i for i, arg in enumerate(on_argv) if arg.endswith("server.py"))
+        assert [*on_argv[:at], *on_argv[at + len(flags) :]] == off_argv
+        assert on_env["PYTHONPYCACHEPREFIX"] == flags[2].removeprefix("pycache_prefix=")
+        assert on_env["PYTHONDONTWRITEBYTECODE"] == "1"
 
     def test_valid_bound_port_injects_exact_origin_distinct_from_app_port(
         self, tmp_path, app_env, monkeypatch
