@@ -78,6 +78,8 @@ import { readPersistedString, usePersistedString } from '../../hooks/usePersiste
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { readCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../../utils/companySignIn'
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
+import { RemoteCrewWindowsNotice } from './RemoteCrewWindowsNotice'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm, setCrewLaunchDraft, dropLaunchedCrewDraft, type CrewLaunchDraft } from '../../store/instancesSlice'
@@ -467,6 +469,9 @@ export function RemoteCrewPanel() {
     ? undefined
     : getRemoteProvisionerRenderer(selectedProvisioner.kind)
 
+  // The built-in launcher is POSIX-only and the server refuses it on Windows
+  // before any AWS call, so a known-Windows gateway runs no check at all.
+  const windowsGateway = useGatewayPlatform() === 'windows'
   const preflightQuery = useQuery({
     queryKey: ['cloud', 'preflight', checkedProfile, checkedRegion],
     queryFn: () => api.cloudPreflight(checkedProfile || undefined, checkedRegion || undefined),
@@ -474,7 +479,7 @@ export function RemoteCrewPanel() {
     // says, so the probe fires at once, as it always did. Only a remembered
     // choice waits for the list: it may resolve to a lane whose form must not
     // trigger an AWS probe at all.
-    enabled: tab === 'setup' && !disabled && !noDrawableLane
+    enabled: tab === 'setup' && !disabled && !noDrawableLane && !windowsGateway
       && (persistedProvisioner === '' || (builtinProvisioner && !provisionersQuery.isLoading)),
   })
 
@@ -885,6 +890,10 @@ export function RemoteCrewPanel() {
   const preflightSandboxKind = preflightNoSandbox && preflightQuery.error instanceof ApiError
     ? parseErrorField(preflightQuery.error.body, 'kind')
     : undefined
+  // The platform signal can be missing (still loading, or an older gateway), so
+  // the server's own refusal also counts.
+  const launcherNeedsPosix = windowsGateway || (preflightQuery.error instanceof ApiError
+    && parseErrorCode(preflightQuery.error.body) === 'posix_host_required')
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
@@ -1303,6 +1312,8 @@ export function RemoteCrewPanel() {
             <Card>
               <div className="text-[13px] text-muted">{i18nT('pages.settings.remoteCrewPanel.provisioner_none_drawable')}</div>
             </Card>
+          ) : builtinProvisioner && launcherNeedsPosix ? (
+            <RemoteCrewWindowsNotice error={windowsGateway ? undefined : preflightQuery.error} />
           ) : builtinProvisioner ? (
           <>
           {/* AWS prerequisites — the account inputs live HERE, above the rows they
