@@ -1313,7 +1313,7 @@ export function RemoteCrewPanel() {
               <div className="text-[13px] text-muted">{i18nT('pages.settings.remoteCrewPanel.provisioner_none_drawable')}</div>
             </Card>
           ) : builtinProvisioner && launcherNeedsPosix ? (
-            <RemoteCrewWindowsNotice />
+            <RemoteCrewWindowsNotice error={windowsGateway ? undefined : preflightQuery.error} />
           ) : builtinProvisioner ? (
           <>
           {/* AWS prerequisites — the account inputs live HERE, above the rows they

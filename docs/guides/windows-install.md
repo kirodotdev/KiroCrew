@@ -410,10 +410,19 @@ needs a Linux or macOS gateway. On a Windows gateway that tab says so and runs n
 AWS check, so it never reports your AWS profile as wrong. There are two ways to
 launch from a Windows PC.
 
-**From PowerShell, with no admin rights.** `kirocrew cloud launch` is the same
-launcher as a terminal wizard, and it runs on Windows. It needs the AWS CLI v2 and
-the AWS [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+**From PowerShell, without WSL.** `kirocrew cloud launch` is the same launcher as
+a terminal wizard, and it runs on Windows. It needs the AWS CLI v2 and the AWS
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
 on this PC. From a clone, `install.ps1` installs both and then starts the wizard.
+The AWS CLI installer is a per-machine install, so adding it usually needs
+administrator rights; with both already installed, the launch itself needs none.
+The desktop installer does not add `kirocrew` to `PATH`, so from a desktop install
+call the bundled shim by its full path:
+
+```powershell
+& "<install dir>\resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd" cloud launch
+```
+
 The crew it launches joins your Remote Crew list like one launched from the
 dashboard.
 

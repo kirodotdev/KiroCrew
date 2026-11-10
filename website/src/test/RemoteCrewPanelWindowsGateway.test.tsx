@@ -3,7 +3,7 @@
  * there with 400 `posix_host_required` before any AWS call, so the tab says that
  * once, with the ways forward, and never blames the AWS credentials it did not read.
  */
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
@@ -82,7 +82,6 @@ function expectNoCredentialBlame() {
   expect(screen.queryByText(/credentials were not checked/i)).not.toBeInTheDocument()
   expect(screen.queryByText(/requires a POSIX host/i)).not.toBeInTheDocument()
   expect(screen.queryByText(/Finish the AWS setup above/i)).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: /Ask the agent/i })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /^Launch$/i })).not.toBeInTheDocument()
 }
 
@@ -106,18 +105,28 @@ describe('RemoteCrewPanel Set-up tab on a Windows gateway', () => {
     const heading = await openSetup()
     const notice = heading.closest('section') as HTMLElement
     expect(notice).not.toBeNull()
-    expect(notice).toHaveTextContent(/Your AWS profile was not checked/)
+    expect(notice).toHaveTextContent(/Your AWS profile wasn’t used, so it isn’t the problem/)
     expect(notice).toHaveTextContent(/kirocrew cloud launch/)
+    expect(notice).toHaveTextContent(/does not add kirocrew to PATH/)
     expect(notice).toHaveTextContent(/administrator rights and a restart/)
     const guide = screen.getByRole('link', { name: /Read the Windows guide/i })
     expect(guide).toHaveAttribute('href', REMOTE_CREW_WINDOWS_GUIDE_URL)
+    // The rejection learned it, so the sentence is the shared error surface, with
+    // its hand-off, inside the notice rather than a second error above it.
+    const alert = within(notice).getByRole('alert')
+    expect(alert).toHaveTextContent(/Your AWS profile wasn’t used, so it isn’t the problem/)
+    expect(within(alert).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Ask the agent/i })).toHaveLength(1)
     expectNoCredentialBlame()
   })
 
   it('runs no AWS check at all when the gateway is known to be Windows', async () => {
     platformEnv.value = 'windows'
-    await openSetup()
+    const heading = await openSetup()
     expect(api.cloudPreflight).not.toHaveBeenCalled()
+    // Nothing was rejected, so there is no error surface to hand off.
+    expect(within(heading.closest('section') as HTMLElement).queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Ask the agent/i })).not.toBeInTheDocument()
     expectNoCredentialBlame()
   })
 

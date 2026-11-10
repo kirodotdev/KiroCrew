@@ -1349,10 +1349,13 @@ its real jobs.
 launch form when the gateway platform reads `windows` (`useGatewayPlatform`), or
 when the preflight answers `400 posix_host_required` (the platform signal may not
 be cached yet). A known-Windows gateway does not send the preflight at all. The
-refusal comes before any AWS call, so the notice says the profile was not checked
-and never shows the credentials row, Ask the agent, or a disabled Launch. It names
-the two ways forward: `kirocrew cloud launch` in PowerShell, which runs on
-Windows, and a gateway inside WSL. It links the guide in
+refusal comes before any AWS call, so the notice says the profile was not used
+and is not the problem, and never shows the credentials row or a disabled Launch. When the refusal is how
+the tab learned it, that sentence renders through `ErrorNotice` with the
+rejection's report and the agent hand-off; a known-Windows gateway gets it as
+plain text. It names the two ways forward: `kirocrew cloud launch` in PowerShell,
+which runs on Windows (by its full path from a desktop install, which adds nothing
+to `PATH`), and a gateway inside WSL. It links the guide in
 [windows-install.md](../../guides/windows-install.md#launch-a-cloud-crew-from-windows).
 A lane an edition draws itself keeps its own form.
 
