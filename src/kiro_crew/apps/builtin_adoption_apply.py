@@ -66,6 +66,7 @@ from kiro_crew.apps.builtin_adoption_state import (
     write_grant_and_marker,
     write_ledger,
 )
+from kiro_crew.sandbox import SandboxUnavailableError
 
 logger = logging.getLogger("kiro_crew.apps.builtin_adoption")
 
@@ -280,6 +281,12 @@ async def staging_pass(*, now: Callable[[], datetime]) -> dict[str, str]:
             outcomes[name] = await _stage_one(pins[name], now())
         except asyncio.CancelledError:
             raise
+        except SandboxUnavailableError as exc:
+            # The fetch runs in the sandbox, and a host with no backend refuses it on
+            # every pass. The refusal's own text names the host's remedy; a stack
+            # trace under it on each gateway start reads as a crash.
+            logger.warning("Adoption staging of %s failed: %s", name, exc)
+            outcomes[name] = "error"
         except Exception:  # noqa: BLE001 - one pin must not stop the others
             logger.exception("Adoption staging of %s failed", name)
             outcomes[name] = "error"

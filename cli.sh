@@ -1395,6 +1395,25 @@ if [ "$INSTALL_KAS" = "1" ]; then
     echo "Retry when online: $_KAS_RETRY" >&2
   fi
 fi
+# Ubuntu 23.10+ ships kernel.apparmor_restrict_unprivileged_userns=1, and there
+# the agent sandbox cannot start, so every agent is refused (fail closed), until
+# the kirocrew-userns AppArmor profile is installed. Writing it needs root, which
+# this installer never asks for, so it says so here, before the next steps that
+# would otherwise lead to a chat that cannot run. Both reads are the ones
+# `kirocrew doctor` makes, and neither needs root. The paths are arguments so a
+# test can hand it files of its own.
+_userns_profile_notice() {
+  [ -r "$1" ] || return 0
+  _un_value=""
+  IFS= read -r _un_value < "$1" 2>/dev/null || true
+  [ "$_un_value" = 1 ] || return 0
+  [ -f "$2" ] && return 0
+  echo "" >&2
+  echo "NOTE: this host restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1)," >&2
+  echo "so agents cannot run until Kiro Crew's AppArmor profile is installed. Install it with:" >&2
+  echo "  kirocrew service install    # needs sudo; it also runs Kiro Crew as a service" >&2
+}
+_userns_profile_notice /proc/sys/kernel/apparmor_restrict_unprivileged_userns /etc/apparmor.d/kirocrew-userns
 if [ "$_kas_rc" -eq 3 ]; then
   echo "" >&2
   echo "Kiro Crew is installed, but this host cannot run the built-in KAS engine (the reason is above)." >&2
