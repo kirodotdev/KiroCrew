@@ -363,12 +363,31 @@ def service_alias_holder() -> "linux.AliasHolder | None":
     return None
 
 
+class ServiceStopRefused(RuntimeError):
+    """The service manager refused to stop a running unit.
+
+    ``hints`` holds the command to run by hand for each refused scope. Raised
+    rather than answered ``False``: ``False`` sends the CLI to its foreground
+    path, which would signal a process the manager restarts (``Restart=always``).
+    """
+
+    def __init__(self, hints: list[str]) -> None:
+        super().__init__("; ".join(hints))
+        self.hints = list(hints)
+
+
 def stop_service() -> bool:
-    """Stop the platform service if active. Returns True if a service was stopped."""
+    """Stop the platform service if active. Returns True if a service was stopped.
+
+    Raises :class:`ServiceStopRefused` when a systemd unit is running and its
+    manager refused the stop.
+    """
     plat = current_platform()
     if plat == Platform.SYSTEMD:
         if linux.is_active():
-            linux.stop()
+            refused = linux.stop()
+            if refused:
+                raise ServiceStopRefused(refused)
             return True
         return False
     if plat == Platform.LAUNCHD:
