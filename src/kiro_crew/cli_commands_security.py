@@ -101,20 +101,45 @@ def _security(args: argparse.Namespace) -> None:
         for p in BUILTIN_DENY_PATTERNS:
             print(f"  ✗ {p}")
         cfg_path = config_dir() / "config.json"
-        if cfg_path.exists():
-            try:
-                data = json.loads(read_config_text(cfg_path))
-            except (OSError, ValueError) as exc:
-                # The built-in list above is already printed; say plainly that the
-                # user-configured half could not be read instead of a traceback.
-                print(f"\n⚠️  Could not read user-configured deny patterns from {cfg_path}: {exc}")
-                data = {}
-            hooks = data.get("hooks") if isinstance(data, dict) else None
-            extra = hooks.get("auto_deny_tools", []) if isinstance(hooks, dict) else []
+        local_path = config_dir() / "config.local.json"
+        if cfg_path.exists() or local_path.exists():
+            if cfg_path.exists():
+                try:
+                    json.loads(read_config_text(cfg_path))
+                except (OSError, ValueError) as exc:
+                    # The built-in list above is already printed; say plainly that the
+                    # user-configured half could not be read instead of a traceback.
+                    print(
+                        f"\n⚠️  Could not read user-configured deny patterns from {cfg_path}: {exc}"
+                    )
+            # The gateway reads ``hooks`` from config.json with config.local.json
+            # merged over it, so the list shown here comes from the same merge.
+            # Imported here, not at module scope: this module is a star-import owner
+            # of ``cli_commands``, so a module-level name would join that facade.
+            from kiro_crew.config.loader_locations import read_merged_config_files
+
+            data = read_merged_config_files(cfg_path, local_path)
+            hooks = data.get("hooks")
+            raw = hooks.get("auto_deny_tools", []) if isinstance(hooks, dict) else []
+            # Show what the gate enforces: ``HooksConfig.from_dict`` keeps only the
+            # text entries of a list and reads anything else as no patterns.
+            if not isinstance(raw, list):
+                print(
+                    "\n⚠  hooks.auto_deny_tools is not a list, so no user-configured "
+                    "deny pattern is enforced. Make it a list of patterns."
+                )
+                raw = []
+            extra = [p for p in raw if isinstance(p, str)]
+            skipped = len(raw) - len(extra)
             if extra:
                 print("\n🔧 User-configured deny patterns:")
                 for p in extra:
                     print(f"  ✗ {p}")
+            if skipped:
+                print(
+                    f"\n⚠  {skipped} entries in hooks.auto_deny_tools are not text and "
+                    "are not enforced."
+                )
     elif action == "audit":
         sessions_dir = config_dir() / "sessions"
         findings, rows_scanned = scan_history(sessions_dir)
