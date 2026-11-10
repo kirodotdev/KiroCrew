@@ -1128,6 +1128,7 @@ export default function SchedulePage() {
                       </TableRow>
                     )}
                     {!isCollapsed && group.jobs.map(j => (
+              <Fragment key={j.id}>
               <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''} ${selected?.id === j.id || selectedIds.has(j.id) ? '[&_button.border-border]:[--border:var(--border-strong)]' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
                 <TableCell className="px-2 text-center" onClick={e => e.stopPropagation()}>
                   <input
@@ -1297,11 +1298,18 @@ export default function SchedulePage() {
                       onNewFolder={handleNewFolder}
                     />
                   </div>
-                  {/* askAgent on: row actions (pause, strict, move, run, delete)
-                      act on a persisted job; the row holds no draft. */}
-                  {actionError?.id === j.id && <ErrorNotice variant="inline" className="mt-1 whitespace-normal" message={actionError.msg} askAgent testId="schedule-job-action-error" />}
                 </TableCell>
               </TableRow>
+              {/* Own row: the nowrap Actions cell broke the text per character (#34557).
+                  askAgent on: row actions act on a persisted job, no draft. */}
+              {actionError?.id === j.id && (
+                <TableRow key={`je-${j.id}`}>
+                  <TableCell colSpan={SCHEDULE_COLUMNS}>
+                    <ErrorNotice variant="inline" className="whitespace-normal" message={actionError.msg} askAgent testId="schedule-job-action-error" />
+                  </TableCell>
+                </TableRow>
+              )}
+              </Fragment>
                     ))}</Fragment>
                   )
                 })
