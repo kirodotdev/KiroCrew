@@ -1080,10 +1080,15 @@ export function AboutPanel() {
                       style={{ color: 'var(--ok)', background: 'color-mix(in oklab, var(--ok) 14%, transparent)' }}
                       data-testid="hero-up-to-date">
                     <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--ok)' }} /> {i18nT('pages.settings.aboutPanel.up_to_date')}</span>
-                  // No verdict yet (never checked, or the check failed). A green
-                  // "Up to date" here is the same half-truth the check contract
-                  // kills: it would sit beside a red "Couldn't check for updates"
-                  // on this very screen. Stay neutral until something is known.
+                  // No verdict yet. A green "Up to date" here is the same
+                  // half-truth the check contract kills: it would sit beside a
+                  // red "Couldn't check for updates" on this very screen. "Not
+                  // checked yet" only while no check has run: the backend stamps
+                  // `update_last_checked_at` on a failed check too, so the card
+                  // below already says "Last checked ..." and the pill must not
+                  // deny it.
+                  : lastCheckedAt
+                  ? null
                   : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5 text-muted bg-bg-accent"
                       data-testid="hero-not-checked">
                     <span className="w-1.5 h-1.5 rounded-full inline-block bg-muted" /> {i18nT('pages.settings.aboutPanel.not_checked_yet')}</span>
