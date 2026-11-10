@@ -161,6 +161,10 @@ hand-built request cannot start a sign-in or a Test session for it. Cancel and
 Disconnect still reach every registry provider, so a grant stored before its
 provider was hidden stays revocable.
 
+Before each screen the cold mint runs the same discovery step the chat banner
+runs (`approve_discovered_oauth_endpoint`, see [security](security.md)), so a
+configured server whose own authorization server advertises the consent URL's
+exact host and path is not refused for its PKCE values.
 A cold mint whose URL is rejected by `oauth_url_contains_credential` disposes
 that dedicated process, protected PID, and ephemeral spec, then creates one
 fresh dedicated attempt with a new provider OAuth state. The retry keeps the
