@@ -4502,7 +4502,7 @@
         "cli": "CLI。",
         "companions_installed_other": "{{count}}個のアダプタパッケージがインストールされています：{{names}}。それらのソースは上記のリストに表示されます。許可後に表示されない場合は、フリート許可ポリシーがそれらを拒否しました — ゲートウェイログを確認してください。",
         "connect_a_signal_source_first_a_rule_naming_an_u": "最初にシグナルソースを接続してください — 設定されていないプロバイダーに名前を付けるルールは決してマッチできません。",
-        "credential_retention_note": "アプリのフォルダーの外に保存されているため、エージェントは読み取ることができません。注：このアプリをアンインストールしてもそれらは削除されません。削除したい場合はここで最初に取り消してください。",
+        "credential_retention_note": "エージェントが読み取れない場所に保存されています。注：このアプリをアンインストールしてもそれらは削除されません。削除したい場合はここで最初に取り消してください。",
         "desktop_notifications": "デスクトップ通知",
         "detached_head": "detached HEAD",
         "detached_head_left_alone_finish_the_merge_first": "detached HEADは意図的に放置されています：マージまたはリベースが進行中の場合は最初に完了または中止してください。refs を動かすと、その作業が失われる可能性があります。",

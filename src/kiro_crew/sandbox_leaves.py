@@ -255,6 +255,12 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "playwright-extension-token",
     "browser-mode-enabled",
     "browser-engine",
+    # Ops Mission Control's provider-token store as an earlier version kept it, at the
+    # data-home root. The store now lives in the app's data directory, which the app's
+    # ``credentialMasks`` declaration masks, and the app moves the old file there on first
+    # access. The root name stays masked because a restored backup can bring it back
+    # holding live tokens.
+    "ops_mission_control_secrets.json",
     # Browser Harness's runtime directory (``browser_harness.supervisor.IPC_LEAF``):
     # the daemon's Unix socket (or, on Windows, the port file carrying the IPC
     # token), its pid file, log and screenshot temp. Whoever can open the socket
@@ -404,7 +410,6 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # above -- and any crash orphan are covered at every name, present and future.
     _AUTH_STORE_STAGING_LEAF,
     "kas",
-    "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",
     # Web Push credential stores (``notifications/push_store.py``, ``vapid_keys.py``), owned by the
     # gateway alone: ``vapid_keys.json`` holds the VAPID EC private key and

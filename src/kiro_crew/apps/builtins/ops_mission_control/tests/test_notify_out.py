@@ -220,8 +220,10 @@ class TestSilentByDefault(_NotifyBase):
 
     def test_enabling_writes_no_secret_material(self) -> None:
         notify_out.set_settings(enabled=True)
-        secrets = Path(self._tmp.name) / "ops_mission_control_secrets.json"
-        self.assertFalse(secrets.exists())
+        from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
+
+        for path in (secrets.secrets_path(), secrets.legacy_secrets_path()):
+            self.assertFalse(path.exists())
 
 
 class TestTheGuardsTheHttpHandlerOwnsAreReplicated(_NotifyBase):

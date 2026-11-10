@@ -24,6 +24,7 @@ import pytest
 
 from kiro_crew import atomic_write as aw
 from kiro_crew import hidden_leaf_staging
+from kiro_crew.apps import credential_masks
 from kiro_crew.sandbox_leaves import _AUTH_STORE_STAGING_LEAF, _CREW_HIDDEN_LEAVES
 
 
@@ -64,6 +65,16 @@ def _ops_policy_write():
     return policy_store.policy_path(), None
 
 
+def _stray(crew_home: Path, target: Path) -> list[str]:
+    """Files other than *target* and lock sidecars, in the data-home root and beside it."""
+    return [
+        p.name
+        for d in sorted({crew_home, target.parent})
+        for p in d.iterdir()
+        if p.is_file() and p != target and not p.name.endswith(".lock")
+    ]
+
+
 WRITERS = {
     "ops-mission-control-secrets": _ops_secret_write,
     "ops-mission-control-policy": _ops_policy_write,
@@ -74,10 +85,10 @@ WRITERS = {
 def test_hidden_leaf_temp_is_staged_only_under_the_masked_directory(writer, crew_home, temp_dirs):
     target, secret = WRITERS[writer]()
 
-    assert target.parent == crew_home, "fixture drift: the leaf is not in the data-home root"
+    leaf = target.relative_to(crew_home).as_posix()
     assert (
-        target.name in _CREW_HIDDEN_LEAVES
-    ), f"{target.name} is no longer a hidden leaf; this test no longer guards anything"
+        leaf in _CREW_HIDDEN_LEAVES or leaf in credential_masks.declared_crew_leaves()
+    ), f"{leaf} is no longer a masked leaf; this test no longer guards anything"
     assert target.is_file(), "the write did not publish"
     if secret is not None:
         assert secret in target.read_text(encoding="utf-8")
@@ -91,14 +102,10 @@ def test_hidden_leaf_temp_is_staged_only_under_the_masked_directory(writer, crew
         )
     assert _AUTH_STORE_STAGING_LEAF in _CREW_HIDDEN_LEAVES
 
-    # Nothing of the write is left in the data-home root besides the leaf itself (and the
-    # ops store's empty lock sidecar, which carries no payload).
-    stray = [
-        p.name
-        for p in crew_home.iterdir()
-        if p.is_file() and p != target and not p.name.endswith(".lock")
-    ]
-    assert stray == [], f"{writer} left unmasked files in the data-home root: {stray}"
+    # Nothing of the write is left in the data-home root or beside the leaf besides the leaf
+    # itself (and the ops store's empty lock sidecar, which carries no payload).
+    stray = _stray(crew_home, target)
+    assert stray == [], f"{writer} left unmasked files beside the leaf: {stray}"
     assert (
         list(staging.iterdir()) == []
     ), f"{writer} left a staged temp behind: {list(staging.iterdir())}"
@@ -122,12 +129,7 @@ def test_failed_publish_leaves_no_orphan_and_keeps_the_old_leaf(writer, crew_hom
         f"{writer} left its staged copy behind after a failed publish: "
         f"{list(staging.iterdir())}"
     )
-    stray = [
-        p.name
-        for p in crew_home.iterdir()
-        if p.is_file() and p != target and not p.name.endswith(".lock")
-    ]
-    assert stray == []
+    assert _stray(crew_home, target) == []
 
 
 def test_unusable_staging_refuses_rather_than_writing_beside_the_leaf(crew_home, temp_dirs):

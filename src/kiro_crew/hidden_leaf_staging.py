@@ -191,11 +191,16 @@ def auth_store_staging_dir(home: Path) -> Path:
     return staging
 
 
-def publish_through_auth_store_staging(path: Path, content: str | bytes) -> None:
+def publish_through_auth_store_staging(
+    path: Path, content: str | bytes, *, home: Path | None = None, fsync: bool = False
+) -> None:
     """Atomically replace *path* with *content*, staged inside the masked staging directory.
 
     For a gateway-owned FILE in ``sandbox._CREW_HIDDEN_LEAVES`` that has no staged publish
-    of its own. A plain ``atomic_write(path, ...)`` stages its temp with
+    of its own, or one an app declares in ``credentialMasks``. *home* is the data home whose
+    staging directory is used, for a *path* deeper in it than its root
+    (``apps/<name>/data/<entry>``); it defaults to *path*'s parent. *fsync* syncs the staged
+    file's data before the rename. A plain ``atomic_write(path, ...)`` stages its temp with
     ``mkstemp(dir=path.parent)``: for a leaf in the data-home root that temp sits at a name
     no mask covers, holding the full payload, so a same-uid sandboxed agent can read it or
     ``link(2)`` it during the write, and a crash leaves the same bytes behind. The signing
@@ -206,7 +211,7 @@ def publish_through_auth_store_staging(path: Path, content: str | bytes) -> None
     (validated, owner-only, masked and fenced as a whole directory, precreated before the
     first spawn), so both the write window and any crash orphan are covered at every name.
     It is then renamed onto *path*. Both steps are atomic renames on one filesystem (the
-    staging directory is a child of *path*'s parent), so *path* is never partial.
+    staging directory is a child of *home*, which holds *path*), so *path* is never partial.
 
     Fails closed: an unusable staging directory raises and NOTHING is written. It never
     falls back to staging beside *path*, which is the exposure this exists to close. A
@@ -215,11 +220,11 @@ def publish_through_auth_store_staging(path: Path, content: str | bytes) -> None
     """
     path = Path(path)
     _publish_staged(
-        auth_store_staging_dir(path.parent),
+        auth_store_staging_dir(path.parent if home is None else Path(home)),
         path,
         content,
         restrict_on_error="raise",
-        fsync=False,
+        fsync=fsync,
     )
 
 

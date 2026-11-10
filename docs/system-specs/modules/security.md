@@ -652,9 +652,9 @@ because a mask covers a path and the temp has a different one. The gateway's two
 stores — `token_signing.key` and `refresh_chains.json` — publish through
 `auth-store-staging`, and so does every other gateway-written hidden FILE leaf in the
 data-home root that would otherwise stage beside itself with `atomic_write`: the browser
-extension token (`playwright-extension-token`) and the Ops Mission Control secret store
-and policy ceiling (`ops_mission_control_secrets.json`, `ops_mission_control_policy.json`),
-and the data home's `.env`, which holds the chat-channel tokens.
+extension token (`playwright-extension-token`), the Ops Mission Control policy ceiling
+(`ops_mission_control_policy.json`) and its secret store (in its data directory, an
+app-declared mask), and the data home's `.env`, which holds the chat-channel tokens.
 They go through
 `hidden_leaf_staging.publish_through_auth_store_staging`,
 which stages with `atomic_write` inside the validated staging directory, renames onto the

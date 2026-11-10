@@ -158,6 +158,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.registry import get_reg
 from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import (  # noqa: F401 -- historical module export
     delete_secret,
     describe_secrets,
+    migrate_legacy_store,
     put_secret,
     redact_tokens,
 )
@@ -518,5 +519,17 @@ def register_routes(app: web.Application) -> None:
         get_registry()
     except Exception:  # noqa: BLE001 — a discovery fault must not break gateway startup
         logger.exception("ops-mission-control: registry warm-up failed; will retry lazily")
+
+    # Move an earlier version's root secret store into the app's data directory here, for
+    # the same reason: the move takes two file locks and two fsyncs, and a lookup on the
+    # loop would otherwise pay them. Fail-open like the warm-up: until it succeeds a lookup
+    # reads the root store where it is, and the next save retries the move and refuses on
+    # its failure. The message is a fixed literal; the traceback carries no store bytes.
+    try:
+        migrate_legacy_store()
+    except OSError:
+        logger.exception(  # nosemgrep: python-logger-credential-disclosure
+            "ops-mission-control: could not move the secret store from the data-home root"
+        )
 
     logger.info("ops-mission-control: routes registered")

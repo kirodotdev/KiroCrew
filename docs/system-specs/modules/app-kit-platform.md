@@ -7593,10 +7593,11 @@ that app's masks from the next spawn, as it could rewrite the app's code. Sealin
 installed tree is a sandbox widening for the operator to choose. A declared file absent
 at spawn is not masked for that spawn, as for a core file leaf.
 
-**Built-ins.** None declares one yet. Ops Mission Control's provider tokens live at the
-data-home root, outside its data directory, so they keep their core rows until the
-store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-control.md`,
-"Repository boundary").
+**Built-ins.** Ops Mission Control declares `secrets.json`, its provider-token store,
+which masks it and refuses a second hard link to it in place of core rows. The core
+keeps the store's old root name as a retired leaf (hidden, hard-link refused, fenced)
+and a tool-gate row for the new path, which no declaration feeds (`ops-mission-control.md`, "Repository boundary").
+`test_app_credential_masks.py` pins the shipped declarations.
 
 **Seam level.** The masks are level 3 (`APP_SDK_LEVEL` is 4 since §30.1's tool keys):
 an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks

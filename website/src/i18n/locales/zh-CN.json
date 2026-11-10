@@ -4414,7 +4414,7 @@
         "cli": "CLI.",
         "companions_installed_other": "已安装 {{count}} 个适配器包：{{names}}。通过准入后，它们的源就会出现在上方列表里；如果没有出现，说明机群准入策略拒绝了它们 — 请查看网关日志。",
         "connect_a_signal_source_first_a_rule_naming_an_u": "请先连接一个信号源 — 指定了未配置提供方的规则永远不会匹配。",
-        "credential_retention_note": "保存在此应用的文件夹之外，所以代理读不到。注意：卸载此应用并不会删除它们。想彻底清掉凭据，请先在这里撤销。",
+        "credential_retention_note": "保存在代理读不到的位置。注意：卸载此应用并不会删除它们。想彻底清掉凭据，请先在这里撤销。",
         "desktop_notifications": "桌面通知",
         "detached_head": "detached HEAD",
         "detached_head_left_alone_finish_the_merge_first": "detached HEAD 是故意不去动的：请先完成或中止正在进行的 merge 或 rebase，因为在这种状态下移动引用会丢掉那部分工作。",

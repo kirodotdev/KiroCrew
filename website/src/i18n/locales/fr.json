@@ -4768,7 +4768,7 @@
         "companions_installed_one": "{{count}} adapter package installed: {{names}}. Their sources appear in the list above once admitted; if they do not, the fleet admission policy rejected them — check the gateway log.",
         "companions_installed_other": "{{count}} adapter packages installed: {{names}}. Their sources appear in the list above once admitted; if they do not, the fleet admission policy rejected them — check the gateway log.",
         "connect_a_signal_source_first_a_rule_naming_an_u": "Connect a signal source first — a rule naming an unconfigured provider can never match.",
-        "credential_retention_note": "Stored outside the app's folder, so the agent cannot read them. Note: uninstalling this app does not delete them. Revoke here first if you want the credential gone.",
+        "credential_retention_note": "Stockés là où l'agent ne peut pas les lire. Remarque : désinstaller cette app ne les supprime pas. Révoque-les d'abord ici si tu veux que l'identifiant disparaisse.",
         "desktop_notifications": "Desktop notifications",
         "detached_head": "detached HEAD",
         "detached_head_left_alone_finish_the_merge_first": "A detached HEAD is left alone on purpose: finish or abort the merge or rebase in progress first, since moving refs under one can lose that work.",

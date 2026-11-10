@@ -120,6 +120,9 @@
       "routes": "backend.agent_tool_hook:register_agent_tool_routes"
     }
   },
+  "credentialMasks": [
+    "secrets.json"
+  ],
   "agentTools": {
     "route": "agent-tools",
     "tools": [
