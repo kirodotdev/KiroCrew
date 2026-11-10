@@ -52,7 +52,7 @@ _PACKAGE = "kiro_crew.instances"
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "__init__": ("function", False, "ab30f0d05883", "ssh_tunnel_manager"),
-    "_answer_embed_mint": ("function", True, "b5c8b10f6ade", "ssh_tunnel_manager_tokens"),
+    "_answer_embed_mint": ("function", True, "3f86aeb9a38c", "ssh_tunnel_manager_tokens"),
     "_apply_hop_holds": ("function", False, "fd498410fb8e", "ssh_tunnel_manager_ports"),
     "_await_peer_version_change": (
         "function",
@@ -83,7 +83,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_mark_recovered": ("function", True, "c25e8ef8253f", "ssh_tunnel_manager_self_heal"),
     "_mint_for": ("function", True, "a4a40773e7f0", "ssh_tunnel_manager_transport"),
     "_mint_superseded": ("function", False, "2885ca508f03", "ssh_tunnel_manager_tokens"),
-    "_mint_through_parent": ("function", True, "a4a40773e7f0", "ssh_tunnel_manager_transport"),
+    "_mint_through_parent": ("function", True, "5cfb48467004", "ssh_tunnel_manager_transport"),
     "_mint_timeout_for": ("function", False, "4c89c0af9684", "ssh_tunnel_manager_transport"),
     "_mint_token_with_parent_port": ("function", True, "94e525cb401a", "ssh_tunnel_manager_tokens"),
     "_minted_ttl": ("function", False, "438b16f4eb67", "ssh_tunnel_manager_tokens"),
@@ -147,7 +147,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "get_token": ("function", False, "4304a34e8586", "ssh_tunnel_manager_tokens"),
     "hop_ownership_violations": ("function", False, "4dd1e5721cbf", "ssh_tunnel_manager_ports"),
     "last_error": ("function", False, "427800bb96d3", "ssh_tunnel_manager_lifecycle"),
-    "mint_embed_token": ("function", True, "582ddabcd0b7", "ssh_tunnel_manager_tokens"),
+    "mint_embed_token": ("function", True, "15ed6cf0af6a", "ssh_tunnel_manager_tokens"),
     "peer_capability": ("function", True, "4fd9c60dcb9f", "ssh_tunnel_manager_peer"),
     "peer_version": ("function", True, "ca2073978776", "ssh_tunnel_manager_peer"),
     "proxy_request": ("function", False, "185d7a847cc1", "ssh_tunnel_manager_peer"),

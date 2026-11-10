@@ -1718,6 +1718,10 @@ function createGatewaySupervisor({
     // A remote-crew edit re-applies the launch port's tunnel choice at once:
     // start, replace (new host or port) or stop the forward to match it.
     syncTunnel: () => tunnelKeeper.start(),
+    // The Remote Crew panes a window on the launch port shows, carried by the
+    // same managed forward (tunnel-keeper.js), and their release when it closes.
+    forwardPanePorts: (owner, ports) => tunnelKeeper.forwardPanePorts(owner, ports),
+    releasePaneForwards: (owner) => tunnelKeeper.releasePaneForwards(owner),
     // First-run setup's "only crews on other machines" exit (remote-switch.js).
     canSwitchToRemoteCrew,
     switchToRemoteCrew,

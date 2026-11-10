@@ -41,6 +41,7 @@ const {
 } = require("./host-config");
 const { isLocalGatewayEnabled } = require("./local-gateway");
 const { seedRenamedStore } = require("./store-rename");
+const { STORE_FILE_MODE, tightenStoreFileMode } = require("./store-file-mode");
 const { resolveHome } = require("./home-dir");
 const { internalSecretFor } = require("./local-token");
 const { identityFamily } = require("./instance-guard");
@@ -120,6 +121,8 @@ const renameSeedCarriedSettings = seedRenamedStore(app.getPath("userData"), {
 const isFreshInstall = !storeFileExistedBeforeBoot && !renameSeedCarriedSettings;
 
 const store = new Store({
+  // Owner-only on every save; see store-file-mode.js.
+  configFileMode: STORE_FILE_MODE,
   defaults: {
     remoteHost: "",
     kirocrewBinPath: DEFAULT_REMOTE_BIN,
@@ -140,6 +143,7 @@ const store = new Store({
     gpuSoftwareFallback: null,
   },
 });
+tightenStoreFileMode(store.path, { log: (message) => glog("store mode: " + message) });
 
 // Opt the summon hotkey OUT for FRESH installs only. Before this, a null/unset
 // globalHotkey auto-bound the platform default (Cmd+Shift+K on macOS, which is

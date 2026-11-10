@@ -943,7 +943,16 @@ and that window's gateway never governs this install's updates. The argument is
 fixed when the view is created: a crew configured for the port afterwards leaves
 the bridges in place and the gate keeps refusing them, and a crew cleared
 afterwards leaves them withheld until the window is next created. The gate stays
-the authority; the preload only stops the asking.
+the authority; the preload only stops the asking. `remoteCrewPaneAPI` goes the
+other way: a remote gateway's window is the one that needs it (the managed tunnel
+forwards its Remote Crew pane ports, see the
+[instances spec](../system-specs/modules/instances.md) §4), so every window gets
+it, and `remote-crew:forward-pane-ports` admits only a top frame on the launch
+port's dashboard origin. That page names the ports: the shell checks only that each
+is a whole port in 1..65535 other than the launch port, takes at most 32 per window,
+and forwards each from this machine's `127.0.0.1` to the same port on the crew
+host's loopback, the forward the pane's own `ssh -L` hint asks the user to run by
+hand.
 
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
