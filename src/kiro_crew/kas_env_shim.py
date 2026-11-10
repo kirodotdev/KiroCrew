@@ -59,8 +59,10 @@ def _digest(*parts: str) -> str:
 def snapshot_name(session_key: str, agent: str, server: str, version: str) -> str:
     """The snapshot file name for one write of one session's server.
 
-    *version* is random per write, so two projections never share a file, even
-    for the same session: each one owns, and removes, only what it wrote. Every
+    A Connection bridge's *version* is random per write, so two of its
+    projections never share a file. A stdio launch or a header bridge is shared
+    by every session of its agent (``kas_env_launch.SHARED_SESSION``), and its
+    version is keyed to the file's content, so they all read one file. Every
     part is hashed, so no reference can name a path outside the leaf.
     """
     return (
