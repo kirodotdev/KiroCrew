@@ -1018,14 +1018,10 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     own_scopes = facts.governance_own_scopes
     if "tools" in own_scopes and not alias_groups and call.mcp_tool not in identity:
         identity = (*identity, call.mcp_tool)
-    if call.is_shell and call.command:
-        # A shell call's title may not carry its command (KAS titles it "Run
-        # Command"), so the recovered command is asked under ``commands`` too, in
-        # the same title form kiro-cli's shell call arrives in. The first tier has
-        # already refused a shell call whose command could not be recovered.
-        from kiro_crew.platform.governance import _RUNNING_PREFIX
-
-        identity = (*identity, f"{_RUNNING_PREFIX}{call.command}")
+    # A shell call's title may not carry its command (KAS titles it "Run Command"),
+    # so it is judged under ``commands`` on its recovered command alone. The first
+    # tier has already refused a shell call whose command could not be recovered.
+    shell_command = call.command if call.is_shell and call.command else ""
     gov_reason = _governance_denial(
         facts.ctx,
         call.title,
@@ -1041,6 +1037,7 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         deny_aliases=deny_aliases,
         spawn_target=call.spawn_target,
         own_scopes=own_scopes,
+        shell_command=shell_command,
     )
     if gov_reason:
         return ToolHookResult.deny_policy(gov_reason)
