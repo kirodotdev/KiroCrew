@@ -492,7 +492,7 @@ again.
 Desktop users install nothing else by hand: the app already carries the
 recognizer, decoder, and AWS client. In a source environment the recognizer and
 AWS client are the optional `voice` extra, installed as its own dependencies
-(`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6.3,<1' 'pywhispercpp>=1.5,<2'`):
+(`pip install "boto3>=1.34,<2" "amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"`):
 
 - **Intel Macs have no prebuilt recognizer.** Every other platform Kiro Crew
   supports (Apple silicon macOS, glibc and musl Linux on x86_64 and arm64, and
@@ -502,7 +502,7 @@ AWS client are the optional `voice` extra, installed as its own dependencies
   different fixes.
 
   If you would rather not build it, installing only the cloud half
-  (`pip install 'boto3>=1.34,<2' 'amazon-transcribe>=0.6.3,<1'`) gets you the AWS
+  (`pip install "boto3>=1.34,<2" "amazon-transcribe>=0.6.3,<1"`) gets you the AWS
   Transcribe client on its own. `pip` resolves an extra all-or-nothing, so on a
   platform without the recognizer wheel the full `voice` extra installs *nothing* —
   including the Transcribe client, which has no such limitation. This is the way to

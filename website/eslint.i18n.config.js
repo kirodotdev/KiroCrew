@@ -785,7 +785,7 @@ export default [
               // The install command the Decisions card's SageMaker option shows
               // when the gateway has no boto3: typed into a terminal, so the
               // same wire-string class, and enumerated for the same reason.
-              "^pip install 'boto3>=1\\.34,<2'$",
+              '^pip install "boto3>=1\\.34,<2"$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such
