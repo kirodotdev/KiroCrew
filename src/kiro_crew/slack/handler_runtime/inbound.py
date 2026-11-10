@@ -37,6 +37,8 @@ if TYPE_CHECKING:
         config_path,
         is_allowed_user,
         is_sensitive_path,
+        is_shared_listed,
+        is_shared_user,
         load_window_off_loop,
         logger,
         privacy_mode,
@@ -641,7 +643,7 @@ async def closed_dashboard_owner_refused(
     if channel_pinned_agent(channel) is None:
         return False
     # Normal handling answers an unauthorized sender; nothing is said here.
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         return False
     if owner is None:
         _first_word = text.strip().split(maxsplit=1)[0] if text.strip() else ""
@@ -689,6 +691,28 @@ async def closed_dashboard_owner_refused(
             " agent, or unlink the thread from the dashboard."
         )
     await slack.post_message(channel, _notice, reply_ts)
+    return True
+
+
+async def shared_user_refused_for_session(
+    user_id: str, session: str, thread_ts: str, channel: str
+) -> bool:
+    """Refuse (and audit) a shared user whose message would reach a code channel's
+    session *session*, or a bound or revoked channel's anchor thread *thread_ts*."""
+    if not is_shared_listed(user_id):
+        return False
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_for_slot
+
+    if not await asyncio.to_thread(shared_user_refused_for_slot, session, thread_ts):
+        return False
+    sel().log_api_access(
+        caller=user_id,
+        operation="slack.message",
+        outcome="denied",
+        source="slack",
+        resources=f"channel={channel}",
+        error="code channel is owner-only",
+    )
     return True
 
 
@@ -749,6 +773,27 @@ async def route_linked_thread(
     *interpret_commands* off (an OPTIONS answer) hands *text* over with commands
     off, so the slot reads it as content, never as a ``/`` command.
     """
+    # Code channels are the owner's (slack.shared_access): a shared user's message
+    # in one never reaches its session, whatever the feature or the slot says.
+    # First, before the no-slot fall-through hands the thread to plain routing.
+    if is_shared_listed(user_id):
+        from kiro_crew.slack.code_channels.routing import (
+            shared_user_refused_in,
+            shared_user_refused_unbound,
+        )
+
+        if await asyncio.to_thread(
+            shared_user_refused_in, channel
+        ) or await shared_user_refused_unbound(slack, channel):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.message",
+                outcome="denied",
+                source="slack",
+                resources=f"channel={channel}",
+                error="code channel is owner-only",
+            )
+            return LinkedRoute.REFUSED
     if not (_dashboard_state and hasattr(_dashboard_state, "get_linked_slot")):
         return LinkedRoute.UNROUTED
     if route_pinned:
@@ -759,6 +804,17 @@ async def route_linked_thread(
         # canonical ``slack:<ts>`` session keys still hit linked slots. session_key
         # is kept for the SEL logging below.
         _linked_slot = _dashboard_state.get_linked_slot(reply_ts)
+    # A thread linked to a code channel's session (or a bound or revoked channel's
+    # anchor) leads into that owner-only session wherever the thread lives, live
+    # slot or closed tab alike, so a shared user (slack.shared_access) is refused
+    # before either route.
+    if is_shared_listed(user_id):
+        _dest = str(getattr(_linked_slot, "key", "") or "")
+        if not _dest and not route_pinned:
+            _sessions = getattr(_dashboard_state, "sessions", None)
+            _dest = str((_sessions.get_session_for_thread(reply_ts) if _sessions else "") or "")
+        if await shared_user_refused_for_session(user_id, _dest, reply_ts, channel):
+            return LinkedRoute.REFUSED
     if not _linked_slot:
         # No live slot: a dashboard session whose tab is closed can still own
         # the thread, and the plain route would run the reply on its recorded
@@ -779,7 +835,7 @@ async def route_linked_thread(
         return LinkedRoute.UNROUTED
 
     # Auth check FIRST — deny all messages from unauthorized users.
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning("Unauthorized user %s in linked thread %s", user_id, session_key)
         sel().log_tool_invocation(
             session_key=session_key,

@@ -105,6 +105,7 @@ PREDICATE_SITES = {
     "dashboard/messaging_api/telegram_settings.py": 2,
     "dashboard/messaging_api/webex_settings.py": 2,
     "dashboard/messaging_api/wecom_settings.py": 2,
+    "dashboard/slack_shared_access.py": 1,
 }
 
 #: ``is_loopback(request.remote ...)`` call sites per file, and why each is safe.

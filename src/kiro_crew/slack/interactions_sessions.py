@@ -32,7 +32,7 @@ from kiro_crew.session_lifecycle import (
     consume_stop_declined,
     decline_stop,
 )
-from kiro_crew.slack.handler import is_allowed_user, is_owner
+from kiro_crew.slack.handler import is_allowed_user, is_owner, is_shared_listed, is_shared_user
 from kiro_crew.slack.interactions_context import _orch, ack_button
 
 logger = logging.getLogger("kiro_crew.slack.interactions")
@@ -49,7 +49,7 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
     if not _orch or not _orch.sessions:
         await ack_button(payload, channel, msg_ts)
         return
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning("stop_confirm denied for unauthorized user %s", user_id or "unknown")
         sel().log_api_access(
             caller=user_id or "unknown",
@@ -235,7 +235,7 @@ async def _handle_stop_kill_now(
     """
     if not _orch or not _orch.sessions:
         return
-    if not is_allowed_user(user_id):
+    if not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning("stop_kill_now denied for unauthorized user %s", user_id or "unknown")
         sel().log_api_access(
             caller=user_id or "unknown",
@@ -278,7 +278,11 @@ async def _handle_stop_kill_now(
                 channel, "⛔ Execution stopped — session reset.", thread_ts
             )
 
-    outcome = await _orch.sessions.stop_turn(session_key, force=True, on_hard=_on_hard)
+    # A shared user's Kill Now keeps the thread's queue (the owner's messages in it
+    # included) for the successor session, as the forced `!stop` does.
+    outcome = await _orch.sessions.stop_turn(
+        session_key, force=True, preserve_queue=is_shared_listed(user_id), on_hard=_on_hard
+    )
     sel().log_tool_invocation(
         session_key=session_key,
         source="slack",
@@ -552,11 +556,34 @@ async def _handle_session_end(
             pass
 
 
+async def _outside_code_channel(channel: str) -> bool:
+    """Whether a shared user may act in *channel*: not a code channel of the owner's,
+    bound or revoked (a DM never is one, so the store is not read for it)."""
+    from kiro_crew.slack.code_channels.routing import (
+        shared_user_refused_in,
+        shared_user_refused_unbound,
+    )
+
+    if await asyncio.to_thread(shared_user_refused_in, channel):
+        return False
+    return not await shared_user_refused_unbound(getattr(_orch, "slack", None), channel)
+
+
 async def _handle_inline_stop(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
-    """Stop the active turn for a session via the inline stop button."""
-    if not is_owner(user_id):
+    """Stop the active turn for a session via the inline stop button.
+
+    The owner, or an admitted shared user (``slack.shared_access``) outside a code
+    channel: code channels stay the owner's.
+    """
+    if not (
+        is_owner(user_id)
+        or (
+            (is_allowed_user(user_id) or is_shared_user(user_id))
+            and await _outside_code_channel(channel)
+        )
+    ):
         sel().log_api_access(
             caller=user_id,
             operation="slack.inline_stop",

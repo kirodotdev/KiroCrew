@@ -1453,6 +1453,27 @@ class TestStopParityWithBangStop:
         assert started == []
         assert theirs in sessions.cleared
 
+    @pytest.mark.asyncio
+    async def test_a_shared_users_escalated_reset_keeps_the_owners_messages(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shared user (slack.shared_access) drops only their own messages, even when
+        their Stop escalates to a reset: the owner's queued work is not theirs."""
+        sessions = FakeSessions(live={"slack:1700.1"}, outcome="hard")
+        orch = Orch(sessions)
+        await _working(orch)
+        started = _record_dispatch(monkeypatch, orch)
+        monkeypatch.setattr(events, "is_shared_listed", lambda u: u == "U1")
+        theirs = _pending("theirs", "UOWNER")
+        mine = _pending("mine", "U1")
+        sessions.queue = [theirs, mine]
+        orch._pending_queue["1700.1"] = [_pending("theirs-pending", "UOWNER")]
+        assert await session_events.handle_stopped(orch, stop_event()) == "hard"
+        await _drain_tasks(orch)
+        assert theirs not in sessions.cleared
+        assert "mine" not in started
+        assert "theirs-pending" in started
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["soft", "hard"])

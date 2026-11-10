@@ -112,6 +112,7 @@ if TYPE_CHECKING:
         session_stop_generation,
         session_store_for_turn,
         settle_turn,
+        shared_user_refused_for_session,
         slack_script_hooks,
         stop_reason_landed,
         turn_ceiling,
@@ -673,6 +674,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             if memory_error is not None:
                 raise memory_error
             break
+        # The owner may have linked this thread to a code channel's session since the
+        # linked-thread check ran: a shared user's turn never runs there.
+        if await shared_user_refused_for_session(user_id, session_key, reply_ts, channel):
+            await turn.clear_working_indicators()
+            return False
         # Re-resolve _agent against (possibly linked) session_key for the main
         # LLM path — linked dashboard sessions may carry a different thread agent.
         _agent = _thread_agents.get(session_key) or channel_agent or _get_default_agent() or None

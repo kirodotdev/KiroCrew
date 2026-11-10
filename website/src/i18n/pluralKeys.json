@@ -552,5 +552,7 @@
   "components.publicPublishAckModal.exposure_window_provider_expiry",
   "components.jobLogsView.idle_runs_hidden",
   "pages.overview.skillsTab.budget_group_counting_detail",
-  "pages.overview.skillsTab.budget_group_cold_detail"
+  "pages.overview.skillsTab.budget_group_cold_detail",
+  "pages.settings.slackSharedAccess.confirm_title",
+  "pages.settings.slackSharedAccess.confirm_label"
 ]

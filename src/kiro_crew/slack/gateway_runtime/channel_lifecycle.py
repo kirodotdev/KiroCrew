@@ -851,9 +851,13 @@ async def _replay_spooled_inbound(self: GatewayOrchestrator, *, spool: Path | No
         # local prevents every other shared send ladder from discovering a
         # Slack transport it was never designed to route through.
         if self.slack is not None:
+            from kiro_crew.slack import shared_access
+
+            # A shared user (slack.shared_access) the owner still lists is owed the
+            # notice for their own refused message, in the conversation it came from.
             transports["slack"] = SlackTransport(
                 self.slack,
-                allowed_users=self._allowed_users,
+                allowed_users=set(self._allowed_users) | set(shared_access.listed_ids(self._cfg)),
             )
         await inbound_spool.replay_spooled(transports=transports, path=spool)
     except asyncio.CancelledError:

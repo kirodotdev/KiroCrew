@@ -199,12 +199,62 @@ a later click on it only gets a private "Already answered".
 
 ## Access control
 
-Kiro Crew on Slack answers the bot owner (`KIROCREW_OWNER_ID`) and nobody else.
-Multi-user access is disabled because an allowed user would act under the owner's
-system identity — the owner's file permissions and cloud credentials — with no scope
-limit and no expiry. `!allowlist`, `/kirocrew @user`, `slack.allowed_users` and
-`slack.open_channels` are all inert as a result, and stale allowlist entries are
-pruned at startup.
+By default Kiro Crew on Slack answers the bot owner (`KIROCREW_OWNER_ID`) and nobody
+else. `!allowlist`, `/kirocrew @user`, `slack.allowed_users` and
+`slack.open_channels` stay inert, and stale allowlist entries are pruned at startup.
+
+### Sharing Slack access
+
+The owner can let other people use the bot: Settings → Messaging Channels → Slack →
+**Share Slack access**, or `slack.shared_access` in config. It is off by default.
+
+Anyone on the list acts **as the owner**. Their turns run with the owner's files,
+Git and cloud credentials and connected tools, and they can see and act in any
+Slack thread they are part of. Through the agent's own tools they can also read
+the owner's other conversations and saved memory, and change what Kiro
+remembers (lessons and memories feed the owner's later sessions too). Only add
+people you trust. The page shows this warning, and turning the switch on needs
+an explicit confirm.
+
+- **Who counts.** Each Slack member ID on the list is checked with Slack
+  (`users.info`) before it is used: same workspace as the bot (`auth.test`), a
+  person rather than a bot or app, not deactivated, and not the owner. The page
+  refuses an ID that fails, and shows each person's name next to their ID. An ID
+  added with `kirocrew config` gets the same check from the gateway before its
+  first message counts. A confirmation is re-checked every 10 minutes.
+- **What they can do.** Talk to the bot in DMs, mentions and threads, `!stop`,
+  `!title`, `!compact`, answer question cards, answer the tool-approval
+  prompts their own turns post, and send or edit the review-mode draft of their
+  own turn.
+- **What stays the owner's.** The access list and the switch; Trust, YOLO and
+  approval-mode changes (a shared user's Trust click is refused); approving a
+  prompt someone else's turn posted; `!dashboard` and other dashboard links; every
+  other `!` command, including `!channel` and agent overrides, and the
+  `!temporary` / `!incognito` modifiers; a message that starts with `/` (the
+  agent's own commands such as `/agent`, `/model` or `/tools`); the `/kirocrew`
+  slash command; the Home tab and the `sessions` list; the `spawn`, `status`, cron and `run`
+  keywords (the agent's own schedule tools are not narrowed, see below); Slack
+  settings and the manifest; and code channels (a shared
+  user's messages and card answers in one are refused, quietly, and they cannot
+  open one). Other buttons answer a shared user with "Only the bot owner can do
+  that."
+- **Changes apply to the next event.** Removing someone, or turning the switch
+  off, stops their next message, including one already waiting in the Slack
+  queue (one already queued on a linked dashboard chat still runs). A
+  `kirocrew config` edit applies once the gateway reads it, within a couple of
+  seconds. If another `slack.*` setting in `config.json` is broken the gateway
+  cannot apply the change, and the settings page says so instead of reporting it
+  done.
+- **Audit.** Every admission and refusal is written to the security event log
+  with the Slack user ID (`slack.message`, `resources=shared_access` on an
+  admission), never the message text. List and switch changes are logged as
+  `slack.shared_access.*`.
+
+The owner-only line is a judgment call recorded in the design note
+(`docs/request-for-change/rfc-slack-shared-access.md`); the agent itself still runs with the owner's tools in a shared user's turn, so a
+tool call the owner would allow is allowed for them too, including the Crew tools
+that list sessions, read transcripts and memory, save lessons, and manage
+artifacts and schedules.
 
 `!dashboard` presigned links go to the owner only.
 

@@ -42,7 +42,16 @@ from kiro_crew.slack.format import (
     escape_mrkdwn,
     replace_options_blocks,
 )
-from kiro_crew.slack.handler import APPROVAL_INTERACTIVE, handle_message, is_allowed_user
+from kiro_crew.slack.handler import (
+    APPROVAL_INTERACTIVE,
+    SHARED_OWNER_ONLY_TEXT,
+    handle_message,
+    is_allowed_user,
+    is_shared_listed,
+    is_shared_user,
+    shared_command_refused,
+    shared_user_refused_for_session,
+)
 from kiro_crew.slack.interactions_context import _orch, register_view_handler
 from kiro_crew.slack.outbound import (
     OptionsSeveralRequest,
@@ -150,6 +159,70 @@ def _extract_selected_value(action: dict) -> tuple[str, str]:
 _ACTION_PAYLOAD_CAP = 4000
 
 
+async def _shared_answer_refused(
+    channel: str, user_id: str, thread_ts: str, text: str, tool_name: str
+) -> bool:
+    """Refuse a shared user's card answer that is a harness ``/`` command or carries a
+    privacy modifier (``slack.shared_access``), BEFORE the card is claimed.
+
+    The agent's harness reads a prompt that starts with ``/`` as its own command
+    whatever Kiro Crew's ``interpret_commands`` says, so such an answer stays the
+    owner's. Refused here, not later in dispatch, so the card stays answerable.
+    """
+    if not shared_command_refused(user_id, text):
+        return False
+    sel().log_tool_invocation(
+        session_key=thread_ts,
+        agent="kirocrew",
+        source="slack",
+        tool_name=tool_name,
+        tool_kind="interaction",
+        outcome="denied",
+        metadata={"reason": "shared_user_command", "channel": channel},
+    )
+    await _tell_user(channel, user_id, thread_ts, SHARED_OWNER_ONLY_TEXT)
+    return True
+
+
+async def _shared_destination_refused(
+    channel: str,
+    user_id: str,
+    thread_ts: str,
+    tool_name: str,
+    *destinations: str | None,
+) -> bool:
+    """Refuse a shared user's card answer whose session is a code channel's
+    (``slack.shared_access``), BEFORE the card is claimed, so it stays answerable.
+
+    The destinations are the sessions the answer may be delivered to (the pinned
+    asker or slot); the thread's current owner and the thread itself are checked too.
+    """
+    if not is_shared_listed(user_id):
+        return False
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_unbound
+
+    keys = [d for d in destinations if d]
+    sessions = getattr(getattr(_orch, "dashboard_state", None), "sessions", None)
+    owner = sessions.get_session_for_thread(thread_ts) if (sessions and thread_ts) else None
+    if isinstance(owner, str) and owner:
+        keys.append(owner)
+    unbound = await shared_user_refused_unbound(getattr(_orch, "slack", None), channel)
+    for key in keys or [""]:
+        if unbound or await shared_user_refused_for_session(user_id, key, thread_ts, channel):
+            sel().log_tool_invocation(
+                session_key=thread_ts,
+                agent="kirocrew",
+                source="slack",
+                tool_name=tool_name,
+                tool_kind="interaction",
+                outcome="denied",
+                metadata={"reason": "code_channel_owner_only", "channel": channel},
+            )
+            await _tell_user(channel, user_id, thread_ts, SHARED_OWNER_ONLY_TEXT)
+            return True
+    return False
+
+
 async def _route_action_to_session(
     channel: str,
     msg_ts: str,
@@ -171,6 +244,11 @@ async def _route_action_to_session(
     there, and its label posts top-level like every other post in the channel.
     """
     assert _orch and _orch.slack  # caller already checked  # noqa: S101
+
+    if await _shared_answer_refused(channel, user_id, thread_ts, label, context_tag):
+        return
+    if await _shared_destination_refused(channel, user_id, thread_ts, context_tag, pinned_slot):
+        return
 
     # Redact label before any Slack surface
     label, _ = redact_exfiltration_urls(label)
@@ -526,6 +604,23 @@ async def _answer_options(
         )
         return
 
+    # A shared user's answer must not reach a code channel's session: the session
+    # it goes to is read before the claim (and before the stale-card cleanup, which
+    # edits the card), from the asker in the control's token and
+    # the slot that asker holds.
+    if is_shared_listed(user_id):
+        _early_token = decode_options_token(block_id)
+        _early_key = _early_token[0] if _early_token else None
+        _early_slot = (
+            slack_options_slot(_orch.dashboard_state, _early_key)
+            if (_early_key and _orch and _orch.dashboard_state)
+            else None
+        )
+        if await _shared_destination_refused(
+            channel, user_id, thread_ts, tool_name, _early_key, getattr(_early_slot, "key", None)
+        ):
+            return
+
     # One rule, checked before any work: does this control still belong to the
     # question the conversation is actually on? Judged from the token in the
     # message plus the transcript on disk, so it holds across a restart -- and it
@@ -550,6 +645,8 @@ async def _answer_options(
     # Redact LLM-generated content before any external use.
     selected = [redact_credentials(redact_exfiltration_urls(all_choices[i])[0])[0] for i in picked]
     combined = ", ".join(selected)
+    if await _shared_answer_refused(channel, user_id, thread_ts, combined, tool_name):
+        return
     # The Slack-facing FALLBACK TEXT, escaped. Slack parses entities in a
     # message's top-level `text` too, not just in mrkdwn blocks -- and `text` is
     # what notifications and block-less clients render, so an unescaped
@@ -794,7 +891,7 @@ async def _handle_options_several_submission(payload: dict) -> None:
         return
     # The same gate every OPTIONS click passes in ``dispatch``: an allowed user,
     # then the channels governance policy -- both before anything is edited or sent.
-    if user_id != request.user_id or not is_allowed_user(user_id):
+    if user_id != request.user_id or not (is_allowed_user(user_id) or is_shared_user(user_id)):
         sel().log_tool_invocation(
             session_key=request.thread_ts,
             agent="kirocrew",

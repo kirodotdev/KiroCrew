@@ -935,6 +935,23 @@ class TestOnEventDispatch:
         assert _audit_rows(_real_sel, "slack.home_tab") == [("U_OWNER", "allowed", "", "")]
 
     @pytest.mark.asyncio
+    async def test_home_tab_denied_for_a_shared_user(self, _mock_sel, _real_sel):
+        """The Home tab lists sessions and settings: owner-only under slack.shared_access."""
+        orch = _socket_orch()
+        on_event = await _install_on_event(orch, ev.SeenCache())
+        payload = {"event": {"type": "app_home_opened", "tab": "home", "user": "U_SHARED"}}
+        with (
+            patch("kiro_crew.slack.events.is_shared_user", return_value=True),
+            patch("kiro_crew.slack.events.is_shared_listed", return_value=True),
+        ):
+            with patch(
+                "kiro_crew.slack.events._publish_home_tab", new_callable=AsyncMock
+            ) as publish:
+                await on_event(_client(), _req("events_api", payload))
+        publish.assert_not_called()
+        assert _mock_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
     async def test_home_tab_denied_for_unauthorized_user(self, _mock_sel, _real_sel):
         orch = _socket_orch()
         on_event = await _install_on_event(orch, ev.SeenCache())
@@ -1250,6 +1267,39 @@ class TestHandleSlash:
         assert _mock_sel.log_api_access.call_args.kwargs["error"] == "unauthorized sender"
         assert _audit_rows(_real_sel, "slack.slash_command") == [
             ("U_BAD", "denied", "status", "unauthorized sender")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_shared_user_is_refused_the_slash_command(self, _mock_sel, _real_sel):
+        """A shared user (slack.shared_access) drives work by message, never by slash."""
+        orch = _make_orch()
+        payload = {"command": "/kirocrew", "user_id": "U_SHARED", "text": "status"}
+        with (
+            patch("kiro_crew.slack.events.is_shared_user", return_value=True),
+            patch("kiro_crew.slack.events.is_shared_listed", return_value=True),
+        ):
+            await ev._handle_slash(orch, payload)
+            await _drain(orch)
+        assert _audit_rows(_real_sel, "slack.slash_command") == [
+            ("U_SHARED", "denied", "status", "unauthorized sender")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_aged_confirmation_passes_no_owner_only_slash_command(
+        self, _mock_sel, _real_sel
+    ):
+        """Admitted while fresh, then the confirmation aged out before the second read:
+        still listed, so the owner-only gate still refuses (no dashboard link)."""
+        orch = _make_orch()
+        payload = {"command": "/kirocrew", "user_id": "U_SHARED", "text": "dashboard"}
+        with (
+            patch("kiro_crew.slack.events.is_shared_user", return_value=False),
+            patch("kiro_crew.slack.shared_access.listed", return_value=True),
+        ):
+            await ev._handle_slash(orch, payload)
+            await _drain(orch)
+        assert _audit_rows(_real_sel, "slack.slash_command") == [
+            ("U_SHARED", "denied", "dashboard", "unauthorized sender")
         ]
 
     @pytest.mark.asyncio
