@@ -2327,7 +2327,8 @@ later, and the first signal after the window starts normally. (The window double
 up to a 300s ceiling, which only a larger cap would reach.) After 3 failures in a row (`_EAGER_SPAWN_FAILURE_CAP`),
 background starts for that slot stay **off until a start succeeds or the gateway
 restarts**. `schedule_eager_spawn` refuses the slot, and the stop is logged once
-at ERROR and posted once as an error row in the chat. The row's last-error text
+at ERROR and posted once as an error row in the chat (a policy-blocked start,
+below, posts none). The row's last-error text
 is redacted and bounded to 500 characters. The user's next message still starts
 the agent, and its success clears the count. The count lives only on the
 in-memory `_ChatSlot`, so a gateway restart starts it at zero.
@@ -2339,7 +2340,11 @@ speculative-resume refusal, or a capability refusal raised before any process ra
 (`CapabilityError`, or a `CapabilityStartupError` code in
 `_PRE_SPAWN_CAPABILITY_CODES`). A failed pending-reset consume, binding or
 selection write, or admission step spawned no agent and is logged without
-counting. Pinned by `test/test_eager_spawn_start_backoff.py`.
+counting. A start Windows policy refused (`AcpSpawnBlocked`, read by its
+`windows_spawn_blocked` tag) goes to the cap at its first failure, logged at ERROR
+and with no stop row of its own: every retry meets the same policy, and the user's next
+message shows the policy card itself. Pinned by
+`test/test_eager_spawn_start_backoff.py`.
 
 `register_app` (`apps/bridges_register.py`) backs the from-source recovery with a **visible
 error**: when a manifest declares agents but `_register_agents` materializes none
