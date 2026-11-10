@@ -553,7 +553,14 @@ async def _on_upstream_initialize(self: Backend, response: dict[str, Any]) -> No
     queued stubs with an explicit error response. Without this a stub
     that registered during the in-flight window would hang forever
     waiting for a cached-initialize that never arrives.
+
+    A reply that lands after the handshake already failed (the deadline
+    fired, or the backend died) is dropped: ``"failed"`` is terminal, and
+    reading it as ``"ready"`` would serve later stubs from a reaped process.
     """
+    if self._init_state == "failed":
+        logger.info("backend pid=%s ignored initialize reply after the handshake failed", self.pid)
+        return
     try:
         result, self.supports_caller_identity = _parse_initialize_response(response)
     except ValueError as exc:
