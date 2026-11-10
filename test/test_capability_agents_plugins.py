@@ -426,6 +426,34 @@ class TestAgentPackageHandlers:
         assert "SECRETVALUE" not in message
         assert len(message) <= 600
 
+    @pytest.mark.parametrize(
+        "op, ok, handler, body, key",
+        [
+            ("install_agent", False, "api_capability_agents_install", {"package": "Pkg"}, "error"),
+            ("sync_plugins", False, "api_capability_plugins_sync", {}, "error"),
+            ("sync_plugins", True, "api_capability_plugins_sync", {}, "message"),
+        ],
+    )
+    def test_a_credential_across_the_cut_is_redacted_whole(
+        self, monkeypatch, op, ok, handler, body, key
+    ):
+        """Redact, then cut: cutting first splits the credential so no pattern
+        matches it, and its first part reaches the browser."""
+        token = "ghp_" + "a1B2c3D4e5" * 3 + "F6g7H8"
+        message = "x" * 490 + " " + token + " tail"  # the token spans char 500
+
+        async def _op(*_args):
+            return CapabilityResult(ok=ok, message=message)
+
+        mgr = _FakeManager()
+        monkeypatch.setattr(mgr, op, _op)
+        _install_manager(monkeypatch, mgr)
+        resp = asyncio.run(getattr(agents_handler, handler)(_FakeRequest(body, _FakeState())))
+        assert resp.status == (200 if ok else 500)
+        text = _body(resp)[key]
+        assert "ghp_" not in text
+        assert len(text) <= 500
+
     def test_audit_names_the_package(self, monkeypatch, no_agent_rebuild):
         """The SEL middleware logs only the path; the package name is the one
         fact an incident responder needs, so it gets an explicit line."""
