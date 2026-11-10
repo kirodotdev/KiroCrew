@@ -13,9 +13,11 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import stat
 import tarfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -381,6 +383,44 @@ class TestInstall:
         assert marker.read_text() == "held"
         assert kas_bundle.installed_bundle(root=root, version="0.66.33") is not None
         assert [p.name for p in root.iterdir() if p.name.startswith(".staging-")] == []
+
+    def test_the_next_install_removes_only_a_stale_install_staging_tree(
+        self, source_dir, tmp_path, caplog
+    ):
+        """An install ended by ``os._exit`` or an outside kill leaves its staging
+        tree; the next install removes it once nothing in it is an hour old, and
+        keeps one still being written, a retired engine, lipo's work tree and a link."""
+        root = tmp_path / "root"
+        outside = tmp_path / "outside"
+        old = time.time() - 2 * 3600
+
+        def staging_tree(path: Path, *, stale_archive: bool) -> None:
+            archive = path / "downloads" / "engine.tgz"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"x")
+            for entry in ([archive] if stale_archive else []) + [archive.parent, path]:
+                os.utime(entry, (old, old))
+
+        staging_tree(root / ".staging-1.2.3-orphan1", stale_archive=True)
+        staging_tree(root / ".staging-1.2.3-writing", stale_archive=False)
+        staging_tree(root / ".staging-retired-abc", stale_archive=True)
+        staging_tree(root / ".staging-lipo-abc", stale_archive=True)
+        staging_tree(outside, stale_archive=True)
+        link = root / ".staging-9-link"
+        link.symlink_to(outside, target_is_directory=True)
+        os.utime(link, (old, old), follow_symlinks=False)
+
+        _install(source_dir, root)
+
+        assert sorted(p.name for p in root.iterdir() if p.name.startswith(".staging-")) == [
+            ".staging-1.2.3-writing",
+            ".staging-9-link",
+            ".staging-lipo-abc",
+            ".staging-retired-abc",
+        ]
+        assert (outside / "downloads" / "engine.tgz").is_file()
+        # The link is skipped, not walked through and refused by rmtree.
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_a_zstd_engine_archive_installs_like_the_published_one(
         self, source_dir, tmp_path, monkeypatch

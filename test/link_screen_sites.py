@@ -27,6 +27,7 @@ DECLARED_SITES = frozenset(
     {
         ("acp/harness/pi.py", "_pi_gate_artifact_dir"),
         ("acp/harness/strands_project_pin.py", "_collect"),
+        ("acp/kas_bundle.py", "sweep_stale_staging"),
         ("acp/prompt_blocks.py", "build_prompt_blocks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_alias_locks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_sidecars_in"),

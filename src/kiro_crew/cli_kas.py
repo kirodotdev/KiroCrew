@@ -118,10 +118,16 @@ def _already_installed(version: str, force: bool) -> kas_bundle.InstalledKasBund
     not where this command writes, so it does not make an install here redundant.
     A directory at the version's name that does not read back as an engine is not
     an answer either; ``install_bundle`` then refuses it and names ``--force``.
+    An answer skips ``install_bundle``, so the stale staging sweep it would have
+    run runs here.
     """
     if force:
         return None
-    return kas_bundle.installed_bundle(root=kas_bundle.kas_engines_root(), version=version)
+    root = kas_bundle.kas_engines_root()
+    present = kas_bundle.installed_bundle(root=root, version=version)
+    if present is not None:
+        kas_bundle.sweep_stale_staging(root)
+    return present
 
 
 #: ``install --if-in-use`` needs the engine: the bundle route runs it.
