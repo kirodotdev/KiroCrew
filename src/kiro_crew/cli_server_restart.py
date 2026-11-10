@@ -41,6 +41,7 @@ from kiro_crew.cli_server_stop import (
     _refuse_service_alias,
     _report_authenticated_shutdown,
     _stop,
+    _terminal_safe_name,
     _verified_loopback_gateway_pids,
 )
 from kiro_crew.config import KiroCrewConfig
@@ -776,6 +777,85 @@ def _print_token_url(port: int) -> None:
     print("\n⚠️  Could not generate token (gateway still starting?). Run: kirocrew token")
 
 
+def _print_running_cron_runs() -> None:
+    """Name each cron run in flight, which a restart cuts short, and whether its job runs again.
+
+    The gateway's stop cancels every cron run and files it ``cancelled``, and
+    nothing retries that run. Whether the JOB runs again is its stored schedule's
+    answer (``job_schedules_from_disk``), so each job gets its own line:
+
+    * a ``delete_after_run`` job (what ``cron add --at`` makes) is consumed by the
+      result merge, or auto-paused when its run had already failed: it does not
+      run again, and the operator schedules it again if it is still needed;
+    * a one-shot that keeps its row is left enabled (the stop never reaches the
+      one-shot park), so it runs at its set time, at once when the gateway is back
+      if that time has passed;
+    * a recurring job runs again at its next scheduled time, and on a cron
+      expression at once when the gateway is back within the minute that run was
+      due (its ``last_run_ts`` stays the previous run's);
+    * a paused job, and one the read cannot classify (no row, an unreadable
+      store), is named with no promise about a next run.
+
+    So the operator is told which runs a restart interrupts before anything is
+    signalled. The line says what a restart does, never that this one goes ahead:
+    a refusal can still follow it (the service manager's, a service alias, the
+    desktop app's), and then nothing was signalled. The source is the in-flight
+    marker a run writes once its payload starts (``cron_inflight``), kept to
+    markers whose writer is alive here: one a crashed gateway left names no run
+    that is still going. A run still in its jitter wait has started nothing and
+    writes no marker. Best-effort: nothing readable prints nothing.
+    """
+    from kiro_crew import cron_inflight
+
+    try:
+        live = [m for m in cron_inflight.read_markers(config_dir()) if m.owner_alive() is True]
+        if not live:
+            return
+        try:
+            from kiro_crew.cron_service.readers import job_schedules_from_disk
+
+            schedules = job_schedules_from_disk()
+        except Exception:  # noqa: BLE001 - an unread store names each run with no promise
+            schedules = {}
+        runs: list[str] = []
+        after: dict[str, str] = {}
+        for m in live:
+            label = _terminal_safe_name(m.name) or _terminal_safe_name(m.job_id)
+            since = time.strftime("%H:%M UTC", time.gmtime(m.started_at))
+            runs.append(f"{label} (since {since})")
+            stored = schedules.get(m.job_id)
+            if stored is None or m.job_id in after:
+                continue
+            if stored.delete_after_run:
+                outlook = "does not run again, so schedule it again if it is still needed."
+            elif not stored.enabled:
+                continue
+            elif stored.kind == "at":
+                outlook = (
+                    "runs again at its set time, or at once when the gateway is back if that "
+                    "time has passed."
+                )
+            elif stored.kind == "every":
+                outlook = "runs again at its next scheduled time."
+            elif stored.kind == "cron":
+                outlook = (
+                    "runs again at its next scheduled time, or at once if the gateway is back "
+                    "within the minute that run was due."
+                )
+            else:
+                continue
+            after[m.job_id] = f"   - {label} {outlook}"
+    except Exception:  # noqa: BLE001 - a notice ahead of the restart must not stop it
+        return
+    lines = [f"⚠️  A restart interrupts the cron job(s) running now: {', '.join(runs)}."]
+    if after:
+        lines.append("   An interrupted run is recorded as cancelled, and after the restart:")
+        lines.extend(after.values())
+    else:
+        lines.append("   An interrupted run is recorded as cancelled.")
+    print("\n".join(lines))
+
+
 # How `kirocrew restart` labels the remedy for each kind of failed scope restart
 # (the command itself comes from the report), and the word the SEL audit row
 # carries for it: `reason=service_restart_denied` is the refusal the privileged
@@ -829,6 +909,9 @@ def _restart(cli_port: int | None = None) -> None:
     short-circuiting through it would target the wrong gateway.
     """
     port = resolve_client_port(cli_port)
+    # Before either path signals or refuses anything: both stop the gateway's cron
+    # runs, and the line stays true when a refusal below follows it.
+    _print_running_cron_runs()
     if cli_port is None:
         report = service_controller.restart_service()
         if report:
