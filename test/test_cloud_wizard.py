@@ -675,11 +675,53 @@ class TestLaunchResume:
         monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
         monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: [])
         monkeypatch.setattr(ec2, "get_stack_failures", lambda *_a, **_k: [])
+        monkeypatch.setattr(ec2, "find_stack", lambda *_a, **_k: None)
         monkeypatch.setattr(ec2, "deploy", lambda **_k: (_ for _ in ()).throw(aws.AWSError("no")))
 
         assert wizard.launch(profile="dev", region="us-west-2", assume_yes=True) == 1
         # NOTHING persisted on failure — the broken tag never reaches cloud.json.
         assert save_calls == []
+
+    @pytest.mark.parametrize(
+        ("status", "missing_action", "keep", "bills"),
+        [
+            (
+                "ROLLBACK_COMPLETE",
+                "iam:PassRole",
+                False,
+                "It holds no instance, so it does not bill.",
+            ),
+            ("CREATE_FAILED", "", True, "It may still be billing until you remove it."),
+        ],
+    )
+    def test_a_failed_deploy_names_the_stack_it_left_and_how_to_remove_it(
+        self, monkeypatch, capsys, status, missing_action, keep, bills
+    ):
+        """The failed launch is not recorded, so a bare `cloud destroy` has no target:
+        the line names the tag, Region and profile the stack is in."""
+        cfg = LaunchState(profile="", region="us-east-1", last_tag="")
+        _patch_post_launch(monkeypatch)
+        monkeypatch.setattr(wizard.LaunchState, "load", classmethod(lambda cls, *a: cfg))
+        monkeypatch.setattr(wizard.LaunchState, "record", classmethod(lambda cls, **k: None))
+        monkeypatch.setattr(wizard, "_new_tag", lambda: "kc-new")
+        monkeypatch.setattr(ec2, "list_stacks", lambda *_a, **_k: [])
+        monkeypatch.setattr(ec2, "get_stack_failures", lambda *_a, **_k: [])
+        looked_up: list[tuple] = []
+        monkeypatch.setattr(
+            ec2,
+            "find_stack",
+            lambda *a, **_k: looked_up.append(a) or {"StackStatus": status},
+        )
+        err = aws.AWSError("cloudformation deploy failed", missing_action=missing_action)
+        monkeypatch.setattr(ec2, "deploy", lambda **_k: (_ for _ in ()).throw(err))
+
+        rc = wizard.launch(profile="dev", region="us-west-2", assume_yes=True, keep_on_failure=keep)
+
+        assert rc == 1
+        assert looked_up == [("kc-new", "dev", "us-west-2")]
+        out = capsys.readouterr().out
+        assert f"The stack kirocrew-kc-new is still in your account ({status}). {bills}" in out
+        assert "kirocrew cloud destroy --tag kc-new --region us-west-2 --profile dev" in out
 
     def test_a_record_that_cannot_be_written_does_not_abort_the_launch(self, monkeypatch):
         """The deploy is BILLED by the time the record is written, so the write cannot fail it.
