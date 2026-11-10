@@ -305,7 +305,13 @@ def _refuse_if_loader_unreachable(self: AcpRuntime, active_agent: str, kas_agent
     wire = getattr(self, "_tool_search_wire", {}).get("toolSearch")
     if not (isinstance(wire, dict) and wire.get("enabled")) or not kas_agents:
         return
-    if any(spec_grants_tool_search(a) for a in kas_agents if isinstance(a, dict)):
+    # The session's own entry only: a sub-agent registered beside it
+    # (``kas_subagent_targets``) lends the session none of its tools.
+    if any(
+        spec_grants_tool_search(a)
+        for a in kas_agents
+        if isinstance(a, dict) and a.get("id") == active_agent
+    ):
         return
     raise AcpToolSurfaceBindingError(
         f"agent {active_agent!r} grants no tool_search loader, but this process "
