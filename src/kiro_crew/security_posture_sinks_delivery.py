@@ -939,4 +939,11 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "sink (an owner DM on Slack): both redactors, through `bridge_egress.redact_note`, "
         "after governance and before every sink, so no transport can skip it.",
     ),
+    (
+        "Notification bridge approval buttons",
+        "notifications/bridge_slack.py",
+        "What a pending approval will run, shown above its Slack Approve and Deny: both "
+        "redactors, then the native approval card's own renderer. `redact_note` covers "
+        "only a note's title and body, so the sink scrubs this field itself.",
+    ),
 )

@@ -425,6 +425,25 @@ class TestDashboardOverrideCard:
         assert slot._deny_waivers == set()
 
     @pytest.mark.asyncio
+    async def test_an_override_card_gets_no_chat_app_buttons(self, tmp_path, monkeypatch):
+        # A plain Approve from a chat app refuses an override card's call, so the
+        # bridged note must not offer one: the dashboard alone answers it.
+        _no_pins(monkeypatch)
+        handed: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.notifications.bridge_approval_note.schedule_pending_approval",
+            lambda state, fut, **kw: handed.append(kw),
+        )
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot()
+        _set_stream(client, _stream())
+
+        await _run_answered(state, slot, "deny_override_once")
+
+        [kw] = handed
+        assert kw["answerable"] is False
+
+    @pytest.mark.asyncio
     async def test_card_asks_for_no_rejection_reason(self, tmp_path, monkeypatch):
         # Its rejection is the rule's own refusal, which carries no reason, so a
         # KAS request that takes one still gets no reason box on this card.

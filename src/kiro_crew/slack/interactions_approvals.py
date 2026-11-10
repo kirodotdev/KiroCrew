@@ -542,3 +542,71 @@ async def _handle_review_revise_submit(payload: dict) -> None:
 
 
 register_view_handler("mc_review_revise_submit", _handle_review_revise_submit)
+
+
+#: What the owner is told, privately, about a stale bridged press. Anyone else is told
+#: nothing, so a press reveals nothing about a decision to someone who is not the owner.
+BRIDGE_ACTION_STALE_NOTICE = "This request was already answered or has expired."
+
+
+async def _handle_bridge_action(
+    payload: dict, action: dict, action_id: str, channel: str, user_id: str
+) -> None:
+    """Resolve a bridged notification's action button (RFC bridge actions, B4c).
+
+    The button's ``value`` is the token ``BridgeActionRegistry.bind`` minted and its
+    ``action_id`` names the answer. ``dispatch`` admits only allow-listed users; this
+    adds the inbound ``channels`` gate an approval runs a tool behind, and the
+    registry adds the rest: owner-only (``is_owner``, the configured ``owner_id``),
+    single-use, an offered answer, before its deadline. ``user_id`` is the payload's
+    ``user.id``, which only Slack writes: interactions arrive on the app-token Socket
+    Mode connection, never as text a user typed. Every press that reaches the
+    registry is audited through ``bridge_action_audit.audit_action``, a refused or
+    stale one included. Fail closed: with the ``bridge_approvals`` preview off, no
+    registry, or a press that does not parse, nothing is resolved.
+    """
+    # Lazy: the bridge's names stay out of this owner's globals, so the
+    # interactions facade does not serve them.
+    from kiro_crew.notifications.bridge_action_audit import audit_action
+    from kiro_crew.notifications.bridge_actions import (
+        SLACK_ACTION_PREFIX,
+        ActionOutcome,
+        actions_enabled,
+    )
+
+    # The live config is read off the loop, so turning the preview off stops a
+    # press on a button posted before it.
+    if not await asyncio.to_thread(actions_enabled):
+        return
+    state = _orch.dashboard_state if _orch else None
+    registry = getattr(state, "bridge_actions", None)
+    if registry is None:
+        return
+    token = action.get("value")
+    choice = action_id.removeprefix(SLACK_ACTION_PREFIX)
+    if not isinstance(token, str) or not token or not user_id:
+        return  # Does not parse: no answer is given.
+    # Resolving an approval runs a governed tool, so a channels policy denying
+    # ``slack`` stops the press here, as it stops the native approval buttons. A
+    # denied press resolves nothing; the dashboard can still answer.
+    if not (
+        await channel_inbound_permitted("slack")
+        and not channel_refusal(channel, operation="slack.bridge_action", caller=user_id)
+    ):
+        logger.info("slack bridged action dropped: denied by channels governance policy")
+        return
+    from_owner = is_owner(user_id)
+    outcome = registry.resolve(token, choice, from_owner=from_owner)
+    audit_action(
+        registry, token, outcome, transport="slack", choice=choice, actor=user_id, channel=channel
+    )
+    if outcome is ActionOutcome.ADMITTED or not from_owner:
+        return
+    thread_ts = payload.get("message", {}).get("thread_ts") or ""
+    if _orch and _orch.slack and channel and user_id:
+        try:
+            await _orch.slack.post_ephemeral(
+                channel, user_id, BRIDGE_ACTION_STALE_NOTICE, thread_ts=thread_ts or None
+            )
+        except Exception:
+            logger.debug("Failed to send a bridged-action notice", exc_info=True)

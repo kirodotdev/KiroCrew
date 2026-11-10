@@ -43,6 +43,7 @@ from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.notifications.bridge import BridgeDispatcher, composite_sink
+from kiro_crew.notifications.bridge_actions import BridgeActionRegistry
 from kiro_crew.notifications.bus import NotificationBus
 from kiro_crew.notifications.push_store import PushSubscriptionStore
 from kiro_crew.notifications.rate_limit import AppRateLimiter
@@ -112,6 +113,7 @@ class DashboardState:
     # Typed here for the owner functions that read them through ``self``.
     notification_bus: NotificationBus
     notification_bridge: BridgeDispatcher
+    bridge_actions: BridgeActionRegistry
     notification_channel_settings: ChannelSettings
     resource_pressure_notifier: ResourcePressureNotifier
     file_indexes: FileIndexRegistry
@@ -536,6 +538,9 @@ class DashboardState:
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         # The bridge runs after it, so a chat transport never delays the
         # dashboard (notifications/bridge.py).
+        # Bindings from bridged notes to the decisions a chat app may answer
+        # (notifications/bridge_actions.py); in-process, so a restart drops them.
+        self.bridge_actions = BridgeActionRegistry()
         self.notification_bridge = BridgeDispatcher(
             settings=lambda: self.notification_channel_settings,
             subjects=lambda note, publisher: _dashboard_services.bridge_subjects(

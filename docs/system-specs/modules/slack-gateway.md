@@ -515,7 +515,7 @@ Agent submission, which `init()` registers.
 | `slack/interactions_settings.py` | Channels modal, user and channel pickers, default-agent selector, allowlist and track-channel approvals |
 | `slack/interactions_options.py` | OPTIONS controls, `action::` buttons, the thread-to-dashboard import |
 | `slack/interactions_sessions.py` | Stop, resume, end and new-session buttons |
-| `slack/interactions_approvals.py` | Native tool-approval buttons and review-mode drafts |
+| `slack/interactions_approvals.py` | Native tool-approval buttons, review-mode drafts, and the bridged-action press (`bridge_action_*`, the Approve and Deny on a bridged pending approval, behind the `bridge_approvals` preview; see app-notifications) |
 
 `interactions.py` keeps `init`, `dispatch` and `_handle_resume_choice` (with its lock table
 and closed-tab notice): the choice's session-file lookup is a stat inside an `async def`

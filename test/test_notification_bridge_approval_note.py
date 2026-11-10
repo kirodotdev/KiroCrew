@@ -79,7 +79,8 @@ def test_with_the_preview_on_one_note_reaches_the_bridge_and_not_the_bell():
     assert note_mod.is_pending_approval_note(note)
     assert note_mod.SLACK_CARD_KEY not in note
     assert "execute_bash" in note["body"] and "Release notes" in note["body"]
-    assert "actions" not in note, "the note carries no buttons yet"
+    assert "actions" not in note, "no dashboard action capsule on a bridge-only note"
+    assert note_mod.ACTION_TOKEN_KEY not in note, "no binding, no buttons"
 
 
 def test_a_config_pending_review_note_is_not_a_tool_approval():
@@ -155,7 +156,8 @@ async def test_the_hand_off_runs_as_its_own_held_task(handed):
     assert task is not None and handed == []
     assert state._background_tasks == {task}  # type: ignore[attr-defined]
     await task
-    assert handed == [_FIELDS]
+    # No registry on this state, so nothing is bound and the note has no buttons.
+    assert handed == [{**_FIELDS, "action_token": ""}]
     assert state._background_tasks == set()  # type: ignore[attr-defined]
 
 

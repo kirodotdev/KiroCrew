@@ -642,6 +642,13 @@ async def dispatch(payload: dict) -> None:
                 logger.debug("Failed to update transport approval message", exc_info=True)
         return
 
+    # ── A bridged notification's action button (RFC bridge actions) ──
+    # Routed before the generic approval fallthrough, which would look this id up
+    # as a native approval it never was.
+    if action_id.startswith(BRIDGE_SLACK_ACTION_PREFIX):
+        await _handle_bridge_action(payload, action, action_id, channel, user_id)
+        return
+
     # ── Tool approval buttons (approve / trust / reject) ──
     if channel and msg_ts:
         await _handle_tool_approval(payload, action_id, channel, msg_ts, user_id)
@@ -981,7 +988,12 @@ from kiro_crew.slack.interactions_approvals import _handle_review_approve  # noq
 from kiro_crew.slack.interactions_approvals import _handle_review_cancel  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_review_edit  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_review_revise  # noqa: E402
+from kiro_crew.slack.interactions_approvals import BRIDGE_ACTION_STALE_NOTICE  # noqa: E402
+from kiro_crew.slack.interactions_approvals import _handle_bridge_action  # noqa: E402
 from kiro_crew.slack.interactions_approvals import _handle_tool_approval  # noqa: E402
+from kiro_crew.notifications.bridge_actions import (  # noqa: E402
+    SLACK_ACTION_PREFIX as BRIDGE_SLACK_ACTION_PREFIX,
+)
 
 # isort: on
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
