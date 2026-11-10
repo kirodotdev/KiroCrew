@@ -16,15 +16,24 @@ nothing fails these tests as surely as one that admits too much.
 
 from __future__ import annotations
 
+import json
+
 import codex_session_mcp_helpers
 import pytest
 from codex_session_mcp_helpers import _by_name, _write_spec
 
 from kiro_crew import mcp_discovery_managed, mcp_work
+from kiro_crew.config import paths
+from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
-from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args
-from kiro_crew.mcp_gateway.session_servers import attach_stub_session_token
+from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args, expand_stub_flags
+from kiro_crew.mcp_gateway.rewriter import rewrite_agents
+from kiro_crew.mcp_gateway.session_servers import (
+    attach_stub_session_token,
+    injection_server_names,
+    pooled_session_servers,
+)
 from kiro_crew.members import MEMBER_DISPATCH_SERVER
 from kiro_crew.providers.mirrors.codex import codex_projection
 from kiro_crew.providers.mirrors.identity import identity_bound_crew_servers
@@ -200,3 +209,47 @@ def test_a_crew_server_that_reads_identity_from_its_process_is_withheld(agents_d
     mounted = _mounted([_stub(_WORK), _stub(_GUIDE)])
     assert _WORK in mounted
     assert _GUIDE not in mounted
+
+
+def test_a_crewmate_chat_mounts_kirocrew_mate_from_its_conductor_overlay(agents_dir, tmp_path):
+    """A Bot's chat on codex reaches ``set_goal`` once ``kirocrew-mate`` is routed.
+
+    The chat runs the stock conductor spec from the crewmate folder, so the overlay
+    pass has to write that spec's own stubs for the session's by-name lookup to find.
+    """
+    mate = "kirocrew-mate"
+    conductor = {
+        "name": MATE_CONDUCTOR_AGENT,
+        "mcpServers": {mate: {"command": "/opt/kirocrew", "args": ["mcp-mate"]}},
+        "tools": [f"@{mate}/set_goal"],
+    }
+    # The folder a by-name read of the conductor resolves to (``paths.spec_dir_for``).
+    mates = paths.mate_agents_dir()
+    mates.mkdir(parents=True, exist_ok=True)
+    (mates / f"{MATE_CONDUCTOR_AGENT}.json").write_text(json.dumps(conductor))
+    user_agents = tmp_path / "user-agents"
+    user_agents.mkdir()
+    overlay = tmp_path / "overlay" / "agents"
+    rewrite_agents(
+        source_dir=user_agents,
+        overlay_dir=overlay,
+        socket_path=tmp_path / "gw.sock",
+        work_dir=tmp_path / "work",
+        stub_servers=frozenset({mate}),
+        mate_source_dir=mates,
+    )
+    stubs = attach_stub_session_token(pooled_session_servers(overlay, MATE_CONDUCTOR_AGENT), _TOKEN)
+    projection = codex_projection(
+        MATE_CONDUCTOR_AGENT,
+        session_key="chat:one",
+        session_token=_TOKEN,
+        stub_server_names=injection_server_names(overlay, MATE_CONDUCTOR_AGENT),
+        stub_elements=stubs,
+    )
+    by_name = _by_name(projection.params["mcpServers"])
+    assert mate in by_name
+    mounted = by_name[mate]
+    flags = expand_stub_flags(mounted["args"])
+    assert flags[flags.index("--agent") + 1] == MATE_CONDUCTOR_AGENT
+    env = {p["name"]: p["value"] for p in mounted["env"]}
+    assert env[STUB_SESSION_TOKEN_ENV] == _TOKEN

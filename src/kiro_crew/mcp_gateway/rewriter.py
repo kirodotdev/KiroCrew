@@ -55,6 +55,7 @@ from kiro_crew.mcp_gateway.mate_overlays import (
     mate_dir_refused,
     mate_overlay_dir,
     rewrite_mate_overlays,
+    with_conductor_source,
 )
 from kiro_crew.mcp_gateway.read_limits import config_read_buffer_limit
 from kiro_crew.mcp_gateway.rewriter_env import (
@@ -142,13 +143,16 @@ def _rewrite_inputs_fingerprint(
     read_buffer_limit: int,
     mate_sources: dict[str, Any] | None = None,
     scope_muted: frozenset[str] = frozenset(),
+    mate_source_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Return a JSON-serializable snapshot of every input that can change
     :func:`rewrite_agents`'s output.
 
     Enumerated against the code, not guessed:
 
-    * ``sources`` / ``settings`` — the parsed spec files (size+mtime+digest).
+    * ``sources`` / ``settings`` — the parsed spec files (size+mtime+digest),
+      the crewmate conductor's from *mate_source_dir* included
+      (:func:`~kiro_crew.mcp_gateway.mate_overlays.with_conductor_source`).
     * ``scope_muted`` — the servers a config scope mutes, which are never
       wrapped. The crew store is not otherwise signed, so without this a mute
       saved there kept serving the stub an earlier pass wrote.
@@ -183,7 +187,8 @@ def _rewrite_inputs_fingerprint(
       accepted files' signatures, and whether that set was fully established.
     """
     sources: dict[str, list[Any] | None] = {
-        p.name: _source_sig(p) for p in iter_agent_spec_files(source_dir)
+        p.name: _source_sig(p)
+        for p in with_conductor_source(iter_agent_spec_files(source_dir), mate_source_dir)
     }
     extra: dict[str, Any] = {} if mate_sources is None else {"mate_sources": mate_sources}
     return {
@@ -580,7 +585,9 @@ def rewrite_agents(
     identity ``crewmate:<id>`` (see :mod:`kiro_crew.mcp_gateway.mate_overlays`),
     handled like agent overlays but with no settings injection. An exception in
     that crewmate half drops its outputs and leaves the pass uncached with
-    ``live_incomplete`` set; the agent half still runs.
+    ``live_incomplete`` set; the agent half still runs. The agents half also
+    rewrites that folder's conductor spec under its own name
+    (:func:`~kiro_crew.mcp_gateway.mate_overlays.with_conductor_source`).
 
     Never modifies ``source_dir``. Idempotent. When no input changed since the
     last completed run (see :func:`_rewrite_inputs_fingerprint`) the cached
@@ -716,6 +723,7 @@ def rewrite_agents(
         read_buffer_limit=read_buffer_limit,
         mate_sources=mate_fingerprint,
         scope_muted=scope_muted,
+        mate_source_dir=mate_source_dir,
     )
     if approvals is not None:
         current_inputs["launch_approvals"] = approvals.digest()
@@ -897,7 +905,7 @@ def rewrite_agents(
     # skipped for bad content claims nothing, so it cannot cost its valid twin
     # the overlay (and the pruning of the twin's stale one) below.
     overlay_keys_claimed: dict[str, str] = {}
-    for path in iter_agent_spec_files(source_dir):
+    for path in with_conductor_source(iter_agent_spec_files(source_dir), mate_source_dir):
         # The overlay is JSON whatever the source: ``session_servers`` resolves
         # ``<agent>.json``. The fingerprint's ``sources`` stays keyed by the
         # SOURCE name, so a markdown edit invalidates its overlay.
@@ -976,7 +984,9 @@ def rewrite_agents(
         # backend-bucket sharing / isolation loss). Fall back to the file stem,
         # mirroring ``agent_parts/spec_upgrades.py`` (``data.get("name") or spec_path.stem``); any
         # stable non-empty identifier prevents the collapse.
-        if not spec.get("name"):
+        if not spec.get("name") or path.parent == mate_source_dir:
+            # The crewmate conductor's folder is outside the sandbox's read-only
+            # seal, so its file's own ``name`` is not trusted for the identity.
             spec["name"] = path.stem
         if str(spec["name"]).startswith(MATE_IDENTITY_PREFIX):
             # ``crewmate:`` is the crewmate stubs' identity, and app-callback
