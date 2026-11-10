@@ -28,6 +28,7 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.config.paths import data_home
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.platform_lock_compat import acquire_lock, open_create_or_existing, release_lock
 
 logger = logging.getLogger(__name__)
@@ -190,7 +191,7 @@ def _plain_dir(path: Path, *, create: bool) -> bool:
         except FileExistsError:
             pass
         st = os.lstat(path)
-    if not stat.S_ISDIR(st.st_mode):
+    if is_link_or_junction(path) or not stat.S_ISDIR(st.st_mode):
         raise OSError(f"{path} is not a plain directory")
     return True
 
@@ -238,7 +239,7 @@ def _legacy_state(trust: Path, kind: str) -> tuple[Path | None, bool]:
             st = os.lstat(path)
         except FileNotFoundError:
             return None, False
-        if stat.S_ISLNK(st.st_mode):
+        if is_link_or_junction(path):
             linked = True
         elif not stat.S_ISDIR(st.st_mode):
             return None, False
