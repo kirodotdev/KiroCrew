@@ -19,7 +19,7 @@ from test_tool_call_classification_kas import _kas_builtin_flow
 from kiro_crew.acp import kas_agents
 from kiro_crew.acp._dispatch import attach_kas_custom_agents
 from kiro_crew.acp.kas_permissions import CREW_ANSWERED_COMMANDS_KEY, CREW_SPEC_DENIES_KEY
-from kiro_crew.acp.kas_spec_denies import projected_spec_denies
+from kiro_crew.acp.kas_spec_denies import GATE_JUDGED_MARK, projected_spec_denies
 from kiro_crew.acp.types import AcpEvent
 from kiro_crew.hooks import (
     TOOL_ALLOW,
@@ -202,6 +202,193 @@ def test_a_grant_beside_denied_commands_and_deny_by_default_still_asks() -> None
     assert plain[CREW_ANSWERED_COMMANDS_KEY] == ["make build"]
     plain_verdict = _judge(_shell("make build"), plain, plain_grant)
     assert (plain_verdict.action, plain_verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
+# ── a deny KAS did not carry, with no grant beside it ─────────────────────────
+
+#: Entries KAS gets no rule for (no glob spelling), each one Crew reads itself.
+_UNCARRIED = {"shell": {"deniedCommands": [r"docker\s+push.*", r"rm -rf \w+", "npm publish.*"]}}
+
+
+@pytest.mark.parametrize(
+    "command", ["docker push img:1", "docker  push", "rm -rf build", "npm publish ."]
+)
+def test_an_uncarried_deny_refuses_what_it_names_without_a_grant(command: str) -> None:
+    """No grant beside the deny, so nothing is lifted; the record only refuses, and
+    the auto-approve floor (a cron job with ``approval_mode: auto``) refuses too."""
+    from kiro_crew import permission_floor
+
+    out, grant = _project(toolsSettings=_UNCARRIED)
+    assert grant is not None and not grant.builtins and not grant.commands
+    assert grant.denied_commands == (r"docker\s+push.*", r"rm -rf \w+", "npm publish.*")
+    event = _shell(command)
+    verdict = _judge(event, out, grant)
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "spec-denies")
+    reason = permission_floor.refusal_for(event, session_key="cron:probe", security_only=False)
+    assert reason == verdict.reason and "deniedCommands" in reason
+    clear = _shell("docker build .")
+    _judge(clear, out, grant)
+    assert (
+        permission_floor.refusal_for(clear, session_key="cron:probe", security_only=False) is None
+    )
+
+
+@pytest.mark.parametrize("command", ["docker build .", "rm notes.txt", "make build"])
+def test_an_uncarried_deny_leaves_other_commands_as_they_were(command: str) -> None:
+    out, grant = _project(toolsSettings=_UNCARRIED)
+    verdict = _judge(_shell(command), out, grant)
+    assert verdict.tier not in ("spec-denies", "spec-builtin-grant")
+    assert verdict.action == TOOL_ALLOW
+
+
+def test_a_deny_kas_carries_records_nothing() -> None:
+    """``npm publish.*`` reaches KAS as a deny rule, so Crew adds no record."""
+    out, grant = _project(toolsSettings={"shell": {"deniedCommands": ["npm publish.*"]}})
+    assert CREW_SPEC_DENIES_KEY not in out and grant is None
+
+
+def test_an_unreadable_uncarried_deny_refuses_nothing_and_is_named() -> None:
+    """``a|b`` is outside what Crew reads as wide as kiro-cli: it refuses nothing, as
+    before, and the notice names it as not refused. The readable entry beside it
+    still refuses, and is not named."""
+    from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
+
+    spec = {
+        "toolsSettings": {"shell": {"deniedCommands": ["curl|wget", r"docker\s+push.*"]}},
+    }
+    out, grant = _project(**spec)
+    assert grant is not None and grant.denied_commands == (r"docker\s+push.*",)
+    assert _judge(_shell("curl x"), out, grant).tier != "spec-denies"
+    assert _judge(_shell("docker push x"), out, grant).tier == "spec-denies"
+    lost = kas_agents.spec_keys_without_carrier(
+        {"name": "a", **spec}, translates_tools_settings=True
+    )
+    assert "toolsSettings.shell.deniedCommands: curl|wget" in lost
+    assert rf"toolsSettings.shell.deniedCommands: docker\s+push.*{GATE_JUDGED_MARK}" in lost
+    notice = spec_keys_notice("a", lost)
+    assert "curl|wget" in notice and "is not refused" in notice
+    assert "It does not judge any other command" in notice
+    assert "a newline, a trailing &, a tab, a ( ) group" in notice
+    assert "so such a command runs without a refusal." in notice
+    assert "docker" not in notice.split("have no effect")[0]
+
+
+@pytest.mark.parametrize("regex", [r"^.*>.*\.kiro/.*$", ".*>.*", ".*<.*", "cat <.*"])
+def test_a_redirect_deny_refuses_nothing_and_is_named(regex: str) -> None:
+    """The row judges a plain command and each command of a chain, never a redirect,
+    so a deny aimed at a redirect could never refuse: it is not recorded, and the notice names it as not refused.
+    """
+    from kiro_crew.acp.kas_spec_denies import uncarried_denied_commands
+    from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
+
+    spec = {"toolsSettings": {"execute_bash": {"deniedCommands": [regex]}}}
+    assert uncarried_denied_commands(spec["toolsSettings"], None) == []
+    lost = kas_agents.spec_keys_without_carrier(
+        {"name": "a", **spec}, translates_tools_settings=True
+    )
+    assert lost == [f"toolsSettings.execute_bash.deniedCommands: {regex}"]
+    assert "is not refused" in spec_keys_notice("a", lost)
+
+
+def test_an_uncarried_deny_keeps_a_grant_already_in_the_record() -> None:
+    """A ``web_fetch.trusted`` grant recorded first stays when the shell deny joins."""
+    settings = {
+        "web_fetch": {"trusted": ["https://docs\\.example\\.com/.*"]},
+        "shell": {"deniedCommands": [r"docker\s+push.*"]},
+    }
+    out, grant = _project(toolsSettings=settings)
+    assert grant is not None and grant.denied_commands == (r"docker\s+push.*",)
+    assert grant.web_fetch_trusted == ("https://docs\\.example\\.com/.*",)
+    assert _judge(_shell("docker push x"), out, grant).tier == "spec-denies"
+
+
+def test_a_carried_dollar_anchored_deny_is_not_named_beside_an_uncarried_one() -> None:
+    """``git push.*$`` reaches KAS as ``git push*``; only the entry neither KAS nor
+    the gate enforces may be named."""
+    spec = {
+        "toolsSettings": {"shell": {"deniedCommands": ["git push.*$", "curl|wget"]}},
+    }
+    lost = kas_agents.spec_keys_without_carrier(
+        {"name": "a", **spec}, translates_tools_settings=True
+    )
+    assert lost == ["toolsSettings.shell.deniedCommands: curl|wget"]
+
+
+def test_readable_entries_past_the_bound_are_named_as_not_refused() -> None:
+    """The record keeps the first 64; each readable entry after them is named."""
+    denied = [rf"docker\s+push img{i}" for i in range(66)]
+    spec = {"toolsSettings": {"shell": {"deniedCommands": denied}}}
+    _, grant = _project(**spec)
+    assert grant is not None and len(grant.denied_commands) == 64
+    lost = kas_agents.spec_keys_without_carrier(
+        {"name": "a", **spec}, translates_tools_settings=True
+    )
+    past = [key for key in lost if key.endswith("(past the first 64)")]
+    assert past == [
+        rf"toolsSettings.shell.deniedCommands: docker\s+push img{i} (past the first 64)"
+        for i in (64, 65)
+    ]
+    assert len(lost) == 66
+
+
+def test_denied_commands_under_a_non_shell_key_stays_named() -> None:
+    """Only a shell key's ``deniedCommands`` is enforced here; any other stays lost."""
+    spec = {"toolsSettings": {"write": {"deniedCommands": ["rm .*"]}}}
+    lost = kas_agents.spec_keys_without_carrier(
+        {"name": "a", **spec}, translates_tools_settings=True
+    )
+    assert "toolsSettings.write.deniedCommands" in lost
+
+
+def test_a_readable_uncarried_deny_is_named_as_refused_by_the_gate() -> None:
+    """The gate refuses what such an entry names, so the notice names it with what
+    the gate does not judge, never as having no effect."""
+    from kiro_crew.agent_sdk.spec_hooks import spec_keys_notice
+
+    lost = kas_agents.spec_keys_without_carrier(
+        {"name": "a", **{"toolsSettings": _UNCARRIED}}, translates_tools_settings=True
+    )
+    # `npm publish.*` reaches KAS as a rule, so only the other two are named.
+    assert sorted(lost) == sorted(
+        f"toolsSettings.shell.deniedCommands: {entry}{GATE_JUDGED_MARK}"
+        for entry in (r"docker\s+push.*", r"rm -rf \w+")
+    )
+    notice = spec_keys_notice("a", lost)
+    assert "no effect" not in notice and "is not refused" not in notice
+    assert "refuses a plain command they name, and each command of a plain chain" in notice
+
+
+@pytest.mark.parametrize(
+    ("command", "refused"),
+    [
+        ("cd app && docker push x", True),
+        ("ls; docker push x", True),
+        ("echo $(docker push x)", False),
+        ("echo `docker push x`", False),
+        ("docker push x > out", False),
+        ("cd app\ndocker push x", False),
+        ("docker push x &", False),
+        ("docker\tpush x", False),
+        ("(docker push x)", False),
+    ],
+)
+def test_an_uncarried_deny_refuses_each_command_of_a_chain_not_a_substitution(
+    command: str, refused: bool
+) -> None:
+    """What the notice says, measured at the gate: with the uncarried record and no
+    grant, a chain is refused piece by piece; a substitution or a redirect is not."""
+    out, grant = _project(toolsSettings=_UNCARRIED)
+    tier = _judge(_shell(command), out, grant).tier
+    assert (tier == "spec-denies") is refused
+
+
+@pytest.mark.parametrize("entry", [r"^docker\s+push.*$", r"\Adocker\s+push.*\z"])
+def test_an_anchored_uncarried_deny_is_recorded_and_refuses(entry: str) -> None:
+    """kiro-cli anchors every entry itself, so an explicit anchor is no redirect or
+    separator: the entry is recorded and refuses what it names."""
+    out, grant = _project(toolsSettings={"shell": {"deniedCommands": [entry]}})
+    assert grant is not None and grant.denied_commands == (entry,)
+    assert _judge(_shell("docker push x"), out, grant).tier == "spec-denies"
 
 
 # ── write paths ───────────────────────────────────────────────────────────────

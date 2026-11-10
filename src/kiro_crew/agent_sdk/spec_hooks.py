@@ -1514,6 +1514,7 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     entry (``<key>.allowedCommands: <entry> (<reason>)``): the other entries apply
     unless the list is also named whole.
     """
+    from kiro_crew.acp.kas_spec_denies import GATE_JUDGED_MARK
     from kiro_crew.agent_sdk.kas_tool_view import allow_exclude_limit
     from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK as GATE
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
@@ -1535,7 +1536,9 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     # Crew's own gate still refuses what a marked allowlist leaves out, so it is
     # never said to have no effect.
     allowlists = [k.removesuffix(GATE) for k in keys if k.endswith(GATE)]
-    rest = [k for k in keys if not k.endswith(GATE)]
+    # A deny Crew's gate refuses is not "no effect" either.
+    judged = [k.removesuffix(GATE_JUDGED_MARK) for k in keys if k.endswith(GATE_JUDGED_MARK)]
+    rest = [k for k in keys if not k.endswith(GATE) and not k.endswith(GATE_JUDGED_MARK)]
     sentences = []
     if rest:
         sentences.append(
@@ -1547,6 +1550,15 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
             f"Agent {agent} sets {' and '.join(allowlists)}, which this backend does not "
             "receive. Kiro Crew's own approval gate still enforces them: it refuses what "
             "they do not cover, and what they cover may ask for approval."
+        )
+    if judged:
+        sentences.append(
+            f"Agent {agent} sets {' and '.join(judged)}, which this backend does not "
+            "receive. Kiro Crew's own approval gate refuses a plain command they name, "
+            "and each command of a plain chain (&&, ||, ;, |). It does not judge any "
+            "other command, such as one with $(...), a backtick, a redirect, a newline, "
+            "a trailing &, a tab, a ( ) group, or a quote, # or [[ in a chain, so such "
+            "a command runs without a refusal."
         )
     notice = "ℹ️ " + " ".join(sentences)
     servers = oauth_servers_in(keys)
@@ -1563,6 +1575,11 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
         notice += (
             f" An allow rule whose exclude list has more than {allow_exclude_limit()} "
             "patterns is not sent, so what it allows asks for approval."
+        )
+    if any(".deniedCommands: " in key for key in rest):
+        notice += (
+            " Kiro Crew does not check those deniedCommands entries, so a command only they "
+            "name is not refused on this backend."
         )
     if unread:
         notice += f" {entries}"
