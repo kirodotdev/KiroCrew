@@ -19,6 +19,7 @@ import work_ledger_helpers
 from work_ledger_helpers import CONDUCTOR, WORKER, _new_item
 
 from kiro_crew import work_ledger as wl
+from kiro_crew.testing.wait import finished
 
 _isolated_home = work_ledger_helpers._isolated_home
 
@@ -733,10 +734,11 @@ async def test_a_stuck_crew_log_writer_cannot_hold_the_send_past_the_client_time
     _started_send(monkeypatch)
     state = _Owners(sessions=_Sessions({f"dashboard:{WORKER}": "unit-w"}), _slots={})
     try:
-        # Well inside the client's 10 s send timeout, while the writer stays stuck.
-        resp = await asyncio.wait_for(
+        # The writer is released only after the send answers, so a send that
+        # waited on it would hang here and fail by name.
+        resp = await finished(
             chat_handlers.api_chat(_TextReq(state, "use main")),  # type: ignore[arg-type]
-            timeout=2,
+            "api_chat while the crew-log writer is stuck",
         )
         body = json.loads(resp.text)
         assert body["ledger_pending"] is True and body["ledger_event"] is None
