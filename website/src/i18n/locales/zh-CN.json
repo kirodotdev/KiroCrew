@@ -16607,7 +16607,19 @@
         "default_template_overridden_notice": "由本地配置文件指定，这里改不了。新会话使用 {{effective}}。",
         "default_template_retry": "重试",
         "default_template_overridden_file": "文件：{{path}}",
-        "default_template_saved": "已保存"
+        "default_template_saved": "已保存",
+        "unlisted_title": "未显示的文件",
+        "unlisted_hint": "~/.kiro/agents 中这些文件不在列表里，但每个文件仍占用其文件名（不含 .json 或 .md），因此新自定义代理无法使用该名称。修复、重命名或删除文件即可释放名称。",
+        "unlisted_reason_unreadable": "无法作为代理定义读取：无法解析、某个字段类型错误、文件过大，或是不会被跟随的链接。",
+        "unlisted_reason_duplicate": "声明的名称“{{name}}”已被“{{file}}”使用，所以列表只显示那个文件。",
+        "unlisted_by_hand": "在 ~/.kiro/agents 中重命名或删除此文件即可释放它的名称。",
+        "unlisted_delete_aria": "删除“{{file}}”",
+        "unlisted_delete_confirm": "删除文件“{{file}}”？",
+        "unlisted_delete_confirm_body": "它将从 ~/.kiro/agents 移除，旁边保留一份以 .bak 结尾的备份，其名称可供新自定义代理使用。",
+        "unlisted_delete_confirm_body_duplicate": "它将从 ~/.kiro/agents 移除，旁边保留一份以 .bak 结尾的备份。“{{file}}”和“{{name}}”代理保持不变，名称“{{stem}}”可供新自定义代理使用。",
+        "unlisted_delete_button": "删除文件",
+        "err_name_taken_unlisted": "该名称被文件“{{file}}”占用，而列表没有显示它。可在此标签页的“未显示的文件”中释放它。",
+        "err_name_taken_listed": "该名称被文件“{{file}}”占用，列表中显示为“{{name}}”，因为这是该文件声明的名称。请修改该文件中的名称，或换一个名称。"
       },
       "usageSeriesChart": {
         "layer_by": "分层依据",
