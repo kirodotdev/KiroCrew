@@ -15,6 +15,9 @@ const INSTALLING_STALL_MS = 5 * 60_000;
 // How long the dialog shows "Installation finished" before it closes itself.
 // Painting and closing in the same tick would give the line at most one frame.
 const INSTALLING_COMPLETE_LINGER_MS = 700;
+// The failure dialog's content height once its launch log is unfolded: room
+// for the message, a scrollable pane of the log and the action row.
+const LOG_OPEN_HEIGHT = 460;
 
 /**
  * The windows a gateway failure puts in front of a person: the bounded failure
@@ -149,11 +152,12 @@ function createFailureDialog({
         // Four actions share this row when a crew can be named here, and each
         // label is one line only if the row has room for it.
         width: remoteCrew ? 700 : 620,
-        // Without the log pane there is nothing to scroll, so the tall window
+        // The log opens folded, so the window opens short and grows to
+        // LOG_OPEN_HEIGHT when the log is unfolded; tall from the start, it
         // would open mostly empty under a two-line message.
-        height: showLog ? 460 : 260,
+        height: showLog ? 300 : 260,
         minWidth: 460,
-        minHeight: showLog ? 320 : 200,
+        minHeight: 200,
         resizable: true,
         useContentSize: true,
         // Parented so it stays above the window it is about. Not modal on
@@ -246,9 +250,17 @@ function createFailureDialog({
         .map((part) => `<p>${escapeHtml(part)}</p>`)
         .join("");
       const messageParagraphs = renderParagraphs(message);
+      // Folded by default: the tail carries internal identifiers and boot
+      // diagnostics that read as noise to someone who just installed the app.
+      // Unfolding tells the main process to grow the window to fit the pane.
       const logPane = showLog
-        ? `<div class="pathline">${escapeHtml(displayedLogPath)}</div>`
+        ? "<details class=\"logbox\" ontoggle=\""
+          + "this.firstChild.textContent = this.open ? 'Hide launch log' : 'Show launch log';"
+          + " document.title = 'mc-log:' + (this.open ? 'open' : 'closed')\">"
+          + "<summary>Show launch log</summary>"
+          + `<div class="pathline">${escapeHtml(displayedLogPath)}</div>`
           + `<pre class="log">${escapeHtml(logTail || "(launch log is empty)")}</pre>`
+          + "</details>"
         : "";
       const revealButton = showLog
         ? "<button class=\"cancel\" onclick=\"act('reveal')\">Reveal Log</button>"
@@ -260,12 +272,16 @@ function createFailureDialog({
         .title { font-size:15px; font-weight:700; margin-bottom:6px; }
         .msg { font-size:13px; line-height:1.45; margin-bottom:10px; }
         .msg p + p { margin-top:8px; }
+        details.logbox { margin-bottom:10px; }
+        details.logbox[open] { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; margin-bottom:0; }
+        details.logbox[open]::details-content { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+        summary { font-size:12px; color:${muted}; cursor:pointer; margin-bottom:6px; }
         .pathline { font-size:11px; color:${muted}; margin-bottom:6px; word-break:break-all; }
         pre.log { flex:1 1 auto; min-height:120px; overflow:auto; white-space:pre;
           font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; line-height:1.45;
           padding:10px; border-radius:6px; border:1px solid #334155; background:#0f172a; color:#e2e8f0;
           margin-bottom:14px; }
-        .row { display:flex; gap:8px; flex:0 0 auto; }
+        .row { display:flex; gap:8px; flex:0 0 auto; margin-top:auto; }
         button { flex:1; padding:9px; border-radius:6px; border:none; cursor:pointer; font-size:13px; font-weight:600; }
         .ok { background:#f97316; color:#fff; } .ok:hover { background:#ea580c; }
         .cancel { background:${dark ? "#334155" : "#e2e8f0"}; color:${dark ? "#94a3b8" : "#475569"}; }
@@ -290,7 +306,9 @@ function createFailureDialog({
           // completion paint reassigns primaryAct when it moves the accent.
           var primaryAct = "act('${primaryAction}')";
           document.addEventListener('keydown', e => {
-            if (e.key === 'Enter') {
+            // Enter on the focused "Show launch log" toggle unfolds the log and
+            // nothing else; pressing the primary too would retry or force-stop.
+            if (e.key === 'Enter' && e.target.tagName !== 'SUMMARY') {
               for (const b of document.querySelectorAll('button')) {
                 if (b.getAttribute('onclick') !== primaryAct) continue;
                 if (!b.disabled) b.click();
@@ -402,7 +420,17 @@ function createFailureDialog({
           }
         }, INSTALLING_PROBE_MS);
       }
-      errorWindow.on("page-title-updated", (_event, updatedTitle) => {
+      errorWindow.on("page-title-updated", (event, updatedTitle) => {
+        if (updatedTitle && updatedTitle.startsWith("mc-log:")) {
+          // A signal, not a title: the title bar keeps the window's own title.
+          event.preventDefault();
+          // Grow only: a window the user already made taller keeps its size.
+          if (updatedTitle === "mc-log:open" && !errorWindow.isDestroyed()) {
+            const [width, height] = errorWindow.getContentSize();
+            if (height < LOG_OPEN_HEIGHT) errorWindow.setContentSize(width, LOG_OPEN_HEIGHT);
+          }
+          return;
+        }
         if (updatedTitle && updatedTitle.startsWith("mc-action:")) {
           // The user chose; a probe landing after this must not overrule them.
           stopProbe();
