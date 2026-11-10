@@ -8,7 +8,7 @@ import { Badge, Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
-import { useFrameLinkBridge, tiedToFrame } from '../../hooks/useFrameLinkBridge'
+import { focusHostOf, useFrameLinkBridge, tiedToFrame } from '../../hooks/useFrameLinkBridge'
 import { useFrameAliveRecovery } from '../../hooks/useFrameAliveRecovery'
 import { hasGesture } from '../../hooks/useFrameOpenLink'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
@@ -935,6 +935,12 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     let loaded = false
     let ready = false
     const promote = () => {
+      // Promotion removes the visible frame. If it holds focus (the person just clicked
+      // a card in it), hand focus to its holder first, or the next click into the new
+      // frame is never seen as coming from the dashboard and a card send falls back
+      // to filling the chat box (`focusHostOf`).
+      const shownFrame = frameRef.current
+      if (shownFrame && document.activeElement === shownFrame) focusHostOf(shownFrame)
       preloadedRef.current = { url: stageUrl, loaded, ready }
       setHeld({ url: stageUrl, grant: grantKeyRef.current })
     }
