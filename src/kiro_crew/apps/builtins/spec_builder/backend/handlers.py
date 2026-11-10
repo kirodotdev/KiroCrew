@@ -423,15 +423,18 @@ async def _handle_get(request: web.Request) -> web.Response:
             status=409,
         )
     turns = tool_calls = 0
-    # A missing worktree has no usable working dir, so a slot cannot be scoped. Serve
-    # the (empty) detail with the real reason, so the SPA can show it and offer
-    # Delete, rather than failing with a 409 that blames another app.
-    slot = (
-        None
-        if stale == STALE_WORKTREE_MISSING
-        else await _ensure_worker_slot(state, name, meta)
-    )
-    if slot is None and state is not None and stale != STALE_WORKTREE_MISSING:
+    # A missing worktree has no usable working dir, so a slot cannot be SCOPED -- but the
+    # ownership refusal below must still run first: serving 200 there would hand the SPA
+    # a slot_key that belongs to another app. scope=False applies that refusal without
+    # creating or repointing a slot, so the (empty) detail is served only for a slot
+    # this app owns, letting the SPA show the real reason and offer Delete.
+    worktree_missing = stale == STALE_WORKTREE_MISSING
+    slot = await _ensure_worker_slot(state, name, meta, scope=not worktree_missing)
+    if (
+        slot is None
+        and state is not None
+        and (not worktree_missing or state.get_slot(_slot_key(name)) is not None)
+    ):
         # A foreign or unscoped slot holds this key (see _ensure_worker_slot).
         # Returning 200 anyway meant ChatEmbed mounted against that unrelated
         # session -- the user could read it, message into it and approve its tool

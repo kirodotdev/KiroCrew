@@ -119,7 +119,11 @@ async def _fetch(client, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "stale"),
-    [("intact", ""), ("worktree_removed", "worktree_missing"), ("branch_changed", "branch_changed")],
+    [
+        ("intact", ""),
+        ("worktree_removed", "worktree_missing"),
+        ("branch_changed", "branch_changed"),
+    ],
 )
 async def test_list_and_detail_report_why_a_spec_is_stale(tmp_path, monkeypatch, mode, stale):
     client = _make_client(monkeypatch, tmp_path)
@@ -154,7 +158,59 @@ async def test_a_stale_spec_can_still_be_deleted(tmp_path, monkeypatch, mode):
 
 
 def test_a_detached_head_is_not_reported_as_a_branch_change(tmp_path):
-    repo, wt, _spec_dir = _worktree_spec(tmp_path)
+    _repo, wt, _spec_dir = _worktree_spec(tmp_path)
     _git("checkout", "--detach", cwd=wt)
     meta = routes._load_index()["demo"]
     assert routes._stale_reason(meta) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["another-app", ""])
+async def test_a_missing_worktree_still_refuses_a_foreign_slot(tmp_path, monkeypatch, owner):
+    """Ownership is checked BEFORE the missing-worktree branch: serving 200 would hand
+    the SPA a slot_key that belongs to another app (or to an unscoped main-chat tab)."""
+    client = _make_client(monkeypatch, tmp_path)
+    repo, wt, _spec_dir = _worktree_spec(tmp_path)
+    _break("worktree_removed", repo, wt)
+    await _fetch(client, monkeypatch)
+    foreign = _Slot()
+    foreign._app = owner
+    foreign.key = routes._slot_key("demo")
+    foreign.project = "/elsewhere"
+    client.app["state"]._slots[foreign.key] = foreign
+    try:
+        resp = await client.get(f"{_BASE}/specs/demo")
+        body = await resp.json()
+    finally:
+        await client.close()
+    assert resp.status == 409
+    assert body["code"] == "slot_owned_by_another_app"
+    assert foreign.project == "/elsewhere", "the foreign slot was repointed"
+    assert foreign._app == owner, "the foreign slot was taken over"
+
+
+@pytest.mark.asyncio
+async def test_a_missing_worktree_reads_our_slot_without_scoping_or_creating_one(
+    tmp_path, monkeypatch
+):
+    client = _make_client(monkeypatch, tmp_path)
+    repo, wt, _spec_dir = _worktree_spec(tmp_path)
+    _break("worktree_removed", repo, wt)
+    await _fetch(client, monkeypatch)
+    state = client.app["state"]
+    try:
+        none_yet = await client.get(f"{_BASE}/specs/demo")
+        assert none_yet.status == 200
+        assert state._slots == {}, "a stale spec must not materialize a worker slot"
+
+        ours = _Slot()
+        ours.key = routes._slot_key("demo")
+        ours.project = "/kept"
+        state._slots[ours.key] = ours
+        owned = await client.get(f"{_BASE}/specs/demo")
+        body = await owned.json()
+    finally:
+        await client.close()
+    assert owned.status == 200
+    assert body["slot_key"] == ours.key
+    assert ours.project == "/kept", "the slot was rescoped onto a directory that no longer exists"
