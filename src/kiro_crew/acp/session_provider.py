@@ -333,7 +333,7 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("_end_shared_turn: orphaned runtime teardown failed", exc_info=True)
 
-    async def new_conversation(self) -> None:
+    async def new_conversation(self, *, member_session_key: str = "", channel_id: str = "") -> None:
         """Reset to a fresh conversation on the SAME warm runtime (kiro path).
 
         The cheap clean-slate reuse primitive a warm worker pool relies on for a
@@ -384,11 +384,16 @@ class AcpSessionProvider(LLMProvider):
         # Create the fresh session BEFORE destroying the old one so a failure
         # leaves the provider still pointing at a usable handle (no window where
         # self._handle references a terminated session).
+        # A member DM's dispatch mount and a channel session's channel ride every
+        # session start (``AcpProvider._member_session_key`` / ``_owning_channel_id``),
+        # so a chat's fresh conversation carries the ones its cold start passed.
         new_handle = await self._runtime.create_session(
             cwd=self._runtime._work_dir,
             agent=self._runtime._agent or None,
             memory_mode=self.memory_mode,
             session_key=self._session_key,
+            member_session_key=member_session_key,
+            channel_id=channel_id,
         )
         # Re-apply the configured non-default model to the fresh session. A new
         # session/new reverts to the agent-config default model, so a warm worker
@@ -444,6 +449,11 @@ class AcpSessionProvider(LLMProvider):
         # the previous one's did.
         new_handle.delete_delay_secs = getattr(old, "delete_delay_secs", 0.0)
         self._handle = new_handle
+        # The fresh session/new restored nothing: a session/load observation from
+        # the old handle would make the next turn skip its history replay
+        # (``turn_dispatch_gates``) and run on an empty conversation. Same as
+        # ``AcpClient.new_conversation``; cleared only once the swap is committed.
+        self._resumed_flag = False
         # The fresh session launched fresh stubs carrying a fresh token, and
         # nothing has named it: an unnamed token is refused, not resolved from
         # the shared runtime's tree. Claim it now, against the session this

@@ -92,6 +92,7 @@ from kiro_crew.agent_sdk.backends import model_registry_namespace  # noqa: F401
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
+    ACP_BACKENDS_SESSION_EVICTION,
 )
 from kiro_crew.agent_sdk.capabilities import SessionCapabilities, capabilities_for
 from kiro_crew.agent_sdk.tool_search import (  # noqa: F401
@@ -1147,7 +1148,41 @@ class AcpProvider(LLMProvider):
                     await self.cleanup_session(replaced)
             await self._apply_initial_effort()
             return
+        if isinstance(self._client, AcpSessionProvider):
+            # The steps a cold start's session start takes that the fresh session
+            # needs too: the member DM mount and channel ride ``session/new``
+            # (``_start_kiro_runtime``), the essentials delivered to the old
+            # conversation are not in the new one, and an effort pushed as a
+            # per-session config option (KAS, codex) is back at the default.
+            await self._client.new_conversation(
+                member_session_key=self._member_session_key(),
+                channel_id=self._owning_channel_id() or "",
+            )
+            self.essential_delivery.invalidate()
+            await self._apply_initial_effort()
+            return
         await self._client.new_conversation()
+
+    @property
+    def swaps_conversation_in_place(self) -> bool:
+        """Whether a fresh conversation can start on this session's live process now.
+
+        True on the shared runtime of a backend whose session teardown evicts
+        (``ACP_BACKENDS_SESSION_EVICTION``), and not for a session placed on a remote
+        or cloud workspace, whose session start records its placement
+        (``record_cloud_session``) where :meth:`new_conversation` does not. A dead
+        process is not read here: ``AcpSessionProvider.new_conversation`` refuses it
+        with ``AcpProcessDied`` before it creates anything, and
+        ``SessionLifecycleService.swap_conversation`` falls back on that refusal.
+        """
+        from kiro_crew.session_environment import remote_workspace_for
+
+        client = self._client
+        return (
+            isinstance(client, AcpSessionProvider)
+            and client.backend in ACP_BACKENDS_SESSION_EVICTION
+            and remote_workspace_for(self._owning_session_key()) is None
+        )
 
     def set_delete_delay(self, seconds: float) -> None:
         """Keep the session's record for ``seconds`` after it ends, then delete it.

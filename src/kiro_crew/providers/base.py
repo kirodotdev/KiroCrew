@@ -773,6 +773,12 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def swaps_conversation_in_place(self) -> bool:
+        """True when a fresh conversation can start on this session's live process
+        now, keeping the sub-agent sessions that process hosts. Default False."""
+        return False
+
+    @property
     def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
         """The capabilities this session's registered agent batch auto-approves.
 

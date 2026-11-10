@@ -57,7 +57,7 @@ SHARED_BINDINGS_CHECKS = (
 _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "__init__": ("function", False, "eab60089ec20", "session_lifecycle"),
     "_calling_task": ("staticmethod", False, "aa08d43876aa", "turn_stop"),
-    "_cancel_parent_children": ("function", True, "c38136ad1de2", "parent_end"),
+    "_cancel_parent_children": ("function", True, "c56324348d70", "parent_end"),
     "_child_teardown": ("property", False, "5d305fdfa44b", "session_lifecycle"),
     "_discard_replay_gap": ("function", False, "8964ba011f68", "turn_stop"),
     "_eager_respawn": ("function", True, "958babeb61c8", "turn_stop"),
@@ -92,7 +92,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "close_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),
     "destroy": ("function", True, "90a6b2cda311", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
-    "discard_conversation": ("function", True, "185d63c540e6", "teardown"),
+    "discard_conversation": ("function", True, "69405409fda2", "teardown"),
     "drain_active_turns": ("function", True, "5944c6af44b2", "fleet"),
     "drain_all_providers": ("function", True, "0624c13b3dee", "fleet"),
     "end_children_for": ("function", True, "958babeb61c8", "parent_end"),
@@ -116,6 +116,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "set_recycle_callback": ("function", False, "eb879633e29d", "session_lifecycle"),
     "stop_generation": ("function", False, "028659ce42ac", "turn_stop"),
     "stop_turn": ("function", True, "67ebfe2370a5", "turn_stop"),
+    "swap_conversation": ("function", True, "f1d40e624ae4", "teardown"),
     "teardown_scope": ("function", False, "2b51a9463afa", "session_lifecycle"),
     "tearing_down": ("function", False, "8f783ea149c8", "session_lifecycle"),
 }
