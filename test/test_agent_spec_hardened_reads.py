@@ -1132,6 +1132,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("connections_mint", "dashboard"),
         ("connections_mint", "dashboard"),
     ],
+    # The KAS route's read of the entry a sign-in mounts, and of which route each
+    # MCP Servers row's sign-in takes.
+    "kiro_crew/connections/mint_kas.py": [("connections_mint", "dashboard")],
     "kiro_crew/connections/warm.py": [
         ("connections_warm_mint", "dashboard"),
         ("connections_warm_mint", "dashboard"),

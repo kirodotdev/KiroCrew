@@ -59,6 +59,7 @@ export type {
   McpCustomSpecResponse,
   McpScopePresence,
   McpTempRefusal,
+  McpKasChatSignIn,
   McpServer,
   McpApplyChange,
   McpGlobalScope,
