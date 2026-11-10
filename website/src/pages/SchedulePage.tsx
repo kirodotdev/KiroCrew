@@ -1128,7 +1128,7 @@ export default function SchedulePage() {
                       </TableRow>
                     )}
                     {!isCollapsed && group.jobs.map(j => (
-              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
+              <TableRow key={j.id} className={`group/jobrow cursor-pointer ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''} ${selected?.id === j.id || selectedIds.has(j.id) ? '[&_button.border-border]:[--border:var(--border-strong)]' : ''}`} {...guidePick(j.name)} onClick={() => openDetail(j)}>
                 <TableCell className="px-2 text-center" onClick={e => e.stopPropagation()}>
                   <input
                     type="checkbox"
@@ -1256,7 +1256,9 @@ export default function SchedulePage() {
                     SAME tokens above the base and below the controls (`-z-10`
                     inside the stacking context every sticky cell creates):
                     `--accent-subtle` is translucent, so composited over
-                    `bg-card` it matches the rest of the row exactly. */}
+                    `bg-card` it matches the rest of the row exactly. A selected
+                    row also re-points `--border` so the buttons keep an edge on
+                    that tint (the hovered-row rule in focus-and-state-cues.css). */}
                 <TableCell className="sticky right-0 whitespace-nowrap bg-card" onClick={e => e.stopPropagation()}>
                   <div aria-hidden className={`absolute inset-0 -z-10 transition-colors group-hover/jobrow:bg-bg-hover ${selected?.id === j.id ? 'bg-accent-subtle' : ''} ${selectedIds.has(j.id) ? 'bg-accent-subtle/60' : ''}`} />
                   {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
