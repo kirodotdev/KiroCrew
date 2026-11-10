@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, CircleMinus, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
-import { isBenignSupersededRetry, isTerminalApprovalRefusal, noPendingApprovalError } from '../../api/apiError'
+import { isBenignSupersededRetry, isNotFoundError, isTerminalApprovalRefusal, noPendingApprovalError } from '../../api/apiError'
 import { LogViewer } from '../LogsPage'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -1190,14 +1190,20 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     // Slot-scoped by construction: delete exactly this slot's terminal cards
     // by id via DELETE /api/spawn/{id}. There is no global clear route, so a
     // cross-session wipe is not reachable from here.
-    // The local clear stays optimistic; a refused delete is reported so the
-    // user knows the card still exists server-side.
+    // The local clear stays optimistic; a delete the gateway refuses while it
+    // still holds the card is reported, so the user knows the card can return.
     setBatchError(null)
     // A retired card is one the inventory already showed the backend holds no
     // record of, so it is cleared locally only: a DELETE would 404.
     const serverIds = terminalIds.filter(id => !isSpawnApprovalRetired(subagents[id]))
     void Promise.allSettled(serverIds.map(id => api.spawnDelete(id))).then(results => {
-      if (results.some(r => r.status === 'rejected')) setBatchError(i18nT('pages.chat.activityViewer.dismiss_failed'))
+      // A 404 means the gateway holds no record that could draw the card again
+      // (a native card from an earlier turn, a run with no folder or log entry),
+      // so the local clear was the whole dismissal. Any other refusal leaves a
+      // record that can bring the card back, and is reported.
+      if (results.some(r => r.status === 'rejected' && !isNotFoundError(r.reason))) {
+        setBatchError(i18nT('pages.chat.activityViewer.dismiss_failed'))
+      }
     })
     dispatchRedux(clearTerminalSubagents({ slot }))
   }, [dispatchRedux, slot, terminalIds, subagents])

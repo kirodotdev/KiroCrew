@@ -1106,8 +1106,11 @@ class TestApiSpawnRetry:
 
 class TestApiSpawnDelete:
     def test_404_for_unknown_native_card(self) -> None:
-        req = _Req(_state(), None, match_info={"agent_id": "native:gone"})
+        state = _state()
+        state.dismiss_native_subagent.return_value = False
+        req = _Req(state, None, match_info={"agent_id": "native:gone"})
         assert _run(mod.api_spawn_delete, req).status == 404
+        state.dismiss_native_subagent.assert_called_once_with("native:gone")
 
     def test_native_cancel_marks_tracker_and_broadcasts(self) -> None:
         record: dict[str, Any] = {"done": False}

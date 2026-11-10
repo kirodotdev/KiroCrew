@@ -1233,6 +1233,7 @@ class DashboardState:
     running_session_keys = _slot_directory.running_session_keys
     spend_slot_by_session = _slot_directory.spend_slot_by_session
     native_subagent_snapshots = _slot_directory.native_subagent_snapshots
+    dismiss_native_subagent = _slot_directory.dismiss_native_subagent
     has_slot = _slot_directory.has_slot
     slot_exists = _slot_directory.slot_exists
     get_linked_slot = _slot_directory.get_linked_slot

@@ -1023,6 +1023,45 @@ describe('ActivityViewer — panel behaviour', () => {
     expect(store.getState().chat.selectedSubagentId).toBeNull()
   })
 
+  /** The gateway's answer for a card it holds no record of. */
+  const notFound = () => new ApiError(404, 'not found', JSON.stringify({ error: 'not found' }))
+
+  /** Click Dismiss done and wait until its DELETEs have settled. The panel reads
+   *  the same promises in a `Promise.allSettled` it created at the click, before
+   *  this one, so its result handler has run by the time this one resolves. */
+  async function clickDismissAndSettle(calls: number) {
+    fireEvent.click(screen.getByTestId('dismiss-done-btn'))
+    await waitFor(() => expect(api.spawnDelete).toHaveBeenCalledTimes(calls))
+    await act(async () => {
+      await Promise.allSettled(vi.mocked(api.spawnDelete).mock.results.map(r => r.value))
+    })
+  }
+
+  const finishedNativeAndManaged = () => ({
+    'native:n1': mkAgent('native:n1', { status: 'done' }),
+    d1: mkAgent('d1', { status: 'done' }),
+  })
+
+  it('reports no failure when the gateway already holds no record of the dismissed cards', async () => {
+    vi.mocked(api.spawnDelete).mockImplementation(() => Promise.reject(notFound()))
+    renderPanel(<ActivityViewer {...baseProps} view="subagents" subagents={finishedNativeAndManaged()} />)
+
+    await clickDismissAndSettle(2)
+
+    expect(screen.queryByText(i18nT('pages.chat.activityViewer.dismiss_failed'))).not.toBeInTheDocument()
+  })
+
+  it('still reports a dismissal the gateway could not record', async () => {
+    vi.mocked(api.spawnDelete).mockImplementation((id: string) => Promise.reject(id === 'd1'
+      ? new ApiError(503, 'dismissal not recorded', JSON.stringify({ error: 'dismissal not recorded', code: 'dismissal_unwritable' }))
+      : notFound()))
+    renderPanel(<ActivityViewer {...baseProps} view="subagents" subagents={finishedNativeAndManaged()} />)
+
+    await clickDismissAndSettle(2)
+
+    expect(await screen.findByText(i18nT('pages.chat.activityViewer.dismiss_failed'))).toBeInTheDocument()
+  })
+
   it('caps the rendered pile and reveals the rest on request', () => {
     const many: Record<string, SubagentActivity> = {}
     for (let i = 0; i < 31; i++) {
