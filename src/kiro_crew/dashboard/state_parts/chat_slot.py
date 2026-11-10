@@ -367,6 +367,7 @@ class _ChatSlot:
         "_question_pending",
         "_embed_question_polled_at",
         "_welcomed_agent",
+        "_welcome_preview",
     )
 
     # Initialised by state_parts/source_links.py.
@@ -408,6 +409,7 @@ class _ChatSlot:
     crew_mode_agent: str
     app_agent_owner: str
     _welcomed_agent: str
+    _welcome_preview: tuple[str, str, str, str]
     jev_route: bool
     _model_withheld: bool
     _model_withheld_for: str

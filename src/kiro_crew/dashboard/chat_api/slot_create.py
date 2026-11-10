@@ -1214,6 +1214,18 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         )
     if slot.executor != "remote" and not bound_remote:
         schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
+    # The greeting the welcome page shows before the first message, since an
+    # unstarted chat writes no row. Read after the spawn is armed, so the two
+    # overlap, and before the answer is built, so the answer carries it.
+    from kiro_crew.dashboard.agent_welcome import refresh_welcome_preview
+
+    await refresh_welcome_preview(state, slot)
+    # The read runs after the create's block, so a close or a same-name recreate
+    # can land during it, and the browser adds this answer to its list and drops
+    # the close's tombstone for that key. A slot that has lost its key answers
+    # the 404 a missing slot gets, as the switches do.
+    if state._slots.get(slot.key) is not slot:
+        return slot_not_found()
     created = _created_slot_row(state, request, slot)
     if session_folder_notice:
         created["session_folder_notice"] = session_folder_notice

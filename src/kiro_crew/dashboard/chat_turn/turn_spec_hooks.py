@@ -29,6 +29,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     spec_tools_settings_unapplied,
     withheld_project_spec_hooks,
 )
+from kiro_crew.dashboard.agent_welcome import AGENT_WELCOME_KIND
 from kiro_crew.dashboard.chat_utils import (
     SPEC_HOOKS_NOTICE_KIND,
     RecoveryPayload,
@@ -110,11 +111,14 @@ async def _surface_agent_welcome(
     """Render *agent*'s ``welcomeMessage`` into *slot*, at most once per activation.
 
     The one consumer of the agent-config field. An agent JSON may carry a
-    ``welcomeMessage`` — a usage hint its author wants the user to read when the
-    agent takes over — and this is the only place it reaches a user. Kiro Crew's
-    own bundled agents ship one, so the field is not a niche extension point.
+    ``welcomeMessage``, a usage hint its author wants the user to read when the
+    agent takes over, and this is the only place it reaches a transcript. Before
+    a chat's first message the welcome page shows it instead, from the slot
+    summary (``dashboard.agent_welcome``), since an unstarted chat holds no row.
+    Kiro Crew's own bundled agents ship one, so the field is not a niche
+    extension point.
 
-    Three properties are the whole design, and each one rules out an
+    Four properties are the whole design, and each one rules out an
     alternative that looks simpler:
 
     * **A transcript row, not prompt context.** Role ``notice``: durable (not in
@@ -126,6 +130,10 @@ async def _surface_agent_welcome(
       ``slot._welcomed_agent``, because a switch and the session start its own
       reset produces are two events for ONE activation, and each path would
       otherwise emit for the other.
+    * **Tagged, so it is never folded away.** ``meta.kind`` is
+      ``AGENT_WELCOME_KIND``, which the dashboard's turn fold exempts: the row
+      lands inside the turn that activated the agent, and under the default
+      collapse-all setting an untagged notice there folds with the working steps.
     * **Untrusted text.** The field is read from a user-writable, tool-shared
       directory. ``NoticeCard`` renders a ``notice`` row as plain text (no
       markdown, no HTML), the reader caps its length, and it is passed through
@@ -158,7 +166,14 @@ async def _surface_agent_welcome(
         return
     if not text:
         return
-    append_and_surface(state, slot, "notice", _redact_display_text(text), "msg msg-info")
+    append_and_surface(
+        state,
+        slot,
+        "notice",
+        _redact_display_text(text),
+        "msg msg-info",
+        meta={"kind": AGENT_WELCOME_KIND},
+    )
 
 
 async def _prepare_spec_hooks(

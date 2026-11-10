@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from kiro_crew.dashboard.agent_welcome import welcome_preview
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
@@ -512,6 +513,7 @@ class SlotProjection:
                     redact(str(record["tool_purpose"])), limit=_MAX_TOOL_PURPOSE
                 )
 
+        durable_rows = sum(1 for message in rows if message.get("role") not in transient_roles)
         return {
             "key": slot.key,
             "title": redact(slot.display_title),
@@ -557,7 +559,11 @@ class SlotProjection:
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
             # Durable rows only, like ``last_ts``: the save path keeps no other row.
-            "messages": sum(1 for message in rows if message.get("role") not in transient_roles),
+            "messages": durable_rows,
+            # The greeting the welcome page draws while the chat has no row (an
+            # unstarted chat writes none, ``agent_welcome``); "" from the first
+            # row on, when the transcript's welcome row carries it.
+            "welcome_message": "" if durable_rows else redact(welcome_preview(slot)),
             # A turn waiting in fair admission is still in flight, so Stop
             # stays available; ``admission_queued`` says it has not started.
             "running": turn_in_flight,
