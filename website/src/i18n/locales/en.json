@@ -7579,6 +7579,7 @@
         "copy_preview": "Copy text",
         "copied": "Copied",
         "copy_link": "Copy link to message",
+        "put_in_composer": "Put in composer",
         "unpin": "Unpin",
         "copy_text_failed": "Couldn’t copy the text. Jump to the message and select the text to copy it.",
         "copy_link_failed": "Couldn’t copy the link. Check that this page may use the clipboard, then try again.",

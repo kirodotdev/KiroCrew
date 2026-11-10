@@ -13649,6 +13649,7 @@
         "copy_preview": "Copiar texto",
         "copied": "Copiado",
         "copy_link": "Copiar enlace al mensaje",
+        "put_in_composer": "Poner en el redactor",
         "unpin": "Desfijar",
         "copy_text_failed": "No se pudo copiar el texto. Ve al mensaje y selecciona el texto para copiarlo.",
         "copy_link_failed": "No se pudo copiar el enlace. Comprueba que esta página puede usar el portapapeles y vuelve a intentarlo.",
