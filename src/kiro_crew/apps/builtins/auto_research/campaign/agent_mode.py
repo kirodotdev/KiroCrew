@@ -211,7 +211,12 @@ async def _prepare_loop_launch(cid: str) -> None:
             previous is not None
             and not previous.active
             and str(getattr(previous, "stopped_reason", "") or "")
-            in (AUTONUDGE_STOP_REASON, *FAILURE_STANDDOWN_REASONS)
+            in (
+                AUTONUDGE_STOP_REASON,
+                *FAILURE_STANDDOWN_REASONS,
+                f"campaign_{storage.CampaignStatus.COMPLETE.value}",
+                f"campaign_{storage.CampaignStatus.STAGNANT.value}",
+            )
         ):
             await svc.remove(previous.id)
     await asyncio.to_thread(_clear_worker_done_marker, cid)

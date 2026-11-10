@@ -46,6 +46,10 @@ _FIRST_CYCLE_GRACE_SECS = 600
 # Worker auto-approve is capped at 24h; past this the watchdog pauses the
 # campaign to NEEDS_INPUT and it must be resumed (re-authorized) to continue.
 _TRUST_TTL_SECS = 24 * 3600
+_FINDING_VERDICT_BY_STOP_REASON = {
+    f"campaign_{CampaignStatus.COMPLETE.value}": CampaignStatus.COMPLETE,
+    f"campaign_{CampaignStatus.STAGNANT.value}": CampaignStatus.STAGNANT,
+}
 
 
 def _awake_idle_secs(cid: str, last_ts: dict[str, float], last_alive: dict[str, float]) -> float:
@@ -256,8 +260,15 @@ async def _settle_campaign_from_watchdog(
     *,
     observed_started_at: float | None,
     stopped_reason: str = "",
+    verdict: CampaignStatus | None = None,
 ) -> None:
-    """Classify one terminal signal and cancellation-safely remove its loop."""
+    """Classify one terminal signal and cancellation-safely remove its loop.
+
+    ``verdict`` is the status a caller already decided from a new finding
+    (verified pass, cycle cap, stagnation). It skips the idle-expiry
+    classification but keeps the same loop teardown, so no terminal path
+    leaves the worker loop scheduling turns for a campaign nobody watches.
+    """
 
     # Bind cleanup to the loop that produced this terminal observation. Status
     # persistence makes Resume legal and may be slow; Resume can replace the
@@ -307,12 +318,15 @@ async def _settle_campaign_from_watchdog(
                     last_counts,
                     last_ts,
                 )
-            status, message = await asyncio.to_thread(
-                _stalled_campaign_verdict,
-                campaign_id,
-                cycle_files,
-                stopped_reason=stopped_reason,
-            )
+            if verdict is not None:
+                status, message = verdict, None
+            else:
+                status, message = await asyncio.to_thread(
+                    _stalled_campaign_verdict,
+                    campaign_id,
+                    cycle_files,
+                    stopped_reason=stopped_reason,
+                )
             # Persist a non-rearmable loop state before SQLite becomes terminal.
             # If the later removal write fails, restart may retain this exact
             # loop, but it cannot schedule another worker turn.
@@ -434,6 +448,7 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                     if (
                         stopped_reason == agent_mode.AUTONUDGE_STOP_REASON
                         or stopped_reason in agent_mode.FAILURE_STANDDOWN_REASONS
+                        or stopped_reason in _FINDING_VERDICT_BY_STOP_REASON
                     ):
                         if run_newly_observed:
                             # A resume marks the campaign RUNNING before _launch_loop
@@ -445,10 +460,14 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                             last_counts[cid] = len(cycle_files)
                             last_ts[cid] = time.time()
                             last_alive[cid] = platform_compat.awake_now()
-                        # The directive runs inside the worker turn. Removing
-                        # its loop before that turn exits would cancel the
-                        # firing timer and destroy the response/bookkeeping.
+                        # The directive or finding is published inside the worker
+                        # turn. Removing its loop before that turn exits would cancel
+                        # the firing timer and destroy the response/bookkeeping.
                         if slot is not None and slot.running:
+                            if started and time.time() - started > _TRUST_TTL_SECS:
+                                from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+                                revoke_slot_trust(state, slot)
                             continue
                         if run_newly_observed:
                             continue
@@ -460,6 +479,11 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                             last_ts,
                             observed_started_at=started,
                             stopped_reason=stopped_reason,
+                            verdict=(
+                                _FINDING_VERDICT_BY_STOP_REASON[stopped_reason]
+                                if stopped_reason in _FINDING_VERDICT_BY_STOP_REASON
+                                else None
+                            ),
                         )
                         continue
                 # 24h auto-approve cap: expire trust and require re-authorization.
@@ -513,35 +537,36 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                     )
                     last_alive[cid] = platform_compat.awake_now()
                     verified = latest.get("verification")
+                    # Every verdict here ends this run, so settle it like the
+                    # idle-expiry path: the worker loop goes inactive before
+                    # the status commits and is removed after, and the
+                    # "complete"/"stagnant" SSE still follows the commit.
+                    finding_verdict: CampaignStatus | None = None
                     if isinstance(verified, dict) and verified.get("passed") is True:
-                        await lifecycle._guarded_transition(
-                            cid,
-                            CampaignStatus.COMPLETE,
-                            allowed_current=(CampaignStatus.RUNNING,),
-                            expected_started_at=started,
-                            on_commit=lambda _r, cid=cid: lifecycle._sse_from_thread(
-                                event_loop, {"type": "complete", "campaign_id": cid}
-                            ),
-                        )
+                        finding_verdict = CampaignStatus.COMPLETE
                     elif count >= row["max_cycles"]:
-                        await lifecycle._guarded_transition(
-                            cid,
-                            CampaignStatus.COMPLETE,
-                            allowed_current=(CampaignStatus.RUNNING,),
-                            expected_started_at=started,
-                            on_commit=lambda _r, cid=cid: lifecycle._sse_from_thread(
-                                event_loop, {"type": "complete", "campaign_id": cid}
-                            ),
-                        )
+                        finding_verdict = CampaignStatus.COMPLETE
                     elif check_stagnation(cid):
-                        await lifecycle._guarded_transition(
+                        finding_verdict = CampaignStatus.STAGNANT
+                    if finding_verdict is not None:
+                        if slot is not None and slot.running:
+                            # Updating during AutoNudge's fire window does not
+                            # cancel that timer. It prevents another turn while
+                            # this verdict waits for the current turn to finish.
+                            if svc is not None and loop is not None and loop.active:
+                                await svc.update(
+                                    loop.id,
+                                    active=False,
+                                    stopped_reason=f"campaign_{finding_verdict.value}",
+                                )
+                            continue
+                        await _settle_campaign_from_watchdog(
                             cid,
-                            CampaignStatus.STAGNANT,
-                            allowed_current=(CampaignStatus.RUNNING,),
-                            expected_started_at=started,
-                            on_commit=lambda _r, cid=cid: lifecycle._sse_from_thread(
-                                event_loop, {"type": "stagnant", "campaign_id": cid}
-                            ),
+                            cycle_files,
+                            last_counts,
+                            last_ts,
+                            observed_started_at=started,
+                            verdict=finding_verdict,
                         )
                 elif cid in last_ts:
                     if slot is not None and slot.running:
