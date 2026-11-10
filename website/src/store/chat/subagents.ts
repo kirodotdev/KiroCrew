@@ -891,7 +891,10 @@ export const subagentReducers = {
     const existing = subs[d.id]
     // Live events can interleave with replay because subscription starts before
     // snapshots are sent. Never let a stale running snapshot demote a terminal card.
+    // A card reconciliation retired for a gone approval is the one `stopped`
+    // card a replay may revive: the replay naming the run proves it launched.
     if (existing?.status === 'done' || existing?.status === 'error') return
+    if (existing?.status === 'stopped' && !isSpawnApprovalRetired(existing)) return
     // For the same reason, a snapshot collected before a live tool frame the
     // card already applied carries a lower tool count. Its tool and progress
     // fields are older than the card's, so it only fills the identity a live
