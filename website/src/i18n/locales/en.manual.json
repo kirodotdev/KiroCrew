@@ -3851,8 +3851,10 @@
       "copy_identifier_label": "Located in {{where}}"
     },
     "artifactFolderDeleteDialog": {
-      "artifact_one": "{{count}} artifact",
-      "artifact_other": "{{count}} artifacts",
+      "contains_artifacts_one": "This folder contains {{count}} artifact.",
+      "contains_artifacts_other": "This folder contains {{count}} artifacts.",
+      "contains_artifacts_across_one": "This folder contains {{count}} artifact across {{subfolders}}.",
+      "contains_artifacts_across_other": "This folder contains {{count}} artifacts across {{subfolders}}.",
       "delete_folder": "Delete folder “{{name}}”?",
       "subfolder_one": "{{count}} subfolder",
       "subfolder_other": "{{count}} subfolders"
