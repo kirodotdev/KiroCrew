@@ -1138,12 +1138,14 @@ class DiscordRenderer(Renderer):
         note = _as_subtext(f"💭 {body}")
         try:
             posted = await self._client.send_message(self._channel_id, note)
-            self._tally_redactions(body)
         except Exception:
             logger.debug("discord: thinking note send failed", exc_info=True)
             return
         if posted is None:
             return
+        # Counted only once the note landed: the turn's redaction notice must not
+        # report a redaction in text the reader never received.
+        self._tally_redactions(body)
         # Record the note as the seam predecessor ONLY when the next thing shown
         # will land BELOW it -- i.e. no live bubble is still open above it
         # (``_stream_mid is None``). Then the note is genuinely the last message on
