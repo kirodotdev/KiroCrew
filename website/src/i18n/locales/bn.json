@@ -7722,6 +7722,10 @@
       "jira_no_credentials": "No Jira credentials configured for this host. Add a jira_auth entry to config.json and set JIRA_API_TOKEN (or JIRA_TOKEN_<hex-host> for multi-host) in your .env file. এই রিডারটি একটি Jira API টোকেন ব্যবহার করে এবং Atlassian MCP সাইন-ইন থেকে আলাদা। সেই MCP সার্ভারে সাইন ইন করলে এটি কনফিগার হয় না।"
     },
     "jobForm": {
+      "project_directory": "প্রজেক্ট ডিরেক্টরি",
+      "project_directory_hint": "এই জবটি একটি প্রজেক্টে চালাও এবং সেই প্রজেক্টের কাস্টম এজেন্ট ব্যবহার করো।",
+      "project_directory_placeholder": "যেমন /Users/you/projects/myrepo",
+      "project_agent_reset": "নির্বাচিত এজেন্টটি এই প্রজেক্টে নেই, তাই এটিকে ডিফল্টে রিসেট করা হয়েছে।",
       "a_short_label_for_this_job": "এই জবের জন্য একটি সংক্ষিপ্ত লেবেল",
       "add": "জব যোগ করো",
       "agent": "এজেন্ট",

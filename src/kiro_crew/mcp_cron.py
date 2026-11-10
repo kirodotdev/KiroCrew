@@ -31,6 +31,7 @@ from kiro_crew.config.loader import config_dir
 from kiro_crew.cron import (
     _JOB_TIMEOUT_SECS,
     CronJob,
+    CronProjectBoundRefusal,
     CronService,
     CronStoreBusy,
     CronStoreUnreadable,
@@ -1290,7 +1291,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if own_err:
             return own_err
         try:
-            resumed = svc.enable_job(jid, enabled=True)
+            resumed = svc.enable_job(jid, enabled=True, require_unbound=True)
+        except CronProjectBoundRefusal as exc:
+            return f"Error: {exc}"
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
         except CronStoreUnreadable as exc:
@@ -1319,7 +1322,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # is paired to the instance actually serving and the job runs here.
         port = resolve_serving_port()
         secret_path = config_dir() / ".local_secret"
-        ok, msg = trigger_cron_job(jid, port, secret_path)
+        ok, msg = trigger_cron_job(
+            jid,
+            port,
+            secret_path,
+            require_unbound=True,
+        )
         sel().log_api_access(
             caller="mcp",
             operation="cron.trigger",

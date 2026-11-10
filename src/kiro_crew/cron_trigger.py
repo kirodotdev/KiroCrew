@@ -19,17 +19,34 @@ _TIMEOUT_SECS = 10  # endpoint returns immediately after starting execution
 ALREADY_RUNNING_STATUS = 409
 
 
-def trigger_cron_job(job_id: str, port: int, secret_path: Path) -> tuple[bool, str]:
+def trigger_cron_job(
+    job_id: str,
+    port: int,
+    secret_path: Path,
+    *,
+    require_unbound: bool = False,
+) -> tuple[bool, str]:
     """POST to the gateway dashboard to trigger a cron job immediately.
 
+    ``require_unbound`` marks an agent-controlled trigger. The authenticated
+    gateway rechecks that constraint against its fresh store before dispatch.
     Returns (success, message) tuple.
     """
-    ok, message, _status = trigger_cron_job_status(job_id, port, secret_path)
+    ok, message, _status = trigger_cron_job_status(
+        job_id,
+        port,
+        secret_path,
+        require_unbound=require_unbound,
+    )
     return ok, message
 
 
 def trigger_cron_job_status(
-    job_id: str, port: int, secret_path: Path
+    job_id: str,
+    port: int,
+    secret_path: Path,
+    *,
+    require_unbound: bool = False,
 ) -> tuple[bool, str, int | None]:
     """:func:`trigger_cron_job` plus the HTTP status of a refused trigger.
 
@@ -41,6 +58,8 @@ def trigger_cron_job_status(
         return False, f"Invalid job ID format: {job_id}", None
 
     url = f"http://127.0.0.1:{port}/api/crons/{job_id}/run"
+    if require_unbound:
+        url += "?require_unbound=1"
     headers: dict[str, str] = {}
     # Credential for the LISTENER first: the shared file has one slot per data
     # home and a second gateway generation replaces it, so reading a home-wide

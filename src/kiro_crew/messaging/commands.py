@@ -57,6 +57,7 @@ from kiro_crew.agent_sdk.backends import (
 from kiro_crew.apps.manager import TASK_RUNNER_APP, TASK_RUNNER_DISABLED_MESSAGE, app_disabled
 from kiro_crew.config.sections import CONTEXT_WARN_MARGIN_PCT
 from kiro_crew.cron import (
+    CronProjectBoundRefusal,
     CronStoreBusy,
     CronStoreUnreadable,
     compute_next_run_ts,
@@ -1036,7 +1037,11 @@ async def cron_command_reply(
     if action in ("pause", "resume"):
         enabled = action == "resume"
         try:
-            changed = await cron_service.enable_job_async(job_id, enabled=enabled)
+            changed = await cron_service.enable_job_async(
+                job_id, enabled=enabled, require_unbound=enabled
+            )
+        except CronProjectBoundRefusal as exc:
+            return f"❌ {exc}"
         except CronStoreBusy:
             return _CRON_BUSY
         except CronStoreUnreadable as exc:

@@ -126,10 +126,16 @@ def test_update_via_mcp_to_member_name_is_refused(member_with_distinct_template)
     _assert_untouched_template()
 
 
-def _dashboard_app(update_job_async) -> web.Application:
+def _dashboard_app(svc) -> web.Application:
     app = web.Application()
     app["state"] = SimpleNamespace(
-        crons=SimpleNamespace(update_job_async=update_job_async),
+        # The real service's methods: the handler reads the stored record (and
+        # its store health) before an agent change, then writes through it.
+        crons=SimpleNamespace(
+            get_job_async=svc.get_job_async,
+            raise_if_store_unreadable=svc.raise_if_store_unreadable,
+            update_job_async=svc.update_job_async,
+        ),
         push_refresh=MagicMock(),
     )
     app.router.add_route("PATCH", "/api/crons/{job_id}", api_cron_update)
@@ -140,7 +146,7 @@ def _dashboard_app(update_job_async) -> web.Application:
 async def test_update_via_dashboard_to_member_name_is_refused(member_with_distinct_template):
     svc = _svc()
     job_id = _template_job()
-    app = _dashboard_app(svc.update_job_async)
+    app = _dashboard_app(svc)
     with patch(
         "kiro_crew.dashboard.handlers.cron.require_owner_dashboard_request",
         return_value=None,

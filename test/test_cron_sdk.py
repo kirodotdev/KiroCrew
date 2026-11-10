@@ -17,9 +17,9 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from kiro_crew.apps.cron_sdk import CronSDK
-from kiro_crew.cron import CronService
+from kiro_crew.cron import CronProjectBoundRefusal, CronService
 from kiro_crew.llm_helpers import ToolApprovalPolicy
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 
 pytestmark = pytest.mark.usefixtures("command_crons_run_here")
 
@@ -1057,6 +1057,70 @@ class TestOwnedCronToggle:
         assert await asyncio.to_thread(service._path.read_bytes) == before
         assert job.message == "hello"
 
+    def test_app_update_cannot_add_a_project_directory(self, service, monkeypatch):
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        sdk = CronSDK("example", service)
+        job = sdk.add_job(name="example/job", message="hello", every_secs=600)
+        before = service._path.read_bytes()
+
+        with pytest.raises(PermissionError, match="cannot set a cron project_path"):
+            sdk.update_job(job.id, project_path="/repo")
+
+        assert service._path.read_bytes() == before
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_async_app_update_cannot_add_a_project_directory(self, service, monkeypatch):
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        before = await asyncio.to_thread(service._path.read_bytes)
+
+        with pytest.raises(PermissionError, match="cannot set a cron project_path"):
+            await sdk.update_job_async(job.id, project_path="/repo")
+
+        assert await asyncio.to_thread(service._path.read_bytes) == before
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_async_app_cannot_resume_a_person_bound_project_job(self, service):
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(
+            name="example/job",
+            message="hello",
+            every_secs=600,
+            enabled=False,
+        )
+        await service.update_job_async(job.id, project_path=str(service._dir))
+
+        with pytest.raises(PermissionError, match="Schedule page or CLI"):
+            await sdk.set_enabled_async(job.id, True)
+
+        assert service.get_job(job.id).enabled is False
+
+    @pytest.mark.asyncio
+    async def test_resume_filesystem_permission_error_is_not_a_policy_denial(
+        self, service, monkeypatch
+    ):
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(
+            name="example/job",
+            message="hello",
+            every_secs=600,
+            enabled=False,
+        )
+
+        with patch.object(service, "_save", side_effect=PermissionError("store is unwritable")):
+            with pytest.raises(PermissionError, match="store is unwritable"):
+                await sdk.set_enabled_async(job.id, True)
+
+        outcomes = [call.kwargs.get("outcome") for call in audit.log_api_access.call_args_list]
+        assert "denied" not in outcomes
+
     @pytest.mark.parametrize("value", ["false", 0, 1, None])
     def test_toggle_requires_boolean(self, service, value):
         with pytest.raises(ValueError, match="boolean"):
@@ -1076,12 +1140,18 @@ class TestOwnedCronRunNow:
     async def test_an_owned_job_runs_once_and_keeps_its_schedule(self, service):
         sdk = CronSDK("example", service)
         job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
-        with patch.object(service, "_run_job_isolated") as run:
+        release = asyncio.Event()
+
+        async def run_body(*_args):
+            await asyncio.wait_for(release.wait(), FALLBACK_TIMEOUT_SECS)
+
+        with patch.object(service, "_run_job_isolated", side_effect=run_body) as run:
             assert await sdk.run_job_async(job.id) is True
             # The claim is taken before the first await, so the run is in flight.
             dispatched = service._claims[job.id].task
             assert await sdk.run_job_async(job.id) is False
-            assert await await_until(dispatched, what="the manual run") is True
+            release.set()
+            await await_until(dispatched, what="the manual run")
         assert [(c.args[0].id, c.args[1].trigger) for c in run.await_args_list] == [
             (job.id, "manual")
         ]
@@ -1101,6 +1171,62 @@ class TestOwnedCronRunNow:
         assert not service.is_running(other.id)
 
     @pytest.mark.asyncio
+    async def test_app_cannot_run_a_person_bound_project_job(self, service):
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        await service.update_job_async(job.id, project_path=str(service._dir))
+
+        with pytest.raises(PermissionError, match="Schedule page or CLI"):
+            await sdk.run_job_async(job.id)
+
+        assert not service.is_running(job.id)
+
+    @pytest.mark.asyncio
+    async def test_fresh_project_bind_is_returned_as_an_explicit_refusal(
+        self, service, monkeypatch
+    ):
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+        real_snapshot = service._synced_snapshot
+
+        def bind_then_refresh(include_disabled=True):
+            CronService(base_dir=service._dir).update_job(
+                job.id,
+                project_path=str(service._dir),
+            )
+            return real_snapshot(include_disabled)
+
+        with patch.object(service, "_synced_snapshot", side_effect=bind_then_refresh):
+            with pytest.raises(CronProjectBoundRefusal, match="Schedule page or CLI"):
+                await sdk.run_job_async(job.id)
+
+        assert audit.log_api_access.call_args.kwargs["outcome"] == "denied"
+        assert not service.is_running(job.id)
+
+    @pytest.mark.asyncio
+    async def test_run_filesystem_permission_error_is_not_a_policy_denial(
+        self, service, monkeypatch
+    ):
+        audit = MagicMock()
+        monkeypatch.setattr("kiro_crew.apps.cron_sdk.sel", lambda: audit)
+        sdk = CronSDK("example", service)
+        job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
+
+        with patch.object(
+            service,
+            "_synced_snapshot",
+            side_effect=PermissionError("crons.json is unreadable"),
+        ):
+            with pytest.raises(PermissionError, match="crons.json is unreadable"):
+                await sdk.run_job_async(job.id)
+
+        outcomes = [call.kwargs.get("outcome") for call in audit.log_api_access.call_args_list]
+        assert "denied" not in outcomes
+        assert not service.is_running(job.id)
+
+    @pytest.mark.asyncio
     async def test_the_run_rechecks_the_owner_in_the_store(self, service):
         sdk = CronSDK("example", service)
         job = await sdk.add_job_async(name="example/job", message="hello", every_secs=600)
@@ -1109,8 +1235,6 @@ class TestOwnedCronRunNow:
         await asyncio.to_thread(service._path.write_text, json.dumps(state), encoding="utf-8")
         with patch.object(service, "_run_job_isolated") as run:
             # The SDK's own check reads the cache, which still names this app.
-            assert await sdk.run_job_async(job.id) is True
-            dispatched = service._claims[job.id].task
-            assert await await_until(dispatched, what="the manual run") is False
+            assert await sdk.run_job_async(job.id) is False
         run.assert_not_awaited()
         assert job.id not in service._claims

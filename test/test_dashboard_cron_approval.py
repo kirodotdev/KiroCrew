@@ -320,6 +320,7 @@ class TestCronListFields:
         mock_job.model = ""
         mock_job.folder_id = ""
         mock_job.chat_folder_id = ""
+        mock_job.project_path = ""
         mock_job.session_key = ""
         mock_job.source_preset = ""
         mock_job.source_template_prompt = ""

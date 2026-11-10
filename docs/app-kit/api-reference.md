@@ -1974,8 +1974,8 @@ dashboard, app, or internal credential; a bare `curl` request is not authenticat
 | GET | `/api/spawn/{agent_id}` | Read subagent status |
 | GET/POST | `/api/crons` | List or create cron jobs |
 | PATCH/DELETE | `/api/crons/{job_id}` | Update or delete a cron job |
-| POST | `/api/crons/{job_id}/enable` | Pause or resume a cron job |
-| POST | `/api/crons/{job_id}/run` | Run a cron job now |
+| POST | `/api/crons/{job_id}/enable` | Pause an owned job; resume only when it has no project directory |
+| POST | `/api/crons/{job_id}/run` | Run an owned job now only when it has no project directory |
 | POST | `/api/crons/{job_id}/cancel` | Cancel a running cron job |
 | POST | `/api/crons/{job_id}/ack` | Acknowledge a cron job's notification |
 | GET/POST/DELETE | `/api/lessons` | List, add, or remove lessons |

@@ -165,8 +165,8 @@ def _sanitize_imported_crons(
     ``drop_malformed=False`` is for a caller with its own shape handling (the CLI
     restore, whose merge skips an unusable store and whose replace validates it):
     an unreadable or misshapen store, and a job that is not an object, are left
-    exactly as they are for that caller to judge, and only rules 2 and 3 below are
-    applied to the jobs that are objects.
+    exactly as they are for that caller to judge, and only the applicable job
+    safety rules below are applied to the jobs that are objects.
 
     Returns ``(dropped, paused)`` — two lists, because they are two different
     outcomes and a caller that conflates them tells the user the wrong thing. A
@@ -207,8 +207,13 @@ def _sanitize_imported_crons(
        name resolves against whatever the target already has there. Both become an
        ambush if they start running on their own. Disabling keeps the restore — the
        jobs, their schedules and their history are all still there — while making
-       the first run an explicit human action. Message-only jobs are untouched:
-       they prompt an agent, they do not execute anything on the host.
+       the first run an explicit human action.
+
+    4. A message job carrying ``project_path`` is revalidated on this host and
+       imported disabled. A valid path may name different project instructions
+       here than on the exporting host; an invalid path is cleared as well as
+       paused, so enabling the job cannot silently run against a rejected scope.
+       Message jobs without a project directory remain live as before.
     """
     # The store is resolved ONCE for the read and published by an atomic replace
     # in the same pinned directory. A by-name read followed by a by-name rewrite is
@@ -296,7 +301,7 @@ def _publish_staged_cron_store(crons_path: Path, dir_fd: int | None, data: objec
 def _sanitize_cron_text(
     text: str | None, crons_path: Path, dir_fd: int | None, *, drop_malformed: bool = True
 ) -> tuple[list[str], list[str]]:
-    """Apply the three rules of :func:`_sanitize_imported_crons` to the bytes read once."""
+    """Apply :func:`_sanitize_imported_crons` to the bytes read once."""
     try:
         if text is None:
             raise ValueError("the staged cron store is not one regular file")
@@ -329,6 +334,8 @@ def _sanitize_cron_text(
     def _name_of(job: object) -> str:
         name = job.get("name") if isinstance(job, dict) else None
         return str(name) if name else "<unnamed>"
+
+    from kiro_crew.cron_service.fields import resolve_project_path
 
     for job in jobs:
         # Rule 1: a shape unfit for the store must not survive the import. This
@@ -371,16 +378,29 @@ def _sanitize_cron_text(
                 _log_cron_denial("settings_import", reason)
                 continue
 
-        # Rule 3: anything that EXECUTES arrives paused, awaiting a human.
-        if (command or script) and not job.get("user_paused", False):
+        should_pause = bool(command or script)
+        project_path = job.get("project_path", "")
+        if project_path:
+            should_pause = True
+            try:
+                resolved_project = resolve_project_path(project_path)
+            except (TypeError, ValueError):
+                resolved_project = ""
+            if resolved_project != project_path:
+                job["project_path"] = resolved_project
+                changed = True
+
+        # Anything that executes directly, or that reads a project's rules,
+        # arrives paused until the person confirms it on this host.
+        if should_pause and not job.get("user_paused", False):
             job["user_paused"] = True
             job["enabled"] = False
             changed = True
             paused.append(_name_of(job))
             _log_cron_denial(
                 "settings_import",
-                "Error: an imported job that runs a command or script is "
-                "restored paused until it is enabled by hand",
+                "Error: an imported job that runs code or uses a project directory "
+                "is restored paused until it is enabled by hand",
             )
         kept.append(job)
 

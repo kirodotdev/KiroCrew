@@ -348,10 +348,11 @@ class TestTierArming(_HomeIsolated):
 class _FakeJob:
     """Minimal duck-type of a CronJob for the arming tests."""
 
-    def __init__(self, name, enabled):
+    def __init__(self, name, enabled, project_path=""):
         self.id = f"id-{name}"
         self.name = name
         self.enabled = enabled
+        self.project_path = project_path
 
 
 class _FakeCronService:
@@ -360,6 +361,7 @@ class _FakeCronService:
     def __init__(self, jobs):
         self._jobs = jobs
         self.calls = []
+        self.require_unbound = []
 
     async def list_jobs_async(self, include_disabled=False):
         # Mirrors the real freshness-guaranteed reader `apply_tiers` uses.
@@ -370,8 +372,9 @@ class _FakeCronService:
         # `list_jobs_async` and `enable_job_async`. A readable store is a no-op.
         return None
 
-    async def enable_job_async(self, job_id, enabled=True):
+    async def enable_job_async(self, job_id, enabled=True, require_unbound=False):
         self.calls.append((job_id, enabled))
+        self.require_unbound.append((job_id, require_unbound))
         for job in self._jobs:
             if job.id == job_id:
                 job.enabled = enabled
@@ -393,7 +396,7 @@ class _RefusingCronService(_FakeCronService):
     yields NOTHING and so never reaches a write at all.
     """
 
-    async def enable_job_async(self, job_id, enabled=True):
+    async def enable_job_async(self, job_id, enabled=True, require_unbound=False):
         raise CronStoreUnreadable("move the file aside")
 
 
@@ -457,6 +460,42 @@ class TestArmingOnARefusingStore(unittest.IsolatedAsyncioTestCase):
         body = json.loads(resp.body)
         self.assertFalse(body["ok"], "a refused store must not be reported as a successful arm")
         self.assertEqual(body["code"], "cron_store_unreadable")
+
+    async def test_arm_reports_a_project_bound_refusal(self):
+        class _App(dict):
+            pass
+
+        app = _App(state=SimpleNamespace(crons=_FakeCronService([])))
+
+        class _Req:
+            def __init__(self, application):
+                self.app = application
+
+        registry = mock.MagicMock()
+        registry.resolve_shift = mock.AsyncMock(return_value=ShiftStatus(on_shift=True))
+        with (
+            mock.patch.object(routes, "get_registry", return_value=registry),
+            mock.patch.object(
+                routes.rotation,
+                "apply_tiers",
+                mock.AsyncMock(
+                    side_effect=rotation._ProjectBoundCronRefusal(
+                        [{"name": "ops-mission-control/dispatch", "enabled": True}]
+                    )
+                ),
+            ),
+        ):
+            resp = await routes._handle_rotation_arm(cast(web.Request, _Req(app)))
+
+        assert isinstance(resp, web.Response)
+        assert isinstance(resp.body, bytes)
+        body = json.loads(resp.body)
+        self.assertEqual(resp.status, 403)
+        self.assertEqual(body["code"], "project_bound_owner_action_required")
+        self.assertEqual(
+            body["changed"],
+            [{"name": "ops-mission-control/dispatch", "enabled": True}],
+        )
 
 
 class TestArmingWithNothingToWatch(unittest.IsolatedAsyncioTestCase):
@@ -700,6 +739,69 @@ class TestServerSideArming(unittest.IsolatedAsyncioTestCase):
         by_name = {job.name: job.enabled for job in jobs}
         self.assertTrue(by_name["ops-mission-control/dispatch"])
         self.assertTrue(by_name["ops-mission-control/reconcile"])
+        self.assertTrue(all(required for _job_id, required in svc.require_unbound))
+
+    async def test_on_shift_cannot_arm_a_project_bound_job(self):
+        from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
+        from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import (
+            ShiftStatus,
+        )
+
+        jobs = self._all_jobs(enabled=True)
+        dispatch = next(j for j in jobs if j.name == "ops-mission-control/dispatch")
+        dispatch.enabled = False
+        dispatch.project_path = "/repo"
+        svc = _FakeCronService(jobs)
+
+        with self.assertRaisesRegex(PermissionError, "Schedule page or CLI"):
+            await rotation.apply_tiers(ShiftStatus(on_shift=True), svc, watching=True)
+
+        self.assertEqual(svc.calls, [])
+
+    async def test_a_bind_race_reports_changes_that_already_landed(self):
+        from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
+        from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import (
+            ShiftStatus,
+        )
+
+        class _BindRace(_FakeCronService):
+            async def enable_job_async(self, job_id, enabled=True, require_unbound=False):
+                if self.calls:
+                    raise rotation.CronProjectBoundRefusal()
+                return await super().enable_job_async(
+                    job_id,
+                    enabled=enabled,
+                    require_unbound=require_unbound,
+                )
+
+        svc = _BindRace(self._all_jobs(enabled=False))
+        audit = mock.MagicMock()
+        with mock.patch.object(rotation, "sel", return_value=audit):
+            with self.assertRaises(rotation._ProjectBoundCronRefusal) as caught:
+                await rotation.apply_tiers(ShiftStatus(on_shift=True), svc, watching=True)
+
+        self.assertEqual(
+            caught.exception.changed,
+            [{"name": "ops-mission-control/dispatch", "enabled": True}],
+        )
+        self.assertEqual(
+            audit.log_api_access.call_args.kwargs["outcome"],
+            "partial",
+        )
+
+    async def test_a_filesystem_permission_error_is_not_a_project_refusal(self):
+        from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
+        from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import (
+            ShiftStatus,
+        )
+
+        class _FilesystemFailure(_FakeCronService):
+            async def enable_job_async(self, job_id, enabled=True, require_unbound=False):
+                raise PermissionError("crons.json is unwritable")
+
+        svc = _FilesystemFailure(self._all_jobs(enabled=False))
+        with self.assertRaisesRegex(PermissionError, "crons.json is unwritable"):
+            await rotation.apply_tiers(ShiftStatus(on_shift=True), svc, watching=True)
 
     async def test_on_shift_with_no_signal_source_keeps_the_gated_tier_paused(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import rotation

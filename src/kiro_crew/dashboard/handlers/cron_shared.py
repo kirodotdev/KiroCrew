@@ -16,6 +16,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.cron import CronStoreUnreadable
+from kiro_crew.cron_service.fields import PROJECT_BOUND_OWNER_ACTION_REQUIRED
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -30,6 +31,17 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.cron")
 # should retry rather than treat it as a hard failure. See CronService mutators.
 _CRON_BUSY_STATUS = 409
 _CRON_BUSY_BODY = {"error": "cron store busy, please retry", "retryable": True}
+
+
+def _project_bound_owner_action_response() -> web.Response:
+    """The refusal shared by agent- and app-controlled activation routes."""
+    return web.json_response(
+        {
+            "error": PROJECT_BOUND_OWNER_ACTION_REQUIRED,
+            "code": "project_bound_owner_action_required",
+        },
+        status=403,
+    )
 
 
 # Returned when the store cannot be WRITTEN because the last read of it failed

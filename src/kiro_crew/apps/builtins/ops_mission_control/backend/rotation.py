@@ -44,6 +44,10 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
     effective_mode,
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import ShiftStatus
+from kiro_crew.cron_service.fields import (
+    PROJECT_BOUND_OWNER_ACTION_REQUIRED,
+    CronProjectBoundRefusal,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -51,6 +55,15 @@ logger = logging.getLogger(__name__)
 TIER_ALWAYS = "always"
 TIER_ON_SHIFT = "on_shift"
 TIER_PRIMARY = "primary"
+
+
+class _ProjectBoundCronRefusal(PermissionError):
+    """A tier arm stopped at a project-bound job, with earlier changes retained."""
+
+    def __init__(self, changed: list[dict[str, Any]]) -> None:
+        super().__init__(PROJECT_BOUND_OWNER_ACTION_REQUIRED)
+        self.changed = [dict(item) for item in changed]
+
 
 #: Cron names per tier, as the SCHEDULER knows them.
 #:
@@ -762,7 +775,24 @@ def protected_cron_names() -> frozenset[str]:
     return frozenset(crons_for_tier(TIER_ALWAYS))
 
 
-async def apply_tiers(shift: ShiftStatus, cron_service: Any, *, watching: bool) -> dict[str, Any]:
+def _audit_tier_changes(changed: list[dict[str, Any]], outcome: str) -> None:
+    """Record the changes that landed, including a batch stopped part-way."""
+    if not changed:
+        return
+    sel().log_api_access(
+        caller="ops-mission-control",
+        operation="rotation.apply_tiers",
+        outcome=outcome,
+        resources=" ".join(f"{c['name']}={'on' if c['enabled'] else 'off'}" for c in changed),
+    )
+
+
+async def apply_tiers(
+    shift: ShiftStatus,
+    cron_service: Any,
+    *,
+    watching: bool,
+) -> dict[str, Any]:
     """Arm/disarm this app's crons to match the tier map, server-side.
 
     Why this exists rather than the agent issuing ``cron_pause``/``cron_resume``:
@@ -840,6 +870,14 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any, *, watching: bool) 
     # (`CronService._unreadable_error`) and lets `POST /rotation/arm`'s existing
     # handler turn it into the 503 it already promises.
     cron_service.raise_if_store_unreadable()
+    for job in jobs:
+        name = str(getattr(job, "name", ""))
+        if (
+            desired.get(name) is True
+            and not bool(getattr(job, "enabled", False))
+            and bool(getattr(job, "project_path", ""))
+        ):
+            raise _ProjectBoundCronRefusal([])
     changed: list[dict[str, Any]] = []
     for job in jobs:
         name = str(getattr(job, "name", ""))
@@ -853,16 +891,18 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any, *, watching: bool) 
             continue
         if bool(getattr(job, "enabled", False)) == want:
             continue
-        await cron_service.enable_job_async(getattr(job, "id", ""), enabled=want)
+        try:
+            await cron_service.enable_job_async(
+                getattr(job, "id", ""),
+                enabled=want,
+                require_unbound=want,
+            )
+        except CronProjectBoundRefusal as exc:
+            _audit_tier_changes(changed, "partial")
+            raise _ProjectBoundCronRefusal(changed) from exc
         changed.append({"name": name, "enabled": want})
 
-    if changed:
-        sel().log_api_access(
-            caller="ops-mission-control",
-            operation="rotation.apply_tiers",
-            outcome="allowed",
-            resources=" ".join(f"{c['name']}={'on' if c['enabled'] else 'off'}" for c in changed),
-        )
+    _audit_tier_changes(changed, "allowed")
     return {"ok": True, "changed": changed, "tiers": states}
 
 

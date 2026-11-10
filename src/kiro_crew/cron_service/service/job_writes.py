@@ -360,6 +360,7 @@ async def add_job_async(
     alert_after_failures: int | None = None,
     source_preset: str = "",
     source_template_prompt: str = "",
+    agent_kind: str = "",
 ) -> CronJob:
     """Event-loop-safe :meth:`add_job`: the lock+save runs off the loop.
 
@@ -374,6 +375,8 @@ async def add_job_async(
     never need a follow-up unlocked ``_save()`` that could race a
     concurrent create and drop a job.
     """
+    if agent_kind not in {"", "template"}:
+        raise ValueError("agent_kind must be empty or 'template'")
     job = self._build_job(
         name,
         message,
@@ -410,13 +413,12 @@ async def add_job_async(
         auto_pause_after_failures=auto_pause_after_failures,
         alert_after_failures=alert_after_failures,
     )
-    # Dashboard-only template provenance. Set on the freshly-built job
-    # BEFORE the off-loop persist -- the object has no other reference yet,
-    # so this is still a single fully-formed first save, not a
-    # build-then-mutate-then-second-save. Kept off _build_job because only
-    # this async path is ever called with them (the sync add_job, CLI, MCP
-    # and apps SDK never carry a template), so threading them through the
-    # shared constructor would be surface with no consumer.
+    # Dashboard-only metadata. Set on the freshly-built job BEFORE the
+    # off-loop persist, while no other reference can observe a partial record.
+    # The namespace distinguishes a custom-agent pick from a same-named Bot;
+    # template provenance powers the Schedule-page update hint.
+    if agent_kind:
+        job.agent_kind = agent_kind
     if source_preset:
         job.source_preset = source_preset
         job.source_template_prompt = source_template_prompt
@@ -433,7 +435,7 @@ def update_job(self: CronService, job_id: str, **kwargs: Any) -> CronJob | None:
 
     Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
     approval_mode, silent, skip_dates, timezone, thread_ts, model,
-    project_path ("" clears it; agent jobs only),
+    project_path ("" clears it; agent jobs only), agent_kind ("template" only),
     timeout_secs (per-wake execution budget, 1..86400),
     auto_pause_after_failures (0..10000; 0 = never auto-pause),
     alert_after_failures (1..10000; failures in a row before the alert is sent).
@@ -471,17 +473,23 @@ def _update_job_locked_kw(self: CronService, job_id: str, kwargs: dict[str, Any]
 
 
 def enable_job(
-    self: CronService, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+    self: CronService,
+    job_id: str,
+    enabled: bool = True,
+    *,
+    expected_owner: str | None = None,
+    require_unbound: bool = False,
 ) -> bool:
     """Enable or disable a job by ID.
 
     Raises :class:`CronStoreBusy` on lock contention; see
     :meth:`enable_job_async` for the event-loop-safe variant.
     """
-    ok = (
-        self._enable_job_locked(job_id, enabled, expected_owner=expected_owner)
-        if expected_owner is not None
-        else self._enable_job_locked(job_id, enabled)
+    ok = self._enable_job_locked(
+        job_id,
+        enabled,
+        expected_owner=expected_owner,
+        require_unbound=require_unbound,
     )
     if ok:
         self._arm_timer()
@@ -489,18 +497,23 @@ def enable_job(
 
 
 async def enable_job_async(
-    self: CronService, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+    self: CronService,
+    job_id: str,
+    enabled: bool = True,
+    *,
+    expected_owner: str | None = None,
+    require_unbound: bool = False,
 ) -> bool:
     """Event-loop-safe :meth:`enable_job`: the lock+save runs off the loop.
 
     Raises :class:`CronStoreBusy` (retryable) on sustained contention.
     """
-    ok = (
-        await asyncio.to_thread(
-            self._enable_job_locked, job_id, enabled, expected_owner=expected_owner
-        )
-        if expected_owner is not None
-        else await asyncio.to_thread(self._enable_job_locked, job_id, enabled)
+    ok = await asyncio.to_thread(
+        self._enable_job_locked,
+        job_id,
+        enabled,
+        expected_owner=expected_owner,
+        require_unbound=require_unbound,
     )
     if ok:
         self._arm_timer()

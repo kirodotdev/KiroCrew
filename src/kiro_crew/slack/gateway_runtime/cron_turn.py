@@ -129,6 +129,7 @@ async def _cron_run_sequence(
     # Sweep every stable per-step key before dispatching anything.
     # Deferring mid-loop would replay completed steps on the next
     # fire, so one mismatch defers the whole sequence instead.
+    _presence_cfg: object | None = None
     for step in steps:
         if not step.alias:
             logger.error(
@@ -146,6 +147,25 @@ async def _cron_run_sequence(
             # (``run_parks_one_shot``) instead of retried every floor.
             job.refusal_cannot_clear = True
             return None
+        if step.kiro_agent is None:
+            from kiro_crew.config import live as _live
+            from kiro_crew.cron_service.agent_presence import (
+                cron_agent_missing,
+                unavailable_cron_agent_message,
+            )
+
+            if _presence_cfg is None:
+                _presence_cfg = _live.snapshot() or getattr(self, "_cfg", None)
+            if await asyncio.to_thread(
+                cron_agent_missing, _presence_cfg, step.dispatch_agent, step.cwd
+            ):
+                missing = unavailable_cron_agent_message(step.dispatch_agent)
+                logger.warning("Cron '%s': %s", job.name, missing)
+                job.last_status = "error"
+                job.last_error = missing
+                job.record_failure()
+                await self._alert_cron_failure(job, missing)
+                return None
         _live_agent = self._retained_session_agent_mismatch(
             job, step.session_key, step.dispatch_agent
         )
@@ -615,7 +635,11 @@ async def _cron_run_single(
         # + workspace before dispatch; falls back to the raw value when
         # it is already a real mode or unset.
         _single_kagent, _single_cwd, _single_crew = self._resolve_cron_agent(
-            cron_execution, cron_agent or None, template_namespace=_default_substituted
+            cron_execution,
+            cron_agent or None,
+            template_namespace=(
+                _default_substituted or getattr(job, "agent_kind", "") == "template"
+            ),
         )
         # A job's own project directory outranks the agent's workspace;
         # a job without one keeps the cwd resolved above.

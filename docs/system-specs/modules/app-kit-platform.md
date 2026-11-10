@@ -447,22 +447,30 @@ service's pause/resume transition, preserving the job ID and history. The servic
 checks the expected app owner inside its lock after reloading persisted state;
 missing and foreign jobs are refused and the SDK audits ownership denial.
 Sync calls refuse on a running event loop. `update_job` refuses both `enabled`
-and `user_paused` updates explicitly instead of silently ignoring a toggle.
-Callers use the scoped transition method rather than assigning pause fields.
-This validation is deliberately pause-field-only, not a general unknown-key
-validator. Other kwargs such as `script`, `command` and `context_enabled` are not
+and `user_paused` updates explicitly instead of silently ignoring a toggle. It
+also refuses a non-empty `project_path`: an app-owned job may not turn its cron
+permission into an unsandboxed read of an arbitrary host directory. Passing the
+empty string remains allowed so an app can remove a stale binding. Resuming and
+manually running a project-bound app job are refused; the person resumes or runs it
+from the Schedule page or CLI. Callers use
+the scoped transition method rather than assigning pause fields.
+This validation is deliberately limited to the fields that cross an ownership
+or host-access boundary, not a general unknown-key validator. Other kwargs such as `script`, `command` and `context_enabled` are not
 made updatable or newly validated here; their underlying service behavior is
 unchanged. Existing app cron permission
 and runtime execution checks remain required.
 
 `CronSDK.run_job_async(job_id)` starts a manual run of an owned job now and leaves
 its schedule as it is. It shares `CronService.trigger_run` with the dashboard Run
-route: `False` when a run of the job is already in flight, `True` once the run is
-dispatched, which does not promise that it executes. Ownership is checked against
-the cache first (`PermissionError`, SEL-audited), then, as `set_enabled` does,
-against the store: the run does not start for a job gone or owned by another app
-by then. Like the Run button it runs a paused job, and the fire-time vet still
-applies. There is no sync form: the run starts as a task on the running loop.
+route: `False` when a run is already in flight or the fresh stored job no longer
+matches the admitted one, and `True` once the fresh-store check dispatches the
+run. Ownership is checked against the cache first (`PermissionError`, SEL-audited),
+then, as `set_enabled` does, against the store: the run does not start for a job
+gone or owned by another app by then. A project binding found by either check
+raises `CronProjectBoundRefusal` and is audited as denied; other
+`PermissionError`s propagate without that classification. Like the Run button it
+runs an unbound paused job, and the fire-time vet still applies. There is no sync
+form: the run starts as a task on the running loop.
 
 `CronSDK`'s three create methods share one closed keyword allowlist
 (`_add_job_kwargs`), so the fields an app can set at create are exactly the ones

@@ -8,10 +8,11 @@ before the field existed; a record written before it loads unchanged.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from slack_gateway_cron_exec_coverage_helpers import (
@@ -24,7 +25,7 @@ from slack_gateway_cron_exec_coverage_helpers import (
 
 from kiro_crew.cli_commands import _cron
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, WorkspaceConfig
-from kiro_crew.cron import CronService, build_job
+from kiro_crew.cron import CronPendingMismatch, CronProjectBoundRefusal, CronService, build_job
 from kiro_crew.cron_service.fields import cron_session_cwd, resolve_project_path
 from kiro_crew.testing.links import make_dir_link
 
@@ -89,6 +90,26 @@ def test_project_path_round_trips_through_the_store(tmp_path) -> None:
     assert job.project_path == repo
     reread = CronService(base_dir=tmp_path / "home").get_job(job.id)
     assert reread is not None and reread.project_path == repo
+
+
+@pytest.mark.asyncio
+async def test_dashboard_template_namespace_round_trips_through_the_store(tmp_path) -> None:
+    repo = _repo(tmp_path)
+    home = tmp_path / "home"
+    svc = CronService(base_dir=home)
+
+    job = await svc.add_job_async(
+        "r",
+        "go",
+        every_secs=3600,
+        agent_id="shared-name",
+        agent_kind="template",
+        project_path=repo,
+    )
+
+    reread = CronService(base_dir=home).get_job(job.id)
+    assert reread is not None
+    assert reread.agent_kind == "template"
 
 
 # ── Validation ──────────────────────────────────────────────────────────────
@@ -178,6 +199,36 @@ async def test_a_fire_runs_the_session_in_the_project_directory(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_project_template_namespace_survives_a_same_name_bot(tmp_path, monkeypatch) -> None:
+    """A template pick never inherits a colliding Bot's runtime or private gates."""
+    from kiro_crew.cron_service import agent_presence
+    from kiro_crew.slack import gateway as _gw
+
+    monkeypatch.setattr(_gw.live, "snapshot", lambda: None)
+    monkeypatch.setattr(agent_presence, "cron_agent_missing", lambda *_args: False)
+    repo = _repo(tmp_path)
+    orch = _make_orchestrator()
+    orch._cfg = _alias_cfg(str(tmp_path / "bot-workspace"))
+    orch.sessions = _message_arm_sessions()
+    orch.dashboard_state = _mock_dashboard_state()
+    job = _job(
+        id="jp-template",
+        name="template collision",
+        agent_id="in-3d",
+        agent_kind="template",
+        project_path=repo,
+    )
+
+    async with _cron_message_cb(orch, result_text="ok") as callback:
+        await callback(job)
+
+    kwargs = orch.sessions.get_or_create.await_args.kwargs
+    assert kwargs["agent"] == "in-3d"
+    assert kwargs["crew_agent"] == ""
+    assert kwargs["cwd"] == repo
+
+
+@pytest.mark.asyncio
 async def test_a_fire_without_a_project_directory_keeps_the_alias_workspace(
     tmp_path, monkeypatch
 ) -> None:
@@ -254,3 +305,133 @@ def test_cli_add_and_update_carry_project_path(tmp_path, monkeypatch, capsys) ->
         _cron(argparse.Namespace(cron_action="update", job_id=job.id, project_path=""))
     (job,) = CronService(base_dir=tmp_path / "home").list_jobs(include_disabled=True)
     assert job.project_path == ""
+
+
+def test_messaging_resume_constraint_is_checked_under_the_store_lock(tmp_path) -> None:
+    repo = str(tmp_path.resolve())
+    svc = CronService(base_dir=tmp_path / "data")
+    job = svc.add_job(
+        "bound",
+        "run",
+        every_secs=300,
+        project_path=repo,
+        enabled=False,
+    )
+
+    with pytest.raises(PermissionError, match="Schedule page or CLI"):
+        svc.enable_job(job.id, require_unbound=True)
+
+    kept = svc.get_job(job.id)
+    assert kept is not None
+    assert kept.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_agent_trigger_rechecks_an_external_bind_before_dispatch(tmp_path) -> None:
+    repo = str(tmp_path.resolve())
+    home = tmp_path / "data"
+    callback = AsyncMock()
+    service = CronService(base_dir=home, on_job=callback)
+    job = service.add_job("job", "run", every_secs=300)
+    CronService(base_dir=home).update_job(job.id, project_path=repo)
+
+    admission = asyncio.get_running_loop().create_future()
+    assert service.trigger_run(job.id, require_unbound=True, admission=admission) is True
+    with pytest.raises(CronProjectBoundRefusal, match="Schedule page or CLI"):
+        await admission
+    wrapper = service._claims.get(job.id)
+
+    callback.assert_not_awaited()
+    assert wrapper is None
+    assert job.id not in service._claims
+
+
+def test_locked_update_rejects_a_changed_project_baseline(tmp_path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    home = tmp_path / "home"
+    service = CronService(base_dir=home)
+    job = service.add_job(
+        "r",
+        "go",
+        every_secs=3600,
+        agent_id="old-agent",
+        project_path=str(first),
+    )
+    CronService(base_dir=home).update_job(job.id, project_path=str(second))
+
+    with pytest.raises(CronPendingMismatch, match="project binding changed"):
+        service.update_job(
+            job.id,
+            agent_id="new-agent",
+            expect_project_path=str(first),
+        )
+
+    stored = CronService(base_dir=home).get_job(job.id)
+    assert stored is not None
+    assert (stored.project_path, stored.agent_id) == (str(second), "old-agent")
+
+
+def test_locked_update_rejects_a_changed_agent_baseline(tmp_path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    service = CronService(base_dir=home)
+    job = service.add_job("r", "go", every_secs=3600, agent_id="old-agent")
+    CronService(base_dir=home).update_job(job.id, agent_id="other-agent")
+
+    with pytest.raises(CronPendingMismatch, match="project agent changed"):
+        service.update_job(
+            job.id,
+            project_path=str(project),
+            expect_agent_id="old-agent",
+        )
+
+    stored = CronService(base_dir=home).get_job(job.id)
+    assert stored is not None
+    assert (stored.project_path, stored.agent_id) == ("", "other-agent")
+
+
+def test_update_persists_the_custom_agent_namespace(tmp_path) -> None:
+    repo = _repo(tmp_path)
+    home = tmp_path / "home"
+    svc = CronService(base_dir=home)
+    job = svc.add_job("r", "go", every_secs=3600, agent_id="shared-name")
+
+    svc.update_job(job.id, project_path=repo, agent_kind="template")
+
+    reread = CronService(base_dir=home).get_job(job.id)
+    assert reread is not None
+    assert reread.project_path == repo
+    assert reread.agent_kind == "template"
+
+
+def test_update_refuses_an_unknown_agent_namespace_untouched(tmp_path) -> None:
+    repo = _repo(tmp_path)
+    home = tmp_path / "home"
+    svc = CronService(base_dir=home)
+    job = svc.add_job("r", "go", every_secs=3600, agent_id="shared-name")
+
+    for kind in ("member", ""):
+        with pytest.raises(ValueError, match="agent_kind"):
+            svc.update_job(job.id, project_path=repo, agent_kind=kind)
+
+    reread = CronService(base_dir=home).get_job(job.id)
+    assert reread is not None
+    assert reread.project_path == ""
+    assert reread.agent_kind == ""
+
+
+@pytest.mark.asyncio
+async def test_agent_trigger_reports_the_project_refusal_over_a_live_run(tmp_path) -> None:
+    """A bound job's refusal is the actionable answer even while a run is live."""
+    repo = str(tmp_path.resolve())
+    svc = CronService(base_dir=tmp_path / "data")
+    job = svc.add_job("bound", "run", every_secs=300, project_path=repo)
+
+    with patch.object(svc, "is_running", return_value=True):
+        with pytest.raises(PermissionError, match="Schedule page or CLI"):
+            svc.trigger_run(job.id, require_unbound=True)
+        assert svc.trigger_run(job.id) is False

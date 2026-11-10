@@ -38,6 +38,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
     set_top_level,
 )
 from kiro_crew.cron import CronStoreUnreadable
+from kiro_crew.cron_service.fields import PROJECT_BOUND_OWNER_ACTION_REQUIRED
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 
 #: Cap on a secret value. Real provider tokens are well under this; a larger body
@@ -872,6 +873,16 @@ async def _handle_rotation_arm(
     watching = await asyncio.to_thread(registry.may_be_watching)
     try:
         return web.json_response(await rotation.apply_tiers(shift, cron_service, watching=watching))
+    except rotation._ProjectBoundCronRefusal as exc:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": PROJECT_BOUND_OWNER_ACTION_REQUIRED,
+                "code": "project_bound_owner_action_required",
+                "changed": exc.changed,
+            },
+            status=403,
+        )
     except CronStoreUnreadable as exc:
         # A store refusing writes fails the arm. Reported, not raised: escaping
         # here becomes a 500, and reported rather than skipped-per-job because a
