@@ -416,7 +416,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           disabled={!settingsReady}
           onClick={() => update({ notify_on_new_issue: !settings.notify_on_new_issue })}
         >
-          {i18nT('apps.issueRadar.views.settings.repoSettings.notify_me_when_a')} <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.new_issue')}</strong> {i18nT('apps.issueRadar.views.settings.repoSettings.is_opened_in')} {owner}/{repo}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.notify_me_when_a_new_issue_is_opened_in"
+            values={{ repo: `${owner}/${repo}` }}
+            components={{ newIssue: <strong>{i18nT('apps.issueRadar.views.settings.repoSettings.new_issue')}</strong> }}
+          />
         </SettingToggle>
         <StatLine>
           <Trans
@@ -676,7 +680,11 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
           <AlertTriangle size={14} /> {i18nT('apps.issueRadar.views.settings.repoSettings.disconnect_repository')}
         </div>
         <p className="text-[12px] text-muted mb-3">
-          {i18nT('apps.issueRadar.views.settings.repoSettings.removes')} {owner}/{repo} {i18nT('apps.issueRadar.views.settings.repoSettings.from_issue_radar_and_deletes_its_local_cache_you')} {terms.providerName} {i18nT('apps.issueRadar.views.settings.repoSettings.data_and')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.auth_are_untouched_you_can_reconnect_anytime')}
+          <Trans
+            i18nKey="apps.issueRadar.views.settings.repoSettings.removes_repo_from_issue_radar"
+            values={{ repo: `${owner}/${repo}`, provider: terms.providerName }}
+            components={{ cli: <code>{terms.cli}</code> }}
+          />
         </p>
         {confirmingDelete ? (
           <div className="flex items-center gap-2 flex-wrap">
