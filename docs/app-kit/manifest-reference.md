@@ -2047,6 +2047,9 @@ in-gateway code your app runs.
   folder for that, `apps/.<name>-credential-masks.json`.
 - A sandboxed process cannot rename or remove the folders above a listed file
   (`apps/<name>/data` and the ones between); it can still create and edit files in them.
+  On Linux the file stays masked in a session that was running when an update replaced
+  your app folder, but that session can rename the new `apps/<name>` folder until it
+  next starts.
 - The installed app folder is writable from inside the sandbox, so this protects your
   file from an agent that reads it, not from one that rewrites your `app.json`.
 - The agent's own file tools (read, write, edit) refuse every listed file and listed
