@@ -59,7 +59,7 @@ async def test_pooled_step_fails_a_turn_stopped_from_outside(monkeypatch, stop_r
     )
 
     with pytest.raises(Exception, match="stopped before it finished"):
-        await agent_pool._run_step(object(), "slow")
+        await agent_pool._run_step(object(), "slow", key="wf-pool:wf_x:0")
 
 
 @pytest.mark.asyncio
@@ -68,7 +68,7 @@ async def test_an_ordinary_end_turn_keeps_its_text(monkeypatch) -> None:
     monkeypatch.setattr(agent_pool, "stream_and_collect", _stream_ending("end_turn", "done"))
 
     assert await agent_exec.build_agent_fn(_Sessions(), run_id="wf_x")("quick", {}) == "done"
-    assert await agent_pool._run_step(object(), "quick") == "done"
+    assert await agent_pool._run_step(object(), "quick", key="wf-pool:wf_x:0") == "done"
 
 
 _SLOW_SCRIPT = "\n".join(

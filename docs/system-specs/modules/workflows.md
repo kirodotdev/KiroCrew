@@ -1527,6 +1527,25 @@ never spawns `kiro-cli` in tests. Two production adapters:
   `surface="workflow"` on a best-effort basis, with deliberately **narrow** guards:
   one wide try around import plus context read plus persist would let a single
   import failure silently drop every row from the workflow surface.
+
+  **Person-only directives are refused out loud.** A step is never a person's
+  turn and no session applier reads its stream, so a `USER_ORIGIN_DIRECTIVES`
+  call (`set_project`, `reset_conversation`, `chat_tag`, `suggest_followup`)
+  would otherwise leave only the tool's own "requested" text and no audit row
+  (#32461). Every executor path streams with `person_only_directive_refuser`
+  (`dashboard/session_directive_apply.py`, the one the cron turn uses) as
+  `on_event`: each completed call is refused with
+  `refuse_user_origin_directive` (its wording, and a SEL `denied` row on the
+  step's own session key), and the refusals lead the step's text before
+  redaction (`agent_exec.step_text`). Nothing is applied. A `schema=` step is
+  the exception: its text is parsed as JSON, and a refusal line ahead of a
+  scalar reply would fail that parse and spend the step's re-asks, so there the
+  refusal stays in its SEL row and an INFO log line and the text is left as the
+  model wrote it. The cold path reads the step's `opts`; a pooled worker's
+  `send_message` carries no options, so the pooled `agent_fn` sets the
+  `_STEP_HAS_SCHEMA` context variable around the call (`WorkerPool.send` awaits
+  the worker in the caller's task). Covered by
+  `test/test_workflow_user_origin_directive_refusal.py`.
 - **`agent_pool.build_pooled_agent_fn`** (warm sessions; the service default,
   `pool_agents=True`). Per-call sessions make every call pay a full cold start
   (subprocess spawn plus ACP `initialize` plus `session/new`, which loads the MCP
