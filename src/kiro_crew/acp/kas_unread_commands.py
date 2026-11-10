@@ -82,7 +82,8 @@ def name_unreadable_entries(tools_settings: Any, not_carried: list[str]) -> list
 
     The bare ``<key>.allowedCommands`` stays when something else named it too: a
     value that is not a list (it has no entries to name), or more usable entries
-    than Kiro Crew keeps.
+    than Kiro Crew keeps. Each ``web_fetch.blocked`` entry KAS cannot carry is
+    named the same way, in place of the bare ``web_fetch.blocked``.
     """
     # circular import: kas_permissions imports this module for its allowlist.
     from kiro_crew.acp.kas_permissions import _MAX_ALLOWED_COMMANDS, _usable_allowed_commands
@@ -90,8 +91,47 @@ def name_unreadable_entries(tools_settings: Any, not_carried: list[str]) -> list
     unread = unreadable_allowed_commands(tools_settings)
     named = {f"{key}.allowedCommands" for key, _entry, _reason in unread}
     over_bound = len(_usable_allowed_commands(tools_settings)) > _MAX_ALLOWED_COMMANDS
+    blocked = _uncarried_web_fetch_blocked(tools_settings)
+    if blocked:
+        named.add("web_fetch.blocked")
     kept = [path for path in not_carried if over_bound or path not in named]
-    return kept + [
-        f"{key}{allowed_commands.UNREADABLE_ENTRY_MARK}{entry} ({reason})"
-        for key, entry, reason in unread
-    ]
+    return (
+        kept
+        + [
+            f"{key}{allowed_commands.UNREADABLE_ENTRY_MARK}{entry} ({reason})"
+            for key, entry, reason in unread
+        ]
+        + blocked
+    )
+
+
+def _uncarried_web_fetch_blocked(tools_settings: Any) -> list[str]:
+    """``web_fetch.blocked: <entry> (<reason>)`` for each ``web_fetch.blocked`` entry
+    the KAS translation drops (the same test ``tools_settings_to_permissions``
+    applies), in the spec's order, so the notice names the entry and not only the
+    key. kiro-cli refuses every URL such an entry matches; on KAS it refuses
+    nothing."""
+    from kiro_crew.acp.kas_permissions import (
+        _MAX_PATTERN_LENGTH,
+        _patterns,
+        _regex_to_glob,
+        _url_glob,
+    )
+
+    settings = tools_settings.get("web_fetch") if isinstance(tools_settings, dict) else None
+    if not isinstance(settings, dict):
+        return []
+    out = []
+    for raw in _patterns(settings.get("blocked")):
+        glob = _url_glob(raw)
+        if glob is not None and len(glob) <= _MAX_PATTERN_LENGTH:
+            continue
+        if _regex_to_glob(raw) is None:
+            reason = "regex syntax KAS cannot express"
+        elif glob is None:
+            reason = "whole-URL rule; KAS checks host only"
+        else:
+            reason = f"longer than {_MAX_PATTERN_LENGTH} characters"
+        shown = raw if raw.isprintable() else json.dumps(raw)
+        out.append(f"web_fetch.blocked: {shown} ({reason})")
+    return list(dict.fromkeys(out))

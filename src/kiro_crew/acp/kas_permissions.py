@@ -1715,6 +1715,14 @@ def _regex_to_glob(pattern: str) -> str | None:
     return "".join(out) or None
 
 
+def _url_glob(raw: str) -> str | None:
+    """A ``web_fetch.blocked`` entry as a KAS host glob, or ``None``. KAS matches
+    web_fetch rules against the URL's host, so a pattern that names a scheme or a
+    path can never match there."""
+    glob = _regex_to_glob(raw)
+    return glob if glob is not None and not set(glob) & set("/:") else None
+
+
 def _patterns(value: Any) -> list[str]:
     return (
         [p.strip() for p in value if isinstance(p, str) and p.strip()]
@@ -1770,12 +1778,6 @@ def tools_settings_to_permissions(
             else:
                 out.append(glob)
         return list(dict.fromkeys(out))
-
-    def url_glob(raw: str) -> str | None:
-        # KAS matches web_fetch rules against the URL's host, so a pattern that
-        # names a scheme or a path can never match there.
-        glob = _regex_to_glob(raw)
-        return glob if glob is not None and not set(glob) & set("/:") else None
 
     for tool in sorted(tools_settings, key=str):
         settings = tools_settings[tool]
@@ -1885,7 +1887,7 @@ def tools_settings_to_permissions(
                 _chunked_rules(
                     "web_fetch",
                     "deny",
-                    converted(f"{tool}.blocked", settings.get("blocked"), url_glob),
+                    converted(f"{tool}.blocked", settings.get("blocked"), _url_glob),
                 )
             )
         elif family == "subagent":
