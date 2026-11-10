@@ -532,6 +532,7 @@ _OWNER_MODULES = frozenset(
         "chat_send",
         "conductor_close",
         "continue_turn",
+        "crew_steer",
         "followup_card",
         "handover_drain",
         "pending_context",

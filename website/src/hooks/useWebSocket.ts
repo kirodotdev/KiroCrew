@@ -72,6 +72,7 @@ import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatch
 import { browserLiveStore } from './useBrowserLive'
 import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
 import { batchedUnlessOpen } from '../lib/streamBatch'
+import { noteCrewSteerReceipt } from '../lib/crewSteerNotice'
 
 /* The dashboard's single multiplexed WebSocket. `useWebSocket` composes the
    owners under ./websocket — connection, stream buffers, voice, approvals,
@@ -374,6 +375,16 @@ export function useWebSocket() {
             // WebSocket to any listener.
             const slotKey = (data as { slot_key?: string }).slot_key
             if (slotKey) invalidateChatPins(queryClient, slotKey)
+            break
+          }
+          case 'crew_steer_unrecorded': {
+            // Owner-only frame: a steer into a Crew Mode worker was delivered but
+            // its background ledger record failed. Same note a receipt's
+            // `ledger_error` sets under the worker's composer.
+            const { slot, reason } = data as { slot?: unknown; reason?: unknown }
+            if (typeof slot === 'string' && typeof reason === 'string') {
+              noteCrewSteerReceipt(slot, { ledger_error: reason })
+            }
             break
           }
           case 'artifact_update':

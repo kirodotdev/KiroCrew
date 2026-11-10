@@ -2089,6 +2089,9 @@ specified compatibility change.
   - `slot_note` — the note route and its deferred hold;
   - `chat_send` — the send path (`api_chat`), its SSE writer and the
     steer-or-queue decision a busy slot's human send asks for;
+  - `crew_steer` — the background ledger record of a person's steer into a Crew
+    Mode worker (`record_crew_steer_later`): one lock per worker keeps the records
+    in send order, and a failed one sends the owner's tabs `crew_steer_unrecorded`;
   - `app_admission` — whether an app may take a slot for a send, a create or a
     resume, send to or cancel on a slot, or change its session settings, and the
     re-check a slot write runs after every await (`_reauthorize_after_await`);

@@ -69,6 +69,7 @@ if TYPE_CHECKING:
         queued_text_for_display,
         quote_meta,
         read_bounded_json,
+        record_crew_steer_later,
         relay_archive_refusal,
         request_slot_origin,
         resolve_agent_bindings,
@@ -278,15 +279,7 @@ def crew_steer_consumed(state: Any, slot: Any, message: str) -> None:
     if marker is None:
         return
     try:
-        from kiro_crew.dashboard.handlers import crew_workers
-
-        task = asyncio.get_running_loop().create_task(
-            crew_workers.person_steer(state, marker[0], marker[1], message)
-        )
-        tasks = getattr(state, "_background_tasks", None)
-        if isinstance(tasks, set):
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
+        record_crew_steer_later(state, marker[0], marker[1], message)
     except Exception:
         logger.warning("crew steer: a read steer was not recorded", exc_info=True)
 
@@ -434,9 +427,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     A send the person types into a Crew Mode worker's own composer is a steer, the
     same as the side panel's steer route: once it was accepted, the one person-steer
     transaction (``crew_workers.person_steer``) writes its ``steer`` event on the
-    ledger that holds the worker's item, and a JSON receipt carries ``ledger_event``
-    and ``ledger_error`` so the composer never shows a recorded steer that was only
-    delivered.
+    ledger that holds the worker's item. The JSON receipt answers once the message
+    is delivered or queued, with ``ledger_pending``: the record is written in the
+    background (``record_crew_steer_later``), and a failed one reaches the composer
+    over the socket, so it never shows a recorded steer that was only delivered.
     """
     resp = await _api_chat_send(request)
     pending = request.get(_CREW_PERSON_STEER)
@@ -444,7 +438,6 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if not pending or resp.status != 200:
         return resp
     root, worker, message = pending
-    from kiro_crew.dashboard.handlers import crew_workers
 
     receipt: Any = None
     if isinstance(resp, web.Response) and resp.content_type == "application/json":
@@ -482,13 +475,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             mark_crew_steer(entry, root, worker)
             receipt.update(ledger_event=None, ledger_error=None, ledger_pending=True)
             return web.json_response(receipt)
-    try:
-        recorded = await crew_workers.person_steer(state, root, worker, message)
-    except Exception:
-        logger.warning("crew steer: the composer's steer was not recorded", exc_info=True)
-        recorded = {"ledger_event": None, "ledger_error": "not_recorded"}
+    # Delivered now. The record waits on the board lock and the crew-log writer,
+    # which a busy writer holds past the client's send timeout, so it runs in the
+    # background in send order; a failure reaches the composer over the socket.
+    record_crew_steer_later(state, root, worker, message)
     if isinstance(receipt, dict):
-        receipt.update(recorded)
+        receipt.update(ledger_event=None, ledger_error=None, ledger_pending=True)
         return web.json_response(receipt)
     return resp
 
