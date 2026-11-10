@@ -478,7 +478,10 @@ def effort_config_option_clear_value(backend: str) -> str | None:
 # from kiro-cli's ``--list-models`` catalog, which names models this harness does not
 # serve, so membership is what makes ``GET /api/models`` answer from copilot's own
 # namespace -- ``auto`` alone until a session advertises more, which a session on a
-# plan with model choice can, through the same capture every member uses.
+# plan with model choice can, through the same capture every member uses. The
+# capture also gains a ``[1m]`` sibling per model there
+# (``ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH``): the long-context tier is a launch
+# argument the advertised ids cannot name.
 ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -694,6 +697,63 @@ def launch_effort_supported(backend: str, level: str) -> bool:
     with. ``False`` for any backend outside the table.
     """
     return bool(level) and level in EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND.get(backend, ())
+
+
+#: Backends whose context-window TIER is a launch argument while the model itself
+#: travels on the wire. Copilot CLI serves a long-context tier (~1M tokens on the
+#: models priced for it) only through ``--context long_context`` or its persisted
+#: ``contextTier`` setting: its ``session/new`` advertises plain ids, no context
+#: option and no per-model eligibility. The tier holds for the process across a
+#: ``model`` config-option switch. So a member's picker offers a
+#: :data:`LONG_CONTEXT_MODEL_SUFFIX` sibling of every advertised model, the launch
+#: passes the flag when the pin carries the suffix, the wire gets the bare id, and a
+#: switch that changes the tier relaunches the process and reloads the session.
+ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_COPILOT})
+
+#: The suffix that names a long-context pick, spelled like claude-agent-acp's window
+#: ids so every existing window-suffix reader (the effort split, the wire-key fold,
+#: the cold-cache spelling ladder) already treats it as a window rather than an effort.
+LONG_CONTEXT_MODEL_SUFFIX = "[1m]"
+
+
+def long_context_pick(backend: str, model_id: str) -> tuple[str, bool]:
+    """``(wire_id, long)`` for a model pick on *backend*.
+
+    A member's ``<id>[1m]`` pick is the bare ``<id>`` on the wire with the long tier
+    at launch. Any other pick, or any pick on another backend, is returned unchanged
+    with ``False``, so a harness that serves ``[1m]`` ids itself keeps them.
+    """
+    if backend not in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH or not model_id:
+        return model_id, False
+    if model_id.lower().endswith(LONG_CONTEXT_MODEL_SUFFIX):
+        base = model_id[: -len(LONG_CONTEXT_MODEL_SUFFIX)]
+        if base:
+            return base, True
+    return model_id, False
+
+
+def with_long_context_variants(backend: str, rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """*rows* with a long-context sibling after each advertised model, for a member.
+
+    ``auto`` gets none: the service picks its model, so no tier can be chosen for it.
+    A sibling the list already carries is not added twice. Non-members get *rows*.
+    """
+    if backend not in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH:
+        return rows
+    present = {str(row.get("modelId") or "") for row in rows}
+    out: list[dict[str, str]] = []
+    for row in rows:
+        out.append(row)
+        mid = str(row.get("modelId") or "")
+        if not mid or mid == "auto" or long_context_pick(backend, mid)[1]:
+            continue
+        variant = mid + LONG_CONTEXT_MODEL_SUFFIX
+        if variant in present:
+            continue
+        present.add(variant)
+        name = str(row.get("name") or mid)
+        out.append({**row, "modelId": variant, "name": f"{name} (long context)"})
+    return out
 
 
 def model_registry_namespace(backend: str) -> str:

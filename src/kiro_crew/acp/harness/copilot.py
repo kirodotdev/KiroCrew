@@ -52,7 +52,7 @@ from kiro_crew.acp._dispatch_parts.tool_call_provenance import TOOL_CALL_CACHE_M
 from kiro_crew.acp.harness.base import ProcessAdapter, SpawnContext, SpawnPlan
 from kiro_crew.acp.mcp_startable import prune_unstartable
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_COPILOT
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_COPILOT, long_context_pick
 from kiro_crew.config.paths import config_dir
 from kiro_crew.hidden_leaf_staging import auth_store_staging_dir
 from kiro_crew.security.paths import is_sensitive_path
@@ -96,6 +96,9 @@ COPILOT_DROPPED_ENV: tuple[str, ...] = (
 #: The launch option Copilot CLI reads extra MCP servers from, and the prefix that
 #: makes its value a file path rather than inline JSON.
 _ADDITIONAL_MCP_CONFIG_ARG = "--additional-mcp-config"
+#: Copilot CLI's context-window tier flag, and the tier a ``[1m]`` pick launches on
+#: (``ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH``). No ACP request changes the tier.
+_CONTEXT_TIER_ARGS = ("--context", "long_context")
 _FILE_VALUE_PREFIX = "@"
 #: The file-name prefix of a launch config inside the auth-store staging directory,
 #: followed by the writing gateway's pid. The directory is shared with the gateway's
@@ -471,6 +474,15 @@ class CopilotLaunch(ProcessAdapter):
             spawn_label,
             stderr_label,
         ) = await launch_mod.resolve_self_served_launch(self.backend)
+        # A long-context pick is a launch argument; the startup apply then sends
+        # the bare model id over ``session/set_model``. Appended after the
+        # shared resolution, so the spawn label stays the harness's ACP arguments.
+        _wire, long_context = long_context_pick(
+            self.backend, getattr(ctx, "model", None) or session._model or ""
+        )
+        session._launched_long_context = long_context
+        if long_context:
+            argv = [*argv, *_CONTEXT_TIER_ARGS]
         # The agent spec is translated into this session's MCP array HERE, for the
         # reason every array-backed adapter does it in its own launch: the
         # translation reads disk, and doing it at the shared session/new call site

@@ -378,6 +378,11 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH": (
+        "how a harness takes its long-context tier: at launch, so a model switch "
+        "across tiers relaunches the process. The tier reaches the person as a "
+        "'(long context)' model on the picker, so a card line would repeat it"
+    ),
     "ACP_BACKENDS_CREW_OAUTH_BRIDGE": (
         "which harness reaches a Crew-held Connection through the gateway bridge. It is "
         "behind the crew_oauth preview, and the Connections page states which sign-in "

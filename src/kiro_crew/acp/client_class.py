@@ -177,6 +177,9 @@ class AcpClient:
         # (``ACP_BACKENDS_EFFORT_AT_LAUNCH``), or "" for its own default. Set by the
         # provider before the first start and by ``acp.launch_tuning`` after.
         self._launch_effort = ""
+        # Whether the running process was launched on the long context tier
+        # (``ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH``); set by the harness's spawn.
+        self._launched_long_context = False
         # Held by a launch-tuning switch across its relaunch, and by the provider's
         # prompt boundary across ``ensure_ready``, so neither starts a process
         # inside the other's (``acp.launch_tuning``).

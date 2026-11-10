@@ -185,6 +185,10 @@ with no row here.
      - driver-internal (whether the model is a launch argument, so the startup
        apply sends nothing and a mid-session switch relaunches the process and
        reloads the session)
+   * - ``ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH``
+     - driver-internal (whether the context-window tier is a launch argument, so
+       the picker offers a long-context sibling of each model, the wire gets the
+       bare id and a switch that changes the tier relaunches and reloads)
    * - ``ACP_BACKENDS_EFFORT_AT_LAUNCH``
      - driver-internal (whether the reasoning effort is a launch argument, so a
        change relaunches the process and reloads the session)
@@ -1337,6 +1341,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REGISTRY_NAMESPACE_BY_BACKEND,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH,
     ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
@@ -1356,16 +1361,19 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES,
     EFFORT_CONFIG_OPTION_VALUES,
     EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND,
+    LONG_CONTEXT_MODEL_SUFFIX,
     ULTRACODE_CONFIG_OPTION_ID,
     effort_config_option_clear_value,
     effort_config_option_id,
     effort_config_option_levels,
     effort_config_option_value,
     launch_effort_supported,
+    long_context_pick,
     model_refusal_phrase,
     model_registry_namespace,
     resolve_cc_permission_mode,
     resolve_cc_pin_inherited_mode,
+    with_long_context_variants,
 )
 from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-exported vocabulary
     _PROMPT_COMMAND_NAME,
