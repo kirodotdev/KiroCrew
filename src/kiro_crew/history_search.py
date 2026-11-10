@@ -128,6 +128,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     _saturates,
     _script_runs,
     _snippet_tiers,
+    _source_offset,
     _valid_words,
     count_needle,
     is_han_run,
