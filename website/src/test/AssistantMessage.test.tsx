@@ -31,6 +31,24 @@ beforeEach(() => {
 afterEach(() => { act(() => { vi.runAllTimers() }); vi.useRealTimers() })
 
 describe('AssistantMessage', () => {
+  it('opens with an offscreen speaker heading so the reply is a transcript landmark', () => {
+    // The transcript's only structure for a screen reader: bubble alignment is
+    // announced as nothing, so without this the reader cannot tell who is
+    // speaking or step between turns with the H key.
+    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
+    const heading = screen.getByRole('heading', { name: 'Kiro Crew' })
+    expect(heading.tagName).toBe('H2')
+    expect(heading.className).toContain('sr-only')
+  })
+
+  it("names the host's speaker in the heading when one is given", () => {
+    // A crewmate's chat wraps the reply in a group named for the crewmate; the
+    // heading inside must not contradict it with the product name.
+    render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} speakerName="Radar" />)
+    expect(screen.getByRole('heading', { name: 'Radar' }).className).toContain('sr-only')
+    expect(screen.queryByRole('heading', { name: 'Kiro Crew' })).toBeNull()
+  })
+
   it('renders markdown content', () => {
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
     expect(screen.getByTestId('md')).toHaveTextContent('Hello world')

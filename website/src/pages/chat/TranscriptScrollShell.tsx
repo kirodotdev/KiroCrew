@@ -245,6 +245,7 @@ export default function TranscriptScrollShell({
   spinnerNearTop,
   scrollerStyle,
   headerSpacer = true,
+  announcement,
   aboveRows,
   belowRows,
   onScrollerElement,
@@ -267,6 +268,14 @@ export default function TranscriptScrollShell({
    *  its own title bar (a split pane, the side panel, an embed) turns it off;
    *  its padding travels through `scrollerStyle` instead. */
   headerSpacer?: boolean
+  /** Text for the transcript's one live region, spoken politely when it
+   *  changes. The scroller itself cannot carry `aria-live` (see the element
+   *  below), so a host announcing a settled message passes its text here.
+   *  Empty or omitted stays silent, which is what a host does while a turn is
+   *  still streaming. The host also owns RELEASING it: the text is a second
+   *  copy of the message in the DOM, so leaving it set puts the newest reply
+   *  ahead of the whole transcript in browse order. */
+  announcement?: string
   /** Page content above the rows (the earlier-messages paging bar). */
   aboveRows?: React.ReactNode
   /** Page content below the rows (footer, survey, tail spacer). */
@@ -329,9 +338,26 @@ export default function TranscriptScrollShell({
         overscrollBehavior: 'contain',
       } as React.CSSProperties}
       aria-label={i18nT('pages.chatPage.chat_messages')}
-      aria-live="polite"
+      // DELIBERATELY NOT a live region. A live region announces the subtree
+      // that changed under it, and the rows under this element are
+      // virtualized: VirtualTranscript drops every unmounted row (`if
+      // (!vi.mounted) return null`), so ordinary scrolling inserts and removes
+      // real DOM here. To a screen reader those insertions are
+      // indistinguishable from a new message, so `aria-live` on this element
+      // re-announced rows the reader had already heard every time the window
+      // moved, and re-announced a streaming row on each flush. `aria-relevant`
+      // cannot separate the two cases, because both are additions. New
+      // messages are announced by the one stable live region below, which
+      // windowing never remounts; the label survives for the focus handoff
+      // that lands on this element.
       onScroll={onScroll}
     >
+      {/* The transcript's ONLY live region. Kept outside `children` so the
+          virtualizer can never unmount and remount it — a remount would
+          re-announce text already spoken. `aria-atomic` so a host swapping one
+          settled message for the next reads as one utterance rather than a
+          diff of the two. */}
+      <span className="sr-only" aria-live="polite" aria-atomic="true">{announcement ?? ''}</span>
       {/* Header spacer */}
       {headerSpacer && <div className="h-16" />}
       {aboveRows}

@@ -12,6 +12,25 @@ import { copySessionLink } from '../utils/shareUrl'
 
 const renderContent = (content: string) => <span data-testid="content">{content}</span>
 
+describe('the offscreen speaker heading', () => {
+  // Matches AssistantMessage's heading level so the two speakers read as
+  // siblings in the page outline rather than a reply hierarchy the transcript
+  // does not have. Present in BOTH branches, because an edit in progress must
+  // not punch a hole in that outline.
+  it('names the speaker above a settled bubble', () => {
+    render(<UserMessage content="hi" renderContent={renderContent} />)
+    const heading = screen.getByRole('heading', { name: 'You' })
+    expect(heading.tagName).toBe('H2')
+    expect(heading.className).toContain('sr-only')
+  })
+
+  it('survives the switch into the edit bubble', () => {
+    render(<UserMessage content="hi" renderContent={renderContent} canEdit onEditResend={() => {}} />)
+    fireEvent.click(screen.getByTitle('Edit & Resend'))
+    expect(screen.getByRole('heading', { name: 'You' }).tagName).toBe('H2')
+  })
+})
+
 describe('the write time handed to renderContent', () => {
   // This value is compared against server-clock slot mint epochs by the session
   // chip's short-name form, so the AUTHORITATIVE server ts has to win. `clientTs`
