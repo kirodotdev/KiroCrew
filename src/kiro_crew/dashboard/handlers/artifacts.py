@@ -221,6 +221,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _clean_origin_session_key,
         _err,
         _event_session_id,
+        _is_agent_call,
         _json_response,
         _non_owner_refusal,
         _notify_artifact_update,

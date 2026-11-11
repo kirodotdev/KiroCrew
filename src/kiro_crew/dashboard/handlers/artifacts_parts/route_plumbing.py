@@ -111,6 +111,18 @@ def _anchor_int_error(anchor: dict[str, Any]) -> str | None:
     return None
 
 
+def _is_agent_call(request: web.Request) -> bool:
+    """True when the caller is the agent transport rather than the dashboard person.
+
+    Two transports reach these routes for an agent: the loopback call that
+    carries ``X-Internal-Secret``, and the agent socket, which sends a
+    capability instead and no secret header. The auth middleware marks both
+    with ``internal_auth`` once it has verified them, so reading the header
+    alone would take a socket agent for the person. Never read from the body.
+    """
+    return "X-Internal-Secret" in request.headers or request.get("internal_auth") is True
+
+
 async def _non_owner_refusal(request: web.Request, operation: str) -> web.Response | None:
     """Refuse a signed-in dashboard caller who is not the owner; ``None`` admits.
 
