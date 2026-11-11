@@ -836,10 +836,15 @@ because kiro-cli and KAS read `resources` from the spec themselves and injecting
 would duplicate what the backend already loaded. KAS also loads each root's
 `.kiro/steering` tree natively, honouring `inclusion`, so the KAS projection drops a
 relative `file://.kiro/steering/...` entry that can match only `.md` files
-(`acp/kas_steering.py`). The entry is kept as before when the workspace tree holds
-a file that may be `inclusion: auto` (KAS skips one with no `description`), a
-link, or anything it cannot read, so no file is lost. The tree is checked when
-the session starts: such a file added during a session loads from the next one. When
+(`acp/kas_steering.py`). When the workspace tree holds files that may be
+`inclusion: auto` (KAS skips one with no `description`), the shipped
+`file://.kiro/steering/**/*.md` entry gives way to one entry per such file, by its
+own path, so KAS reads just those on every turn. The entry is kept as before when
+the tree holds a link or a folder it cannot read, or when KAS might read those
+paths otherwise or with less of its resource budget (a `*` or `?` in a name,
+another `file://` entry before it or another steering entry, more than 32 files or
+99,000 bytes), so no file is lost. The tree is checked when the session
+starts: such a file added during a session loads from the next one. When
 `chat.disableInheritingDefaultResources` is on, a KAS session says at start that
 AGENTS.md and steering still load: KAS has no switch for its native load. Session start and the first turn
 after a compaction share one gate, `steering_resources_part` in
