@@ -173,7 +173,20 @@ async def _init_cron(self: GatewayOrchestrator, *, arm: bool = True) -> None:
 
         # ── Code-based script execution (deterministic, no LLM) ──
         if job.script:
-            result = await self._cron_run_script(job)
+            # The script's tool calls present `cron:<id>`, and a spawn refuses a key
+            # with no admitted memory mode: admit it with the captured mode for this
+            # run only, in memory, unless the message arm already admitted it. Store
+            # and member come from the job's record already (member_request_scope).
+            script_key = f"cron:{job.id}"
+            modes = getattr(self.ctx_builder, "_session_memory_modes", None)
+            admitted = modes if isinstance(modes, dict) and script_key not in modes else None
+            if admitted is not None:
+                admitted[script_key] = cap.cron_execution.memory_mode
+            try:
+                result = await self._cron_run_script(job)
+            finally:
+                if admitted is not None:
+                    admitted.pop(script_key, None)
             if job.last_status == "error" and not getattr(job, "run_never_started", False):
                 # A failed run writes no record, so the crewmate's page would keep the
                 # last good one as current: the gateway records the failure there. A
