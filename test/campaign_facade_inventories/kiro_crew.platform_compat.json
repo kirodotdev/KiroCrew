@@ -92,6 +92,7 @@
   "host_available_mib",
   "host_total_mib",
   "is_bundled_interpreter",
+  "is_exec_supervisor_of",
   "is_exec_supervisor_of_this_process",
   "is_executable_file",
   "is_link_or_junction",
