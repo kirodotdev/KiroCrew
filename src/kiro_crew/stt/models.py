@@ -890,6 +890,15 @@ class ModelStore:
         #: abandoned and is still the latest, so an un-cancelled attempt's own
         #: coroutine stays the one that reports its success.
         self._abandoned_token = 0
+        #: The model whose transfer is running with its caller still awaiting, or
+        #: ``""``. While it is set, only that model's writes reach ``status``: a
+        #: pre-lock check of another model (the custom file, a catalog file already
+        #: on disk) would otherwise replace a running download's progress with its
+        #: own result. Read and written under ``_status_lock``.
+        self._downloading = ""
+        #: Each model's own last status, so a check that could not be shown is still
+        #: readable by the caller that ran it (see :meth:`status_for`).
+        self._by_model: dict[str, dict[str, object]] = {}
         self.status: dict[str, object] = {
             "step": "idle",
             "model": "",
@@ -978,6 +987,7 @@ class ModelStore:
             with self._status_lock:
                 self._download_token += 1
                 token = self._download_token
+                self._downloading = model.name
                 self._set_locked(step="downloading", model=model.name, total=model.size_bytes)
             # Set in the worker thread the instant the verified file lands, read by
             # the cancel handler. Guarded by the status lock, so "the file landed"
@@ -1043,6 +1053,9 @@ class ModelStore:
                     if token == self._download_token:
                         self._set_locked(step="failed", model=model.name, error=str(exc))
                 return None
+            finally:
+                with self._status_lock:
+                    self._downloading = ""
             with self._status_lock:
                 if token == self._download_token:
                     self._set_locked(step="ready", model=model.name, total=model.size_bytes)
@@ -1287,7 +1300,7 @@ class ModelStore:
         One ``dict`` reassigned in one statement, so a reader taking no lock still
         sees a whole status object (the previous one or this one), never a torn mix.
         """
-        self.status = {
+        status: dict[str, object] = {
             "step": step,
             "model": model,
             "downloaded_bytes": done,
@@ -1297,7 +1310,20 @@ class ModelStore:
         if refused:
             # Present only on a load-time alias refusal, so every other status keeps its
             # shape. The engine reads it to report the refusal rather than "not downloaded".
-            self.status["refused"] = True
+            status["refused"] = True
+        self._by_model[model] = status
+        if self._downloading and model != self._downloading:
+            return
+        self.status = status
+
+    def status_for(self, model: str) -> dict[str, object]:
+        """*model*'s own last status, or ``{}`` if this store has not touched it.
+
+        ``status`` is what the settings page shows, and a running download keeps it;
+        this is how a caller reads the result of its own check of another model.
+        """
+        with self._status_lock:
+            return self._by_model.get(model, {})
 
 
 _store: ModelStore | None = None
