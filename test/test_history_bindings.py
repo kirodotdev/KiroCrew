@@ -157,6 +157,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "last_message_info": ("function", "5ce93cd5cafb", "history"),
     "last_message_preview": ("function", "67642ad2d3e2", "history"),
     "last_row_ts": ("function", "4b576121a346", "history"),
+    "last_speech_row_ts": ("function", "4b576121a346", "history"),
     "last_speech_info": ("function", "5c2c36671674", "history"),
     "list_sessions": ("function", "32c901f96e6a", "history"),
     "list_sessions_indexed": ("function", "3b4687b0c546", "history"),

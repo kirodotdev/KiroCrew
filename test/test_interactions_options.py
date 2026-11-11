@@ -63,6 +63,9 @@ class _Log:
         self.asked.append(session_key)
         return self.newest
 
+    def last_speech_row_ts(self, session_key: str) -> str:
+        return self.last_row_ts(session_key)
+
 
 def _make_orch() -> MagicMock:
     orch = MagicMock()

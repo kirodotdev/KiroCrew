@@ -981,6 +981,9 @@ class ConversationLog:
     def last_row_ts(self, key: str) -> str | None:
         return self._read_projection.last_row_ts(key)
 
+    def last_speech_row_ts(self, key: str) -> str | None:
+        return self._read_projection.last_speech_row_ts(key)
+
     @staticmethod
     def _cache_key_identities(key: str) -> tuple[str, ...]:
         """Every cache-key spelling that can refer to *key*'s session.
