@@ -100,7 +100,7 @@ def test_the_corridor_is_owner_only(tmp_path: Path, monkeypatch) -> None:
 def test_boot_flushes_stdout_before_exec() -> None:
     """The probe's own output must survive the exec into the gateway."""
     source = Path(inspect.getsourcefile(rt._boot_unguarded) or "").read_text(encoding="utf-8")
-    probe_at = source.index("_probe_pod_child_bootstrap(pod_env)")
+    probe_at = source.index("_probe_pod_child_bootstrap(pod_env,")
     flush_at = source.index("sys.stdout.flush()", probe_at)
     gateway_at = source.index('argv = ["gateway"]', probe_at)
     assert probe_at < flush_at < gateway_at

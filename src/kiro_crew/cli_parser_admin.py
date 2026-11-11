@@ -459,6 +459,20 @@ def register_pod_parser(sub: _Commands) -> None:
         ),
     )
     pod_up.add_argument(
+        "--env",
+        dest="env",
+        action="append",
+        metavar="KEY=VALUE",
+        default=None,
+        help=(
+            "Set an environment variable in the pod's gateway, to point it at a "
+            "test double. Repeatable. Only KIROCREW_KIRO_BIN is accepted (an "
+            "absolute path to an executable, such as a fake kiro-cli); other keys "
+            "are refused. Every `pod up` replaces the pod's overrides with the ones "
+            "it names, so an up without --env clears them. Applies at boot."
+        ),
+    )
+    pod_up.add_argument(
         "--wait-secs",
         dest="wait_secs",
         type=int,
