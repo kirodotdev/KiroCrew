@@ -572,7 +572,7 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
             data = {"mcpServers": {}}
         except PermissionError:
             return _mcp_config_busy("mcp toggle")
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             return _mcp_config_corrupt()
 
         servers = data.setdefault("mcpServers", {})
@@ -712,14 +712,15 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
         )
 
     async with _get_mcp_lock():
-        _refuse_commented_config(_GLOBAL_MCP_JSON)
         try:
+            # Inside the try: the comment check decodes the file as UTF-8 too.
+            _refuse_commented_config(_GLOBAL_MCP_JSON)
             data = loads_mcp_config(await asyncio.to_thread(_read_global_mcp_text))
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except PermissionError:
             return _mcp_config_busy("mcp toggle-tool")
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             return _mcp_config_corrupt()
 
         servers = data.setdefault("mcpServers", {})
@@ -787,14 +788,15 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
         return not_owned
 
     async with _get_mcp_lock():
-        _refuse_commented_config(_GLOBAL_MCP_JSON)
         try:
+            # Inside the try: the comment check decodes the file as UTF-8 too.
+            _refuse_commented_config(_GLOBAL_MCP_JSON)
             data = loads_mcp_config(await asyncio.to_thread(_read_global_mcp_text))
         except FileNotFoundError:
             data = {"mcpServers": {}}
         except PermissionError:
             return _mcp_config_busy("mcp toggle-all")
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             return _mcp_config_corrupt()
 
         servers = data.get("mcpServers", {})
@@ -876,8 +878,19 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     # store are mutated below, so both are refused up front: a store the user
     # hand-edited with JSONC would otherwise raise only at its own write, after
     # the global file had already lost the entry and with the agent-spec sync
-    # skipped.
-    await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON, _kirocrew_mcp_json())
+    # skipped. The check decodes each file as UTF-8, so it is also where a file
+    # that is not UTF-8 is refused, one file at a time so the reply names it.
+    try:
+        await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON)
+    except UnicodeDecodeError:
+        return _mcp_config_corrupt()
+    try:
+        await asyncio.to_thread(_refuse_commented_config, _kirocrew_mcp_json())
+    except UnicodeDecodeError:
+        return web.json_response(
+            {"error": "cannot parse the Kiro Crew mcp.json", "code": "config_corrupt"},
+            status=500,
+        )
     mgr = _capability_manager()
     if mgr.available():
         try:
@@ -995,13 +1008,16 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
 
         # Remove from global mcp.json
         async with _get_mcp_lock():
-            _refuse_commented_config(_GLOBAL_MCP_JSON)
             try:
+                # Inside the try: the comment check decodes the file as UTF-8 too.
+                _refuse_commented_config(_GLOBAL_MCP_JSON)
                 data = loads_user_json(await asyncio.to_thread(_read_global_mcp_text))
             except (FileNotFoundError, json.JSONDecodeError):
                 data = {"mcpServers": {}}
             except PermissionError:
                 return _mcp_config_busy("mcp server delete")
+            except UnicodeDecodeError:
+                return _mcp_config_corrupt()
             removed = data.get("mcpServers", {}).pop(name, None) is not None
             if removed:
                 _write_mcp_json(data)
@@ -1359,7 +1375,14 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
             loaded = await asyncio.to_thread(_load_config_or_refusal, path)
             if isinstance(loaded, web.Response):
                 return loaded
-        await asyncio.to_thread(_refuse_commented_config, *_user_mcp_config_paths())
+        try:
+            await asyncio.to_thread(_refuse_commented_config, *_user_mcp_config_paths())
+        except UnicodeDecodeError:
+            # The loop above decoded every other file: only the store is left.
+            return web.json_response(
+                {"error": "cannot parse the Kiro Crew mcp.json", "code": "config_corrupt"},
+                status=500,
+            )
         change_keys, ambiguous = await asyncio.to_thread(_preflight_change_keys, change_names)
         if ambiguous:
             sel().log_api_access(
