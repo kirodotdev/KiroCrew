@@ -70,7 +70,7 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   installedVersion?: string
   enabled?: boolean
   sessionApprovalConsentPending?: boolean
-  approvedGrants?: { api?: string[]; events?: string[] }
+  approvedGrants?: { api?: string[]; events?: string[]; bots?: string[] }
   linkPreviewGrant?: LinkPreviewGrantRow
   messageActionGrant?: MessageActionGrantRow
   linkOpenGrant?: LinkOpenGrantRow
@@ -126,6 +126,8 @@ interface AppPermissions {
   reachableByUserSessions?: string[]
   desktopCapabilities?: string[]
   webhookSource?: boolean
+  /** Bot scopes, `"read"` and `"wake"`. */
+  bots?: string[]
   [key: string]: unknown
 }
 
@@ -183,4 +185,4 @@ interface AppManifest {
 }
 
 // `AppDetailPage.tsx` builds and renders these.
-export type { AppInfo, NormalizedRegistryEntry, RegistryEntry }
+export type { AppInfo, McpServerConfig, NormalizedRegistryEntry, RegistryEntry }

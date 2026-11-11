@@ -362,11 +362,15 @@ def app_is_stopping(state: Any) -> bool:
     return process_shutdown_requested(getattr(state, "sessions", None))
 
 
-def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool) -> bool:
+def dispatch_hidden_turn(
+    state: Any, slot: Any, prompt: str, *, human_seen: bool, actor: str = "gateway"
+) -> bool:
     """Run *prompt* as one gateway-authored turn in *slot*, with no user row for it.
 
-    Shared by the first welcome and the goal check-ins
-    (:mod:`kiro_crew.dashboard.goal_reminder`). The turn is not one the user
+    Shared by the first welcome, the goal check-ins
+    (:mod:`kiro_crew.dashboard.goal_reminder`) and an app's wake
+    (:mod:`kiro_crew.dashboard.app_bot_wake`, *actor* ``"app"``, the crew log's
+    name for a turn an app caused; every other caller is ``"gateway"``). The turn is not one the user
     sent (``_turn_user_sent`` stays false), so the operations only a user's turn
     may run (a guide, ``update_self``, most cards) refuse inside it; in a
     crewmate's own thread its goal, milestones and check-ins cards are still
@@ -402,7 +406,7 @@ def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool
                 slot,
                 prompt,
                 _synthetic_payload=True,
-                _turn_actor="gateway",
+                _turn_actor=actor,
             ),
         ),
     )

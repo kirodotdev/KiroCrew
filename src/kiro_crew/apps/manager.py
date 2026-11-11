@@ -153,6 +153,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _EXPLICIT_ONLY_FAMILIES,
         _GRANT_AND_SCOPE_WIDENING,
         _GRANT_WIDENING,
+        _OWNER_APPROVED_FAMILIES,
         _RECORD_READ_CAP,
         _SCOPE_WIDENING,
         _TREE_SWAP_LAST_CAP,
@@ -176,6 +177,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _approved_grants_stored,
         _approved_grants_text,
         _config_keys_refresh_lock,
+        _consented_grant_entries,
         _credential_free_source_metadata,
         _declared_grant_entries,
         _disabled_before_upgrade,
@@ -355,6 +357,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         contain_command_agents,
         cron_permission_error,
         is_reserved_app_name,
+    )
+    from kiro_crew.apps.manifest_sections import (  # noqa: F401
+        BOT_GRANT_FAMILY,
     )
     from kiro_crew.apps.message_action_grants import (  # noqa: F401
         message_action_grant_row,
