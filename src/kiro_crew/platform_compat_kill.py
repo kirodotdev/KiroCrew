@@ -522,14 +522,14 @@ def kill_popen_tree(proc: subprocess.Popen[Any]) -> None:
 #: bound as ``cloud/aws.py``'s ``_POST_KILL_DRAIN_SECS`` and the cron drain.
 _POST_KILL_DRAIN_SECS: float = 5
 
-#: The stdlib's own ``subprocess.run``, read once at import. The Windows arm below
+#: The stdlib's own ``subprocess.run``, read once at import. The tree-killing arm below
 #: replaces only this function's timeout handling; a ``subprocess.run`` someone has
 #: since replaced is called as given instead.
 _STDLIB_RUN = subprocess.run
 
 
 def run_killing_tree_on_timeout(args: Any, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
-    """``subprocess.run``, except that on Windows a timeout also ends the child's tree.
+    """``subprocess.run``, except that a timeout also ends the child's tree where it can.
 
     On a timeout CPython's Windows ``subprocess.run`` kills only the direct child
     and then calls ``communicate()`` with no timeout. A descendant that inherited
@@ -541,9 +541,16 @@ def run_killing_tree_on_timeout(args: Any, **kwargs: Any) -> subprocess.Complete
     was written within :data:`_POST_KILL_DRAIN_SECS`, and raises the same
     ``TimeoutExpired`` the stdlib raises, with its ``cmd`` and ``timeout``.
 
-    Everywhere else, and on Windows when there is no timeout or neither output
-    is a pipe (nothing to wait on), it IS ``subprocess.run``: the POSIX timeout
-    arm only ``wait()``s for the direct child and never reads the pipes. It is
+    On POSIX a caller that starts the child in its own session
+    (``start_new_session=True``) gets the same arm: CPython's POSIX timeout kills
+    only the direct child, so whatever it started keeps running. Here the child's
+    whole process group is killed while the child is still unreaped, so the group
+    id cannot belong to anyone else yet.
+
+    Everywhere else -- on POSIX without ``start_new_session``, and on Windows
+    when neither output is a pipe (nothing to wait on) -- and whenever there is
+    no timeout, it IS ``subprocess.run``: the POSIX timeout arm only
+    ``wait()``s for the direct child and never reads the pipes. It is
     also ``subprocess.run`` whenever that name holds something other than the
     stdlib's function: the test suite stubs ``<module>.subprocess.run`` by name to stand in
     for git and the CLIs (see ``kiro_crew.subprocess_utf8``), and a stub must keep
@@ -556,7 +563,9 @@ def run_killing_tree_on_timeout(args: Any, **kwargs: Any) -> subprocess.Complete
     timeout = kwargs.get("timeout")
     capture_output = kwargs.get("capture_output", False)
     piped = capture_output or subprocess.PIPE in (kwargs.get("stdout"), kwargs.get("stderr"))
-    if not IS_WINDOWS or timeout is None or not piped or subprocess.run is not _STDLIB_RUN:
+    own_group = IS_POSIX and bool(kwargs.get("start_new_session"))
+    tree_arm = (IS_WINDOWS and piped) or own_group
+    if not tree_arm or timeout is None or subprocess.run is not _STDLIB_RUN:
         # Forwarded exactly as given, so this arm is the caller's own call.
         return subprocess.run(args, **kwargs)
     del kwargs["timeout"]

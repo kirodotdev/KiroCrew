@@ -155,10 +155,13 @@ def _node_version(
         env["HOME"] = os.environ["HOME"]
     try:
         with wrap([node, "--version"]) as argv:
-            completed = subprocess_mod.run(
+            # In its own process group, so a timeout also ends what a shim started.
+            completed = platform_compat.run_killing_tree_on_timeout(
                 argv,
                 cwd=cwd or None,
                 env=env,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
                 stdin=subprocess_mod.DEVNULL,
                 capture_output=True,
                 text=True,
