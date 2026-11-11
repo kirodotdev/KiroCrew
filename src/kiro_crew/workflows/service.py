@@ -1321,10 +1321,12 @@ class WorkflowService:
         """
         with self._definition_lock:
             errors: list[str] = []
+            warnings: list[str] = []
             meta: dict[str, Any] = {}
             if source_format == SOURCE_FORMAT_PYTHON:
                 vr = validate(source)
-                errors = list(vr.errors)
+                # A compile-stage error is saved as before and returned as a warning.
+                errors, warnings = vr.save_errors, vr.compile_errors
                 meta = vr.meta or {}
             elif source_format == SOURCE_FORMAT_TASK_PLAN:
                 try:
@@ -1356,7 +1358,7 @@ class WorkflowService:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)], "slug_taken": True}
             except SensitiveWorkflowSourceError as exc:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
-        return {"ok": True, "definition": definition}
+        return _saved(definition, warnings)
 
     async def _reusable_run(self, run_id: str) -> RunHandle | dict[str, Any]:
         """The run whose original source may enter the library, or the refusal.
@@ -1416,11 +1418,11 @@ class WorkflowService:
         source = handle.source
         if handle.source_format == SOURCE_FORMAT_PYTHON:
             validated = validate(source)
-            if not validated.ok:
+            if validated.save_errors:
                 return {
                     "ok": False,
-                    "error": "; ".join(validated.errors),
-                    "errors": validated.errors,
+                    "error": "; ".join(validated.save_errors),
+                    "errors": validated.save_errors,
                 }
             derived_from = declared_lineage(validated.meta or {})
         elif handle.source_format == SOURCE_FORMAT_TASK_PLAN:
@@ -1477,9 +1479,10 @@ class WorkflowService:
             if expected_id is not None and current.get("id") != expected_id:
                 return {"ok": False, "error": _REF_MOVED_ERROR, "conflict": True}
             source_format = str(current.get("format") or SOURCE_FORMAT_PYTHON)
+            warnings: list[str] = []
             if source_format == SOURCE_FORMAT_PYTHON:
                 vr = validate(source)
-                errors = list(vr.errors)
+                errors, warnings = vr.save_errors, vr.compile_errors
             elif source_format == SOURCE_FORMAT_TASK_PLAN:
                 try:
                     decompose_yaml(source)
@@ -1507,7 +1510,7 @@ class WorkflowService:
                 "error": "workflow definition has a newer revision",
                 "conflict": True,
             }
-        return {"ok": True, "definition": definition}
+        return _saved(definition, warnings)
 
     async def update_run_definition(
         self,
@@ -1907,6 +1910,14 @@ def _run_provenance(definition: dict[str, Any]) -> dict[str, Any]:
     if definition.get("shadowed_refs"):
         provenance["shadowed_refs"] = list(definition["shadowed_refs"])
     return provenance
+
+
+def _saved(definition: Any, warnings: list[str]) -> dict[str, Any]:
+    """A save's reply; compile-stage errors ride along as ``warnings``."""
+    if not warnings:
+        return {"ok": True, "definition": definition}
+    logger.warning("workflow saved with a script that cannot run: %s", "; ".join(warnings))
+    return {"ok": True, "definition": definition, "warnings": warnings}
 
 
 def _lineage_exists(value: Any, definitions: list[dict[str, Any]]) -> bool:
