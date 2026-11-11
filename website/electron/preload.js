@@ -6,7 +6,8 @@ let cursorAwaySubscribers = 0;
 let navigateReadySent = false;
 // Set for a window whose gateway is not this machine's: the bridges whose
 // channels `assertLocalDashboard` refuses are then withheld, not exposed.
-const REMOTE_GATEWAY = process.argv.includes("--kc-remote-gateway");
+// Asked of the shell on every load; only an explicit `false` exposes them.
+const REMOTE_GATEWAY = ipcRenderer.sendSync("dashboard:is-remote-gateway") !== false;
 
 contextBridge.exposeInMainWorld("kirocrew", {
   platform: process.platform,

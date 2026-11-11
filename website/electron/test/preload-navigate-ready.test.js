@@ -17,6 +17,7 @@ function loadPreload() {
     ipcRenderer: {
       send: (channel) => log.push(["send", channel]),
       invoke: () => Promise.resolve(),
+      sendSync: () => false,
       on: (channel) => log.push(["on", channel]),
       once: () => {},
       removeListener: (channel) => log.push(["off", channel]),
