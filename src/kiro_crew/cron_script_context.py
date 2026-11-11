@@ -52,9 +52,10 @@ class DoneError(Exception):
     Use ctx.notify() before raising Done() to deliver a message.
     """
 
-    def __init__(self, message: str = ""):
-        self.message = message
-        super().__init__(message)
+    def __init__(self, message: object = ""):
+        # Done(42) delivers "42": the gateway only sends text; an empty value sends nothing.
+        self.message = "" if not message else message if isinstance(message, str) else str(message)
+        super().__init__(self.message)
 
 
 class ReportError(Exception):
@@ -63,9 +64,10 @@ class ReportError(Exception):
     Use for long-lived monitors that need to report multiple times.
     """
 
-    def __init__(self, message: str = ""):
-        self.message = message
-        super().__init__(message)
+    def __init__(self, message: object = ""):
+        # Report(42) delivers "42": the gateway only sends text; an empty value sends nothing.
+        self.message = "" if not message else message if isinstance(message, str) else str(message)
+        super().__init__(self.message)
 
 
 # Backward-compat aliases: Skip/Done/Report are the public API used by
