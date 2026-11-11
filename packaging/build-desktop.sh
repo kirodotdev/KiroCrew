@@ -48,6 +48,7 @@ cd "$ROOT"
 
 # The backend bytecode steps (bytecode_coverage_gate, precompile_macos_backend).
 . "$ROOT/packaging/desktop-bytecode.sh"
+. "$ROOT/packaging/desktop-onepassword.sh"
 # The electron-builder call and its transient-failure retry
 # (run_electron_builder_with_retry).
 . "$ROOT/packaging/desktop-electron-builder.sh"
@@ -571,6 +572,7 @@ build_backend() {
   # The Feishu channel SDK is NOT bundled: about 11,000 files per backend that
   # most users never load. The app installs it into the data home when the owner
   # presses Install in Settings (src/kiro_crew/sdk_extras.py).
+  install_onepassword_extra "$out/bin/python3.12" "$ROOT[1password]" "${OS}/${want_arch:-$HOST_ARCH}"
 
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
@@ -755,6 +757,7 @@ build_backend_windows() {
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[voice] @ $root_uri"
   # The Feishu channel SDK is installed on first use, as in build_backend.
+  install_onepassword_extra "$out/python.exe" "kirocrew[1password] @ $root_uri" "windows/$HOST_ARCH"
 
   sp="$out/Lib/site-packages"
   install_desktop_decoder "$out/python.exe" "$sp" ""
