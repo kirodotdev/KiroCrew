@@ -339,7 +339,12 @@ def _validate_deepseek_env_mapping(mapping: dict[str, str]) -> None:
                 "name the harness can resolve: its credential references are POSIX "
                 "shell identifiers, matching [A-Za-z_][A-Za-z0-9_]*."
             )
-        if key.startswith(_DEEPSEEK_ENV_RESERVED_PREFIXES) or key in _DEEPSEEK_ENV_CREW_OWNED_NAMES:
+        # Windows compares env names case-insensitively: judge the name as it does.
+        held = key.upper() if os.name == "nt" else key
+        if (
+            held.startswith(_DEEPSEEK_ENV_RESERVED_PREFIXES)
+            or held in _DEEPSEEK_ENV_CREW_OWNED_NAMES
+        ):
             raise ValueError(
                 f"agent.deepseek_env entry {key!r} names a variable Kiro Crew or the "
                 "harness sets on this child itself (the DSH_ and KIROCREW_ namespaces, "
