@@ -506,6 +506,35 @@ async def test_a_prompt_typed_in_the_dashboard_is_still_echoed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_challenge_link_prompt_is_not_echoed_back() -> None:
+    # The dashboard sends the prompt a channel challenge link carried: the person's
+    # own message, already in the thread right above where the quote would land.
+    slack = await _linked_turn([_ANSWER, _DONE], message="what's up?", _prompt_on_channel=True)
+    assert _echoes(slack) == []
+    # Only the quote is withheld: the answer still reaches the thread.
+    assert "the reply" in [text for _, text in slack.posts()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("on_channel", [False, True])
+async def test_a_prompts_get_hand_off_keeps_the_challenge_mark(
+    monkeypatch: pytest.MonkeyPatch, on_channel: bool
+) -> None:
+    # ``/prompts get`` re-enters the runner with the expanded prompt; the nested
+    # turn carries the outer one's mark, so a challenge prompt stays unquoted.
+    from kiro_crew.dashboard import chat_runner
+
+    monkeypatch.setattr(
+        chat_runner,
+        "_resolve_prompt_mention",
+        lambda *_a, **_kw: ("the expanded prompt", "ok", ""),
+    )
+    dispatch = {"_prompt_on_channel": True} if on_channel else {}
+    slack = await _linked_turn([_ANSWER, _DONE], message="/prompts get notes", **dispatch)
+    assert _echoes(slack) == ([] if on_channel else ["> 💬 the expanded prompt"])
+
+
+@pytest.mark.asyncio
 async def test_the_gate_reads_stamps_not_text() -> None:
     # The person may paste a wake banner; it is still their prompt.
     slack = await _linked_turn([_ANSWER, _DONE], message=_WAKE_TEXT)
@@ -551,6 +580,7 @@ class TestPromptTypedInDashboard:
             "_synthetic_recovery_turn": False,
             "_recovery_echo_owed": False,
             "_turn_provenance_restored": False,
+            "_prompt_on_channel": False,
         }
         return SimpleNamespace(**{**base, **over})
 
@@ -569,6 +599,7 @@ class TestPromptTypedInDashboard:
             ("_is_synthetic", True),
             ("_synthetic_recovery_turn", True),
             ("_turn_provenance_restored", True),
+            ("_prompt_on_channel", True),
         ],
     )
     def test_each_condition_closes_it(self, field: str, value: Any) -> None:
@@ -587,6 +618,15 @@ class TestPromptTypedInDashboard:
         assert _prompt_typed_in_dashboard(early) is True
         early._synthetic_payload = True
         assert _prompt_typed_in_dashboard(early) is False
+
+    def test_a_challenge_prompt_never_owes_its_recovery_replay_an_echo(self) -> None:
+        # A turn that dies before the echo point is requeued with the owed stamp
+        # only when its echo was owed; a challenge prompt's never is, so its
+        # replay (a recovery turn without the stamp) stays unechoed too.
+        from kiro_crew.dashboard.chat_turn.recipient import _mirror_echo_owed
+
+        assert _mirror_echo_owed(self._turn()) is True
+        assert _mirror_echo_owed(self._turn(_prompt_on_channel=True)) is False
 
 
 class TestTheDrainCarriesOrigin:
@@ -710,6 +750,50 @@ class TestTheDrainCarriesOrigin:
         kwargs = await run(slot)
         assert slot._queue == []
         assert kwargs["_directive_channel_origin"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("merge", [False, True])
+    async def test_a_queued_challenge_prompt_runs_marked(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, merge: bool
+    ) -> None:
+        # The mark rides the entry's meta (``channel_prompt.stamp_queued``). With
+        # merging on, a typed message after it runs as its own turn and keeps its
+        # echo: a merge run stops where the mark changes.
+        from kiro_crew.dashboard import channel_prompt
+        from kiro_crew.dashboard import chat_delivery as cd
+
+        state, busy, run = self._drain(tmp_path, monkeypatch, merge=merge)
+        slot = busy("chat-1")
+        qid = cd.queue_for_next_turn(state, slot, "from the link", directive_user_origin=True)
+        channel_prompt.stamp_queued(
+            slot, qid, {"meta": {"origin": channel_prompt.CHANNEL_CHALLENGE_ORIGIN}}
+        )
+        if merge:
+            cd.queue_for_next_turn(
+                state, slot, "typed in the dashboard", directive_user_origin=True
+            )
+        kwargs = await run(slot)
+        assert kwargs["_prompt_on_channel"] is True
+        assert kwargs["_directive_user_origin"] is True
+        # Queue plumbing: the drained user row does not carry the mark.
+        assert all(
+            channel_prompt.PROMPT_ON_CHANNEL_META_KEY not in (row.get("meta") or {})
+            for row in slot.messages
+        )
+        if merge:
+            assert [item["content"] for item in slot._queue] == ["typed in the dashboard"]
+            assert "_prompt_on_channel" not in await run(slot)
+
+    @pytest.mark.asyncio
+    async def test_a_queued_typed_message_runs_unmarked(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.dashboard import chat_delivery as cd
+
+        state, busy, run = self._drain(tmp_path, monkeypatch)
+        slot = busy("chat-1")
+        cd.queue_for_next_turn(state, slot, "typed in the dashboard", directive_user_origin=True)
+        assert "_prompt_on_channel" not in await run(slot)
 
     @pytest.mark.asyncio
     async def test_a_routed_slack_reply_runs_apart_from_a_dashboard_message(
