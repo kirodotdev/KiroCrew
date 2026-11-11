@@ -248,6 +248,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, origin_key: 'str', text: 'str', *, actor_key: 'str') -> 'bool'",
         ),
         ("_cron_job_is_silent", "method", "(self, parent_key: 'str') -> 'bool'"),
+        ("_cron_dm_user", "method", "(self, job: 'CronJob') -> 'str'"),
     ),
     "mcp_broker": (
         ("_init_mcp_discovery", "method", "(self) -> 'None'"),
