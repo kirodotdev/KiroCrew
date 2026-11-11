@@ -53,7 +53,7 @@ pytestmark = pytest.mark.timeout(120)
 _JOB_ID = "nightly-dispatcher"
 
 
-def _register_script_job(gw, job_id: str = _JOB_ID) -> None:
+def _register_script_job(gw, job_id: str = _JOB_ID, session_key: str = "") -> None:
     """Record a script job on the live scheduler, as the operator's crons.json would.
 
     The internal-auth middleware refuses a ``cron:`` caller whose job record is
@@ -66,7 +66,13 @@ def _register_script_job(gw, job_id: str = _JOB_ID) -> None:
     from kiro_crew.cron import CronJob
 
     gw.state.crons._jobs.append(
-        CronJob(id=job_id, name=job_id.replace("-", " "), message="", script="dispatch.py:run")
+        CronJob(
+            id=job_id,
+            name=job_id.replace("-", " "),
+            message="",
+            script="dispatch.py:run",
+            session_key=session_key,
+        )
     )
 
 
@@ -769,5 +775,46 @@ async def test_a_switched_off_gateway_refuses_a_cron_key_resetting_a_session(
     async with gateway_boot() as gw:
         _register_script_job(gw)
         key = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+
+        await _assert_switched_off_refusal(await _cron_resets(gw, key))
+
+
+@pytest.mark.asyncio
+async def test_a_cron_key_resets_the_session_its_job_is_bound_to(gateway_boot) -> None:
+    async with gateway_boot() as gw:
+        key = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+        _register_script_job(gw, session_key=f"dashboard:{key}")
+        _register_script_job(gw, _OTHER_JOB_ID)
+
+        await _assert_not_creator_refusal(await _cron_resets(gw, key, _OTHER_JOB_ID))
+        seen = {r["entry_hash"] for r in await _audit_rows(gw, operation_prefix="slot_reset")}
+
+        resp = await _cron_resets(gw, key)
+        body = await resp.text()
+        assert resp.status == 200, body
+        assert json.loads(body).get("reset") is True, body
+        rows = await _audit_rows(gw, operation_prefix="slot_reset_conversation")
+        resets = [r for r in rows if r["entry_hash"] not in seen]
+        assert [r["caller_identity"] for r in resets] == [f"cron:{_JOB_ID}"], resets
+
+
+@pytest.mark.asyncio
+async def test_a_bound_cron_key_cannot_reset_another_owner_slot(gateway_boot) -> None:
+    async with gateway_boot() as gw:
+        bound = (await gw.post_json("/api/chat/slots", {"name": "Dispatcher"}))["key"]
+        other = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+        _register_script_job(gw, session_key=f"dashboard:{bound}")
+
+        await _assert_not_creator_refusal(await _cron_resets(gw, other))
+
+
+@pytest.mark.asyncio
+async def test_a_switched_off_gateway_refuses_a_bound_cron_key_resetting_its_session(
+    gateway_boot, integration_home: Path
+) -> None:
+    _switch_session_control_off(integration_home)
+    async with gateway_boot() as gw:
+        key = (await gw.post_json("/api/chat/slots", {"name": "Dispatcher"}))["key"]
+        _register_script_job(gw, session_key=f"dashboard:{key}")
 
         await _assert_switched_off_refusal(await _cron_resets(gw, key))

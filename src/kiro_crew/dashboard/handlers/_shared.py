@@ -129,6 +129,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_session_control_refusal,
         _member_admitted_to_chat_folder_tag_route,
         _single_id_segment,
+        cron_bound_session_key,
         cron_creator_admission,
         cron_mode_refusal,
         cron_slot_creator,

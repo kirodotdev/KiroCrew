@@ -33,6 +33,7 @@
   "bounded_json_error_code",
   "collect_skills_blocking",
   "config_dir",
+  "cron_bound_session_key",
   "cron_creator_admission",
   "cron_mode_refusal",
   "cron_slot_creator",
