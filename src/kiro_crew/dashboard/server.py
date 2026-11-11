@@ -726,13 +726,6 @@ _CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
 _OWN_HOST_WARM_TASKS: "set[asyncio.Future[None]]" = set()
 
 
-# Deep link at the approval toggle itself (Settings -> Skills, highlighted), so
-# the notification can offer the opt-out at the exact moment the user is being
-# asked to review yet another candidate. Same highlight=key:<configKey> format
-# the frontend's <SettingRef> builds, consumed by useSettingHighlight.
-_SKILL_APPROVAL_SETTING_URL = "/settings/skills?highlight=key:skills.approval_required"
-
-
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
