@@ -23,6 +23,7 @@ import pytest
 
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.agent_spec_format import iter_agent_spec_files
+from kiro_crew.workspace_cli_settings import CLI_SETTINGS_LOCK_NAME
 
 # The shared fixtures and helpers, bound here by name: pytest registers the fixtures
 # from this namespace.
@@ -944,3 +945,57 @@ def test_global_preference_refresh_uses_only_literal_true(native_tree, value):
     resources = refreshed.specs["custom"]["resources"]
     assert any("AGENTS.md" in item for item in resources) is (value is not True)
     assert any("steering" in item for item in resources) is (value is not True)
+
+
+def test_kiro_link_inside_the_work_dir_projects_into_its_target(native_tree, monkeypatch):
+    """A ``.kiro`` link whose folder stays inside the work dir is followed, and rollback too."""
+    from kiro_crew import platform_compat
+
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    target_kiro = project / "shared" / ".kiro"
+    (target_kiro / "settings").mkdir(parents=True)
+    try:
+        platform_compat.symlink_or_junction(target_kiro, project / ".kiro")
+    except (OSError, NotImplementedError) as exc:
+        pytest.fail(f"symlink is unavailable: {exc}")
+    target_settings = target_kiro / "settings" / "cli.json"
+
+    prepared = projection.prepare_native_skill_projection(project)
+    assert prepared is not None
+    assert list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
+    written = json.loads(target_settings.read_text(encoding="utf-8"))
+    assert written["chat.disableInheritingDefaultResources"] is True
+    assert (target_kiro / "settings" / CLI_SETTINGS_LOCK_NAME).is_file()
+    assert platform_compat.is_link_or_junction(project / ".kiro")
+
+    monkeypatch.setenv("KIROCREW_NATIVE_SKILL_PROJECTION", "0")
+    assert projection.prepare_native_skill_projection(project) is None
+    assert json.loads(target_settings.read_text(encoding="utf-8")) == {}
+
+
+def test_kiro_link_leaving_the_work_dir_skips_projection(native_tree, tmp_path, caplog):
+    """A ``.kiro`` link whose folder leaves the work dir is refused: no alias, nothing written."""
+    from kiro_crew import platform_compat
+
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    outside_kiro = tmp_path / "outside" / ".kiro"
+    (outside_kiro / "settings").mkdir(parents=True)
+    outside_settings = outside_kiro / "settings" / "cli.json"
+    before = b'{"token": "SECRET"}'
+    outside_settings.write_bytes(before)
+    try:
+        platform_compat.symlink_or_junction(outside_kiro, project / ".kiro")
+    except (OSError, NotImplementedError) as exc:
+        pytest.fail(f"symlink is unavailable: {exc}")
+
+    assert projection.prepare_native_skill_projection(project) is None
+    assert not list(agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
+    assert outside_settings.read_bytes() == before
+    assert not (outside_kiro / "settings" / CLI_SETTINGS_LOCK_NAME).exists()
+
+    with caplog.at_level(logging.WARNING):
+        assert projection.prepare_native_skill_projection(project, enabled=False) is None
+    assert any("rollback" in record.getMessage() for record in caplog.records)
+    assert outside_settings.read_bytes() == before

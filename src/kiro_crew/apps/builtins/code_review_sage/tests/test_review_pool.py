@@ -590,6 +590,32 @@ class TestReviewEffort(unittest.TestCase):
     def test_write_effort_overlay_never_raises(self):
         _write_effort_overlay("/proc/nonexistent/\x00bad", "claude-sonnet-4.6")
 
+    def test_a_settings_link_leaving_the_work_dir_gets_no_write(self):
+        """A `.kiro` or `settings` link naming a folder outside the review
+        worker's work dir is refused by the settings lock every writer shares,
+        so the write is logged and skipped and the named folder gains nothing.
+        """
+        from kiro_crew import platform_compat
+
+        for redirect in (".kiro", "settings"):
+            with self.subTest(redirect=redirect), tempfile.TemporaryDirectory() as tmp:
+                work_dir = Path(tmp) / "work"
+                work_dir.mkdir()
+                outside = Path(tmp) / "outside"
+                (outside / "settings").mkdir(parents=True)
+                if redirect == ".kiro":
+                    link, target = work_dir / ".kiro", outside
+                else:
+                    (work_dir / ".kiro").mkdir()
+                    link, target = work_dir / ".kiro" / "settings", outside / "settings"
+                platform_compat.symlink_or_junction(target, link)
+
+                with self.assertLogs(rp.logger, level="DEBUG") as logs:
+                    _write_effort_overlay(str(work_dir), "claude-sonnet-4.6", "high")
+
+                self.assertEqual([p.name for p in outside.rglob("*")], ["settings"])
+                self.assertIn("could not write review effort overlay", "\n".join(logs.output))
+
     def test_a_planted_link_at_the_overlay_name_takes_no_bytes(self):
         """`work_dir` is the review worker's OWN cwd, so it is plantable.
 

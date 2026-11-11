@@ -12,13 +12,17 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
+import os
 import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+from kiro_crew.providers import acp as acp_provider
 from kiro_crew.providers.acp import (
     TOOL_SEARCH_DEFAULT_MIN_PCT,
     TOOL_SEARCH_DEFAULT_MIN_TOKENS,
@@ -83,13 +87,71 @@ class TestWriteToolSearchOverlay:
         assert data["toolSearch.enabled"] is True
         assert data["chat.modelDefaults"]["claude-opus-4.7"]["output_config"]["effort"] == "xhigh"
 
-    def test_handles_corrupt_existing_json(self, tmp_path):
+    @pytest.mark.parametrize(
+        "contents",
+        [b"{ this is not valid json", b'{"x": "\xff"}', b"[1, 2]"],
+        ids=["malformed", "undecodable", "non-object"],
+    )
+    def test_unmergeable_existing_file_raises_and_is_left_unchanged(self, tmp_path, contents):
+        # Resetting the file to {} to make room for the flag would destroy the
+        # operator's settings and every other session's effort entries. The
+        # same guard as _write_cli_overlay: the bytes stay, the write raises.
         cli = _cli_json(tmp_path)
         cli.parent.mkdir(parents=True, exist_ok=True)
-        cli.write_text("{ this is not valid json", encoding="utf-8")
+        cli.write_bytes(contents)
+
+        with pytest.raises(ValueError, match="left unchanged"):
+            _write_tool_search_overlay(tmp_path, True)
+
+        assert cli.read_bytes() == contents
+
+    def test_unreadable_existing_file_raises_the_read_error(self, tmp_path, monkeypatch):
         _write_tool_search_overlay(tmp_path, True)
-        data = json.loads(cli.read_text(encoding="utf-8"))
-        assert data["toolSearch.enabled"] is True
+        cli = _cli_json(tmp_path)
+        before = cli.read_bytes()
+
+        def _flaky_read(_cli_json, _settings_dir):
+            raise OSError("sharing violation")
+
+        def _failed_pinned_read(_settings_fd, _cli_json):
+            raise OSError("sharing violation")
+
+        with monkeypatch.context() as temporary_patches:
+            temporary_patches.setattr(acp_provider, "_read_named_cli_json", _flaky_read)
+            temporary_patches.setattr(acp_provider, "_read_pinned_cli_json", _failed_pinned_read)
+            with pytest.raises(OSError, match="sharing violation"):
+                _write_tool_search_overlay(tmp_path, False)
+
+        assert cli.read_bytes() == before
+
+    @pytest.mark.parametrize(
+        "link_kind", [pytest.param("symlink", marks=requires_symlinks), "hardlink"]
+    )
+    def test_linked_existing_file_is_refused_without_copying_contents(self, tmp_path, link_kind):
+        cli = _cli_json(tmp_path)
+        cli.parent.mkdir(parents=True)
+        target = tmp_path / "outside.json"
+        secret = b'{"token": "SECRET"}'
+        target.write_bytes(secret)
+        try:
+            if link_kind == "symlink":
+                cli.symlink_to(target)
+            else:
+                os.link(target, cli)
+        except (OSError, NotImplementedError) as exc:
+            pytest.fail(f"{link_kind} is unavailable: {exc}")
+
+        with pytest.raises(OSError, match="link|hardlink|regular"):
+            _write_tool_search_overlay(tmp_path, True)
+
+        assert target.read_bytes() == secret
+        assert not any(
+            path != cli
+            and path.is_file()
+            and not path.is_symlink()
+            and b"SECRET" in path.read_bytes()
+            for path in cli.parent.iterdir()
+        )
 
     def test_idempotent(self, tmp_path):
         _write_tool_search_overlay(tmp_path, True)
@@ -133,6 +195,26 @@ class TestApplyToolSearchOverlay:
         provider._tool_search = None
         provider._apply_tool_search_overlay()
         assert not _cli_json(tmp_path).exists()
+
+    @pytest.mark.asyncio
+    async def test_unmergeable_file_survives_construction_and_start(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        # A corrupt overlay must never stop a session from starting, and the
+        # refused write must be visible: the file keeps its bytes and the
+        # provider logs the skip instead of raising into __init__ or start().
+        cli = _cli_json(tmp_path)
+        cli.parent.mkdir(parents=True, exist_ok=True)
+        contents = b"{ this is not valid json"
+        cli.write_bytes(contents)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.acp"):
+            provider = AcpProvider(acp_backend="", work_dir=tmp_path, tool_search=True)
+            monkeypatch.setattr(provider, "_start_kiro_runtime", AsyncMock())
+            await provider.start()
+
+        assert cli.read_bytes() == contents
+        assert "tool-search overlay write failed" in caplog.text
 
 
 # ── Constructor and start wiring ─────────────────────────────────────────────
