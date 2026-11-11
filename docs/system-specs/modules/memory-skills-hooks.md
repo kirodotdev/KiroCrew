@@ -6781,6 +6781,13 @@ legitimately needs — `PATH`/`PATHEXT`/`COMSPEC`/`SYSTEMROOT`, the home/profile
 `KIROCREW_HOME` data-home vars, temp-dir and locale vars, and TLS-trust
 (`SSL_CERT_*`, `NO_PROXY`) — plus the hook-metadata vars set last (`KIROCREW_HOOK_*`,
 and `KIRO_SESSION_ID` / `KIROCREW_SESSION_MODEL` when known).
+The hook's `PATH` is the gateway's own (or the absolute entries of `os.defpath`
+when unset) followed by
+the user tool directories `kiro_crew.env.augmented_path` adds for the kiro-cli
+and MCP spawns (`~/.local/bin`, Homebrew, `/usr/local/bin` and the like), so a
+desktop-app or service gateway's bare `PATH` still finds a CLI installed there.
+They are appended, never prepended: a user-writable directory must not shadow a
+system binary that a guard hook calls by name.
 `HTTP(S)_PROXY` is deliberately dropped (it commonly embeds userinfo credentials).
 The consequence for operators: a hook that relied on an ambient var outside that
 set (e.g. `VIRTUAL_ENV`, `PYTHONPATH`, `JAVA_HOME`, `AWS_PROFILE`, nvm/pyenv vars)

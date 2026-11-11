@@ -371,6 +371,12 @@ hook because something like `VIRTUAL_ENV`, `PYTHONPATH`, `JAVA_HOME` or
 `AWS_PROFILE` is not forwarded. Set what you need inside the command, or use
 absolute paths.
 
+A hook's `PATH` also gets the user tool directories Crew adds for kiro-cli, such
+as `~/.local/bin` and Homebrew's, after the gateway's own entries. A CLI
+installed there is found even when the desktop app or a service started the
+gateway with a bare system `PATH`. A command that exists in both places resolves
+to the system copy.
+
 A hook's fields:
 
 | Field | Means |

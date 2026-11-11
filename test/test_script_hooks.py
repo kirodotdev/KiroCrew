@@ -492,7 +492,7 @@ class TestRunScriptHook:
         result = await run_script_hook(hook, "test-context")
         assert HOOK_EVENT_USER_PROMPT_SUBMIT in result.stdout
 
-    def test_subprocess_env_excludes_gateway_credentials(self, monkeypatch):
+    def test_subprocess_env_excludes_gateway_credentials(self, monkeypatch, tmp_path):
         from kiro_crew.hooks import _hook_subprocess_env
 
         secret = "AKIAIOSFODNN7EXAMPLE"
@@ -500,7 +500,10 @@ class TestRunScriptHook:
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", secret)
         monkeypatch.setenv("HTTPS_PROXY", proxy_secret)
         monkeypatch.setenv("http_proxy", proxy_secret)
-        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+        # Pinned, so a host PATH entry spelled differently (a trailing slash)
+        # cannot make the literal comparison below disagree with the code's.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("PATH", os.pathsep.join([str(tmp_path / "a"), str(tmp_path / "b")]))
         monkeypatch.setenv("KIROCREW_HOME", "/custom/data/home")
         hook = ScriptHook(
             id="env-safe",
@@ -511,7 +514,14 @@ class TestRunScriptHook:
 
         env = _hook_subprocess_env(hook, "prompt text")
 
-        assert env["PATH"] == os.environ["PATH"]
+        from kiro_crew.env import augmented_path, dedup_path
+
+        # The inherited PATH survives the allowlist first and verbatim; only
+        # the user tool dirs kiro-cli also gets are added after it.
+        inherited = os.environ["PATH"]
+        have = set(dedup_path(inherited).split(os.pathsep))
+        extra = [d for d in augmented_path("").split(os.pathsep) if d and d not in have]
+        assert env["PATH"] == os.pathsep.join([inherited, *dict.fromkeys(extra)])
         assert "AWS_ACCESS_KEY_ID" not in env
         assert "HTTPS_PROXY" not in env
         assert "http_proxy" not in env
@@ -1346,3 +1356,96 @@ def test_the_saved_hooks_snapshot_keeps_a_hook_saved_while_one_ran(tmp_path: Pat
     monkeypatch.setattr(hooks_mod, "run_script_hook", fake_run)
     assert asyncio.run(hooks_mod.permission_pre_tool_block(None, [], None, "x")) is None
     assert {h.id for h in ScriptHookStore(config_dir=tmp_path).list_all()} == {"saved", "new"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH layout")
+def test_hook_env_path_gets_the_user_tool_dirs_kiro_cli_gets(monkeypatch, tmp_path):
+    """A gateway started with a bare system PATH still lets a hook find ~/.local/bin."""
+    from kiro_crew.hooks import _hook_subprocess_env
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    hook = ScriptHook(
+        id="path-aug",
+        name="path-aug",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+        command="echo ok",
+    )
+
+    dirs = _hook_subprocess_env(hook, "ctx")["PATH"].split(os.pathsep)
+
+    assert str(local_bin) in dirs
+    # System dirs keep precedence over the user-writable dirs added after them.
+    assert dirs[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+    monkeypatch.delenv("PATH")
+    unset = _hook_subprocess_env(hook, "ctx")["PATH"].split(os.pathsep)
+    assert unset[: len(os.defpath.split(os.pathsep))] == os.defpath.split(os.pathsep)
+    assert str(local_bin) in unset
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH layout")
+def test_hook_env_keeps_an_inherited_empty_path_entry(monkeypatch, tmp_path):
+    """An empty PATH entry (the cwd) is not dropped when user dirs are added."""
+    from kiro_crew.hooks import _hook_subprocess_env
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin::/bin")
+    hook = ScriptHook(
+        id="empty-entry",
+        name="empty-entry",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+        command="echo ok",
+    )
+
+    assert _hook_subprocess_env(hook, "ctx")["PATH"].startswith("/usr/bin::/bin")
+
+
+@pytest.mark.asyncio
+async def test_hook_env_is_built_off_the_event_loop(monkeypatch):
+    """The PATH probes run in a worker thread, never on the gateway loop."""
+    import threading
+
+    from kiro_crew import hooks as script_hooks
+
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+    real = script_hooks._hook_subprocess_env
+
+    def spy(*args, **kwargs):
+        seen.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(script_hooks, "_hook_subprocess_env", spy)
+    hook = ScriptHook(
+        id="thread",
+        name="thread",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+        command="echo ok",
+    )
+    await run_script_hook(hook, "ctx")
+
+    assert seen and loop_thread not in seen
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH layout")
+def test_hook_env_unset_path_fallback_drops_relative_defpath_entries(monkeypatch, tmp_path):
+    """With PATH unset, a relative os.defpath entry (the cwd) never reaches a hook."""
+    from kiro_crew.hooks import _hook_subprocess_env
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("PATH", raising=False)
+    monkeypatch.setattr(os, "defpath", ".:/bin:/usr/bin")
+    hook = ScriptHook(
+        id="defpath",
+        name="defpath",
+        event=HOOK_EVENT_USER_PROMPT_SUBMIT,
+        command="echo ok",
+    )
+
+    dirs = _hook_subprocess_env(hook, "ctx")["PATH"].split(os.pathsep)
+
+    assert "." not in dirs
+    assert dirs[:2] == ["/bin", "/usr/bin"]
