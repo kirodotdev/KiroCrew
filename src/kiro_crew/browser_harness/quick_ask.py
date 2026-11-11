@@ -23,7 +23,10 @@ So:
   of its type. Anything else is ``origin_changed`` and nothing is written.
 * A fill is ``DOM.focus`` on the bound node, then one call on that node that
   proves it holds focus and inserts the text, in the gateway. Values are never
-  logged, stored, published or put in an exception.
+  logged, published or put in an exception, and are stored only when the person
+  ticked "Save to Secrets store" on the card (:mod:`kiro_crew.browser_harness.vault_fill`,
+  behind the ``secrets_vault`` preview). A login the person picks from the vault
+  there takes this same fill.
 
 Pure validation (:func:`parse_ask`) and the CDP half (:class:`PageProbe`,
 :func:`bind_ask`, :func:`verify`, :func:`fill`, :func:`click_once`,
@@ -299,6 +302,12 @@ class QuickAsk:
     #: page showed a username box; ``none``: it showed only a password box;
     #: ``optional``: it showed neither yet).
     username_mode: str = ""
+    #: A credentials ask under the ``secrets_vault`` preview: ``(name, username)``
+    #: of each vault login matching ``origin`` (``[]``: none, the card offers to
+    #: save). ``None``: no vault part, the card is as without the preview.
+    vault: list[tuple[str, str]] | None = None
+    #: How many more logins matched than ``vault`` holds (the card says so).
+    vault_more: int = 0
 
     def __post_init__(self) -> None:
         # A top-frame ask: the asked frame IS the top frame.
@@ -346,6 +355,11 @@ class QuickAsk:
             out["top_origin"] = self.top_origin
         if self.spec.sign_in_takeover:
             out["steps"] = {"username": self.username_mode or "optional"}
+        if self.vault is not None:
+            # Name and username, for the person to pick from: never a password.
+            out["vault"] = {"items": [{"name": n, "username": u} for n, u in self.vault]}
+            if self.vault_more:
+                out["vault"]["more"] = self.vault_more
         if self.spec.kind == "otp":
             out["digits"] = self.spec.digits
         if self.spec.kind == "confirm":
