@@ -626,6 +626,9 @@ async def _route_subagent_to_tab(
     channel routes do (``_inline_verdict``). That holds for a dashboard tab's
     own turn too: one the user stops before it lands still gets the result.
     """
+    # Imported here: this body runs on the gateway's globals.
+    from kiro_crew.tracing import subagents as trace_subagents
+
     assert self.dashboard_state is not None
     _slot_name = _injection_slot_name
     # What a parked completion is routed with again at its turn's release, where
@@ -781,11 +784,15 @@ async def _route_subagent_to_tab(
                     # on any exit path.
                     # Carry the structured completion facts so the
                     # drained row is a card without re-parsing the
-                    # prose; _start_next_queued_turn reads them.
-                    _injection_slot.queue_append(
-                        announce,
-                        kind=SUBAGENT_COMPLETION_KIND,
-                        meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                    # prose; _start_next_queued_turn reads them. The trace
+                    # remembers which runs the entry delivers (tracing/subagents.py).
+                    trace_subagents.note_delivery(
+                        _injection_slot.queue_append(
+                            announce,
+                            kind=SUBAGENT_COMPLETION_KIND,
+                            meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
+                        ),
+                        carried,
                     )
                     # Queuing is not delivery. The announce promises
                     # result paths the parent can read on demand, but
@@ -841,6 +848,7 @@ async def _route_subagent_to_tab(
                         kind=SUBAGENT_COMPLETION_KIND,
                         meta={SUBAGENT_COMPLETION_META_KEY: sub_meta},
                     )
+                    trace_subagents.note_delivery(_queue_id, carried)
                     self._defer_queued_delivery(
                         _injection_slot, announce, info, flush_only=_flush_only
                     )

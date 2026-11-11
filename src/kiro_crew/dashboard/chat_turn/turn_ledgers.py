@@ -217,6 +217,11 @@ def _queue_recovery(
     # its message or a continuation) is the same Regenerate's next attempt: it
     # settles the previous reply, not this turn.
     carry_regenerate_target(slot, _recovery_qid)
+    # A retry of a completion turn still reports on the same sub-agent runs, so
+    # its trace joins theirs (tracing/subagents.py).
+    from kiro_crew.tracing import subagents as trace_subagents
+
+    trace_subagents.requeue(_recovery_turn_id, _recovery_qid)
     # A recovery of a channel message is still that channel's words: it keeps
     # the channels admission judges it by. A restriction only, so it is kept
     # even on a turn whose channel-origin flag a restart removed.

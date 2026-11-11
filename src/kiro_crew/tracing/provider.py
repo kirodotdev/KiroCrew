@@ -23,9 +23,10 @@ from __future__ import annotations
 import logging
 import random
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,26 @@ def new_state(
     return TraceState(provider.get_tracer(SCOPE_NAME), provider, namespace, hash_key, sink)
 
 
+#: Spans started per trace id in this process, newest traces last: what the run
+#: roots' span budget (``tracing/runs.py``) reads. Bounded like the turn registries.
+_span_counts: "OrderedDict[str, int]" = OrderedDict()
+_counts_lock = threading.Lock()
+_MAX_COUNTED_TRACES = 4096
+
+
+def span_count(trace_id: str) -> int:
+    """How many spans this process has started in *trace_id*."""
+    with _counts_lock:
+        return _span_counts.get(trace_id, 0)
+
+
+def _count_span(trace_id: str) -> None:
+    with _counts_lock:
+        _span_counts[trace_id] = _span_counts.pop(trace_id, 0) + 1
+        while len(_span_counts) > _MAX_COUNTED_TRACES:
+            _span_counts.popitem(last=False)
+
+
 def start_span(
     state: TraceState,
     name: str,
@@ -222,11 +243,13 @@ def start_span(
     span_id: str,
     parent: Any = None,
     attributes: Mapping[str, Any] | None = None,
+    links: Sequence[Any] = (),
 ) -> Any:
     """Start a span with the given hex ids under *parent* (``None`` = a root).
 
     A root is started under an EMPTY context, never whatever span happens to be
-    current, so its trace id is always the pinned one.
+    current, so its trace id is always the pinned one. Under a parent the span
+    takes the parent's trace id, which the caller passes as *trace_id* too.
     """
     from opentelemetry import trace
     from opentelemetry.context import Context
@@ -235,10 +258,14 @@ def start_span(
     _pins.trace_id = int(trace_id, 16)
     _pins.span_id = int(span_id, 16)
     try:
-        return state.tracer.start_span(name, context=context, attributes=dict(attributes or {}))
+        span = state.tracer.start_span(
+            name, context=context, attributes=dict(attributes or {}), links=list(links)
+        )
     finally:
         _pins.trace_id = None
         _pins.span_id = None
+    _count_span(trace_id)
+    return span
 
 
 def shutdown() -> None:
@@ -277,6 +304,8 @@ async def flush_for_exit() -> None:
 def reset_for_testing() -> None:
     """Shut down and forget the tracer, so a test starts from the switch."""
     shutdown()
+    with _counts_lock:
+        _span_counts.clear()
 
 
 def install_for_testing(state: TraceState | None) -> None:

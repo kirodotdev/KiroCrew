@@ -679,6 +679,12 @@ class _GateMixin(ManagerComponent):
             )
 
             _crew_log_asked = crew_log_asking_origin(self._manager._sessions, parent_session_key)
+        if not _from_queue:
+            # Where this child's turns go in the parent's trace, read while the
+            # spawn tool call is still open (tracing/subagents.py).
+            from kiro_crew.tracing import subagents as trace_subagents
+
+            trace_subagents.pin_origin(agent_id, self._manager._sessions, parent_session_key)
         queue_params: dict = {
             "task": task,
             "parent_session_key": parent_session_key,

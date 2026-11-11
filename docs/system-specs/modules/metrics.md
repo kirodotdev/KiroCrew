@@ -1811,8 +1811,8 @@ task-review tab titled through the transcript its row recorded), plus the
 
 Native OpenTelemetry spans of agent turns, for #1643. Design record: the native
 tracing RFC under `docs/request-for-change/`. This section covers what is built:
-session turns recorded to a local sink. There is no OTLP export, no sub-agent
-nesting and no surface trigger span yet. Tests: `test/tracing/`.
+session turns and sub-agent runs recorded to a local sink. There is no OTLP export
+and no surface trigger span yet. Tests: `test/tracing/`.
 
 **Switch.** `telemetry.traces_enabled`, default `false`, independent of
 `telemetry.enabled`. The switch (and, when on, the namespace file and vault key) is
@@ -1848,7 +1848,7 @@ tracing is off. The tree, the same for every surface:
 
 | Span | Parent | Carries |
 |---|---|---|
-| `invoke_agent <agent>` | none (the trace root) | correlation set, `gen_ai.agent.name`, model, spend, `error.type` |
+| `invoke_agent <agent>` | none (the trace root), or the run it joins | correlation set, `gen_ai.agent.name`, model, spend, `error.type`; links when it roots several causes |
 | `user.prompt` | turn | marker at prompt send |
 | `chat` / `chat <model>` | turn | the turn's model work as one aggregate (`kirocrew.chat.aggregate`): model, spend, the three `langfuse.observation.*` keys |
 | `execute_tool <tool>` | turn | `gen_ai.tool.name`, `kirocrew.tool_kind`, `kirocrew.tool_call_id`, `kirocrew.tool.outcome` |
@@ -1871,11 +1871,66 @@ call is named `mcp`, and so is any tool name spelled like an MCP one; with no
 harness-authored name the tool kind stands in.
 
 **Trace id.** `dashboard/chat_runner.py::_run_chat` binds `turn._recovery_turn_id`
-with `bind_turn_root` around the turn, and that id is the trace id of each stream
-the same task opens; the n-th stream is `kirocrew.attempt=n`. A task spawned inside
-the turn does not inherit it (the binding records its task), so a background turn
-roots its own trace. Every other surface mints a random turn id per stream until
-its own root lands.
+through `dashboard/trace_binding.py::bind_turn` around the turn, and that id is the
+trace id of each stream the same task opens; the n-th stream is `kirocrew.attempt=n`.
+A task spawned inside the turn does not inherit it (the binding records its task), so
+a background turn roots its own trace. Every other surface mints a random turn id per
+stream until its own root lands. A binding can instead name a run the turn joins
+(`join=`, a `runs.RunRef`): the turn's spans then sit in that trace, under that run's
+span, and wear the run root's `session.id`, while `kirocrew.turn_id` stays the turn's
+own. Every span in a trace carries the root's `session.id`; a span's own session is
+`kirocrew.session_key_hash`.
+
+**Sub-agents** (`tracing/subagents.py`). The spawn gate
+(`subagent_manager/admission/gate.py`) calls `pin_origin` on a spawn's first
+admission pass, inside the parent's spawn tool call: it finds the parent's open turn
+by its ACP session and keeps that turn's trace id, turn span id, the one open
+`spawn_sub_agents` / `spawn_run` / `spawn_continue` tool span (the turn span when none
+or several are open) and the trace's root session, keyed by the child's agent id.
+`subagent_manager/run_lifecycle.py::_run_impl` binds each run with `bind_child`: a new
+turn id under that spawn span, with `kirocrew.subagent_id` and
+`kirocrew.parent_session_key_hash`. A blocking child ends inside its spawn span, which
+then carries the children's roll-up; an async child runs on under a spawn span that
+has already ended. A continuation (`conversation_key`) and a retry take the origin of
+the run they continue, and are re-pinned under it, so their completion turn joins the
+trace they ran in. A child moved onto a continuation trace still adds to its spawn
+span's roll-up. Pins live in memory only: after a restart a child roots its
+own trace.
+
+**The completion turn.** `slack/gateway_runtime/subagent_injection.py` records which
+runs each queued completion entry delivers (`note_delivery`, by queue id), the queue
+drain hands the drained entries' runs to the turn's task (`delivered`), and
+`bind_turn` takes them once (`take_causes`; a nested turn of the same task gets none).
+A drain that delivers nothing clears the hand-over, so a turn never inherits causes an
+earlier turn in the same task left untaken. A turn requeued by `_queue_recovery` (a
+runtime death before output, say) delivers the same runs on its retry: the causes a
+turn took are kept under its turn id, and `requeue` registers them under the retry's
+queue id.
+One run with a known origin: the turn joins its trace under the parent turn's span.
+Several (a wave digest): the turn roots itself with one link per run, to that run's
+last turn, or to its spawn span when none ended in this process.
+
+**Run roots** (`tracing/runs.py`, RFC R2-R5), shared by every run kind:
+
+| Helper | Does |
+|---|---|
+| `anchor` | emits a run's root as a zero-length span, ids `H(trace.<kind>, *key, cont)` / `H(<kind>, *key, cont)`; children parent to it by id, so nothing is held open |
+| `outcome` | `<kind> outcome <status>` under the anchor, span id `H(<kind>.outcome, *key, cont, outcome_key)`, carrying a roll-up |
+| `Rollup` | sums child turns' spend into `kirocrew.usage.{input_tokens,output_tokens,credits,cost_usd,turns}_total`, never `gen_ai.usage.*` |
+| `segment` | where a run's next child goes: once its trace holds `SPAN_BUDGET` (2,000) spans or is `AGE_BUDGET_SECS` (6 days) old, a `<name> (cont N)` anchor in a new trace that links back, and every later child of the run goes there |
+
+Span counts per trace are kept by `provider.start_span` in this process (bounded,
+lost on restart). Anchors carry `kirocrew.run.kind`, `kirocrew.run.continuation` and,
+on an outcome, `kirocrew.run.status`.
+
+**Crew attributes** (`tracing/crew.py`). A dashboard turn on an Ultra Mode or Bot
+conductor, or on one of their workers, nested `/prompts get` turns included, carries `kirocrew.crew.root` (hashed root slot
+key), `kirocrew.crew.root_kind` (`ultra` or `mate`) and, for a worker,
+`kirocrew.crew.dispatcher` (hashed). The stamps come from
+`crew_mode.live_stamp_rows`, the slot list's own rule, with no I/O. A worker bound to
+a work item also carries `kirocrew.work.item_id`, `kirocrew.work.round` and
+`kirocrew.work.conductor_hash`, read from the work ledger binding on a worker thread
+before the turn binds. No goal, title, acceptance or other ledger text.
 
 **Deterministic ids** (`tracing/ids.py`, vectors in
 `test/fixtures/tracing/id_conformance.json`):
@@ -1891,11 +1946,16 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 | `invoke_agent` | `turn, turn_id, attempt` |
 | `chat`, `user.prompt`, `turn.complete` | that kind, `turn_id, attempt` |
 | `execute_tool` | `tool, acp_session_id, tool_call_id` |
+| sub-agent `invoke_agent` | `turn, turn_id, attempt`, in the parent's trace under its spawn span |
+| run anchor (`subagent`, later cron, workflow, Ultra Mode) | `<kind>, *key, cont`; trace `trace.<kind>, *key, cont` |
+| `<kind> outcome <status>` | `<kind>.outcome, *key, cont, outcome_key` |
 
 **Correlation and the allowlist** (`tracing/correlation.py`). `ALLOWED_KEYS` is the
 whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook
-contract with a `kirocrew.` prefix: `kirocrew.turn_id`, `kirocrew.acp_session_id`
-and `kirocrew.tool_call_id` raw; `kirocrew.session_key_hash` and `session.id` a
+contract with a `kirocrew.` prefix: `kirocrew.turn_id`, `kirocrew.acp_session_id`,
+`kirocrew.tool_call_id`, `kirocrew.subagent_id` and `kirocrew.work.item_id` raw;
+`kirocrew.parent_session_key_hash`, `kirocrew.crew.root`, `kirocrew.crew.dispatcher`
+and `kirocrew.work.conductor_hash` hashed like the session key; `kirocrew.session_key_hash` and `session.id` a
 keyed HMAC-SHA256 (32 hex) under `SecretVault.derive_subkey("trace-correlation")`;
 the raw key under `kirocrew.local.session_key`, which only the local sink may keep.
 Ids are shape-checked rather than run through `validate_attrs`, whose entropy test
