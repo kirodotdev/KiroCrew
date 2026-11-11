@@ -1650,16 +1650,15 @@ async def refresh_forked_title(state: DashboardState, slot: _ChatSlot) -> None:
     A fork is born titled ``↳ Fork of <parent>``, which names the PARENT's
     topic, and keeps that name until the person sends the child a message.
     That send (``chat_title_fork.schedule_fork_title``, or ``name_queued_fork``
-    for a queued send) runs this one pass, so the child is named for what the
-    user went on to ask in it, never for a question copied from the parent.
-    Only an AUTO title is touched (``_refresh_blocked``): a fork whose parent
-    carried a manual name keeps ``↳ Fork of <that name>`` as a final title, and
-    an agent fork given an explicit title is "user" too.
+    for a queued send) runs this one pass. Only an AUTO title is touched
+    (``_refresh_blocked``): a fork whose parent carried a manual name keeps
+    ``↳ Fork of <that name>`` as a final title, and an agent fork given an
+    explicit title is "user" too.
 
-    One initial-title generation over the latest person-typed question alone
-    (``_latest_human_question``), never the copied turns. The fork
-    marker stays in front of the generated name, because the sidebar shows no
-    other sign that a session is a fork. The parent is never read or written.
+    One initial-title generation over the child's newest title window, which
+    ends with that message: the copied turns say what a short "yes do that" is
+    about, but never start the pass (``_latest_human_question``). The fork
+    marker stays in front of the name. The parent is never read or written.
 
     Bounded: at most ``_FORK_TITLE_MAX_PASSES`` generations, no retry on a
     SKIP or an error, and ``_title_in_flight`` keeps the background refresh off
@@ -1698,8 +1697,9 @@ async def refresh_forked_title(state: DashboardState, slot: _ChatSlot) -> None:
     try:
         for _ in range(_FORK_TITLE_MAX_PASSES):
             key = await _ticket_key_if_enabled(_ticket_key_from_messages([question]))
+            convo = [m for m in _titling_messages(slot) if m.get("role") in _TITLE_PROMPT_ROLES]
             summary = await _generate_title_via_kiro(
-                state, [question], session_key=effective_session_key(slot)
+                state, convo[-_TITLE_PROMPT_WINDOW:], session_key=effective_session_key(slot)
             )
             if superseded():
                 logger.info(

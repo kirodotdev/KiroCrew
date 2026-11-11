@@ -2,9 +2,10 @@
 
 A fork is born ``↳ Fork of <parent>`` (``↳ Tail of`` for a tail fork,
 ``chat_fork.fork_slot``) and keeps that name until the person sends the child a
-message. That message, not a question copied from the parent, then names it
-through ``chat_title.refresh_forked_title``. This module decides when that one
-pass starts; ``chat_title`` owns the pass itself.
+message. That message then names it through ``chat_title.refresh_forked_title``,
+read together with the turns before it; a question copied from the parent never
+starts the pass. This module decides when that one pass starts; ``chat_title``
+owns the pass itself.
 """
 
 from __future__ import annotations
