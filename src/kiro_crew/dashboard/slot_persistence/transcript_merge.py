@@ -377,6 +377,63 @@ def _drop_carried_foreign(foreign: list[str], entries: list[dict]) -> list[str]:
     return kept
 
 
+def _written_size(text: str) -> int:
+    """How many bytes ``atomic_write(path, text)`` puts on disk for *text*.
+
+    UTF-8, with each ``\\n`` written as ``os.linesep`` (its ``newline=None``).
+    """
+    size = len(text.encode("utf-8"))
+    return size + text.count("\n") if os.linesep == "\r\n" else size
+
+
+def prefix_range(meta_str: str, prefix: str) -> tuple[int, int]:
+    """Where a save's frozen prefix sits in the file it writes: ``(offset, size)``.
+
+    The save writes ``meta_str + prefix + window``, so the prefix starts right
+    after the metadata line. Recorded in ``slot._frozen_prefix_cache`` instead of
+    the prefix text.
+    """
+    return _written_size(meta_str), _written_size(prefix)
+
+
+def read_prefix_range(path: Path, where: str | tuple[int, int]) -> str | None:
+    """The cached frozen prefix: its text, read back from *path* when cached as a range.
+
+    *where* is the cache's prefix entry: the text itself (cached before a write,
+    so a failed write is retried on the same bytes), or the ``(offset, size)`` of
+    the prefix in the file the last save wrote. A range that does not start just
+    after a newline, end on one and decode as UTF-8 returns ``None``, and the
+    caller then reads the whole file.
+    """
+    if isinstance(where, str):
+        return where
+    offset, size = where
+    if size == 0:
+        return ""
+    if offset <= 0:
+        return None
+    # Local: the chat_persistence facade's owners may import at module scope only
+    # what the facade already imports (test_chat_persistence_composition_contract).
+    from kiro_crew.bounded_read import bounded_read
+
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(offset - 1)
+            data = bounded_read(fh, size + 1)
+    except OSError:
+        return None
+    if len(data) != size + 1 or data[:1] != b"\n" or not data.endswith(b"\n"):
+        return None
+    try:
+        text = data[1:].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    # The prefix text a save writes never carries a ``\r`` of its own (the read
+    # that built it folded every line ending to ``\n``), so one read back is a
+    # translated line ending.
+    return text.replace("\r\n", "\n") if "\r" in text else text
+
+
 def _frozen_prefix_and_foreign_appends(
     slot: _ChatSlot,
     path,
@@ -484,8 +541,15 @@ def _frozen_prefix_and_foreign_appends(
         # cross-process append is re-emitted instead of silently dropped. No
         # scan runs, so there are no fresh dedup drops to archive. A cached line
         # the window now carries itself is left out (_drop_carried_foreign).
-        carriers = [*window_entries, *(retired_entries or ())]
-        return (cache[3], _drop_carried_foreign(list(cache[4]), carriers), [])
+        #
+        # The cache holds where the prefix sits in that file, not its text, so
+        # an idle slot does not keep a copy of its older history in memory. The
+        # range is read back here; a range that does not read back as whole
+        # lines falls through to the full read below.
+        prefix = read_prefix_range(path, cache[3])
+        if prefix is not None:
+            carriers = [*window_entries, *(retired_entries or ())]
+            return (prefix, _drop_carried_foreign(list(cache[4]), carriers), [])
     try:
         # Bytes, so a first line that is not UTF-8 (which the save is about to
         # rewrite as CORRUPT) does not raise here; the rows decode strictly.

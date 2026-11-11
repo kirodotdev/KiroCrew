@@ -626,7 +626,8 @@ def _save_slot_to_history(
                 rewrite=rewrite,
                 retired_rows=retired_rows,
             )
-            frozen_prefix: str | None
+            # Text from a rewrite; on an append, the cache's entry, possibly a range.
+            frozen_prefix: str | tuple[int, int] | None
             if tail is None:
                 payload, frozen_prefix, foreign_lines, drop_archives = (
                     _transcript_merge.compose_payload(
@@ -743,7 +744,11 @@ def _save_slot_to_history(
             # foreign-append fast path. The foreign lines just preserved are cached
             # too: they now sit in the window region, and a bare frozen+window
             # rebuild would delete them.
-            _post_write_cache: tuple[float, int, int, str, list[str]] | None
+            #
+            # The prefix is cached as where it sits in this file, not as its
+            # text: a slot that stays open would otherwise hold a second copy of
+            # its whole older history for as long as it lives.
+            _post_write_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
             try:
                 _st = path.stat()
             except OSError:
@@ -756,7 +761,11 @@ def _save_slot_to_history(
                         _st.st_mtime,
                         _st.st_size,
                         disk_older,
-                        frozen_prefix,
+                        (
+                            frozen_prefix
+                            if not isinstance(frozen_prefix, str)
+                            else _transcript_merge.prefix_range(meta_str, frozen_prefix)
+                        ),
                         foreign_lines,
                     )
                 )
