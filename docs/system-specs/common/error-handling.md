@@ -105,7 +105,7 @@ instead of the row simply disappearing.
 
 | Boundary | Strategy |
 |----------|----------|
-| ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
+| ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)`. A session start that the backend refuses can raise `AcpRuntimeError` instead (a KAS engine install that cannot fetch the engine, for one), which is outside the `AcpError` hierarchy, so `kirocrew chat` (`cli_chat._run_chat`) catches both and prints the refusal's own text as one line, with the stack trace only in the debug log |
 | Sandbox refusal → CLI and boot logs | `SandboxCeilingUnsealable` and `SandboxUnavailableError` sit outside the `AcpError` hierarchy, and each one's own text names the host's remedy. `kirocrew chat` (`cli_chat._run_chat`) prints that text as one line through `safe_terminal_line` and exits 1; the built-in adoption STAGE pass logs a `SandboxUnavailableError` as one warning carrying it. Neither prints a stack trace |
 | JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
 | KAS HTTP MCP bridge (`kas_http_bridge.Bridge.send`) | A server it cannot reach, or that stops answering mid-answer, is reported on stderr and in each unanswered request's JSON-RPC error with the plain cause `asset_downloader.network_failure_cause` names (`could not be reached (connection refused)`, `stopped answering (timed out)`); any other failure is named by its `reason`, its text or its type |
