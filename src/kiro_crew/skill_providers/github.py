@@ -86,6 +86,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import posixpath
 import re
 import sys
@@ -782,14 +783,23 @@ class GitHubRepoProvider:
             # ``fetch_skill_bundle``, where an unwritable path refuses the bundle
             # by name. Dropping it here would make that refusal unreachable and
             # install the skill without the file instead.
+            raw_size = entry.get("size", 0) or 0
             try:
-                size = int(entry.get("size", 0) or 0)
+                if isinstance(raw_size, float) and math.isnan(raw_size):
+                    # ``NaN`` parses as a float with no integer value. Like an
+                    # infinite size it reads as over the ceiling, never as zero.
+                    size = sys.maxsize
+                else:
+                    size = int(raw_size)
             except (TypeError, ValueError):
                 size = 0
             except OverflowError:
                 # ``1e999`` parses as an infinite float: as large as a size can be,
                 # so the bundle's size ceiling refuses it by name rather than the
                 # whole listing failing (and never read as zero, under the cap).
+                size = sys.maxsize
+            if size < 0:
+                # No file has a negative size; read it as over the ceiling too.
                 size = sys.maxsize
             blobs.append((path, size))
         return blobs
