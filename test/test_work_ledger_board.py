@@ -319,6 +319,7 @@ async def test_an_unbound_item_is_closed_not_running():
 async def test_terminal_comes_from_the_store_s_own_property():
     open_id = _item(title="still open")
     closed_id = _item(title="finished")
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=closed_id, verdict="pass")
     wl.apply_conductor_action(
         CONDUCTOR, "close", item_id=closed_id, state="accepted", decision="looks right"
     )
@@ -790,6 +791,7 @@ async def test_a_non_orphaned_item_is_refused_409(_stop_calls):
 async def test_a_terminal_item_is_refused_because_it_is_not_orphaned(_stop_calls):
     """``is_orphaned`` is a conjunction: a closed item never qualifies."""
     item_id = _orphaned_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     body, response = await _act(_state({WORKER: _slot()}), CONDUCTOR, item_id, "stop")
     assert response.status == 409

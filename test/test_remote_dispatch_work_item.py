@@ -296,6 +296,7 @@ async def test_a_closed_slot_still_reads_its_own_item_but_takes_no_decision(stat
 async def test_a_decision_on_a_closed_item_is_refused(state, preview):
     _, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
     board = f"hub:{HUB_CONDUCTOR}"
+    wl.apply_conductor_action(board, "verdict", item_id="it_0000abcd", verdict="pass")
     wl.apply_conductor_action(board, "close", item_id="it_0000abcd", state="accepted")
     status, body = await _call(
         state, "PATCH", f"/api/chat/slots/{created['key']}/work-item", {"decision": "x"}
