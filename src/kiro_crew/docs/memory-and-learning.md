@@ -113,6 +113,7 @@ Switches that change what is written or injected:
 | `memory.lesson_extraction_enabled: false` | No extracted lessons; other writes and `learn_add` unchanged | Unchanged |
 | `memory.kind_routing: "enforce"` | Consolidation skips a `state` fact; facts and events are written as before (`"shadow"` only logs; default `"off"` does neither) | Unchanged |
 | `memory.lesson_origin_gate: "enforce"` | A lesson from turns no person sent is saved as an `on_topic` finding, never a standing rule (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
+| `memory.lesson_tier_policy: "enforce"` | A new consolidation lesson is a standing rule only when your own words in a message back it; otherwise it is saved as an `on_topic` finding (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
 | `memory.inject_memory: false` | Unchanged | Stored memory block withheld |
 | `memory.inject_lessons: false` | Unchanged | Lessons and user-profile blocks withheld |
 

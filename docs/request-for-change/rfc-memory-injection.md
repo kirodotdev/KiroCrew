@@ -533,6 +533,25 @@ shadow answers the C2 agent-text question with live counts. Its rules:
   host without the agents cgroup reads as a terminal. The JSONL fallback store has no `source` field, so
   there the gate changes the tier only.
 
+R3 ships behind its flag, default `off`, before its sign-off: its job is to
+produce the counts that sign-off waits for. Its rules:
+
+- **Scope.** New consolidation lessons only, in both stores, after R0a's gate
+  on the same rows. An untagged lesson is stored `on_topic`; an `always`
+  lesson keeps its tier only with a `user_quote` that passes the P2 check.
+  `learn_add`, dashboard and CLI writes and every stored row are unchanged.
+  A messaging-channel session is not gated, for R0a's reason.
+- **Prompt.** Only `enforce` asks for `user_quote`. Asking changes the tier the
+  model picks, so a shadow that asked would stop measuring today's writes.
+  `shadow` therefore counts every standing lesson as a would-be demotion (an
+  upper bound on `enforce`), and its quote counts cover only quotes the model
+  offers unasked; quote pass and fail rates come from `enforce`.
+- **Re-teach.** Under `shadow`, each `learn_add` with a vector is compared,
+  before its write, with the stored vectors of the logged would-be demoted
+  keys; a cosine above 0.85 counts as a re-teach. An agent's own
+  `learn_add` counts only when the person sent the chat's latest turn. That count over the
+  would-be demotions is the R3 pass metric.
+
 R1 comes next because it fixes S2 on existing stores without rewriting a row.
 R4 needs one test fix first: the golden fixture that gives every topic-less
 row the same vector must give distinct vectors, or it folds everything.
