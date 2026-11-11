@@ -3872,7 +3872,11 @@ dashboard token auth.
   answers Slack's error (`invalid_auth`, a timeout) with the working
   connection left up. A connected reconnect also
   attaches the agent-session driver to its new client
-  (`agent_sessions.status.configure`), as boot does. While a reconnect runs with no client
+  (`agent_sessions.status.configure`), as boot does, and moves the code-channel
+  status driver of the client it replaced onto it
+  (`code_channels.status.move_driver`), so a code-channel turn that went
+  `processing` before the reconnect sends its turn-end `active` through the new
+  client; an attempt that publishes no client moves nothing. While a reconnect runs with no client
   published, the Slack queue drains and the inbound route keep their entries
   queued rather than dispatch them into the cleared client, and a connected
   reconnect starts them again; an inbound message with attachments waits for

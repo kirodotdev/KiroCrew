@@ -477,6 +477,73 @@ def test_a_reconnect_attaches_the_agent_session_driver_to_its_client(seams, monk
     assert attached == ["client:xoxb-placeholder"]
 
 
+class _StatusClient:
+    """The two attributes the code-channel status driver uses on a Slack client."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self._web = SimpleNamespace(api_call=self._api_call)
+
+    async def _api_call(self, method: str, *, params: dict[str, Any]) -> dict[str, Any]:
+        self.sent.append(params["status"])
+        return {"ok": True}
+
+    def _inject_team(self, channel: str, params: dict[str, Any]) -> None:
+        return None
+
+
+def _code_channel_turn_across_a_reconnect(
+    orch: _Orch, monkeypatch: pytest.MonkeyPatch
+) -> tuple[_StatusClient, _StatusClient]:
+    """Start a code-channel turn on *orch*'s client, reconnect, end the turn."""
+    from kiro_crew.slack.code_channels import status as cc_status
+
+    old, new = _StatusClient(), _StatusClient()
+    orch.slack = old
+    monkeypatch.setattr(slack_client_mod, "RealSlackClient", lambda token: new)
+    monkeypatch.setattr(cc_status, "_gate", lambda: True)
+    monkeypatch.setattr(cc_status, "_slack_provider", lambda: orch.slack)
+    binding = SimpleNamespace(channel_id="C0CODE")
+
+    async def _turn() -> None:
+        await cc_status._on_start(binding, None)  # type: ignore[arg-type]
+        await rc.reconnect_slack(orch)  # type: ignore[arg-type]
+        await cc_status._on_end(binding, None)  # type: ignore[arg-type]
+
+    asyncio.run(_turn())
+    return old, new
+
+
+def test_a_code_channel_turn_across_a_reconnect_clears_through_the_new_client(
+    seams, monkeypatch
+) -> None:
+    orch = _Orch()
+    old, new = _code_channel_turn_across_a_reconnect(orch, monkeypatch)
+    assert orch.slack is new
+    assert old.sent == ["processing"]
+    assert new.sent == ["active"]
+
+
+@pytest.mark.parametrize(
+    "attempt, old_sent",
+    [
+        ("handshake-fails", ["processing"]),
+        # Refused before the teardown: the old client stays published and ends the turn.
+        ("workspace-switch-refused", ["processing", "active"]),
+    ],
+)
+def test_a_reconnect_that_publishes_no_client_carries_no_status_records(
+    seams, monkeypatch, attempt: str, old_sent: list[str]
+) -> None:
+    orch = _Orch(connect_ok=attempt != "handshake-fails")
+    if attempt == "workspace-switch-refused":
+        seams.team = "T0OTHER"
+    old, new = _code_channel_turn_across_a_reconnect(orch, monkeypatch)
+    assert new.sent == []
+    assert not hasattr(new, "code_channel_status")
+    assert old.sent == old_sent
+
+
 def test_a_workspace_the_gate_rejects_publishes_no_client(seams) -> None:
     seams.init_admits = False
     orch = _Orch()
