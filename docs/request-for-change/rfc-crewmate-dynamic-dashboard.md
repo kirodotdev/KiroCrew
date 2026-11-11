@@ -1012,7 +1012,7 @@ The first amendment of 2026-10-12 says removing the gate reopens the 2026-10-11 
 - `AUTHORED_PAGE_REFUSAL` stays. A template call that hands the store a `manifest` or `html` is refused. Its text names `dashboard_preview`, so the sentence is reworded to name `dashboard_apply`; what it refuses does not change. `EDITED_PAGE_REFUSAL` stays for the same reason. An agent's own page goes through the package path, not the template path.
 - The frame's containment does not change: same sandbox, same policy, same CDN allowlist.
 - The catalog's link and junction refusal for the operator folder stays, and a `user` page never shadows a `builtin` id.
-- The layout lock stays. A locked crewmate's apply and rollback are refused, as today.
+- The layout lock stays. A locked crewmate's apply and rollback are refused, as today. *(Superseded 2026-10-31: the owner removed the lock, because a crewmate no longer changes its page on its own and `dashboard_rollback` undoes a change. See "There is no structure lock" in `docs/system-specs/modules/dashboard-instances.md`.)*
 
 ### Decision 4 -- a guard test holds the "values are text" premise
 

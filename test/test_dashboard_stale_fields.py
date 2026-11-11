@@ -221,13 +221,6 @@ class TestTheTurn:
         assert len(stale) == 1, lines
         assert lines[-1].startswith("Upkeep:") and stale[0] == len(lines) - 2, lines
 
-    def test_a_locked_page_still_names_them_since_field_writes_still_land(
-        self, _member_page
-    ) -> None:
-        _preview(_member_page, True)
-        instance.set_structure_lock(SLUG, True)
-        assert "Out of date on your page" in dashboard_agentic.turn_block(SLUG, MEMBER)
-
     def test_a_cold_fold_is_never_reported_as_never_written(self, _member_page) -> None:
         """No warm read (a restart): no claim, rather than every field 'never written'."""
         _preview(_member_page, True)
