@@ -1966,6 +1966,10 @@ the builtin `artifacts` skill):
 - Resolution stays human-only: the resolve endpoint returns 403 for any
   MCP-originated request (actor inferred from the `X-Internal-Secret`
   header, never from a body flag).
+- An agent cannot undo a resolve either: `artifact_mark_review` on a thread
+  whose status is already `resolved` returns 409 for an MCP-originated
+  request and leaves the thread resolved. The person can still
+  reopen or mark review from the dashboard.
 - Agents may not delete provider-synced comments (403) — provider
   reconciliation (companion edition) would resurrect or desync them; mark
   REVIEW instead.
