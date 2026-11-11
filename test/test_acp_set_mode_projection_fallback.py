@@ -511,7 +511,7 @@ async def test_a_busy_settings_lock_blames_no_process(
     def busy_settings_lock(work_dir):
         raise OSError("workspace CLI settings lock still held after 5s")
 
-    monkeypatch.setattr(skill_projection, "workspace_cli_settings_lock", busy_settings_lock)
+    monkeypatch.setattr(skill_projection, "locked_workspace_cli_settings", busy_settings_lock)
     rt, kiro = _runtime({FRESH_ALIAS})
 
     with pytest.raises(AcpRuntimeError) as refused:
