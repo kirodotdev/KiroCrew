@@ -686,6 +686,34 @@ composer and source strip, which an app page does not have.
 | `selectedUrl` | `string` | yes | The url of the one shown |
 | `onSelect` | `(url: string) => void` | yes | Called when the user picks another tab |
 
+## Issue Search
+
+`POST /api/source/issues` lists or searches the issues of one GitHub repository
+(`owner/repo`) or GitLab project (`group/sub/project`), through the gateway's own
+`gh`/`glab` sign-in. It answers the owner's dashboard session only: an app token is
+refused (403) whatever its manifest declares, as for `/api/source/pull-request`. On an
+app page, `useAppApi()` allows the path only when the manifest declares
+`/api/source/issues` in `permissions.api`. The grant is separate from
+`/api/source/issue` (one issue by URL): a bare path covers itself and its children at
+a slash boundary, so neither declares the other. The owner gate, audit and error
+shape are the ones `/api/source/issue` uses.
+
+The request and response types are `IssueSearchRequest` and `IssueSearchResponse` in
+`website/src/types/index.sources.ts`. In short:
+
+| Field | Meaning |
+|---|---|
+| `provider`, `scope` | Required. `github` or `gitlab`; `jira` and `linear` answer 400 `provider_not_supported` |
+| `host` | A GitHub Enterprise or self-managed GitLab host on the gateway's allowlist (`dashboard.github_hosts`, `dashboard.gitlab_hosts`); defaults to github.com / gitlab.com |
+| `state`, `assignee`, `author`, `labels`, `text` | Structured filters; `assignee: 'me'` is the signed-in user |
+| `raw` | GitHub search qualifiers or a GitLab filter string (`labels=bug&milestone=v1`). Replaces the structured filters; it cannot name another repo, org, user or owner, use `OR`/`AND`/`NOT` or parentheses, or set GitLab paging, ordering or `scope` |
+| `sort`, `order`, `limit`, `cursor`, `refresh` | `updated`/`created`, `desc`/`asc`, 1 to 100 (25), the previous page's `nextCursor`, and a cache bypass (results are kept 30 seconds) |
+
+Each `IssueSummary` carries a url built from the validated scope, a display `key`,
+labels, people, counts, a plain-text `excerpt` and `linkedChanges` (`[]` from both list
+APIs). GitHub pull requests never appear. `total` is `null` when the provider does not
+report one; GitHub search stops at its 1,000-result window.
+
 ## Chat Marker Protocol
 
 An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
