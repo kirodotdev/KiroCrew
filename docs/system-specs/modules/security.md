@@ -1009,7 +1009,9 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 - `shell_commands.py` — the shared quote-aware command reader. `read_commands(text, track)`
   walks the text once with `shell_normalizer._iter_shell_chars` and returns one `ShellCommand`
   per command: its steps (raw text, raw offsets, quote state), its words (split at live
-  blanks, a live redirection starting its own word with a standalone fd prefix kept on it),
+  blanks, a live redirection starting its own word with a standalone fd prefix kept on it,
+  a `\`-newline continuation before the first word dropped as bash drops it, so
+  `cd repo && \`-newline `cat x` reads `cat` as the program),
   its redirections with their separate targets (leading ones included), its `argv`, and the
   live separator that ended it (`;`, `&`, `&&`, `|`, `||`, newline, a backtick or paren,
   `<<` where a heredoc stopped the read). It keeps the two facts a dequoted token list
