@@ -27,6 +27,7 @@ import { loadChatConfig } from '../ChatSettings'
 import { api } from '../../../api/client'
 import { resolveAskAfterSend } from '../../../lib/resolveAskAfterSend'
 import { uniqueNotificationTs } from './notificationTs'
+import { CHANNEL_CHALLENGE_ORIGIN, takeChallengeSend } from '../../../utils/channelChallengeSend'
 import { PREFILL_STORAGE_KEY } from '../../../utils/navIntent'
 import { isComposerSendHeld } from '../../../utils/composerSendHolds'
 import type { ComposerHandle } from '../../../chat-core/composer/Composer'
@@ -308,6 +309,7 @@ export function useComposerSend({
     // App launches own only their explicit text, not the composer's staged data.
     const widgetOrigin = !isolated && !!widgetPrefillRef.current && raw.includes(widgetPrefillRef.current)
     if (!isolated) widgetPrefillRef.current = null
+    const challengeOrigin = takeChallengeSend()
     // A staged quote alone is a sendable message (the quote IS the text).
     const sentQuote: MessageQuote | null = isolated || optionText ? null : messageQuote.consume('').quote
     if (isEmptyTurn(isolated ? { text: raw } : { text: raw, quote: sentQuote, files: pendingFilesRef.current, sessionRefs: pendingSessionsRef.current })) return false
@@ -754,6 +756,7 @@ export function useComposerSend({
     // turn's wire order.
     const meta: Record<string, unknown> = { ...turn.meta }
     if (widgetOrigin) meta.origin = 'widget'
+    if (challengeOrigin) meta.origin = CHANNEL_CHALLENGE_ORIGIN
     // A client-generated correlation ID so the server echo can be matched
     // to this exact optimistic bubble without relying on content equality.
     // The server preserves meta fields on the user row it appends, so the

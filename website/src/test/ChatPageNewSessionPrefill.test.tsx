@@ -38,6 +38,7 @@ import { loadSessionRefDrafts, saveSessionRefDrafts, __resetSessionRefDraftsForT
 import { formatToken } from '../utils/pasteTokens'
 import { openPopout, __resetForTests as resetChatPopouts } from '../utils/chatPopout'
 import { performSlotSwitch } from '../lib/slotSwitch'
+import { captureUrlToken } from '../lib/urlToken'
 import { bindSlotReadSender, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { i18nT } from '../i18n/t'
 import type { useKnowledgeFetch } from '../pages/chat/useKnowledgeFetch'
@@ -66,6 +67,7 @@ const answerQuestion = vi.fn()
 const cancelQueuedRequest = vi.fn()
 const deleteChatSlot = vi.fn()
 const discardChatSlot = vi.fn()
+const slackLink = vi.fn()
 vi.mock('../api/client', () => ({
   api: {
     answerQuestion: (...a: unknown[]) => answerQuestion(...a),
@@ -88,6 +90,7 @@ vi.mock('../api/client', () => ({
     discardChatSlot: (...a: unknown[]) => discardChatSlot(...a),
     chatSlotContext: vi.fn().mockResolvedValue({ ok: true }),
     suggestions: vi.fn().mockResolvedValue({ suggestions: [] }),
+    slackLink: (...a: unknown[]) => slackLink(...a),
   },
   SEARCH_MIN_CHARS: 2,
 }))
@@ -1103,5 +1106,40 @@ describe('App SDK chat launch intent', () => {
       expect(discardChatSlot).not.toHaveBeenCalled()
       expect(isListed(store)).toBe(true)
     })
+  })
+})
+
+
+describe('Signed channel link', () => {
+  /** Hand the boot-time token capture a signed chat link, the shape the channel redirect issues. */
+  function openLink(payload: Record<string, unknown>) {
+    const token = `${btoa(JSON.stringify(payload)).replace(/\+/g, '-').replace(/\//g, '_')}.sig`
+    captureUrlToken({
+      location: { href: `http://localhost/chat?token=${token}` },
+      history: { state: null, replaceState: () => {} },
+    } as unknown as Pick<Window, 'location' | 'history'>)
+  }
+
+  beforeEach(() => {
+    slackLink.mockReset()
+    slackLink.mockResolvedValue({ ok: true })
+  })
+
+  it('sends the link prompt tagged as already in the channel thread, and nothing after it', async () => {
+    openLink({ prompt: PROMPT, channel: 'C123', thread_ts: '1700.5' })
+    await renderAt('/chat')
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(slackLink).toHaveBeenCalledWith(NEW_SLOT, 'C123', '1700.5')
+    const [message, slot, , , meta] = sendChat.mock.calls[0]
+    expect(message).toBe(PROMPT)
+    expect(slot).toBe(NEW_SLOT)
+    // The gateway's mirror reads this to skip quoting the person's own message back.
+    expect(meta).toMatchObject({ origin: 'channel_challenge' })
+
+    // The next message is typed in the dashboard, so the thread gets its quote.
+    await act(async () => { fireEvent.change(composer(), { target: { value: PROMPT } }) })
+    await act(async () => { fireEvent.keyDown(composer(), { key: 'Enter', code: 'Enter' }) })
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2))
+    expect(sendChat.mock.calls[1][4]).not.toHaveProperty('origin')
   })
 })

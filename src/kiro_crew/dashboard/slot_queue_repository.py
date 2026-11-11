@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard.channel_prompt import PROMPT_ON_CHANNEL_META_KEY
+
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
 
@@ -995,6 +997,8 @@ class SlotQueueRepository:
                 # A code channel's Slack sender names whose words these are;
                 # replacement text is the editor's, so the name goes.
                 item["meta"].pop("slack_sender", None)
+                # Nor are the editor's words in the linked thread, so they echo.
+                item["meta"].pop(PROMPT_ON_CHANNEL_META_KEY, None)
             if directive_user_origin:
                 item["_directive_user_origin"] = True
             else:

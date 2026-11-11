@@ -1052,6 +1052,8 @@ def _prompt_typed_in_dashboard(turn: Any) -> bool:
       its echo was posted (``_recovery_echo_owed``, carried on the requeued entry
       by ``_mirror_echo_owed``), so the thread never shows an answer without its
       question, and never shows the question twice.
+    * not ``_prompt_on_channel``: a channel challenge link's prompt, sent by the
+      dashboard but already in the thread it came from (``channel_prompt``).
     """
     return bool(
         turn._directive_user_origin
@@ -1062,6 +1064,7 @@ def _prompt_typed_in_dashboard(turn: Any) -> bool:
         and not getattr(turn, "_is_synthetic", turn._synthetic_payload)
         and (not turn._synthetic_recovery_turn or turn._recovery_echo_owed)
         and not turn._turn_provenance_restored
+        and not getattr(turn, "_prompt_on_channel", False)
     )
 
 
