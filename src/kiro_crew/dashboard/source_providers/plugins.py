@@ -69,7 +69,14 @@ _PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 # built-in hosts first, so a shadowing plugin would be dead for parsing yet live
 # for fetching -- two layers disagreeing about one provider.
 _BUILTIN_PROVIDER_IDS = frozenset(
-    {"github", "gitlab", "jira", contract.BITBUCKET_SERVER_PROVIDER, contract.GERRIT_PROVIDER}
+    {
+        "github",
+        "gitlab",
+        "jira",
+        "linear",
+        contract.BITBUCKET_SERVER_PROVIDER,
+        contract.GERRIT_PROVIDER,
+    }
 )
 
 _SOURCE_PROVIDER_PLUGINS: dict[str, SourceProviderPlugin] = {}

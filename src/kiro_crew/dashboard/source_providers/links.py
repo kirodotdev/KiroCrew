@@ -8,6 +8,7 @@ grammars run first, the operator allowlists next, and registered providers last.
 from __future__ import annotations
 
 import re
+import string
 from collections.abc import Iterator
 from pathlib import PurePosixPath
 from urllib.parse import urlparse, urlunparse
@@ -194,6 +195,75 @@ def _jira_ref(host: str, path: str) -> SourceRef:
     return SourceRef("jira", normalized, host, "", project_key, int(number_text), kind="issue")
 
 
+# Linear is one hosted service: an issue lives at
+# ``https://linear.app/<workspace>/issue/<TEAM>-<number>``, optionally followed by
+# a title slug. The workspace is the organization's url key, the team key starts
+# with a letter, and the number has no leading zero, so each spelling of one
+# issue normalizes to one URL.
+LINEAR_HOST = "linear.app"
+_LINEAR_HOSTS = frozenset({LINEAR_HOST, "www.linear.app"})
+_LINEAR_WORKSPACE_CHARS = frozenset(string.ascii_lowercase + string.digits + "-")
+_LINEAR_WORKSPACE_MAX_CHARS = 64
+_LINEAR_TEAM_FIRST = frozenset(string.ascii_uppercase)
+_LINEAR_TEAM_REST = frozenset(string.ascii_uppercase + string.digits)
+_LINEAR_TEAM_MAX_CHARS = 10
+_LINEAR_NUMBER_MAX_DIGITS = 9
+_LINEAR_URL_HINT = "Expected a Linear URL like https://linear.app/<workspace>/issue/ENG-123."
+
+
+def is_linear_team_key(value: str) -> bool:
+    """*value* is an upper-case Linear team key such as ``ENG``."""
+    return (
+        0 < len(value) <= _LINEAR_TEAM_MAX_CHARS
+        and value[0] in _LINEAR_TEAM_FIRST
+        and set(value[1:]) <= _LINEAR_TEAM_REST
+    )
+
+
+def is_linear_workspace(value: str) -> bool:
+    """*value* is a lower-case Linear workspace url key such as ``acme``."""
+    return (
+        0 < len(value) <= _LINEAR_WORKSPACE_MAX_CHARS
+        and set(value) <= _LINEAR_WORKSPACE_CHARS
+        and value[0] != "-"
+    )
+
+
+def linear_issue_key(text: str) -> tuple[str, int] | None:
+    """``("ENG", 77)`` for ``ENG-77`` in any letter case, else None."""
+    team, dash, number = text.upper().rpartition("-")
+    if (
+        not dash
+        or not is_linear_team_key(team)
+        or not 0 < len(number) <= _LINEAR_NUMBER_MAX_DIGITS
+        or not number.isascii()
+        or not number.isdigit()
+        or number[0] == "0"
+    ):
+        return None
+    return team, int(number)
+
+
+def linear_issue_url(workspace: str, team: str, number: int) -> str:
+    """The canonical URL of one Linear issue."""
+    return f"https://{LINEAR_HOST}/{workspace}/issue/{team}-{number}"
+
+
+def _linear_ref(path: str) -> SourceRef:
+    """Build a Linear ``SourceRef``: ``owner`` is the workspace, ``repo`` the team."""
+    segments = path.split("/")
+    # "", workspace, "issue", key, then an optional title slug.
+    if len(segments) not in (4, 5) or segments[0] != "" or segments[2] != "issue":
+        raise ValueError(_LINEAR_URL_HINT)
+    workspace = segments[1].lower()
+    key = linear_issue_key(segments[3])
+    if not is_linear_workspace(workspace) or key is None:
+        raise ValueError(_LINEAR_URL_HINT)
+    team, number = key
+    url = linear_issue_url(workspace, team, number)
+    return SourceRef("linear", url, LINEAR_HOST, workspace, team, number, kind="issue")
+
+
 # Bitbucket Server keeps a pull request at
 # ``<context>/projects/KEY/repos/SLUG/pull-requests/N``, optionally followed by
 # the UI tab the link was copied from. Split on "/" and matched from the end, so
@@ -376,6 +446,10 @@ def parse_source_url(raw_url: str) -> SourceRef:
     if host in {"gitlab.com", "www.gitlab.com"}:
         return _gitlab_ref("gitlab.com", path)
 
+    # A URL on any port other than the default is not Linear's.
+    if host in _LINEAR_HOSTS and parsed.port in (None, 443):
+        return _linear_ref(path)
+
     # A self-managed instance may listen on a non-default port, so the allowlist
     # is matched against host and host:port -- an entry without a port does not
     # authorize an arbitrary port on the same host. An explicit :443 is treated
@@ -422,8 +496,8 @@ def parse_source_url(raw_url: str) -> SourceRef:
         "issues, merge requests or issues on a GitLab host listed in "
         "dashboard.gitlab_hosts, pull requests on a Bitbucket Server host listed "
         "in dashboard.bitbucket_server_hosts, changes on a Gerrit host listed in "
-        "dashboard.gerrit_hosts, and Jira issues on *.atlassian.net or a host "
-        "listed in dashboard.jira_hosts are supported."
+        "dashboard.gerrit_hosts, Jira issues on *.atlassian.net or a host "
+        "listed in dashboard.jira_hosts, and Linear issues on linear.app are supported."
     )
 
 
