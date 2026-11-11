@@ -7,7 +7,7 @@
  * fixtures they share live in KiroPrerequisiteGateTestUtils.tsx.
  */
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { KiroPrerequisiteStatus } from '../api/client'
 import KiroPrerequisiteGate, {
   acpBackendsRefetchInterval,
@@ -919,6 +919,37 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.queryByText('We could not check Kiro CLI.')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
     expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('does not mount the app on a first run while the refused status read waits for its retry', async () => {
+    // The dashboard's own retry ladder: a session-expiry 403 gets one more try.
+    // While it waits the query is still pending, and the app's own reads (the
+    // import scan, the sidebar's settings) would be refused the same way.
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(403, 'session expired', '', true))
+    const { queryClient } = renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+      { queryDefaults: { retry: 1, retryDelay: 60_000 } },
+    )
+    onTestFinished(() => queryClient.cancelQueries())
+
+    expect(await screen.findByRole('heading', { name: 'Sign in again to continue.' })).toBeInTheDocument()
+    expect(queryClient.getQueryState(['kiro-prerequisite'])?.status).toBe('pending')
+    expect(screen.queryByText('Dashboard loaded')).not.toBeInTheDocument()
+  })
+
+  it('keeps a returning browser on its app while the refused status read waits for its retry', async () => {
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockRejectedValue(new ApiError(403, 'session expired', '', true))
+    const { queryClient } = renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+      { queryDefaults: { retry: 1, retryDelay: 60_000 } },
+    )
+    onTestFinished(() => queryClient.cancelQueries())
+
+    await waitFor(() => expect(queryClient.getQueryState(['kiro-prerequisite'])?.fetchFailureCount).toBe(1))
+    expect(queryClient.getQueryState(['kiro-prerequisite'])?.status).toBe('pending')
+    expect(screen.getByText('Dashboard loaded')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Sign in again to continue.' })).not.toBeInTheDocument()
   })
 
   it('shows the probe diagnostic when the backend backstop degrades a probe exception to 200', async () => {

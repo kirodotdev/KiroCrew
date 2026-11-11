@@ -5564,7 +5564,8 @@ Two layers close that window:
 
 - **The dashboard never waits on the check.** Kiro readiness gates nothing in the
   dashboard, so an unresolved check mounts the app immediately and **fully
-  usable** (`statusQuery.isPending` → children rendered directly). Whichever way
+  usable** (`statusQuery.isPending` → children rendered directly; the one
+  exception, a first attempt refused for the dashboard sign-in, is below). Whichever way
   it resolves, the user is already where they need to be: only a *confirmed*
   first-run status shows setup chrome; a signed-out established install shows
   nothing at all.
@@ -5595,7 +5596,12 @@ either way. A check refused because this browser's dashboard sign-in lapsed (403
 `X-Auth-Required`, not a proxy's challenge) is not a setup failure either: with
 nothing remembered the gate shows `SessionSignInRequired` ("Sign in again to
 continue") and no retry button, since the session-expired banner is the remedy
-and its token exchange refetches the check. A genuine first run — nothing
+and its token exchange refetches the check. It shows that screen from the first
+refused attempt, while the read's one retry is still pending, rather than keeping
+the app mounted for the wait: every read the app starts then is refused the same
+way, and its panels (the first-run import dialog, the sidebar) would show those
+refusals as failures under the banner. A retry that passes still replaces the
+screen. A genuine first run — nothing
 remembered, no established home — still gets the full setup gate, and `initial_setup_complete` short-circuits ahead of the
 non-owner branch so an established non-owner is never shown the owner-restore
 screen either.
