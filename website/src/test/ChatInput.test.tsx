@@ -376,6 +376,16 @@ describe('ChatInput', () => {
       fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
       expect(onChange).toHaveBeenCalledWith('hel\nlo')
     })
+
+    it('leaves a read-only (disabled) composer untouched on Ctrl+Enter', () => {
+      const onChange = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="hello" disabled onChange={onChange} sendOnEnter="enter-ctrl-newline" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      Object.defineProperty(ta, 'selectionStart', { value: 3, writable: true })
+      Object.defineProperty(ta, 'selectionEnd', { value: 3, writable: true })
+      fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
+      expect(onChange).not.toHaveBeenCalled()
+    })
   })
 
   describe('onChange', () => {
