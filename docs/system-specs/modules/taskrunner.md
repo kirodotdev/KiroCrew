@@ -1031,6 +1031,12 @@ Notifications with a run are prefixed with `[run.name]`, falling back to the spe
 | Token budget | 💰 Token budget exceeded | Usage vs budget |
 | Branch ready | 🌿 Branch: `name` | Shown in completion summary |
 
+The completion summary's step list and `TASK_PROGRESS.md` mark each step from one
+map, `task_reporter.TASK_STATUS_ICONS`: ✅ passed, ❌ failed, 🔄 in progress,
+🔍 reviewing, ⬜ pending, ⏭️ skipped, 🚫 cancelled. So a step a replan skipped
+shows ⏭️ in the summary, not ❌. The summary uses ❌ for a status the map does
+not have. Pinned by `test/test_taskrunner_verification.py`.
+
 ### Where a notification lands: the originating conversation
 
 `start_background(..., session_key=)` records the conversation the run was
