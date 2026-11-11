@@ -46,10 +46,12 @@ cannot be globbed skips only itself.
 KAS loads both roots itself and honours `inclusion: manual` and `fileMatch`. So
 on a KAS session the shipped `file://.kiro/steering/**/*.md` entry is not sent
 when KAS already loads every file it names; otherwise those files would load on
-every turn, and twice. The entry is still sent when the workspace tree may hold an
-`inclusion: auto` file, a link, or a file Crew cannot read. The tree is checked
-when the session starts, so such a file added during a session loads from the
-next session (`src/kiro_crew/acp/kas_steering.py`).
+every turn, and twice. When the workspace tree may hold `inclusion: auto` files,
+Crew sends just those files, each by its own path, in the entry's place. The entry
+itself is still sent when the tree holds a link or a folder Crew cannot read, or
+when KAS might read those paths otherwise or not load them all in full. The tree
+is checked when the session starts, so such a file added during a session loads
+from the next session (`src/kiro_crew/acp/kas_steering.py`).
 
 A workspace file therefore needs a project bound to the chat slot. With no
 resolvable project the Steering files tab offers only the global root, and
