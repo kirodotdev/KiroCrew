@@ -14,6 +14,7 @@ import { Check, ChevronRight } from 'lucide-react'
 import { api, type McpManagedServer } from '../../api/client'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import {
   argvLine,
@@ -209,9 +210,9 @@ export function RefusalLaunch({ refusal }: { refusal: LaunchRefusal }) {
           : diff.removed.length > 0
             ? i18nT('pages.mcpManagement.diff_removed', { tokens: diff.removed.join(' ') })
             : null,
-      diff.envAdded.length > 0 ? i18nT('pages.mcpManagement.diff_env_added', { names: diff.envAdded.join(', ') }) : null,
+      diff.envAdded.length > 0 ? i18nT('pages.mcpManagement.diff_env_added', { names: fmtList(diff.envAdded, { style: 'narrow' }) }) : null,
       diff.envRemoved.length > 0
-        ? i18nT('pages.mcpManagement.diff_env_removed', { names: diff.envRemoved.join(', ') })
+        ? i18nT('pages.mcpManagement.diff_env_removed', { names: fmtList(diff.envRemoved, { style: 'narrow' }) })
         : null,
     ].filter((l): l is string => l !== null)
     return (

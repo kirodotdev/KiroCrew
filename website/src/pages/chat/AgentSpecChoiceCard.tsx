@@ -5,7 +5,7 @@ import { ApiError } from '../../api/apiError'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
-import { fmtDateTime } from '../../i18n/format'
+import { fmtDateTime, fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import type { ChatMessage } from '../../types'
@@ -115,7 +115,7 @@ export function AgentSpecChoiceCard({ ambiguity, onRetry }: {
               )}
               {c.differs.length > 0 && (
                 <span className="text-[12px] leading-5 text-muted" data-testid="agent-spec-choice-differs">
-                  {i18nT('pages.chat.errorCard.spec_choice_differs', { fields: c.differs.join(', ') })}
+                  {i18nT('pages.chat.errorCard.spec_choice_differs', { fields: fmtList(c.differs, { style: 'narrow' }) })}
                 </span>
               )}
               <span className="text-[12px] leading-5 text-muted">

@@ -55,6 +55,7 @@ import { Btn } from './ui'
 import { useRovingTabs } from './Tablist'
 
 
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { pullRequestErrorDetails } from '../utils/pullRequestErrors'
 import ErrorNotice from './ErrorNotice'
@@ -1424,8 +1425,8 @@ export default function PullRequestPanel({
               className="shrink-0 mx-4 my-2"
               variant="inline"
               message={sourceProviderMeta(source.provider).pullRequestWording
-                ? i18nT('components.pullRequestPanel.provider_results_failed_pull_request', { sections: partial.failed.join(', ') })
-                : i18nT('components.pullRequestPanel.provider_results_failed_merge_request', { sections: partial.failed.join(', ') })}
+                ? i18nT('components.pullRequestPanel.provider_results_failed_pull_request', { sections: fmtList(partial.failed, { style: 'narrow' }) })
+                : i18nT('components.pullRequestPanel.provider_results_failed_merge_request', { sections: fmtList(partial.failed, { style: 'narrow' }) })}
               askAgent
               testId="pull-request-panel-failed-sections"
             />
@@ -1436,8 +1437,8 @@ export default function PullRequestPanel({
               <AlertCircle className="lucide-inline shrink-0 mt-0.5 text-warn" />
               <span>
                 {sourceProviderMeta(source.provider).pullRequestWording
-                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: partial.truncated.join(', ') })
-                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: partial.truncated.join(', ') })}
+                  ? i18nT('components.pullRequestPanel.provider_results_may_be_partial_pull_request', { sections: fmtList(partial.truncated, { style: 'narrow' }) })
+                  : i18nT('components.pullRequestPanel.provider_results_may_be_partial_merge_request', { sections: fmtList(partial.truncated, { style: 'narrow' }) })}
               </span>
             </div>
           )}
