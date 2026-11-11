@@ -13861,6 +13861,19 @@
       "could_not_repair_images": "이미지를 복구하지 못했습니다"
     },
     "chatSidebar": {
+      "selection": {
+        "count_other": "{{count}}개 선택됨",
+        "clear": "선택 모두 해제",
+        "actions": "작업",
+        "actions_label": "선택한 세션에 대한 작업",
+        "hint": "세션을 클릭하면 선택에 추가하거나 제외할 수 있습니다. Shift+클릭하면 범위를 선택합니다.",
+        "select": "선택",
+        "deselect": "선택 해제",
+        "close_other": "세션 {{count}}개 닫기",
+        "close_title_other": "세션 {{count}}개를 닫으시겠습니까?",
+        "close_working_other": "그중 {{count}}개는 아직 작업 중입니다. 닫으면 그 작업이 중지됩니다.",
+        "close_kept": "대화와 메시지 입력란의 초안은 유지되며 나중에 세션을 다시 열 수 있습니다."
+      },
       "needsMeCard": {
         "card_label": "{{title}}: 처리가 필요합니다",
         "recap": "요약",

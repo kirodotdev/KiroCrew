@@ -543,5 +543,9 @@
   "pages.schedulePage.batchActions.batch_failed_reason",
   "pages.schedulePage.batchActions.changes_n_jobs",
   "pages.schedulePage.batchActions.run_confirm_title",
-  "pages.developer.agentBackendTab.card_summary_safety_notes"
+  "pages.developer.agentBackendTab.card_summary_safety_notes",
+  "pages.chatSidebar.selection.count",
+  "pages.chatSidebar.selection.close",
+  "pages.chatSidebar.selection.close_title",
+  "pages.chatSidebar.selection.close_working"
 ]

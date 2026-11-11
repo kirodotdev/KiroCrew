@@ -63,6 +63,13 @@
    fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
 .session-row.session-reveal-flash,.folder-row.session-reveal-flash,.folder-col.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
 .session-row.session-reveal-flash-fade,.folder-row.session-reveal-flash-fade,.folder-col.session-reveal-flash-fade{outline-color:transparent}
+/* A row picked for a batch action (chat-sidebar/selection.ts): the open row's
+   fill plus an accent ring, so a picked row reads apart from the open one, which
+   has the fill and no ring. On the row's class pair, so the idle row's hover
+   fill does not replace it. The ring is an outline because a row's inline style
+   owns its box-shadow (the recency tint) and can own its fill (a session
+   color). */
+.session-row.session-selected{background-color:var(--accent-subtle);color:var(--text-strong);outline:1px solid var(--accent);outline-offset:-1px}
 /* Pinned folder headers in the Sessions lane (chat-sidebar/folderBlocks.tsx renderFolderHeader).
    A sticky row needs an opaque surface or the session rows scroll visibly
    through it; it takes the card's own surface so it reads as part of the

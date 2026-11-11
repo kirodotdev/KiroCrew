@@ -84,7 +84,7 @@ function scene(over: Partial<Omit<RowScene, 'local'>> & { local?: Partial<RowSce
     ...over,
     local: {
       recentRank: new Map(), subagentCounts: {}, subagentApprovalCounts: {}, poppedOut: new Set(), digits: null,
-      renaming: { key: null, scope: null, value: '' }, revealFlash: null, nativeDragKey: null,
+      renaming: { key: null, scope: null, value: '' }, revealFlash: null, nativeDragKey: null, selection: null,
       ...over.local,
     },
   }
@@ -104,7 +104,7 @@ const FULL_LOCAL: SidebarRowInputs['local'] = {
 const FULL_SCENE_LOCAL: RowScene['local'] = {
   recentRank: new Map([['k', 1]]), subagentCounts: { k: 2 }, subagentApprovalCounts: { k: 1 }, poppedOut: new Set(['k']),
   digits: new Map([['k', '1']]), renaming: { key: 'k', scope: 'list', value: 'draft' },
-  revealFlash: { kind: 'session', key: 'k', fading: false }, nativeDragKey: 'k',
+  revealFlash: { kind: 'session', key: 'k', fading: false }, nativeDragKey: 'k', selection: new Map([['k', true]]),
 }
 
 describe('a peer row never carries local state', () => {
@@ -122,7 +122,7 @@ describe('a peer row never carries local state', () => {
       isActive: false, isOut: false, isPinned: false, isUnread: false,
       recent: undefined, subagentCount: 0, subagentApprovalCount: 0, digitBadge: undefined, isRenaming: false,
       renamingHere: false, renameValue: '', revealFlash: null, pinnedOrderIndex: -1, pinnedReorderEnabled: false,
-      opensElsewhere: null,
+      opensElsewhere: null, selection: null,
       // A peer row reports its OWN running flag, not the local set's answer for its key.
       isRunning: true,
     })
@@ -136,7 +136,7 @@ describe('a peer row never carries local state', () => {
       identity: 'k', localKey: 'k', peerId: undefined, peerName: undefined,
       isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true,
       recent: 1, subagentCount: 2, subagentApprovalCount: 1, digitBadge: '1', isRenaming: true, renamingHere: true,
-      renameValue: 'draft', revealFlash: 'flash', pinnedOrderIndex: 0, pinnedReorderEnabled: true,
+      renameValue: 'draft', revealFlash: 'flash', pinnedOrderIndex: 0, pinnedReorderEnabled: true, selection: true,
     })
     expect(views.windowOf(theLocal).keepMounted).toBe(true)
   })
@@ -920,6 +920,23 @@ describe('row views compare by value', () => {
     expect(views.view(member, AT).opensElsewhere).toBe('/members?member=bob%20smith')
     expect(views.view(local('x', { mode: 'member' }), AT).opensElsewhere).toBe('/members')
     expect(views.view(a, AT).opensElsewhere).toBeNull()
+  })
+
+  it('marks the rows that can be picked only while rows are being picked', () => {
+    const anchor = local('x')
+    const picking = buildSidebarRows(inputs([a, b, anchor])).views(scene({ local: { selection: new Map([['a', true], ['b', false]]) } }))
+    expect(picking.view(a, AT).selection).toBe(true)
+    expect(picking.view(b, AT).selection).toBe(false)
+    // A drawn row the selection does not list (a conductor-lane anchor) is no toggle.
+    expect(picking.view(anchor, AT).selection).toBeNull()
+    expect(rows.views(scene()).view(a, AT).selection).toBeNull()
+  })
+
+  it('a pick re-renders the picked row and leaves its siblings\' views equal', () => {
+    const one = rows.views(scene({ local: { selection: new Map([['a', true], ['b', false]]) } }))
+    const two = rows.views(scene({ local: { selection: new Map([['a', true], ['b', true]]) } }))
+    expect(sameRowView(one.view(a, AT), two.view(a, AT))).toBe(true)
+    expect(sameRowView(one.view(b, AT), two.view(b, AT))).toBe(false)
   })
 
   it('fades a reveal flash, and lights it only for a session reveal', () => {

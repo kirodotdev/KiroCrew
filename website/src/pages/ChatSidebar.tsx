@@ -97,6 +97,9 @@ import { renderHistoryPane } from './chat-sidebar/HistoryPane'
 import { renderFolderModal } from './chat-sidebar/folderModal'
 import { renderSessionCleanupPanel, useSessionCleanup } from './chat-sidebar/sessionCleanup'
 import { renderBulkModelPanel, useBulkModelSwitch } from './chat-sidebar/bulkModelSwitch'
+import { useSessionSelection } from './chat-sidebar/selection'
+import SelectionBar from './chat-sidebar/SelectionBar'
+import { RowSelectionContext } from '../hooks/useRowSelection'
 import BroadcastPanel from './chat-sidebar/BroadcastPanel'
 import { makeKindOf, type KindSections } from './chat-sidebar/kindSections'
 import type { Slot } from './chat-sidebar/types'
@@ -698,6 +701,10 @@ function ChatSidebar({
   const [activeDrag, setActiveDrag] = useState<{ type: string; id: string } | null>(null)
   // Its native counterpart: the board card in flight, which no DndContext sees.
   const { nativeSessionDrag, startNativeSessionDrag, endNativeSessionDrag } = useNativeSessionDrag()
+  // The rows picked for a batch action (Shift-click, or the row menu's Select).
+  const selection = useSessionSelection({
+    rows: sidebarRows.filteredSlots, activeSlot, rootRef: sidebarRootRef, dragging: !!activeDrag || nativeSessionDrag !== null,
+  })
   // The derived lane a session card hovers right now. Such a lane refuses the
   // drop, and its header's hover title is out of sight mid-drag, so the lane
   // says why in a visible line instead. It shows only while `nativeSessionDrag`
@@ -880,6 +887,7 @@ function ChatSidebar({
       digits: digitModifierHeld ? shortcutDigitByKey : null,
       renaming: { key: renamingSlot, scope: renameScope, value: renameValue },
       revealFlash, nativeDragKey: nativeSessionDrag,
+      selection: selection.marks,
     },
     drag: activeDrag,
   }
@@ -987,13 +995,17 @@ function ChatSidebar({
 
   return (
     <SharedCrewBylineContext.Provider value={creatorView.bylines}>
+    <RowSelectionContext.Provider value={selection.menu}>
     {/* stable theming hook 'sidebar' — see website/docs/theming-contract.md
         The region is the session picker a guide's "choose the session" step
         points at (`sessions.list`): both layouts draw their rows inside it. */}
     <>
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="slot-rename-status">{renameAnnouncement}</span>
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
-      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
+      {/* Always mounted, so the first pick is announced too: a status region that
+          mounts with its text already in it is not reliably read. */}
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="session-selection-status">{selection.selecting ? i18nT('pages.chatSidebar.selection.count', { count: selection.selected.size }) : ''}</span>
+      <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} {...selection.rootProps} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />
@@ -1113,6 +1125,13 @@ function ChatSidebar({
       )}
       </ListDock>
 
+      {/* Batch selection: the count, the way out and the actions for the picked
+          rows. Under the lanes, like the undo bars below it, so the rows do not
+          move under the pointer when the first pick brings it up. */}
+      {selection.selecting && (
+        <SelectionBar selected={selection.selected} slots={localSlots} unread={unreadSet} folders={folders} actions={sessionActions} onClear={selection.clear} />
+      )}
+
       {/* Drag-move confirmation + undo. Deliberately a SIBLING of the lanes and
           a sibling ABOVE the separator, so it never covers the row that just
           moved and never covers the persistent "Older Sessions" control — the
@@ -1160,6 +1179,7 @@ function ChatSidebar({
       {folderModal && renderFolderModal(scope, folderModal)}
     </div>
     </>
+    </RowSelectionContext.Provider>
     </SharedCrewBylineContext.Provider>
   )
 }

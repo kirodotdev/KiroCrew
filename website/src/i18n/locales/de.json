@@ -14189,6 +14189,23 @@
       "could_not_repair_images": "Die Bilder konnten nicht repariert werden"
     },
     "chatSidebar": {
+      "selection": {
+        "count_one": "{{count}} ausgewählt",
+        "count_other": "{{count}} ausgewählt",
+        "clear": "Auswahl aufheben",
+        "actions": "Aktionen",
+        "actions_label": "Aktionen für die ausgewählten Sitzungen",
+        "hint": "Klicke auf eine Sitzung, um sie hinzuzufügen oder zu entfernen. Umschalt+Klick wählt einen Bereich aus.",
+        "select": "Auswählen",
+        "deselect": "Abwählen",
+        "close_one": "{{count}} Sitzung schließen",
+        "close_other": "{{count}} Sitzungen schließen",
+        "close_title_one": "{{count}} Sitzung schließen?",
+        "close_title_other": "{{count}} Sitzungen schließen?",
+        "close_working_one": "{{count}} davon arbeitet noch. Schließen stoppt diese Arbeit.",
+        "close_working_other": "{{count}} davon arbeiten noch. Schließen stoppt diese Arbeit.",
+        "close_kept": "Die Unterhaltungen und die Entwürfe in den Eingabefeldern bleiben erhalten, und du kannst die Sitzungen später wieder öffnen."
+      },
       "needsMeCard": {
         "card_label": "{{title}}: braucht dich",
         "recap": "Zusammenfassung",

@@ -13861,6 +13861,19 @@
       "could_not_repair_images": "无法修复图片"
     },
     "chatSidebar": {
+      "selection": {
+        "count_other": "已选择 {{count}} 个",
+        "clear": "清除选择",
+        "actions": "操作",
+        "actions_label": "对所选会话的操作",
+        "hint": "点击会话可将其加入或移出选择。按住 Shift 点击可选择一段范围。",
+        "select": "选择",
+        "deselect": "取消选择",
+        "close_other": "关闭 {{count}} 个会话",
+        "close_title_other": "关闭 {{count}} 个会话？",
+        "close_working_other": "其中 {{count}} 个仍在工作。关闭会停止这些工作。",
+        "close_kept": "对话和消息框中的草稿都会保留，之后可以重新打开这些会话。"
+      },
       "needsMeCard": {
         "card_label": "{{title}}：需要你处理",
         "recap": "概要",

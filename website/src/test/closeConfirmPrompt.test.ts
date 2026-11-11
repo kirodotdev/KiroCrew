@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest'
 import { isValidElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { closeBusyReasons } from '../lib/closeBusyGate'
-import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { closeConfirmPrompt, closeManyConfirmPrompt } from '../lib/closeConfirmPrompt'
 import { i18nT } from '../i18n/t'
 import { createTestStore } from './helpers'
 import type { RootState } from '../store'
@@ -171,5 +171,32 @@ describe('closeConfirmPrompt', () => {
       'reason_workflow', 'reason_goal_loop', 'reason_monitor', 'reason_work', 'reason_setting', 'actions', 'confirm']) {
       expect(t(k)).not.toContain('close_confirm')
     }
+  })
+})
+
+describe('closeManyConfirmPrompt', () => {
+  const stateOf = (slots: Partial<ChatSlot>[]): RootState => createTestStore({
+    dashboard: { slots: slots.map(s => ({ title: 'Chat', messages: 1, running: false, ...s })) } as unknown as RootState['dashboard'],
+    chat: { activeSlot: null, slotHistory: [] } as unknown as RootState['chat'],
+  }).getState()
+  const paragraphs = (opts: ReturnType<typeof closeManyConfirmPrompt>): string[] => {
+    if (!isValidElement(opts.body)) throw new Error('body is not an element')
+    return [...renderToStaticMarkup(opts.body).matchAll(/<p[^>]*>(.*?)<\/p>/g)].map(m => decode(m[1]))
+  }
+
+  it('asks once for all of them, counting the sessions in the title and on the button', () => {
+    const opts = closeManyConfirmPrompt(stateOf([{ key: 'a' }, { key: 'b' }, { key: 'c' }]), ['a', 'b', 'c'])
+    expect(opts.title).toBe('Close 3 sessions?')
+    expect(opts.confirmLabel).toBe('Close 3 sessions')
+    // Nothing is running: the one line says what is kept.
+    expect(paragraphs(opts)).toEqual(['The conversations and the drafts in their message boxes are kept, and you can reopen the sessions later.'])
+  })
+
+  it('counts the sessions with live work, and only those being closed', () => {
+    const state = stateOf([{ key: 'a', running: true }, { key: 'b' }, { key: 'c', running: true }, { key: 'd', running: true }])
+    expect(paragraphs(closeManyConfirmPrompt(state, ['a', 'b', 'c']))[0])
+      .toBe('2 of them are still working. Closing stops that work.')
+    expect(paragraphs(closeManyConfirmPrompt(state, ['a', 'b']))[0])
+      .toBe('1 of them is still working. Closing stops that work.')
   })
 })

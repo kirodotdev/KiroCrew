@@ -249,6 +249,9 @@ export interface RowScene {
     revealFlash: { kind: string; key: string; fading: boolean } | null
     /** The board card whose native HTML5 drag is in flight. */
     nativeDragKey: string | null
+    /** While rows are being picked for a batch action (`./selection`): every row
+     *  that can be picked, and whether it is. Null while none is. */
+    selection: ReadonlyMap<string, boolean> | null
   }
   /** The dnd-kit drag in flight, if any. */
   drag: { type: string; id: string } | null
@@ -327,6 +330,9 @@ export interface SessionRowView {
    *  thread, admitted to the conductor lane as a creator anchor) opens here instead
    *  of switching to it; null for every other row. */
   opensElsewhere: string | null
+  /** Whether the row is picked for a batch action, while rows are being picked
+   *  (`./selection`); null at rest, and for a row that cannot be picked. */
+  selection: boolean | null
   shell: RowShell
 }
 
@@ -1004,6 +1010,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     drawnOrderIndex: local === null || !scene.drag ? -1 : (model.drawnIndex.get(local) ?? -1),
     pinnedReorderEnabled: !model.searchRanks && local !== null,
     opensElsewhere: opensElsewhereOf(slot),
+    selection: local === null ? null : (scene.local.selection?.get(local) ?? null),
     shell: scene.shell,
   }
 }
@@ -1026,7 +1033,7 @@ const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   isActive: true, isSidebarActiveSlot: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
-  opensElsewhere: true, shell: true,
+  opensElsewhere: true, selection: true, shell: true,
 }
 const VIEW_KEYS = Object.keys(VIEW_FIELDS) as (keyof SessionRowView)[]
 

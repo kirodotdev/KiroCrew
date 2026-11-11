@@ -13861,6 +13861,19 @@
       "could_not_repair_images": "画像を修復できませんでした"
     },
     "chatSidebar": {
+      "selection": {
+        "count_other": "{{count}} 件選択済み",
+        "clear": "選択を解除",
+        "actions": "アクション",
+        "actions_label": "選択したセッションの操作",
+        "hint": "セッションをクリックすると選択に追加または解除できます。Shift キーを押しながらクリックすると範囲を選択できます。",
+        "select": "選択",
+        "deselect": "選択解除",
+        "close_other": "{{count}} 件のセッションを閉じる",
+        "close_title_other": "{{count}} 件のセッションを閉じますか？",
+        "close_working_other": "そのうち {{count}} 件はまだ作業中です。閉じるとその作業は停止します。",
+        "close_kept": "会話とメッセージ欄の下書きは保持され、後でセッションを再び開けます。"
+      },
       "needsMeCard": {
         "card_label": "{{title}}：対応が必要です",
         "recap": "要約",

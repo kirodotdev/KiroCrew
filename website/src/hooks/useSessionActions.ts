@@ -11,7 +11,7 @@ import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { closeConfirmPrompt } from '../lib/closeConfirmPrompt'
+import { closeConfirmPrompt, closeManyConfirmPrompt } from '../lib/closeConfirmPrompt'
 import { askAppConfirm } from '../lib/appConfirm'
 import { forgetClosedSessionRef, rememberClosedSession, trackClosedSessionClose } from '../lib/recentlyClosedSessions'
 import { i18nT } from '../i18n/t'
@@ -122,6 +122,8 @@ export interface SessionActions {
   reload: (slotKey: string) => void
   /** Close (delete) a session, honouring the confirm-close preference. */
   close: (slotKey: string) => void
+  /** Close several sessions on one confirmation. Resolves whether it was given. */
+  closeMany: (slotKeys: string[]) => Promise<boolean>
 }
 
 export function useSessionActions(mode?: string, opts?: {
@@ -504,19 +506,29 @@ export function useSessionActions(mode?: string, opts?: {
   // the two made it ask (`closeConfirmPrompt`). The question is the in-app
   // dialog, never the browser's native confirm(): in the desktop app that one
   // can leave the window unable to take input once it closes.
+  const closeSlot = useCallback((slotKey: string) => {
+    // Recorded as the close is dispatched, not on `fulfilled` (which trails
+    // the peer session's transcript load); a refused close drops the record.
+    const ref = rememberClosedSession(store.getState().dashboard.slots.find(s => s.key === slotKey))
+    const close = dispatch(deleteSlot(slotKey))
+    trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
+    void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
+  }, [dispatch])
   const close = useCallback((slotKey: string) => {
     const ask = closeConfirmPrompt(store.getState(), slotKey, { settingOn: loadChatConfig().confirmCloseSession })
-    const closeSlot = () => {
-      // Recorded as the close is dispatched, not on `fulfilled` (which trails
-      // the peer session's transcript load); a refused close drops the record.
-      const ref = rememberClosedSession(store.getState().dashboard.slots.find(s => s.key === slotKey))
-      const close = dispatch(deleteSlot(slotKey))
-      trackClosedSessionClose(ref, close.then(action => deleteSlot.fulfilled.match(action)))
-      void close.then(action => { if (deleteSlot.rejected.match(action)) forgetClosedSessionRef(ref) })
-    }
-    if (ask === null) { closeSlot(); return }
-    void askAppConfirm(ask).then(ok => { if (ok) closeSlot() })
-  }, [dispatch])
+    if (ask === null) { closeSlot(slotKey); return }
+    void askAppConfirm(ask).then(ok => { if (ok) closeSlot(slotKey) })
+  }, [closeSlot])
+  const closeMany = useCallback(async (slotKeys: string[]) => {
+    if (slotKeys.length === 0) return false
+    const ok = await askAppConfirm(closeManyConfirmPrompt(store.getState(), slotKeys))
+    if (!ok) return false
+    // The open chat closes last, so the session its close switches to is not one
+    // this batch is about to close.
+    const active = store.getState().chat.activeSlot
+    for (const key of [...slotKeys.filter(k => k !== active), ...slotKeys.filter(k => k === active)]) closeSlot(key)
+    return true
+  }, [closeSlot])
 
-  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
+  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close, closeMany }
 }
