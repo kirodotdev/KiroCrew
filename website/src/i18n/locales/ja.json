@@ -8239,7 +8239,9 @@
         "chat_stopped_unrecovered_body": "チャットが停止し、復旧できませんでした。チャットを開いて新しいチャットを開始してください。",
         "chat_stopped_busy_body": "チャットが使用中のままで、復旧できませんでした。チャットを開いて新しいチャットを開始してください。",
         "chat_stopped_refused_body": "モデルが回答を拒否したため、チャットが停止しました。チャットを開いて理由を確認してください。",
-        "chat_stopped_stalled_body": "チャットが停滞し、復旧できませんでした。チャットを開いて新しいチャットを開始してください。"
+        "chat_stopped_stalled_body": "チャットが停滞し、復旧できませんでした。チャットを開いて新しいチャットを開始してください。",
+        "folder_agent_label_title": "フォルダーのデフォルトエージェントを確認",
+        "folder_agent_label_body": "これらのフォルダーのデフォルトエージェントは Bot と同じ名前ですが、新しいチャットはその Bot では実行されません：{{folders}}。その Bot を使うには、フォルダーの設定でデフォルトエージェントとして選択してください。"
       },
       "notificationBanner": {
         "dismiss_notification": "通知を閉じる",

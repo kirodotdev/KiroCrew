@@ -258,12 +258,14 @@ card and banner, the feed rows and their search, and the detail panel, and falls
 back to the stored English for a note without an id, an id the maps do not hold,
 or a persisted row of the wrong shape. Notes that name a copy today: the turn-ceiling
 pause (`turn_limit`) and the default-model applied and failed notes
-(`default_model_applied`, `default_model_failed`), and the dead-turn note on
+(`default_model_applied`, `default_model_failed`), the folder Default agent note
+(`folder_agent_label`), and the dead-turn note on
 `system.turn`, one `chat_stopped_*` id per way the turn died under one shared title;
 every other producer still writes English only. `test_notification_dashboard_copy.py` pins the turn-ceiling
 producer, its English against the catalog and the meta refusal;
 `test_config_live_server_appliers.py` pins the default-model ids;
 `test_turn_died_notify.py` pins each `chat_stopped_*` id and its English;
+`test_folder_agent_member_key.py` pins the folder Default agent note (`folder_agent_label`) and its English;
 `NotificationCard.systemNote.test.tsx` pins the zh-CN render of every id and the
 fallback.
 
