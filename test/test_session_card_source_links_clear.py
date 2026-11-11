@@ -10,6 +10,7 @@ already dropped.
 from __future__ import annotations
 
 import pytest
+from source_link_rows import append_created
 
 from kiro_crew.dashboard.state import _ChatSlot
 
@@ -25,7 +26,7 @@ def _urls(slot: _ChatSlot) -> list[str]:
 class TestClearBoundary:
     def test_links_named_before_a_clear_are_dropped(self):
         slot = _ChatSlot("s1")
-        slot.append("assistant", f"opened {OLD} and {OLD_ISSUE}", ts="t1")
+        append_created(slot, OLD, OLD_ISSUE, ts="t1")
         slot.append("user", "/clear", ts="t2")
         slot.append("assistant", "🗑 Conversation cleared.", ts="t3")
 
@@ -36,36 +37,40 @@ class TestClearBoundary:
 
     def test_links_named_after_the_clear_are_kept(self):
         slot = _ChatSlot("s1")
-        slot.append("assistant", f"opened {OLD}", ts="t1")
+        append_created(slot, OLD, ts="t1")
         slot.append("user", "/clear", ts="t2")
-        slot.append("assistant", f"now on {NEW}", ts="t3")
+        append_created(slot, NEW, ts="t3")
 
         assert _urls(slot) == [NEW]
         assert slot.to_dict()["source_links_total"] == 1
 
     def test_only_the_newest_clear_is_the_boundary(self):
         slot = _ChatSlot("s1")
-        slot.append("assistant", f"opened {OLD}", ts="t1")
+        append_created(slot, OLD, ts="t1")
         slot.append("user", "/clear", ts="t2")
-        slot.append("assistant", f"now on {NEW}", ts="t3")
+        append_created(slot, NEW, ts="t3")
         slot.append("user", "/CLEAR", ts="t4")
 
         assert _urls(slot) == []
 
-    def test_a_link_re_mentioned_after_the_clear_comes_back(self):
+    def test_a_link_created_again_after_the_clear_comes_back(self):
         slot = _ChatSlot("s1")
-        slot.append("assistant", f"opened {OLD}", ts="t1")
+        append_created(slot, OLD, ts="t1")
         slot.append("user", "/clear", ts="t2")
         assert _urls(slot) == []
 
+        # Only mentioned after the clear: still not this conversation's.
         slot.append("user", f"look at {OLD} again", ts="t3")
+        assert _urls(slot) == []
+
+        append_created(slot, OLD, ts="t4")
         assert _urls(slot) == [OLD]
 
     def test_a_session_with_no_clear_is_unchanged(self):
         slot = _ChatSlot("s1")
-        slot.append("assistant", f"opened {OLD}", ts="t1")
+        append_created(slot, OLD, ts="t1")
         slot.append("user", "please clear the cache", ts="t2")
-        slot.append("assistant", f"and {NEW}", ts="t3")
+        append_created(slot, NEW, ts="t3")
 
         assert _urls(slot) == [NEW, OLD]
 

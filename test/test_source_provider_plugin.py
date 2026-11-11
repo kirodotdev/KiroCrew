@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from source_link_rows import gh_create_row
 
 from kiro_crew import history, history_search
 from kiro_crew.dashboard.handlers import source_providers as source
@@ -625,13 +626,9 @@ def test_sidebar_keeps_same_numbered_changes_on_different_repos_distinct(plugin)
 
     slot = object.__new__(state_mod._ChatSlot)
     slot.messages = [
-        {
-            "role": "assistant",
-            "content": (
-                "Compare https://github.com/acme/tools/pull/7 with "
-                "https://github.com/acme/gadgets/pull/7 today."
-            ),
-        }
+        gh_create_row(
+            "https://github.com/acme/tools/pull/7", "https://github.com/acme/gadgets/pull/7"
+        )
     ]
     slot._source_links_revision = 1
     slot._source_links_cache = None

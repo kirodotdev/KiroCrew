@@ -68,6 +68,7 @@ _COMPOSED: dict[str, str] = {
     "_restore_open_slots_steps": "restore_drivers",
     "_restore_recent_sessions_steps": "restore_drivers",
     "_short_scalar": "restore_drivers",
+    "_tail_gh_meta": "restore_drivers",
     "_TAIL_CLS_BOUND": "restore_drivers",
     "_TAIL_META_KEYS": "restore_drivers",
     "_TAIL_SCALAR_BOUND": "restore_drivers",

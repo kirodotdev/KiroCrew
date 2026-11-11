@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
 from kiro_crew.dashboard.agent_welcome import welcome_preview
@@ -151,48 +151,61 @@ class SlotProjection:
     """
 
     @staticmethod
+    def dismissed_identity_keys(slot: Any) -> frozenset[str]:
+        """The identities the user unlinked from this slot, folded, minus in-flight ones.
+
+        Keyed on the serialized identity, so a dismissed change stays gone no
+        matter which URL shape names it again. Each key is folded the way the
+        identity is, so a key stored under a mixed-case GitHub spelling still
+        matches. Keys added under an in-flight (uncommitted) unlink transaction are
+        NOT yet suppressed: publishing them would let a concurrent broadcast show a
+        chip removed before its guarded write commits (and possibly rolled back).
+
+        Read defensively: a bare ``object.__new__``-built slot that never ran
+        ``__init__`` has no dismissed set and reads as "nothing dismissed".
+        """
+        from kiro_crew.dashboard.source_providers.contract import canonical_source_identity_key
+
+        dismissed = frozenset(
+            map(canonical_source_identity_key, getattr(slot, "_dismissed_source_links", ()) or ())
+        )
+        pending = frozenset(
+            map(canonical_source_identity_key, getattr(slot, "_dismissed_txn_pending", ()) or ())
+        )
+        return dismissed - pending if pending else dismissed
+
+    @staticmethod
     def source_links(
         slot: Any,
         *,
         max_links: int,
         non_durable_roles: frozenset[str],
     ) -> list[dict]:
-        """Return source links ordered by their most recent mention."""
+        """Return the links this slot's own tool rows own, newest owning event first.
+
+        Each link carries two private keys the merge in
+        ``state_parts/source_links.py`` reads and strips before anything is
+        served: :data:`OWNED_AT_KEY` (the owning row's stamp) and
+        :data:`RELATION_KEY` (``created`` or ``acted``).
+        """
         from kiro_crew.dashboard.handlers.source_providers import (
             gitlab_hosts_generation,
             parse_source_url,
             source_link_path_markers,
             source_ref_label,
         )
-        from kiro_crew.dashboard.source_providers.contract import (
-            canonical_source_identity_key,
-            source_ref_identity_key,
-        )
+        from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
         from kiro_crew.dashboard.source_providers.links import iter_source_url_candidates
+        from kiro_crew.dashboard.source_providers.ownership import (
+            CREATED_KEY,
+            OWNED_AT_KEY,
+            RELATION_KEY,
+            owned_refs_in_tool_row,
+            row_timestamp,
+            source_link_dict,
+        )
 
-        # Identities the user has explicitly unlinked from this session. The set
-        # is keyed on the serialized identity, so a dismissed change stays gone
-        # no matter which URL shape re-mentions it. Each key is folded the way
-        # the identity is, so a key stored under a mixed-case GitHub spelling
-        # still matches. Snapshotting it as a frozenset
-        # keeps the loop's membership test cheap and immune to a concurrent mutate.
-        # Read defensively: this scanner is a staticmethod designed to run against
-        # a bare ``object.__new__``-built slot that supplies only the fields the
-        # walk reaches, so a slot that never ran ``__init__`` (and thus has no
-        # dismissed set) must read as "nothing dismissed" rather than raise.
-        dismissed = frozenset(
-            map(canonical_source_identity_key, getattr(slot, "_dismissed_source_links", ()) or ())
-        )
-        # Keys added under an in-flight (uncommitted) unlink transaction are NOT
-        # yet suppressed: publishing them here would let a concurrent broadcast
-        # show a chip removed before its guarded write commits (and possibly
-        # rolled back). Subtract them so the chip stays visible until commit.
-        # Read defensively for the same bare-slot reason as ``dismissed`` above.
-        _txn_pending = frozenset(
-            map(canonical_source_identity_key, getattr(slot, "_dismissed_txn_pending", ()) or ())
-        )
-        if _txn_pending:
-            dismissed = dismissed - _txn_pending
+        dismissed = SlotProjection.dismissed_identity_keys(slot)
 
         # The allowlist generation belongs in the cache key: a cold self-managed
         # GitLab miss must be retried after the allowlist finishes loading. The
@@ -221,9 +234,47 @@ class SlotProjection:
         # identity contains (and Jira's instance-context exception) is
         # ``SourceRef.identity``'s contract.
         found: dict[tuple, dict] = {}
-        # Charge every parse attempt, including rejected and duplicate URLs, so
-        # one accepted oversized message cannot monopolize the event loop.
+        # Charge every mention parse attempt, including rejected and duplicate
+        # URLs, so one oversized message cannot monopolize the event loop. A
+        # tool row costs a bounded read of its own (``ownership``) and is read
+        # once per change through the row memo below.
         parse_budget = max_links * 64
+
+        def candidates(text: str) -> Iterator[str]:
+            return iter_source_url_candidates(text, path_markers)
+
+        def add(ref: Any, at: float, relation: str) -> None:
+            identity = ref.identity
+            if identity in found:
+                # An older event on a link already kept: only whether the chat
+                # CREATED it survives, since a worker's created links roll up.
+                if relation == "created":
+                    found[identity][CREATED_KEY] = True
+                return
+            # Keyed on the serialized identity so the suppression matches the
+            # object, not the particular URL that named it again.
+            if source_ref_identity_key(identity) in dismissed:
+                return
+            # First writer wins, and because the walk is backwards the first
+            # writer IS the newest event -- so the newest URL (and any sub-path
+            # pin it carries) is the one the chip links to.
+            found[identity] = {
+                **source_link_dict(ref, source_ref_label, source_ref_identity_key),
+                OWNED_AT_KEY: at,
+                RELATION_KEY: relation,
+                CREATED_KEY: relation == "created",
+            }
+
+        # The owned refs each gh tool row yielded on the last walk, by row, so a
+        # re-derivation after one appended row re-reads only rows whose command
+        # or output changed. Rebuilt every walk from the rows it visits, so it
+        # never outgrows the window, and dropped when the host allowlists change
+        # (a row's refs depend on them). Read defensively for a bare slot.
+        held_memo = getattr(slot, "_owned_row_memo", None)
+        row_memo: dict[int, tuple[Any, Any, Any, list]] = (
+            held_memo[1] if held_memo and held_memo[0] == cache_key[1] else {}
+        )
+        next_memo: dict[int, tuple[Any, Any, Any, list]] = {}
         for msg in reversed(summary_rows(slot)):
             if len(found) >= max_links or parse_budget <= 0:
                 break
@@ -237,63 +288,70 @@ class SlotProjection:
                 break
             if not isinstance(msg, dict) or msg.get("role") in non_durable_roles:
                 continue
+            meta = msg.get("meta")
+            if msg.get("role") == "tool" and isinstance(meta, dict):
+                # A GitHub link counts only when a tool row proves the chat
+                # created or acted on it (``source_providers/ownership.py``).
+                held = row_memo.get(id(msg))
+                if (
+                    held is not None
+                    and held[0] is msg
+                    and held[1] is meta.get("input")
+                    and held[2] is meta.get("output")
+                ):
+                    owned = held[3]
+                else:
+                    owned = owned_refs_in_tool_row(msg, parse_source_url, candidates)
+                next_memo[id(msg)] = (msg, meta.get("input"), meta.get("output"), owned)
+                parse_budget -= len(owned)
+                at = row_timestamp(msg.get("ts")) if owned else 0.0
+                # Newest first within the row too: the line gh printed last.
+                for ref, relation in reversed(owned):
+                    if len(found) >= max_links:
+                        break
+                    add(ref, at, relation)
             content = msg.get("content")
             if not isinstance(content, str) or "https://" not in content:
                 continue
 
+            # Every other provider (GitLab, Jira, Gerrit, Bitbucket Server, a
+            # registered plugin) has no ownership signal yet, so a mention in
+            # any durable row still makes its chip.
+            #
             # ``iter_source_url_candidates`` is the shared token grammar (the
             # unlink-authorization predicate ``_ChatSlot.mentions_source_identity``
             # walks the same one, so the two cannot drift). It yields front to
             # back; we need newest-first (reversed) to keep this scanner's "newest
-            # mention wins" contract -- combined with the outer
-            # ``reversed(messages)`` walk, the first writer into ``found`` is the
-            # most recent mention, so the chip links to the newest URL. Collect
-            # into a ``deque(maxlen=parse_budget)`` rather than an unbounded
-            # ``list``: at most ``parse_budget`` candidates are ever resident, so
-            # a message dense in marker-carrying URLs cannot allocate an unbounded
-            # candidate list before the budget check stops the scan. maxlen keeps
-            # the LAST budget candidates (the message tail = its most recent
-            # content), and reversing them yields newest-first within the cap.
-            recent = deque(iter_source_url_candidates(content, path_markers), maxlen=parse_budget)
+            # mention wins" contract. Collect into a ``deque(maxlen=parse_budget)``
+            # rather than an unbounded ``list``: at most ``parse_budget``
+            # candidates are ever resident, so a message dense in marker-carrying
+            # URLs cannot allocate an unbounded candidate list before the budget
+            # check stops the scan. maxlen keeps the LAST budget candidates (the
+            # message tail = its most recent content), and reversing them yields
+            # newest-first within the cap.
+            recent = deque(candidates(content), maxlen=max(parse_budget, 0))
             for candidate in reversed(recent):
                 if len(found) >= max_links or parse_budget <= 0:
                     break
+                # A GitHub URL that text only MENTIONS (a status note, pasted
+                # context, a compaction summary) is not the chat's; the chat
+                # view's own Changes and Resources panels still list it. The
+                # public host is skipped before the parse; an Enterprise host is
+                # dropped after it.
+                if candidate.startswith("https://github.com/"):
+                    continue
                 parse_budget -= 1
                 try:
                     ref = parse_source_url(candidate)
                 except ValueError:
                     continue
-                identity = ref.identity
-                if identity in found:
+                if ref.provider == "github":
                     continue
-                # Budget is already charged above, so an unlinked chip costs the
-                # same parse work it did before dismissal -- cost accounting is
-                # unchanged, only the surfaced result set shrinks. Keyed on the
-                # serialized identity so the suppression matches the object, not
-                # the particular URL that re-mentioned it.
-                if source_ref_identity_key(identity) in dismissed:
-                    continue
-                # First writer wins, and because the walk is backwards the
-                # first writer IS the most recent mention -- so the newest
-                # mention's URL (and any sub-path pin it carries) is the one
-                # the chip links to.
-                found[identity] = {
-                    "provider": ref.provider,
-                    "number": ref.number,
-                    "url": ref.url,
-                    "kind": ref.kind,
-                    "label": source_ref_label(ref),
-                    # The serialized identity travels to the client so an unlink
-                    # affordance can name this exact object back to the DELETE
-                    # endpoint without the client having to re-parse the URL. It
-                    # is the SAME key the dismissed-set filter above tests, so a
-                    # round-trip through the wire cannot drift from what the
-                    # backend suppresses.
-                    "identity": source_ref_identity_key(identity),
-                }
+                add(ref, row_timestamp(msg.get("ts")), "mentioned")
 
         links = list(found.values())
         slot._source_links_cache = (cache_key, links)
+        slot._owned_row_memo = (cache_key[1], next_memo)
         return links
 
     @staticmethod

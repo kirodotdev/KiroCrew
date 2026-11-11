@@ -19,6 +19,7 @@ from dashboard_source_link_unlink_helpers import (
     _request,
     _slot,
 )
+from source_link_rows import append_created
 
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_source_link_unlink
 from kiro_crew.dashboard.state import _ChatSlot
@@ -309,7 +310,7 @@ class TestAwaitBindingRegressions:
 
         slot = _ChatSlot("cron-job")
         slot.linked_session_key = "cron:job"
-        slot.append("assistant", PR_A)
+        append_created(slot, PR_A)
         slot._dismissed_hydrated = False
         slot.turn_timeout_secs = None  # its turn limit is read; only the dismissed set is not
         key = _identity_key(PR_A)

@@ -10,8 +10,20 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from source_link_rows import append_created
 
 from kiro_crew.dashboard.state import _MAX_SLOT_MESSAGES, _MAX_SOURCE_LINKS_PER_SLOT, _ChatSlot
+
+
+def _mr(number: int) -> str:
+    """A gitlab.com merge request URL.
+
+    The mention-scanner mechanics below (token grammar, budgets, recency) run on
+    a provider whose chips still come from mentions. A GitHub link counts only
+    when the chat owns it (``test_source_link_ownership.py``).
+    """
+    return f"https://gitlab.com/acme/widgets/-/merge_requests/{number}"
+
 
 # ── Slot unit tests ──
 
@@ -148,9 +160,9 @@ class TestChatSlot:
         slot = _ChatSlot("s1")
         pr_url = "https://github.com/acme/widgets/pull/12"
         issue_urls = [f"https://github.com/acme/widgets/issues/{n}" for n in (1, 2, 3, 4)]
-        # The issues are mentioned FIRST, so a slice taken in mention order
+        # The issues are created FIRST, so a slice taken in discovery order
         # would spend the whole budget before ever reaching the pull request.
-        slot.append("assistant", "\n".join([*issue_urls, pr_url]), ts="t1")
+        append_created(slot, *issue_urls, pr_url, ts="t1")
 
         payload = slot.to_dict()
         serialized = payload["source_links"]
@@ -203,7 +215,7 @@ class TestChatSlot:
 
     def test_pr_source_links_refresh_after_same_length_content_edit(self):
         slot = _ChatSlot("s1")
-        url = "https://github.com/acme/widgets/pull/12"
+        url = _mr(12)
         linked_content = f"Review {url}"
         unlinked_content = "x" * len(linked_content)
         slot.append("assistant", unlinked_content, ts="t1")
@@ -245,10 +257,10 @@ class TestChatSlot:
     def test_pr_source_links_ignore_streaming_numeric_prefixes(self):
         slot = _ChatSlot("s1")
         for suffix in ("1", "12", "123"):
-            slot.append("chunk", f"https://github.com/acme/widgets/pull/{suffix}")
+            slot.append("chunk", _mr(int(suffix)))
             assert slot.to_dict()["source_links_total"] == 0
 
-        url = "https://github.com/acme/widgets/pull/1234"
+        url = _mr(1234)
         slot.append("assistant", f"Review {url}")
         payload = slot.to_dict()
         assert payload["source_links_total"] == 1
@@ -258,7 +270,7 @@ class TestChatSlot:
         """Regression: '**url**' left a trailing '**' on the candidate, so the
         numeric tail check failed and the link was silently dropped."""
         slot = _ChatSlot("s1")
-        url = "https://github.com/acme/widgets/pull/166"
+        url = _mr(166)
         for i, wrapped in enumerate(
             (f"**{url}**", f"*{url}*", f"`{url}`", f"__{url}__", f"~~{url}~~")
         ):
@@ -320,16 +332,10 @@ class TestChatSlot:
 
         slot = _ChatSlot("s1")
         for number in range(1, _MAX_SOURCE_LINKS_PER_SLOT + 1):
-            slot.append(
-                "assistant",
-                f"https://github.com/acme/widgets/pull/{number}",
-            )
+            slot.append("assistant", _mr(number))
         # The scan runs newest-first, so the message it must never reach is the
         # OLDEST one -- placed before everything else in the transcript.
-        beyond_cap = CountingMessage(
-            role="assistant",
-            content="https://github.com/acme/widgets/pull/999",
-        )
+        beyond_cap = CountingMessage(role="assistant", content=_mr(999))
         slot.messages.insert(0, beyond_cap)
         slot.invalidate_source_links()
 
@@ -346,13 +352,13 @@ class TestChatSlot:
         collapsed the one being worked on into the "+N" pill."""
         slot = _ChatSlot("s1")
         for number in (1, 2, 3, 4):
-            slot.append("assistant", f"https://github.com/acme/widgets/pull/{number}")
+            slot.append("assistant", _mr(number))
 
         assert [link["number"] for link in slot._pr_source_links()] == [4, 3, 2, 1]
 
         # Re-mentioning an OLD pull request moves it back to the head: recency is
         # last mention, which is what "the one I am working on" actually means.
-        slot.append("assistant", "picking https://github.com/acme/widgets/pull/1 back up")
+        slot.append("assistant", f"picking {_mr(1)} back up")
         links = slot._pr_source_links()
         assert [link["number"] for link in links] == [1, 4, 3, 2]
         # Still deduplicated -- the earlier mention did not survive as a second entry.
@@ -362,8 +368,8 @@ class TestChatSlot:
         """Several urls in ONE message have no turn ordering to go on, so position
         in the text is the only available proxy for "mentioned later"."""
         slot = _ChatSlot("s1")
-        first = "https://github.com/acme/widgets/pull/1"
-        second = "https://github.com/acme/widgets/pull/2"
+        first = _mr(1)
+        second = _mr(2)
         slot.append("assistant", f"opened {first} then {second}")
 
         assert [link["url"] for link in slot._pr_source_links()] == [second, first]
@@ -385,10 +391,7 @@ class TestChatSlot:
         monkeypatch.setattr(source_providers, "parse_source_url", counting)
 
         slot = _ChatSlot("s1")
-        flood = " ".join(
-            f"https://github.com/acme/widgets/pull/{n}"
-            for n in range(1, _MAX_SOURCE_LINKS_PER_SLOT * 20)
-        )
+        flood = " ".join(_mr(n) for n in range(1, _MAX_SOURCE_LINKS_PER_SLOT * 20))
         slot.append("assistant", flood)
 
         links = slot._pr_source_links()
@@ -407,7 +410,7 @@ class TestChatSlot:
         An unbounded scan is quadratic here and runs synchronously in `push_slots_update`.
         Measured 0.14s bounded vs 128s unbounded, so an absolute budget avoids flaky ratios.
         """
-        payload = "https://" * 16000 + "github.com/acme/widgets/pull/1"
+        payload = "https://" * 16000 + "gitlab.com/acme/widgets/-/merge_requests/1"
         assert len(payload) > 128_000
         slot = _ChatSlot("s1")
         slot.append("assistant", payload)
@@ -416,7 +419,7 @@ class TestChatSlot:
         links = slot._pr_source_links()
         elapsed = time.perf_counter() - started
 
-        assert [link["url"] for link in links] == ["https://github.com/acme/widgets/pull/1"]
+        assert [link["url"] for link in links] == [_mr(1)]
         assert elapsed < 10, f"scan took {elapsed:.1f}s — the per-candidate bound is gone"
 
     def test_pr_source_links_bound_total_parse_attempts(self, monkeypatch):
@@ -458,7 +461,7 @@ class TestChatSlot:
         transcript mentioning the full chip allowance still yields every link."""
         slot = _ChatSlot("s1")
         for n in range(1, _MAX_SOURCE_LINKS_PER_SLOT + 1):
-            slot.append("assistant", f"opened https://github.com/acme/widgets/pull/{n} for review")
+            slot.append("assistant", f"opened {_mr(n)} for review")
 
         links = slot._pr_source_links()
         assert len(links) == _MAX_SOURCE_LINKS_PER_SLOT
@@ -472,19 +475,17 @@ class TestChatSlot:
         call, so surfacing it is acceptable -- pinned here so it is a decision
         rather than a surprise."""
         slot = _ChatSlot("s1")
-        nested = "https://redirect.example/?to=https://github.com/acme/widgets/pull/7"
+        nested = f"https://redirect.example/?to={_mr(7)}"
         slot.append("assistant", nested)
 
-        assert [link["url"] for link in slot._pr_source_links()] == [
-            "https://github.com/acme/widgets/pull/7",
-        ]
+        assert [link["url"] for link in slot._pr_source_links()] == [_mr(7)]
 
     def test_serialized_chips_keep_the_newest_pull_requests(self):
         slot = _ChatSlot("s1")
         for number in (1, 2, 3, 4, 5):
-            slot.append("assistant", f"https://github.com/acme/widgets/pull/{number}")
+            append_created(slot, f"https://github.com/acme/widgets/pull/{number}")
         for number in (10, 11, 12, 13):
-            slot.append("assistant", f"https://github.com/acme/widgets/issues/{number}")
+            append_created(slot, f"https://github.com/acme/widgets/issues/{number}")
 
         payload = slot.to_dict()
         serialized = payload["source_links"]
@@ -500,7 +501,7 @@ class TestChatSlot:
 
     def test_to_dict_scans_pr_source_links_once(self, monkeypatch):
         slot = _ChatSlot("s1")
-        slot.append("user", "https://github.com/acme/widgets/pull/12")
+        slot.append("user", _mr(12))
         original = _ChatSlot._pr_source_links
         calls = 0
 
@@ -521,7 +522,8 @@ class TestChatSlot:
         mr = "https://gitlab.com/acme/widgets/-/merge_requests/14"
         gitlab_issue = "https://gitlab.com/acme/widgets/-/issues/15"
         work_item = "https://gitlab.com/acme/widgets/-/work_items/16"
-        slot.append("assistant", f"{pr} {issue} {mr} {gitlab_issue} {work_item}")
+        append_created(slot, pr, issue)
+        slot.append("assistant", f"{mr} {gitlab_issue} {work_item}")
 
         payload = slot.to_dict()
 
@@ -556,7 +558,7 @@ class TestChatSlot:
         slot = _ChatSlot("s1")
         pr = "https://github.com/acme/widgets/pull/12"
         issue = "https://github.com/acme/widgets/issues/13"
-        slot.append("assistant", f"{pr} and {issue}")
+        append_created(slot, pr, issue)
 
         links = slot.to_dict(include_check_status=True)["source_links"]
 
@@ -572,7 +574,7 @@ class TestChatSlot:
         monkeypatch.setattr(state_module, "_cached_check_status", lambda _url: {"ci": "failed"})
         slot = _ChatSlot("s1")
         url = "https://github.com/acme/widgets/pull/12"
-        slot.append("assistant", url)
+        append_created(slot, url)
         slot._pr_source_links()
         # Simulate a pre-upgrade cache entry.
         key, links = slot._source_links_cache
@@ -814,7 +816,7 @@ class TestSourceLinkUrlsExcludeIssues:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("source")
         pr = "https://github.com/acme/widgets/pull/12"
-        slot.append("assistant", f"{pr} and https://github.com/acme/widgets/issues/13")
+        append_created(slot, pr, "https://github.com/acme/widgets/issues/13")
 
         assert state.source_link_urls() == [pr]
         assert state.source_link_urls_for_slot("source") == [pr]
@@ -830,7 +832,7 @@ class TestSourceLinkUrlsExcludeIssues:
         state.owner_id = "U_OWNER"
         slot = state.get_or_create_slot("source")
         pr = "https://github.com/acme/widgets/pull/12"
-        slot.append("assistant", f"{pr} and https://github.com/acme/widgets/issues/13")
+        append_created(slot, pr, "https://github.com/acme/widgets/issues/13")
 
         app = _make_app(state)
 

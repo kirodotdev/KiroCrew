@@ -10,6 +10,7 @@ see this package's ``__init__``. New restore driver steps go here.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Iterable, Iterator, Sequence
 from typing import TYPE_CHECKING
@@ -166,15 +167,42 @@ def _display_tail(rows: list[dict]) -> list[dict]:
             row["cls"] = cls
         meta = m.get("meta")
         if isinstance(meta, dict):
-            kept = {
+            kept: dict[str, object] = {
                 key: value
                 for key in _TAIL_META_KEYS
                 if (value := _short_scalar(meta.get(key))) is not None
             }
+            if role == "tool":
+                # A row that ran a gh write keeps a bounded copy of its command
+                # and output: the card's GitHub chips are derived from them
+                # (``source_providers/ownership.py``), at read time, so they
+                # follow the host allowlists as they load and change.
+                kept.update(_tail_gh_meta(meta))
             if kept:
                 row["meta"] = kept
         shown.append(row)
     return shown
+
+
+def _tail_gh_meta(meta: dict) -> dict:
+    """``input``/``output``/``failed`` of a gh-write tool row, bounded, else ``{}``."""
+    from kiro_crew.dashboard.source_providers.ownership import gh_write_command
+
+    command = gh_write_command(meta)
+    output = meta.get("output")
+    if command is None or not isinstance(output, str):
+        return {}
+    # Redacted like the row's content, before the bound, so a credential a legacy
+    # or agent-written row carries never reaches the sidebar or a chip.
+    gh: dict[str, object] = {
+        "input": json.dumps({"command": redact_display_content(command)[: TAIL_TEXT_BOUND * 2]}),
+        # The end of the output is where gh prints the new URL and the shell
+        # its exit trailer.
+        "output": redact_display_content(output)[-TAIL_TEXT_BOUND:],
+    }
+    if meta.get("failed"):
+        gh["failed"] = True
+    return gh
 
 
 def _prefetch_open_slot_inputs(

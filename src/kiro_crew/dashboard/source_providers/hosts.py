@@ -72,12 +72,18 @@ def _publish_provider_hosts(
     bitbucket_server: frozenset[str] = frozenset(),
     gerrit: frozenset[str] = frozenset(),
 ) -> None:
-    """Install freshly loaded snapshots, bumping the generation on real change."""
+    """Install freshly loaded snapshots, bumping the generation on real change.
+
+    The first load is a change too, even when every list is empty: before it an
+    empty list means "not read yet", which a reader may treat differently from
+    "none configured" (``ownership._default_host``).
+    """
     global _gitlab_hosts_snapshot, _jira_hosts_snapshot, _github_hosts_snapshot
     global _bitbucket_server_hosts_snapshot, _gerrit_hosts_snapshot
     global _gitlab_hosts_loaded_at, _gitlab_hosts_generation
     if (
-        gitlab != _gitlab_hosts_snapshot
+        not _gitlab_hosts_loaded_at
+        or gitlab != _gitlab_hosts_snapshot
         or jira != _jira_hosts_snapshot
         or github != _github_hosts_snapshot
         or bitbucket_server != _bitbucket_server_hosts_snapshot

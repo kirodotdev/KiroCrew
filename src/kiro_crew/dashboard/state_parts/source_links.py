@@ -7,8 +7,8 @@ its transcript, filters its dismissed identities and caches the result.
 Instance fields of ``_ChatSlot`` this module reads and writes:
 
 Writes: ``_dismissed_hydrated``, ``_dismissed_source_links``, ``_dismissed_txn_depth``,
-``_dismissed_txn_pending``, ``_projection``, ``_source_links_cache``,
-``_source_links_revision``.
+``_dismissed_txn_pending``, ``_owned_links_cache``, ``_owned_row_memo``, ``_peer_slot``,
+``_projection``, ``_source_links_cache``, ``_source_links_revision``.
 
 Instance fields of ``DashboardState`` this module reads and writes:
 
@@ -29,9 +29,11 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.slot_projection import SlotProjection
+from kiro_crew.dashboard.source_providers.ownership import MAX_LEDGER_LINKS
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -41,7 +43,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.dashboard.state")
 
 
-_MAX_SOURCE_LINKS_PER_SLOT = 64
+#: The most links one slot derives; the ledger answer keeps the same many.
+_MAX_SOURCE_LINKS_PER_SLOT = MAX_LEDGER_LINKS
 
 
 # How many source links each slot payload actually serializes, ACROSS kinds:
@@ -249,6 +252,16 @@ def init_source_links_fields(self: _ChatSlot) -> None:
     # (content revision, links) cache for the sidebar PR chips scan.
     self._source_links_revision = 0
     self._source_links_cache = None
+    # The merged card links (own rows, own report, workers' links) and the
+    # inputs they were merged from; see ``_pr_source_links``.
+    self._owned_links_cache = None
+    # Each gh tool row's owned refs from the last walk, so a re-walk re-reads
+    # only the rows that changed (``SlotProjection.source_links``).
+    self._owned_row_memo = None
+    # Another live slot by key, wired by DashboardState like
+    # _coordinator_approvals, so a conductor's card can read its workers'
+    # own created links. None (a bare slot) rolls up the ledger reports only.
+    self._peer_slot = None
     # Serialized ``SourceRef.identity`` keys the user has explicitly unlinked
     # from this session. The derivation in ``SlotProjection.source_links``
     # filters against this, so a dismissed change stays gone across the
@@ -327,6 +340,24 @@ def dismiss_source_link(self: _ChatSlot, identity_key: str) -> bool:
     return True
 
 
+def _owned_refs_of(slot: _ChatSlot, msg: dict, parse: Any, candidates: Any) -> list:
+    """*msg*'s owned refs, from the derivation's row memo when it holds this row."""
+    from kiro_crew.dashboard.source_providers.ownership import owned_refs_in_tool_row
+
+    memo = getattr(slot, "_owned_row_memo", None)
+    meta = msg.get("meta")
+    held = memo[1].get(id(msg)) if memo else None
+    if (
+        held is not None
+        and isinstance(meta, dict)
+        and held[0] is msg
+        and held[1] is meta.get("input")
+        and held[2] is meta.get("output")
+    ):
+        return list(held[3])
+    return owned_refs_in_tool_row(msg, parse, candidates)
+
+
 def mentions_source_identity(self: _ChatSlot, identity_key: str) -> bool:
     """Does this transcript RAW-mention the given source-link identity?
 
@@ -348,6 +379,10 @@ def mentions_source_identity(self: _ChatSlot, identity_key: str) -> bool:
     from kiro_crew.dashboard.source_providers.links import iter_source_url_candidates
 
     path_markers = source_link_path_markers()
+
+    def candidates(text: str) -> Iterator[str]:
+        return iter_source_url_candidates(text, path_markers)
+
     # No parse budget and no early stop here (unlike the bounded derivation):
     # this predicate authorizes a durable tombstone, so it must scan the WHOLE
     # transcript -- a budget that gave up early could report a genuinely
@@ -355,10 +390,18 @@ def mentions_source_identity(self: _ChatSlot, identity_key: str) -> bool:
     for msg in self.messages:
         if not isinstance(msg, dict) or msg.get("role") in _NON_DURABLE_SOURCE_LINK_ROLES:
             continue
+        # A link the chat owns through a tool row (its URL only in ``meta``)
+        # is carried by the transcript as much as a typed one. The derivation's
+        # row memo answers for a row it already read.
+        if msg.get("role") == "tool" and any(
+            source_ref_identity_key(owned.ref.identity) == identity_key
+            for owned in _owned_refs_of(self, msg, parse_source_url, candidates)
+        ):
+            return True
         content = msg.get("content")
         if not isinstance(content, str) or "https://" not in content:
             continue
-        for candidate in iter_source_url_candidates(content, path_markers):
+        for candidate in candidates(content):
             try:
                 ref = parse_source_url(candidate)
             except ValueError:
@@ -368,13 +411,136 @@ def mentions_source_identity(self: _ChatSlot, identity_key: str) -> bool:
     return False
 
 
+def _ledger_session_key(slot: _ChatSlot) -> str:
+    """The session key the work ledger files this slot's board and binding under.
+
+    The work-ledger routes key on the caller's SESSION (a channel-born slot runs
+    on ``slack:<ts>``, not on its slot key), so the card reads the same one. A
+    bare slot built without ``__init__`` falls back to its key.
+    """
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+
+    try:
+        return effective_session_key(slot)
+    except AttributeError:
+        return str(getattr(slot, "key", "") or "")
+
+
 def _pr_source_links(self: _ChatSlot) -> list[dict]:
-    """Return cached source links ordered by their most recent mention."""
-    return self._projection.source_links(
-        self,
-        max_links=_MAX_SOURCE_LINKS_PER_SLOT,
-        non_durable_roles=_NON_DURABLE_SOURCE_LINK_ROLES,
+    """The links this slot's card shows, newest owning event first.
+
+    Three sources, each one the chat OWNS rather than merely mentions:
+
+    * its own tool rows -- what it created or acted on (``SlotProjection``);
+    * the work ledger -- the PR its own item's report names, and every PR the
+      items on the board it conducts report;
+    * one level of roll-up -- the links each local worker bound to that board
+      created in its own tool rows (a worker's acted-on links stay on its own
+      card, so a sweep of other PRs does not land on the conductor's).
+
+    A link several sources name is ordered by its NEWEST owning event, and the
+    user's unlinks apply to all of them. The merge is kept while every input is
+    the same object, so the row memo and the chip refresh read one list.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import (
+        parse_source_url,
+        source_link_path_markers,
+        source_ref_label,
     )
+    from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
+    from kiro_crew.dashboard.source_providers.links import iter_source_url_candidates
+    from kiro_crew.dashboard.source_providers.ownership import (
+        CREATED_KEY,
+        OWNED_AT_KEY,
+        PRIVATE_KEYS,
+        RELATION_KEY,
+        ledger_links,
+        source_link_dict,
+    )
+
+    def own_links(slot: _ChatSlot) -> list[dict]:
+        return slot._projection.source_links(
+            slot,
+            max_links=_MAX_SOURCE_LINKS_PER_SLOT,
+            non_durable_roles=_NON_DURABLE_SOURCE_LINK_ROLES,
+        )
+
+    path_markers = source_link_path_markers()
+
+    def candidates(text: str) -> Iterator[str]:
+        return iter_source_url_candidates(text, path_markers)
+
+    own = own_links(self)
+    ledger = ledger_links(_ledger_session_key(self), parse_source_url, candidates)
+    peer = getattr(self, "_peer_slot", None)
+    workers: list[list[dict]] = []
+    if peer is not None:
+        for key in ledger.workers:
+            worker = peer(key)
+            if worker is not None and worker is not self:
+                workers.append(own_links(worker))
+    dismissed = SlotProjection.dismissed_identity_keys(self)
+    cached = getattr(self, "_owned_links_cache", None)
+    if (
+        cached is not None
+        and cached[0] is own
+        and cached[1] is ledger
+        and len(cached[2]) == len(workers)
+        and all(a is b for a, b in zip(cached[2], workers))
+        and cached[3] == dismissed
+    ):
+        return cached[4]
+
+    best: dict[str, dict] = {}
+    # The work board is not the transcript: a ``/clear`` starts the conversation
+    # over, and the chips its rows named go with it, but the board keeps its items
+    # and so the card keeps the PRs they report.
+
+    def offer(link: dict) -> None:
+        key = link.get("identity") or link.get("url")
+        if not key or key in dismissed:
+            return
+        held = best.get(key)
+        if held is None or link.get(OWNED_AT_KEY, 0.0) > held.get(OWNED_AT_KEY, 0.0):
+            best[key] = link
+
+    for link in own:
+        offer(link)
+    for url, at in ledger.links:
+        try:
+            ref = parse_source_url(url)
+        except ValueError:
+            continue
+        link = source_link_dict(ref, source_ref_label, source_ref_identity_key)
+        offer({**link, OWNED_AT_KEY: at, RELATION_KEY: "reported"})
+    for links in workers:
+        for link in links:
+            if link.get(CREATED_KEY):
+                offer(link)
+    # A reported number with no repository names the one GitHub PR with that
+    # number this chat or one of its workers created or acted on, if there is
+    # exactly one.
+    for number, at in ledger.numbers:
+        named = {
+            link["identity"]: link
+            for link in (*own, *(link for links in workers for link in links))
+            if link.get("provider") == "github"
+            and link.get("kind", "change") == "change"
+            and link.get("number") == number
+            and link.get("identity")
+        }
+        if len(named) == 1:
+            (link,) = named.values()
+            offer({**link, OWNED_AT_KEY: at, RELATION_KEY: "reported"})
+    # ``sorted`` is stable, so links whose rows carry no stamp keep the walk's
+    # newest-first order behind every stamped one.
+    ordered = sorted(best.values(), key=lambda link: -link.get(OWNED_AT_KEY, 0.0))
+    merged = [
+        {name: value for name, value in link.items() if name not in PRIVATE_KEYS}
+        for link in ordered[:_MAX_SOURCE_LINKS_PER_SLOT]
+    ]
+    self._owned_links_cache = (own, ledger, workers, dismissed, merged)
+    return merged
 
 
 def source_links_payload(

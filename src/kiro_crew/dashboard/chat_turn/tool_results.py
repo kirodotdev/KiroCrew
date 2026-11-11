@@ -868,6 +868,14 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                 # a first terminal frame with no output still reads as one.
                 if _out or "output" not in _meta:
                     _meta["output"] = _out
+                    # A ``gh pr create`` row's new URL lands here, and the
+                    # card's GitHub chips are derived from gh rows' output.
+                    from kiro_crew.dashboard.source_providers.ownership import (
+                        gh_write_command,
+                    )
+
+                    if gh_write_command(_meta) is not None:
+                        slot.invalidate_source_links()
         # Tell open clients about the app flag as well as storing it.
         # `chat.mcpApps` is a BOUNDED cache, so a session that opens
         # many apps evicts the oldest payload while its row is still

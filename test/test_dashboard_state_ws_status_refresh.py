@@ -27,6 +27,7 @@ from dashboard_state_ws_helpers import (  # noqa: F401 -- fixtures are requested
     state_fixture,
     sync_event_loop,
 )
+from source_link_rows import append_created
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.testing.wait import await_until
@@ -51,11 +52,9 @@ class TestPeriodicCheckStatusRefresh:
     ) -> None:
         slot_a = state.get_or_create_slot("chat-a")
         for n in (1, 2, 3, 4):
-            slot_a.append(
-                "assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False
-            )
+            append_created(slot_a, f"https://github.com/acme/repo/pull/{n}", broadcast=False)
         slot_b = state.get_or_create_slot("chat-b")
-        slot_b.append("assistant", "and https://github.com/acme/other/pull/9", broadcast=False)
+        append_created(slot_b, "https://github.com/acme/other/pull/9", broadcast=False)
 
         urls = state.source_link_urls()
 
@@ -690,9 +689,9 @@ class TestTurnBoundarySourceStatus:
     def test_per_slot_urls_are_scoped_and_capped(self, state: DashboardState) -> None:
         slot = state.get_or_create_slot("chat-a")
         for n in (1, 2, 3, 4):
-            slot.append("assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False)
+            append_created(slot, f"https://github.com/acme/repo/pull/{n}", broadcast=False)
         other = state.get_or_create_slot("chat-b")
-        other.append("assistant", "and https://github.com/acme/other/pull/9", broadcast=False)
+        append_created(other, "https://github.com/acme/other/pull/9", broadcast=False)
 
         # Only this slot's chips, capped at the serialized count — a turn ending
         # in one session must not fan provider reads across every other session.
@@ -709,7 +708,7 @@ class TestTurnBoundarySourceStatus:
         from kiro_crew.dashboard.handlers import source_providers
 
         slot = state.get_or_create_slot("chat-a")
-        slot.append("assistant", "opened https://github.com/acme/repo/pull/7", broadcast=False)
+        append_created(slot, "https://github.com/acme/repo/pull/7", broadcast=False)
         state._owner_ws_clients.add(MagicMock(closed=False))
         calls: list[tuple] = []
         monkeypatch.setattr(
@@ -730,7 +729,7 @@ class TestTurnBoundarySourceStatus:
         from kiro_crew.dashboard.handlers import source_providers
 
         slot = state.get_or_create_slot("chat-a")
-        slot.append("assistant", "opened https://github.com/acme/repo/pull/7", broadcast=False)
+        append_created(slot, "https://github.com/acme/repo/pull/7", broadcast=False)
         state._owner_ws_clients.clear()
         refresh = MagicMock()
         monkeypatch.setattr(source_providers, "request_check_refresh_now", refresh)
@@ -792,7 +791,7 @@ class TestTurnBoundarySourceStatus:
         from kiro_crew.dashboard.handlers import source_providers
 
         slot = state.get_or_create_slot("chat-a")
-        slot.append("assistant", "opened https://github.com/acme/repo/pull/7", broadcast=False)
+        append_created(slot, "https://github.com/acme/repo/pull/7", broadcast=False)
         state._owner_ws_clients.add(MagicMock(closed=False))
         refresh = MagicMock(side_effect=RuntimeError("no event loop"))
         monkeypatch.setattr(source_providers, "request_check_refresh_now", refresh)
@@ -861,8 +860,8 @@ class TestOnDemandSourceStatus:
 
         route = "/api/source/pull-request/status/refresh"
         every_chip = ["https://github.com/acme/repo/pull/7", "https://github.com/acme/other/pull/9"]
-        state.get_or_create_slot("chat-a").append("assistant", every_chip[0], broadcast=False)
-        state.get_or_create_slot("chat-b").append("assistant", every_chip[1], broadcast=False)
+        append_created(state.get_or_create_slot("chat-a"), every_chip[0], broadcast=False)
+        append_created(state.get_or_create_slot("chat-b"), every_chip[1], broadcast=False)
         state.owner_id = "U_OWNER"
         # chat-a's chip was just read and chat-b's never was: the stalest goes first,
         # so a click capped at CHECK_STATUS_PENDING_MAX reads leaves the next one the rest.

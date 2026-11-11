@@ -12,6 +12,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from source_link_rows import append_created
 
 # ── Save vs. permanent delete ──
 
@@ -1133,7 +1134,7 @@ class TestSlotLifecycle:
         state.owner_id = "U_OWNER"
         slot = state.get_or_create_slot("source")
         url = "https://github.com/acme/repo/pull/12"
-        slot.append("user", url)
+        append_created(slot, url)
 
         @web.middleware
         async def owner_auth(request, handler):
@@ -1169,7 +1170,7 @@ class TestSlotLifecycle:
         state.owner_id = "U_OWNER"
         slot = state.get_or_create_slot("source")
         url = "https://github.com/acme/private/pull/12"
-        slot.append("user", url)
+        append_created(slot, url)
 
         @web.middleware
         async def non_owner_auth(request, handler):
@@ -1206,7 +1207,7 @@ class TestSlotLifecycle:
         )
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("source")
-        slot.append("user", "https://github.com/acme/private/pull/12")
+        append_created(slot, "https://github.com/acme/private/pull/12")
 
         generic_link = state.serialize_slots()[0]["source_links"][0]
         owner_link = state.serialize_slots(include_check_status=True)[0]["source_links"][0]

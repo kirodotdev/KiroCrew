@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from source_link_rows import append_created
 
 from kiro_crew.dashboard import slot_row_memo
 from kiro_crew.dashboard.chat_utils_display import _clear_display_redaction_cache
@@ -110,6 +111,7 @@ def _unmemoized_frames(state: DashboardState) -> str:
 def test_the_unmemoized_reference_writes_no_memo(state: DashboardState) -> None:
     slot = state.get_or_create_slot("chat-a")
     slot.append("assistant", "see https://github.com/acme/public/pull/1", "msg")
+    append_created(slot, "https://github.com/acme/public/pull/1", cls="msg")
     for name in ("_row_summary_memo", "_row_redacted_memo", "_row_links_memo", "_slot_links_memo"):
         setattr(slot, name, None)
     _unmemoized_frames(state)
@@ -136,16 +138,18 @@ def test_memoized_frames_equal_unmemoized_frames_across_mutations(
 ) -> None:
     a = state.get_or_create_slot("chat-a")
     a.append("user", "open a PR please", "msg")
+    append_created(a, "https://github.com/acme/public/pull/1", cls="msg")
     a.append("assistant", "opened https://github.com/acme/public/pull/1", "msg")
     b = state.get_or_create_slot("chat-b")
     b.append("user", "which one?", "msg")
+    append_created(b, "https://github.com/acme/private/pull/2", cls="msg")
     b.append("assistant", "pick https://github.com/acme/private/pull/2 [OPTIONS: yes | no]", "msg")
     c = state.get_or_create_slot("chat-c")
     c.append("user", "hello", "msg")
     _assert_same(state)
 
     steps: list[tuple[str, Any]] = [
-        ("append", lambda: a.append("assistant", "and https://github.com/acme/x/issues/9", "msg")),
+        ("append", lambda: append_created(a, "https://github.com/acme/x/issues/9", cls="msg")),
         ("in-place edit", lambda: b.messages[-1].update(content="now [OPTIONS: left | right]")),
         ("title", lambda: _retitle(c, "Renamed chat")),
         ("question", lambda: setattr(c, "_question_pending", True)),
@@ -353,12 +357,14 @@ def test_links_unmemoized_without_a_real_generation(state: DashboardState) -> No
 def test_bare_chip_memo_follows_a_new_extraction(state: DashboardState) -> None:
     slot = state.get_or_create_slot("chat-a")
     slot.append("assistant", "see https://github.com/acme/public/pull/1", "msg")
+    append_created(slot, "https://github.com/acme/public/pull/1", cls="msg")
     first = state.serialize_slots()[0]["source_links"]
     memo = slot._row_links_memo
     assert memo is not None
     assert state.serialize_slots()[0]["source_links"] == first
     assert slot._row_links_memo is memo
     slot.append("assistant", "and https://github.com/acme/public/pull/3", "msg")
+    append_created(slot, "https://github.com/acme/public/pull/3", cls="msg")
     second = state.serialize_slots()[0]["source_links"]
     assert [link["number"] for link in second] == [3, 1]
     assert slot._row_links_memo is not memo
@@ -394,6 +400,7 @@ def test_owner_view_pass_memoizes_nothing(state: DashboardState) -> None:
 
     slot = state.get_or_create_slot("chat-owner")
     slot.append("assistant", "see https://github.com/acme/public/pull/1", "msg")
+    append_created(slot, "https://github.com/acme/public/pull/1", cls="msg")
     # Creating and appending already ran unscoped passes.
     for name in ("_row_summary_memo", "_row_redacted_memo", "_row_links_memo", "_slot_links_memo"):
         setattr(slot, name, None)
