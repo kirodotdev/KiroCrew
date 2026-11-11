@@ -6865,7 +6865,7 @@ any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 adds the
 manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), and the desktop
 window host's spanning overlay, background window, panel gutter and the messages between
-an app's windows (§35). Several seams share level 7, so an app that needs one
+an app's windows (§35); level 8 adds `permissions.bots` (§32c). Several seams share level 7, so an app that needs one
 feature-detects it (the manifest key or attribute), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -7077,6 +7077,99 @@ Writers: `apps/lifecycle_sdk.py`, `apps/context.py`, `apps/app_sdk_level.py`,
 `website/src/app-sdk/sdkLevel.ts`. Tests: `test/test_app_lifecycle_sdk.py`,
 `test/test_app_sdk_level_mirror.py`. App authors: `docs/app-kit/api-reference.md`
 "App lifecycle".
+
+## 32c. App Kit seam level 8: an app reads and wakes the Bots the owner gave it
+
+Every Crew Members route refuses an app token with a 404 (`_deny_app_caller`). Level 8
+opens three of them to an app, and only this far. An app passes two checks, both in
+`handlers/members_access._app_bot_gate`, and every failure is the same 404, so an app
+cannot tell a Bot it was not given from one that does not exist:
+
+1. **A scope.** `permissions.bots` holds `"read"`, `"wake"` or both. Any other entry
+   is dropped at parse (`manifest_sections._bot_scopes`). `bots` is a staged grant
+   family, registered with `point_grants.register_permission_grants`
+   (`manifest_sections.bot_grant_entries`) with `explicit_only=True`, like
+   `reachableByUserSessions`. Its approval is the `bots` family of the app's approved
+   set, in the same protected store as every other family
+   (`member-records/app-grants/<app>.json`, `apps.protected_app_state`), and
+   `app_bot_scopes` reads it through `staged_app_grants`. Declaring a scope is never
+   enough: an install and a first registration approve no Bot scope
+   (`manager_records._consented_grant_entries`), a set that defers to the manifest
+   or predates the family approves none (`_freeze_declared`, `_parse_approved_grants`),
+   and each scope waits for the owner's approval on the app detail page, like a new
+   `permissions.api` path. A set written in the app's own tree is never read, and the
+   one-time import of an older build's set carries no Bot scope over
+   (`_import_app_tree_grants_locked`).
+2. **A ticked Bot.** The owner ticks Bots for the app in the app detail page's "Bots
+   this app can reach" card (`website/src/pages/AppDetailBotGrants.tsx`), which writes
+   `PUT /api/apps/{name}/bot-grants`. Owner only: the path is in the app's own
+   namespace, so `require_owner_dashboard_request` is what keeps an app from ticking
+   Bots for itself. The list (member slugs, at most `MAX_BOT_GRANTS`, a proposal)
+   starts empty. It lives in the gateway-only `member-records/app-bot-grants/<app>.json`
+   (`apps/bot_grant_store.py`), which code in a sandbox can neither read nor write.
+   The record names the install's `installedAt`, so the list survives an update, a
+   reinstall reaches no Bot until the owner ticks again, and an uninstall removes it once it commits, so a failed one keeps it (`test_a_failed_uninstall_keeps_the_owners_ticks_and_a_finished_one_removes_them`). An install and a first registration remove a list that an earlier install left, and refuse when they cannot. A save whose record would not read back answers 500 and is never shown as saved. Approving a held-back Bot scope re-reads the card's own query. A
+   `botGrants` key in `installed.json` is never read, so the owner ticks again
+   (`test_an_app_that_edits_installed_json_reaches_no_unticked_bot`). `bot-grants` is
+   in `CORE_APP_ROUTE_SEGMENTS`.
+
+A disabled app holds no Bot scope: `apps/bot_grants.app_bot_scopes` reads
+`is_app_enabled` on every call (pinned by `test_app_bot_disabled_token.py`).
+
+The app's requests still pass the path gate, so it also declares `/api/members` in
+`permissions.api`. The token allowlist, CORS and frame-ancestors are unchanged.
+
+| Route | Scope | What the app gets |
+|---|---|---|
+| `GET /api/members` | `read` | `BotList` of the ticked Bots, in the owner's order: `id` (the member slug), `object`, `name`, `description`, `avatar_url`, `status` (`busy` / `idle`), `has_goal`. Built from its own allowlist in `handlers/members_app.py`, never the owner's rows. |
+| `GET /api/members/{slug}/goals` | `read` | `BotGoals`: `goals` (`id`, `number`, `text`) and `key_results` (`id`, `text`, `target`, `current`, `updated_at`, `goal_ids`, `history`). No schedules, reports or undo state. |
+| `POST /api/members/{slug}/wake` | `wake` | One hidden turn in the Bot's thread whose text the gateway writes (`dashboard/app_bot_wake.wake_prompt`, envelope `[App wake from "<app>"]`). The body is `{"ref": "<id>"}` and nothing else: any other key is 400 `unexpected_field`, and `ref` must match `WAKE_REF_RE`. App tokens only. |
+
+Neither scope reaches a Bot's DM thread, briefing, rules, activity, projections,
+dashboard, export or import: those routes keep `_deny_app_caller` or the owner gate,
+pinned by `test_bot_scopes_never_open_a_private_member_route`.
+
+**The wake.** The turn runs through `mate_welcome.dispatch_hidden_turn` with crew-log
+actor `app`, so nothing in it speaks as the owner, and the Bot is told that what it
+reads through the app's tools is data, not instructions. The refs wait in the thread's
+wake store (`mate_thread_wakes.app_wakes`, per thread and app) and the flush that
+delivers a worker report delivers them (`mate_thread_wakes.schedule_flush`): at once
+on an idle thread, else from the thread's next turn end, all of one thread's refs in
+one turn, after an owed upgrade notice and after any waiting worker reports, so a
+steady run of wakes cannot hold a report back
+(`test_a_waiting_worker_report_goes_before_the_app_wakes`). At most
+`MAX_PENDING_REFS` refs from one app wait on a busy Bot; a new ref past that is
+refused with 429 `wake_queue_full`, never dropped once accepted. A dashboard session gets 403 `app_token_required`; a closed thread is loaded from its transcript first, as a goal
+check-in does; a Bot whose thread was never opened answers 409 `bot_unavailable`. The
+rate limit is the `create_rate_limit.APP_BOT_WAKE` budget row, keyed per app and Bot
+(`MAX_APP_BOT_WAKES_PER_WINDOW` in `WINDOW_SECS`: 20 per 300 s, a proposal), past
+which the route answers 429 with `Retry-After`. Held refs and the budget live in
+memory, so a restart drops both.
+
+**Who calls.** An installed app reaches its Bots from its own backend with its app
+token (`POST /api/apps/{name}/token`), which every gate here applies to. The
+dashboard SDK has no Bot hooks: a dashboard page holds the owner's session, not an app
+token. They come back once a gateway relay gives an app page its own identity.
+`APP_SDK_LEVEL` is 8 on both sides: level 8 means an app may declare
+`permissions.bots` and call these routes with its app token. The Crew API draft's
+`/v1/crew/bots` carries the same shapes, so only the paths change when the routes move
+there.
+
+**Approved Bot scopes.** Pinned by
+`test_an_app_that_writes_wake_into_its_own_tree_cannot_wake`,
+`test_a_set_that_defers_to_the_manifest_approves_no_bot_scope`,
+`test_an_install_approves_no_bot_scope_until_the_owner_does` and
+`test_an_app_that_rewrites_its_record_after_the_owners_disable_holds_no_bot_scope`
+(the switch `app_bot_scopes` reads honours the owner's disable in
+`member-records/app-disabled/`, not the app-writable `installed.json`).
+
+Writers: `apps/bot_grants.py`, `apps/routes_bot_grants.py`, `apps/manifest_sections.py`,
+`apps/point_grants.py`, `apps/manager_records.py`, `apps/manager_install.py`,
+`apps/manager_external.py`, `apps/manager_uninstall.py`,
+`apps/app_sdk_level.py`, `dashboard/handlers/members_access.py`,
+`dashboard/handlers/members_app.py`, `dashboard/handlers/members_roster.py`,
+`dashboard/handlers/member_goals.py`, `dashboard/app_bot_wake.py`,
+`dashboard/mate_welcome.py`, `website/src/pages/AppDetailBotGrants.tsx`.
 
 ## 33. Former built-in adoption
 
@@ -7958,8 +8051,8 @@ store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-con
 "Repository boundary").
 
 **Seam level.** The masks are level 3 (level 4 adds §30.1's tool keys, level 5
-`ctx.app_token` and `ctx.gateway_origin`, level 6 §18h's issue list, and level 7 §39's
-`agentReadOnlyDirs`):
+`ctx.app_token` and `ctx.gateway_origin`, level 6 §18h's issue list, level 7 §39's
+`agentReadOnlyDirs`, and level 8 §32c's `permissions.bots`):
 an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
 the file.
 
@@ -8147,7 +8240,7 @@ copying its target into the agent-readable record. Agents may now read it, which
 write" names. A purge uninstall now
 removes the record with the app's data.
 
-**Seam level.** `APP_SDK_LEVEL` is 7. An app reads `ctx.sdk_level` and, below 7, knows
+**Seam level.** `agentReadOnlyDirs` is level 7. An app reads `ctx.sdk_level` and, below 7, knows
 nothing fences the directories: an older host ignores the key.
 
 Writers: `apps/agent_readonly_dirs.py`, `apps/credential_masks.py`, `apps/manifest.py`,

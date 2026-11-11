@@ -171,7 +171,7 @@ const API_KEY_ORDER = [
   'channelPresets', 'channelGet', 'channelCreate', 'channelClose',
   'channelPost', 'channelAddAgent', 'channelUpdateAgent', 'channelDismissAgent',
   'channelWakeAgent', 'channelApproveAgent', 'channelClearContext', 'listApps',
-  'getApp', 'getAppManifest', 'installApp', 'enableApp',
+  'getApp', 'getAppManifest', 'getAppBotGrants', 'setAppBotGrants', 'installApp', 'enableApp',
   'disableApp', 'openApp', 'uninstallApp', 'uninstallPreview',
   'updateApp', 'migrateCleanup', 'listRegistry', 'listRegistries',
   'updateRegistries', 'refreshAppStore', 'refreshRegistries', 'installFromRegistry',

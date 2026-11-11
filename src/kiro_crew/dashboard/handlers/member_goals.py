@@ -175,7 +175,15 @@ async def _body(request: web.Request) -> dict[str, Any] | web.Response:
 
 
 async def api_member_goals_get(request: web.Request) -> web.Response:
-    """GET /api/members/{slug}/goals?member=<name> — the crewmate's goal record."""
+    """GET /api/members/{slug}/goals?member=<name> — the crewmate's goal record.
+
+    An app token gets its own trimmed view instead (``members_app.app_bot_goals``,
+    behind ``permissions.bots: read`` and the owner's ticked Bots), or a 404.
+    """
+    if request.get("app", ""):
+        from kiro_crew.dashboard.handlers.members import app_bot_goals
+
+        return await app_bot_goals(request)
     who = await _owner_member(
         request, "members.goals.read", request.query.get("member", ""), write=False
     )

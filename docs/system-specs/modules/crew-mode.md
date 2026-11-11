@@ -4724,7 +4724,10 @@ fallback answers no, and that worker's report is not delivered.
 Transcript metadata alone wakes nothing. A busy thread keeps one
 pending report per worker (`_mate_wakes`, counting turns) and its flush waits on
 the thread's own turn task, so a report is delivered once, never twice; pending
-reports live in memory. While the app is stopping
+reports live in memory. The same flush delivers the refs an installed app sent
+the Bot (`app_wakes`, written by `dashboard/app_bot_wake.py`, see
+[app-kit-platform](app-kit-platform.md) §32c) as one turn with crew-log actor
+`app`, after an owed upgrade notice and after the reports. While the app is stopping
 (`mate_welcome.app_is_stopping`) no hidden turn starts and reports stay pending.
 
 **Adding abilities to a Bot** (`kiro_crew.mate_worker_kit`, owner-only

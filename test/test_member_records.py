@@ -24,7 +24,7 @@ from kiro_crew import (
     sandbox_tiers,
     security,
 )
-from kiro_crew.apps import protected_app_state
+from kiro_crew.apps import bot_grant_store, protected_app_state
 from kiro_crew.config.paths import data_home
 
 _SLUG = "atlas"
@@ -115,6 +115,7 @@ def test_the_spelled_names_match_their_owners() -> None:
         protected_app_state.APP_GRANTS_KIND,
         protected_app_state.APP_DISABLED_KIND,
         protected_app_state.APP_SECRETS_KIND,
+        bot_grant_store.APP_BOT_GRANTS_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,

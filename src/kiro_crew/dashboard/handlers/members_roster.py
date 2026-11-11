@@ -28,9 +28,9 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.members_access import (
     _audit_owner_read,
     _audit_teammate_read,
-    _deny_app_caller,
     _member_name_is_addressable,
 )
+from kiro_crew.dashboard.handlers.members_app import app_bot_list
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.external_text import redact_external_text
 from kiro_crew.members import MemberSlugError
@@ -341,9 +341,11 @@ async def api_members(request: web.Request) -> web.Response:
     already-subscribed WS ``slots`` frames on the frontend, so this endpoint
     only fills the cold-start gap.
     """
-    denied = await _deny_app_caller(request, "members.list")
-    if denied is not None:
-        return denied
+    if request.get("app", ""):
+        # An app token never gets these rows: with `permissions.bots: read` it gets the
+        # trimmed list of the Bots the owner ticked for it, and otherwise the 404
+        # every member route sends an app (members_app / members_access).
+        return await app_bot_list(request)
     # A team Crew teammate the Kiro relay verified reads the roster too, with every
     # owner-private field left out (`_teammate_roster`). Checked before the owner
     # gate so the owner's read below stays exactly what it was.

@@ -13,7 +13,9 @@ filtering code anywhere.
 
 Dashboard-only surface: app tokens are denied outright (deny-by-default, same
 posture as slot access — an app has no business enumerating the user's crews
-or opening threads that speak as them).
+or opening threads that speak as them). The one exception is ``members_app``:
+an app holding ``permissions.bots`` sees the Bots the owner ticked for it, as a
+roster of its own shape, their goals, and a fixed-text wake; never a thread.
 """
 
 from __future__ import annotations
@@ -29,7 +31,10 @@ from kiro_crew import _facade_mirror
 # binds the name, and a write -- ``monkeypatch.setattr``, ``mock.patch`` -- reaches every
 # owner holding it (:mod:`kiro_crew._facade_mirror`). Owners never import this module. New
 # work goes to the owner of its responsibility:
-#   ``members_access`` -- the app-caller denial, the owner-read audit and the slug's names
+#   ``members_access`` -- the app-caller denial, the app Bot-scope gate, the owner-read
+#     audit and the slug's names
+#   ``members_app`` -- what an app token with ``permissions.bots`` sees: the trimmed
+#     roster, the goals, and the wake
 #   ``members_roster`` -- the roster list and the member-log attribution it is served under
 #   ``members_thread`` -- opening, binding and pinning a crewmate's DM thread
 #   ``members_thread_turns`` -- the first welcome and fresh start on that thread
@@ -38,6 +43,7 @@ from kiro_crew import _facade_mirror
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.dashboard.handlers.members_access",
+    "kiro_crew.dashboard.handlers.members_app",
     "kiro_crew.dashboard.handlers.members_roster",
     "kiro_crew.dashboard.handlers.members_thread",
     "kiro_crew.dashboard.handlers.members_thread_turns",
@@ -54,13 +60,29 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.members_access import (  # noqa: F401
+        _app_bot_gate,
         _audit_owner_read,
         _audit_teammate_read,
         _deny_app_caller,
         _member_name_is_addressable,
         _member_names_for_slug,
+        _not_found,
         _sel,
         _slug_is_claimed_by_any_member,
+    )
+    from kiro_crew.dashboard.handlers.members_app import (  # noqa: F401
+        STATUS_BUSY,
+        STATUS_IDLE,
+        WAKE_REF_RE,
+        _bad,
+        _bot_row,
+        _goals,
+        _resolve,
+        _roster,
+        _thread_key,
+        api_member_wake,
+        app_bot_goals,
+        app_bot_list,
     )
     from kiro_crew.dashboard.handlers.members_drawer import (  # noqa: F401
         _ACTIVITY_LIMIT,
@@ -121,7 +143,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import kiro_crew.dashboard.handlers as _h  # noqa: F401
+    from kiro_crew import member_goals  # noqa: F401
     from kiro_crew import members as members_mod  # noqa: F401
+    from kiro_crew.apps.bot_grants import (  # noqa: F401
+        BOT_SCOPE_READ,
+        BOT_SCOPE_WAKE,
+    )
     from kiro_crew.config.loader import (  # noqa: F401
         KiroCrewConfig,
         default_project_dir,

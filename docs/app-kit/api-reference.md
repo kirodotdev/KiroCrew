@@ -142,6 +142,72 @@ A bundle that must also load on an older host reads these through a namespace im
 (`import * as sdk from '@kirocrew/app-sdk'`) and falls back when one is `undefined`. A
 named import of a name the host lacks fails the whole bundle at load time.
 
+### Bots (`permissions.bots`, from your backend)
+
+Level 8. An app's backend can see and wake the owner's Bots, but only the ones the
+owner ticks for it in the app's detail page, under "Bots this app can reach". A fresh
+install reaches none. Declaring a scope is not enough: the owner approves each one on
+the app's detail page, and installing approves none. Declare both of these in the
+manifest:
+
+```json
+"permissions": { "api": ["/api/members"], "bots": ["read", "wake"] }
+```
+
+The calls are made from your backend with your app's own token. The dashboard SDK has
+no Bot hooks: a dashboard page holds the owner's session, not an app token, and these
+routes answer only an app token.
+
+| Route | Scope | Returns |
+|---|---|---|
+| `GET /api/members` | `read` | `{ object: 'list', data: Bot[], has_more, first_id, last_id }`: the ticked Bots, in the owner's order. |
+| `GET /api/members/{id}/goals` | `read` | `BotGoals`: one Bot's goals and key results. |
+| `POST /api/members/{id}/wake` | `wake` | 202 `{ status: 'started' \| 'queued' }`. The body is `{ "ref": "<id>" }` and nothing else. |
+
+A `Bot` is `{ id, object: 'bot', name, description, avatar_url, status: 'busy' | 'idle',
+has_goal }`; `id` is the Bot's member slug. `BotGoals` is `{ bot, goals: [{ id, number,
+text }], key_results: [{ id, text, target, current, updated_at, goal_ids, history }] }`.
+
+A wake sends no text. `ref` is an opaque id your app minted (1 to 64 of
+`A-Z a-z 0-9 _ . : -`). The Bot reads a line the gateway writes, naming your app and
+the ref, and fetches the message through your app's own tools if it has them. A busy
+Bot gets the wake when its current turn ends. Each app may wake one Bot at most 20 times
+in 5 minutes, and at most 10 refs from one app wait on a busy Bot; past either limit the
+call fails with a 429 and a `Retry-After` header.
+
+No scope reaches a Bot's chats, briefing or rules. A Bot that is not ticked answers 404,
+the same as one that does not exist.
+
+Example, from a backend the gateway spawned (see
+[Backend Environment Variables](#backend-environment-variables)): trade the app secret
+for an app token, then call the routes with it as the gateway's session cookie. Hooks that
+run in the gateway process have no secret: they get the same app token from
+[`ctx.app_token()`](#app-token-ctxapp_token).
+
+```python
+import os
+from urllib.parse import urlsplit
+
+import aiohttp
+
+name = os.environ["KIROCREW_APP_NAME"]
+origin = os.environ["KIROCREW_GATEWAY_ORIGIN"]  # verify KIROCREW_GATEWAY_ORIGIN_PROOF first
+secret = os.environ["KIROCREW_PROXY_SECRET"]  # the app secret the gateway hands its backend
+
+async def wake_first_bot(ref: str) -> None:
+    async with aiohttp.ClientSession() as http:
+        async with http.post(f"{origin}/api/apps/{name}/token", headers={"X-App-Secret": secret}) as r:
+            app_token = (await r.json())["token"]
+        cookie = {f"mc_token_{urlsplit(origin).port}": app_token}
+        async with http.get(f"{origin}/api/members", cookies=cookie) as r:
+            bots = (await r.json())["data"]  # only the Bots the owner ticked
+        if bots:
+            async with http.post(
+                f"{origin}/api/members/{bots[0]['id']}/wake", json={"ref": ref}, cookies=cookie
+            ) as r:
+                print(r.status, await r.json())  # 202 {"status": "started"} or "queued"
+```
+
 ## Embedded Chat
 
 `ChatEmbed` mounts Kiro Crew's native transcript and compact composer for an
@@ -1721,11 +1787,13 @@ notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
 [Backend Environment Variables](#backend-environment-variables)), level 5 adds
 [`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token), level 6
 adds the dashboard's [issue list](#issue-list) (`useIssues`, `IssueList`, `IssueCard`),
-and level 7 adds the manifest's `agentReadOnlyDirs` (see
+level 7 adds the manifest's `agentReadOnlyDirs` (see
 [manifest-reference.md](manifest-reference.md#agent-read-only-directories)), the
 [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk) and the `desktop` block's
 `displays: "all"`, `background` kind and `gutter` (see
-[manifest-reference.md](manifest-reference.md#desktop-windows)); each level
+[manifest-reference.md](manifest-reference.md#desktop-windows)), and level 8 adds
+`permissions.bots`, which an app's backend uses with its app token
+([Bots](#bots-permissionsbots-from-your-backend)); each level
 includes every level below it. Several seams share level 7, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call

@@ -21,6 +21,7 @@ import os
 import pytest
 
 from kiro_crew import member_records, sandbox_leaves
+from kiro_crew.apps import bot_grant_store
 from kiro_crew.apps import manager as manager_mod
 from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.manager import (
@@ -516,3 +517,83 @@ def test_an_uninstall_with_an_unreadable_set_keeps_every_grant(tmp_path, app_hom
     assert not result.ok and "approved permissions" in result.error
     assert dropped == []  # the execution grant was never withdrawn
     assert (app_dir(APP) / INSTALLED_META_FILENAME).is_file()
+
+
+def test_the_import_carries_no_bot_scope_over(tmp_path, app_home):
+    _legacy_home(
+        tmp_path,
+        stored=True,
+        legacy={"api": [OLD_API], "events": [], "bots": ["read", "wake"]},
+    )
+
+    grants = manager_mod._read_approved_grants(APP)
+
+    assert grants["bots"] == [] and grants["api"] == [OLD_API]
+
+
+def _leave_ticked_bots():
+    """A ticked list under APP's name that no uninstall removed."""
+    bot_grant_store.write_granted_bots(APP, "2026-11-08T00:00:00Z", ["demo-scribe"])
+    assert bot_grant_store.grants_path(APP).is_file()
+
+
+def _unlink_fails(monkeypatch):
+    def _refuse(_path):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(bot_grant_store, "_unlink", _refuse)
+
+
+def test_an_install_removes_the_ticked_bots_an_earlier_install_left(
+    tmp_path, app_home, monkeypatch
+):
+    _leave_ticked_bots()
+
+    assert install_app(_source(tmp_path, "v1", [OLD_API])).ok
+    assert not bot_grant_store.grants_path(APP).exists()
+
+    assert uninstall_app(APP, keep_data=False).ok
+    _leave_ticked_bots()
+    with monkeypatch.context() as patched:
+        _unlink_fails(patched)
+        result = install_app(_source(tmp_path, "v2", [OLD_API]))
+    assert not result.ok and "Bot access" in result.error
+    assert not (app_dir(APP) / INSTALLED_META_FILENAME).exists()
+
+
+def test_a_failed_install_write_leaves_no_app_and_no_earlier_ticked_bots(
+    tmp_path, app_home, monkeypatch
+):
+    import kiro_crew.dashboard.token_auth as token_auth
+    from kiro_crew.apps import bot_grants
+
+    def _disk_full(*_a, **_kw):
+        raise OSError("No space left on device")
+
+    _leave_ticked_bots()
+    with monkeypatch.context() as patched:
+        patched.setattr(token_auth, "write_app_secret", _disk_full)
+        result = install_app(_source(tmp_path, "v1", [OLD_API]))
+    assert not result.ok and "failed to record the install" in result.error
+    assert not (app_dir(APP) / INSTALLED_META_FILENAME).exists()
+    # Undoing the failed install does not bring the earlier list back.
+    assert not bot_grant_store.grants_path(APP).exists()
+
+    assert install_app(_source(tmp_path, "v2", [OLD_API])).ok
+    assert bot_grants.app_granted_bots(APP) == ()
+
+
+def test_a_first_registration_removes_the_ticked_bots_an_earlier_install_left(
+    app_home, monkeypatch
+):
+    from kiro_crew.apps.manager import register_external_app
+
+    _leave_ticked_bots()
+    with monkeypatch.context() as patched:
+        _unlink_fails(patched)
+        result = register_external_app(APP, version="1.0.0", display_name="Guarded")
+    assert not result.ok and "Bot access" in result.error
+    assert not app_dir(APP).exists()
+
+    assert register_external_app(APP, version="1.0.0", display_name="Guarded").ok
+    assert not bot_grant_store.grants_path(APP).exists()
