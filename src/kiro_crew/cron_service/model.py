@@ -185,6 +185,10 @@ class CronJob:
     # tick, which woke no one), so the run writes no history row. Reset at the
     # start of every run.
     quiet_run: bool = False
+    # Runtime-only (never serialized): set by the gateway when THIS run was a
+    # script's Skip(), so its history row is marked idle and the Logs tab can
+    # hide it. Reset at the start of every run.
+    idle_run: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for

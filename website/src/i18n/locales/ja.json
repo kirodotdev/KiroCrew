@@ -7620,6 +7620,8 @@
       "cancel_running_execution": "実行中の実行をキャンセル",
       "currently_running": "現在実行中…",
       "failed_to_load_history": "履歴の読み込みに失敗",
+      "hide_idle_runs": "アイドル実行を非表示",
+      "idle_runs_hidden_other": "{{count}} 件のアイドル実行を非表示",
       "loading_logs": "ログを読み込み中…",
       "next": "次へ →",
       "no_execution_history_yet": "実行履歴がまだありません",

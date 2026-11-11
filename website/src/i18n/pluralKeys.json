@@ -545,5 +545,6 @@
   "pages.schedulePage.batchActions.run_confirm_title",
   "pages.developer.agentBackendTab.card_summary_safety_notes",
   "components.publishHub.expiry_after_days",
-  "components.publicPublishAckModal.exposure_window_provider_expiry"
+  "components.publicPublishAckModal.exposure_window_provider_expiry",
+  "components.jobLogsView.idle_runs_hidden"
 ]

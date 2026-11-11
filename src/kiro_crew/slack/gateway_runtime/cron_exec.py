@@ -679,6 +679,7 @@ async def _cron_run_script(self: GatewayOrchestrator, job: CronJob) -> str | Non
             # Result-less like the deny paths: a Skip that carried the
             # previous run's output read as though it had produced it.
             job.clear_carried_result()
+            job.idle_run = True
             try:
                 sel().log_tool_invocation(
                     session_key=f"cron:{job.id}",

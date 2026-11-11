@@ -7620,6 +7620,8 @@
       "cancel_running_execution": "실행 중인 작업 취소",
       "currently_running": "현재 실행 중…",
       "failed_to_load_history": "기록을 불러오지 못했습니다",
+      "hide_idle_runs": "유휴 실행 숨기기",
+      "idle_runs_hidden_other": "유휴 실행 {{count}}개 숨김",
       "loading_logs": "로그를 불러오는 중…",
       "next": "다음 →",
       "no_execution_history_yet": "아직 실행 기록이 없습니다",

@@ -7620,6 +7620,8 @@
       "cancel_running_execution": "取消正在运行的执行",
       "currently_running": "正在运行…",
       "failed_to_load_history": "加载历史记录失败",
+      "hide_idle_runs": "隐藏空闲运行",
+      "idle_runs_hidden_other": "已隐藏 {{count}} 次空闲运行",
       "loading_logs": "正在加载日志…",
       "next": "下一页 →",
       "no_execution_history_yet": "暂无执行历史",
