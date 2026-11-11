@@ -241,12 +241,21 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
     name = str(body.get("name") or "").strip()
     if not name:
         return _err("name required")
+    fstore = await _run_off_loop(get_default_folder_store)
+    color = str(body.get("color") or "")
+    # mkdir -p below saves ``parent`` at once, so what the create refuses is
+    # refused first: the color here, a path too deep for a child in the resolve.
+    try:
+        fstore.clean_color(color)
+    except ArtifactValidationError as exc:
+        _audit(tool="artifact_folder_create", request=request, outcome="denied", error=str(exc))
+        return _err(str(exc))
     # ``parent`` accepts an id OR a human path (mkdir -p); ``parent_id`` is
     # id-only — resolved read-only so a path-looking value can never
     # auto-create folders through the id-only key.
     if "parent" in body:
         parent_id, ferr = await _resolve_folder_ref_off_loop(
-            body.get("parent"), create_missing=True
+            body.get("parent"), create_missing=True, as_parent=True
         )
     else:
         parent_id, ferr = await _resolve_folder_ref_off_loop(
@@ -255,8 +264,6 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
     if ferr:
         _audit(tool="artifact_folder_create", request=request, outcome="denied", error=ferr)
         return _err(ferr)
-    fstore = get_default_folder_store()
-    color = str(body.get("color") or "")
     try:
         folder = await _run_off_loop(lambda: fstore.create(name, parent_id=parent_id, color=color))
     except ArtifactValidationError as exc:

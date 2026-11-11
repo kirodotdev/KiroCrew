@@ -246,13 +246,14 @@ def item_liveness(
     running: Any,
     closed: Any,
     looping: Any = None,
+    held: Any = None,
     remote: tuple[bool, bool] | None = None,
-) -> tuple[bool, bool, bool]:
-    """``(running, closed, looping)`` for *item*'s worker, the one answer every reader uses.
+) -> tuple[bool, bool, bool, bool]:
+    """``(running, closed, looping, held)`` for *item*'s worker, the one answer every reader uses.
 
     A remote item answers from its stored record (:func:`remote_liveness`) and never
     from this gateway's slot table, where the peer's key names nothing; it holds no
-    local loop. A local item asks the three resolvers with its worker key. The read
+    local loop. A local item asks the resolvers with its worker key. The read
     rows, the board and the wake probe all call this, so they cannot disagree.
 
     *remote* is that stored answer already read (off the event loop, by a route);
@@ -261,9 +262,14 @@ def item_liveness(
     if item.worker_instance_id and remote is None:
         remote = remote_liveness(board, item)
     if item.worker_instance_id and remote is not None:
-        return remote[0], remote[1], False
+        return remote[0], remote[1], False, False
     key = item.worker_session_key or ""
-    return bool(running(key)), bool(closed(key)), bool(looping(key)) if looping else False
+    return (
+        bool(running(key)),
+        bool(closed(key)),
+        bool(looping(key)) if looping else False,
+        bool(held(key)) if held else False,
+    )
 
 
 def remote_liveness_map(board: str, items: Any) -> dict[str, tuple[bool, bool]]:

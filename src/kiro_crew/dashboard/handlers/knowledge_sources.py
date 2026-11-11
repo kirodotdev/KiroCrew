@@ -1251,9 +1251,10 @@ async def list_source_files(request: web.Request) -> web.Response:
         }
         for r in rows
     ]
-    # Also count totals
+    # Also count totals. A deduped file was read; its text lives in the copy it
+    # matched, so it is finished work and counts as done.
     total = len(files)
-    done = sum(1 for f in files if f["status"] == "done")
+    done = sum(1 for f in files if f["status"] in ("done", "deduped"))
     failed = sum(1 for f in files if f["status"] == "failed")
     skipped = sum(1 for f in files if f["status"] == "skipped")
     return web.json_response(

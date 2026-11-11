@@ -829,6 +829,26 @@ newer versions, Windows, and moved AppImages keep the existing reuse
 behavior. The shell does not restart or force-stop a stale gateway without
 the user's choice.
 
+On Windows a gateway left running from another install folder (an older
+install, or another copy of the app) reads as `foreign`, because only this
+install's executable is trusted. Before refusing it, the shell checks whether
+it is this data folder's Kiro Crew gateway: it is the port's one listener, the
+CLI's lock probe (`kirocrew gateway-pid --port <port>`) names that same pid as
+this home's `gateway.lock` holder, and its command line has a Kiro Crew server
+shape. Windows' mandatory lock hides the pid stamped in `gateway.lock`, so there
+the probe names the holder from the gateway's own run record for the port
+(`run/gateway-<port>.pid` with a matching start token), which gateways of
+earlier releases write too. A
+proven holder gets a dialog naming its pid, executable path and version, with
+**Stop it and restart**, **Use it** (only when the ordinary adopt decision
+would reuse it, so not for the other release family) and **Quit**. The stop
+re-proves the holder right before acting and requires the same pid and command
+line, then ends that process tree with `taskkill /T /F` behind the same
+command-line check, waits for the port to clear and starts this app's own
+gateway. **Use it** re-proves the holder the same way, then adopts it as a
+plain local gateway. Any holder that
+is not proven keeps the `foreign-holder` refusal and is never stopped.
+
 When nothing answers the first health check but the port is still held, the
 shell checks whether the sole listener is a local Kiro Crew gateway for this
 app's data folder: `gateway.lock` must name its pid, and that pid must have
@@ -938,30 +958,31 @@ a refused gate are each told beside the button.
 
 A window whose gateway the shell already knows is not on this machine (a
 configured Remote Crew on its port, as in the client-only launch with the local
-gateway off, or a non-loopback URL) does not ask in the first place.
-`setupWindowContents` passes the preload `--kc-remote-gateway`, decided by the
-same `isGatewayLocalForWindow` the gate reads, and the preload then withholds
-every bridge whose channels that gate refuses: `remoteCrewSetupAPI`,
+gateway off, or a non-loopback URL) does not ask in the first place. On every
+load the preload asks the shell `dashboard:is-remote-gateway`, answered by the
+same `isGatewayLocalForWindow` the gate reads, and then withholds every bridge
+whose channels that gate refuses: `remoteCrewSetupAPI`,
 `gatewayRestartAPI`, `crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
 `externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
 `updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
 a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
 the native folder and terminal controls and first-run's link to a crew on
 another machine are absent there, a failed pane reloads without a cache purge,
-and that window's gateway never governs this install's updates. The argument is
-fixed when the view is created: a crew configured for the port afterwards leaves
-the bridges in place and the gate keeps refusing them, and a crew cleared
-afterwards leaves them withheld until the window is next created. The gate stays
-the authority; the preload only stops the asking. `remoteCrewPaneAPI` goes the
-other way: a remote gateway's window is the one that needs it (the managed tunnel
-forwards its Remote Crew pane ports, see the
-[instances spec](../system-specs/modules/instances.md) §4), so every window gets
-it, and `remote-crew:forward-pane-ports` admits only a top frame on the launch
-port's dashboard origin. That page names the ports: the shell checks only that each
-is a whole port in 1..65535 other than the launch port, takes at most 32 per window,
-and forwards each from this machine's `127.0.0.1` to the same port on the crew
-host's loopback, the forward the pane's own `ssh -L` hint asks the user to run by
-hand.
+and that window's gateway never governs this install's updates. A crew
+configured or cleared for the port after the window opened applies from that
+window's next load. The ask is synchronous, so its listener sits on the
+dashboard view's own WebContents before anything loads there and answers on
+every path, remote when the store cannot be read; only an explicit local answer
+exposes the bridges. The gate stays the authority; the preload only stops the
+asking. `remoteCrewPaneAPI` goes the other way: a remote gateway's window is the
+one that needs it (the managed tunnel forwards its Remote Crew pane ports, see
+the [instances spec](../system-specs/modules/instances.md) §4), so every window
+gets it, and `remote-crew:forward-pane-ports` admits only a top frame on the
+launch port's dashboard origin. That page names the ports: the shell checks only
+that each is a whole port in 1..65535 other than the launch port, takes at most
+32 per window, and forwards each from this machine's `127.0.0.1` to the same
+port on the crew host's loopback, the forward the pane's own `ssh -L` hint asks
+the user to run by hand.
 
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk

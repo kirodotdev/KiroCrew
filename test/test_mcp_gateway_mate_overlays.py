@@ -96,6 +96,37 @@ class TestTheRewritePass:
         listed = sorted(p.name for p in mate_overlays.mate_overlay_dir(home.overlay).iterdir())
         assert listed == ["pixel.json"]
 
+    def test_the_conductor_spec_gets_its_own_overlay_by_name(self, home):
+        """A crewmate's chat runs the stock conductor spec and looks its stubs up by name."""
+        conductor = mate_worker.MATE_CONDUCTOR_AGENT
+        launch = {"command": sys.executable, "args": ["-V"]}
+        _write(
+            home.mates / f"{conductor}.json", {"name": conductor, "mcpServers": {SERVER: launch}}
+        )
+        # A same-named file in ~/.kiro/agents is not the spec the chat runs.
+        _write(home.agents / f"{conductor}.json", {"name": conductor, "mcpServers": {}})
+        _rewrite(home)
+        path = home.overlay / f"{conductor}.json"
+        assert path.is_file()
+        servers = json.loads(path.read_text())["mcpServers"]
+        assert SERVER in servers
+        assert _agent_flag(servers[SERVER]) == conductor
+        injected = session_servers.pooled_session_servers(home.overlay, conductor)
+        assert [e["name"] for e in injected] == [SERVER]
+
+    def test_the_conductor_files_own_name_is_not_its_identity(self, home):
+        """The crewmate folder is outside the sandbox seal, so the file cannot pick its identity."""
+        conductor = mate_worker.MATE_CONDUCTOR_AGENT
+        launch = {"command": sys.executable, "args": ["-V"]}
+        _write(
+            home.mates / f"{conductor}.json", {"name": "kirocrew", "mcpServers": {SERVER: launch}}
+        )
+        _rewrite(home)
+        path = home.overlay / f"{conductor}.json"
+        assert path.is_file()
+        entry = json.loads(path.read_text())["mcpServers"][SERVER]
+        assert _agent_flag(entry) == conductor
+
     def test_a_credential_env_lands_in_a_sidecar_named_for_the_crewmate(self, home):
         _write(
             home.mates / "pixel.json",

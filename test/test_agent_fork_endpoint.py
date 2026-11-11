@@ -16,10 +16,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
+from config_pending_helpers import HAND_EDIT, make_config_json_pending
 from sidecar_fault_helpers import fail_one_sidecar_read
 
 from kiro_crew import agent_state
-from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_path
+from kiro_crew.config.loader import (
+    KiroCrewAgentConfig,
+    KiroCrewConfig,
+    PendingEditBlocksSave,
+    config_path,
+)
 from kiro_crew.dashboard.handlers.agents import api_agent_fork
 
 
@@ -293,6 +299,29 @@ async def test_fork_bookkeeping_failure_compensates(tmp_path):
 
     assert resp.status == 500
     assert json.loads(resp.text)["code"] == "bookkeeping_failed"
+    assert not (agents_dir / "design-crew.json").exists()
+    assert agent_state.get_fork_info("design-crew") is None
+
+
+@pytest.mark.asyncio
+async def test_fork_of_a_pending_config_json_hands_the_refusal_to_the_chain(tmp_path, monkeypatch):
+    """config.json has a change pending owner review: the rebind is refused, the copy
+    it created and its lineage are removed, and the refusal reaches the dashboard
+    chain, which answers 409, not the fork's own 500."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _write_template(agents_dir, "mytemplate")
+    _seed_config("design-crew", "mytemplate")
+    path = make_config_json_pending(monkeypatch)
+
+    with (
+        patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir),
+        pytest.raises(PendingEditBlocksSave),
+    ):
+        await api_agent_fork(_fork_request("mytemplate", {"crew": "design-crew"}))
+
+    assert path.read_bytes() == HAND_EDIT
+    assert KiroCrewConfig.load().agents["design-crew"].kiro_agent == "mytemplate"
     assert not (agents_dir / "design-crew.json").exists()
     assert agent_state.get_fork_info("design-crew") is None
 

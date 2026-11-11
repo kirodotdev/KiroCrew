@@ -590,8 +590,13 @@ def _notify_subagent_tab_gone(
     assert self.dashboard_state is not None
     logger.info("Subagent %s: parent slot %s gone, notification only", info.id, slot_name)
     # Only notify when the tab is gone: an open tab already shows results in
-    # the Activity panel and chat.
-    self.dashboard_state.notify("subagent", title, body, meta=self._notif_meta(parent_key))
+    # the Activity panel and chat. A silent run rings no completion bell on
+    # ANY route (docs/decisions/, "a silent parent's sub-agent completions
+    # never ring the bell"); the suppression IS this route's delivery
+    # decision, so the run is marked delivered either way, matching how the
+    # cron route treats a silent run.
+    if not info.silent:
+        self.dashboard_state.notify("subagent", title, body, meta=self._notif_meta(parent_key))
     # The notification is this route's whole delivery.
     info._report_delivered = True
 
@@ -1264,8 +1269,10 @@ async def _inject_subagent_into_channel_parent(
                 info,
                 reason=_last_failure_reason,
             )
-    # Dashboard notification
-    if self.dashboard_state:
+    # Dashboard notification — the completion's bell copy, so a silent run
+    # skips it like every other route; the injection-failure notice above is
+    # an alert, not a completion, and stays.
+    if self.dashboard_state and not info.silent:
         self.dashboard_state.notify(
             "subagent",
             title,
@@ -1429,10 +1436,10 @@ async def _finish_subagent_cron_or_notify(
             body = f"{body}\n\n{cron_response}"
             logger.info("Subagent %s → cron session %s", info.id, parent_key)
             # also deliver the synthesized response to the job's own
-            # surfaces. honor the parent cron job's silent flag too:
-            # info.silent is never set from the cron's silent setting for
-            # spawn_run sub-agents, so a silent cron would otherwise still
-            # post every subagent-completion turn.
+            # surfaces. info.silent carries a silent cron's flag from
+            # admission (_parent_run_is_silent); the live read beside it
+            # covers a run admitted before the job turned silent and a row
+            # that predates the admission rule.
             try:
                 await self._deliver_cron_response(
                     parent_key,

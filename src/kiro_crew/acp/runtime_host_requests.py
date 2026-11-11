@@ -10,7 +10,7 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_audit_tasks``, ``_kas_host_auth_logged``,
 ``_kas_host_auth_failure_logged``,
-``_mcp_reattempts``, ``_mcp_sign_in``.
+``_mcp_reattempts``, ``_mcp_sign_in``, ``_mcp_sign_in_ended_hooks``.
 
 Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``,
 ``_max_answer_tasks``, ``_pid``, ``_session_queues``, ``_subagent_owner``.
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.acp import kas_secret_storage
 from kiro_crew.acp._dispatch import redact_text
@@ -464,15 +464,25 @@ def begin_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> bo
 
 
 async def _run_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) -> None:
-    """Hold the sign-in slot until the engine's reset answer arrives."""
+    """Hold the sign-in slot until the engine's reset answer arrives.
+
+    An attempt the engine answers ``success: false``, refuses with an error, or
+    never answers is then reported to the session's ended-attempt hook
+    (``set_mcp_sign_in_ended_hook``): the engine has closed that attempt's
+    callback listener, so the link it showed is dead. Any other answer reports
+    nothing, and a process that died is left to the dashboard's dead-child gate.
+    """
     entry = (session_id, server_name)
+    ended_unconnected = False
     try:
-        await self._send_and_await(
+        answer = await self._send_and_await(
             METHOD_KAS_MCP_RESET_SERVER,
             {"sessionId": session_id, "serverName": server_name, "startOAuth": True},
             timeout=_MCP_SIGN_IN_TIMEOUT,
         )
+        ended_unconnected = isinstance(answer, dict) and answer.get("success") is False
     except Exception as exc:  # noqa: BLE001 -- the next offer retries
+        ended_unconnected = not isinstance(exc, AcpRuntimeDead)
         logger.info(
             "MCP sign-in for %s ended without an answer: %s",
             sanitize_sink_text(server_name, NAME_CAP),
@@ -481,6 +491,23 @@ async def _run_mcp_sign_in(self: AcpRuntime, session_id: str, server_name: str) 
     finally:
         if self._mcp_sign_in == entry:
             self._mcp_sign_in = None
+    hook = self._mcp_sign_in_ended_hooks.get(session_id) if ended_unconnected else None
+    if hook is not None:
+        try:
+            hook(server_name)
+        except Exception:  # noqa: BLE001 -- a display hook never breaks the runtime
+            logger.warning("MCP sign-in ended hook failed", exc_info=True)
+
+
+def set_mcp_sign_in_ended_hook(
+    self: AcpRuntime, session_id: str, hook: Callable[[str], None]
+) -> None:
+    """Install the hook told the server name when *session_id*'s sign-in ends unconnected.
+
+    It runs whether or not a turn is reading the session, so an idle chat still
+    withdraws the dead link. ``unregister_session`` removes it.
+    """
+    self._mcp_sign_in_ended_hooks[session_id] = hook
 
 
 def begin_mcp_reattempt(self: AcpRuntime, session_id: str, server_name: str) -> bool:

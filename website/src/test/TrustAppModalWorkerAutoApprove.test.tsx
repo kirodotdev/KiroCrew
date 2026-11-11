@@ -53,6 +53,21 @@ describe('TrustAppModal worker auto-approve disclosure', () => {
   })
 })
 
+describe('TrustAppModal user-session reach disclosure', () => {
+  it('names each declared verb the gateway knows, and only those', () => {
+    const dialog = renderModal({ ...BASE, reachableByUserSessions: ['send', 'close'] })
+    expect(dialog.getByText(`${K}.user_session_reach_heading`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.user_session_reach_send`)).toBeTruthy()
+    expect(dialog.queryByText(`${K}.user_session_reach_read`)).toBeNull()
+    expect(dialog.getByText(`${K}.user_session_reach_note`)).toBeTruthy()
+  })
+
+  it('shows no such box when nothing it knows is declared', () => {
+    const dialog = renderModal({ ...BASE, reachableByUserSessions: ['close'] })
+    expect(dialog.queryByText(`${K}.user_session_reach_heading`)).toBeNull()
+  })
+})
+
 describe('useAppActions trust target', () => {
   function wrapper({ children }: { children: ReactNode }) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

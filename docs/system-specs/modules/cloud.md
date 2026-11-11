@@ -172,7 +172,9 @@ discovery always prefers the default VPC). The explicit path keeps discovery's
 launch-time guarantees: the subnet must exist in the region, its AZ must offer
 the chosen instance type, and it must pass the same `_subnet_egress_kinds`
 egress check (NAT or IGW) — each failing fast with actionable text instead of
-hanging to the `WaitCondition` timeout, and the same NAT→no-public-IP /
+hanging to the `WaitCondition` timeout (the no-egress refusal offers leaving the
+subnet unset or choosing one with a NAT or internet-gateway route before a
+route-table change), and the same NAT→no-public-IP /
 IGW→public-IP parameter wiring applies. `--subnet` applies only to a **new**
 stack; reusing an existing stack warns interactively that its network is fixed,
 and **hard-fails under `--yes`** — a script's explicitly requested pin must not
@@ -182,7 +184,13 @@ be silently ignored.
 **new** box only, with the same existing-stack rule as `--subnet` (warn
 interactively, hard-fail under `--yes`). `--ami` fills the template's
 `CustomAmiId` (the `HasCustomAmi` condition picks it over the SSM-resolved
-AL2023 image); `--extra-packages` is validated by
+AL2023 image). Once the size is known, before the account confirmation, the
+wizard reads the image's architecture (`ec2.assert_ami_matches_tier`, one
+`describe-images` call) and refuses an image built for another architecture than
+the size runs, naming both and the sizes that fit it, so nothing is created; the
+template would otherwise fail only at the `Instance` resource, after the role
+and instance profile exist. A read that fails is logged and refuses nothing:
+CloudFormation still judges the image. `--extra-packages` is validated by
 `ec2.normalize_extra_packages` (allowlist charset, no leading `-`, at most 256
 chars) and fills `ExtraPackages`, which UserData installs one name
 at a time, skipping one dnf cannot find. Both template parameters carry an
@@ -212,6 +220,15 @@ the `--keep-on-failure` tip. On a build with host policies, a denied
 it allows. `aws.checked`, `find_stack` and the boundary read put their remedy
 ahead of the raw error the same way. The CLI's stderr is kept whole, so the stack
 name in its `describe-stack-events` command is not cut.
+
+With no denied action named, a failed stack event that carries an EC2 account
+refusal puts its plain cause and next step in the same place: a vCPU quota with
+no room for the size (EC2's "current vCPU limit" message) names the size's vCPU
+and asks for a higher Running On-Demand Standard instances quota (L-1216C47A) in
+Service Quotas, or a smaller size when one exists; an account still being
+validated (EC2's "in this region is being validated" message) says to retry once
+AWS confirms. The match is on EC2's message because CloudFormation's resource
+handler drops EC2's error code from the reason. `missing_action` stays unset.
 
 Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
 

@@ -277,7 +277,7 @@ _BUILDER_MEMBERS: dict[str, tuple[str, str]] = {
 
 #: Public functions defined on the facade, and their signatures.
 _PUBLIC_SIGNATURES = {
-    "build_cancelled_turn_preamble": "(conversation_log: \"'ConversationLog'\", session_key: 'str', *, user_cap: 'int' = 2000, assist_cap: 'int' = 2000) -> 'str'",
+    "build_cancelled_turn_preamble": "(conversation_log: \"'ConversationLog'\", session_key: 'str', *, user_cap: 'int' = 2000, assist_cap: 'int' = 2000, newest_request: 'bool' = False) -> 'str'",
     "build_interrupted_turn_preamble": "(messages: 'list[dict]', current: 'dict | None' = None, *, opener_inject_kinds: 'AbstractSet[str]' = frozenset(), user_cap: 'int' = 8000, assist_cap: 'int' = 4000) -> 'str'",
     "build_session_replay": "(conversation_log: \"'ConversationLog | None'\", session_key: 'str', *, exclude_last_n: 'int' = 0, model_window: 'int | None' = None, pending_messages: 'list[dict] | None' = None, current_message: 'dict | None' = None) -> 'str | None'",
     "cached_vector_store_entries": "() -> \"tuple[tuple[str, 'VectorMemoryStore'], ...]\"",

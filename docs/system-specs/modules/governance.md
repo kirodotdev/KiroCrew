@@ -166,6 +166,7 @@ In an `oss` build a scope the policy does not name is ungoverned and permitted (
 - **Not gated.** `BASELINE_UNGATED` lists, each with its reason, the scopes that keep Crew's own default: the two ordinals (`approval_mode`, `sandbox.min_level`) and the open controls of RFC D3 as amended on 2026-11-02 (`mcp`, `filesystem.read`, `filesystem.write`, `commands`, `tools`, `capabilities.spawn`, `capabilities.cron`, `apps`; appendix "Crew default") and as amended on 2026-11-05 (`capabilities.memory_writes`, `capabilities.theme_persona`, `capabilities.milestones`, `capabilities.decisions_local`). Open means permitted, not switched on: a feature's preview flag or user setting, where it has one, keeps its `oss` default, and `capabilities.decisions_local` only narrows `capabilities.decisions`, which stays in the baseline off. `capabilities.app_dev_mode` and `app_versions` stay in `BASELINE_CONTROLS`. `edition_locks.policy_permits` (the process-wide switch milestones read) lets an open scope's `default`-layer permit stand; every other scope it answers still needs a policy-layer permit (`follows_policy`). With the policy silent, an open control answers as in `oss`, ungoverned; a remote policy that names one still decides, and a local tier composed under a silent central policy still narrows it. A scope in neither table (one registered at run time) is denied.
 - **Minimal sets that differ from the appendix wording.** `approval_modes` is `normal`, `trust`, `trust_reads` (only `yolo` is off; the catalog floor is `normal` alone, so a remote `permission_mode` rule may narrow it). `updates.source` is not a catalog scope and has no baseline.
 - **A proven non-shell call is judged in its own scopes.** `classify_tool_title` reads an unprefixed name as a command body and a tool name both, and kiro-cli titles an MCP call `Running: @server/tool`, so with `commands` off (a remote policy that turns it off) every built-in and every MCP call was refused. In an LTS build `GateFacts.governance_own_scopes` proves, from the trusted identity of a call the client did not classify as shell, that the call is MCP-served (`("mcp",)`) or a host built-in whose `BUILTIN_TOOL_SCOPES` row has no `commands` (`("tools", *row)`; a KAS id through its admitting kiro-cli alias only, so `delete_file`, `run_command` and `code` stay unproven). `gate_decision(own_scopes=...)` then keeps every `commands` pair, the title's `tools` pair, an MCP identity's `tools` pair, and a built-in's argument pair outside its row as deny-only: an explicit deny there (a local `curl *` deny) still refuses, an allow-mode miss does not. Each scope in a built-in's row that its arguments name no target in is asked about `_NO_TARGET_ITEM`, so an allow-mode `filesystem.read` the remote policy names refuses a pathless `grep` or `glob` (it searches a directory the gate cannot see), and an allow-mode `filesystem.write` refuses a write that does not arrive as an edit. A relative path is anchored at the gateway's working directory, as for every `filesystem.*` rule. `oss` never sets `own_scopes`.
+- **A shell call is judged on its recovered command.** A harness may title its shell call without the command (KAS titles it `Run Command`), so a `commands` rule read off the title alone never met the command, and a policy deny such as `*backdoor*` let `echo backdoor` through to the `read-only` row's auto-approve. The `governance` row therefore also asks `Running: <recovered command>` (`ToolCall.command`, the same command every shell row judges) under `commands`, beside the title, in the form kiro-cli's own shell title takes. A deny on it refuses the call before any grant or classify row runs. A shell call with no recovered command never reaches this row (`unverifiable-shell` refuses it).
 - **Inner lists the remote leaves out.** `BASELINE_INNER_LISTS` names inner lists that keep their baseline even when the remote policy names their capability: today `capabilities.publish` `regions`, `audience` and `accounts`, all off. `parsing.with_inner_baseline` fills them into a remote-named gate, in `evaluator._policy_level` and in `tiers._with_lts_baseline` for a central authority, so a local tier cannot supply a list the remote left out.
 - **Local policy tiers.** `compose_tier_ladder` first fills the authority tier's unnamed scopes from the baseline (`tiers._with_lts_baseline`), so the tighten-only `_intersect_ceilings` composes a local tier (`env`, `home`, `bundled`) WITH the baseline: a local tier can narrow it and never supply a scope's whole answer. With no central document the authority is itself local, so it is intersected with the baseline scope by scope rather than filled; only a central authority's named scopes replace the baseline. The installed ceiling therefore names every gated scope in an LTS build, and `kirocrew policy show` lists the baseline rows beside the document's own.
 - **Not covered here.** The `ceiling is None and profile is None` early returns in `hook_runtime/governance_gate.py`, `mcp_gateway/app_call.py` and `governance_profiles.governance_permits` still permit before `resolve` runs; an enterprise host with no policy at all is the LTS gate's to refuse (RFC Migration plan phase 2).
@@ -1487,7 +1488,10 @@ the rule. Its sibling `availableAgents` travels as a `deny` with the listed name
 `exclude`, which only narrows and so travels whatever the ceiling says.
 
 The projection is built per session, so the translated merge asks
-`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`. The ceiling
+`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`, and so does
+the spec's own sub-agent allow (`use_subagent` in `allowedTools`, a `subagent` allow in its
+`permissions`, `kas_agents._authored_allow_gate`); the spec's other authored allows still
+ask `may_skip_gate_now`. The ceiling
 and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
 resolve for one of that session's calls count
 (`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
@@ -1530,6 +1534,13 @@ withholds. The KAS projection asks `may_grant_builtin_at_gate_now` once when it 
 the grant; the gate asks again on every call. A spec's `toolsSettings.shell.allowedCommands`
 takes the same row and the same question, asked about `execute_bash`: the patterns are
 recorded only when it holds, and the row asks it again for every matching command.
+One ceiling shape is not an opinion here: a deny-mode `commands` scope whose every
+pattern is string-identical to a built-in deny rule (`_commands_only_pin_the_floor`), as
+an edition writes when it pins its self-protection rules. The gate force-enables each
+such rule in its deny floor, so the deny-rules row has refused a call one names before
+this row runs, and the pins say nothing about any other command. Any other pattern beside
+them, an allow-mode set or a profile's `commands` scope still withholds the grant. The
+static writers (`may_skip_gate`) are unchanged.
 
 What no hook can do is narrow a session **already negotiated**: kiro-cli holds the grants it
 was given, and nothing reaches into a running one. That limit has the same shape as an
@@ -2571,7 +2582,12 @@ read-your-writes should add it deliberately, with its own tests.
   `mcp_core._vet_memory_writes_governance` (at `learn_add`); script-hook
   execution in `hooks._script_hooks_capability_denied` (at `run_script_hook`,
   asking `events:<event>` so the row's inner `events` list can name the trigger
-  events a hook may fire on; an unnamed list permits every event); inbound
+  events a hook may fire on; an unnamed list permits every event; then
+  `hooks:<name>` for its inner `hooks` list, where an agent spec's hook is
+  `<agent>/<Event>/<n>`, the `#n` of its name, and a Hooks-page hook is its
+  name; an unnamed list permits every hook, a refused PreToolUse hook still
+  blocks the tool, and a listed hook still meets the shell deny list and the
+  sandbox; `hook_event_governance.hook_refusal`); inbound
   webhook sources in `webhook_sources.source_refusal` (the `webhooks` scope,
   members `agent` for `POST /api/hooks/agent` and `ops-mission-control` for that
   app's signal webhook; policy layer only, asked before the token or signature is
@@ -3708,8 +3724,9 @@ started by hand on a preset's port from answering. Both
 chokepoints select the row from the configured provider and the runtime, never from
 the request. `PUT /api/decisions/provider`
 refuses a switch to a withdrawn side with `403 decisions_capability_denied`, and its
-`GET` reports `hosted_permitted` / `local_permitted` so the picker greys that side
-out. `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
+`GET` reports `hosted_permitted` / `local_permitted` / `sagemaker_permitted`; the
+picker hides a refused hosted option and greys out a refused local one, and the
+PUT also asks the `endpoints` list for a hosted or SageMaker host, as does an enabling `PUT /api/decisions/consent`, and a refused hosted default reads as `active: "none"` (see decisions.md). `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
 only when `capabilities.decisions` is pinned off (which covers both sides) or both
 rows are. A fleet that permits hosted Jev but wants no local model pins this row.
 
@@ -4311,7 +4328,9 @@ denies `trust` already refuses the first three.
 **`approval_modes` is the single precedence point.** Every site that asks governance
 whether a mode may be selected or honoured asks `approval_mode_permitted`,
 `session_mode_permitted` or `yolo_policy_permits`, and all three answer from the
-`approval_modes` scope alone. The ordinal `approval_mode` is subordinate to it: only
+`approval_modes` scope alone. `approval_mode_permitted` answers `trust` and
+`trust_reads` by calling `session_mode_permitted`, so those two modes have one verdict
+wherever they are asked. The ordinal `approval_mode` is subordinate to it: only
 its boot floor is enforced, its live clamp stays reserved (see its note under "Scope
 boundaries"), and it can never permit a mode `approval_modes` denies.
 

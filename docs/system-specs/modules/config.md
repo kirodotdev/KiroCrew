@@ -120,7 +120,9 @@ its logical name. `read_config_document` parses `reconcile(leaf, disk_bytes)`, a
 seals these files, both serve the endorsed copy whenever the on-disk bytes differ, PER FILE and
 before the merge, so an unrelated save cannot re-endorse a tampered file. Under enforcement the
 store fails closed: a failed copy write keeps the previous copy and aborts the save before
-publishing, a failed publish restores the prior copy, and an existing but unreadable copy
+publishing, a failed publish restores the prior copy (when that restore fails too, the process
+keeps answering the prior copy while the file still holds the unpublished bytes, so the next
+save is not refused as an outside edit), and an existing but unreadable copy
 raises rather than serving disk bytes. It is whole-file, so every key is covered with no key
 list to maintain. It runs only where
 the per-file bind can detach (`enforcement_active`: a Linux host that can build the namespace
@@ -147,7 +149,8 @@ endorsed or written (`refuse_save_if_pending`, inside `endorsing`, raising
 sentence `PENDING_SAVE_REFUSED`): it would publish the endorsed copy plus its change over the
 pending edit, which would then be lost. Saves of the other files are unaffected. The dashboard
 save handlers answer that code (a handler with no catch of its own is answered `409` with it by
-the chain's `spa_fallback` layer) and the frontend shows its own translation with a link to the
+the chain's `spa_fallback` layer, and one whose broad `except` would catch it hands it there
+after that arm's own rollback or audit) and the frontend shows its translation with a link to the
 pending card; the CLI prints the sentence and exits 1 (`cli.main`'s `_exit_on_pending_save`, for
 every subcommand); the migration write-back each load retries is refused too and logged once per
 pending version (`log_writeback_refused_once`); an app uninstall whose grant would need
@@ -369,19 +372,27 @@ written only on the default path (a `KIROCREW_HOME` override carries no `~/.kiro
 wipe risk). It is **not a backup** — just a durable signpost that survives a
 `~/.kiro/`-wide uninstaller wipe so a user or support script can find any
 surviving data or understand what was removed. This narrows, but does not
-eliminate, the one-way-door risk above; the release gate still stands.
+eliminate, the one-way-door risk above; what remains is the accepted risk below.
 
-> **Release gate (UNINSTALLER-EXCLUDE-CREW).** This is a pre-release,
-> human-sign-off dependency, NOT a code change in this repo: the code cannot
-> constrain another product's uninstaller. For every release that ships data
-> under `~/.kiro/`, the Kiro Crew product owner MUST confirm the
-> Kiro-family uninstaller either excludes `~/.kiro/crew` or prompts — because
-> there is no `~/.kirocrew.archived` fallback for any install, so a
-> `~/.kiro/`-wide wipe would be unrecoverable total data loss. Until confirmed,
-> the placement decision is acknowledged-but-owned here under this name so it is
-> not lost. **Tracked as release-blocking in
-> [issue #355](https://github.com/kirodotdev/KiroCrew/issues/355)**; the sign-off
-> must be recorded there.
+> **Accepted risk (UNINSTALLER-EXCLUDE-CREW).** A Kiro-family uninstaller that
+> removes `~/.kiro/` wholesale also removes `~/.kiro/crew`, and with no
+> `~/.kirocrew.archived` fallback that is unrecoverable total data loss. The code
+> cannot constrain another product's uninstaller, and Kiro Crew holds no written
+> confirmation that a Kiro-family uninstaller excludes `~/.kiro/crew` or prompts
+> first, so this is a documented accepted risk, not a release gate. The
+> protections Kiro Crew owns:
+>
+> - every uninstall path this repository owns keeps the data home (the
+>   repository-controlled uninstall contract above);
+> - the `~/.kirocrew.breadcrumb` pointer above, written outside `~/.kiro/`;
+> - `KIROCREW_HOME`, which puts the data home outside `~/.kiro/` (the crewmate
+>   agent files in `~/.kiro/mates` do not move with it);
+> - `snapshot_dir` set outside `~/.kiro/`, so a `kirocrew snapshot` written there
+>   survives such a removal; the default, `<data home>/snapshots`, survives it
+>   only when the data home itself is outside `~/.kiro/`.
+>
+> Reopen [issue #355](https://github.com/kirodotdev/KiroCrew/issues/355) if a
+> Kiro-family uninstaller is found to remove `~/.kiro/` wholesale.
 
 **Paths are resolved per call, never captured at import.** Because
 `config_dir()` re-reads `$KIROCREW_HOME` on every call and resolution/maintenance
@@ -2259,11 +2270,12 @@ requested name while the generic default agent answers **with none of the app's
 MCP tools and no error**, leaving the app unusable until a gateway restart happens
 to re-warm the snapshot. `_turn_admit` therefore guards the resolve, strictly behind
 `slot._app and not bindings.requested_resolved` (zero extra work / I/O on the
-common hot path — no `_app`, or already resolved). The first rescan step also
-runs for a named non-app slot that did not resolve while
-`materialized_snapshot_complete()` is False (a scan skipped a spec, or the boot
-scan has not landed); if the re-resolve still misses, that turn fails with
-`memory_unavailable`. A complete snapshot is trusted and costs no rescan:
+common hot path — an agent that resolved). The first rescan step also
+runs for a named non-app slot that did not resolve: the snapshot may lack a spec
+written by hand or by kiro-cli after it warmed, or one a scan could not read. If
+the re-resolve still misses, that turn fails with `memory_unavailable`. The
+refresh's memo makes a miss with nothing new on disk a listing and a stat per
+spec.
 
 1. **Self-heal (two escalating steps).** First, **rescan** the snapshot **off the
    loop** with the same pattern the gateway boot uses (`dashboard/server_runtime/app_platform.py`) —
@@ -2311,6 +2323,14 @@ pick never rescans: members come from the config the handler loaded. The
 refresh's memo makes a miss with nothing moved on disk a listing of the agents
 directories and a stat per spec (a revision it cannot prove scans, as a catalog
 fetch does), and a failed scan leaves the refusal in place.
+
+The paths that run an agent a chat already holds refresh once the same way
+before refusing a name that did not resolve, then resolve again: a thread reply
+(`dashboard/chat_threads.py`) awaits `rescan_before_refusal()`, and kiro-cli's own
+agent switch inside a turn (`session_agent_selection.record_provider_agent_switch`)
+and the Crew Mode migration's target check (`dashboard/crew_mode_migration.py`
+`_usable`) call `refresh_materialized_agents` inline, as both already run off the
+loop.
 
 The eager-spawn pre-warm path mirrors the **self-heal** step (rescan →
 re-register-from-source) only (so the speculative session bakes in the app's own
@@ -3548,6 +3568,8 @@ class MemoryConfig:
     lesson_extraction_enabled: bool = True  # off = consolidation (default and member stores) and the task runner save no extracted lessons; other writes and learn_add continue
     kind_routing: str = "off"        # off | shadow | enforce: whether consolidation tags each project.* write with a kind (fact/event/state) and what it does with it; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log; unknown values read as off (memory_kind_routing.py)
     lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; unknown values read as off (memory_origin_gate.py)
+    lesson_tier_policy: str = "off"  # off | shadow | enforce: which tier a new consolidation lesson gets; enforce stores an untagged lesson, and an always lesson whose user_quote is not found in a person's unrelayed turn, as on_topic, and only enforce asks the prompt for user_quote; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log plus a learn_add re-teach count; unknown values read as off (memory_tier_policy.py)
+    rule_authority_order: str = "off"  # off | shadow | enforce: how the session-start rule block orders its rules; off keeps today's block, shadow keeps it and records in the injection receipt the rule ids the authority order would add or drop, enforce lists user_explicit rules first then the rest, the authored-before-untagged order and request relevance holding inside each group; an agent-triggered learn_add is user_explicit unless lesson_origin_gate is enforce; cap and omission line unchanged; unknown values read as off (memory_rule_authority.py)
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
     inject_lessons_per_turn: bool = False  # on follow-up messages, add up to 3 matching lessons the session was not shown; requires inject_lessons
@@ -4897,6 +4919,14 @@ corrupt existing document as described above.
   above
 - An enum value outside its set → that field's default, with a logged line
 - An out-of-range number → clamped (see "Security-Bounded Config Clamp")
+
+### Editable choices (`enum`)
+
+`PATCH /api/config/kirocrew` accepts an `enum` entry of `_EDITABLE_CONFIG` when the value equals
+one of its `values` (or its `values_fn` result), and stores that member rather than the value
+sent. For `browser.live.max_fps` (`[15, 30, 60]`) a JSON `15.0` equals `15`, and the loader reads
+only an int, so storing the float would make the route answer 200 while the live view ran the
+default rate. Pinned by `test/test_config_browser_section.py::TestPatchRoute::test_an_integral_float_frame_rate_is_stored_as_the_choice`.
 
 ### Editable string lists (`str_list`)
 

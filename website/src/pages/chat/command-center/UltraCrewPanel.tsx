@@ -759,7 +759,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
                     onToggle={e => setDoneOpen((e.currentTarget as HTMLDetailsElement).open)}>
                     <summary className="flex items-center gap-2.5 py-1.5 cursor-pointer list-none">
                       <span className="shrink-0">{STATE_ICON.done}</span>
-                      <span className="flex-1 min-w-0 text-[13px] text-text truncate">{i18nT('components.crewMode.ultra_ms_done_fold', { n: doneMs.length })}{!doneOpen && <span className="text-muted"> · {doneMs.map(m => m.item.title).join(', ')}</span>}</span>
+                      <span className="flex-1 min-w-0 text-[13px] text-text truncate">{i18nT('components.crewMode.ultra_ms_done_fold', { n: doneMs.length })}{!doneOpen && <span className="text-muted"> · {fmtList(doneMs.map(m => m.item.title), { style: 'narrow' })}</span>}</span>
                       <ChevronRight size={14} aria-hidden="true" className="shrink-0 text-muted transition-transform group-open:rotate-90" />
                     </summary>
                     <ol className="divide-y divide-border pl-2">{doneMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)} />)}</ol>

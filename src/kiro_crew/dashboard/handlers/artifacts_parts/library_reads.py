@@ -39,6 +39,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _clean_origin_session_key,
     _err,
     _event_session_id,
+    _is_agent_call,
     _json_response,
     _run_off_loop,
     logger,
@@ -429,9 +430,10 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
     # tab can list what a session CONSUMED, not only what it authored (the
     # ``touched_by`` filter reads these events). Deliberately narrow:
     #
-    #  * MCP only (``X-Internal-Secret``). A browser GET carries the literal
-    #    ``dashboard:ui`` key, which ``_event_session_id`` drops anyway — but
-    #    gating on the secret keeps a plain page view from ever mutating state.
+    #  * Agent only (``_is_agent_call``: internal secret or agent socket). A
+    #    browser GET carries the literal ``dashboard:ui`` key, which
+    #    ``_event_session_id`` drops anyway — but gating on the agent
+    #    transport keeps a plain page view from ever mutating state.
     #  * Never for a restricted (incognito / temporary) session — leaving a
     #    durable trace is exactly what those sessions exist to avoid. Reads are
     #    otherwise ungated here, so this check is local rather than a 403.
@@ -440,7 +442,7 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
     #    lifecycle event, so a read after an edit is a no-op. A failure must
     #    never turn a successful read into an error.
     session_id = _event_session_id(request)
-    if session_id and request.headers.get("X-Internal-Secret") is not None:
+    if session_id and _is_agent_call(request):
         # Deny by default: a falsy ``state`` must withhold the breadcrumb, not
         # skip the check. Written as its own positive gate (rather than folded
         # into the condition above) so no falsy value can short-circuit past it.

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp import seed_provenance
+from kiro_crew.bounded_read import bounded_read_fd
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
@@ -92,7 +93,7 @@ def _settings_path_bytes(path: Path, expectation: tuple[int, str] | None) -> byt
         # ONE byte past the recorded length, so a file that grew between the
         # fstat and the read is rejected on length rather than matching on a
         # prefix hash. Bounded either way: a few hundred bytes, never the file.
-        chunk = os.read(fd, size + 1)
+        chunk = bounded_read_fd(fd, size + 1)
         if len(chunk) == size and hashlib.sha256(chunk).hexdigest() == sha:
             return chunk
         return None

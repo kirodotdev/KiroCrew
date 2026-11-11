@@ -289,13 +289,36 @@ def may_skip_gate(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
     return _ceiling_has_no_say(ref, ceiling)
 
 
-def _ceiling_has_no_say(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
+def _commands_only_pin_the_floor(control: object) -> bool:
+    """Whether a ``commands`` control only pins built-in deny rules.
+
+    True for a deny-mode set whose every pattern is string-identical to a built-in
+    deny rule (``security._rule_id_for_pattern``). The gate force-enables each such
+    rule in its deny floor (``hook_runtime.denied_commands``), so the deny-rules row
+    has already refused any call one of them names before a grant row runs. An
+    edition that pins its self-protection rules this way says nothing more about the
+    shell. Any other pattern, an allow-mode set or an unknown shape is an opinion.
+    """
+    from kiro_crew.platform.governance_parts import carriers
+    from kiro_crew.security import _rule_id_for_pattern
+
+    if str(getattr(control, "mode", "") or "").strip().lower() != MODE_DENY:
+        return False
+    pins = carriers._command_deny_patterns(control)
+    return all(_rule_id_for_pattern(pin) for pin in pins)
+
+
+def _ceiling_has_no_say(
+    ref: str, ceiling: Optional[GovernanceCeiling], *, at_gate: bool = False
+) -> bool:
     """:func:`may_skip_gate` after its floor clause: the ceiling's own question.
 
     True when the ceiling could never have an opinion about *ref*, so a grant of it
     stands. Shared by the static writers (through :func:`may_skip_gate`, which
     refuses a floor-gated builtin first) and the gate-answered grant
     (:func:`may_grant_builtin_at_gate`, whose call has already met the floor).
+    *at_gate* is that second caller: there a ``commands`` scope that only pins
+    built-in deny rules (:func:`_commands_only_pin_the_floor`) is not an opinion.
     """
     # An LTS build has no ungoverned host: an unnamed scope is answered by
     # the built-in baseline, read through ``policy_level_control`` below.
@@ -333,7 +356,12 @@ def _ceiling_has_no_say(ref: str, ceiling: Optional[GovernanceCeiling]) -> bool:
         # bypassed a `tools`-scope ceiling (e.g. tools.deny=["report"]). The
         # capability scopes it DOES map to add path/host granularity on top.
         scopes = ("tools",) + tuple(BUILTIN_TOOL_SCOPES.get(ref, ()))
-        if any(_ruleset_has_an_opinion(policy_level_control(ceiling, scope)) for scope in scopes):
+        for scope in scopes:
+            control = policy_level_control(ceiling, scope)
+            if not _ruleset_has_an_opinion(control):
+                continue
+            if at_gate and scope == "commands" and _commands_only_pin_the_floor(control):
+                continue
             return False
         capability = BUILTIN_TOOL_CAPABILITIES.get(ref)
         return not (capability and _capability_restricts(policy_level_control(ceiling, capability)))
@@ -884,7 +912,10 @@ def may_grant_builtin_at_gate(ref: str, ceiling: Optional[GovernanceCeiling]) ->
     floor, the sensitive-path check and governance have all run on the real
     arguments, so the floor clause has nothing left to protect there. Everything
     else stands: a ceiling with any opinion on the tool's scopes, or any configured
-    profile that could govern it, withholds the grant and the call prompts.
+    profile that could govern it, withholds the grant and the call prompts. The one
+    exception is a ceiling ``commands`` scope that only pins built-in deny rules,
+    which the deny floor has already applied to this call
+    (:func:`_commands_only_pin_the_floor`).
 
     *ceiling* is the one the gate's own context snapshot carries, so the call is
     judged under one ceiling throughout. Fails closed on any error.
@@ -892,7 +923,7 @@ def may_grant_builtin_at_gate(ref: str, ceiling: Optional[GovernanceCeiling]) ->
     if not isinstance(ref, str) or not ref or ref.startswith("@"):
         return False
     try:
-        if not _ceiling_has_no_say(ref, ceiling):
+        if not _ceiling_has_no_say(ref, ceiling, at_gate=True):
             return False
         from kiro_crew.platform.governance_profiles import any_configured_profile_has_say
 

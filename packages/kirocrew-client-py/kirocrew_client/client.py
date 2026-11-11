@@ -137,7 +137,15 @@ _SLOT_SCOPED_APPROVAL_MODES = frozenset({"normal", "trust_reads", "trust"})
 
 
 def _read_app_secret(app_name: str) -> str:
-    """Read the per-app secret from disk. Returns empty string if unavailable."""
+    """The per-app secret, or an empty string if unavailable.
+
+    A backend the Gateway starts gets its secret in ``KIROCREW_PROXY_SECRET``, beside
+    its name in ``KIROCREW_APP_NAME``; current Gateways keep no copy the app can read.
+    The file in the app's folder is read only for a Gateway older than that.
+    """
+    env_secret = os.environ.get("KIROCREW_PROXY_SECRET", "").strip()
+    if env_secret and os.environ.get("KIROCREW_APP_NAME") == app_name:
+        return env_secret
     home = os.environ.get("KIROCREW_HOME", str(Path.home() / ".kiro" / "crew"))
     secret_path = Path(home) / "apps" / app_name / ".app_secret"
     try:

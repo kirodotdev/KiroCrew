@@ -28,6 +28,7 @@ import {
   DialogTitle,
 } from '../../components/ui/dialog'
 import ErrorNotice from '../../components/ErrorNotice'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import {
   type CurrentLaunch,
@@ -423,10 +424,10 @@ export function McpManagement({
       void qc.invalidateQueries({ queryKey: ['mcpGatewayFootprint'] })
       if (!r.pingOk) setError(i18nT('pages.mcpManagement.sharing_not_live'))
       if (r.skippedNames.length > 0) {
-        setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: r.skippedNames.join(', ') }))
+        setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(r.skippedNames, { style: 'narrow' }) }))
       }
       if (r.failed.length > 0) {
-        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: r.failed.join(', ') }))
+        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: fmtList(r.failed, { style: 'narrow' }) }))
       }
       if (r.restart) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
     },
@@ -524,13 +525,13 @@ export function McpManagement({
         return
       }
       if (r.failed.length > 0) {
-        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: r.failed.join(', ') }))
+        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: fmtList(r.failed, { style: 'narrow' }) }))
       }
       if (r.plan.length === 0) {
         // Servers whose launch can't be approved are still unshared: name them
         // rather than claiming there is nothing left.
         if (r.unreadable.length > 0) {
-          setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: r.unreadable.join(', ') }))
+          setNotice(i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(r.unreadable, { style: 'narrow' }) }))
         } else if (r.failed.length === 0) {
           setNotice(i18nT('pages.mcpManagement.enable_all_review_nothing'))
         }
@@ -581,13 +582,13 @@ export function McpManagement({
             { count: r.shared },
           ),
           ...(r.skippedNames.length > 0
-            ? [i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: r.skippedNames.join(', ') })]
+            ? [i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(r.skippedNames, { style: 'narrow' }) })]
             : []),
         ].join(' '),
       )
       // Failed requests are errors: they go through ErrorNotice, not the status line.
       if (r.failed.length > 0) {
-        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: r.failed.join(', ') }))
+        setError(i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: fmtList(r.failed, { style: 'narrow' }) }))
       }
       if (!r.sharingOn && r.shared > 0 && supported) void askToTurnOnSharing()
       if (r.restart) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
@@ -822,7 +823,7 @@ export function McpManagement({
               ))}
             </ul>
             {allSkipped.length > 0 && (
-              <p>{i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: allSkipped.join(', ') })}</p>
+              <p>{i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(allSkipped, { style: 'narrow' }) })}</p>
             )}
             <div className="flex flex-wrap items-center gap-2">
               <Btn
@@ -1143,7 +1144,7 @@ function ConfirmSharing({
             className="mt-1"
             message={
               failed.length > 0
-                ? i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: failed.join(', ') })
+                ? i18nT('pages.mcpManagement.enable_all_review_failed_names', { names: fmtList(failed, { style: 'narrow' }) })
                 : null
             }
             askAgent={!handoffWouldLoseEdits}
@@ -1151,7 +1152,7 @@ function ConfirmSharing({
           />
           {skipped.length > 0 && (
             <p className="mt-1 break-words text-[12.5px] text-muted [overflow-wrap:anywhere]">
-              {i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: skipped.join(', ') })}
+              {i18nT('pages.mcpManagement.enable_all_review_skipped_names', { names: fmtList(skipped, { style: 'narrow' }) })}
             </p>
           )}
           {/* The verdict belongs at the decision point, not only after the fact:

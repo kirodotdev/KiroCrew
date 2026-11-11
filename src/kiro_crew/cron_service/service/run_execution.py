@@ -239,8 +239,12 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
                 logger.exception("Failed to record history for job '%s'", job.name)
             if interrupted:
                 # The service never retries a run it stopped, so the owner is
-                # told rather than left with only the history row.
-                self._alert_interrupt(job, row_error)
+                # told rather than left with only the history row. The stored
+                # row, not this run's copy: the merge's _sync swaps in new
+                # objects, so a pause or resume another process (CLI, MCP)
+                # wrote during the run shows only there. A merge skipped on
+                # CronStoreBusy leaves the cache as of the last sync.
+                self._alert_interrupt(self.get_job(job.id) or job, row_error)
         # Re-arm last, after this run's outcome is settled: _next_wake_secs()
         # skipped this job while it was claimed, so the armed delay may be
         # stale by up to _TIMER_POLL_SECS. _arm_timer() guards a concurrent sweep.

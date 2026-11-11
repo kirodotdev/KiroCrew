@@ -267,7 +267,8 @@ def enable_app(
         approved: dict[str, list[str]] = {}
         for family in STAGED_GRANT_FAMILIES:
             shown = {e for e in grants_consent.get(family, ()) if isinstance(e, str)}
-            # A family the stored set predates approves what is declared.
+            # A family the stored set predates approves what is declared. An
+            # explicit-only family is never absent here (``_parse_approved_grants``).
             kept = list(current_grants[family] if family in current_grants else declared[family])
             kept += [e for e in declared[family] if e in shown and e not in kept]
             approved[family] = kept
@@ -424,13 +425,17 @@ def disable_app(name: str) -> AppResult:
         # enabled:false to the writable installed.json. This early return otherwise
         # skips the revoke the write path does, leaving a grant from a real earlier
         # enable live, so a pod still starts after the owner disabled the app. Revoke
-        # here too, and fail closed if the grant cannot be removed.
+        # here too, and fail closed if the grant cannot be removed. The record is
+        # written after the revoke, so the token cutoff moves to now and a token
+        # minted before this disable stays refused after a later enable.
         revoke_host_exec(name)
         revoke_worker_auto_approve(name)
         if host_exec_granted(name):
             return AppResult(
                 ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"
             )
+        meta.updatedAt = _now_iso()
+        _write_installed(name, meta)
         return AppResult(ok=True, name=name, message=f"{name} is already disabled")
 
     meta.enabled = False

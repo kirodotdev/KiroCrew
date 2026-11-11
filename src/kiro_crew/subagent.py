@@ -207,6 +207,7 @@ from kiro_crew.subagent_ending import (  # noqa: F401
     SubagentEnding,
     classify_ending,
 )
+from kiro_crew.subagent_host_decision import HostSpawnDecision  # noqa: F401 - re-exported
 from kiro_crew.subagent_manager import (
     CancellationCoordinator,
     ClaimPoint,
@@ -221,6 +222,9 @@ from kiro_crew.subagent_manager import (
     WaveDigestCoordinator,
     bind_component_globals,
     copy_component_docs,
+)
+from kiro_crew.subagent_manager.continuation import (  # noqa: F401 - resolved by continuation.py via bind_component_globals
+    _run_silent,
 )
 from kiro_crew.subagent_manager.monitoring import (  # noqa: F401 - resolved by monitoring.py via bind_component_globals
     orphan_carried_fields,
@@ -301,7 +305,6 @@ from kiro_crew.subagent_parts.delivery import (  # noqa: F401
     NOT_DELIVERY_STATE,
     PARKS_WHEN_SET,
     PARKS_WHEN_UNSET,
-    HostSpawnDecision,
     SpawnApprovalCallback,
     SpawnApprovalUnreachable,
     SubagentEventCallback,
@@ -427,6 +430,8 @@ from kiro_crew.subagent_parts.run_record import (  # noqa: F401
     _BareStateView,
     _context_groups_field,
     _context_groups_of,
+    _DoneFlag,
+    wait_done,
 )
 from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _SETTLED_PROJECTION_CEILING_GB,

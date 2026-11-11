@@ -2432,6 +2432,11 @@ continue" with the gateway's reason; a turn starting retires it. An error card
 with a remedy of its own (a context overflow, a repeated session start, a
 refused feature request, a refused app agent) withholds Resume from the composer
 too, through the one predicate `newestErrorOwnsRecovery` that ChatPage reads. A
+sign-in error (`auth_required`) is not one of them: the press works once the
+sign-in lands, so the composer keeps Resume and only its placeholder changes,
+to "Last turn needs a sign-in -- follow the message above, then press Resume or
+send your message again" (`authRequiredIsNewest`, read by ChatPage, `ChatPane`
+and a crew's window). A
 split-view pane of an ordinary chat is the same `ChatPane` and offers the same
 Resume.
 
@@ -2473,9 +2478,16 @@ treatment with its hover. Notes, Permissions, and Model follow.
 The pencil, Permissions, and Model entries open `CrewEditorModal`;
 the card introduces no configuration writer. Memory is a non-interactive binding
 readout — it never opens the unrelated generated Dashboard. The Workspace tile's
-label is the crew record's `workspace` field shown as-is: that field is the
+label comes from the crew record's `workspace` field: that field is the
 configured workspace's NAME (a key into the workspaces list, `default` for most
-Bots), not a directory, so no folder name is taken off it. Workspace opens
+Bots), not a directory, so no folder name is taken off it. A rename changes only
+the Bot's label, so the workspace made for it keeps its `member-<slug>` name and
+folder; when the field is exactly `member-<slug>` of the Bot's own roster slug,
+the tile reads the Bot's current name instead, and any other value (`default`, a
+named workspace, another Bot's `member-*`, or the Bot's own name shortened past
+40 characters or numbered on a collision) is shown as-is. The tooltip
+is the stored name either way, and the editor's Workspace field and the
+Workspaces list still show the stored name. Workspace opens
 SidePanel Files, and Files / Terminal are rooted in `projectDir` = the live DM
 slot's `project` — the directory the backend resolved that name to when it opened
 the member slot (`default_project_dir`) — never in the name itself, which rooted
@@ -4315,10 +4327,11 @@ parts:
   records none), then per item
   `work_ledger_record action=create`, `session_create`, `work_ledger_record
   action=bind`, `session_send`, binding before the seed. It also teaches the
-  patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
-  its default (never `gate:false`), `interval_secs` within 300..900, no
+  patrol: a self-armed `monitor_start`, only when the bind reply's `patrol=` is
+  not `armed` or `existing (active-work-ledger)`, with `watch="work-ledger"`,
+  `gate` left at its default (never `gate:false`), and no `interval_secs`,
   `max_cycles` or `max_runtime_secs` (a work-ledger patrol takes none from the
-  model), and, when every item is terminal or the user says stop, ONE final
+  model and runs every 300 s), and, when every item is terminal or the user says stop, ONE final
   report to the user before `autonudge_stop` in a later step. Those
   rules, and the verdict and close rules beside them, are not the Bot's
   own text: each is a placeholder filled from the root conductor's shared rules
@@ -4411,8 +4424,13 @@ parts:
   `allowedTools` list would drop lands as that list's matching `@server` /
   `@server/tool` refs (`mate_spec_policy._carry_mcp_allow`), also for a server the
   base declares, whose own `allowedTools` refs the file does not carry; the
-  ceiling then filters the merged list like any other grant. Only when those refs
-  cannot grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
+  ceiling then filters the merged list like any other grant. An unscoped
+  built-in `allow` (`capability` and `effect` alone) on a capability one Crew
+  tool name stands for (`kas_permissions.CAPABILITY_BY_TOOL`: `use_subagent`
+  for `subagent`, `disclose_context` for `skill`) lands as that name
+  (`mate_spec_policy._carry_builtin_allow`, `kas_tool_view.builtin_allow_tool`);
+  a name-scoped one is never widened to it. Only when those entries cannot
+  grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
   (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
   `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
   the read and write tools, `web_fetch.blocked`, and `availableAgents` under the
@@ -4428,8 +4446,9 @@ parts:
   allowlist, an entry for a tool the base sets differently or under another
   spelling of it, a `permissions` block KAS would refuse whole, a built-in
   `allow` rule KAS's projection drops beside the worker's `allowedTools` list
-  (`kas_tool_view.permission_allow_derivable`), a hook past the
-  `spec_hooks._MAX_SPEC_HOOKS` Crew fires) raises `SpecPolicyUncarried`, a
+  (`kas_tool_view.permission_allow_derivable`) that no `allowedTools` entry can
+  grant exactly, a hook past the `spec_hooks._MAX_SPEC_HOOKS` (64) Crew fires)
+  raises `SpecPolicyUncarried`, a
   `WorkerKitUnreadable`, so the
   worker is refused, naming it. A host that applies none of the three
   (`mate_spec_policy.applies_spec_policy`, KAS only) refuses a file
@@ -4500,8 +4519,11 @@ parts:
   KAS honours the limits as the worker spec's `excludedTools`). claude, in
   `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`, honours the MCP ones as
   `permissions.deny` rules read from the worker's own spec by its session
-  (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`), so it refuses only a
-  native-tool exclude (`@builtin` included), a wildcard, or a `disabledTools` that is not a list of tool
+  (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`), and, in
+  `ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS`, a native-tool exclude its built-in
+  table covers as a `tools` allow-list of the built-ins the worker keeps
+  (`agent_sdk.claude_worker_tools.claude_worker_builtin_tools`), so it refuses only another
+  native entry (a bare `@builtin`, `use_aws`), a wildcard, or a `disabledTools` that is not a list of tool
   names (`mate_worker.uncarried_tool_limits_of`). The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
 
@@ -4685,13 +4707,15 @@ reading any agent file, so everything it can do at first comes from the worker
 base. A preview writes nothing and lists each `added` and each `skipped` item,
 plus every auto-approval the add writes
 (`allowedTools` rows, from any of three channels: an `allowedTools` entry, a
-server's `autoApprove`, and an `mcp` allow in `permissions`, which the worker
-merge writes into the worker's `allowedTools` as `mate_spec_policy.mcp_allow_refs`
-unless the worker base already grants it) and every tool the template newly
+server's `autoApprove`, and an `mcp` or unscoped built-in allow in `permissions`,
+which the worker merge writes into the worker's `allowedTools` as
+`mate_spec_policy.mcp_allow_refs` or `kas_tool_view.builtin_allow_tool`'s tool
+name unless the worker base already grants it) and every tool the template newly
 excludes. Its `runs_unasked` says whether the add lets a tool run without a
 prompt: a newly selected tool that meets one of those grants, or a new
 `permissions` allow no `allowedTools` ref expresses (a scoped or excluded one KAS
-keeps, an unscoped shell or file one Crew's gate answers itself); a `deny` or
+keeps, an unscoped shell or file one Crew's gate answers itself), or a new
+unscoped built-in allow, whose tool name lands in the worker's list; a `deny` or
 `ask` rule never counts. The apply needs the preview's `revision`
 (`_plan_revision`, binding the file and the result shown) or answers `stale_revision`. Each approval row an apply writes is recorded as granted again (see *A revoked approval stays revoked*); when the worker base cannot be read at that moment, a `permissions` allow re-grants nothing, since the preview leaves out the ones the base already grants. The template's
 `excludedTools` join the file's, and its `hooks`, `permissions` and
@@ -5071,7 +5095,9 @@ else `agent.acp_backend` (Kiro CLI as KAS), else KAS when Crew bots cannot run o
 that harness, logged and rung in the bell (`crewmate_harness_notice`). One Crew bot
 also runs on KAS on its own when it follows the Settings harness and its own file
 sets something for its workers that harness cannot carry: worker tool limits
-(outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`) or `hooks` / `permissions` /
+(outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`; on claude a native-tool exclude
+counts only when the installed adapter is below the session-options floor,
+`claude_adapter_honours_session_options`, where the start would stop the worker) or `hooks` / `permissions` /
 `toolsSettings` (`mate_spec_policy.applies_spec_policy`), read by
 `mate_worker.kas_only_worker_fields` (`crewmate_harness.worker_spec_forces_kas`). Its
 workers would each be refused. The answer is held in memory, read off the loop at
@@ -5158,12 +5184,22 @@ kiro-cli that lacks its engine.
   (`crewmate_harness.worker_harnesses` for a worker, `crewmate_harnesses` for
   a chat) and clearing the pin only when the member route would carry it
   (`crewmate_harness.pin_remedy`). A worker on a `kiro` pin that kept the v2
-  launch also gets the `kiro-cli update`. With no pin a worker's refusal names
-  `agent.member_acp_backend` with only the kit backends selectable now, and
-  when this host cannot serve KAS (`host_unservable_reason`) it says why and
-  names the fixes: update kiro-cli or turn on `agent.kas_bundle`, then restart.
-  A `spawn_run(backend=...)` or `session_create(backend=...)` that named the
-  backend is told to name one that carries the kit.
+  launch also gets the `kiro-cli update`. A Bot's worker or DM with no pin
+  names the fixes a person can reach (`mate_worker.inherited_harness_remedy`):
+  pick a harness that can in the Bot's settings (the same `worker_harnesses` or
+  `crewmate_harnesses` list), and either change Settings → Agent Harness or,
+  when a stored `agent.member_acp_backend` wins over Settings, remove that key.
+  A chat started on a picked harness is told to start a new chat on one that
+  can, since the pick outranks the pin; a chat that is not a Bot's DM runs on
+  Settings → Agent Harness, so it names that and the selectable harnesses in
+  `ACP_BACKENDS_MEMBER_CAPABILITIES`. No refusal tells a person to set
+  `agent.member_acp_backend`. A worker's
+  refusal, when this host cannot serve KAS (`host_unservable_reason`), also
+  says why and names the fixes: update kiro-cli or turn on `agent.kas_bundle`,
+  then restart. A `spawn_run(backend=...)` or `session_create(backend=...)`
+  that named the backend is told to name one that carries the kit. The
+  `capability_tool_limits_unsupported` row names the harness the session runs
+  on, as the selection gate answers it (`turn_failures._chat_harness_name`).
 - **Read path.** Only the owner-only `GET /api/agents/resolved-model` reads the
   pin (`acp_backend`, the effective `harness`, `harnesses` from
   `crewmate_harnesses`, `worker_harnesses` (`ACP_BACKENDS_MATE_WORKER_KIT`), and

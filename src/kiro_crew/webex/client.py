@@ -74,6 +74,9 @@ def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
 # the reconnect backoff. A connect->immediate-close (bad token) stays on the
 # backoff curve so it cannot hot-loop with zero delay. Mirrors WeComClient.
 _MIN_HEALTHY_CONN_SECS = 5.0
+#: Floor between retries of a bot identity lookup that failed, so a lookup that
+#: keeps failing costs one request per window rather than one per message.
+_IDENTITY_RETRY_SECS = 30.0
 
 # Minimum quiet time between unparseable-frame WARNINGs on one connection;
 # repeats inside the window log at DEBUG and a reconnect starts a fresh window.
@@ -344,6 +347,9 @@ class WebexClient:
         # Display name, for stripping the bot's own @mention out of a group
         # message — Webex leaves it in the text.
         self.bot_name: str = ""
+        # When the identity lookup was last tried, so a failed one is retried on a
+        # later message at most every ``_IDENTITY_RETRY_SECS``.
+        self._identity_tried_at: float = float("-inf")
         # Set once the WS is connected + authorized (cleared while
         # disconnected/reconnecting). ``wait_ready`` gates "connected" status.
         self.ready: asyncio.Event = asyncio.Event()
@@ -656,14 +662,36 @@ class WebexClient:
 
     # ── Identity ──
 
-    async def _fetch_me(self) -> None:
-        """Resolve the bot's own identity once (self-message filtering)."""
+    async def _fetch_me(self) -> bool:
+        """Resolve the bot's own identity (self-message filtering, @mention strip).
+
+        False when the lookup failed; :meth:`_ensure_identity` retries it later.
+        """
+        self._identity_tried_at = time.monotonic()
         me = await self._api("GET", "/people/me", None)
-        if isinstance(me, dict):
-            emails = me.get("emails") or []
-            self.bot_email = (emails[0] if emails else "").lower()
-            self.bot_person_id = me.get("id", "")
-            self.bot_name = str(me.get("displayName") or me.get("nickName") or "")
+        if not isinstance(me, dict):
+            return False
+        emails = me.get("emails") or []
+        self.bot_email = (emails[0] if emails else "").lower()
+        self.bot_person_id = me.get("id", "")
+        self.bot_name = str(me.get("displayName") or me.get("nickName") or "")
+        # An empty or unreadable 2xx body names nobody, so it is a failure too.
+        return bool(self.bot_email)
+
+    async def _ensure_identity(self) -> None:
+        """Retry an identity lookup that failed, throttled, before a message is read.
+
+        A connection is served even when the lookup failed, so
+        a lookup that fails for good never keeps the bot offline. Until it lands,
+        group @mentions stay unstripped and self-echoes rely on the person-id and
+        allow-list checks.
+        """
+        if self.bot_email or self._identity_tried_at == float("-inf"):
+            # Known, or never tried yet: the connect is what looks it up first.
+            return
+        if time.monotonic() - self._identity_tried_at < _IDENTITY_RETRY_SECS:
+            return
+        await self._fetch_me()
 
     # ── WebSocket serve loop ──
 
@@ -704,8 +732,9 @@ class WebexClient:
     async def _connect_and_serve(self) -> None:
         """Single connection lifecycle: register device, connect, authorize, serve."""
         session = await self._ensure_session()
-        if not self.bot_email:
-            await self._fetch_me()
+        if not self.bot_email and not await self._fetch_me():
+            # Served anyway: the lookup is retried on a later message.
+            logger.warning("Webex: could not resolve the bot's identity; retrying later")
 
         ws_url = await self._get_websocket_url()
         if not ws_url:
@@ -1006,6 +1035,8 @@ class WebexClient:
         msg = await self._fetch_for_dispatch(message_id)
         if msg is None:
             return
+        # Before the message is read: its @mention strip and self filter need it.
+        await self._ensure_identity()
         try:
             person_id = msg.get("personId", "")
             # Belt-and-braces self filter: the WS actor email can be absent.
@@ -1118,8 +1149,15 @@ class WebexClient:
         if cached is not None:
             return cached
         person = await self._api("GET", f"/people/{person_id}", None)
+        if person is None:
+            # A failed lookup (5xx, timeout, rate limit) is not an answer: caching
+            # its "" would refuse every later press by this person until restart.
+            return ""
         emails = (person.get("emails") or []) if isinstance(person, dict) else []
         email = str(emails[0]).lower() if emails else ""
+        if not email:
+            # Nor is a reply that names no email (an unreadable 2xx body included).
+            return ""
         # Bounded: a room's membership is small, but a long-lived gateway seeing
         # many rooms should not accumulate without limit.
         if len(self._person_emails) >= _PERSON_CACHE_MAX:

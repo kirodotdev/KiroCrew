@@ -896,19 +896,23 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # an inherited or spoofed env value. The proof is injected ONLY when the
     # secret is readable AND the origin was injected above; a missing
     # .app_secret is tolerated as before and yields neither the secret nor the
-    # proof (a secret-less legacy backend gets the origin only).
-    try:
-        _proxy_secret = (root / ".app_secret").read_text().strip()
-        if _proxy_secret:
-            env["KIROCREW_PROXY_SECRET"] = _proxy_secret
-            if gateway_origin:
-                env["KIROCREW_GATEWAY_ORIGIN_PROOF"] = hmac.new(
-                    _proxy_secret.encode("utf-8"),
-                    gateway_origin.encode("utf-8"),
-                    hashlib.sha256,
-                ).hexdigest()
-    except OSError:
-        pass
+    # proof (a secret-less legacy backend gets the origin only). This env var is the
+    # backend's ONLY channel for its secret: the gateway keeps it where no sandbox,
+    # the backend's own included, can read it (``token_auth.read_app_secret``).
+    # circular import: token_auth -> app_secret_store -> manager -> backend
+    # An app an older version left a folder secret gets a new one here, the one place
+    # it is handed over (``token_auth.replace_legacy_app_secret``).
+    from kiro_crew.dashboard.token_auth import replace_legacy_app_secret
+
+    _proxy_secret = replace_legacy_app_secret(app_name)
+    if _proxy_secret:
+        env["KIROCREW_PROXY_SECRET"] = _proxy_secret
+        if gateway_origin:
+            env["KIROCREW_GATEWAY_ORIGIN_PROOF"] = hmac.new(
+                _proxy_secret.encode("utf-8"),
+                gateway_origin.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
     # Expose the provisioned deps dir (pip --target, above) to the child.
     # PYTHONPATH rather than an interpreter switch: it is honored identically
     # by the app's own venv interpreter and the gateway fallback, on every

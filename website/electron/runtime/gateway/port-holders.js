@@ -16,7 +16,7 @@ const {
   snapshotPortPids,
   incumbentSnapshotBlocksRespawn,
 } = require("../../gateway-recovery");
-const { WINDOWS_LOCAL_GATEWAY_WAIT_MS } = require("../../gateway-wait");
+const { LOCAL_GATEWAY_WAIT_MS } = require("../../gateway-wait");
 
 const LSOF_CANDIDATES = ["/usr/sbin/lsof", "/usr/bin/lsof"];
 
@@ -337,7 +337,7 @@ function createPortHolders({
         // while after it exits, so a refusal is waited out for as long as the
         // splash already allows a Windows gateway to start.
         confirmFree: (p) => isPortBindable(p),
-        confirmFreeWaitMs: WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+        confirmFreeWaitMs: LOCAL_GATEWAY_WAIT_MS,
         onConfirmFreeWait: onBindWait,
         isAborted,
         log: glog,

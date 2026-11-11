@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     tighten_replacement_to_restricted_original,
 )
+from kiro_crew.dashboard.prompt_handoff import turn_handed_off
 from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
 from kiro_crew.dashboard.title_audit import record_manual_rename, record_rename_route_access
@@ -1245,10 +1246,9 @@ def _titling_messages(slot: _ChatSlot) -> list[dict[str, Any]]:
 async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     """Background task: attempt to LLM-title a slot.
 
-    Fired on the first message send (so the title lands during the first turn,
-    from just the user's message) and again after a response completes as a
-    retry. Idempotent: no-ops once titled and guards against concurrent
-    attempts via ``slot._title_in_flight``. Untitled slots display as
+    Fired on the first message send (it waits for that turn's prompt handoff, so the
+    title lands during the first turn without delaying it) and after a response as a
+    retry. Idempotent: no-ops once titled or in flight. Untitled slots display as
     "New Session…" via ``_ChatSlot.display_title`` until this lands. If the LLM
     returns SKIP/empty after the assistant has responded (a definitive
     failure), the title falls back to the truncated first message with an
@@ -1258,11 +1258,11 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
     Runs for EVERY ``memory_mode``, temporary included. Titling reads only the
     slot's own messages and prompts the shared ``_bg`` session, so it neither
     reads stored memory nor writes any — the two things a temporary session
-    actually forbids. The title is
-    persisted the same way for every mode because ``_save_slot_to_history``
-    already writes ``meta_line["title"]`` for temporary slots regardless of
-    this path — those sessions keep a transcript on disk for tab recovery.
+    actually forbids. The title is persisted the same way for every mode because
+    ``_save_slot_to_history`` already writes ``meta_line["title"]`` for temporary slots
+    regardless of this path — those sessions keep a transcript on disk for tab recovery.
     """
+    await turn_handed_off(slot)
     if _is_member_thread(slot):
         return
     if slot._titled:

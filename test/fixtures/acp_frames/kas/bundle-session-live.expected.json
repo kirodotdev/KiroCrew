@@ -7,9 +7,15 @@
     "agent_capabilities": {
       "_meta": {
         "kiro": {
+          "autoCompactionThreshold": {
+            "default": 80,
+            "max": 80,
+            "min": 0
+          },
           "checkpoints": true,
           "executionTargets": [
-            "local"
+            "local",
+            "cloud-sandbox"
           ],
           "extensionMethods": [
             "_kiro/knowledge",
@@ -18,13 +24,28 @@
             "_kiro/memory/create",
             "_kiro/memory/update",
             "_kiro/memory/delete",
+            "_kiro/memory/import",
+            "_kiro/memory/export",
+            "_kiro/memory/getImportPrompt",
+            "_kiro/memory/getSyncStatus",
+            "_kiro/memory/sync",
             "_kiro/codeIntelligence",
+            "_kiro/environment/start_ssh_session",
+            "_kiro/environment/get_network_configuration",
             "_kiro/session/context",
             "_kiro/session/compact",
             "_kiro/session/export",
             "_kiro/session/history",
+            "_kiro/session/delete",
+            "_kiro/session/rename",
+            "_kiro/job/cancel",
+            "_kiro/job/output",
             "_kiro/config/template",
+            "_kiro/permissions/presets/list",
+            "_kiro/permissions/presets/add",
+            "_kiro/permissions/presets/remove",
             "_kiro/configuration/getState",
+            "_kiro/configuration/set",
             "_kiro/workflow/new",
             "_kiro/workflow/invoke",
             "_kiro/workflow/load",
@@ -38,36 +59,40 @@
             "_kiro/workflow/resumeAll",
             "_kiro/workflow/retry",
             "_kiro/workflow/update",
-            "_kiro/workflow/resume"
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
           ],
           "logging": {
             "channels": [
               {
-                "filePath": "~/.kiro/logs/20261024T003905266/kiro.log",
+                "filePath": "~/.kiro/logs/20261110T230813262-3498583/kiro.log",
                 "name": "kiro"
               },
               {
-                "filePath": "~/.kiro/logs/20261024T003905266/mcp.log",
+                "filePath": "~/.kiro/logs/20261110T230813262-3498583/mcp.log",
                 "name": "mcp"
               },
               {
-                "filePath": "~/.kiro/logs/20261024T003905266/powers.log",
+                "filePath": "~/.kiro/logs/20261110T230813262-3498583/powers.log",
                 "name": "powers"
               }
             ],
-            "logDir": "~/.kiro/logs/20261024T003905266"
+            "logDir": "~/.kiro/logs/20261110T230813262-3498583"
           },
           "modelFallbackReporting": true,
           "policyNotifications": true,
           "replayMarking": true,
           "sessionList": true,
           "sessionListScopes": [
-            "workspace"
+            "workspace",
+            "user"
           ],
           "sessionSources": [
-            "local"
+            "local",
+            "remote"
           ],
-          "sourceProviders": false
+          "sourceProviders": true
         }
       },
       "loadSession": true,
@@ -243,7 +268,7 @@
         "type": "select"
       },
       {
-        "currentValue": "on",
+        "currentValue": "off",
         "description": "Allow this session to reflect on new memory",
         "id": "memoryReflection",
         "name": "Memory reflection",
@@ -278,7 +303,7 @@
         "type": "select"
       },
       {
-        "currentValue": "disabled",
+        "currentValue": "enabled",
         "id": "contentCollection",
         "name": "Content Collection",
         "options": [

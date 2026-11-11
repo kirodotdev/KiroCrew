@@ -7,6 +7,7 @@ Mirrors ``test_artifacts_handlers.py``: MagicMock requests + a real
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -148,6 +149,39 @@ class TestFolderCreate:
             _request(body={"name": "X"}, restricted=True)
         )
         assert resp.status == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "extra",
+        [{"parent": "A/B", "color": "red"}, {"parent": "/".join(f"L{i}" for i in range(20))}],
+        ids=["bad-color", "too-deep-for-a-child"],
+    )
+    async def test_refused_create_saves_no_parent_folders(
+        self, stores, patch_restricted, extra: dict
+    ) -> None:
+        _store, fstore = stores
+        resp = await api_artifact_folder_create(_request(body={"name": "X", **extra}))
+        assert resp.status == 400
+        assert fstore.list() == []
+
+    @pytest.mark.asyncio
+    async def test_store_lookup_runs_off_the_event_loop(
+        self, stores, patch_restricted, monkeypatch
+    ) -> None:
+        # The first lookup builds the store, which reads the folder index from disk.
+        _store, fstore = stores
+        threads: list[int] = []
+
+        def _lookup() -> ArtifactFolderStore:
+            threads.append(threading.get_ident())
+            return fstore
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.artifacts.get_default_folder_store", _lookup
+        )
+        resp = await api_artifact_folder_create(_request(body={"name": "Q3", "parent": "Reports"}))
+        assert resp.status == 201
+        assert threads and threading.get_ident() not in threads
 
 
 # ── Update ───────────────────────────────────────────────────────────────────
@@ -525,6 +559,23 @@ class TestArtifactCreateWithFolder:
         slug = _body(resp)["slug"]
         leaf = fstore.resolve_path("Reports/Q3")
         assert store.get(slug).folder_id == leaf
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra", "status"),
+        [({"slug": "Bad Slug!"}, 400), ({"kind": "nope"}, 400), ({"slug": "taken"}, 409)],
+        ids=["bad-slug", "bad-kind", "taken-slug"],
+    )
+    async def test_refused_save_creates_no_folders(
+        self, stores, patch_restricted, extra: dict, status: int
+    ) -> None:
+        store, fstore = stores
+        store.create(name="taken", content="x", slug="taken")
+        resp = await api_artifacts_create(
+            _request(body={"name": "x", "content": "y", "folder": "Inbox/Triage", **extra})
+        )
+        assert resp.status == status
+        assert fstore.list() == []
 
     @pytest.mark.asyncio
     async def test_list_scopes_by_folder_query(self, stores) -> None:

@@ -1,8 +1,10 @@
 """The bytes a dashboard save writes: frozen prefix, live window, foreign lines.
 
 A session file is a frozen prefix (the on-disk lines older than the in-memory
-window, whose count and order a save never changes) followed by the window,
-re-serialized in full on every save. This module owns how those become one
+window, whose count and order a save never changes) followed by the window. A
+save whose older rows and file are unchanged since its own last write appends
+only its new rows (:func:`appendable_tail`); any other save re-serializes the
+whole window. This module owns how those become one
 payload: reading and caching the prefix, bounding the file-change copies the
 prefix's older rows carry, finding the lines another writer appended into the
 window region and merging them back in time order, and archiving what a save
@@ -15,8 +17,10 @@ New rules about what a save keeps from the file it replaces belong here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 from collections import deque
 from typing import TYPE_CHECKING, Any, Callable
@@ -777,6 +781,113 @@ def _frozen_prefix_and_foreign_appends(
         )
     slot._foreign_reported = seen
     return (prefix, foreign, dedup_dropped)
+
+
+def row_digests(window: list[dict]) -> list[bytes]:
+    """One digest per window message, over the raw message.
+
+    The next save compares these to tell an unchanged row apart without
+    rebuilding or redacting it. Raw, not the built entry: a message mutated in
+    place changes its digest. A message that cannot be serialized gets ``b""``,
+    which :func:`appendable_tail` never treats as a match.
+    """
+    out: list[bytes] = []
+    for m in window:
+        try:
+            raw = json.dumps(m, sort_keys=True, default=str).encode()
+        except Exception:
+            out.append(b"")
+            continue
+        out.append(hashlib.blake2b(raw, digest_size=16).digest())
+    return out
+
+
+def first_file_change_row(window: list[dict]) -> int:
+    """Index of the first window message carrying file changes, or ``len(window)``.
+
+    A trim that moves such a row into the prefix must take the full path: only a
+    prefix read applies the file-change bound (:func:`_file_change_prefix_bound`).
+    """
+    return next((i for i, m in enumerate(window) if _is_file_change_row(m)), len(window))
+
+
+def file_identity(path: Path) -> tuple[int, int, int, int] | None:
+    """``(st_ino, st_dev, st_mtime_ns, st_size)`` of *path*, or None when it cannot be read."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_dev, st.st_mtime_ns, st.st_size)
+
+
+def appendable_tail(
+    slot: _ChatSlot,
+    path: Path,
+    history_key: str,
+    window: list[dict],
+    digests: list[bytes],
+    disk_older: int,
+    meta_str: str,
+    *,
+    rewrite: bool,
+    retired_rows: list[dict] | None,
+) -> list[str] | None:
+    """The lines this save may append instead of rewriting the file, or None.
+
+    ``slot._append_basis`` records what the last committed save left on disk:
+    the file's identity, ``disk_older``, the metadata line and the window's
+    digests. When the file is still exactly that file (nobody else wrote it,
+    nothing tore it), the metadata line is unchanged, and every window row that
+    save wrote is still here unchanged -- a trim at the window cap only moves
+    rows without file changes into the prefix -- the file already holds this save's full payload
+    minus the new rows. Only those are built, redacted and serialized. Neither
+    the prefix nor the file is read. Any other case returns None and the save
+    takes the full rewrite, which also repairs a torn tail.
+    """
+    basis = slot._append_basis
+    if basis is None or rewrite or retired_rows is not None:
+        return None
+    where, identity, older, meta, old_digests, first_file_change = basis
+    trimmed = disk_older - older
+    kept = len(old_digests) - trimmed
+    if (
+        where != str(path)
+        or meta != meta_str
+        or trimmed < 0
+        or trimmed > first_file_change
+        or kept < 0
+        or len(window) < kept
+        or digests[:kept] != old_digests[trimmed:]
+        or b"" in digests[:kept]
+        or file_identity(path) != identity
+    ):
+        return None
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    attachments = (path.parent, path.stem)
+    entries = [
+        e
+        for m in window[kept:]
+        if (e := cp._build_message_entry(m, attachments=attachments)) is not None
+    ]
+    lines = [json.dumps(e) + "\n" for e in entries]
+    display_verdicts.note_written_lines(history_key, lines)
+    if entries:
+        slot.note_disk_tail(None, entries[-1].get("ts"))
+    return lines
+
+
+def append_tail(path: Path, lines: list[str]) -> None:
+    """Append *lines* (each ending in a newline) with one write and an fsync.
+
+    Only after :func:`appendable_tail` proved the file is the one the last save
+    wrote, so its tail is that save's newline and needs no read. A failed write
+    is truncated back, leaving the file as it was.
+    """
+    from kiro_crew.atomic_write import append_line
+
+    if lines:
+        append_line(path, "".join(lines)[:-1], fsync=True, check_tail=False)
 
 
 def compose_payload(

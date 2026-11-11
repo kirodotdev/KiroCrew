@@ -8,6 +8,7 @@ import { themeDesignPrompt } from '../lib/themeDesign.prompt'
 import { copyToClipboard } from '../utils/clipboard'
 import { askAppConfirm } from '../lib/appConfirm'
 
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 /* ── CSS variable groups for the color picker ── */
@@ -517,9 +518,11 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
     </div>
   )
 
-  /** At most ten names, so a pasted framework stylesheet stays one readable line. */
+  /** At most ten names, so a pasted framework stylesheet stays one readable line.
+   *  Past ten the sentence closes the list with its own "and N more", so a locale
+   *  join there would add a second "and" (de: "a, b und c und 5 weitere"). */
   const nameList = (names: string[]) => names.length <= 10
-    ? names.join(', ')
+    ? fmtList(names, { style: 'narrow' })
     : i18nT('components.themeEditor.css_more_names', { names: names.slice(0, 10).join(', '), extra: names.length - 10 })
 
   const cssCounts = {

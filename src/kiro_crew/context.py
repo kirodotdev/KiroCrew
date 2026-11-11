@@ -1133,6 +1133,7 @@ def build_cancelled_turn_preamble(
     *,
     user_cap: int = 2000,
     assist_cap: int = 2000,
+    newest_request: bool = False,
 ) -> str:
     """Build a preamble describing the most recent cancelled turn, if any.
 
@@ -1143,17 +1144,19 @@ def build_cancelled_turn_preamble(
     immediately before it plus any assistant text in between. Return a
     short bracketed preamble. Returns "" if nothing to inject.
 
-    Called by both dashboard and Slack callers after ``prev_turn_cancelled``
-    is observed on the session.
+    Called by the dashboard, Slack and the shared channel pipeline after
+    ``prev_turn_cancelled`` is observed on the session.
     """
     try:
         # Whole rows: ``recent()`` keeps only role and content, and the walk reads
-        # ``meta`` to step past a steer the person took back. Both callers run this
+        # ``meta`` to step past a steer the person took back. Every caller runs this
         # in a worker thread, since it reads the whole transcript.
         rows = _without_warm_task_brief_messages(conversation_log.read_messages(session_key))
     except Exception:
         return ""
-    return _replay.cancelled_turn_preamble(rows[-20:], user_cap=user_cap, assist_cap=assist_cap)
+    return _replay.cancelled_turn_preamble(
+        rows[-20:], user_cap=user_cap, assist_cap=assist_cap, newest_request=newest_request
+    )
 
 
 # ── Provider-Agnostic Session Replay ──

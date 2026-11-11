@@ -109,6 +109,26 @@ class TestFolderDelete:
         assert path == "/api/artifact-folders/f_reports?delete_contents=true"
         assert "3 artifacts" in out
 
+    def test_cascade_relays_the_kept_artifacts(self) -> None:
+        """A cascade that kept some artifacts says so, not 'entire subtree'."""
+        notice = "The folder was deleted, but q3-deck is still published and so was kept."
+        with patch("kiro_crew.mcp_core._get", return_value={"folders": _FOLDERS}), patch(
+            "kiro_crew.mcp_core._delete",
+            return_value={
+                "ok": True,
+                "deleted_folder_ids": ["f_reports", "f_q3"],
+                "deleted_artifact_slugs": ["a", "b"],
+                "kept_published_artifact_slugs": ["q3-deck"],
+                "notice": notice,
+            },
+        ):
+            out = _call_tool_inner(
+                "artifact_folder_delete",
+                {"folder": "f_reports", "delete_contents": True},
+            )
+        assert "entire subtree" not in out
+        assert notice in out
+
 
 class TestArtifactMove:
     def test_move_patches_folder_route(self) -> None:

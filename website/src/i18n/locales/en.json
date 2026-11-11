@@ -58,6 +58,9 @@
     "you_re_on_the_latest_version": "You're on the latest version"
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "The session was created, but the server didn't send it back. Try again."
+    },
     "pullRequestPanel": {
       "not_declared": "This app can't show pull requests: its permissions don't declare {{path}}."
     },
@@ -4704,6 +4707,7 @@
       "total": "Total",
       "trust_reads": "Trust read-only commands",
       "turn_interrupted_press_resume": "Last turn was interrupted — press Resume, or just type",
+      "turn_interrupted_sign_in_first": "Last turn needs a sign-in — follow the message above, then press Resume or send your message again",
       "turn_interrupted_restored_card": "Last turn was interrupted. Resume reruns only that turn. Your queued message won't send on its own: send it with Send now (⚡).",
       "turn_interrupted_restored_queue_one": "Last turn was interrupted. Resume reruns only that turn. Your {{count}} queued message won't send on its own: open the queue ({{count}} queued ^), then send it with Send now (⚡).",
       "turn_interrupted_restored_queue_other": "Last turn was interrupted. Resume reruns only that turn. Your {{count}} queued messages won't send on their own: open the queue ({{count}} queued ^), then send each with Send now (⚡).",
@@ -6677,7 +6681,7 @@
       "origin_resources_lifecycle": "Origin: {{origin}} | Resources: {{resources}} | Lifecycle: {{lifecycle}}",
       "permissions": "Permissions",
       "session_approval_desc": "Can send messages and choose response options in your chats, approve or deny tool prompts, and switch a chat's approval mode.",
-      "session_approval_member_threads": "This includes your own chats with your bots.",
+      "session_approval_member_threads": "This includes your own chats with your Bots. The app can send your Bots messages in your name.",
       "session_approval_member_threads_refused": "This app now also asks to reach your chats with your bots. Review it and enable again.",
       "session_approval_modes": "Chat approval modes it can set",
       "session_approval_manifest_key": "Manifest key",
@@ -7250,7 +7254,8 @@
         "remote_gateway_hint": "On a remote gateway the browser's localhost callback will fail — that is expected. Copy the full address the browser landed on and paste it here to finish authorizing.",
         "requires_authentication": "requires authentication.",
         "superseded": "sign-in is no longer active — a newer request replaced it. Use the latest Authorize button to sign in.",
-        "expired": "sign-in is no longer active — the session that started it ended. Send a message to get a fresh Authorize link."
+        "expired": "sign-in is no longer active — the session that started it ended. Send a message to get a fresh Authorize link.",
+        "timed_out": "sign-in timed out before it was completed. Name this server in a message to get a fresh Authorize link."
       },
       "notificationItem": {
         "delete": "Delete"
@@ -7608,6 +7613,7 @@
         "outcome_undo": "To undo, ask {{name}} to restore the previous dashboard."
       },
       "browserLiveStage": {
+        "stage_load_failed": "The agent's browser view couldn't load. Check the connection to the gateway, then try again.",
         "bring_back": "Bring back to chat",
         "by_you": "By you",
         "exit_full_screen": "Exit full screen",
@@ -9159,6 +9165,9 @@
       "patrol_stopped_approval": "Stopped while waiting for your approval",
       "patrol_stopped_session": "Its chat was closed",
       "panel_toggle": "Dashboard & files",
+      "linked_to": "Linked to {{label}}",
+      "linked_to_paused": "Linked to {{label}} · replies paused",
+      "connect_channel": "Connect to a channel",
       "create_advanced_settings": "Advanced settings",
       "dashboard_kept_last_good": "A newer version of this dashboard did not load, so this is the last one that did.",
       "dashboard_none_yet": "No dashboard set up for this bot yet.",
@@ -10459,6 +10468,8 @@
         "side_panel_pin_summary": "Pin Summary in Side Panel",
         "side_panel_pin_summary_hint": "Shows Summary as the first side panel tab. Whenever the panel opens, it shows Summary. Opening a file or another item still shows that item. Needs Session summaries on.",
         "side_panel_pin_summary_needs_session_summaries": "Session summaries are off. Turn them on in Settings → Chat → Sessions to pin Summary.",
+        "project_tags": "Project tags",
+        "project_tags_desc": "Tags each new session in the sidebar with the name of its project folder, like \"my-app\".",
         "topic_tags": "Topic tags",
         "topic_tags_desc": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session.",
         "transcript": "Transcript",
@@ -10781,6 +10792,8 @@
         "retry": "Retry",
         "ssh_host_alias": "SSH host / alias",
         "ssh_tunnel": "SSH tunnel",
+        "ssh_tunnel_not_supported_windows": "Not supported on Windows",
+        "ssh_tunnel_not_supported_windows_hint": "SSH tunnels are not yet supported when {{productName}} runs on Windows: it needs the OpenSSH client on PATH and may fail to connect. Use AWS SSM Session Manager instead.",
         "ssm_target_instance_id": "SSM target (instance id)",
         "state_connected": "Connected",
         "state_connecting": "Connecting",
@@ -11906,6 +11919,7 @@
     "send_race_dismiss": "Dismiss",
     "send_race_lost": "{{name}} sent first. Yours wasn't sent; the draft is kept.",
     "send_race_send_now": "Send after {{name}}'s message",
+    "sent_by_an_app": "Sent by an app",
     "sessions_created": "Sessions created: {{n}}",
     "session_state_failed": "Could not load this session's sharing details.",
     "sessions_failed": "Could not load the filtered sessions.",

@@ -46,6 +46,7 @@ from kiro_crew.instances.validation import (
     validate_ssm_run_as,
     validate_ssm_target,
 )
+from kiro_crew.platform_compat import kill_and_reap
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +273,11 @@ async def _run_ok(argv: list[str], timeout: float) -> bool:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         return False
+    except asyncio.CancelledError:
+        # A cancelled diagnosis (an instance edit, a gateway shutdown) must not
+        # leave its ssh child dialing on with no owner.
+        await kill_and_reap(proc)
+        raise
     return proc.returncode == 0
 
 
@@ -297,6 +303,9 @@ async def _run_stdout(argv: list[str], timeout: float) -> str | None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         return None
+    except asyncio.CancelledError:
+        await kill_and_reap(proc)
+        raise
     if proc.returncode != 0:
         return None
     return stdout_b.decode("utf-8", "replace")

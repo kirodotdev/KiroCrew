@@ -88,6 +88,42 @@ class TestNothingToDoTool:
         assert set(_DIRECTIVE_NOT_APPLIED_OUTCOMES) == set(session_directive.DIRECTIVE_TOOLS)
 
 
+class TestQuietEndAfterText:
+    """The result tells the model its text was shown only when the gateway says
+    the running turn already streamed reply text."""
+
+    @staticmethod
+    def _call(monkeypatch, reply):
+        from kiro_crew import mcp_core
+
+        def _post(path, body=None, **_kw):
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        monkeypatch.setattr(mcp_core, "current_call_name", lambda: "nothing_to_do")
+        monkeypatch.setattr(mcp_core, "current_call_raw_args", lambda: {"note": "n"})
+        monkeypatch.setattr(mcp_core, "_post", _post)
+        return control.nothing_to_do("nothing_to_do", {"note": "n"})
+
+    def test_a_turn_that_wrote_text_gets_the_reminder_and_keeps_its_marker(self, monkeypatch):
+        from kiro_crew.mcp_tools.control_parts.directive import QUIET_END_AFTER_TEXT_REMINDER
+
+        plain = self._call(monkeypatch, {"ok": True, "turn_wrote_text": False})
+        out = self._call(monkeypatch, {"ok": True, "turn_wrote_text": True})
+        assert QUIET_END_AFTER_TEXT_REMINDER not in plain
+        assert session_directive.strip_marker(out).endswith(QUIET_END_AFTER_TEXT_REMINDER)
+        assert session_directive.decode(out, "nothing_to_do") == {"note": "n"}
+        assert session_directive.is_vouched(out)
+
+    @pytest.mark.parametrize(
+        "reply", [{"ok": True}, {"error": "x"}, {"turn_wrote_text": "yes"}, OSError("down")]
+    )
+    def test_no_text_or_no_answer_leaves_the_result_unchanged(self, monkeypatch, reply):
+        plain = self._call(monkeypatch, {"ok": True, "turn_wrote_text": False})
+        assert self._call(monkeypatch, reply) == plain
+
+
 # ── the frontend mirror ──────────────────────────────────────────────────────
 
 
@@ -612,6 +648,30 @@ class TestDashboardRunnerHonoursTheSignal:
         await _drive_turn(state, worker, events, monkeypatch)
         assert any(is_quiet_end_row(m) for m in worker.messages), "the quiet end was not applied"
         assert list(await _pending_reports(state, mate)) == [worker.key]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("text", "wrote"), [("Nothing to do.", True), ("  \n", False)])
+    async def test_the_slot_says_whether_the_running_turn_wrote_text(
+        self, tmp_path, monkeypatch, text, wrote
+    ):
+        """What ``POST /api/session-directive`` reads while the tool runs: set by
+        visible reply text, not by whitespace, and cleared when the turn ends."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("wrote-text")
+        slot._titled = True
+        slot._turn_wrote_text = True  # left over from an earlier turn
+        seen: list[bool] = []
+
+        def _events():
+            seen.append(slot._turn_wrote_text)
+            yield AcpEvent(kind=EVENT_TEXT_CHUNK, text=text)
+            yield _core_call("nothing_to_do")
+            seen.append(slot._turn_wrote_text)
+            yield from _quiet_turn_events()[1:]
+
+        await _drive_turn(state, slot, _events(), monkeypatch)
+        assert seen == [False, wrote]
+        assert slot._turn_wrote_text is False
 
     @pytest.mark.asyncio
     async def test_quiet_end_skips_the_empty_response_ladder(self, tmp_path, monkeypatch):

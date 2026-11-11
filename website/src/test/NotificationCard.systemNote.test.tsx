@@ -23,12 +23,13 @@ const note = (over: Partial<Notification> = {}): Notification => ({
 describe('a gateway-written note', () => {
   afterEach(async () => { await i18next.changeLanguage('en') })
 
-  // The turn-limit and default-model notes.
-  it.each(['turn_limit', 'default_model_applied', 'default_model_failed'] as const)('renders the %s copy in the dashboard language', async (id) => {
+  // The turn-limit, default-model and folder Default agent notes.
+  it.each(['turn_limit', 'default_model_applied', 'default_model_failed', 'folder_agent_label'] as const)('renders the %s copy in the dashboard language', async (id) => {
     await i18next.changeLanguage('zh-CN')
-    renderWithProviders(<NotificationCard n={note({ i18n: { id, params: { surface: 'discord' } } })} />)
+    renderWithProviders(<NotificationCard n={note({ i18n: { id, params: { surface: 'discord', folders: 'Jira Tickets (jira-ticket)' } } })} />)
     const copy = zh.components.notifications.systemNote
     const body = copy[`${id}_body`].replace('{{surface}}', 'discord').replace('{{productName}}', 'Kiro Crew')
+      .replace('{{folders}}', 'Jira Tickets (jira-ticket)')
     expect(screen.getByText(copy[`${id}_title`])).toBeInTheDocument()
     expect(screen.getByText(body.slice(0, 140))).toBeInTheDocument()
   })

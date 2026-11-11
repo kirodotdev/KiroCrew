@@ -28,7 +28,9 @@ from dataclasses import dataclass, field, replace  # noqa: F401
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Mapping, Optional  # noqa: F401
 
-from kiro_crew import _facade_mirror, platform_compat
+from kiro_crew import _facade_mirror
+from kiro_crew import mcp_structured_text as _structured_text  # noqa: F401
+from kiro_crew import platform_compat
 from kiro_crew.constants import (  # noqa: F401
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,

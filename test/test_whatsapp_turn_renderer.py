@@ -41,6 +41,9 @@ class FakeTransport:
         #: Flipped by a test to stand in for a transient wire failure.
         self.fail = False
         self._n = 0
+        #: Set by ``_pair``: edits forward to the client fake, as the real
+        #: transport forwards to the real client.
+        self.client: "FakeClient | None" = None
 
     async def send_message(self, jid: str, content: str) -> str:
         if self.fail:
@@ -53,6 +56,11 @@ class FakeTransport:
     async def send_image(self, jid: str, data: bytes, caption: str) -> str:
         self.images.append((jid, data, caption))
         return "IMG1"
+
+    async def edit_text(self, jid: str, message_id: str, text: str) -> bool:
+        # The real transport echo-tracks the edit and forwards to the client.
+        assert self.client is not None
+        return await self.client.edit_text(jid, message_id, text)
 
 
 class FakeClient:
@@ -74,8 +82,14 @@ class FakeClient:
         return True
 
 
-def make(unprompted: bool = False, edits_ok: bool = True):
+def _pair(edits_ok: bool = True) -> "tuple[FakeTransport, FakeClient]":
     transport, client = FakeTransport(), FakeClient(edits_ok=edits_ok)
+    transport.client = client
+    return transport, client
+
+
+def make(unprompted: bool = False, edits_ok: bool = True):
+    transport, client = _pair(edits_ok=edits_ok)
     r = WhatsAppRenderer(transport, client, "chat@s.whatsapp.net", CAPS, unprompted=unprompted)
     return r, transport, client
 
@@ -354,7 +368,7 @@ class TestDisplaySafety:
 
         monkeypatch.setattr(module, "plan_uploads_off_loop", fake_plan)
         caps = TransportCapabilities(max_message_chars=4096, max_buttons=0, files_outbound=True)
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         # The root only has to pass the absolute-path gate (the plan is faked above);
         # spelled for the host because ``ntpath.isabs("/tmp")`` is False on 3.13.
         r = WhatsAppRenderer(
@@ -380,7 +394,7 @@ class TestDisplaySafety:
 
         monkeypatch.setattr(module, "plan_uploads_off_loop", fake_plan)
         caps = TransportCapabilities(max_message_chars=4096, max_buttons=0, files_outbound=True)
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
 
         async def failed_upload(*_args, **_kwargs):
             raise RuntimeError("wire error")
@@ -402,7 +416,7 @@ class TestDisplaySafety:
         consenting to something other than what they read. The title and purpose
         are taken as a pair for the same reason.
         """
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -417,7 +431,7 @@ class TestDisplaySafety:
         """The tool title is model-authored and reaches the chat with no scan of
         its own -- ``build_approval_prompt`` interpolates it verbatim.
         """
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -436,7 +450,7 @@ class TestApprovalPresence:
         operator watches "composing" for the whole five-minute window while the
         agent is in fact waiting on them.
         """
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -450,7 +464,7 @@ class TestApprovalPresence:
         prompt and only then awaits the decider -- so the next output event is the
         first news that the wait is over.
         """
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -473,7 +487,7 @@ class TestApprovalTimeoutIsSpoken:
     async def test_a_timeout_resolves_the_prompt_in_place(self):
         from kiro_crew.messaging.approval import TIMEOUT_NOTICE
 
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -484,7 +498,7 @@ class TestApprovalTimeoutIsSpoken:
     async def test_a_timeout_posts_the_notice_when_the_edit_is_refused(self):
         from kiro_crew.messaging.approval import TIMEOUT_NOTICE
 
-        transport, client = FakeTransport(), FakeClient(edits_ok=False)
+        transport, client = _pair(edits_ok=False)
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -504,7 +518,7 @@ class TestApprovalTimeoutIsSpoken:
         )
 
         reset_for_tests()
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(
             transport, client, "c@s.whatsapp.net", CAPS, approval_session_key="sess"
         )
@@ -578,7 +592,7 @@ class TestNothingIsLostOrLooped:
         reply disappears with nothing raised and nothing logged.
         """
         caps = TransportCapabilities(max_message_chars=60, max_buttons=0)
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(transport, client, "c@s.whatsapp.net", caps)
         await r.on_turn_start()
         await r.on_text_chunk("A" * 30)
@@ -619,7 +633,7 @@ class TestNothingIsLostOrLooped:
         stays on screen and the real answer never arrives.
         """
         caps = TransportCapabilities(max_message_chars=60, max_buttons=0)
-        transport, client = FakeTransport(), FakeClient()
+        transport, client = _pair()
         r = WhatsAppRenderer(transport, client, "c@s.whatsapp.net", caps)
         await r.on_turn_start()
         await r.on_text_chunk("x" * 55 + " [OPTIONS: yes | n")

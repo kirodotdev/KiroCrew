@@ -1077,6 +1077,9 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
     Every read failure counts toward the side that claims less: an unreadable
     directory is an empty census, an unreadable sidecar is not foreign.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     counts = {
         "total": 0,
         "leased": 0,
@@ -1154,7 +1157,7 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
         else:
             try:
                 try:
-                    raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+                    raw = bounded_read_fd(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
                 finally:
                     os.close(fd)
                 if len(raw) <= _PROJECTION_LEASE_MAX_BYTES:
@@ -1181,10 +1184,13 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
 
 def _read_alias_spec_bounded(path: Path) -> dict[str, Any] | None:
     """The parsed alias at *path* when it is a small regular file; ``None`` otherwise."""
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     try:
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
-            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+            raw = bounded_read_fd(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
         finally:
             os.close(fd)
     except OSError:
@@ -1214,6 +1220,9 @@ def census_projection_residue(
     ``truncated``
         1 when a walk hit :data:`_CENSUS_MAX_ALIASES`, making the rest floors.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     counts = {
         "sidecars": 0,
         "orphan_sidecars": 0,
@@ -1273,14 +1282,14 @@ def census_projection_residue(
                     try:
                         fd = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                         try:
-                            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+                            raw = bounded_read_fd(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
                         finally:
                             os.close(fd)
                         alias_fd = os.open(
                             directory / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
                         )
                         try:
-                            alias_raw = os.read(alias_fd, _CENSUS_ALIAS_MAX_BYTES + 1)
+                            alias_raw = bounded_read_fd(alias_fd, _CENSUS_ALIAS_MAX_BYTES + 1)
                         finally:
                             os.close(alias_fd)
                     except OSError:

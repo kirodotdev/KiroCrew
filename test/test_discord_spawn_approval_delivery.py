@@ -25,7 +25,7 @@ from kiro_crew.discord.client import DiscordInteraction
 from kiro_crew.discord.renderer import DiscordApprovalDecider
 from kiro_crew.messaging import spawn_approval_delivery as seam
 from kiro_crew.messaging.display_safety import canonicalize_display
-from kiro_crew.subagent import SpawnApprovalUnreachable
+from kiro_crew.subagent import HostSpawnDecision, SpawnApprovalUnreachable
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -796,7 +796,12 @@ async def test_a_channel_that_stops_being_a_thread_mid_wait_answers_none() -> No
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("_short_wait")
 async def test_an_unpressed_wait_on_a_still_authorized_channel_still_denies() -> None:
-    """Negative control: nothing was withdrawn, so the elapsed wait is a real deny."""
+    """Negative control: nothing was withdrawn, so the elapsed wait is a real deny.
+
+    It is the host's deny: nobody pressed anything.
+    """
+    from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
+
     d, cli, _ = _dispatcher({"u1"}, allowed_threads={"t1"})
 
     direct = asyncio.ensure_future(
@@ -806,8 +811,8 @@ async def test_an_unpressed_wait_on_a_still_authorized_channel_still_denies() ->
         d.deliver_spawn_approval("spawn:a2", "spawn_run(t)", d._session_key("u1", "t1"))
     )
 
-    assert await direct is False
-    assert await thread is False
+    assert await direct == HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT)
+    assert await thread == HostSpawnDecision(False, DENY_CAUSE_APPROVAL_TIMEOUT)
 
 
 @pytest.mark.asyncio

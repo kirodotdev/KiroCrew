@@ -90,6 +90,21 @@ class TestUpdateCheckEndpoint:
         assert payload["update_required"] is True
         assert "auto_update" in payload
 
+    @pytest.mark.asyncio
+    async def test_carries_the_same_check_stamp_as_the_status_frame(self, monkeypatch):
+        """The dashboard orders this answer against the status frame's by this stamp."""
+
+        async def _fake_check() -> None:
+            monkeypatch.setattr(updates, "_last_update_check", 1_700_000_123.0)
+            updates._set_update_info(check_status="failed", error_code="feed_unreachable")
+
+        monkeypatch.setattr(updates, "_do_update_check", _fake_check)
+
+        payload = json.loads((await updates.api_update_check(_request())).body.decode())
+
+        assert payload["last_checked_at"] == 1_700_000_123.0
+        assert updates.status_update_fields()["update_last_checked_at"] == 1_700_000_123.0
+
 
 # A stand-in ``git`` whose fetch starts a helper that inherits git's stderr and
 # outlives git, the way a real ``git fetch`` starts ``git remote-https``, ssh or

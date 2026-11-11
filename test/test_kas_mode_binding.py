@@ -23,6 +23,7 @@ from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp import skill_projection  # bound before a fixture patches its paths
 from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.harness.kas_cloud import CLOUD_SANDBOX_TARGET, KasCloudSandboxHarness
+from kiro_crew.acp.kas_start_agent import START_AGENT_ID
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -55,8 +56,8 @@ import json, os, sys
 BUILTIN = ["vibe", "spec", "plan", "review"]
 # Accepted in a batch and then left out of availableModes (measured on 2.23.0).
 # ``dropped-agent`` stands in for an entry the engine drops whole, as the 0.66.33
-# bundle drops one with no prompt.
-DROPPED = ["default", "dropped-agent"]
+# bundle drops one with no prompt. A test can name one more through the environment.
+DROPPED = ["default", "dropped-agent"] + [d for d in os.environ.get("KAS_STUB_DROP", "").split(",") if d]
 state = {"modes": list(BUILTIN), "injected": [], "set_mode": None, "start_mode": {}}
 
 def mode_entry(mode_id):
@@ -725,9 +726,37 @@ class TestSavedMemberSpecOnKas:
         finally:
             await runtime.kill()
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
-        assert [a["id"] for a in seen["injected"]] == [_SAVED_TEMPLATE]
+        # The spec declares a server, so the session starts in the start agent
+        # registered after it and set_mode switches to the member's own.
+        assert [a["id"] for a in seen["injected"]] == [_SAVED_TEMPLATE, START_AGENT_ID]
+        assert seen["start_mode"][METHOD_SESSION_NEW] == START_AGENT_ID
         assert seen["injected"][0]["prompt"] == "You are the member."
         assert "extra" in seen["injected"][0]["mcpServers"]
+        assert seen["set_mode"] == _SAVED_TEMPLATE
+
+    @pytest.mark.asyncio
+    async def test_an_engine_that_drops_the_start_agent_still_runs_the_members_own(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch
+    ):
+        """The session then starts in the engine's ``vibe`` mode, as it did before a
+        start mode was named, and ``set_mode`` still activates the member's agent."""
+        monkeypatch.setenv("KAS_STUB_DROP", START_AGENT_ID)
+        _write_saved_spec(crew_agent, {"command": "extra-server"})
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws",
+            agent=_SAVED_TEMPLATE,
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        try:
+            await runtime.spawn()
+            handle = await runtime.create_session(cwd=tmp_path / "ws")
+            assert handle.active_agent == _SAVED_TEMPLATE
+        finally:
+            await runtime.kill()
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert seen["start_mode"][METHOD_SESSION_NEW] == START_AGENT_ID
+        assert START_AGENT_ID not in seen["modes"]
         assert seen["set_mode"] == _SAVED_TEMPLATE
 
 

@@ -248,6 +248,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     # The close side of the same liveness question, injected the same way.
     "_worker_closed": ("method", "490393185551"),
     # The loop side of the same liveness question, read from this service's own table.
+    "_worker_loop_held": ("method", "490393185551"),
     "_worker_looping": ("method", "490393185551"),
     # Reads one loop's monitor kind: the startup resume treats a work-ledger
     # watch differently, because its news arrives by a push a restart loses.

@@ -255,11 +255,11 @@ def test_a_read_during_an_update_swap_grants_nothing(tmp_path, app_home):
     assert _allowlist() == (OLD_API,)
 
 
-def test_a_pre_set_record_replaced_between_its_reads_grants_nothing(
+def test_a_pre_set_record_is_fixed_once_and_its_record_cannot_widen_it(
     tmp_path, app_home, monkeypatch
 ):
-    # Another process swaps the tree: the record read meets the old tree, the
-    # file read meets the gap. The record read again differs from the first.
+    # The first read stores what the manifest declares then; a record rewritten
+    # between reads, and a manifest widened afterwards, add nothing to it.
     _installed_v1(tmp_path)
     _make_legacy()
     real_read = manager_mod._read_installed
@@ -273,7 +273,8 @@ def test_a_pre_set_record_replaced_between_its_reads_grants_nothing(
         return meta
 
     monkeypatch.setattr(manager_mod, "_read_installed", _read_then_swap)
-    assert staged_app_grants(APP, "api", lambda: [OLD_API, NEW_API]) == []
+    assert staged_app_grants(APP, "api", lambda: [OLD_API, NEW_API]) == [OLD_API]
+    assert get_app(APP)["approvedGrants"]["api"] == [OLD_API]
 
 
 def test_entries_are_held_back_while_the_new_tree_lands(tmp_path, app_home, monkeypatch):

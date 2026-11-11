@@ -858,6 +858,15 @@ bucket is private and a manifest must never advertise a raw S3 URL.
 so a retried job produces a byte-identical manifest and the immutable write
 still succeeds.
 
+**The optional advance notice, `announce.json`.** Beside `latest-cli.json` the
+feed may carry `feed/<channel>/announce.json`, which the gateway reads to draw
+the About page's "Upcoming update" block (field schema and failure rules:
+[learn-cron-dashboard](../system-specs/modules/learn-cron-dashboard.md), "Upcoming
+update notice"). It is unsigned display text. Nothing writes it yet: a follow-up
+adds a step to `publish-cli.yml`, next to the manifest write, that publishes it
+from the release's changelog section ahead of the release and removes or
+replaces it once the release ships.
+
 Key provisioning, the `kms:GetPublicKey` + `kms:Sign` grant, and the rotation
 procedure (dual-trust, never an in-place swap, because schema v1 pins exactly
 one key) are in [../../packaging/signing/README.md](../../packaging/signing/README.md).

@@ -744,6 +744,7 @@ class SessionManager:
     mirror_accepts_inbound = _links.mirror_accepts_inbound
     has_mirror_row = _links.has_mirror_row
     mirror_link_nonce = _links.mirror_link_nonce
+    session_map_generation = _links.session_map_generation
     slack_link_nonce = _links.slack_link_nonce
     set_mirror_opt_out = _links.set_mirror_opt_out
     mirror_opt_out = _links.mirror_opt_out
@@ -794,6 +795,7 @@ class SessionManager:
     destroy = _teardown.destroy
     destroy_if = _teardown.destroy_if
     discard_conversation = _teardown.discard_conversation
+    swap_conversation = _teardown.swap_conversation
     drain_active_turns = _teardown.drain_active_turns
     close_all = _teardown.close_all
     absorb_orphaned_release = _teardown.absorb_orphaned_release
@@ -805,6 +807,7 @@ class SessionManager:
     stop_generation = _teardown.stop_generation
     note_stop = _teardown.note_stop
     open_replay_gap = _teardown.open_replay_gap
+    has_open_replay_gap = _teardown.has_open_replay_gap
     close_replay_gap = _teardown.close_replay_gap
     await_replay_gap = _teardown.await_replay_gap
     _send_abort_for_session = _teardown._send_abort_for_session

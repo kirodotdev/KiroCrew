@@ -50,6 +50,8 @@ from typing import Any
 
 from kiro_crew.apps.manifest import KEBAB_RE, app_name_error
 from kiro_crew.apps.store_links import sanitize_links
+from kiro_crew.apps.user_session_reach import GRANT_FAMILY as USER_SESSION_REACH_KEY
+from kiro_crew.apps.user_session_reach import declared_verbs
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import config_dir
 
@@ -548,11 +550,16 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
     """Project the explicit grants the trust prompt discloses before install.
 
     ``memberThreads`` rides along only with ``sessionApproval``, the grant it scopes.
+    ``reachableByUserSessions`` is a list of verbs, kept to the known ones.
     """
     permissions = entry.get("permissions")
     if not isinstance(permissions, dict):
         return None
-    disclosed = {key: True for key in _DISCLOSED_PERMISSIONS if permissions.get(key) is True}
+    disclosed: dict[str, Any] = {
+        key: True for key in _DISCLOSED_PERMISSIONS if permissions.get(key) is True
+    }
+    if reach := declared_verbs(permissions.get(USER_SESSION_REACH_KEY)):
+        disclosed[USER_SESSION_REACH_KEY] = reach
     if not disclosed:
         return None
     if disclosed.get("sessionApproval") and permissions.get("memberThreads") is True:

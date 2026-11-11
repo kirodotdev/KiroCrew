@@ -43,4 +43,18 @@ describe('updateNudge policy', () => {
   it('skipRecord marks skipped without a snooze horizon', () => {
     expect(skipRecord('2.0.0')).toEqual({ version: '2.0.0', snoozed_until: 0, skipped: true })
   })
+
+  it('a skip in the stored list holds after a snooze of another version', () => {
+    // What the gateway stores for skip 0.6.0 then snooze 0.6.1.
+    const stored = { ...snoozeRecord('0.6.1', now), skipped_versions: ['0.6.0'] }
+    expect(shouldNudge('0.6.1', stored, now)).toBe(false)
+    expect(shouldNudge('0.6.0', stored, now)).toBe(false)
+    expect(shouldNudge('0.6.0', stored, now + 10 * SNOOZE_SECS)).toBe(false)
+    expect(shouldNudge('0.6.2', stored, now)).toBe(true)
+  })
+
+  it('a verdict never sends the skip list: the gateway owns it', () => {
+    expect(snoozeRecord('0.6.1', now)).not.toHaveProperty('skipped_versions')
+    expect(skipRecord('0.6.1')).not.toHaveProperty('skipped_versions')
+  })
 })

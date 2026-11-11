@@ -263,6 +263,7 @@
   "pages.chatSidebar.resume_all_sessions",
   "pages.chatSidebar.resume_all_done",
   "pages.chatSidebar.resume_all_partial",
+  "pages.chatSidebar.search_results_count",
   "pages.chatSidebar.session",
   "pages.chatSidebar.session_failed_to_archive",
   "pages.chatSidebar.session_failed_to_switch",
@@ -543,5 +544,7 @@
   "pages.schedulePage.batchActions.batch_failed_reason",
   "pages.schedulePage.batchActions.changes_n_jobs",
   "pages.schedulePage.batchActions.run_confirm_title",
-  "pages.developer.agentBackendTab.card_summary_safety_notes"
+  "pages.developer.agentBackendTab.card_summary_safety_notes",
+  "components.publishHub.expiry_after_days",
+  "components.publicPublishAckModal.exposure_window_provider_expiry"
 ]

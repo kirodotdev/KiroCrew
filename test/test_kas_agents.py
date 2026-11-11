@@ -201,6 +201,18 @@ class TestTheSpecIsSpelledInKasToolIds:
             for r in out["permissions"]["rules"]
         )
 
+    def test_execute_bash_brings_the_background_process_tools(self):
+        """A Bot worker's spec names only ``execute_bash``; on KAS it must still
+        be able to keep a long-running command (a dev server) up."""
+        out = to_client_custom_agent("a", _spec(tools=["execute_bash"]), "p")
+        assert out["tools"] == ["execute_bash", "control_bash_process", "control_pwsh_process"]
+
+    def test_excluding_execute_bash_withholds_the_background_process_tools(self):
+        from kiro_crew.platform.tool_names import expand_kiro_cli_tool_exclusions
+
+        out = expand_kiro_cli_tool_exclusions(["execute_bash"])
+        assert {"control_bash_process", "control_pwsh_process"} <= set(out)
+
     def test_delete_file_mounts_only_when_the_spec_names_it(self):
         out = to_client_custom_agent("a", _spec(tools=["fs_write", "delete_file"]), "p")
         assert out["tools"] == ["fs_write", "str_replace", "fs_append", "delete_file"]
@@ -218,7 +230,9 @@ class TestTheSpecIsSpelledInKasToolIds:
         assert out["tools"][0] == "fs_read"
 
     def test_names_both_engines_share_and_mcp_refs_pass_through_unchanged(self):
-        shared = ["execute_bash", "code", "web_fetch", "tool_search", "@kirocrew-core"]
+        # ``execute_bash`` is shared too but brings its process-control family
+        # (``test_execute_bash_brings_the_background_process_tools``).
+        shared = ["code", "web_fetch", "tool_search", "@kirocrew-core"]
         out = to_client_custom_agent("a", _spec(tools=shared), "p")
         assert out["tools"] == shared
 
@@ -341,7 +355,8 @@ class TestTheSpecIsSpelledInKasToolIds:
             asked.append(ref)
             return ref != "use_subagent"
 
-        monkeypatch.setattr(kas_agents, "may_skip_gate_now", ceiling)
+        # The sub-agent ref is judged by the session's predicate (_authored_allow_gate).
+        monkeypatch.setattr(kas_agents, "may_skip_gate_for_session", lambda *_a: ceiling)
         out = to_client_custom_agent("a", _spec(tools=["*"], allowedTools=["subagent"]), "p")
         assert asked == ["use_subagent"]
         rules = (out.get("permissions") or {}).get("rules", [])
@@ -370,9 +385,12 @@ class TestTheSpecIsSpelledInKasToolIds:
         by class rather than by tool, so none appears here."""
         registry = Path(__file__).resolve().parent / "fixtures" / "kas_builtin_tool_ids.json"
         reg = json.loads(registry.read_text(encoding="utf-8"))
-        registered = set(reg["registered"]) | set(reg["remote"]["ids"])
+        registered = (
+            set(reg["registered"]) | set(reg["remote"]["ids"]) | set(reg["process_control"]["ids"])
+        )
         for kiro_cli_name, family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.items():
             assert kiro_cli_name in {
+                "execute_bash",
                 "fs_read",
                 "fs_write",
                 "grep",
@@ -520,7 +538,11 @@ class TestOptionalPassThrough:
             "a", _spec(resources=["file:///x.md"], excludedTools=["execute_bash"]), "p"
         )
         assert out["resources"] == ["file:///x.md"]
-        assert out["excludedTools"] == ["execute_bash"]
+        assert out["excludedTools"] == [
+            "execute_bash",
+            "control_bash_process",
+            "control_pwsh_process",
+        ]
 
     def test_empty_lists_are_omitted_rather_than_sent(self):
         out = to_client_custom_agent("a", _spec(resources=[], excludedTools=[]), "p")

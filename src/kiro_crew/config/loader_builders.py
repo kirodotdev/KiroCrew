@@ -595,7 +595,7 @@ def _note_member_fallback(inherited: str, used: str) -> None:
     logger.warning(
         "agent.acp_backend is %r, which Crew bots cannot run on (no saved spec, dispatch "
         "tools or worker kit there); Crew bot chats and their workers run on %r instead. "
-        "Pin a harness per Crew bot or set agent.member_acp_backend to choose another.",
+        "Pin a harness in a Crew bot's settings to choose another.",
         inherited,
         used,
     )
@@ -816,6 +816,16 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             )
         ),
         apps_allow_third_party=section.read("apps_allow_third_party", _safe_bool),
+        sandbox_readonly_paths=(
+            [p for p in _ro_paths if isinstance(p, str) and p]
+            if isinstance(_ro_paths := section.get("sandbox_readonly_paths"), list)
+            else section.default("sandbox_readonly_paths")
+        ),
+        sandbox_readonly_exceptions=(
+            [p for p in _ro_exceptions if isinstance(p, str) and p]
+            if isinstance(_ro_exceptions := section.get("sandbox_readonly_exceptions"), list)
+            else section.default("sandbox_readonly_exceptions")
+        ),
         apps_trusted=(
             [a for a in _trusted if isinstance(a, str) and a]
             if isinstance(_trusted := section.get("apps_trusted"), list)
@@ -854,6 +864,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
         session_sharing=bool(section.get("session_sharing")),
+        chat_runtime_sharing_max_sessions=section.read(
+            "chat_runtime_sharing_max_sessions", _safe_int, 1, 64
+        ),
         agent_started_turns=bool(section.get("agent_started_turns")),
         max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
         max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),
@@ -1427,6 +1440,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         milestones_enabled=section.read("milestones_enabled", _safe_bool),
         folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
+        project_tags_enabled=section.read("project_tags_enabled", _safe_bool),
         topic_tags_enabled=section.read("topic_tags_enabled", _safe_bool),
         tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),
         tips_snooze_hours=section.read("tips_snooze_hours", _safe_float, lo=0.0),

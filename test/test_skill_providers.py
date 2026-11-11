@@ -530,3 +530,48 @@ class TestIsInternalUrlSSRF:
         with patch("kiro_crew.skill_providers.skillsh._audit_ssrf_blocked") as m:
             assert _is_internal_url("https://raw.githubusercontent.com/o/r/main/S.md") is False
             assert not m.called
+
+
+@pytest.mark.asyncio
+async def test_an_infinite_install_count_costs_only_that_rows_count():
+    """``1e999`` parses as an infinite float; one such row keeps every result."""
+    mock_data = {
+        "skills": [
+            {"id": "a/b/bad", "installs": float("inf"), "source": "a/b"},
+            {"id": "a/b/good", "installs": 7, "source": "a/b"},
+        ]
+    }
+    with patch("kiro_crew.skill_providers.skillsh._sync_fetch_json", return_value=mock_data):
+        results = await SkillsShProvider().search("x")
+
+    assert [(r.id, r.installs) for r in results] == [("a/b/bad", 0), ("a/b/good", 7)]
+
+
+@pytest.mark.asyncio
+async def test_an_infinite_blob_size_reads_as_over_the_bundle_ceiling():
+    """An infinite tree size is listed as too large to import, never as zero."""
+    from kiro_crew.skill_providers import github as gh
+
+    tree = {
+        "sha": "c" * 40,
+        "truncated": False,
+        "tree": [
+            {"path": "SKILL.md", "type": "blob", "size": 10},
+            {"path": "huge.bin", "type": "blob", "size": float("inf")},
+        ],
+    }
+
+    async def _fake_fetch_json(url):
+        return tree
+
+    with patch.object(gh, "_fetch_json", _fake_fetch_json):
+        try:
+            blobs = await gh.GitHubRepoProvider()._list_blobs(
+                gh.RepoSpec(owner="acme", repo="widgets"), "c" * 40
+            )
+        except OverflowError as exc:
+            pytest.fail(f"one infinite size failed the whole listing: {exc}")
+
+    sizes = dict(blobs)
+    assert sizes["SKILL.md"] == 10
+    assert sizes["huge.bin"] > gh._MAX_BUNDLE_BYTES

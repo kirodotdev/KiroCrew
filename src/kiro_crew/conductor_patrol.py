@@ -43,10 +43,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-#: Inside the conductor's 300..900 s band. No cycle cap: the patrol runs until the
-#: conductor stops it after its final report, or a person stops it. Its one bound is
-#: the runaway backstop :func:`patrol_max_runtime_secs` (``rfc-permanent-patrol.md``).
-PATROL_INTERVAL_SECS = 600
+#: The one interval of every work-ledger patrol: this default patrol, and a loop the
+#: conductor arms itself (``monitor_start`` forces it for ``watch="work-ledger"``).
+#: No cycle cap: the patrol runs until the conductor stops it after its final report,
+#: or a person stops it. Its one bound is the runaway backstop
+#: :func:`patrol_max_runtime_secs` (``rfc-permanent-patrol.md``).
+PATROL_INTERVAL_SECS = 300
 PATROL_MAX_CYCLES = 0
 
 

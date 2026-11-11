@@ -443,11 +443,11 @@ def _plugin_ownership_remedy(candidate: str, reason: str) -> str:
     return ""
 
 
-def session_manager_plugin_install_hint() -> str:
+def session_manager_plugin_install_hint(rerun: str = "kirocrew cloud connect") -> str:
     """Human-readable install hint for the local SSM plugin prerequisite."""
     return (
         "session-manager-plugin is not installed locally. Install the AWS "
-        f"Session Manager plugin, then rerun `kirocrew cloud connect`: "
+        f"Session Manager plugin, then rerun `{rerun}`: "
         f"{_SESSION_MANAGER_PLUGIN_DOC_URL}"
     )
 

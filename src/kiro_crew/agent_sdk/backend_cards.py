@@ -565,6 +565,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "error naming the fix, so it never runs wider than its Bot saved; the "
         "single-tool line above already covers a native-tool switch-off"
     ),
+    "ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS": (
+        "whether a Bot worker's native-tool switch-offs, such as no shell or no file "
+        "writes, are honoured. A worker with such limits on a non-member is refused before "
+        "spawn with an error naming the fix, so it never runs wider than its Bot saved; on "
+        "claude such a worker keeps only the built-ins of the native tools it keeps, so a "
+        "built-in Crew has not mapped is left out too"
+    ),
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": (
         "which channel carries the agent spec's own servers to the session, read by the "
         "unresolved-ref detector. The servers arrive either way; a wrong membership is a "
@@ -777,6 +784,18 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "new launch file and loading the same session. Off the card for the reason "
         "the re-sent projection is: the fact needs one line, and that line cannot be "
         "projected while the version-gated hot-reload half cannot"
+    ),
+    "ACP_BACKENDS_CHAT_RUNTIME_SHARING": (
+        "whether a top-level dashboard chat slot may share one process with other "
+        "chat slots, behind the off-by-default chat_runtime_sharing feature preview. "
+        "A reader choosing a harness loses nothing when it is out: their chat gets "
+        "its own process, which is exactly what happens with the preview off, and "
+        "its resume record is kept either way -- the gate exists so a backend whose "
+        "chat teardown has not been proven to keep that record does NOT share "
+        "(harness-parity H6, decided separately from the subagent "
+        "ACP_BACKENDS_SESSION_SHARING). A wrong membership is invisible when it "
+        "withholds and a lost resume record when it grants, which is a defect rather "
+        "than an absent feature a card could mark"
     ),
 }
 

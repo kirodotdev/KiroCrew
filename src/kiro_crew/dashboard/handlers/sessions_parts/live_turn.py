@@ -412,7 +412,17 @@ async def api_session_directive(request: web.Request) -> web.Response:
             exc,
         )
         return web.json_response({"error": str(exc), "code": "invalid_directive"}, status=400)
-    return web.json_response({"ok": True, "id": record_id})
+    # Whether the caller's running turn has already streamed reply text, so the
+    # tool can tell the model that text was shown. Read from the session's own
+    # dashboard tab; a session with none (a channel or cron session) reports False.
+    # shortcut: the text chunks normally reach the runner before the tool runs, but
+    # nothing orders the two; a chunk still in the pipe reads as no text.
+    from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+
+    slot_name = dashboard_slot_key(session_key)
+    slot = request.app["state"].get_slot(slot_name) if slot_name else None
+    wrote_text = getattr(slot, "_turn_wrote_text", False) is True
+    return web.json_response({"ok": True, "id": record_id, "turn_wrote_text": wrote_text})
 
 
 async def api_session_keepalive(request: web.Request) -> web.Response:

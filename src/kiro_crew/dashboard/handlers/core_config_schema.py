@@ -70,6 +70,7 @@ from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers.core_config_models import _validate_role_model
 from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.instances.crew_ref import MAX_CREW_REF_LEN
+from kiro_crew.update_deferral import MAX_SKIPPED_VERSIONS
 from kiro_crew.validation import QUALIFIED_MODEL_PATTERN
 
 
@@ -307,13 +308,23 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # with a new version) and a two-client interleave that reassembles a
     # verdict nobody expressed. Persisted in gateway config (not browser
     # storage) so the decision holds across browsers and the desktop app's
-    # embedded dashboard.
+    # embedded dashboard. The route stores a fourth, ``stored_at``, from this
+    # host's clock, in place of any a client sends.
     "dashboard.update_nudge": {
         "type": "dict",
         "keys": {
             "version": {"type": "str", "max_len": 128},
             "snoozed_until": {"type": "float", "min": 0.0, "max": 4102444800.0},
             "skipped": {"type": "bool"},
+            # Every skip. Optional: the popup's verdict omits it and the route
+            # merges the verdict into the saved list; a whole record (a change
+            # card or its Undo) sends it and is stored as sent.
+            "skipped_versions": {
+                "type": "str_list",
+                "max_items": MAX_SKIPPED_VERSIONS,
+                "max_item_len": 128,
+                "optional": True,
+            },
         },
     },
     # Default shell for the built-in terminal panel (Settings → Display →

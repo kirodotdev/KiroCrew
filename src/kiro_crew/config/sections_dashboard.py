@@ -54,6 +54,7 @@ REMOTE_EDITOR_HOST_PATTERN = (
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
     "bridge_approvals",
+    "chat_runtime_sharing",
     "crew_mode",
     "crew_oauth",
     "dashboard_stale_fields",
@@ -1041,8 +1042,9 @@ class DashboardConfig:
         metadata=_meta(
             "Update Nudge",
             "Per-version state for the proactive update popup. Written by the "
-            "dashboard when the user snoozes or skips a release; a record only "
-            "suppresses the popup for the version it names. Validated as one "
+            "dashboard when the user snoozes or skips a release; a snooze only "
+            "suppresses the popup for the version it names, and every skipped "
+            "version stays in skipped_versions. Validated as one "
             "atomic record by the PATCH allowlist (dashboard.update_nudge); "
             "no Settings control reads it, so it carries no schema properties.",
         ),
@@ -1177,6 +1179,15 @@ class DashboardConfig:
         metadata=_meta(
             "Folder Suggestions Enabled",
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
+        ),
+    )
+    project_tags_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Project Tags Enabled",
+            "Tag a new chat session with the last folder name of its project path, "
+            "such as my-app. Off creates and adds no project tag; tags already on a "
+            "session stay.",
         ),
     )
     topic_tags_enabled: bool = field(

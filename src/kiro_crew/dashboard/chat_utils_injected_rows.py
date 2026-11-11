@@ -231,6 +231,12 @@ SPEC_HOOKS_RUN_NOWHERE_NOTICE = "run_nowhere"
 #: for the same reason as :data:`SPEC_HOOKS_NOTICE_KIND`.
 SEED_DECLINED_NOTICE_KIND = "seed_declined"
 
+#: ``meta.kind`` of the session-start notice that names MCP servers whose sign-in
+#: cannot work on this backend. The dashboard keeps it out of the collapsed steps
+#: of the turn (``isAlwaysVisible`` in ``website/src/pages/chat/TurnBlock.tsx``):
+#: it is the only sign that such a server never connects in this session.
+MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND = "mcp_sign_in_unsupported"
+
 
 #: Row-level kind for the terminal `error` row a prompt-time MODEL ENTITLEMENT
 #: rejection produces ("Your account does not have access to model 'X'"), so
@@ -613,10 +619,15 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
     (``meta.decisions_strip``) and where the stamped turn actor
     changes, so an app's queued send never folds into the user's own words, and
     where the stamped source channels change, so a turn admission refuses for one
-    channel never carries another message with it; an entry that starts no run
+    channel never carries another message with it, and where the channel challenge
+    mark changes (``channel_prompt``), so a typed message keeps its echo; an
+    entry that starts no run
     pops alone.
     """
     if merge_enabled and len(slot._queue) > 1:
+        # Local: a module-level import would serve the name through the chat_utils facade.
+        from kiro_crew.dashboard.channel_prompt import entry_prompt_on_channel
+
         to_merge: list[dict] = []
         for item in list(slot._queue):
             if (
@@ -637,6 +648,9 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
             # so entries from different channels (or one with none) never share a
             # turn: a refusal of one channel's words must not take another's.
             if to_merge and source_channels_of(item) != source_channels_of(to_merge[0]):
+                break
+            # Words already in the linked thread skip its echo; typed words keep it.
+            if to_merge and entry_prompt_on_channel(item) != entry_prompt_on_channel(to_merge[0]):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

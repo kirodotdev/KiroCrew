@@ -325,6 +325,10 @@ class AcpSessionHandle:
         self.member_dispatch_mounted: bool = False
         self._queue = queue
         self._runtime = runtime
+        # Set by the provider that serves this handle on a SHARED chat runtime
+        # (``AcpSessionProvider``); gates the ownerless agent-switch drop in the
+        # dispatch so every other session runs as it did before chat sharing.
+        self.chat_shared: bool = False
         # The directory THIS session was opened against, which on a shared runtime is
         # not the runtime's own: sessions for different projects live on one process.
         self._bound_cwd = bound_cwd
@@ -734,6 +738,9 @@ class AcpSessionHandle:
         # Whether that KAS is known to apply the batch's prompts
         # (``KasHarness.agent_prompt_applied``); False without that evidence.
         self.kas_agent_prompt_applied: bool = False
+        # The engine version when Crew knows it, i.e. its own bundle's
+        # (``KasHarness.bundle_engine_version``); "" on the relay.
+        self.kas_bundle_engine_version: str = ""
         # The notice naming the MCP servers this session's projection sent without
         # part of their env or headers, by key name only
         # (``kas_agents.withheld_credentials_notice``); "" otherwise.

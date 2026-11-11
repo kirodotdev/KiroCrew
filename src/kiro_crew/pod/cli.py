@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Callable, NoReturn
 
+from kiro_crew.pod import env_overrides as pod_env_overrides
 from kiro_crew.pod import limits as pod_limits
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
@@ -443,10 +444,20 @@ def _limit_updates(name: str, args: argparse.Namespace) -> dict[str, str]:
     return updates
 
 
+def _env_overrides(name: str, args: argparse.Namespace) -> dict[str, str]:
+    """Checked ``--env`` overrides, refused before anything changes."""
+    try:
+        return pod_env_overrides.parse_assignments(getattr(args, "env", None) or [])
+    except pod_env_overrides.EnvOverrideError as exc:
+        _audit("pod.up", "denied", f"name={name}", error="invalid env override")
+        _die(str(exc))
+
+
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
     _require_up_user_bus(name)
     limit_updates = _limit_updates(name, args)
+    env_overrides = _env_overrides(name, args)
     checkout = _resolve_or_die(cfg, name)
 
     scenario = ""
@@ -513,6 +524,13 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             boot_flags.append("--no-embeddings")
         env_updates.update(limit_updates)
         boot_flags.extend(f"--{k.lower()} {v}" for k, v in limit_updates.items())
+        override_updates = pod_env_overrides.env_file_updates(
+            env_overrides, rt.read_env_file(cfg, name)
+        )
+        env_updates.update(override_updates)
+        # A cleared override is a boot setting too: on a running pod it takes
+        # effect only at the next boot, so it must reach the note below.
+        boot_flags.extend(f"--env {k}={v}" for k, v in override_updates.items())
 
         # Read the unit's state BEFORE choosing a port, and inside the mutex: the
         # two questions are one decision. An `up` against an already-active pod is
@@ -679,6 +697,9 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             resources += " embeddings=off"
         for key, val in limit_updates.items():
             resources += f" {key.lower()}={val}"
+        if env_overrides:
+            # Key names only: the audit row says a double is in play, not where.
+            resources += f" env={','.join(env_overrides)}"
         if boot_flags and was_active:
             resources += " applied=next_boot"
         _audit("pod.up", "allowed", resources)

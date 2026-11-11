@@ -1430,6 +1430,14 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "``initialize`` extensionMethods. Every other ``ACP_BACKENDS_COMPACT`` member "
     "compacts on the ``/compact`` prompt, so the positive test keeps them on it.",
     (
+        "src/kiro_crew/acp/runtime_session_registry.py",
+        "__aenter__",
+    ): "The chat turn gate on a shared process is skipped on KAS only: the KAS engine "
+    "names the session on every ``session/update`` and orders turns itself, so no "
+    "ownerless control frame needs one turn in flight. Of the two "
+    "``ACP_BACKENDS_CHAT_RUNTIME_SHARING`` members, kiro-cli is the one that emits "
+    "frames without a sessionId; a positive KAS test keeps every other host gated.",
+    (
         "src/kiro_crew/acp/session_handle_kas.py",
         "kas_command_call",
     ): "``_kiro/session/context``, ``_kiro/knowledge`` and ``_kiro/codeIntelligence`` are "

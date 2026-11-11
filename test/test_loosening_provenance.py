@@ -380,6 +380,40 @@ def test_failed_publish_restores_the_prior_endorsed_copy(_enforcing, monkeypatch
     assert lp.endorsed_bytes("config.json") == prior
 
 
+def test_a_failed_publish_whose_restore_fails_does_not_block_the_next_save(monkeypatch) -> None:
+    """The copy file keeps the unpublished bytes, but this process still reads
+    the previous copy, so the leaf is not pending and the next save goes through."""
+    monkeypatch.setattr(lp, "enforcement_active", lambda: True)
+    cfg_path = config_dir() / "config.json"
+    published = _config(x=2)
+    with lp.endorsing("config.json", published):
+        cfg_path.write_bytes(published)
+
+    real_write = lp.atomic_write
+    copy_dir_broken = [False]
+
+    def _write(*args, **kwargs):
+        if copy_dir_broken[0]:
+            raise OSError(30, "Read-only file system")
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(lp, "atomic_write", _write)
+    with pytest.raises(OSError):
+        with lp.endorsing("config.json", _config(x=3)):
+            copy_dir_broken[0] = True
+            raise OSError(28, "No space left on device")
+    copy_dir_broken[0] = False
+
+    assert lp._endorsed_path("config.json").read_bytes() == _config(x=3)
+    assert lp.endorsed_bytes("config.json") == published
+    assert lp.leaf_pending("config.json") is False
+    nxt = _config(x=4)
+    with lp.endorsing("config.json", nxt):
+        cfg_path.write_bytes(nxt)
+    assert lp.endorsed_bytes("config.json") == nxt
+    assert lp._endorsed_path("config.json").read_bytes() == nxt
+
+
 def test_a_load_inside_a_failed_publish_does_not_outlive_it(_enforcing, monkeypatch) -> None:
     """A load between the endorse and the failed rename serves the attempted copy and
     caches it under the unchanged on-disk fingerprint; the rollback must drop it."""

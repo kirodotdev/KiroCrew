@@ -377,7 +377,7 @@ async def test_effort_keys_its_own_warm_subpool():
 class _EffortProvider(_FakeProvider):
     """A provider whose fresh conversation loses its effort, as on KAS and Codex."""
 
-    def __init__(self, tag: str, *, refuse: bool = False, offered: tuple = ()) -> None:
+    def __init__(self, tag: str, *, refuse: bool | str = False, offered: tuple = ()) -> None:
         super().__init__(tag)
         self.efforts_pushed: list[str] = []
         self.refuse = refuse
@@ -387,6 +387,10 @@ class _EffortProvider(_FakeProvider):
         return not self.offered or level in self.offered
 
     async def change_effort(self, level: str) -> bool:
+        if self.refuse == "kiro-cli":
+            from kiro_crew.acp.command_refused import AcpCommandRefused
+
+            raise AcpCommandRefused(f"invalid effort level {level!r}")
         if self.refuse:
             raise RuntimeError("effort push refused")
         self.efforts_pushed.append(level)
@@ -394,7 +398,7 @@ class _EffortProvider(_FakeProvider):
 
 
 class _EffortProviderSessions(_EffortSessions):
-    def __init__(self, *, refuse: bool = False, offered: tuple = ()) -> None:
+    def __init__(self, *, refuse: bool | str = False, offered: tuple = ()) -> None:
         super().__init__()
         self.refuse = refuse
         self.offered = offered
@@ -448,6 +452,22 @@ async def test_a_level_the_session_does_not_offer_keeps_the_cheap_reuse():
     must not turn every reuse into a hard reset."""
     sessions = _EffortProviderSessions(refuse=True, offered=("low",))
     agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef9", max_workers=1)
+    try:
+        await agent_fn("a", {"effort": "high"})
+        await agent_fn("b", {"effort": "high"})
+        provider = next(iter(sessions.live.values()))
+    finally:
+        await pool.shutdown()
+    assert sessions.resets == 0
+    assert sessions.cold_starts == 1
+    assert provider.new_conversation_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_level_kiro_cli_refuses_keeps_the_cheap_reuse():
+    """A hard reset would cold-start on the refused level and respawn on every reuse."""
+    sessions = _EffortProviderSessions(refuse="kiro-cli")
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="ef10", max_workers=1)
     try:
         await agent_fn("a", {"effort": "high"})
         await agent_fn("b", {"effort": "high"})

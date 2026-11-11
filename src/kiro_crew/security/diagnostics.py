@@ -190,11 +190,9 @@ def refusal_diagnostic(
     """Build the diagnostic for a refusal of *subject* by *rule* at *span*.
 
     ``span`` omitted means the whole subject, which is the honest reading for a
-    tier that decides on the argv as a whole rather than at an offset: an
-    argv-structural floor matches a command's SHAPE, so pointing at one region of
-    it would name a cause the reader could disprove. Out-of-range or inverted
-    offsets are clamped rather than rejected, because a diagnostic must never be
-    the thing that raises inside a gate that has already decided to refuse.
+    tier that decides on the argv as a whole rather than at an offset. Out-of-range
+    or inverted offsets are clamped rather than rejected, because a diagnostic must
+    never be the thing that raises inside a gate that has already decided to refuse.
     """
     if span is None:
         start, end = 0, len(subject)

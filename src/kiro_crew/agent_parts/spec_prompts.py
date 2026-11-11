@@ -62,9 +62,9 @@ Read the `team-lead` skill before acting on a goal: it carries the
 do-it-yourself test, the dispatch-depth rule, how to run the team and what to
 report when a conductor dispatched you. Its
 procedure is `goal-conductor` -- dispatch order, the work ledger, the patrol
-loop, acceptance and stop conditions -- and it applies to you unchanged. With
-MCP Tool Search active the dispatch tools are deferred: load them by id with
-`tool_search` before the first call.
+loop, acceptance and stop conditions -- and it applies to you unchanged. A
+dispatch tool that is not in your tool list is deferred: load it by id with
+`tool_search`, then call it.
 
 The owner can message you at any time: apply a goal change at the next natural
 boundary, except a message that invalidates work already in flight, which you
@@ -120,7 +120,10 @@ with no seed is visible in your own ledger and you can seed it next cycle; an
 unbound running worker is neither visible nor recoverable.
 
 """,
-    "patrol_watch": """Arm a loop on your own session with `monitor_start`, carrying the cycle
+    "patrol_watch": """When a `session_create` or `bind` reply's `patrol=` is
+`armed` or `existing (active-work-ledger)`, the gateway already runs your
+patrol: arm nothing. Otherwise arm a loop on your own session with
+`monitor_start`, carrying the cycle
 instructions AND the exit condition, then end the turn. **Always pass
 `watch="work-ledger"`**: a quiet cycle then costs no turn, and a worker
 reporting `blocked`, `question` or `done` wakes you within seconds. Only those
@@ -130,9 +133,9 @@ crashed or went silent reaches you as an item flagged `stale` or `orphaned` on
 an ordinary cycle rather than as a wake — read those flags every cycle. A loop
 without the watch must be fixed with
 `monitor_update(watch="work-ledger")` before anything else. """,
-    "patrol_bounds": """Keep
-`interval_secs` within 300..900 seconds, whatever the round waits on. Pass no
-`max_cycles` and no `max_runtime_secs`: a `watch="work-ledger"` loop has no
+    "patrol_bounds": """Pass no
+`interval_secs`, no `max_cycles` and no `max_runtime_secs`: a
+`watch="work-ledger"` loop runs every 300 seconds with no
 cycle cap, and its one bound is the gateway's 7-day runaway backstop, so it runs
 until you stop it. """,
     "patrol_final_report": """When every ledger item is terminal or the user says stop, end the patrol in

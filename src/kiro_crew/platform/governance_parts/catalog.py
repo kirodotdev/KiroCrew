@@ -216,9 +216,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # (RFC crew-lts-edition, appendix row "Hook trigger events"). Queried as
     # ``events:<event>`` by ``hook_runtime.governance_gate`` before a hook runs, and
     # for each event of the user's kiro hooks before they are installed. An unnamed
-    # ruleset permits every event.
+    # ruleset permits every event. Inner ``hooks`` ruleset (``identifier``): which
+    # hooks may run, by ``hook_event_governance.hook_policy_name`` -- an agent
+    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name.
+    # Queried as ``hooks:<name>``; an unnamed ruleset permits every hook.
     "capabilities.script_hooks": ScopeSpec(
-        CAPABILITY, capability_default=False, scope_matchers={"events": "identifier"}
+        CAPABILITY,
+        capability_default=False,
+        scope_matchers={"events": "identifier", "hooks": "identifier"},
     ),
     "capabilities.cron": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.messaging": ScopeSpec(CAPABILITY, capability_default=False),

@@ -301,7 +301,7 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 - Batched `last_seen` flush/commit and stale-claim release run off the asyncio
   event loop; each flush and its commit stay within one worker hop so they share
   the thread-local SQLite connection.
-- Per-file state lives in the `folder_file_state` table with `status` ∈ `{done, scanning, skipped, failed, deduped}`. `scanning` is written **before** ingest so a crash mid-file is recoverable; `skipped`/`failed`/`deduped` files are not auto-retried (user must retry).
+- Per-file state lives in the `folder_file_state` table with `status` ∈ `{done, scanning, skipped, failed, deduped}`. `scanning` is written **before** ingest so a crash mid-file is recoverable; `skipped`/`failed`/`deduped` files are not auto-retried (user must retry). `GET /api/knowledge/sources/{id}/files` counts a `deduped` file in `done`, since it was read and its text is held by the copy it matched; the folder progress bar treats a scan as finished when `done + failed + skipped` reaches `total`, so a `deduped` file left out of every count kept it polling and short of 100% forever.
 - **The committed group is recorded inside the commit hop, and never over a verdict.** `_ingest_file`'s `on_committed` callback turns the `scanning` marker into the `done` row in the pipeline's finalize hop; a write that fails (writer-lock contention) is retried once there under `BEGIN IMMEDIATE`, and a second failure is swallowed so it cannot poison the committed ingest. The scan's own terminal write (`_settle_done`) then lands only while the row is still `scanning`, read and written under one `BEGIN IMMEDIATE` in a `run_to_completion` hop. Once the callback's write lands the row is a `done` row the dedup sweep enumerates, so a collapse may already have deleted the group and marked the row `deduped`; writing the captured ids over that would name deleted items, and the sweep's verdict stands instead.
 - **TOCTOU defense**: `_ingest_file` re-resolves symlinks and re-checks `is_sensitive_path` at ingest time; a block writes `status='failed'` and emits an SEL `knowledge.source.file.ingest_denied` (`outcome="denied"`, `reason=sensitive_path_toctou`) audit event.
 - After a successful scan, each newly ingested/changed file gets a **targeted** cross-source dedup (`dedup_document(..., apply=True)`) — O(k·n) over the k changed files rather than a full O(n²) corpus sweep — so a folder copy collapses any matching one-shot upload.
@@ -1163,8 +1163,15 @@ Scopes the page to a single source. Composes with the existing `type`, `status`,
   in-group pager derives its page count from it, so a global total would break
   the pager math.
 - `source_id=__none__` selects items with no source (`source_id` NULL or empty).
-- Applied in both branches of `list_items`: as a SQL predicate in the list
-  branch, and via `_matches_source` after ranking in the hybrid-search branch.
+- A named source selects what it **holds**, the same union `/source-counts`
+  counts: items it owns plus items it is a location of in `source_locations`
+  after a duplicate collapse. A source holding only located items therefore
+  lists them under its badge instead of an empty group. A scoped page labels
+  each row from that source's own state (`_attach_file_paths(scope_source=)`),
+  so a located item shows the holder's file name, never the owner's.
+- Applied in both branches of `list_items`: as a SQL predicate
+  (`_HELD_BY_SOURCE`) in the list branch, and via `_matches_source` with the
+  source's located ids after ranking in the hybrid-search branch.
 - Because the hybrid-search branch filters *after* the retriever has ranked
   globally, a scoped search escalates its candidate pool
   (`_search_until_exhausted`: `_SCOPED_SEARCH_START` doubling to

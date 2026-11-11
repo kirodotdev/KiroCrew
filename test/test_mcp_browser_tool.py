@@ -364,6 +364,20 @@ def test_a_long_hold_pings_the_session_keepalive_and_gives_up_at_the_bound(
     assert ops == [("click", {"x": 1, "y": 2})], "the op is not re-posted while held"
 
 
+def test_the_gateway_ending_the_hold_stops_the_op(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gateway's hub owns the hold's end: once it answers ``hold_over`` a
+    hand-back since went to chat, so the op is not re-posted behind it."""
+    clock = _Clock()
+    parked, posts, ops, keepalives = _parked(
+        monkeypatch,
+        clock,
+        [(200, {"released": False, "hold_over": True, "handed_back": {"note": "Wrong account"}})],
+    )
+    text = parked.step()
+    assert text is not None and "user_in_control" in text and "Wrong account" in text
+    assert ops == [("click", {"x": 1, "y": 2})], "the op is not re-posted"
+
+
 def test_an_interrupted_op_is_not_re_run_after_the_hand_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

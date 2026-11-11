@@ -68,6 +68,7 @@ logger = logging.getLogger(__name__)
 _OWNERS = (
     "kiro_crew.dashboard.session_control_parts.caller_access",
     "kiro_crew.dashboard.session_control_parts.delivery_containment",
+    "kiro_crew.dashboard.session_control_parts.app_reach",
     "kiro_crew.dashboard.session_control_parts.target_authorization",
     "kiro_crew.dashboard.session_control_parts.turn_control",
     "kiro_crew.dashboard.session_control_parts.model_switch",
@@ -95,6 +96,13 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name this module forwards, for type checkers
+    from kiro_crew.dashboard.session_control_parts.app_reach import (  # noqa: F401
+        _PERSON_ORIGINS,
+        APP_REACH_OPERATIONS,
+        app_admits_reach,
+        app_reach_caller_refusal,
+        prewarm_app_reach,
+    )
     from kiro_crew.dashboard.session_control_parts.caller_access import (  # noqa: F401
         APP_CRON_OWNER_PREFIX,
         CONDUCTOR_AGENTS,
@@ -308,6 +316,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _BIDI_CONTROLS,
         _BLANK_GLYPHS,
         _MAX_RENAME_TITLE_CHARS,
+        SESSION_NOTE_SOURCE,
         _admit_generate_title,
         _clean_new_session_title,
         _clean_rename_title,
@@ -315,6 +324,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _parse_session_color,
         _refuse_hidden_title_characters,
         _shows_nothing,
+        authorize_created_target,
         generate_title_target,
         rename_target,
         set_color_target,
@@ -395,6 +405,8 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP  # noqa: F401
     from kiro_crew.agent_sdk.capabilities import capabilities_for  # noqa: F401
     from kiro_crew.agent_sdk.provider_identity import is_claude_code  # noqa: F401
+    from kiro_crew.apps.user_session_reach import app_allows_user_session_reach  # noqa: F401
+    from kiro_crew.apps.user_session_reach import prime_user_session_reach  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.config.loader import _workspace_name_for_dir  # noqa: F401
     from kiro_crew.config.loader import default_project_dir  # noqa: F401

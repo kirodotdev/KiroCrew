@@ -1392,8 +1392,11 @@ class TestResolveExplicitSubnet:
             return {}
 
         monkeypatch.setattr(aws, "checked_json", fake_json)
-        with pytest.raises(aws.AWSError, match="egress"):
+        with pytest.raises(aws.AWSError, match="egress") as ei:
             ec2.resolve_explicit_subnet("subnet-iso", "dev", "us-east-1")
+        # It offers the in-place recoveries, not only a network change outside Kiro Crew.
+        assert "leave the subnet unset to let Kiro Crew pick one automatically" in str(ei.value)
+        assert "choose a subnet with a NAT or internet-gateway route" in str(ei.value)
 
     def test_az_not_offering_type_raises(self, monkeypatch):
         def fake_json(args, profile="", region="", *, action, timeout=aws.DEFAULT_TIMEOUT):

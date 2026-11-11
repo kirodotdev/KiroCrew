@@ -72,6 +72,20 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
 from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+# Re-exported for the modules that import these from spec_hooks; they live in a
+# sibling only to keep this module under its line cap. The sibling imports this
+# module's seams lazily, so the two load in either order.
+from kiro_crew.agent_sdk.spec_hooks_reproject import (  # noqa: E402,F401
+    ClaimToken,
+    UnattendedClaim,
+    acquire_with_token,
+    close_reprojection_gap,
+    live_session_entry,
+    make_claim_token,
+    reproject_claimed_session,
+    reproject_unattended_claim,
+)
 from kiro_crew.hooks import (
     _HOOK_STREAM_CAP_BYTES,
     HOOK_EVENT_AGENT_SPAWN,
@@ -114,9 +128,9 @@ OBSERVER_HOOK_EVENTS = frozenset(
 #: so a matcher on any other event is dropped rather than applied to the context.
 _TOOL_EVENTS = frozenset({HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE})
 
-#: Bound on the hooks taken from one spec, the same total the materialized spec is
-#: capped at, so a hand-written spec cannot make every turn spawn without limit.
-_MAX_SPEC_HOOKS = 20
+#: Bound on the hooks taken from one spec, so a runaway spec cannot make every turn
+#: spawn without limit, set high enough that an installed agent's set runs whole.
+_MAX_SPEC_HOOKS = 64
 
 #: Bound on a retained command: the longest command the shell gate scans, so a
 #: spec hook is held to the same ceiling as a shell tool call's command and every
@@ -1290,6 +1304,7 @@ def crew_fired_spec_hooks(
     translates_tools_settings: bool = False,
     session_key: str = "",
     discards_mcp_oauth: bool = False,
+    withholds_oauth_secret: bool = False,
     governance_session_key: str = "",
     governance_app: str | None = None,
 ) -> tuple[list[ScriptHook], list[str], int]:
@@ -1303,8 +1318,11 @@ def crew_fired_spec_hooks(
     cannot be read; the caller fails PreToolUse closed on that. *project_dir* is
     :func:`spec_project_dir` of the session. *translates_tools_settings* is true
     only for a KAS session, the one backend that receives ``toolsSettings`` as
-    ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session too,
-    the backend that drops a remote MCP server's ``oauth`` block. *session_key*
+    ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session whose
+    engine Crew knows drops a remote MCP server's ``oauth`` block.
+    *withholds_oauth_secret* is true for every KAS session: its projection sends
+    nothing, on any engine, from a block that names a ``clientSecret`` or keeps no
+    key it can send. *session_key*
     reads a crewmate's worker as that session's merged spec (:func:`_agent_spec`).
     *governance_session_key* and *governance_app* are the session and app the KAS
     projection judged a ``trustedAgents`` allow for, so the notice judges it alike.
@@ -1319,6 +1337,7 @@ def crew_fired_spec_hooks(
         spec,
         translates_tools_settings=translates_tools_settings,
         discards_mcp_oauth=discards_mcp_oauth,
+        withholds_oauth_secret=withholds_oauth_secret,
         session_key=governance_session_key,
         governance_app=governance_app,
     )
@@ -1496,12 +1515,15 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     unless the list is also named whole.
     """
     from kiro_crew.agent_sdk.kas_tool_view import allow_exclude_limit
+    from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK as GATE
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
     from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
 
     unread = [key for key in keys if MARK in key]
     keys = [key for key in keys if MARK not in key]
-    whole = {key.partition(MARK)[0] + ".allowedCommands" for key in unread} & set(keys)
+    whole = {key.partition(MARK)[0] + ".allowedCommands" for key in unread} & {
+        key.removesuffix(GATE) for key in keys
+    }
     others = "" if whole else "; the agent's other entries still apply"
     entries = (
         f"Agent {agent} has allowedCommands entries Kiro Crew cannot read: {'; '.join(unread)}. "
@@ -1510,17 +1532,27 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     )
     if unread and not keys:
         return f"ℹ️ {entries}"
-    notice = (
-        f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
-        "receive, so they have no effect in this session."
-    )
+    # Crew's own gate still refuses what a marked allowlist leaves out, so it is
+    # never said to have no effect.
+    allowlists = [k.removesuffix(GATE) for k in keys if k.endswith(GATE)]
+    rest = [k for k in keys if not k.endswith(GATE)]
+    sentences = []
+    if rest:
+        sentences.append(
+            f"Agent {agent} sets {' and '.join(rest)}, which this backend does not "
+            "receive, so they have no effect in this session."
+        )
+    if allowlists:
+        sentences.append(
+            f"Agent {agent} sets {' and '.join(allowlists)}, which this backend does not "
+            "receive. Kiro Crew's own approval gate still enforces them: it refuses what "
+            "they do not cover, and what they cover may ask for approval."
+        )
+    notice = "ℹ️ " + " ".join(sentences)
     servers = oauth_servers_in(keys)
     if servers:
         noun = "server" if len(servers) == 1 else "servers"
-        notice += (
-            f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this "
-            "backend. The kiro-cli backend supports it."
-        )
+        notice += f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this backend yet."
     if "permissions" in keys:
         notice += (
             " A permissions block is not sent at all when it names a policies bundle "
@@ -1591,7 +1623,7 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     session_key = provider_session_key(provider)
     # The keys the session runs without, read as the chat turn reads them.
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
-    from kiro_crew.agent_sdk.kas_engine import keeps_mcp_oauth
+    from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
 
     on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS
     try:
@@ -1601,7 +1633,8 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
                 agent_id,
                 spec_project_dir(provider),
                 translates_tools_settings=on_kas,
-                discards_mcp_oauth=on_kas and not keeps_mcp_oauth(provider),
+                discards_mcp_oauth=on_kas and discards_mcp_oauth(provider),
+                withholds_oauth_secret=on_kas,
                 session_key=session_key,
             )
         )
@@ -1791,47 +1824,6 @@ async def invalidate_stale_kas_session(sessions: Any, session_key: str, agent_id
         logger.warning("re-projection reset for %s failed", session_key, exc_info=True)
         return PROJECTION_BUSY
     return PROJECTION_RESET if reset else PROJECTION_BUSY
-
-
-async def reproject_claimed_session(
-    sessions: Any,
-    session_key: str,
-    agent_id: str,
-    claimed: tuple[Any, bool, bool],
-    claim: Callable[[], Awaitable[tuple[Any, bool, bool]]],
-) -> tuple[Any, bool, bool]:
-    """The claim to run the turn on, re-projected when the claimed session is stale.
-
-    Called with the lease held, so no other turn can change what the session
-    runs between this check and the tools. A session that went stale while this
-    turn waited for it (the pre-claim reset was declined because another turn
-    held it) is reset here, under the lease, and *claim* registers a fresh batch.
-    Raises :class:`StaleProjectionError` when the session is still stale after
-    :data:`_MAX_REPROJECTIONS` resets, rather than running the turn on a batch
-    that would auto-approve a call a hook covers.
-    """
-    for _ in range(_MAX_REPROJECTIONS):
-        if not await hook_projection_stale(claimed[0], agent_id):
-            return claimed
-        logger.info(
-            "agent %r: the claimed session auto-approves a capability a PreToolUse "
-            "hook now covers; re-projecting it before the turn runs",
-            agent_id,
-        )
-        await sessions.reset(session_key)
-        claimed = await claim()
-        # The reset recorded this task as the holder of the permit it popped; this
-        # claim's permit is the one its release is for (a claim that allocated has
-        # already said so, and saying it again changes nothing).
-        adopt = getattr(sessions, "adopt_turn", None)
-        if callable(adopt):
-            adopt(session_key)
-    if await hook_projection_stale(claimed[0], agent_id):
-        raise StaleProjectionError(
-            f"agent {agent_id!r}: the session could not be re-projected for the "
-            "PreToolUse hooks now in place; the turn was not run"
-        )
-    return claimed
 
 
 async def replace_stale_shared_session(

@@ -27,7 +27,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-class _FakeReq:
+class _FakeReq(dict):
     def __init__(self, body=None, name=""):
         self._body = body or {}
         self.match_info = {"name": name}

@@ -696,7 +696,7 @@ class TestSpawnSubAgentsSummarization:
             short_result = "brief answer"
             large_result = "detailed " * 600  # over 3K
 
-            def _get_side(url):
+            def _get_side(url, **_kw):
                 if "short1" in url:
                     return {
                         "done": True,

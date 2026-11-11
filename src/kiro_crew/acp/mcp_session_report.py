@@ -427,6 +427,17 @@ class KasMcpReadiness:
             self.seen.update(self.advertised_by_tag)
 
     @property
+    def all_pending_connecting(self) -> bool:
+        """Whether every pending server is one the host reports as ``connecting``.
+
+        Only such a server can be waiting in the host's connect queue. A server
+        that is unreported, filtered, re-attempting or connected without its
+        tools is not, so progress elsewhere says nothing about it.
+        """
+        pending = self.pending_names
+        return bool(pending) and all(self.states.get(name) == "connecting" for name in pending)
+
+    @property
     def failed_name(self) -> str:
         """The first required server, in required order, whose state ends the start."""
         for name in self.required:

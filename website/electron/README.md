@@ -33,8 +33,8 @@ The app will:
    (see [the desktop app guide](../../docs/build/desktop-app.md#how-the-app-finds-and-launches-the-backend))
 3. Launch `kirocrew gateway` when needed
 4. Show a loading screen while the backend boots. A live bundled backend gets an
-   extended Windows cold-start window; a child that actually exits still fails
-   immediately with its launch-log cause.
+   extended cold-start window on every platform; a child that actually exits
+   still fails immediately with its launch-log cause.
 5. Load the dashboard
 6. Point the user at Kiro CLI installation and sign-in on the gateway host when
    either prerequisite is missing
@@ -275,7 +275,8 @@ Remote host settings are **per-port** — each window can have its own remote ho
    from the window's local port (default: same as the window's port)
 5. Optionally set a **Remote PATH** if kirocrew needs additional directories
    (default: `~/.toolbox/bin:/usr/bin:/bin`)
-6. Optionally tick **Keep an SSH tunnel to this crew open** (macOS and Linux).
+6. **Keep an SSH tunnel to this crew open** (macOS and Linux) starts ticked for
+   a crew being added, here and in the "no gateway is answering" dialog's form.
    The checkbox appears only for the port the app launched on, and never on
    Windows; another window's form carries its stored choice over unchanged.
    The app then runs `kirocrew desktop tunnel`, which holds the forward from the
@@ -283,7 +284,11 @@ Remote host settings are **per-port** — each window can have its own remote ho
    inside a gateway. A dropped forward is rebuilt on its own, and waking the
    machine from sleep rebuilds it at once. Leave it unticked if something else
    (your own ssh, a VPN, `kubectl port-forward`) already carries that port: the
-   app never takes a port over without this opt-in. Routing and identity come
+   app never takes a port over that answers or that something listens on. With
+   the local gateway off, a crew saved unticked whose port nothing answers or
+   listens on at launch still gets the forward for that launch, so it keeps
+   working with nothing to edit (`tunnel-keeper.js`, `startForUnansweredPort`).
+   Saving this form unticked ends that forward. Routing and identity come
    from your `~/.ssh/config`, and ssh runs non-interactively, so the host must
    authenticate without a prompt. The same keeper also forwards the port of
    each Remote Crew pane that crew's dashboard shows, with the same number on

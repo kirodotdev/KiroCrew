@@ -185,15 +185,26 @@ outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`
 own because the worker's limits travel differently from a member chat's: the
 worker spec rewrites every switched-off tool into `excludedTools`, which KAS
 projects, so KAS (the default backend) honours them and is in the set. claude
-honours only their MCP half, so it is in `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`
-(KAS, claude) and not in the whole set: a `disabledTools` entry, an
+honours their MCP half and the native tools its table maps, not all of them, so it
+is in `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS` (KAS, claude) and not in the whole
+set: a `disabledTools` entry, an
 `@server/tool` and a whole `@server` become `permissions.deny` rules derived from
 the worker's own spec, keyed by the session
 (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`, the read its array is
-built from), while a native-tool exclude (`@builtin` included), a wildcard, or a `disabledTools` that is
-not a list of tool names (`mate_worker.uncarried_tool_limits_of`) is still refused. The capture is
-`claude/worker-tool-limits-live.jsonl`: each of the three limits kept its tools out
-of the model's list while their siblings asked and ran. codex is in neither set:
+built from). claude is also in `ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS` (KAS,
+claude): a native-tool exclude its built-in table covers (`shell`, `fs_write`,
+`@builtin/<tool>`, a tag such as `write`;
+`agent_sdk.claude_worker_tools.CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL`) rides the session's
+`tools` option as an allow-list of the built-ins of the native tools the worker
+keeps (`claude_worker_builtin_tools`, carried on `SessionProjection.builtin_tools`),
+so a built-in the table does not list is withheld too, and no settings file can
+add one back. Any other native entry (`use_aws`, a bare `@builtin`), a wildcard, or a
+`disabledTools` that is not a list of tool names (`mate_worker.uncarried_tool_limits_of`)
+is still refused. The captures are `claude/worker-tool-limits-live.jsonl`, where each of the
+three MCP limits kept its tools out of the model's list while their siblings asked
+and ran, and `claude/worker-native-tool-limits-live.jsonl`, where a worker excluding
+`shell` and `fs_write` was offered no command-running or file-writing built-in, its
+deferred MCP tool still loaded and ran, and a subagent it started had the same tools. codex is in none of the three sets:
 its worker capture shows no single-tool limit held. codex is in the kit set on its own live capture
 (`codex/worker-kit-live.jsonl`): its mirror hands the session key to the
 projection, so the worker's array carried the Bot's server and the worker
@@ -261,17 +272,29 @@ live Slack OPTIONS and the context owed by a first claim, including speculative
 resume, while completing that claim's session-start bookkeeping. The sibling
 `/compact` gate may refuse before acquisition; when no positively alive provider
 exists, it uses the factory's member-aware `select_provider_backend` authority.
-`GET /api/slash-commands` has no session key, so it lists `/todos` from the
-default `agent.acp_backend` capability only; a member session routed to a
-different harness is still judged by the gate above when the command is sent.
-The same default decides the rest of the list on a harness in
+`GET /api/slash-commands` lists for the chat the composer names (`?slot=`): its
+backend comes from the same `_slash_command_backend` the gate uses
+(`agents_session_commands.menu_backend`), so a member or crewmate session routed
+to a different harness gets that harness's list. A request with no slot, or with a
+slot an app caller may not read as its own session, gets the default
+`agent.acp_backend`. That backend decides whether the list keeps `/todos`, and it
+decides the rest of the list on a harness in
 `ACP_BACKENDS_LOCAL_HARNESS_COMMANDS` (KAS, Strands): the list keeps only the
 commands the dashboard serves there (`/agent`, `/clear`, `/compact`, `/goal`,
 `/prompts`, `/side`, `/workflow`, plus `/code`, `/context`, `/help`, `/hooks`,
 `/mcp`, `/model`, `/tools` and `/usage` on KAS alone;
 `kas_local_commands.local_harness_menu`), because the slash
 gate reads the same set and answers every other harness command with a notice
-naming the harness. On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
+naming the harness. A harness with a row in `ACP_BACKEND_PROMPT_HANDLER_COMMANDS`
+gets the same rule, except for the harness commands in its row. Those reach the
+harness as typed. Codex has the one row, `/compact` and `/mcp`, because codex-acp's
+`classifyPrompt` runs only those of Crew's harness commands and sends any other name
+to the model. On Codex the list is `/agent`, `/clear`, `/compact`, `/goal`, `/mcp`,
+`/prompts`, `/side` and `/workflow`. A `/help`, `/context`, `/tools` or other
+kiro-cli word typed on Codex gets the "doesn't work with OpenAI Codex. It was not
+sent to the agent." notice. Codex's own built-ins (`/status`, `/review` and the
+others) are not Crew harness commands, so they are not listed and stay prompt text.
+On KAS, `/model`, `/tools`, `/mcp`, `/context`, `/usage`,
 `/help` and `/agent` (bare or `list`) are answered by
 `dashboard/kas_local_commands.py` from state
 the dashboard already holds, never by the model and without a turn: `/model`

@@ -297,7 +297,12 @@ def run_script_sandboxed(
         "except Report as r:\n"
         "    _envelope = {'status': 'report', 'message': r.message}\n"
         "except Exception as e:\n"
-        "    _envelope = {'status': 'error', 'error': str(e)}\n"
+        # The type names the failure when the text is empty (a bare ``assert``)
+        # or reads as a value (``KeyError`` prints only the missing key).
+        "    _msg = str(e)\n"
+        "    _envelope = {'status': 'error', 'error': (\n"
+        "        type(e).__name__ + ': ' + _msg if _msg else type(e).__name__\n"
+        "    )}\n"
         "finally:\n"
         "    ctx.close()\n"
         # Probe again before any non-error envelope: a sandbox torn down WHILE
@@ -1094,6 +1099,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew import agent_scratch  # noqa: F401
+    from kiro_crew import mcp_structured_text as _structured_text  # noqa: F401
     from kiro_crew.agent_discovery import _read_agent_spec  # noqa: F401
     from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
     from kiro_crew.config.loader import CONFIG_DIR_NAME, read_local_secret  # noqa: F401

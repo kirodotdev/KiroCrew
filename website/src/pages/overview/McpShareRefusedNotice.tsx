@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { GatewayStatus } from '../settings/mcpManagementModel'
 
@@ -86,7 +87,7 @@ export default function McpShareRefusedNotice({
   return (
     <ErrorNotice
       className={className}
-      message={i18nT('pages.overview.mcpTab.share_refused', { count: names.length, names: names.join(', ') })}
+      message={i18nT('pages.overview.mcpTab.share_refused', { count: names.length, names: fmtList(names, { style: 'narrow' }) })}
       askAgent={!stagedChanges}
       actionPlacement="below"
       testId="mcp-share-refused"

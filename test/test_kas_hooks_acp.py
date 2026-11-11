@@ -1012,6 +1012,32 @@ class TestExecuteHook:
         assert audited == [("slot:3", "kas_execute_hook", "denied", "script hooks disabled")]
 
     @pytest.mark.asyncio
+    async def test_a_hook_the_hooks_list_leaves_out_is_refused_before_it_is_approved(
+        self, store: ScriptHookStore, monkeypatch, governance_permits
+    ):
+        from kiro_crew import hook_event_governance
+
+        created = store.create({"name": "unlisted", "event": "PreToolUse", "command": "echo a"})
+        set_global_hook_store(store)
+        monkeypatch.setattr(hooks_mod, "run_script_hook", _must_not_run)
+        monkeypatch.setattr(
+            hook_event_governance,
+            "hook_refusal",
+            lambda sk, hook: f"hook {hook.name!r} is not in the security policy's hooks list",
+        )
+        outcomes: list[str] = []
+        monkeypatch.setattr(kas_wire, "_audit_execute", lambda *a, **k: outcomes.append(a[3]))
+        handle = _FakeHandle(session_key="slot:3")
+        _list_for(handle)
+
+        await _execute(handle, {"hookId": f"crew:script:{created.id}"})
+
+        assert [e[2] for e in handle._runtime.errors] == [
+            "Refused by Kiro Crew: hook 'unlisted' is not in the security policy's hooks list"
+        ]
+        assert outcomes == ["refused"]
+
+    @pytest.mark.asyncio
     async def test_the_stored_timeout_applies_and_the_host_timeout_does_not(
         self, store: ScriptHookStore, passthrough_sandbox, governance_permits
     ):

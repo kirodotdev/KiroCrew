@@ -49,6 +49,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _own_ledger,
     _refuse_if_dirty,
     _slot_closed,
+    _slot_loop_held,
     _slot_looping,
     _slot_open,
     _slot_running,
@@ -473,15 +474,20 @@ def with_worker_facts(value: Any, state: Any, conductor: str = "") -> Any:
         facts: dict[str, Any] = {}
         if conductor_alive is not None:
             facts["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-        running, closed, looping = work_ledger.item_liveness(
+        running, closed, looping, held = work_ledger.item_liveness(
             "",
             item,
             running=lambda k: _slot_running(state, k),
             closed=lambda k: _slot_closed(state, k),
             looping=_slot_looping,
+            held=_slot_loop_held,
         )
         facts["stale"] = work_ledger.is_stale(
-            item, worker_running=running, worker_closed=closed, worker_looping=looping
+            item,
+            worker_running=running,
+            worker_closed=closed,
+            worker_looping=looping,
+            worker_loop_held=held,
         )
         # Idle, and its worker's own loop will wake it (waiting on CI): the page reads
         # it as working, not waiting. A running turn keeps its own live reading.
@@ -585,16 +591,21 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
     for item in items:
         row = item.to_dict()
         row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-        running, closed, looping = work_ledger.item_liveness(
+        running, closed, looping, held = work_ledger.item_liveness(
             key,
             item,
             running=lambda k: _slot_running(state, k),
             closed=lambda k: _slot_closed(state, k),
             looping=_slot_looping,
+            held=_slot_loop_held,
             remote=remote_live.get(item.item_id) or (False, False),
         )
         row["stale"] = work_ledger.is_stale(
-            item, worker_running=running, worker_closed=closed, worker_looping=looping
+            item,
+            worker_running=running,
+            worker_closed=closed,
+            worker_looping=looping,
+            worker_loop_held=held,
         )
         # Idle, and its worker's own loop will wake it (waiting on CI): the Crew panel
         # reads it as running, not waiting. A running turn keeps its own reading.

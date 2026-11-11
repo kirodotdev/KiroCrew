@@ -7,14 +7,14 @@
         "kind": "tool_call",
         "raw_tool_params": {
           "command": "echo hello-from-bundle-route",
-          "description": "Echo a test string",
+          "description": "Print a test message",
           "run_in_background": false
         },
-        "title": "Echo a test string",
+        "title": "Print a test message",
         "tool_call_id": "run_command_call-1",
-        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}",
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Print a test message\",\n  \"run_in_background\": false\n}",
         "tool_kind": "execute",
-        "wire_title": "Echo a test string"
+        "wire_title": "Print a test message"
       }
     ],
     "frame": "session/update",
@@ -49,14 +49,14 @@
         "raw_params_trusted": true,
         "raw_tool_params": {
           "command": "echo hello-from-bundle-route",
-          "description": "Echo a test string",
+          "description": "Print a test message",
           "run_in_background": false
         },
         "request_id": 1,
         "shell_classified": true,
         "title": "echo hello-from-bundle-route",
         "tool_call_id": "run_command_call-1",
-        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}",
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Print a test message\",\n  \"run_in_background\": false\n}",
         "tool_name": "run_command"
       }
     ],
@@ -75,12 +75,12 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "echo hello-from-bundle-route",
-          "description": "Echo a test string",
+          "description": "Print a test message",
           "run_in_background": false
         },
-        "title": "Echo a test string",
+        "title": "Print a test message",
         "tool_call_id": "run_command_call-1",
-        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}"
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Print a test message\",\n  \"run_in_background\": false\n}"
       }
     ],
     "frame": "session/update",
@@ -94,12 +94,12 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "echo hello-from-bundle-route",
-          "description": "Echo a test string",
+          "description": "Print a test message",
           "run_in_background": false
         },
-        "title": "Echo a test string",
+        "title": "Print a test message",
         "tool_call_id": "run_command_call-1",
-        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}"
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Print a test message\",\n  \"run_in_background\": false\n}"
       }
     ],
     "frame": "session/update",
@@ -122,13 +122,13 @@
         "kind": "tool_call_update",
         "raw_tool_params": {
           "command": "echo hello-from-bundle-route",
-          "description": "Echo a test string",
+          "description": "Print a test message",
           "run_in_background": false
         },
-        "title": "Echo a test string",
+        "title": "Print a test message",
         "tool_call_id": "run_command_call-1",
-        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}",
-        "wire_title": "Echo a test string"
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Print a test message\",\n  \"run_in_background\": false\n}",
+        "wire_title": "Print a test message"
       }
     ],
     "frame": "session/update",
@@ -139,28 +139,13 @@
     "events": [
       {
         "kind": "text_chunk",
-        "text": "D"
+        "text": "DONE"
       }
     ],
     "frame": "session/update",
     "session_update": "agent_message_chunk",
     "text_chunk": {
-      "text": "D",
-      "thinking": false
-    }
-  },
-  {
-    "action": "update",
-    "events": [
-      {
-        "kind": "text_chunk",
-        "text": "ONE"
-      }
-    ],
-    "frame": "session/update",
-    "session_update": "agent_message_chunk",
-    "text_chunk": {
-      "text": "ONE",
+      "text": "DONE",
       "thinking": false
     }
   },
@@ -172,7 +157,7 @@
   },
   {
     "frame": "response",
-    "id": 5,
+    "id": 3,
     "stop_reason": "end_turn"
   }
 ]

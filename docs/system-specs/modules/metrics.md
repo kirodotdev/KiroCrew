@@ -1375,6 +1375,18 @@ thread (no suspension point in the gate) and never fails the turn. Legacy JSONL 
 rows have no key: a kept one is not named, and a cut one still counts in `*_omitted`. Lesson
 text is never written. Purpose: scoring which lessons change behaviour (#20446).
 
+A memory stage running under `shadow` or `enforce` adds one more field, named by
+its kind in `injection_receipts.STAGE_KINDS` (today `rule_authority_order`):
+`{mode, policy, would_add, would_drop}`, ids only. A line with no stage record keeps
+the bytes above exactly. Stage fields are capped with the kind-routing constants in
+`<data home>/usage/injections/stage-log.json`: a per-UTC-day counter by kind and mode
+(`lines`, `would_add`, `would_drop`), pruned past `COUNTER_DAYS_KEPT` days, counts
+every field; the field itself is written on at most `SAMPLES_PER_DAY` lines a day,
+`SAMPLES_TOTAL` lines and `SAMPLE_BYTES_CAP` bytes in all, and only for
+`SHADOW_SAMPLE_WINDOW_SECS` after the stage first wrote one. A new policy version
+restarts the window and the sample budget. Past a cap, or when the log cannot be
+read or replaced, the line is written without the field.
+
 **Current-request recency boundary.** Injected blocks are not the only proof that a
 turn is contextual. A keyed warm provider session (`is_new_session=False`) carries
 native conversation history even when this turn emits no Kiro Crew context block,

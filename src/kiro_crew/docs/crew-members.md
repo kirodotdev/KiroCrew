@@ -214,8 +214,10 @@ added to this Bot, and **Remove** takes one out. A new Bot starts with
 nothing added. To add more, pick an agent under **Add abilities** on the same
 page: it shows at once which connections, skills and auto-approvals would be
 added and which the Bot already has, then **Add** writes them and says so.
-Only what is missing is added and nothing already there is replaced. If the
-agent has its own instructions, they become the Bot's **behavior
+Only what is missing is added and nothing already there is replaced. The
+agent's hooks and permission rules come too, and the worker runs them on KAS;
+an agent's allow for sub-agents or skills becomes the worker's auto-approval
+for them. If the agent has its own instructions, they become the Bot's **behavior
 directions**, which its worker follows after its built-in instructions. A Bot
 has one set: adding another agent that has directions replaces them (the
 preview says **Replaces current**), and **Remove** clears them. Later edits to that agent do not reach the

@@ -8,6 +8,7 @@ screen and the sign-in API, then boots again once a sign-in lands.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import socket
 from typing import Any
@@ -542,6 +543,49 @@ def test_cli_the_sign_in_screen_takes_the_gateway_lock(
     assert exit_.code != 0
     assert signin.serve_until_signed_in.served == []  # type: ignore[attr-defined]
     gateway.assert_not_called()
+
+
+def test_cli_a_second_start_on_a_served_sign_in_screen_points_at_its_link(
+    lts: None,
+    signed_out: list[bool],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`kirocrew token` and `kirocrew stop` are refused until this home is signed in."""
+    from kiro_crew import gateway_lock, platform_compat
+    from kiro_crew.config import config_dir
+    from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE, GatewayLock
+    from kiro_crew.platform_compat import PortListener
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    # The holder the diagnosis judges serving: alive, on the port, answering HTTP.
+    pid = os.getpid()
+    monkeypatch.setattr(platform_compat, "flock_owner_pid", lambda _p: pid)
+    monkeypatch.setattr(platform_compat, "pid_exists", lambda _p: True)
+    monkeypatch.setattr(platform_compat, "pids_holding_file", lambda _p: [pid])
+    monkeypatch.setattr(platform_compat, "process_thread_count", lambda _p: 118)
+    monkeypatch.setattr(
+        platform_compat,
+        "find_port_listeners",
+        lambda _p: [PortListener(pid, "127.0.0.1", "4")],
+    )
+    monkeypatch.setattr(gateway_lock, "_port_answers_http", lambda *_a, **_k: True)
+    held = GatewayLock(config_dir()).acquire()
+    try:
+        exit_, _boots, gateway = _cli_gateway(monkeypatch, tmp_path, "--no-open", "--port", "5477")
+    finally:
+        held.release()
+    assert exit_.code == LIVE_HOLDER_EXIT_CODE
+    assert signin.serve_until_signed_in.served == []  # type: ignore[attr-defined]
+    gateway.assert_not_called()
+    err = capsys.readouterr().err
+    assert (
+        f"Kiro Crew is already running for this home at http://127.0.0.1:5477 (pid {pid})." in err
+    )
+    assert "Open it with the latest sign-in link it printed (its terminal or log)." in err
+    assert "kirocrew token" not in err and "kirocrew stop" not in err
+    assert "KIROCREW_HOME" in err
 
 
 @pytest.mark.parametrize("flag", ["--test-mode", "--json-ready"])

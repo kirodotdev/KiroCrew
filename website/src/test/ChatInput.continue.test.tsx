@@ -114,6 +114,17 @@ describe('ChatInput continue affordance', () => {
     expect(input).toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_press_resume'))
   })
 
+  it('names the sign-in before Resume under a sign-in error, and keeps Resume and the restored-queue wording (#32065)', () => {
+    const { rerender } = renderWithProviders(
+      <ChatInput {...defaultProps} continuable continueIsRecovery resumeAfterSignIn onContinue={vi.fn()} />,
+    )
+    const input = screen.getByLabelText('Message input')
+    expect(input).toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_sign_in_first'))
+    expect(screen.getByTestId('composer-continue')).toBeInTheDocument()
+    rerender(<ChatInput {...defaultProps} continuable continueIsRecovery resumeAfterSignIn restoredQueueCount={1} onContinue={vi.fn()} />)
+    expect(input).toHaveAttribute('placeholder', i18nT('components.chatInput.turn_interrupted_restored_card'))
+  })
+
   it('keeps the ordinary placeholder when the turn is not resumable', () => {
     renderWithProviders(<ChatInput {...defaultProps} />)
     expect(screen.getByPlaceholderText(/\/command/)).toBeInTheDocument()

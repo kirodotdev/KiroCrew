@@ -308,13 +308,10 @@ class TestGatewayOriginInjection:
         install_app(src)
         return name
 
-    def _write_secret(self, name, *, mode=0o600, secret=None):
-        from kiro_crew.apps.manager import app_dir
+    def _write_secret(self, name, *, secret=None):
+        from kiro_crew.dashboard.token_auth import write_app_secret
 
-        path = app_dir(name) / ".app_secret"
-        path.write_text(secret if secret is not None else self._SECRET)
-        os.chmod(path, mode)
-        return path
+        write_app_secret(name, secret if secret is not None else self._SECRET)
 
     def _capture_child_env(self, monkeypatch, app_name):
         """Freeze the spawn at the Popen boundary and return the child env dict.
@@ -562,14 +559,33 @@ class TestGatewayOriginInjection:
         assert hmac.compare_digest(env["KIROCREW_GATEWAY_ORIGIN_PROOF"], good)
         assert not hmac.compare_digest(env["KIROCREW_GATEWAY_ORIGIN_PROOF"], bad)
 
+    def test_a_folder_secret_from_an_older_version_is_replaced_at_spawn(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """The spawn hands the backend a NEW secret; the folder copy is never read."""
+        from kiro_crew.apps import protected_app_state
+        from kiro_crew.apps.manager import app_dir
+        from kiro_crew.dashboard.token_auth import read_app_secret
+
+        name = self._install_backend_app(tmp_path)
+        protected_app_state.secret_path(name).unlink()
+        legacy = app_dir(name) / ".app_secret"
+        legacy.write_text("old-folder-secret", encoding="utf-8")
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None
+        assert env["KIROCREW_PROXY_SECRET"] not in ("", "old-folder-secret")
+        assert env["KIROCREW_PROXY_SECRET"] == read_app_secret(name)
+        assert not legacy.exists()
+
     def test_missing_secret_still_injects_origin_but_no_secret(
         self, tmp_path, app_env, monkeypatch
     ):
-        """A missing .app_secret is tolerated: origin still set, no proof, no secret."""
-        from kiro_crew.apps.manager import app_dir
+        """A missing secret is tolerated: origin still set, no proof, no secret."""
+        from kiro_crew.apps import protected_app_state
 
         name = self._install_backend_app(tmp_path)
-        (app_dir(name) / ".app_secret").unlink()  # install writes one; remove it
+        protected_app_state.secret_path(name).unlink()  # install writes one; remove it
         monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
 
         _result, env = self._capture_child_env(monkeypatch, name)

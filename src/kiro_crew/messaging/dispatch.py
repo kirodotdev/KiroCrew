@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
+from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_REASON_CANCELLED
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import (
     TURN_BUILD_ADMISSION_TIMEOUT_SECS,
@@ -94,8 +95,10 @@ from kiro_crew.messaging.dispatch_tools import (
     TOOLLESS_TURN_AGENT,
     TOOLLESS_TURN_REFUSAL_NOTE,
     ToollessTurnUnavailable,
+    _guest_spec_repair_count,
     _refuse_before_spawn_unless_toolless,
     _refuse_unless_toolless,
+    _repair_toolless_spec,
     _toolless_spec_before_spawn,
     _toolless_turn_work_dir,
     _without_deny_reason,
@@ -129,7 +132,7 @@ from kiro_crew.messaging.turn_bracket import driver_turn_landed  # noqa: F401 (r
 from kiro_crew.messaging.turn_bracket import rearm_reinjection  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import rollback_skill_bodies  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import stop_reason_landed  # noqa: F401 (re-exported)
-from kiro_crew.messaging.turn_bracket import TurnBracket, rearm_first_turn
+from kiro_crew.messaging.turn_bracket import TurnBracket, rearm_first_turn, typed_text_span
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.parent_turns import settle_turn
 from kiro_crew.security import (
@@ -715,12 +718,19 @@ class ChannelTurns:
         session_agent = TOOLLESS_TURN_AGENT if deny_all_tools else agent
         # The tool-less spec's pre-spawn read, before any ``get_or_create`` below can
         # cold-start the harness on it; ``_refuse_unless_toolless`` reads it again
-        # after the start, and both must find it mounts nothing.
+        # after the start, and both must find it mounts nothing. A read that refuses
+        # goes to the repair, whose second read stands in for it. The repair count is
+        # taken first, so a repair started meanwhile leaves the read unconfirmed.
+        repairs_before_spawn = _guest_spec_repair_count()
         toolless_before_spawn = (
             await asyncio.to_thread(_toolless_spec_before_spawn, session_key)
             if deny_all_tools
             else False
         )
+        if deny_all_tools and not toolless_before_spawn:
+            toolless_before_spawn, repairs_before_spawn = await _repair_toolless_spec(
+                sessions, session_key
+            )
         if deny_all_tools and monitor is not None and not toolless_before_spawn:
             # A wake claims its session below, outside the refusal handler, so a
             # spec the read refused ends the wake here, before anything starts.
@@ -741,14 +751,31 @@ class ChannelTurns:
         resumed = False
         memory_store: Any = None
         claimed = False
+        # Whether a re-projection left this turn holding the replay gap.
+        _reprojected = False
+        # The claim token (session entry + Stop count) captured at the FIRST
+        # acquisition, before any renderer setup: its Stop count is the baseline
+        # every later gate reads, never the live session, so a hard Stop and a
+        # successor claim landing while the renderer is set up cannot slip past.
+        _claim_token: Any = None
+        # The token from THIS pass's acquisition: the fence reads its entry, so a
+        # compaction replay fences against the session the replay reacquired, not
+        # the first acquisition's entry that an earlier reset already popped.
+        _fence_token: Any = None
         if monitor is not None:
             # A wake claims its session WITHOUT waiting, before anything is built: a
             # conversation already in a turn answers BUSY and the wake retries its
             # durable claim instead of queueing behind it.
+            # The token is minted inside the acquire the instant the claim
+            # returns, BEFORE the renderer setup below (await source(muted)), so a
+            # Stop and a successor claim in that window cannot slip past the fence.
+            from kiro_crew.agent_sdk.spec_hooks import acquire_with_token
+
             try:
                 memory_store = await session_store_for_turn(ctx_builder, session_key)
                 crew_log_store = await self._crew_log_store(asker)
-                provider, is_new, resumed = await sessions.get_or_create(
+                (provider, is_new, resumed), _claim_token = await acquire_with_token(
+                    sessions,
                     session_key,
                     agent=session_agent,
                     channel_id=asker.conversation_id,
@@ -763,6 +790,7 @@ class ChannelTurns:
                 logger.exception("%s monitor session claim failed", channel)
                 return self._outcome(Verdict.FAILED, monitor)
             _acquired = claimed = True
+            _fence_token = _claim_token
             _turn_provider = provider
             if self._opens_crew_log(asker):
                 self._open_crew_log(provider, session_key, agent, resumed, crew_log_store)
@@ -892,6 +920,7 @@ class ChannelTurns:
             # bookkeeping, which would then re-run the new-conversation work --
             # title, dashboard surfacing -- over an existing conversation.
             turn_is_new: bool | None = None
+            cancelled_preamble: str | None = None
             replaying = False
             # One per inbound message, so a replay below does not run
             # UserPromptSubmit again. The operator's hooks run for the operator's
@@ -918,7 +947,10 @@ class ChannelTurns:
                     # turn's prompt.
                     memory_store = await session_store_for_turn(ctx_builder, session_key)
                     crew_log_store = await self._crew_log_store(asker)
-                    provider, is_new, resumed = await sessions.get_or_create(
+                    from kiro_crew.agent_sdk.spec_hooks import acquire_with_token
+
+                    (provider, is_new, resumed), _got_token = await acquire_with_token(
+                        sessions,
                         session_key,
                         agent=session_agent,
                         channel_id=asker.conversation_id,
@@ -941,6 +973,11 @@ class ChannelTurns:
                         # on the NEXT turn, by then a warm reuse, so its previous edge
                         # would never be written.
                         self._open_crew_log(provider, session_key, agent, resumed, crew_log_store)
+                    # This pass fences against its own acquisition's entry; the
+                    # FIRST token stays the Stop baseline every later gate reads.
+                    _fence_token = _got_token
+                    if _claim_token is None:
+                        _claim_token = _got_token
                 # The wake's claim serves its first attempt only; a replay reacquires.
                 claimed = False
                 if deny_all_tools:
@@ -949,16 +986,74 @@ class ChannelTurns:
                         session_key,
                         provider,
                         authored_before_spawn=toolless_before_spawn,
+                        repairs_before_spawn=repairs_before_spawn,
                     )
                 # Keep the first acquisition's snapshot across replays: a Stop
                 # during a reset or a hook must not become a new attempt's baseline.
+                # From the claim token, so a wake's baseline predates its renderer
+                # setup rather than being read after it.
                 if stop_gen_at_entry is None:
-                    stop_gen_at_entry = session_stop_generation(sessions, session_key)
+                    stop_gen_at_entry = (
+                        _claim_token.stop_gen
+                        if _claim_token is not None
+                        else session_stop_generation(sessions, session_key)
+                    )
                 if recovery:
                     if conv_gen_at_entry is None:
                         conv_gen_at_entry = session_conversation_generation(sessions, session_key)
                 if turn_is_new is None:
                     turn_is_new = is_new
+                if not deny_all_tools:
+                    # After the Stop snapshot: a KAS batch that auto-approves what a
+                    # PreToolUse hook now covers is reset and claimed again under the
+                    # replay gap, which the ``finally`` closes after the release.
+                    from kiro_crew.agent_sdk.spec_hooks import (
+                        acquire_with_token,
+                        reproject_unattended_claim,
+                        running_agent,
+                    )
+
+                    _claim_kwargs: dict[str, Any] = (
+                        {"wait_if_busy": False} if monitor is not None and not replaying else extra
+                    )
+
+                    async def _reclaim() -> tuple[tuple[Any, bool, bool], Any]:
+                        nonlocal _turn_provider
+                        got, tok = await acquire_with_token(
+                            sessions,
+                            session_key,
+                            agent=session_agent,
+                            channel_id=asker.conversation_id,
+                            start_priority=asker.start_priority,
+                            **_claim_kwargs,
+                        )
+                        _turn_provider = got[0]
+                        if self._opens_crew_log(asker):
+                            self._open_crew_log(got[0], session_key, agent, got[2], crew_log_store)
+                        # The fresh entry for the next fence, minted by the acquire
+                        # so the helper never reads the live session.
+                        return got, tok.entry
+
+                    reprojection = await reproject_unattended_claim(
+                        sessions,
+                        session_key,
+                        running_agent(provider, session_agent),
+                        (provider, is_new, resumed),
+                        _reclaim,
+                        _fence_token,
+                    )
+                    provider, is_new, resumed = reprojection.claimed
+                    _reprojected = _reprojected or reprojection.reprojected
+                    if reprojection.superseded or (
+                        reprojection.reprojected
+                        and session_stop_generation(sessions, session_key) != stop_gen_at_entry
+                    ):
+                        # A Stop while the session was re-projected: nothing ran.
+                        await renderer.dispatch(
+                            OutputEvent(kind=DONE, stop_reason=STOP_REASON_CANCELLED)
+                        )
+                        verdict = Verdict.ABANDONED
+                        return self._outcome(verdict, monitor, acquired=True)
                 if retry_guard is not None:
                     retry_guard.provider = provider
                 if prepare is not None:
@@ -1048,13 +1143,18 @@ class ChannelTurns:
                 # one-shot flag so this attempt re-injects that context exactly once;
                 # the bracket re-arms it in the finally if the turn never lands.
                 needs_reinjection = bracket.take_reinjection()
+                # The turn a Stop cut off, restored once per message (a replay reuses
+                # it). A wake takes it too, as on the dashboard: the wake's own rows
+                # would otherwise read as the stopped request on the next message.
+                if cancelled_preamble is None:
+                    cancelled_preamble = await bracket.take_cancelled_turn()
                 # This conversation's own silo comes from the session's RECORDED
                 # binding (``memory_store`` above), never from ``agent``: that is a
                 # kiro-cli template id, a namespace disjoint from ``cfg.agents``.
                 # Off-loop: build_message embeds the episodic query (blocking urllib).
                 full_message, _ = await run_in_embed_pool(
                     ctx_builder.build_message,
-                    prompt,
+                    f"{cancelled_preamble}\n\n{prompt}" if cancelled_preamble else prompt,
                     is_new,
                     session_key,
                     channel_id=asker.conversation_id,
@@ -1068,6 +1168,7 @@ class ChannelTurns:
                     user_display_name=asker.display_name,
                     skill_trigger_text=skill_trigger_text,
                     tab_notices=bracket.tab_notices,
+                    **typed_text_span(cancelled_preamble, prompt),
                     # A wake has nobody waiting on it, and a refused one stops its monitor.
                     _admission_timeout=None if monitor else TURN_BUILD_ADMISSION_TIMEOUT_SECS,
                 )
@@ -1241,7 +1342,8 @@ class ChannelTurns:
             turn_new = bool(turn_is_new) and not asker.resumed
             if monitor is not None and not monitor.hook.accepted:
                 # The wake was refused at its own gate: no turn ran, so nothing is
-                # counted, recorded or audited.
+                # counted, recorded or audited, and the stopped turn is still owed.
+                bracket.rearm_cancelled_turn()
                 verdict = Verdict.STALE
                 return self._outcome(verdict, monitor, acquired=True)
             notice = getattr(driver, "empty_turn_notice", "") or ""
@@ -1332,6 +1434,7 @@ class ChannelTurns:
                 stop_reason=stop_reason,
             )
         except _MonitorGenerationChanged:
+            bracket.rearm_cancelled_turn()  # refused before the prompt went out
             logger.info(
                 "%s monitor dispatch refused after generation changed for %s",
                 channel,
@@ -1339,6 +1442,7 @@ class ChannelTurns:
             )
             verdict = Verdict.STALE
         except _SenderNoLongerAdmitted:
+            bracket.rearm_cancelled_turn()  # refused before the prompt went out
             # Admitted on arrival, refused at the pre-stream gate or the provider's
             # prompt gate: nothing was prompted or recorded, and the stand-in is what
             # the ``finally`` closes, because a channel's close sends a placeholder for
@@ -1348,6 +1452,8 @@ class ChannelTurns:
             renderer = SilentRenderer()
             verdict = Verdict.DENIED
         except TurnCeilingExceeded as exc:
+            # Refused before the prompt went out: the stopped turn is still owed.
+            bracket.rearm_cancelled_turn()
             # The conversation is at its turn ceiling, so this turn never opened.
             # Ahead of the shutdown branch below and deliberately unlike it in two
             # ways. It is NOT spooled: the spool exists so a message our own restart
@@ -1368,6 +1474,7 @@ class ChannelTurns:
             await turn_ceiling.render_refusal(renderer, exc)
             verdict = Verdict.CEILING
         except SessionClosingError:
+            bracket.rearm_cancelled_turn()  # refused before the prompt went out
             # The gateway began shutting down between the claim and the dispatch, so
             # this turn never opened. Terminal for the message, but NOT a fault of
             # the session — which is why it is caught ahead of the generic handler
@@ -1426,6 +1533,7 @@ class ChannelTurns:
             verdict = Verdict.MEMORY_REFUSED
             if _acquired and isinstance(exc, EmbedAdmissionTimeout):
                 rearm_first_turn(sessions, session_key, provider, is_new=is_new, resumed=resumed)
+                bracket.rearm_cancelled_turn()
             if monitor is None and not quiet:
                 try:
                     await renderer.on_text_chunk(redact_local_paths(redact(str(exc)))[0][:1000])
@@ -1512,7 +1620,7 @@ class ChannelTurns:
                 # it closes), so the release cannot wait on the guard above.
                 if _acquired:
                     sessions.release(session_key)
-                if recovery:
+                if recovery or _reprojected:
                     # Closed LAST, after the permit is back: a message that waited
                     # behind the gap then finds an idle successor instead of a
                     # semaphore a later reset could pop from under it. Idempotent, so
@@ -1609,7 +1717,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _breaker_threshold,
     )
     from kiro_crew.messaging.dispatch_tools import (  # noqa: F401
+        _GUEST_RESET_TIMEOUT_SECS,
+        _guest_resets_failed,
+        _guest_spec_repair_tasks,
+        _guest_spec_repairs_finished,
+        _guest_spec_repairs_started,
         _provider_backend,
+        _restore_guest_spec,
         toolless_turns_supported,
         warn_if_toolless_turns_unservable,
     )

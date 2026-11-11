@@ -34,6 +34,7 @@ from kiro_crew.acp.client import (
     registration_rate_limited_error,
     registration_throttle_line,
 )
+from kiro_crew.acp.command_refused import AcpCommandRefused
 from kiro_crew.acp.types import METHOD_CANCEL, METHOD_COMMANDS_EXECUTE, JsonRpcMessage
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
@@ -144,7 +145,8 @@ async def send_command(
 ) -> str:
     """Execute a kiro slash command (e.g. '/compact', '/effort').
 
-    Returns the response text (if any). Mirrors AcpClient.send_command.
+    Returns the response text (if any); raises AcpCommandRefused on a
+    ``success: false`` answer. Mirrors AcpClient.send_command.
     """
     if args:
         cmd_name = command.strip().split(None, 1)[0].lstrip("/")
@@ -168,6 +170,9 @@ async def send_command(
         text = str(raw)
         text, _ = redact_exfiltration_urls(text)
         text, _ = redact_credentials(text)
+        if isinstance(result, dict) and result.get("success") is False:
+            # kiro-cli refuses an /effort level this way, with no JSON-RPC error.
+            raise AcpCommandRefused(text or f"{command} refused")
         return text
     except AcpTimeoutError:
         return ""

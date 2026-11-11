@@ -24,6 +24,7 @@ const ROOT = path.join(__dirname, "..");
  *  string literal from reading as the start of a line comment. */
 function code(file) {
   return fs.readFileSync(path.join(ROOT, file), "utf8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
@@ -93,6 +94,11 @@ const OCCUPANCY_SITES = [
     code: 'if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";',
     times: 1,
   },
+  {
+    what: "client-only launch fallback: open the app's own forward only on a port nothing listens on",
+    code: 'if ((await probeGatewayPortBinding(PORT)) !== "free") return;',
+    times: 1,
+  },
 ];
 
 // The identity judgements. These MAY rest on the holder's command line -- that
@@ -142,6 +148,11 @@ const IDENTITY_SITES = [
   {
     what: "existing-gateway dialog: a service manager needs the extra recovery step",
     code: 'const serviceNote = localOwner === "service"',
+    times: 1,
+  },
+  {
+    what: "boot: a Windows gateway proven by this home's lock is adopted as a plain local one",
+    code: 'const PROVEN_HOME_OWNER = "kirocrew";',
     times: 1,
   },
   {

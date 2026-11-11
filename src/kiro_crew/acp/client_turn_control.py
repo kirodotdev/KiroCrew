@@ -46,6 +46,7 @@ from kiro_crew.acp.client_timeouts import (
     _STEERING_WAIT_SLICE_SECS,
     _effective_prompt_timeout_async,
 )
+from kiro_crew.acp.command_refused import AcpCommandRefused
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.transport_errors import AcpError, AcpProcessDied, AcpTimeoutError
 from kiro_crew.acp.transport_framing import write_notification_best_effort
@@ -327,8 +328,8 @@ async def command_result(
 async def send_command(self: AcpClient, command: str, args: dict | None = None) -> str:
     """Execute a kiro slash command (e.g. '/compact', '/usage', '/effort').
 
-    Returns the response text (if any).  For streaming output use
-    :meth:`stream_command` instead.
+    Returns the response text (if any); raises AcpCommandRefused on a
+    ``success: false`` answer.  For streaming output use :meth:`stream_command` instead.
 
     When *args* is provided (e.g. ``{"level": "high"}`` for ``/effort``),
     the TuiCommand object form ``{command, args}`` is used so kiro-cli
@@ -356,6 +357,9 @@ async def send_command(self: AcpClient, command: str, args: dict | None = None) 
             # tokens/keys in slash-command output.
             raw, _ = redact_exfiltration_urls(raw)
             raw, _ = redact_credentials(raw)
+        if result.get("success") is False:
+            # kiro-cli refuses an /effort level this way, with no JSON-RPC error.
+            raise AcpCommandRefused(raw or f"{command} refused")
         return raw
     except AcpTimeoutError:
         logger.debug("Command '%s' response timed out (may still be running)", command)

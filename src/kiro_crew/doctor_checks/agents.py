@@ -649,6 +649,10 @@ def _doctor_agent_auth() -> None:
             continue
         if host_signed_in is True:
             print(f"  {label.ljust(13)}✅ {source}")
+        elif host_signed_in is None and not cli_doctor.resolve_kiro_cli():
+            # Nothing to ask, so not a failed check: the kiro-cli row above
+            # already reports the missing install.
+            print(f"  {label.ljust(13)}⏭  {source}; kiro-cli not installed")
         elif host_signed_in is None:
             print(f"  {label.ljust(13)}⚠️  {source}; could not check")
         else:

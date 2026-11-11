@@ -72,6 +72,7 @@ def _restore_module_globals():
         setattr(sh._vc, field, value)
     sh.set_allowed_users(saved_allowed)
     sh.set_tracking_channels(saved_tracking)
+    sh._removes_in_flight.clear()
 
 
 def _make_orch() -> MagicMock:

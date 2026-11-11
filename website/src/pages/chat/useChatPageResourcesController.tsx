@@ -57,6 +57,7 @@ import type { ResizeInfo } from '../../utils/resizeImage'
 import { errMessage } from '../../utils/thunkError'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
+import { isUnansweredRead } from '../../api/queryClient'
 import {
   cancelComposerUploads,
   composerUploadSlot,
@@ -187,9 +188,13 @@ export function useChatPageResourcesController({
     staleTime: 30_000,
   })
   // A failed read leaves self-hosted source chips inert, so say so -- once
-  // per failure (keyed on errorUpdatedAt), not on every re-render.
+  // per failure (keyed on errorUpdatedAt), not on every re-render. A re-read
+  // the gateway never answered (a dropped link, a restart) while an earlier
+  // answer is still cached says nothing: the chips keep working from that
+  // answer, and the next connection's first 'slots' frame re-reads this key.
   useEffect(() => {
     if (!sourceHostErrorAt || !sourceHostError) return
+    if (sourceHostCfg && isUnansweredRead(sourceHostError)) return
     showActionError(i18nT('pages.chatPage.source_hosts_failed_reason', { reason: errMessage(sourceHostError) || i18nT('pages.chatPage.unknown_error') }))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one notice per failure
   }, [sourceHostErrorAt])

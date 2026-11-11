@@ -213,7 +213,7 @@ async def test_first_bind_arms_one_work_ledger_patrol(svc, audits):
     assert armed["slot_key"] == CONDUCTOR
     assert armed["watch"] == "work-ledger"
     assert armed["gate"] is True
-    assert armed["idle_secs"] == 600
+    assert armed["idle_secs"] == 300
     assert armed["max_cycles"] == 0
     assert armed["max_runtime_secs"] == conductor_patrol.patrol_max_runtime_secs()
     assert armed["replace_existing"] is False
@@ -402,7 +402,7 @@ def test_the_default_patrol_has_no_cycle_cap_and_the_ceiling_as_its_runtime():
     assert conductor_patrol.PATROL_MAX_CYCLES == 0
     assert conductor_patrol.patrol_max_runtime_secs() == runtime_ceiling_secs()
     assert DEFAULT_RUNTIME_CEILING_SECS == 7 * 86400
-    assert 300 <= conductor_patrol.PATROL_INTERVAL_SECS <= 900
+    assert conductor_patrol.PATROL_INTERVAL_SECS == 300
     message = conductor_patrol.PATROL_MESSAGE
     assert message.index("one final report") < message.index("call autonudge_stop")
 

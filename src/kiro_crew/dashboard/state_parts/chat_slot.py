@@ -101,6 +101,8 @@ class _ChatSlot:
         "_turn_generation",
         "_turns_started",
         "_unstarted_generation",
+        "_handoff_generation",
+        "_handoff_mark",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -300,6 +302,7 @@ class _ChatSlot:
         "_disk_meta_key",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
+        "_append_basis",
         "_foreign_reported",
         "_pending_rewrite",
         "_file_changes",
@@ -347,6 +350,7 @@ class _ChatSlot:
         "_turn_user_sent",
         "_turn_owner_sent",
         "_turn_agent_started",
+        "_turn_wrote_text",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -369,6 +373,11 @@ class _ChatSlot:
         "_embed_question_polled_at",
         "_welcomed_agent",
         "_welcome_preview",
+        # Sidebar-row memos (``dashboard/slot_row_memo.py``); ``None`` means no memo.
+        "_row_summary_memo",
+        "_row_redacted_memo",
+        "_row_links_memo",
+        "_slot_links_memo",
     )
 
     # Initialised by state_parts/source_links.py.
@@ -379,6 +388,11 @@ class _ChatSlot:
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int
     _dismissed_txn_pending: set[str]
+    # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
+    _row_summary_memo: tuple[Any, ...] | None
+    _row_redacted_memo: tuple[Any, ...] | None
+    _row_links_memo: tuple[list[dict], list[dict]] | None
+    _slot_links_memo: tuple[Any, ...] | None
 
     # Initialised by state_parts/slot_sidebar.py.
     _artifact: str
@@ -504,6 +518,8 @@ class _ChatSlot:
     _turn_generation: int
     _turns_started: int
     _unstarted_generation: int
+    _handoff_generation: int
+    _handoff_mark: asyncio.Future[None] | None
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event
@@ -669,6 +685,9 @@ class _ChatSlot:
     #: The turn running now is one the agent started on its own between prompts
     #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
     _turn_agent_started: bool
+    #: The turn running now has streamed reply text (``chat_turn.stream_chunks``);
+    #: ``POST /api/session-directive`` reports it to the directive tool.
+    _turn_wrote_text: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]
@@ -709,6 +728,7 @@ class _ChatSlot:
     _disk_window_len: int
     _disk_tail_ts: str | None
     _frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None
+    _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool
 

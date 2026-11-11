@@ -562,11 +562,27 @@ class TestLayering:
         """The module the channel reply reads the kinds from imports nothing from
         ``kiro_crew`` itself, so reading it can never grow into the edge above;
         and it agrees with what ``kiro_crew.subagent`` re-exports."""
-        import importlib
+        import kiro_crew.subagent_wait_reasons as leaf
 
-        leaf = importlib.import_module("kiro_crew.subagent_wait_reasons")
-        tree = ast.parse(Path(leaf.__file__).read_text(encoding="utf-8"))
-        edges = [
+        assert self._kiro_crew_imports(leaf.__file__) == []
+        from kiro_crew import subagent as sub
+
+        assert sub.DEFERRED_QUEUED_REASONS is leaf.DEFERRED_QUEUED_REASONS
+        assert leaf.QUEUED_REASON_CONCURRENCY_LIMIT not in leaf.DEFERRED_QUEUED_REASONS
+
+    def test_the_host_spawn_decision_comes_from_a_leaf_module(self) -> None:
+        """The spawn-approval seam returns ``HostSpawnDecision`` from a module that
+        imports nothing from ``kiro_crew``, the same class the facade re-exports."""
+        import kiro_crew.subagent_host_decision as leaf
+        from kiro_crew import subagent as sub
+
+        assert self._kiro_crew_imports(leaf.__file__) == []
+        assert sub.HostSpawnDecision is leaf.HostSpawnDecision
+
+    @staticmethod
+    def _kiro_crew_imports(path: str | None) -> list[str]:
+        tree = ast.parse(Path(str(path)).read_text(encoding="utf-8"))
+        return [
             (node.module or "")
             for node in ast.walk(tree)
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("kiro_crew")
@@ -577,11 +593,6 @@ class TestLayering:
             for a in node.names
             if a.name.startswith("kiro_crew")
         ]
-        assert edges == [], edges
-        from kiro_crew import subagent as sub
-
-        assert sub.DEFERRED_QUEUED_REASONS is leaf.DEFERRED_QUEUED_REASONS
-        assert leaf.QUEUED_REASON_CONCURRENCY_LIMIT not in leaf.DEFERRED_QUEUED_REASONS
 
     def test_the_allowed_edge_list_has_no_stale_entries(self) -> None:
         """An exception that does not exist must be deleted, not left to rot.

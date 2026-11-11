@@ -80,6 +80,9 @@ export interface ChatMessageListProps {
    *  Renderers read it as `ctx.toolDetails`; a `renderTool` row ignores it. */
   toolDetails?: boolean
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open a directory in the host's side panel; see
+   *  `MessageRenderContext.onFolderOpen`. */
+  onFolderOpen?: (path: string) => void
   /** Open an artifact link in the host's side panel; see
    *  `MessageRenderContext.onArtifactOpen`. */
   onArtifactOpen?: (slug: string) => void
@@ -215,6 +218,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
   handOff = true,
   toolDetails = true,
   onFileOpen,
+  onFolderOpen,
   onArtifactOpen,
   onQuote,
   onAsk,
@@ -378,6 +382,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       running,
       key,
       onFileOpen,
+      onFolderOpen,
       onArtifactOpen,
       onQuote,
       onAsk,
@@ -392,7 +397,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
       row,
     }
     return withDivider(entry.render(m, ctx))
-  }, [versioned, running, contentWidth, onFileOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
+  }, [versioned, running, contentWidth, onFileOpen, onFolderOpen, onArtifactOpen, onQuote, onAsk, onQuoteMessage, threads, renderTool, autoDeniedIds, hideCardOwnedOAuth, handOff, toolDetails, activeRenderers, unreadRun])
 
 
   // Render a TurnItem (single or group)

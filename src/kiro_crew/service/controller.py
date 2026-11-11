@@ -285,7 +285,7 @@ def service_status() -> int:
         return 0 if linux.is_up() else 1
     if plat == Platform.LAUNCHD:
         print(macos.status())
-        return 0 if macos.is_active() else 1
+        return 0 if macos.is_up() else 1
     _unsupported_message()
     return 2
 

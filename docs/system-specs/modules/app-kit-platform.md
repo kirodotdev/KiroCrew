@@ -1497,7 +1497,8 @@ exactly that copy is refused and reset. Rosters (`list_agents`,
 reserved name, never through a view built by a name lookup; `_deregister_agents` and an update that drops the agent
 remove an app's copies. KAS keeps the bare
 name: Crew reads the spec it sends, and a name the user level declares resolves to the
-user-level spec whatever the checkout holds (`acp.harness.kas.resolve_projected_spec`).
+user-level spec, and a same-named checkout spec adds only its switch-off keys (a mute,
+`disabledTools`) to servers that spec declares (`acp.harness.kas.resolve_projected_spec`).
 Before the claim an admitted turn binds its session to the app's agent
 (`apps.agent_launch.bind_session_app_agent`), and the KAS projection of a bound session
 reads the registered file by its path (`read_bound_app_spec`): a file gone by then (the
@@ -2089,7 +2090,12 @@ it, which every later save carries forward and the scan matches beside `app`. On
 line that send writes takes it, so an embed naming an existing conversation's key does
 not make it the app's, and the field authorizes nothing. A send that cannot write that
 line is refused (503), and its retry, while the conversation still holds no row, begins
-it and records the app. Read through
+it and records the app. A session an app page creates (`useChatSession`, or the app's
+own `POST /api/chat/slots` before it mounts `ChatPanel`) is a person's create, and the
+sends that follow name no app; the scoped client's `post` adds `embed_app` to that
+create, and `slot_create.py` records it on the first line the create writes, by the
+same rule, so a key already on disk stays the person's. A create that cannot write that
+line is refused (503). Read through
 `get_metadata_status`, not `get_metadata`: the latter answers `{}` for both "no `app`"
 and "could not read the record", and those are different answers. An unreadable record
 is neither claimed (that would sweep up a conversation this app may not own, worse than
@@ -2535,7 +2541,8 @@ change to the default lesson store, never its text, and no read grant with it
 
 **An app backend subscribes the way its page does.** The gateway hands a backend
 it spawns `KIROCREW_GATEWAY_ORIGIN` and `KIROCREW_PROXY_SECRET`, which is the
-app's `.app_secret`; `POST /api/apps/<name>/token` with that value as
+app's secret (kept in `member-records/app-secrets/<name>`, masked in every sandbox,
+never in the app's folder; `token_auth.read_app_secret`); `POST /api/apps/<name>/token` with that value as
 `X-App-Secret` returns the same app-scoped token the page uses (only while the
 owner-enable marker the gateway sealed is present, see dashboard-token-auth), and
 `/api/ws`
@@ -2564,9 +2571,9 @@ consults declarations.** `disable_app` flips `enabled` in `installed.json` and
 leaves `app.json` intact, so a manifest-only read would report a disabled app's
 declarations unchanged — hence enablement is read as part of the declared set, and
 a disabled or uninstalled app declares nothing. That alone does not revoke it:
-`disable_app` does not invalidate the app token (`token_auth` has no enablement
-check; each app backend route gates on `is_app_enabled` itself), so the app can
-keep an authenticated `/api/ws` socket, and `_slot_visible` grants an app its OWN
+the token check (see "An app token lives only while its app is enabled" below)
+refuses a disabled app's token on every NEW request and handshake, but a socket
+opened before the disable stays authenticated, and `_slot_visible` grants an app its OWN
 slots on the ownership check BEFORE `allowed_events` is read. Emptying the
 declaration set cannot reach that branch. So the enablement flag is also exposed
 as `ws_event_scope.app_events_revoked`, which the own-slot branches and the gate
@@ -2581,8 +2588,38 @@ Revocation therefore requires POSITIVE evidence of disablement, so an unreadable
 `app.json` on a still-enabled app declares nothing but is NOT revoked; blanking a
 working app's own chat over a transient filesystem error is the more costly error.
 
-**The CONNECT path resolves enablement too, and refuses.** Since the token
-survives `disable_app`, a disabled app can reconnect at will, and a connect-time
+**An app token lives only while its app is enabled.** The token is HMAC-signed
+with the gateway-wide key, so its signature outlives a disable or an uninstall.
+`validate_token_with_app` therefore also reads the app's `installed.json`
+(`apps.manager.app_token_cutoff`, the record alone, no manifest) and refuses the
+token, with the same `invalid signature` reason a forged one gets, when the app is
+not installed, is disabled (the record says so, or the owner's disable stands in
+`apps.protected_app_state`, which an app rewriting its own record cannot clear), or
+its record cannot be read, or when the token's
+`iat` is not after the record's `appTokensNotBefore`. The record is read through
+`jsonl_util.open_regular_nofollow` (no link, no FIFO, 256 KB cap), and a cutoff that is
+not a finite float refuses every token. The record is read on every check, with
+no cache, so a disable from any process (the CLI included) refuses the app's
+tokens on the next request. The async auth middleware runs the check for a signed
+app token in a worker thread (`validate_token_with_app_off_loop`), so the event
+loop never reads the file; any other token is checked in place and reads nothing.
+A name that does not match `APP_NAME_RE` refuses without a read. `_write_installed` moves that
+cutoff to now on every write that leaves the app disabled and on the write that
+creates the record, and never moves it back, so a token minted before a disable
+or an uninstall stays dead after the app is enabled or installed again: the app
+re-exchanges its secret at `POST /api/apps/<name>/token`, as it does when a token
+expires. An owner disable of a record already marked off (an app can write
+`enabled: false` itself) still writes the record, after revoking the host-exec
+grant, so the cutoff moves then too. An app session cookie exchanged from an app
+token carries that token's issue time (`app_iat`), and the cutoff judges the cookie
+by it: a request whose token passed the check just before an owner's disable is
+exchanged just after it, and the cookie stays as dead as that token after a
+re-enable.
+The record sits in the app's own directory, so this check is as strong
+as `installed.json` itself and no stronger.
+
+**The CONNECT path resolves enablement too, and refuses.** A socket a disabled
+app already holds is not re-authenticated, and a connect-time
 read of `app.json` alone would hand it a full snapshot from the intact manifest —
 which the initial `slots` push and the log replay are then judged against before
 any background refresh runs, with `app_events_revoked` reporting NOT revoked on
@@ -2699,6 +2736,10 @@ whatever the manifest says. With it, `POST /api/chat/slots/{slot}/approve`,
 `POST /api/chat` turn (an `[OPTIONS:]` choice is one) reach the thread through
 the same session-control rule as a user session, the send's allow row naming
 the scope (`permissions.sessionApproval+memberThreads|slot=member-<slug>`).
+Such a turn speaks to the Bot in the owner's thread, so the consent text says
+so (`session_approval_member_threads`: the app can send the owner's Bots
+messages in the owner's name) and the transcript labels the row with the app
+that sent it (`MessageByline`, see shared-crew "Message attribution").
 It reaches no more than that: every `/api/members/*` and `/api/teams*` route
 still answers an app 404, the thread's transcript stays owner-only, a resume or
 `POST /v1/chat/completions` naming a member key stays refused, and an app still
@@ -2840,13 +2881,13 @@ the one-time import first, so the import's lock is the only lock needed.
   the two records that stops halfway, puts it back (uninstall holds `app_record_lock` throughout, so a
   concurrent enable or disable waits and its record is never rolled back)
   (`protected_app_state.snapshot_app` / `restore_app`). A gateway-shipped builtin
-  is stored as `approveDeclared` with its first record (`register_builtin_apps`):
-  it changes with the gateway, not through an update.
+  stores what its SHIPPED manifest declares at every start (`register_builtin_apps`):
+  it changes with the gateway, not through an update, and the `app.json` copy in its
+  agent-writable folder grants nothing.
 - **Import and backfill.** The first read in the gateway carries every app's
   set over once (`_import_app_tree_grants`): an `apps/<name>/approved-grants.json`
   from an older build is copied, a record that never stored a set
-  (`approvedGrantsStored` absent) is stored as `{"approveDeclared": true}` and keeps
-  approving what its manifest declares, so no app loses access on upgrade, and a
+  (`approvedGrantsStored` absent) is stored as `{"approveDeclared": true}`, and a
   record that stored a set and lost the file, or whose file is unreadable or not a
   mapping, is stored with an empty list for every family (a family left out would
   approve what the manifest declares). The marker
@@ -2860,8 +2901,14 @@ the one-time import first, so the import's lock is the only lock needed.
   its default-on promotion, which `backfill_default_on_builtins` turns on. After it, the store alone decides: a missing record approves nothing, and
   neither a file the app writes in its tree nor `approvedGrantsStored` in
   `installed.json` can widen a set. The app row shows an empty `approvedGrants` the
-  owner can approve again. A register with no manifest yet stores
-  `approveDeclared`.
+  owner can approve again. A set stored as `approveDeclared`, and one written before
+  a grant family existed, is fixed at its first gateway read to what the manifest
+  declares then (`_freeze_declared`), which is what it granted until then, so no app
+  loses access on upgrade and a later write to `app.json` is held back like any
+  widening. A register with no manifest yet stores `{"awaitingManifest": true}`:
+  nothing is approved until the owner's registration route sends the first
+  manifest, which approves what it declares; a manifest written into the app's
+  folder meanwhile approves nothing.
 - **Approval.** The detail page lists the held-back entries under "API access"
   and "WebSocket events" (the Permissions card's labels) with a plain-words line
   for each group, and tags them "not approved" on the Permissions card. Its
@@ -6783,7 +6830,12 @@ A refusal is
 SEL-audited as `agent_turn` (`spawn_sdk._audit_spawn_denied`) and raises
 `AgentTurnRefused`, a `PermissionError`. With no policy and no profile both
 questions permit, so an ungoverned host runs as before. Every tool the agent calls
-is still gated.
+is still gated. An app turn is not a person's, and no session applier reads its
+stream (#34341), so `run` streams with `person_only_directive_refuser`
+(`dashboard/session_directive_apply.py`, as a cron turn and a workflow step do): a
+completed `set_project`, `reset_conversation`, `chat_tag` or `suggest_followup`
+call is refused with `refuse_user_origin_directive` (its wording, and a SEL `denied`
+row on the turn's key), and the refusals lead the reply. Nothing is applied.
 
 **Untrusted text** (`apps/untrusted_text_sdk.UntrustedTextSDK`, `ctx.untrusted`).
 Always present, built in `AppContext.__post_init__` from `name`, because it adds no

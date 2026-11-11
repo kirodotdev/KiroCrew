@@ -447,13 +447,17 @@ def resolve_project(runtime: Any, payload: JsonObject) -> tuple[str, str, str]:
 
     if project is not None:
         url_project, served_relative = runtime._proj_for_preview(preview_url)
-        if url_project is not None and url_project["id"] != project["id"]:
+        served = url_project is not None and url_project["id"] == project["id"]
+        if url_project is not None and not served:
             served_relative = ""
     else:
         project, served_relative = runtime._proj_for_preview(preview_url)
+        served = project is not None
 
     if project is not None:
         root = project["path"]
+        if served:
+            return project["id"], root, served_source(runtime, root, served_relative)
         return project["id"], root, runtime._contained_source(root, served_relative)
     if runtime._ROOT:
         return (
@@ -473,6 +477,24 @@ def contained_source(runtime: Any, root: str, relative: str) -> str:
         return str(runtime._contained(root, relative))
     except runtime._PathEscape:
         return ""
+
+
+def served_source(runtime: Any, root: str, relative: str) -> str:
+    """Return the file a static preview serves for ``relative``, or an empty string.
+
+    The static server answers a folder URL, the project root included, with the
+    folder's entry HTML from ``_find_entry``, so that file is the source.
+    """
+
+    try:
+        project_root = runtime._contained(root)
+        target = runtime._contained(project_root, relative)
+    except runtime._PathEscape:
+        return ""
+    if target.is_dir():
+        entry = runtime._find_entry(target, project_root)
+        return str(entry) if entry is not None else ""
+    return str(target)
 
 
 def sanitize_selection_sources(runtime: Any, selection: Any, root: str) -> None:

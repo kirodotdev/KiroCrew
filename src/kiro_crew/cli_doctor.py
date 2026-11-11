@@ -745,7 +745,16 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             installed_engine = None
         if installed_engine is not None:
             bundle_node_version = installed_engine.node_version or None
-    _report_node(issues, bundle_route=bundle_route, bundle_node_version=bundle_node_version)
+    # The node row treats PATH's Node as unused only when EVERY selected role runs
+    # on the bundle: a Bot role on another harness (Claude's adapter, say) spawns
+    # on the Node from PATH, so its floor still fails the run.
+    # shortcut: reads the two role fields as the other role checks here do, not a
+    # bot's own agents.<name>.acp_backend pin; widen if doctor learns those.
+    roles_on_bundle = bundle_route and all(
+        backend == ACP_BACKEND_KAS
+        for backend in (cfg.agent.acp_backend, cfg.agent.member_acp_backend)
+    )
+    _report_node(issues, bundle_route=roles_on_bundle, bundle_node_version=bundle_node_version)
 
     # venv detection — used by the runtime section below. Windows venvs put the
     # interpreter under .venv\Scripts\python.exe, not .venv/bin/python3, so a
@@ -989,6 +998,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Speech-to-Text (optional) ──
     features._doctor_speech_to_text(cfg, issues)
+
+    # ── Saved prompts (only when a built-in command shadows one) ──
+    features._doctor_saved_prompts()
 
     # ── Slack (optional) ──
     channels._doctor_slack(cfg, dashboard.creds, dashboard.has_slack, issues)

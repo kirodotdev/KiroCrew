@@ -12,8 +12,9 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_capability_projection_gaps``,
 ``_channel_id``, ``_child_pids``, ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
-``_claude_settings_written``, ``_confirmed_capability_session``, ``_consult_future``,
-``_copilot_mcp_config_path``, ``_crew_bridge_snapshots``,
+``_claude_settings_written``, ``_claude_worker_builtin_tools``,
+``_confirmed_capability_session``, ``_consult_future``, ``_copilot_mcp_config_path``,
+``_crew_bridge_snapshots``,
 ``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
 ``_mcp_ref_spec``,
@@ -62,7 +63,8 @@ from kiro_crew.acp.transport_errors import (
     AcpDelegateLaunchFailed,
     AcpError,
     AcpSandboxInitFailed,
-    is_delegate_launch_failure_output,
+    delegate_launch_failed,
+    delegate_launch_failure_message,
     is_sandbox_init_failure_output,
     registration_throttle_line,
     sandbox_init_failure,
@@ -352,14 +354,21 @@ async def _snapshot_process_tree(self: AcpClient) -> None:
 
     Merges with any early snapshot taken in _spawn().  MCP servers
     (the internal MCP server, node) may not exist until after _initialize_session().
+
+    A no-op where the walk cannot see a descendant
+    (``runtime_process_tree.walk_observes_descendants``): there is nothing to
+    record.
     """
+    if not runtime_process_tree.walk_observes_descendants():
+        return
     _loop = asyncio.get_running_loop()
     descendants = await _loop.run_in_executor(
         subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
     )
-    if not descendants:
-        # Retry once — children may not have forked yet
-        await asyncio.sleep(0.5)
+    # Retry once: children may not have forked yet.
+    if not descendants and await runtime_process_tree.wait_for_descendants(
+        runtime_process_tree.EMPTY_WALK_RETRY_DELAY
+    ):
         descendants = await _loop.run_in_executor(
             subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
         )
@@ -678,6 +687,7 @@ def _reset_state(self: AcpClient) -> None:
     self._spec_write_allowlist = None
     self._spec_write_cwd = ""
     self._spec_zero_tools = False
+    self._claude_worker_builtin_tools = None
     self._session_mcp_unhonoured = frozenset()
     self._session_harness_deny_rules = ()
     self._opencode_denies_in_force = None
@@ -892,7 +902,7 @@ async def _delegate_launch_failure(self: AcpClient) -> AcpDelegateLaunchFailed |
     """The delegate-launch error for this child's stderr, or ``None``.
 
     The ``AcpClient`` side of the classification ``AcpRuntime`` latches per
-    stderr line: the same shared :func:`is_delegate_launch_failure_output`
+    stderr line: the same shared :func:`delegate_launch_failure_message`
     signature, read off the ring buffer the way :meth:`_sandbox_init_failure`
     reads it, so the two transports cannot disagree about what a
     ``kiro-cli-chat`` launch failure is. ``None`` when nothing was retained (a
@@ -903,9 +913,10 @@ async def _delegate_launch_failure(self: AcpClient) -> AcpDelegateLaunchFailed |
     await self._settle_stderr()
     if not self._stderr_lines:
         return None
-    if not is_delegate_launch_failure_output("\n".join(self._stderr_lines)):
+    message = delegate_launch_failure_message("\n".join(self._stderr_lines))
+    if message is None:
         return None
-    return AcpDelegateLaunchFailed()
+    return await delegate_launch_failed(message)
 
 
 async def _registration_throttle_line(self: AcpClient) -> str | None:

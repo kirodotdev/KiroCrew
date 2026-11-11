@@ -439,7 +439,8 @@ class TestLinuxUnitRendering:
     ):
         """If `sudo install` fails (user denies password, sudoers misconfigured),
         install MUST raise with a clear message rather than continuing on
-        and silently leaving the system half-configured."""
+        and silently leaving the system half-configured, and name what a user
+        without sudo can run instead."""
         from kiro_crew.service import linux as svc_linux
 
         monkeypatch.setenv("USER", "tester")
@@ -462,6 +463,9 @@ class TestLinuxUnitRendering:
         # user knows what's going on.
         assert "unit file" in msg.lower()
         assert "sudo" in msg.lower() or "password" in msg.lower()
+        # The no-sudo fallback: a foreground gateway kept alive in tmux/screen.
+        assert "`kirocrew gateway`" in msg and "tmux" in msg
+        assert "ask an administrator for sudo access" in msg
 
     def test_install_refuses_on_a_host_not_booted_with_systemd(self, tmp_path, monkeypatch):
         """`systemctl` on PATH makes the platform SYSTEMD, but a container whose

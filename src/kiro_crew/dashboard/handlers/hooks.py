@@ -1122,7 +1122,7 @@ async def _run_hook_agent(
         # that task before it reads memory; this turn takes the same bounded
         # wait, so a webhook accepted during startup runs once memory is ready
         # instead of failing on its first read.
-        await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+        await wait_for_memory_preparation(lambda: getattr(state, "memory_startup_task", None))
 
         # Shared Crew fair admission, charged to Crew automation (a webhook
         # caller has no principal); a refusal raises ``TurnRefused``.

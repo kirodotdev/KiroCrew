@@ -26,6 +26,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_continue` | `POST /api/session-control/continue` | The same `continue_slot_turn` call without `require_interrupted`, as the Continue button makes it, through the helper `retry_target` shares (`_continue_turn_of_target`); the result's `body` is `resumed` or `continued`, whichever continuation `_is_interrupted` chose, and the allowed audit line records it. Not in any auto-grant: a member or conductor is asked before each call |
 | `session_set_model` | `POST /api/session-control/set-model` | Record a pending model and/or reasoning-effort pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. Each half yields separately to a newer user pick from its own control. A busy target is refused with `target_busy` and keeps its settings |
 | `session_set_color` | `POST /api/session-control/set-color` | Set the sidebar tint (palette index 0-6, or clear). `authorize_target` (self refused), then a creator fence for every caller: only sessions it created |
+| `session_set_note` | `POST /api/session-control/set-note` | Leave a note: the reach of `session_set_color` (`authorize_created_target`), then `chat_handlers.write_slot_note`, the body of `POST /api/chat/slots/{slot}/note`, with nothing suspending between the gate and the write. The visible line, the next-turn context half (source `session_set_note`), the hold while a turn runs, the limits and the reply are that route's. The visible line is an inject row like any `/note` line: history replay carries it, and its hold retires with its committed row ([session](session.md), the held-note table). The context half carries the containment the gate admitted (`containment_meta`, as `admission`, a key only `write_slot_note` sets, so a `/note` or `/context` entry under the same source label is plain context). Before the drain, `drop_session_notes_out_of_reach` finds each waiting half by that key, compares it with the target's containment now and drops the half when a constraint `authorize_target` refuses newly holds (a mirror or link gained, a workspace move), as the queue drain drops a `session_send` message. A half held across a restart keeps its `admission` key with only its admitted workspace (`slot_buffers._sanitize_restored_context`), judged against the all-false floor plus that workspace, and a half whose admission is not an object is dropped. A half the turn keeps has its admission recorded on the turn (`record_audience_admission`), so a channel linked before the reply withholds it. Each drop is a `note_containment_drop` SEL row |
 | `session_reload` | `POST /api/session-control/reload` | Relaunch the agent process of an idle session the caller created, through `chat_handlers.reload_slot_session` (shared with the tab menu's Reload session). The transcript is kept and gets one notice naming the caller, then one row once the respawn has ended: the agent is ready, it did not start (with the redacted error), or it starts with the next message (`_report_reload_respawn`). A message still waiting on the respawn gets that row. No row is added once a turn has answered after the reload notice (a reply, tool call or error card follows it): that turn already shows how the agent came back, and a respawn that ended late would put the row after it. Self, remote-crew and busy targets (turn running or starting, queued messages, sub-agents) are refused |
 | `session_rename` | `POST /api/session-control/rename` | Set the caller's own title or a target's through `chat_title.apply_manual_title`, the sidebar rename's code, after `authorize_target` with `allow_self`; a scheduled run's own session is still refused as `unattended_target`. The title is final (`_TITLE_ORIGIN_USER`). An empty title, one over 200 characters (before or after `_scrub_text` redaction, which lengthens credential-shaped text into markers), one with no character that renders (only whitespace, characters `terminal_safe._is_invisible` reports such as zero-width, variation-selector and Hangul-filler characters, or the blank Braille pattern U+2800), one containing U+2800 anywhere (scanning normalization keeps it, so it could split a secret past the redactors), or one with a control character or any text-direction control (embeddings, overrides, isolates and the U+200E/U+200F/U+061C marks), or any other `Cf` format character except U+200C/U+200D and the tag characters U+E0020..U+E007F that spell flag subdivisions (`_is_allowed_format_char`; the tag block's other `Cf` character, U+E0001 LANGUAGE TAG, is refused; its unassigned code points are not `Cf`), is refused with `invalid_title`; if the history write fails the live slot keeps and broadcasts the new title (best-effort, like the sidebar and channel renames; the next full save writes it) and the verb answers `title_persist_failed` (500) instead of `ok` |
 | `session_generate_title` | `POST /api/session-control/generate-title` | Regenerate a session's title through `chat_title.generate_manual_title` and `chat_title.apply_regenerated_title`, the sidebar "Regenerate title" code: one awaited titling-model call; the result replaces the current title (a hand-set one included) and stays auto. After `authorize_target` (no `allow_self`), the target must be one the caller created (`not_creator`, 403) for every caller class. One admitted call per target per `create_rate_limit.WINDOW_SECS` (300 s) through the shared creation limiter keyed by the target slot, stamped before the model call (`title_rate_limited`, 429). After the model answers, the slot identity and closing flag are checked (`target_replaced`, 409) and `authorize_target` runs again synchronously; then every field is assigned before the first await, as `session_rename` does, and the save only makes that change durable. The save passes `still_current` (slot identity), so `_persist_title` refuses the write under the history lock when the slot left its key, and the verb then answers `target_replaced` (409) rather than overwriting a successor's saved title. A rename that landed during the model call wins (`changed: false`). If the history write fails the live slot keeps the title and the verb answers `title_persist_failed` (500). The sidebar push is skipped when the slot left its key during the save |
@@ -1122,12 +1123,50 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is the caller | 403 | A session controlling itself has no exit |
 | Target is unattended (`cron-*`, `workflow-*`) | 403 | A `workflow-<run_id>` slot is display-only and a cron's turns are driven by a schedule. Not exempted for a cron CALLER: a cron may create and drive its own children, never another job's tab |
 | Target is incognito or temporary | 403 | Never addressable, matching `list_sessions` |
-| Target is app-scoped | 403 | App sessions are the app's, not a peer's |
+| Target is app-scoped | 403 | App sessions are the app's, not a peer's. **Exception:** see "App sessions the owner's chats may reach" below |
 | Target is channel-linked (`linked_session_key` set) | 403 | Its conversation is mirrored to Slack/Telegram, so reaching it crosses a surface boundary both ways — and its stop cannot be honoured, because the stop path addresses `dashboard:<slot>` while a linked slot's turns run under its linked key |
 | Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors. **Caller-side exception, two shapes:** an owner DM whose mirror IS its own conversation, and a dashboard-born caller whose outbound mirror IS the owner's own 1:1 DM (the conductor tab the operator linked to their phone) — the same audience either way, established by `owner_dm_refusal` before either caller-side channel refusal runs; the threadless Slack row every unlinked channel session carries reads as no mirror from the store itself (`SessionMap.get_mirror_link` never synthesizes a Slack mirror without a thread), and a Slack thread bound beside the mirror row (`get_slack_link`) counts as a second audience. **A paused mirror refuses exactly like a live one.** `_has_channel_mirror` reads the binding, never `mirror_paused`: the dashboard's Disconnect row mutes outbound delivery and keeps the binding, inbound from that conversation still routes into the session (`SessionBinder.resolve_inbound` does not read the flag either), and one click on the same row resumes delivery — so a paused binding is a latent audience that returns without any further authorization, and admitting the session while it stands would let a session control peers between two clicks of the same toggle. Fail-closed here means the way back into session control is to **sever** the binding: the menu's `Unlink from X` item (`mirror-unlink` / `slack-unlink`) or an in-channel `/unlink`, both of which drop the row and the pause flag with it (#14068; pinned in `test_session_control_boundaries.py::test_a_paused_mirror_still_refuses`). The exemption reads the binding the same way, so a paused mirror to the owner's own DM is admitted exactly as a live one is — the audience did not change. Whether a dashboard-born session mirroring to the owner's OWN DM is that contained audience was left open by #14084 and is decided by #15288: it is, on the same clauses, with the peer read off the transport's own record of the DM (see "Owner-DM channel callers" below) |
 | Target is in another workspace | 403 | Workspaces are the memory boundary |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
+
+### App sessions the owner's chats may reach
+
+An app that runs one chat session per work item can let the owner's general chats read
+those sessions and send them follow-ups. It declares the verbs in
+`permissions.reachableByUserSessions` (`"read"`, `"send"`; `apps/user_session_reach.py`).
+Each verb is an entry of a staged grant family: an install approves what it declares,
+an update that adds a verb holds it back until the owner approves it on the app's page,
+and a stored set from before the family existed approves nothing, so the owner's
+approval and every update start the family from nothing too. Before each read,
+summary and send gate (the steer and queue re-gates and the autonudge read included),
+`prewarm_app_reach` reads the live manifest, that approval and the record's `enabled` in
+a worker thread for the app of every live app session. `authorize_target` reads only
+that verdict, so it does no disk read on the event loop. A verdict older than 30 s
+allows nothing, so a gate that no prime precedes fails closed. Each verdict is stamped
+before its read, and a prime that read earlier never replaces a later one, so a slow
+read from before a disable cannot undo the refusal.
+
+`authorize_target` lifts `app_scoped_target` for one call only when all of these hold
+(`session_control_parts/app_reach.py`):
+
+1. The app allows the verb the operation needs: `read` for `read` and `summary`, `send`
+   for `send` (a broadcast's per-target delivery and the steer re-gate included).
+2. The caller is one of the owner's own chats: a `chat-` tab with origin `user` (or none,
+   on an older record), no `_created_by`, no `_app`, persistent memory, not a remote
+   executor, no channel or cron link, not channel-born, no outbound mirror, and not a
+   crew member's session. The owner-DM exemption does not apply. This runs after
+   `refuse_caller_surface`, so a caller it refuses keeps that refusal's code.
+
+Every other clause still runs: the target's own unattended, ephemeral, link and mirror
+refusals (the app clause is the only one skipped), the workspace compare and the
+ownership fence. Every other verb keeps `app_scoped_target`. `stop` ends a turn the app
+started and may still be waiting on, and `close` archives a session the app still holds
+by key, so neither is offered. `revive` keeps refusing an archived app session for the
+second reason. A sent message carries the usual `meta.relay` sender, so the transcript
+shows which chat sent it. The peer turn on an app session no person drives runs outside
+the background-turn cap, like a send to any of the owner's sessions. A queued send is not
+checked against the grant again at drain, so one queued before a withdrawal still runs.
 
 ### Handoff: the manager a fenced caller is checked against
 
@@ -1282,7 +1321,8 @@ are untouched: they still require the switch.
 The exceptions are `session_end_wait`, whose own creator fence (below, "Ending
 a wait early") binds every caller class, owner sessions included,
 `session_reload`, whose creator fence binds every caller class the same way,
-and `session_set_color`, whose creator fence also binds every caller class.
+and `session_set_color` and `session_set_note`, whose creator fences also bind
+every caller class.
 
 #### The owner's Conductor: the same bypass, the same fence
 
@@ -2836,7 +2876,8 @@ goes to its owner, and the owners import each other lowest layer first, in this 
 - `src/kiro_crew/dashboard/session_control_parts/model_switch.py`: `session_set_model` and
   the deferred model pick.
 - `src/kiro_crew/dashboard/session_control_parts/session_titles.py`: title cleaning,
-  `session_rename`, `session_generate_title` and `session_set_color`.
+  `session_rename`, `session_generate_title`, `session_set_color`, and
+  `authorize_created_target`, the gate `session_set_color` and `session_set_note` share.
 - `src/kiro_crew/dashboard/session_control_parts/crew_filing.py`: the Ultra Mode filing
   rule `session_create` and `session_fork` share: whether the caller is in a turned-on
   Ultra Mode tree, and the `folder_ignored` / `crew_mode` reply keys.

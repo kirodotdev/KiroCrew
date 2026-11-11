@@ -62,6 +62,10 @@ def gateway_logs(caplog):
         (_snoozed("9.9.9", _NOW - _DAY + 1), True),
         (_snoozed("9.9.9", _NOW - _DAY - 1), False),
         (_snoozed("9.9.8", _NOW + _DAY), False),
+        # A skip survives a later snooze of another version.
+        ({**_snoozed("9.9.10", _NOW + _DAY), "skipped_versions": ["9.9.9"]}, True),
+        ({**_snoozed("9.9.10", _NOW + _DAY), "skipped_versions": ["9.9.8"]}, False),
+        ({**_snoozed("9.9.10", _NOW + _DAY), "skipped_versions": "9.9.9"}, False),
         ({}, False),
         (None, False),
         ({"version": "9.9.9", "snoozed_until": "soon"}, False),
@@ -74,10 +78,75 @@ def test_the_record_defers_only_its_own_version_while_it_lasts(record, deferred)
     assert user_deferred_update(_cfg(record), "9.9.9", now=_NOW) is deferred
 
 
+def test_a_verdict_keeps_the_saved_skips_in_order_and_adds_its_own_last() -> None:
+    from kiro_crew.update_deferral import (
+        MAX_SKIPPED_VERSIONS,
+        SkipListFull,
+        merge_update_nudge_record,
+    )
+
+    saved = {"version": "99.1", "skipped": True, "skipped_versions": ["99.0"]}
+    snooze = {"version": "99.2", "snoozed_until": 5, "skipped": False}
+    assert merge_update_nudge_record(saved, snooze)["skipped_versions"] == ["99.0", "99.1"]
+    skip = {"version": "99.0", "snoozed_until": 0, "skipped": True}
+    assert merge_update_nudge_record(saved, skip)["skipped_versions"] == ["99.1", "99.0"]
+    # A skip past the cap is refused; none that still holds is evicted.
+    many = {"skipped_versions": [f"99.0.{i}" for i in range(MAX_SKIPPED_VERSIONS)]}
+    new = {"version": "99.1.0", "snoozed_until": 0, "skipped": True}
+    with pytest.raises(SkipListFull):
+        merge_update_nudge_record(many, new)
+    assert merge_update_nudge_record(many, snooze)["skipped_versions"] == many["skipped_versions"]
+
+
+def test_a_skip_of_the_running_version_is_kept() -> None:
+    # A git checkout can offer an update without a version bump, so a skip is
+    # never dropped by comparing it with this build.
+    from kiro_crew import __version__
+    from kiro_crew.update_deferral import merge_update_nudge_record
+
+    saved = {"skipped_versions": ["0.0.1", __version__]}
+    snooze = {"version": __version__, "snoozed_until": 5, "skipped": False}
+    assert merge_update_nudge_record(saved, snooze)["skipped_versions"] == ["0.0.1", __version__]
+
+
+def test_a_record_that_sends_the_list_is_stored_as_sent() -> None:
+    from kiro_crew.update_deferral import merge_update_nudge_record, with_skip_list
+
+    saved = {"version": "1.0", "snoozed_until": 0, "skipped": True}
+    whole = {"version": "1.0", "snoozed_until": 0, "skipped": False, "skipped_versions": []}
+    assert merge_update_nudge_record(saved, whole) == whole
+    assert with_skip_list(saved) == {**saved, "skipped_versions": ["1.0"]}
+    assert with_skip_list(whole) is whole
+
+
 def test_an_unknown_version_is_never_deferred() -> None:
     from kiro_crew.update_deferral import user_deferred_update
 
     assert user_deferred_update(_cfg(_snoozed("", _NOW + _DAY)), "", now=_NOW) is False
+
+
+@pytest.mark.parametrize(
+    ("browser_skew", "now", "deferred"),
+    [
+        # Two days behind: the snooze is already over by this host's clock, yet the
+        # stamp still holds for the snooze plus one prompt window.
+        (-2 * _DAY, _NOW, True),
+        (-2 * _DAY, _NOW + 2 * _DAY - 1, True),
+        (-2 * _DAY, _NOW + 2 * _DAY, False),
+        # Ahead: the later browser reading still holds, so a browser with a right clock,
+        # which stays quiet until then, is not installed over before it asks again.
+        (5 * _DAY, _NOW + 6 * _DAY, True),
+    ],
+)
+def test_the_hold_counts_from_when_the_gateway_stored_the_snooze(
+    browser_skew, now, deferred
+) -> None:
+    from kiro_crew.update_deferral import user_deferred_update
+
+    # What "Remind me tomorrow" writes from a browser clock off by browser_skew,
+    # stamped by the gateway's PATCH at _NOW.
+    record = {**_snoozed("9.9.9", _NOW + browser_skew + _DAY), "stored_at": _NOW}
+    assert user_deferred_update(_cfg(record), "9.9.9", now=now) is deferred
 
 
 # ── the coordinator ─────────────────────────────────────────────────────────

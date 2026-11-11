@@ -173,6 +173,37 @@ describe('AboutPanel gateway channel switcher', () => {
     })
   })
 
+  // A switch re-runs the check, so its answer joins the newest-answer ordering
+  // the hero and the card share (#34868).
+  it('a switch whose re-check succeeds clears an older background failure', async () => {
+    stubFetch({ channelResponse: {
+      ok: true, channel: 'insider', check_status: 'succeeded', update_available: false, last_checked_at: 200,
+    } })
+    seedStatus({ update_channel: 'stable', update_check_status: 'failed', update_last_checked_at: 100 })
+    mountWeb()
+    expect(await screen.findByTestId('check-failed')).toBeTruthy()
+
+    fireEvent.click(within(await screen.findByTestId('gateway-channel-switcher')).getByTitle('Insider'))
+
+    await waitFor(() => expect(screen.getByTestId('hero-up-to-date')).toBeTruthy())
+    expect(screen.queryByTestId('check-failed')).toBeNull()
+  })
+
+  it('a switch whose re-check fails shows the failure and its reason, not a stale green', async () => {
+    stubFetch({ channelResponse: {
+      ok: true, channel: 'insider', check_status: 'failed', update_available: null,
+      error_code: 'feed_unreachable', last_checked_at: 200,
+    } })
+    seedStatus({ update_channel: 'stable', update_check_status: 'succeeded', update_available: false, update_last_checked_at: 100 })
+    mountWeb()
+    expect(await screen.findByTestId('hero-up-to-date')).toBeTruthy()
+
+    fireEvent.click(within(await screen.findByTestId('gateway-channel-switcher')).getByTitle('Insider'))
+
+    expect((await screen.findByTestId('check-failed')).textContent).toContain('release feed')
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
+  })
+
   it('keeps the verdict a successful switch just found instead of discarding it', async () => {
     // The switch response IS the re-run check against the new lane. This handler
     // was left reading the pre-rename keys (`available` / `checked` /

@@ -40,7 +40,7 @@ from kiro_crew.appearance_packs.ids import DEFAULT_PACK, pack_id_key, safe_pack_
 from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, sound_body
 from kiro_crew.atomic_write import read_bytes_with_retry, replace_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
-from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
+from kiro_crew.platform_compat import chmod_safe, is_link_or_junction, remove_with_retry
 from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
@@ -540,7 +540,14 @@ class AppearanceStore:
                 return False
             if not resolved.is_dir():
                 return False
-            shutil.rmtree(resolved)
+            # Where rmtree walks by path anyway (Windows, where a held file can stop it), walk the
+            # pack here with ``manifest.json`` last, so a pack a hold interrupts stays listed.
+            hint = "Close the program using that file, then delete the pack again"
+            if not shutil.rmtree.avoids_symlink_attacks:
+                for child in resolved.iterdir():
+                    if child.name.casefold() != "manifest.json":
+                        remove_with_retry(child, retry_hint=hint)
+            remove_with_retry(resolved, retry_hint=hint)
         except OSError as exc:
             logger.warning("appearance-packs: pack delete failed: %s", exc)
             return False

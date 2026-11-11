@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _BLOCKED_SLASH_COMMANDS,
         ACP_BACKEND_KIRO,
+        ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
         ACP_BACKENDS_COMPACT,
         ACP_BACKENDS_LOCAL_CLEAR,
         ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
@@ -637,6 +638,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_channel_origin=_directive_channel_origin,
                     _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
                     _card_origin=turn._card_origin,
+                    _prompt_on_channel=turn._prompt_on_channel,
                     _turn_actor=_turn_actor,
                 )
             elif status == "blocked":
@@ -850,7 +852,9 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
     # either, or (claude) run one Crew cannot observe, so /clear alone is answered
     # here for them too; their other commands keep the prompt path, where those
-    # harnesses serve the ones they know.
+    # harnesses serve the ones they know. A harness with a row in
+    # ACP_BACKEND_PROMPT_HANDLER_COMMANDS (codex) keeps the prompt path only for the
+    # commands in its row; its other commands get the notice, as on KAS.
     # A kiro-cli command that is not a Crew harness command (/knowledge, /effort,
     # /plan, /rewind) is answered here on KAS alone; anywhere else it stays text.
     # The user's own quick prompt of that name is a macro and keeps the text path.
@@ -866,10 +870,14 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     ):
         _command_backend = await _slash_command_backend(state, session_key)
+        _runs_from_prompt = ACP_BACKEND_PROMPT_HANDLER_COMMANDS.get(_command_backend)
         if (
             _command_backend == ACP_BACKEND_KAS
             if _kas_only_word
-            else _command_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS
+            else (
+                _command_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS
+                or (_runs_from_prompt is not None and first_word not in _runs_from_prompt)
+            )
         ) or (_this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR):
             turn_exit.local_command = first_word
             await _answer_slash_for_harness(

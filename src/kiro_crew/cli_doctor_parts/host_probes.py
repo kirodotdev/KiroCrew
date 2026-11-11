@@ -390,10 +390,11 @@ def _report_node(
     code needs. The same constant drives the startup warning in ``cli.py``. An
     unreadable version is shown as present rather than guessed at.
 
-    On the KAS bundle route (*bundle_route*) the engine runs the Node its bundle
-    ships, so a missing ``node`` on PATH is not a gap for the selected backend and
-    the install advice is not printed. A Node that IS on PATH is still judged
-    against the floor: other tools run on it.
+    *bundle_route* means every selected role (main and Bot) runs KAS on its
+    bundle, whose engine runs the Node the bundle ships. Then a missing ``node`` on
+    PATH is not a gap and the install advice is not printed. A Node that IS on PATH
+    is still judged against the floor, because other tools run on it, but one below
+    the floor is a ``⚠`` there and not an issue: no selected role runs it.
     """
     node = shutil.which("node")
     if node:
@@ -414,6 +415,17 @@ def _report_node(
                 print(f"  node:        ✅ {node}")
             elif node_version_meets_floor(version, MIN_NODE_VERSION):
                 print(f"  node:        ✅ {node} (v{format_node_version(version)})")
+            elif bundle_route:
+                own = f"Node {bundle_node_version}" if bundle_node_version else "Node"
+                floor = format_node_version(MIN_NODE_VERSION)
+                print(
+                    f"  node:        ⚠  v{format_node_version(version)} on PATH < v{floor}; "
+                    f"KAS runs its engine bundle's own {own}"
+                )
+                print(
+                    "               Tools run from PATH (for example MCP servers started "
+                    f"with npx) may still need v{floor} or newer."
+                )
             else:
                 print(
                     f"  node:        ❌ v{format_node_version(version)} < "

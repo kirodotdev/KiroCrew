@@ -112,7 +112,7 @@ export type RegistryApp = {
     // global shortcuts, tray). A UX gate only — the marker is client-side.
     requiresDesktopApp?: boolean }
   manifest?: {
-    permissions?: { sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean }
+    permissions?: { sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; reachableByUserSessions?: string[] }
     platform?: { requiresDesktopApp?: boolean }
   }
 }
@@ -168,6 +168,8 @@ export type InstalledApp = {
   selectionActionGrant?: SelectionActionGrantRow
   /** Whether the owner approved `permissions.workerAutoApprove`; absent when undeclared. */
   workerAutoApproveGrant?: { approved: boolean; staged: boolean }
+  /** `permissions.reachableByUserSessions` verbs the owner approved, and the ones an update holds back; absent when undeclared. */
+  userSessionReachGrant?: { approved: string[]; staged: string[] }
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -247,6 +249,7 @@ export type InstalledApp = {
       sessionApproval?: boolean
       memberThreads?: boolean
       workerAutoApprove?: boolean
+      reachableByUserSessions?: string[]
     }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string

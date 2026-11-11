@@ -20,6 +20,7 @@ import re
 import stat
 import sys
 import sys as _sys
+import threading
 import time
 from email.utils import formatdate
 from functools import partial
@@ -224,7 +225,9 @@ def register_app_routes(app: web.Application) -> None:
     """Register all app management routes on an aiohttp Application."""
 
     async def _start_proxy_session(app: web.Application) -> None:
-        app["_proxy_session"] = aiohttp.ClientSession()
+        # No auto-decompress: the relay copies the backend's Content-Encoding and
+        # Content-Length, so the body must stay the bytes those headers describe.
+        app["_proxy_session"] = aiohttp.ClientSession(auto_decompress=False)
 
     async def _close_proxy_session(app: web.Application) -> None:
         session = app.get("_proxy_session")
@@ -378,6 +381,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROXY_STRIP_QUERY_PARAMS,
         _PROXY_TIMEOUT,
         _app_secret_cache,
+        _app_secret_generation,
+        _app_secret_lock,
         _end_relay_midbody,
         _forwarded_query,
         _get_app_secret,

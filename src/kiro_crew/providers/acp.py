@@ -69,6 +69,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+    ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
@@ -92,6 +93,7 @@ from kiro_crew.agent_sdk.backends import model_registry_namespace  # noqa: F401
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
+    ACP_BACKENDS_SESSION_EVICTION,
 )
 from kiro_crew.agent_sdk.capabilities import SessionCapabilities, capabilities_for
 from kiro_crew.agent_sdk.tool_search import (  # noqa: F401
@@ -215,6 +217,13 @@ class AcpProvider(LLMProvider):
             kwargs["agent"] = agent
         self.member_context = member_context
         self.memory_mode = memory_mode
+        # The account era this start read and the reader it came from, written by
+        # the allocator immediately before ``start()``. The chat-sharing placement
+        # keys a shared process on the era and re-reads it after acquiring
+        # (``providers.chat_share``). Empty / None on an entry point that wires
+        # no identity reader (the CLI, tests), where sharing is not eligible.
+        self.pre_spawn_identity: str = ""
+        self.spawn_identity_reader: Any = None
         # The name kiro-cli is asked for in place of ``agent`` (an app's launch
         # copy, ``apps.agent_launch``), set by session allocation; ``agent``
         # stays the session's identity. Read by the Kiro runtime start only.
@@ -851,6 +860,11 @@ class AcpProvider(LLMProvider):
         return self._client.backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
 
     @property
+    def mate_worker_native_tool_limits_supported(self) -> bool:
+        """A crewmate worker's native-tool excludes, by opt-in (H6)."""
+        return self._client.backend in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS
+
+    @property
     def loaded_capability_template(self) -> str:
         return self._client.loaded_capability_template
 
@@ -938,6 +952,10 @@ class AcpProvider(LLMProvider):
         """
         return self._client.get_valid_effort_levels()
 
+    def advertised_commands(self) -> list[dict[str, str]]:
+        """The commands this session's ``available_commands_update`` last listed."""
+        return self._client.advertised_commands()
+
     @property
     def tool_search_settings(self) -> ToolSearchSettings | None:
         """The resolved Tool Search choice this provider spawns runtimes with (H14 capability)."""
@@ -981,6 +999,16 @@ class AcpProvider(LLMProvider):
         # client gets the engine's own OAuth requests and has no trigger.
         if isinstance(self._client, AcpSessionProvider):
             self._sign_in_ask: str = text
+
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
+        # Only the shared runtime's session starts a KAS sign-in, as above.
+        if isinstance(self._client, AcpSessionProvider):
+            self._client.set_mcp_sign_in_ended_hook(hook)
+
+    def mcp_sign_in_ended(self, server_name: str) -> bool:
+        return isinstance(self._client, AcpSessionProvider) and self._client.mcp_sign_in_ended(
+            server_name
+        )
 
     @property
     def member_dispatch_mounted(self) -> bool | None:
@@ -1147,7 +1175,41 @@ class AcpProvider(LLMProvider):
                     await self.cleanup_session(replaced)
             await self._apply_initial_effort()
             return
+        if isinstance(self._client, AcpSessionProvider):
+            # The steps a cold start's session start takes that the fresh session
+            # needs too: the member DM mount and channel ride ``session/new``
+            # (``_start_kiro_runtime``), the essentials delivered to the old
+            # conversation are not in the new one, and an effort pushed as a
+            # per-session config option (KAS, codex) is back at the default.
+            await self._client.new_conversation(
+                member_session_key=self._member_session_key(),
+                channel_id=self._owning_channel_id() or "",
+            )
+            self.essential_delivery.invalidate()
+            await self._apply_initial_effort()
+            return
         await self._client.new_conversation()
+
+    @property
+    def swaps_conversation_in_place(self) -> bool:
+        """Whether a fresh conversation can start on this session's live process now.
+
+        True on the shared runtime of a backend whose session teardown evicts
+        (``ACP_BACKENDS_SESSION_EVICTION``), and not for a session placed on a remote
+        or cloud workspace, whose session start records its placement
+        (``record_cloud_session``) where :meth:`new_conversation` does not. A dead
+        process is not read here: ``AcpSessionProvider.new_conversation`` refuses it
+        with ``AcpProcessDied`` before it creates anything, and
+        ``SessionLifecycleService.swap_conversation`` falls back on that refusal.
+        """
+        from kiro_crew.session_environment import remote_workspace_for
+
+        client = self._client
+        return (
+            isinstance(client, AcpSessionProvider)
+            and client.backend in ACP_BACKENDS_SESSION_EVICTION
+            and remote_workspace_for(self._owning_session_key()) is None
+        )
 
     def set_delete_delay(self, seconds: float) -> None:
         """Keep the session's record for ``seconds`` after it ends, then delete it.
@@ -1330,6 +1392,7 @@ class AcpProvider(LLMProvider):
     steer = _acp_turns.steer
     _inline_turn_finished_cleanly = _acp_turns._inline_turn_finished_cleanly
     wait_for_compaction = _acp_turns.wait_for_compaction
+    hold_chat_turn_gate = _acp_turns.hold_chat_turn_gate
 
 
 def is_claude_backend(provider: Any) -> bool:
