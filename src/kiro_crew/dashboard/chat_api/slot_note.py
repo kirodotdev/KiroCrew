@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         _validate_source,
         deny_app_slot_session_access,
         effective_session_key,
+        load_window_off_loop,
         logger,
         note_hold_durable,
         persist_deferred_notes_sync,
@@ -552,8 +553,14 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     if len(display_source) > MAX_SOURCE_LABEL_LEN or SOURCE_LABEL_CTRL_RE.search(display_source):
         display_source = ""
 
+    # A tab restored as a sidebar row keeps a restored hold until its window
+    # loads, and an immediate note flushes that hold first. Load the window here,
+    # off the loop, so the re-authorization below is the last await before the
+    # note's first write.
+    await load_window_off_loop(slot)
+
     # Ownership was decided before the body read. Re-decide it here, against the
-    # slot as it is NOW, because that await is long enough for a rebind.
+    # slot as it is NOW, because the awaits above are long enough for a rebind.
     stale = _reauthorize_after_await(state, slot, name, request_app, "note_post")
     if stale is not None:
         return stale
@@ -913,6 +920,11 @@ async def deliver_note(
             row_meta["appLabel"] = display_source
         if merged_from is not None:
             row_meta[MERGED_FROM_META_KEY] = dict(merged_from)
+        # A hold can outlive the turn it waited on: a restart restores it onto a
+        # slot that is now idle. Deliver it first, so an older acknowledged note
+        # never lands below this one and its context is queued ahead of this one.
+        if slot._deferred_notes:
+            _flush_held_notes_if_idle(state, slot)
         slot.append(
             role="inject",
             content=visible_content,
