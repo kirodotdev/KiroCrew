@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _audit,
     _err,
+    _is_agent_call,
     _json_response,
     _non_owner_refusal,
     _notify_artifact_update,
@@ -185,8 +186,7 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
             extra={"slug": slug, "provider": effective_provider},
         )
         return _err(gov_denial, status=403)
-    is_mcp = request.headers.get("X-Internal-Secret") is not None
-    actor = "agent" if is_mcp else "user"
+    actor = "agent" if _is_agent_call(request) else "user"
     try:
         await publish_sync.publish(
             slug,
