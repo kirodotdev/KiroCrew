@@ -2764,6 +2764,28 @@ One `failed` entry is re-attempted before it terminates: a required server
 whose start only ran out of time is connected again once, on the same
 deadline (see "KAS managed MCP start re-attempt" below).
 
+A server still `connecting` may be queued rather than stuck. KAS connects one
+process's MCP servers through a single FIFO queue of four slots
+(`MAX_CONCURRENT_CONNECTIONS` in the engine's `connection-lifecycle.ts`), shows a
+queued server as `connecting`, and starts its 60 s connect timeout only once it
+holds a slot. It merges the session-level `mcpServers` tier last, so Crew's
+managed servers wait behind every agent and `mcp.json` server, and behind any
+other session's servers queued earlier in that process. The runtime reader feeds
+every `_kiro/mcp/status` frame, for any session and before routing, to
+`acp/mcp_connect_progress.McpConnectProgress`, whose `epoch` grows each time a
+session's snapshot shows more servers settled (connected, failed or disabled)
+than that session's previous snapshot (so a reload or mode switch that starts the
+same session id over still counts), keyed by a fixed-size digest of the session
+id and bounded to 1,024 sessions. At the deadline, if every pending required
+server is `connecting` and the epoch moved since the last grant, the barrier
+waits one more budget window (`session_handle_mcp._QueueWait`), never past the
+budget plus `QUEUE_EXTENSION_SECS` (240 s). No movement, a pending server in any
+other state, or a runtime without the tracker fails at the deadline exactly as
+before. A timeout after an extension names `agent.session_start_timeout_secs`.
+The allowance is bounded so the subagent startup watchdog still outlives a
+start that spends its whole `session/new` budget and this wait, at the default
+and the 900 s maximum budget.
+
 While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
 the init drain's first-report bound) inside the full start budget. The KAS
 customAgents wire has no slot for the registry marker, so a governed host's
