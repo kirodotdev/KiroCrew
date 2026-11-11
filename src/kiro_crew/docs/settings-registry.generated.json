@@ -888,6 +888,14 @@
       "hint": "How many lines the latest-message preview can use before it is cut off"
     },
     {
+      "id": "chat.project-tags",
+      "label": "Project tags",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.project_tags_enabled",
+      "description": "Tags each new session in the sidebar with the name of its project folder, like \"my-app\".",
+      "configKey": "dashboard.project_tags_enabled"
+    },
+    {
       "id": "chat.quick-reply-card-on-hover",
       "label": "Quick Reply Card on Hover",
       "tab": "chat",

@@ -19242,6 +19242,8 @@
         "side_panel_pin_summary": "Fijar el resumen en el panel lateral",
         "side_panel_pin_summary_hint": "Muestra el resumen como primera pestaña del panel lateral. Cuando el panel se abre, muestra el resumen. Si abres un archivo u otro elemento, se sigue mostrando ese elemento. Necesita tener activados los resúmenes de sesión.",
         "side_panel_pin_summary_needs_session_summaries": "Los resúmenes de sesión están desactivados. Actívalos en Ajustes → Chat → Sesiones para fijar el resumen.",
+        "project_tags": "Etiquetas de proyecto",
+        "project_tags_desc": "Etiqueta cada sesión nueva en la barra lateral con el nombre de su carpeta de proyecto, como «my-app».",
         "topic_tags": "Etiquetas de tema",
         "topic_tags_desc": "Etiqueta cada sesión nueva en la barra lateral con hasta dos temas, como «debugging». Usa una llamada al modelo en segundo plano por sesión nueva.",
         "transcript": "Conversación",

@@ -1179,6 +1179,15 @@ class DashboardConfig:
             "Offer to file a newly-titled, unfiled chat session into a matching folder.",
         ),
     )
+    project_tags_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Project Tags Enabled",
+            "Tag a new chat session with the last folder name of its project path, "
+            "such as my-app. Off creates and adds no project tag; tags already on a "
+            "session stay.",
+        ),
+    )
     topic_tags_enabled: bool = field(
         default=False,
         metadata=_meta(

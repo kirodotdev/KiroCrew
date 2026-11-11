@@ -612,6 +612,18 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
+  it('shows project tags on by default and persists turning them off', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Project tags')
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({
+        project_tags_enabled: false,
+      })
+    )
+  })
+
   it('shows topic tags off by default and persists turning them on', async () => {
     wrap('sessions')
     const sw = await settledSwitch('Topic tags')

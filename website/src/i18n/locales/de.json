@@ -18755,6 +18755,8 @@
         "side_panel_pin_summary": "Zusammenfassung im Seitenpanel anheften",
         "side_panel_pin_summary_hint": "Zeigt die Zusammenfassung als ersten Tab im Seitenpanel. Wenn sich das Panel öffnet, zeigt es die Zusammenfassung. Öffnest du eine Datei oder ein anderes Element, wird weiterhin dieses angezeigt. Dafür müssen Sitzungszusammenfassungen eingeschaltet sein.",
         "side_panel_pin_summary_needs_session_summaries": "Sitzungszusammenfassungen sind ausgeschaltet. Schalte sie unter Einstellungen → Chat → Sitzungen ein, um die Zusammenfassung anzuheften.",
+        "project_tags": "Projekt-Tags",
+        "project_tags_desc": "Taggt jede neue Sitzung in der Seitenleiste mit dem Namen ihres Projektordners, etwa „my-app“.",
         "topic_tags": "Themen-Tags",
         "topic_tags_desc": "Taggt jede neue Sitzung in der Seitenleiste mit bis zu zwei Themen, etwa „debugging“. Nutzt einen Hintergrund-Modellaufruf pro neuer Sitzung.",
         "transcript": "Verlauf",
