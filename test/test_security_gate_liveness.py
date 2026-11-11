@@ -855,7 +855,11 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 6, from 36,891, to 36,897, for ``memory_provider_consent.json`` on the
 #: crew secret-leaf list, beside ``decisions_consent.json``: the record authorizes
 #: memory to leave the machine, so the file-tool gate fences it like that one.
-_PACKAGE_LINE_BUDGET = 36_897
+#: Raised by 37, from 36,897, for the quoted-newline push split:
+#: ``_quoted_newlines_are_data`` lets ``_split_push_command_segments`` keep a newline
+#: inside its quoted word (a multi-line ``git commit -m`` before a feature push), and
+#: keeps the per-line split for a heredoc or an open quote. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_934
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
