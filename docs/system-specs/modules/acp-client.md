@@ -1496,10 +1496,12 @@ when the load reports `config.json` or its overlay unreadable, since its
 `hooks` then cannot carry an operator's `false`; see
 `rfc-batch-write-guard-default-on.md`). After the floor allows a request, both `approve_tool` methods call
 `batch_guard.screen_approval`, which refuses a write-class call that shares its
-parallel tool batch with a producer -- a read-class call, or a write that mints
-ids (`batch_guard.is_creator`, only among main's write-class calls:
+parallel tool batch with a producer -- a read-class call, or a call that mints
+ids (`batch_guard.is_creator`: among main's write-class calls,
 `work_ledger_record` with `action=create`, `gh pr|issue create`,
-`git commit|push`, an `aws` `start-`/`create-` operation)
+`git commit|push`, an `aws` `start-`/`create-` operation; and the three session
+tools whose result is a new session key, `session_create`, `session_fork` and
+`work_dispatch`, which stay unclassified and are never refused themselves)
 -- when the write's argument text carries a token the session had not seen
 (`batch_guard_tokens.tokens_of`: a 7-64 character hex id with a digit and a
 letter, in either case and read lowercase, an `it_`, `chat-` or `art_` id, a 10-20 digit id, a PR number after `#`,
@@ -1548,7 +1550,9 @@ an unseen token that a returned member of its batch printed, beyond that
 member's own arguments, is refused even when no peer is a read or a creator. A
 plain write peer is never proof; a batch of writes is refused only when one of
 them is a creator (a ledger `create`, a `gh pr create`, a commit or push) and
-another write quotes an id it could mint. A to-the-second time (`07:30:45Z`) is never a token
+another write quotes an id it could mint. A `session_create` peer is such a
+creator too, so a `session_send` or a ledger `bind` of its batch that names a
+session key nobody has seen is refused. A to-the-second time (`07:30:45Z`) is never a token
 but counts as such proof. A token in a non-write peer's own arguments (the PR a
 read views) is not unseen; one only another write of the batch carries is.
 Known gaps: a review id written as a letter prefix, a dash and digits is not a
