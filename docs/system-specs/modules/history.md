@@ -1261,7 +1261,7 @@ prefix count proved equal to it by a byte search for transient roles. A hit, or
 a page read that fails, takes the full chained read instead. The async paths that act on an existing tab await
 `state.load_window_off_loop` first, which reads on a worker thread: every
 `/api/chat/slots/{slot}` route but the close and a bounded open (`slot_ownership.load_routed_slot_window`),
-a send, a session-control send, retry, read or fork, a message, file card, MCP app
+a send, a session-control send, retry, read, fork or generate-title, a message, file card, MCP app
 message, OpenAI-compatible turn, script cron result, heartbeat result, loop nudge or
 subagent notice delivered into a session, a reply in a Slack or transport thread linked
 to the tab (which resolves the link again after the load), a change card or guide row

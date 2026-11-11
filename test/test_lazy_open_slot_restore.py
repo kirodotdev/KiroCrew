@@ -866,6 +866,29 @@ async def test_the_read_verb_loads_its_target_before_its_gate(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_the_generate_title_verb_loads_its_target_before_its_gate(tmp_path, monkeypatch):
+    """The title is built from the target's rows, and a session another session
+    created can now restore as a sidebar row, so the window loads off the loop."""
+    from kiro_crew.dashboard.handlers import session_control as sc_handlers
+
+    calls: list = []
+    monkeypatch.setattr(sc, "load_target_window", _stopping_spy(calls))
+    monkeypatch.setattr(sc_handlers, "_require_internal", AsyncMock(return_value=None))
+    monkeypatch.setattr(sc_handlers, "_body", AsyncMock(return_value={"target": "chat-x"}))
+    generate = AsyncMock()
+    monkeypatch.setattr(sc, "generate_title_target", generate)
+    app = web.Application()
+    app["state"] = state = _make_state(tmp_path)
+    request = make_mocked_request("POST", "/api/session-control/generate-title", app=app)
+
+    with pytest.raises(_Stop):
+        await sc_handlers.api_session_control_generate_title(request)
+
+    assert calls == [(state, "chat-x")]
+    generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_message_to_a_live_session_loads_it_first(monkeypatch):
     from kiro_crew.dashboard.handlers import messaging
 

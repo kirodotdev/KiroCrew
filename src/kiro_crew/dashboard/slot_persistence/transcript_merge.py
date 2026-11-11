@@ -412,10 +412,14 @@ def read_prefix_range(path: Path, where: str | tuple[int, int]) -> str | None:
         return ""
     if offset <= 0:
         return None
+    # Local: the chat_persistence facade's owners may import at module scope only
+    # what the facade already imports (test_chat_persistence_composition_contract).
+    from kiro_crew.bounded_read import bounded_read
+
     try:
         with open(path, "rb") as fh:
             fh.seek(offset - 1)
-            data = fh.read(size + 1)
+            data = bounded_read(fh, size + 1)
     except OSError:
         return None
     if len(data) != size + 1 or data[:1] != b"\n" or not data.endswith(b"\n"):
