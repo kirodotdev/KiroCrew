@@ -486,6 +486,36 @@ describe('DecisionsProviderPicker', () => {
   })
 })
 
+describe('refused hosted default (round-14 repro)', () => {
+  it('lets the owner save No model over a refused hosted default', async () => {
+    const save = vi.spyOn(api, 'saveDecisionsProvider').mockResolvedValue(providerOf('none'))
+    await renderPicker({ data: { ...providerOf('none'), hosted_permitted: false } })
+    fireEvent.click(await screen.findByRole('radio', { name: 'No model' }))
+    const button = await screen.findByRole('button', { name: 'Use this model' })
+    fireEvent.click(button)
+    await waitFor(() => expect(save).toHaveBeenCalledWith('none'))
+  })
+
+  it('names the refusal and does not draw the switch as active', async () => {
+    await renderPicker({ data: { ...providerOf('none'), hosted_permitted: false } })
+    expect(await screen.findByText(/policy blocks Jev/i)).toBeTruthy()
+  })
+
+  it('names SageMaker, not Jev, when only the SageMaker host is refused', async () => {
+    await renderPicker({
+      data: {
+        ...providerOf('none'),
+        configured_endpoint: 'sagemaker://research/us-west-2/ep',
+        hosted_permitted: true,
+        sagemaker_permitted: false,
+        configured_refused: true,
+      },
+    })
+    expect(await screen.findByText(/Turned off by your organization's policy/i)).toBeTruthy()
+    expect(screen.queryByText(/policy blocks Jev/i)).toBeNull()
+  })
+})
+
 describe('fleet policy', () => {
   it('hides hosted Jev when policy withdraws it and keeps local models choosable', async () => {
     vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
