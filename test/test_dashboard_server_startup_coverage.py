@@ -1171,7 +1171,7 @@ class TestStartDashboardWiring:
             assert callable(state.resume_channel_agents)
             assert state.memory_startup_task is prepared
             assert state.ready is True
-            schedule_memory.assert_called_once_with()
+            schedule_memory.assert_called_once_with(state)
 
     @pytest.mark.asyncio
     async def test_memory_preparation_is_published_before_session_restore_runs(
@@ -1193,7 +1193,7 @@ class TestStartDashboardWiring:
         ) as (_runner, state, _spies):
             assert seen == {"task_at_restore": prepared, "ready_at_restore": False}
             assert state.memory_startup_task is prepared
-            schedule_memory.assert_called_once_with()
+            schedule_memory.assert_called_once_with(state)
 
     @pytest.mark.asyncio
     async def test_the_mcp_and_dashboard_routes_are_both_mounted(

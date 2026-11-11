@@ -752,7 +752,7 @@ async def start_dashboard(
     assume_kiro_ready: bool = False,
     kiro_prerequisite_service: "KiroPrerequisiteService | None" = None,
     defer_channel_agent_resume: bool = False,
-    schedule_memory_preparation: "Callable[[], asyncio.Task[None] | None] | None" = None,
+    schedule_memory_preparation: "Callable[[DashboardState], asyncio.Task[None] | None] | None" = None,
     approval_mode: str | None = None,
 ) -> tuple[web.AppRunner, DashboardState]:
     """Start the dashboard web server.  Returns ``(runner, state)``."""
@@ -1608,7 +1608,7 @@ async def start_dashboard(
     # so the task's worker can start now; state.ready stays False until the end
     # of boot, and a turn waits on this task, not on ready.
     if schedule_memory_preparation is not None:
-        state.memory_startup_task = schedule_memory_preparation()
+        state.memory_startup_task = schedule_memory_preparation(state)
 
     await _restore_dashboard_sessions(state, cfg)
 
