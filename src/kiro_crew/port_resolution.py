@@ -132,8 +132,9 @@ def _gateway_owns_port(port: int) -> bool:
     1. **Recorded pid** — ``run_marker.read_pid(port)`` reads the sidecar the
        gateway wrote at ``0600`` inside the ``0700`` ``run/`` dir. Another local
        user cannot write it, so they cannot nominate a process of theirs.
-    2. **Holds the port** — that pid must be among
-       ``platform_compat.find_listening_pids(port)``. This is what makes a stale
+    2. **Holds the port** — that pid must itself hold a LISTEN socket on the
+       port, on any address
+       (``platform_compat.process_owns_port_listener``). This is what makes a stale
        recorded pid harmless: it has to actually hold the port we are about to
        send the secret to.
     3. **Owned by us, and ours** — the pid's uid must equal the caller's
@@ -146,8 +147,8 @@ def _gateway_owns_port(port: int) -> bool:
     escalation for them. The boundary this closes is a *different* local user.
 
     **Fails closed** at every step: no sidecar, no recorded pid, a pid that does
-    not hold the port, an unresolvable uid, a missing lookup tool
-    (``find_listening_pids`` folds that into an empty list) or a throwing one —
+    not hold the port, an unresolvable uid, an unreadable socket table or
+    descriptor list, a missing or incomplete lookup tool, or a throwing one —
     all deny, and discovery is skipped in favour of the documented default.
     ``--port`` and ``KIROCREW_PORT`` remain available on such hosts.
 
@@ -166,11 +167,17 @@ def _gateway_owns_port(port: int) -> bool:
     recorded = run_marker.read_pid(port)
     if recorded is None:
         return False
+    # Asked of the recorded pid alone, rather than listing every pid on the port
+    # with a system-wide lsof pass. That pass costs 115-275 ms on a busy host, and
+    # a pooled control-plane backend re-proves ownership on every call that posts
+    # back to the gateway. Any LISTEN socket on the port counts, whatever address
+    # it is bound to: boot's marker prune and sibling-port check read this as
+    # "that gateway is alive", and a gateway bound to one interface or to ::1
+    # alone has no loopback-covering socket. Anything but a completed True denies.
     try:
-        pids = platform_compat.find_listening_pids(port)
+        if platform_compat.process_owns_port_listener(recorded, port) is not True:
+            return False
     except Exception:
-        return False
-    if recorded not in pids:
         return False
     owner = platform_compat.process_owner_uid(recorded)
     if owner is None or owner != os.getuid():
