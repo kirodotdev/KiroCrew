@@ -1575,27 +1575,32 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     since what they grant keeps asking, and, last, each unreadable ``allowedCommands``
     entry (``<key>.allowedCommands: <entry> (<reason>)``): the other entries apply
     unless the list is also named whole. A ``hooks.postToolUse[<matcher>]`` key
-    gets :func:`unmet_post_tool_matchers_sentence` instead of "no effect".
+    gets :func:`unmet_post_tool_matchers_sentence` instead of "no effect". The
+    entries past the bound Kiro Crew applies get their own sentence
+    (``kas_unread_commands.over_limit_notice``).
     """
     from kiro_crew.acp.kas_spec_denies import GATE_JUDGED_MARK
+    from kiro_crew.acp.kas_unread_commands import over_limit_notice
     from kiro_crew.agent_sdk.kas_tool_view import allow_exclude_limit
     from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK as GATE
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
     from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
 
+    over_limit, keys = over_limit_notice(agent, keys)
     unread = [key for key in keys if MARK in key]
     keys = [key for key in keys if MARK not in key]
     whole = {key.partition(MARK)[0] + ".allowedCommands" for key in unread} & {
         key.removesuffix(GATE) for key in keys
     }
-    others = "" if whole else "; the agent's other entries still apply"
+    others = "" if whole or over_limit else "; the agent's other entries still apply"
     entries = (
         f"Agent {agent} has allowedCommands entries Kiro Crew cannot read: {'; '.join(unread)}. "
         "Each allows nothing, so a command only it matches asks for approval, or is refused "
         f"when denyByDefault is set{others}. Run kirocrew doctor to list them."
     )
-    if unread and not keys:
-        return f"ℹ️ {entries}"
+    named = ([entries] if unread else []) + ([over_limit] if over_limit else [])
+    if named and not keys:
+        return "ℹ️ " + " ".join(named)
     # Crew's own gate still refuses what a marked allowlist leaves out, so it is
     # never said to have no effect.
     allowlists = [k.removesuffix(GATE) for k in keys if k.endswith(GATE)]
@@ -1651,8 +1656,8 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
             " Kiro Crew does not check those deniedCommands entries, so a command only they "
             "name is not refused on this backend."
         )
-    if unread:
-        notice += f" {entries}"
+    for sentence in named:
+        notice += f" {sentence}"
     return notice
 
 

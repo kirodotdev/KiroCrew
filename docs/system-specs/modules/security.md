@@ -2950,7 +2950,13 @@ The same row answers a spec's `toolsSettings.shell.allowedCommands` (#25320), an
 `match` globs of a `permissions` `shell` `allow` with no `exclude` (#25365): `*` is
 read as `.*` and every other character as a literal, and a glob holding `? [ ] { } !`
 or a backslash is left out, so its commands keep prompting. The
-projection records the patterns (`kas_permissions.crew_answered_commands`, at most 64; each entry
+projection records the patterns (`kas_permissions.crew_answered_commands`: at most 1,024 distinct
+usable `allowedCommands` entries, in the order written, then every authored glob, which the
+`permissions` block's own bounds limit and this bound never cuts; each entry's text is read once
+and kept, `allowed_commands._read_text`, an LRU cache of 4,096 texts keyed on the text itself, so
+a changed list is never answered from another text's reading and a shell call costs one match per
+entry; a value that is not a string, is empty or is longer than 1,024 characters is refused before
+the cache on every call; each entry
 read by `platform/allowed_commands.py` in Rust's `regex` syntax, as Rust reads it:
 literal characters, escaped punctuation, `.`, bracket classes (ranges, `^`
 negation, a `-` only first, last or as a range, POSIX classes and `\d \w \s`
@@ -2978,7 +2984,11 @@ entries match. An escape must be ASCII punctuation, and in an entry with any of
 that wider syntax not `<` `>` (Rust reads `\<` `\>` as word boundaries and refuses
 other escapes, a non-ASCII one included); an entry outside it is named in the
 session-start notice with the reason (`kas_unread_commands.name_unreadable_entries`),
-and an over-long list and a list the projection withholds by key) only when
+a list past the 1,024-entry bound has each entry past it named there by its position as
+written and its text (the first ten, each cut to 80 characters, then a count of the rest;
+`kas_unread_commands.over_limit_notice` says the first 1,024 readable entries apply and
+that the list in the agent's file must be shortened), never as a key with no effect,
+and a list the projection withholds by key is named whole) only when
 `may_grant_builtin_at_gate_now("execute_bash")` holds and no restriction the spec's author wrote on the shell withholds it (`withhold_answered_under_authored_rules`, read over every `toolsSettings` shell key except the ones that never turn a matched command into a prompt on kiro-cli, `kas_grant_only_settings.without_shell_grant_keys`: `allowedCommands` itself, `denyByDefault` (the `spec-shell-allowlist` row refuses an unmatched command first) and a boolean `autoAllowReadonly`; so any other key beside it keeps every command prompting, and a `deniedCommands` beside it is read under **KAS spec grant beside a checked deny** below), the handle keeps them
 (`AcpSessionHandle.kas_crew_answered_commands`) and stamps them on the same own
 requests (`AcpEvent.spec_granted_commands`). In place of the built-in name, the row
@@ -3068,7 +3078,7 @@ entry KAS carries is not named.
 **KAS spec shell allowlist (`denyByDefault`)** — a spec that sets
 `toolsSettings.shell.denyByDefault` (either shell key; any value but `false`) has
 its usable `allowedCommands` recorded as the agent's shell allowlist
-(`kas_permissions.spec_shell_allowlist`, the same subset and 64-entry bound as
+(`kas_permissions.spec_shell_allowlist`, the same subset and 1,024-entry bound as
 above, possibly empty), then each printable entry the reader refuses, which
 matches nothing there (`kas_unread_commands.unreadable_allowlist_entries`, at most
 64), whatever the governance ceiling says, since it is a restriction. The handle keeps it (`AcpSessionHandle.kas_spec_shell_allowlist`,
@@ -3086,7 +3096,7 @@ which is all an unattended job's record shows, then names up to three of the
 entries the reader refuses with the reason (`allowed_commands.unreadable_note`);
 the session-start notice names each with the reason, and `kirocrew doctor` lists
 every one (`doctor_checks/agents._doctor_unreadable_allowed_commands`); past the
-bound the notice names `allowedCommands`. A malformed record reads as an
+bound the notice names each entry that is not applied, by position and text. A malformed record reads as an
 empty allowlist. A listed command is answered by the grant row above, as on
 kiro-cli. With `autoAllowReadonly: true` on the same shell key (the literal
 `true` only) the projection also records `_crewShellReadonly`, stamped as
