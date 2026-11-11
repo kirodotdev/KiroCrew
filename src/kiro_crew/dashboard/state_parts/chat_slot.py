@@ -300,6 +300,7 @@ class _ChatSlot:
         "_disk_meta_key",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
+        "_append_basis",
         "_foreign_reported",
         "_pending_rewrite",
         "_file_changes",
@@ -723,6 +724,7 @@ class _ChatSlot:
     _disk_window_len: int
     _disk_tail_ts: str | None
     _frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None
+    _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool
 
