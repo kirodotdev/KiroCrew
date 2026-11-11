@@ -301,6 +301,9 @@ async def test_a_reused_slot_is_not_overwritten_when_its_first_goal_never_append
     assert board_a.recorded_at and board_a.generation
 
     # Board A finishes and the sweep reaps its directory. Its ENTRIES remain.
+    assert (await _record(CONDUCTOR, {"action": "verdict", "item_id": item_id, "verdict": "pass"}))[
+        0
+    ] == 200
     status, body = await _record(
         CONDUCTOR, {"action": "close", "item_id": item_id, "state": "accepted"}
     )

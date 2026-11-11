@@ -447,6 +447,11 @@ async def test_already_bound_is_409():
 @pytest.mark.asyncio
 async def test_item_closed_is_409_for_both_halves():
     ids = await two_by_two()
+    assert (
+        await _record(
+            CONDUCTOR_A, {"action": "verdict", "item_id": ids["item_a"], "verdict": "pass"}
+        )
+    )[0] == 200
     status, _ = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
     )
@@ -517,6 +522,9 @@ async def test_goal_concurrency_cap_reached_is_409_and_concurrency_cap_raises_it
         CONDUCTOR_A, {"action": "create", "title": "d", "acceptance": acceptance}
     )
     assert (status, body["code"]) == (409, wl.CODE_GOAL_CONCURRENCY_CAP_REACHED)
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": second, "verdict": "pass"})
+    )[0] == 200
     status, _ = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": second, "state": "accepted"}
     )
@@ -1591,6 +1599,9 @@ async def test_read_filters_by_item_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_read_filters_by_state(monkeypatch):
     ids = await _three_dated_items(monkeypatch)
+    assert (
+        await _record(CONDUCTOR_A, {"action": "verdict", "item_id": ids[0], "verdict": "pass"})
+    )[0] == 200
     status, body = await _record(
         CONDUCTOR_A, {"action": "close", "item_id": ids[0], "state": "accepted", "decision": "ok"}
     )
