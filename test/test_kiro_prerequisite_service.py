@@ -155,6 +155,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "_stamp_probe": ("function", False, "(self, identity: 'str') -> 'None'"),
     "authenticated": ("property", False, "(self) -> 'bool'"),
     "boot_login_status": ("function", True, "(self) -> 'PrerequisiteStatus'"),
+    "cli_too_old": ("property", False, "(self) -> 'bool'"),
     "close": ("function", True, "(self) -> 'None'"),
     "current_identity_fingerprint": (
         "function",
@@ -171,6 +172,11 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
     "initial_setup_complete": ("property", False, "(self) -> 'bool'"),
     "login_verified": ("function", True, "(self, *, max_age_secs: 'float') -> 'bool'"),
     "mark_signed_out": ("function", False, "(self) -> 'None'"),
+    "mark_cli_too_old": (
+        "function",
+        False,
+        "(self, stamp: 'tuple[object, ...] | None' = None) -> 'bool'",
+    ),
     "note_absence_swept": ("function", False, "(self, run: 'int') -> 'None'"),
     "note_sessions_reconciled": (
         "function",

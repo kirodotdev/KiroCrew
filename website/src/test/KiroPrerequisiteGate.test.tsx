@@ -85,6 +85,19 @@ describe('KiroPrerequisiteGate', () => {
     expect(kiroPrerequisiteIsBlocking(undefined)).toBe(false)
   })
 
+  it('keeps probing while the out-of-date card blocks an established install', () => {
+    // A terminal `kiro-cli update` touches no gateway, so a latch-reading poll
+    // would hold the card until Check again.
+    const tooOld = status({ installed: true, initial_setup_complete: true, acp_supported: false })
+    expect(kiroPrerequisiteIsBlocking(tooOld, true)).toBe(true)
+    expect(kiroPrerequisiteRefetchInterval(tooOld, true)).toBe(5_000)
+    // A non-owner sees the owner screen and must not drive host probes.
+    expect(kiroPrerequisiteIsBlocking({ ...tooOld, setup_allowed: false }, true)).toBe(false)
+    // Another harness's user sees the dashboard, not the card: no forced probes.
+    expect(kiroPrerequisiteIsBlocking(tooOld, false)).toBe(false)
+    expect(kiroPrerequisiteRefetchInterval(tooOld, false)).toBe(30_000)
+  })
+
   it('polls the harness probe at the server\'s cache rate, and only behind a setup screen', () => {
     const missing = probe({ installed: 'missing' })
     // The endpoint serves a 30s cache (backend_install.CACHE_TTL_SECONDS), the
