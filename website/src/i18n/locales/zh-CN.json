@@ -14753,6 +14753,12 @@
       "start_row_show": "显示",
       "start_row_shown": "已在上方显示",
       "picked_gone": "第 {{n}} 轮已移出图表，所以显示最近一轮。",
+      "prompt_heading": "实际发送的提示词",
+      "prompt_masked": "本轮发送给智能体的文本，机密信息已遮盖。",
+      "prompt_not_kept": "本轮的提示词已不再保留。只在内存中保留聊天最近几轮的提示词，隐身或临时聊天不保留，重启后清空。",
+      "prompt_owner_only": "只有仪表板所有者可以查看一轮的提示词。",
+      "prompt_too_long": "本轮的提示词太长，未予保留，因此无法显示。",
+      "prompt_loading": "正在加载提示词…",
       "turn_start_latest": "第 {{n}} 轮 · 会话开始 · 最近一次"
     },
     "crewBoard": {

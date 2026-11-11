@@ -597,6 +597,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         context_start,
         context_turn,
         context_turn_blocks,
+        context_turn_number,
         crew_blocks,
         crew_share,
         crew_split,

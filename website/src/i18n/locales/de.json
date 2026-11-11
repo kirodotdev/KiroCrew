@@ -15144,6 +15144,12 @@
       "start_row_show": "Anzeigen",
       "start_row_shown": "Oben angezeigt",
       "picked_gone": "Durchlauf {{n}} ist aus dem Diagramm gefallen, daher wird der neueste Durchlauf gezeigt.",
+      "prompt_heading": "Gesendeter Prompt",
+      "prompt_masked": "Der Text, den dieser Durchlauf an den Agenten gesendet hat, mit maskierten Secrets.",
+      "prompt_not_kept": "Der Prompt dieses Durchlaufs wird nicht mehr aufbewahrt. Nur die neuesten Durchläufe eines Chats werden im Speicher aufbewahrt, keiner für einen Inkognito- oder temporären Chat, und ein Neustart löscht sie.",
+      "prompt_owner_only": "Nur der Besitzer des Dashboards kann den Prompt eines Durchlaufs lesen.",
+      "prompt_too_long": "Der Prompt dieses Durchlaufs war zu lang, um ihn aufzubewahren, daher kann er nicht angezeigt werden.",
+      "prompt_loading": "Prompt wird geladen…",
       "turn_start_latest": "Durchlauf {{n}} · Sitzungsstart · neuester"
     },
     "crewBoard": {

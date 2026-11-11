@@ -597,6 +597,9 @@ async def api_tasks_summary(request):
     return await handler(request)
 
 
+from kiro_crew.dashboard.handlers.prompt_as_sent import (  # noqa: E402, F401
+    api_prompt_as_sent,
+)
 from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_beacon_status,
     api_collection_status,

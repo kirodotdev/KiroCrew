@@ -15535,6 +15535,12 @@
       "start_row_show": "Afficher",
       "start_row_shown": "Affiché au-dessus",
       "picked_gone": "Le tour {{n}} a quitté le graphique, le plus récent est donc affiché.",
+      "prompt_heading": "Prompt tel qu'envoyé",
+      "prompt_masked": "Le texte que ce tour a envoyé à l'agent, secrets masqués.",
+      "prompt_not_kept": "Le prompt de ce tour n'est plus conservé. Seuls les tours les plus récents d'un chat sont conservés, en mémoire, aucun pour un chat incognito ou temporaire, et un redémarrage les efface.",
+      "prompt_owner_only": "Seul le propriétaire du tableau de bord peut lire le prompt d'un tour.",
+      "prompt_too_long": "Le prompt de ce tour était trop long pour être conservé, il ne peut donc pas être affiché.",
+      "prompt_loading": "Chargement du prompt…",
       "turn_start_latest": "Tour {{n}} · début de session · dernier"
     },
     "crewBoard": {

@@ -14753,6 +14753,12 @@
       "start_row_show": "보기",
       "start_row_shown": "위에 표시됨",
       "picked_gone": "{{n}}번째 턴이 차트에서 빠져 최신 턴을 표시합니다.",
+      "prompt_heading": "보낸 그대로의 프롬프트",
+      "prompt_masked": "이 턴이 에이전트에 보낸 텍스트이며, 비밀 정보는 가려져 있습니다.",
+      "prompt_not_kept": "이 턴의 프롬프트는 더 이상 보관되지 않습니다. 채팅의 최신 턴만 메모리에 보관되며, 시크릿 채팅 또는 임시 채팅은 보관되지 않고, 재시작하면 지워집니다.",
+      "prompt_owner_only": "대시보드 소유자만 턴의 프롬프트를 읽을 수 있습니다.",
+      "prompt_too_long": "이 턴의 프롬프트는 너무 길어서 보관되지 않았으므로 표시할 수 없습니다.",
+      "prompt_loading": "프롬프트를 불러오는 중…",
       "turn_start_latest": "{{n}}번째 턴 · 세션 시작 · 최신"
     },
     "crewBoard": {

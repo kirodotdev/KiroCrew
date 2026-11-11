@@ -1641,6 +1641,40 @@ indistinguishable `404` (`code: not_found`) and the refusal is SEL-audited
 (deny-by-default, App Kit §5.2). An app that needs its own turns' billing has
 `/api/usage/turns`.
 
+**Prompt as sent.** Under the selected turn's blocks, a "Prompt as sent" disclosure
+shows the text that turn sent the agent (`PromptAsSent.tsx`), read each time it is
+opened and never polled. The gateway keeps the text in process memory only
+(`prompt_trace`): the dashboard runner names the turn just before the stream
+(`prompt_trace.expect`; not for a restricted session, by its key or the slot's own
+memory mode, nor with the crew log off),
+and the provider's `EssentialDelivery` reports the text it hands the transport,
+after the receipt swap ([providers](providers.md)). It keeps the newest
+`MAX_TURNS` (8) prompts per crew-log unit, for at most `MAX_SESSIONS` (32) units
+and `MAX_TOTAL_CHARS` in all, dropping the least recently written unit first and
+logging one INFO line per dropped unit naming it and the cap (no text). A prompt longer than
+`MAX_PROMPT_CHARS` (1M characters) keeps a marker in its turn's place instead of its
+text (it counts no characters but holds a turn slot) and logs one INFO line naming
+the turn. Every dashboard turn at a turn number, a slash command and an
+agent-started turn included, drops that number's record and every later one before
+it opens its stream (`prompt_trace.forget_from`, once in `_run_chat`, with the crew
+log on), so a retry, a regenerate or a turn after a rewind that keeps no text shows
+nothing rather than an earlier turn's. A restart forgets it and nothing is written to disk:
+the opt-in wire recorder is the durable capture.
+`GET /api/telemetry/prompt-as-sent?slot=<session key>&turn=<ordinal>`
+(`handlers/prompt_as_sent.py`) joins the tab's ordinal to the composer's turn number
+through the `usage` fold (`context_turn_number`, which answers only for the fold's
+newest unit, because a slot that starts over counts its turn numbers from the start
+again) and reads that unit's record (`newest_unit_in_succession`). It is
+**owner-only**, as the Crew log is, because the text carries the conversation and a
+crew member's own memory: an app caller gets the indistinguishable `404`
+(`code: not_found`) with a SEL line, as `context-trace` refuses one, and any other
+caller who is not the dashboard owner gets `403 owner_only`
+(`require_owner_dashboard_request`), which the tab shows as a plain sentence. After
+those, `400 slot_required` or `400 turn_invalid`, `404 too_long` for a turn whose
+prompt was over the cap (the tab says it was too long to keep), and `404 not_kept`
+once the record is gone. The text is masked on the way out
+(`redact_exfiltration_urls`, then `redact_credentials`).
+
 **Row-timestamp parsing has one owner.** `usage._parse_row_dt` (in `usage_store.py`) is the single
 spelling for reading a stored row timestamp (`Z` rewritten to `+00:00` for
 py3.10's `fromisoformat`; a naive stamp left naive so a caller's

@@ -34,6 +34,7 @@ from kiro_crew import (  # noqa: F401
     mcp_apps_render,
     model_registry,
     prompt_segments,
+    prompt_trace,
     resource_status,
     runtime_death,
     session_directive,
@@ -110,7 +111,7 @@ from kiro_crew.config.loader import (  # noqa: F401
 from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.connections import get_visible_providers  # noqa: F401
 from kiro_crew.constants import strip_control_comments  # noqa: F401
-from kiro_crew.constants import STEER_NOTICE_BOUND_SECS
+from kiro_crew.constants import STEER_NOTICE_BOUND_SECS, crew_log_enabled
 from kiro_crew.context import (
     embed_startup_query,
     prefetch_session_memory,
@@ -345,6 +346,7 @@ from kiro_crew.dashboard.handlers import (
     _get_skills,
     _list_aim_prompts,
 )
+from kiro_crew.dashboard.handlers._shared import is_restricted_session_key
 from kiro_crew.dashboard.handlers.usage import (
     persist_token_record_async,
     read_context_tokens,
@@ -1126,6 +1128,10 @@ async def _run_chat(
         # The gateway-wide heartbeat ticks while any turn holds it; released first
         # in ``finally`` below.
         state.hold_turn_heartbeat(turn, slot.key)
+        # Any turn at a number takes it over in the Context tab's "Prompt as sent",
+        # so a command or an agent-started turn there shows no earlier prompt's text.
+        if crew_log_enabled() and turn._crew_log_sid and turn._crew_log_turn_no > 0:
+            prompt_trace.forget_from(turn._crew_log_sid, turn._crew_log_turn_no)
         # The prefixes added after assembly made the prompt a plain string again;
         # re-apply build_message's provenance so only the user's text is upgraded.
         if _agent_started:
@@ -1135,7 +1141,17 @@ async def _run_chat(
                 _begin_compact_command(turn)
             event_stream = client.stream_command(message)
         else:
-            event_stream = client.stream(_segment_user_span(turn, full_message))
+            prompt = _segment_user_span(turn, full_message)
+            # The Context tab's "Prompt as sent". Only a turn it can show (the crew
+            # log draws its rows) and never a restricted session's: the slot's own
+            # mode too, as a channel-born slot's key can miss the key-based check.
+            if (
+                crew_log_enabled()
+                and not slot.is_restricted
+                and not is_restricted_session_key(state, session_key)
+            ):
+                prompt_trace.expect(client, prompt, turn._crew_log_sid, turn._crew_log_turn_no)
+            event_stream = client.stream(prompt)
         if _timed:
             turn_timing.mark("stream_open")
         # Admission, the session claim, the prompt build and every gate are
