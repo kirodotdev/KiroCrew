@@ -256,7 +256,8 @@ binary (an installed `uv` on `PATH` is deliberately never executed -- `PATH`
 commonly leads with agent-writable directories), then installs a
 [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
 CPython 3.12 into a user-owned directory beside the data home
-(`~/.kiro/crew-python`, override with `KIROCREW_PYTHON_DIR`). No package
+(`~/.kiro/crew-python`, override with `KIROCREW_PYTHON_DIR`), with no
+`python3.12` link added to `~/.local/bin` (`uv python install --no-bin`). No package
 manager, no sudo, and the prebuilt interpreter runs on old-glibc distros
 (CentOS 7) whose base repos never reach 3.10. Pass `--system-python` (or set
 `KIROCREW_MANAGED_PYTHON=0`) to run on a system Python 3.12+ instead — the
