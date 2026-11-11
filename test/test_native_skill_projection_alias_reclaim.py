@@ -6,7 +6,6 @@ publication lock with its fail-closed fallback.
 
 from __future__ import annotations
 
-import gc
 import hashlib
 import json
 import os
@@ -24,6 +23,7 @@ from native_skill_projection_helpers import (
     _hold_the_prune_clock,
     _legacy_alias,
     _metadata_file,
+    _wait_for_dropped_projection_ends,
 )
 
 from conftest import requires_symlinks
@@ -170,7 +170,7 @@ def test_prune_reclaims_alias_whose_agent_file_was_deleted(native_tree, monkeypa
     stale = _alias_file(agents, first)
     assert stale.exists()
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     # The agent stops resolving, and a spawn for a DIFFERENT live agent runs.
     (agents / "custom.json").unlink()
     monkeypatch.setattr(
@@ -208,12 +208,7 @@ def test_every_reclaim_stage_admits_an_ordinary_local_alias(native_tree):
     # Drop the projection: its lease must be released and reclaimed, which is
     # what makes the alias unused. Nothing about the authored source changes.
     del prepared
-    gc.collect()
-    # The drop's end (lease release + reclaim) runs on the reaper thread, not
-    # inline on the dropping thread (see ``_end_projection``). Wait for it.
-    _reached = threading.Event()
-    projection._COLLECTED_ENDS.put(_reached.set)
-    assert _reached.wait(10), "the reaper never reached the dropped projection's end"
+    _wait_for_dropped_projection_ends()
 
     assert projection._active_aliases() == set(), "a dropped projection still claims its aliases"
     assert not _alias_is_live(
@@ -617,7 +612,7 @@ def test_editing_an_agent_publishes_a_new_alias_and_reclaims_the_old(native_tree
     first = projection.prepare_native_skill_projection(project)
     stale = _alias_file(agents, first)
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     source.write_text('{"name":"custom","prompt":"v2"}', encoding="utf-8")
     second = projection.prepare_native_skill_projection(project)
     assert _alias_file(agents, second) != stale
@@ -642,7 +637,7 @@ def test_prune_reclaims_unused_alias_whose_work_dir_still_exists(native_tree, tm
     alias = _alias_file(agents, ended)
     metadata = _metadata_file(agents, ended)
     del ended
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     assert run_dir.is_dir(), "the run directory is deliberately left in place"
 
     source.write_text('{"name":"custom","prompt":"new"}', encoding="utf-8")
@@ -677,7 +672,7 @@ def test_prune_reclaims_at_least_as_many_aliases_as_one_spawn_publishes(
     ended = projection.prepare_native_skill_projection(run_dir)
     left_behind = [_alias_file(agents, ended, n) for n in names]
     del ended
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     for name in names:
         (agents / f"{name}.json").write_text(
             json.dumps({"name": name, "prompt": "edited"}), encoding="utf-8"
@@ -718,7 +713,7 @@ def test_prune_drains_headroom_beyond_one_spawn_publishes(native_tree, monkeypat
     edit("live")
     backlog = [_alias_file(agents, prepared, name) for prepared in ended for name in names]
     del ended
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     assert sum(path.exists() for path in backlog) == 6
 
     live = projection.prepare_native_skill_projection(project)
@@ -740,7 +735,7 @@ def test_alias_count_stays_bounded_across_many_ended_runs(native_tree, tmp_path)
         prepared = projection.prepare_native_skill_projection(run_dir)
         assert prepared is not None
         del prepared
-        gc.collect()
+        _wait_for_dropped_projection_ends()
     live = projection.prepare_native_skill_projection(project)
     aliases = sorted(p.name for p in agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
     assert aliases == [f"{live.agent('custom')}.json"]
@@ -754,7 +749,7 @@ def test_prune_keeps_alias_replaced_after_unused_classification(native_tree, mon
     unused = _alias_file(agents, first)
     replacement = unused.read_text(encoding="utf-8")
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
 
     (agents / "other.json").write_text('{"name":"other"}', encoding="utf-8")
     monkeypatch.setattr(
@@ -983,7 +978,7 @@ def test_projection_lock_failure_keeps_aliases_and_preserves_startup(
     assert json.loads(settings.read_text(encoding="utf-8"))[projection._INHERIT_SETTING] is True
     settings_before = settings.read_bytes()
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     source.unlink()
 
     (agents / "other.json").write_text('{"name":"other"}', encoding="utf-8")
@@ -1336,7 +1331,7 @@ def test_prune_keeps_alias_while_an_external_projection_lease_is_locked(native_t
     stale = _alias_file(agents, first)
     external = projection._acquire_projection_lease(agents, {stale.stem})
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     source.unlink()
 
     (agents / "other.json").write_text('{"name":"other"}', encoding="utf-8")
@@ -1362,11 +1357,6 @@ def test_projection_finalizer_removes_its_lease_sidecar(native_tree):
     assert len(list(lease_dir.glob("*.json"))) == 1
 
     del prepared
-    gc.collect()
-    # The drop's end (lease release + sidecar removal) runs on the reaper thread,
-    # not inline on the dropping thread (see ``_end_projection``). Wait for it.
-    _reached = threading.Event()
-    projection._COLLECTED_ENDS.put(_reached.set)
-    assert _reached.wait(10), "the reaper never reached the dropped projection's end"
+    _wait_for_dropped_projection_ends()
 
     assert list(lease_dir.glob("*.json")) == []

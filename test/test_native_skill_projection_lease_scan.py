@@ -23,6 +23,7 @@ from native_skill_projection_helpers import (
     _hold_the_prune_clock,
     _legacy_alias,
     _metadata_file,
+    _wait_for_dropped_projection_ends,
 )
 
 from conftest import requires_symlinks
@@ -275,7 +276,7 @@ def test_lease_scan_overflow_is_uncertain_and_retains_stale_alias(native_tree, m
     first = projection.prepare_native_skill_projection(project)
     stale = _alias_file(agents, first)
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     source.unlink()
 
     # The scan ceiling bounds EVERY directory entry, not just the ``.json``
@@ -556,7 +557,7 @@ def test_census_counts_what_the_reclaim_would_keep_and_remove(native_tree, tmp_p
     assert ended is not None
     published = len(ended.aliases)
     del ended
-    gc.collect()
+    _wait_for_dropped_projection_ends()
     live = projection.prepare_native_skill_projection(project)
     assert live is not None
 
