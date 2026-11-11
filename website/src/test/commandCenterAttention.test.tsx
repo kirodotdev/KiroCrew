@@ -8,6 +8,7 @@ import { buildCommandCenter, type AttentionItem } from '../pages/chat/command-ce
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
 import { registerMainComposer } from '../utils/composerRestore'
+import { i18nT } from '../i18n/t'
 
 /** Jev's consent for `Auto` mode, set per test rather than fetched. */
 const jev = vi.hoisted(() => ({ consented: false }))
@@ -322,9 +323,13 @@ describe('task dashboard input routing', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve once' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve once' })).not.toBeInTheDocument())
     expect(screen.queryByText('Your response was recorded.')).not.toBeInTheDocument()
-    // The refused press is a failed request: it renders through ErrorNotice
-    // (errors-use-error-notice) in the sentence every approval surface uses.
-    expect(screen.getByRole('alert')).toHaveTextContent('This approval expired, was already decided, or was replaced by a newer request')
+    // The gone approval is status, not an error (#18203), in the sentence every
+    // approval surface uses.
+    expect(screen.getByText(i18nT('components.approvalCard.approval_no_longer_pending')).closest('[role]')).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    // Nothing waits on it any more, so the card stops saying it needs approval.
+    expect(screen.queryByText(i18nT('commandCenter.approval_needed'), { exact: false })).not.toBeInTheDocument()
+    expect(screen.queryByText(i18nT('commandCenter.reject_help'))).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=child')
   })
 

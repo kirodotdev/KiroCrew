@@ -30,8 +30,8 @@ interface NotificationsState {
   ackSeqByTs?: Record<string, number>
   /** The ts of every approval row that can no longer be decided although it
    *  is still listed: a decide this tab sent was refused as no longer pending
-   *  (`isTerminalApprovalRefusal`: a 404, or the `no pending approval` 400), so
-   *  the request FAILED and the row says so as an error. An
+   *  (`isTerminalApprovalRefusal`), and the row says so as status, not an
+   *  error. An
    *  `approval_resolved` frame removes a live row instead: only a refused
    *  press keeps one, to say why. A retired row is also read: it no longer
    *  asks for anything, so `approvalDecisionSettled` marks it read in this tab and

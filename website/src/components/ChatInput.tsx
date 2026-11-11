@@ -377,7 +377,7 @@ function ChatInput({
   const {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
@@ -406,7 +406,7 @@ function ChatInput({
   // Timed client-side from the frame that carried the decline; see the hook.
   const stopDeclinedArmed = useStopDeclinedHint(stopDeclined)
 
-  const spawnApprovals = useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError })
+  const spawnApprovals = useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError, showApprovalStatus })
 
   const {
     inputRef, composerAnchorRef, lexicalControlRef, lexicalLoadFailed, setLexicalLoadFailed,
@@ -1261,18 +1261,6 @@ function ChatInput({
           />
         </div>
       )}
-      {spawnApprovals.spawnLivenessError && (
-        <div className="px-4 mb-1">
-          {/* No hand-off: the composer draft below is unsaved. Beside the
-              refusal, never over it: a failed liveness read after a gone
-              verdict is a second fact, not a replacement for the first. */}
-          <ErrorNotice
-            testId="spawn-liveness-error"
-            message={spawnApprovals.spawnLivenessError}
-            onDismiss={spawnApprovals.dismissSpawnLivenessError}
-          />
-        </div>
-      )}
       {approvalNotice && (approvalNoticeKind === 'status' || approvalNoticeKind === 'settled') && (
         <div
           role="status"
@@ -1280,6 +1268,18 @@ function ChatInput({
         >
           {approvalNoticeKind === 'settled' ? <CheckCircle size={12} className="text-ok shrink-0" /> : <Lock size={12} className="text-warn shrink-0" />}
           <span className="text-muted text-[13px]">{approvalNotice}</span>
+        </div>
+      )}
+      {spawnApprovals.spawnLivenessError && (
+        <div className="px-4 mb-1">
+          {/* No hand-off: the composer draft below is unsaved. Under the
+              refusal, never over it: a failed liveness read after a gone
+              verdict is a second fact, not a replacement for the first. */}
+          <ErrorNotice
+            testId="spawn-liveness-error"
+            message={spawnApprovals.spawnLivenessError}
+            onDismiss={spawnApprovals.dismissSpawnLivenessError}
+          />
         </div>
       )}
       {approvalNotice && approvalNoticeKind === 'granted' && (
