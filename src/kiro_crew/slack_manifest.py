@@ -123,22 +123,31 @@ def slash_command(alias: str) -> str:
 AGENT_SESSIONS = "agent_sessions"
 #: Slack Code switch: the app may open code channels (``features.code_channels``).
 CODE_CHANNELS = "code_channels"
-#: The Slack Code switch REGISTRY: switch name -> the bot scope it cannot run
-#: without. The name is also the switch's ``slack.<name>`` config key and the
-#: template's ``#@<name>`` gate. Registering a switch is one entry here, its
-#: gated lines in ``slack-manifest.yaml`` and its config field: the render, every
-#: combination the exfil validator rebuilds (:func:`feature_sets`), the
-#: requirement diffs, the drift probe, the capability record and the settings
-#: page's update panel all follow from this mapping.
+#: The Slack Code switch REGISTRY, for the switches the gateway runs: switch name
+#: -> the bot scope it cannot run without. The name is also the switch's
+#: ``slack.<name>`` config key and the template's ``#@<name>`` gate. Registering a
+#: switch is one entry here, its gated lines in ``slack-manifest.yaml`` and its
+#: config field: the render, every combination the exfil validator rebuilds
+#: (:func:`feature_sets`), the requirement diffs, the drift probe, the capability
+#: record and the settings page's update panel all follow from this mapping.
 FEATURE_SCOPES: dict[str, str] = {
     AGENT_SESSIONS: "assistant:write",
     CODE_CHANNELS: "code_channels:manage",
 }
+#: Slack Code switch: the same Slack app also serves Slack's MCP server
+#: (``settings.is_mcp_enabled``, PKCE, the localhost redirect and read-only user
+#: scopes), for each person's own Slack sign-in on the Connections card. It only
+#: changes what the manifest asks Slack for: the gateway runs nothing for it, so
+#: it has no bot scope and is deliberately NOT in :data:`FEATURE_SCOPES`, which
+#: the capability probe, the latches and the runtime gate read (a bot token
+#: cannot read an app's user scopes or settings anyway).
+SLACK_MCP = "slack_mcp"
 #: Every registered switch, in a fixed (display) order.
-FEATURES: tuple[str, ...] = tuple(FEATURE_SCOPES)
+FEATURES: tuple[str, ...] = (*FEATURE_SCOPES, SLACK_MCP)
 
-#: A gated template line: ``<content>  #@flag`` or ``#@flag1|flag2`` at line end.
-_GATE_RE = re.compile(r"\s+#@(?P<flags>[a-z_]+(?:\|[a-z_]+)*)\s*$")
+#: A gated template line: ``<content>  #@flag`` or ``#@flag1|flag2`` at line end;
+#: ``#@!flag`` gates on the switch being OFF (a line the switch replaces).
+_GATE_RE = re.compile(r"\s+#@(?P<off>!)?(?P<flags>[a-z_]+(?:\|[a-z_]+)*)\s*$")
 
 
 def normalize_features(features: Iterable[str] | None) -> frozenset[str]:
@@ -165,8 +174,9 @@ def template(features: Iterable[str] | None = None) -> str:
 
     A line gated on a switch that is off is removed whole, comment or not; one
     whose switch is on keeps its content with the ``#@...`` gate cut off, so no
-    rendered manifest ever carries a gate. ``##`` lines are notes about the
-    template itself and are never rendered.
+    rendered manifest ever carries a gate. A ``#@!`` gate is the reverse: kept
+    only while its switch is off. ``##`` lines are notes about the template
+    itself and are never rendered.
     """
     enabled = normalize_features(features)
     out: list[str] = []
@@ -176,7 +186,7 @@ def template(features: Iterable[str] | None = None) -> str:
         gate = _GATE_RE.search(line)
         if gate is None:
             out.append(line)
-        elif enabled.intersection(gate["flags"].split("|")):
+        elif bool(enabled.intersection(gate["flags"].split("|"))) != bool(gate["off"]):
             out.append(line[: gate.start()])
     return "\n".join(out) + "\n"
 
@@ -259,6 +269,12 @@ class ManifestRequirements:
     bot_events: frozenset[str] = field(default_factory=frozenset)
     #: ``features.*`` blocks the manifest declares (``code_channels``…).
     features: frozenset[str] = field(default_factory=frozenset)
+    #: ``oauth_config.scopes.user``: what a person's own sign-in may ask for.
+    user_scopes: frozenset[str] = field(default_factory=frozenset)
+    #: App settings outside scopes and events, one ``<path>: <value>`` line per
+    #: value (``settings.is_mcp_enabled: true``,
+    #: ``oauth_config.redirect_urls: http://…``).
+    settings: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -271,20 +287,14 @@ class ManifestChange:
     removed_events: tuple[str, ...] = ()
     added_features: tuple[str, ...] = ()
     removed_features: tuple[str, ...] = ()
+    added_user_scopes: tuple[str, ...] = ()
+    removed_user_scopes: tuple[str, ...] = ()
+    added_settings: tuple[str, ...] = ()
 
     @property
     def empty(self) -> bool:
         """True when the two manifests ask Slack for the same things."""
-        return not any(
-            (
-                self.added_scopes,
-                self.removed_scopes,
-                self.added_events,
-                self.removed_events,
-                self.added_features,
-                self.removed_features,
-            )
-        )
+        return not any(self.as_dict().values())
 
     def as_dict(self) -> dict[str, list[str]]:
         """JSON-ready form, every list sorted."""
@@ -295,20 +305,49 @@ class ManifestChange:
             "removed_events": list(self.removed_events),
             "added_features": list(self.added_features),
             "removed_features": list(self.removed_features),
+            "added_user_scopes": list(self.added_user_scopes),
+            "removed_user_scopes": list(self.removed_user_scopes),
+            "added_settings": list(self.added_settings),
         }
 
 
+def _setting_lines(prefix: str, value: object, skip: frozenset[str]) -> Iterable[str]:
+    """``<path>: <value>`` for every scalar under *value*; list items one line each."""
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            path = f"{prefix}.{key}"
+            if path not in skip:
+                yield from _setting_lines(path, sub, skip)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _setting_lines(prefix, item, skip)
+    else:
+        text = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        yield f"{prefix}: {text}"
+
+
+#: Covered by their own kinds (scopes, events), so not repeated as settings.
+_NOT_SETTINGS = frozenset({"oauth_config.scopes", "settings.event_subscriptions"})
+
+
 def requirements(features: Iterable[str] | None = None) -> ManifestRequirements:
-    """Parse the manifest for *features* into its scope, event and feature sets."""
+    """Parse the manifest for *features* into its scope, event, feature and setting sets."""
     import yaml  # type: ignore[import-untyped]
 
     parsed = yaml.safe_load(render(DEFAULT_ALIAS, features=features)) or {}
     oauth = (parsed.get("oauth_config") or {}).get("scopes") or {}
     events = (parsed.get("settings") or {}).get("event_subscriptions") or {}
+    settings = frozenset(
+        line
+        for section in ("oauth_config", "settings")
+        for line in _setting_lines(section, parsed.get(section) or {}, _NOT_SETTINGS)
+    )
     return ManifestRequirements(
         bot_scopes=frozenset(oauth.get("bot") or ()),
         bot_events=frozenset(events.get("bot_events") or ()),
         features=frozenset((parsed.get("features") or {}).keys()),
+        user_scopes=frozenset(oauth.get("user") or ()),
+        settings=settings,
     )
 
 
@@ -321,4 +360,7 @@ def diff_requirements(old: ManifestRequirements, new: ManifestRequirements) -> M
         removed_events=tuple(sorted(old.bot_events - new.bot_events)),
         added_features=tuple(sorted(new.features - old.features)),
         removed_features=tuple(sorted(old.features - new.features)),
+        added_user_scopes=tuple(sorted(new.user_scopes - old.user_scopes)),
+        removed_user_scopes=tuple(sorted(old.user_scopes - new.user_scopes)),
+        added_settings=tuple(sorted(new.settings - old.settings)),
     )

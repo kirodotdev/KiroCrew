@@ -838,6 +838,8 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         agent_sessions=section.read("agent_sessions", _safe_bool),
         code_channel_dispatch=section.read("code_channel_dispatch", _safe_bool),
         code_channels=section.read("code_channels", _safe_bool),
+        # Default False: an unparseable value must never add user scopes or PKCE.
+        slack_mcp=section.read("slack_mcp", _safe_bool),
         code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
         shared_access=_build_shared_access(slack_data.get("shared_access")),
     )

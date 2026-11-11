@@ -147,6 +147,10 @@ export const APP_AUTO_DOWNLOAD_SETTING_ID = 'about.install-app-updates-automatic
 /** The config key of Channels' switch, which `ChannelsSetting` draws only while it is on. */
 export const CHANNELS_SWITCH_KEY = 'dashboard.channels_enabled'
 
+/** The config key of the Slack tools switch, which Settings > Slack draws only while
+ *  Connections offers the Slack card or the switch is already on. */
+export const SLACK_TOOLS_SWITCH_KEY = 'slack.slack_mcp'
+
 /** Registry ids of the Instances tab's two rows: RemoteCrewPanel draws the enable
  *  card only while remote crews are off, and the auto-connect switch only while on. */
 export const ENABLE_REMOTE_CREWS_SETTING_ID = 'instances.enable-remote-crew-management'
@@ -196,6 +200,13 @@ export interface SettingsSearchGovernance {
    * entry is offered only once the read SUCCEEDED and said `true`.
    */
   channelsOn?: boolean
+  /**
+   * Whether Settings > Slack draws the Slack tools switch, from the `['slack-config']`
+   * read that page itself renders from: the server says Connections offers the Slack
+   * card (`slack_mcp_card`) or the switch is already on. `false` only on a read that
+   * SUCCEEDED and said neither; `undefined` (no answer) keeps the entry.
+   */
+  slackToolsShown?: boolean
 }
 
 /**
@@ -243,6 +254,7 @@ export function settingEntryOffered(
   if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
   if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
   if (entry.id === TERMINAL_CTRL_COPY_PASTE_SETTING_ID) return !isMac
+  if (entry.configKey === SLACK_TOOLS_SWITCH_KEY) return governance.slackToolsShown !== false
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }

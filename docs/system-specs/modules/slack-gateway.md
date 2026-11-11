@@ -584,6 +584,16 @@ separately configured Slack MCP/search integration's `xoxp-...` token. The
 gateway constructs every Slack client with `SLACK_BOT_TOKEN`; it does not read
 or store the user token.
 
+The Slack MCP switch (`slack.slack_mcp`) is in `slack_manifest.FEATURES` but has
+no bot scope, so it is not in `FEATURE_SCOPES` and the capability probe, latches
+and runtime gate never see it. With it on, the manifest adds
+`settings.is_mcp_enabled`, `oauth_config.pkce_enabled` and the redirect URL
+`http://localhost:48106/callback`, and its user scopes become exactly the
+read-only set the Slack MCP server needs (the Slack Connections card's
+`recommended_scopes`): the template's one `#@!slack_mcp` line, `search:read`,
+renders only while the switch is off. With it off, the rendered manifest is
+byte-identical to the one without the switch.
+
 The manifest's one slash command is `/{{COMMAND}}`, rendered by `slack_manifest.slash_command(alias)` as `kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), because Slack resolves command names across a whole Enterprise Grid org and two installs registering the same `/kirocrew` collide. The dashboard's default alias `kirocrew` keeps `/kirocrew`. Slack delivers only commands the app registered, so `_handle_slash` and the code-channel router (both through `slack_manifest.is_app_command`) answer the live `/{slack.command}`, the shown `/{orch.slack_command}`, and every name `slack_manifest.MANIFEST_COMMAND_RE` matches (`/kirocrew` and `/kirocrew-<alias>`), whichever manifest created the app; no restart is needed. `kirocrew manifest` still prints the `kirocrew config set slack.command kirocrew-<alias>` line (applied live): `GET /api/slack/manifest` with no alias renders from the saved `slack.command`, so saving it is what keeps a later manifest update on the alias name. Once the owner gate passes, the typed name becomes `orch.slack_command`, so usage replies, the fallback help, the Home tab and the code-channel pickers name a command this app registered even while `slack.command` is the default; a `slack.command` change sets it again. Owner gating and the deny audit are the same for every answered name. Any other name is dropped.
 
 ### `run_gateway(cfg: KiroCrewConfig, *, no_dashboard=False, no_crons=False, no_tunnel=False, no_open=False, port_override=None, json_ready=False, approval_mode=None, test_mode=False) -> None`
