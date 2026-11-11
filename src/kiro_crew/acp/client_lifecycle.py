@@ -357,7 +357,7 @@ async def _snapshot_process_tree(self: AcpClient) -> None:
 
     A no-op where the walk cannot see a descendant
     (``runtime_process_tree.walk_observes_descendants``): there is nothing to
-    record, and waiting for the retry below could not change that.
+    record.
     """
     if not runtime_process_tree.walk_observes_descendants():
         return
@@ -365,9 +365,10 @@ async def _snapshot_process_tree(self: AcpClient) -> None:
     descendants = await _loop.run_in_executor(
         subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
     )
-    if not descendants:
-        # Retry once — children may not have forked yet
-        await asyncio.sleep(0.5)
+    # Retry once: children may not have forked yet.
+    if not descendants and await runtime_process_tree.wait_for_descendants(
+        runtime_process_tree.EMPTY_WALK_RETRY_DELAY
+    ):
         descendants = await _loop.run_in_executor(
             subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
         )

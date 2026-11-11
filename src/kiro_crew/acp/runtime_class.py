@@ -35,7 +35,7 @@ from kiro_crew.acp.harness import HarnessAdapter, harness_for
 from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.runtime_liveness import _DEFAULT_MAX_AGE_SECS, _DEFAULT_MAX_RSS_MB
-from kiro_crew.acp.runtime_process_tree import ChildRecord
+from kiro_crew.acp.runtime_process_tree import EMPTY_WALK_RETRY_DELAY, ChildRecord
 from kiro_crew.acp.runtime_start import _INIT_NOTIFICATION_BUFFER_LIMIT, StartCollector
 from kiro_crew.acp.runtime_wire import _PendingRequests
 from kiro_crew.acp.types import ACP_BACKEND_KIRO, JsonRpcMessage, backends_retired_by_host_logout
@@ -995,7 +995,7 @@ class AcpRuntime:
     #: deferred scan runs (``_rescan_descendants_later``). The root has only
     #: just answered ``initialize`` and may fork a moment later. One is enough
     #: because every later session start scans again. Nothing waits on it.
-    _DESCENDANT_RESCAN_DELAY = 0.5
+    _DESCENDANT_RESCAN_DELAY = EMPTY_WALK_RETRY_DELAY
 
     #: Why a teardown reached nothing, per ``_root_identity`` verdict. "holds" is
     #: reachable here too: the tree kill ran and the root exited under it, which

@@ -1,10 +1,12 @@
 """Tests for process tree tracking, recursive kill, and session cleanup."""
 
+import ast
 import asyncio
 import inspect
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,7 +23,7 @@ from kiro_crew.acp.client import (
     _kill_escaped_children,
     _read_basename,
 )
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import await_until, wait_until
 
 if sys.platform != "win32":
     import signal
@@ -478,8 +480,93 @@ class TestWalkCapability:
         assert client._child_pids == {}
 
 
+#: Far beyond any test: a wait this long can only return by not being taken.
+_NEVER = 3600.0
+
+#: The names a function reads when it walks a process tree for its records.
+_TREE_WALKS = frozenset({"_get_child_pids", "_direct_children", "guarded_tree_pass"})
+
+
+def _sleeps_beside_a_tree_walk() -> list[str]:
+    """Every function under ``src/kiro_crew`` that walks the tree and sleeps itself."""
+    src = Path(rpt.__file__).resolve().parents[1]
+    found = []
+    for path in sorted(src.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if not any(name in text for name in _TREE_WALKS):
+            continue
+        for fn in ast.walk(ast.parse(text)):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+            names |= {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}
+            if names & _TREE_WALKS and "sleep" in names:
+                found.append(f"{path.relative_to(src).as_posix()}:{fn.name}")
+    return found
+
+
+class TestWaitForDescendants:
+    """The one place a wait for the tree walk may sleep, and the one that asks first."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_nothing")
+    async def test_it_answers_no_at_once_where_the_walk_sees_nothing(self):
+        waited = await await_until(asyncio.ensure_future(rpt.wait_for_descendants(_NEVER)))
+        assert waited is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_descendants")
+    async def test_it_waits_then_answers_yes_where_the_walk_can_see(self):
+        pending = asyncio.ensure_future(rpt.wait_for_descendants(_NEVER))
+        await asyncio.sleep(0)
+        assert not pending.done(), "the wait returned before its delay"
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert await rpt.wait_for_descendants(0) is True
+
+    def test_the_runtime_retry_and_the_client_retry_share_one_delay(self):
+        assert rt.AcpRuntime._DESCENDANT_RESCAN_DELAY == rpt.EMPTY_WALK_RETRY_DELAY
+
+    def test_no_function_sleeps_beside_the_tree_walk_itself(self):
+        """A caller that walks waits through ``wait_for_descendants``, never on its own."""
+        assert _sleeps_beside_a_tree_walk() == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("walk_sees_nothing")
+    async def test_a_scheduled_runtime_retry_neither_waits_nor_walks(self):
+        r = _snapshot_runtime()
+        r._DESCENDANT_RESCAN_DELAY = _NEVER
+
+        with patch("kiro_crew.acp.runtime._get_child_pids") as scan:
+            await await_until(asyncio.ensure_future(r._rescan_descendants_later()))
+
+        scan.assert_not_called()
+
+
 @pytest.mark.usefixtures("walk_sees_descendants")
 class TestSnapshotProcessTree:
+    @pytest.mark.asyncio
+    async def test_an_empty_first_walk_is_read_once_more(self, tmp_path, monkeypatch):
+        """Where the walk can see, the client still gives its children one retry."""
+        monkeypatch.setattr(rpt, "EMPTY_WALK_RETRY_DELAY", 0)
+        client = AcpClient.__new__(AcpClient)
+        client._pid = 100
+        client._child_pids = {}
+        walks = [[], [200]]
+
+        with (
+            patch("kiro_crew.acp.client._get_child_pids", side_effect=lambda pid: walks.pop(0)),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=lambda p: p * 10),
+            patch("kiro_crew.acp.client._read_basename", side_effect=lambda p: f"proc{p}".encode()),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+            patch("kiro_crew.session_pid._pid_start_token", side_effect=lambda p: str(p * 10)),
+        ):
+            await client._snapshot_process_tree()
+
+        assert client._child_pids == {200: (2000, b"proc200")}
+        assert walks == []
+
     @pytest.mark.asyncio
     async def test_tracks_all_descendants(self, tmp_path):
         client = AcpClient.__new__(AcpClient)

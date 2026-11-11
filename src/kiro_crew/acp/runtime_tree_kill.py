@@ -348,8 +348,8 @@ async def _rescan_descendants_later(self: AcpRuntime) -> None:
     the root's identity (a root that died or was replaced meanwhile records
     nothing), and silent on failure. ``_kill_inner`` cancels it.
     """
-    await asyncio.sleep(self._DESCENDANT_RESCAN_DELAY)
-    await self._snapshot_descendants()
+    if await runtime_process_tree.wait_for_descendants(self._DESCENDANT_RESCAN_DELAY):
+        await self._snapshot_descendants()
 
 
 async def _signal_tree(
