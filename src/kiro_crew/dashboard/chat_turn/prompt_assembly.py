@@ -108,6 +108,22 @@ if TYPE_CHECKING:
 _BUILD_ADMISSION_TIMEOUT_SECS = 60.0
 
 
+def _turn_runtime_source(turn: _ChatTurn) -> str:
+    """The interface that carried this turn's words, for ``[RUNTIME]`` and source-keyed rules.
+
+    A message typed in a linked Slack thread runs in the dashboard slot, but its
+    reader is in Slack, which renders no tool cards. Only the Slack intercept
+    stamps ``_directive_source_channels`` on a channel-origin turn, so the pair
+    names Slack positively; every other turn keeps ``dashboard``.
+
+    shortcut: other channel hand-offs (``channel_handoff``) stamp no channel type
+    on the turn, so they still read ``dashboard``; upgrade when they carry one.
+    """
+    if turn._directive_channel_origin and turn._directive_source_channels:
+        return "slack"
+    return "dashboard"
+
+
 async def _session_replay_history(
     state: DashboardState,
     context_builder: ContextBuilder,
@@ -1003,7 +1019,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 mode=slot.mode,
                 blocks_reads=slot.blocks_reads,
                 provider_type=provider_name,
-                runtime_source="dashboard",
+                runtime_source=_turn_runtime_source(turn),
                 request_prefix_context=_request_prefix_context or None,
                 exclude_last_n=1,
                 conversation_reset=bool(_conversation_reset),
