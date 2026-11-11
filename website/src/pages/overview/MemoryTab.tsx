@@ -273,6 +273,10 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   const dirty = recordDirty || vectorDirty || embedDirty || Object.values(docDirty).some(Boolean) || rule.trim() !== '' || settingsUnsaved || editing !== null
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   const [lessonRequestError, setLessonRequestError] = useState<string | null>(null)
+  // The lessons list itself could not be read: on open and refresh (`load`),
+  // or right after an Add that was stored (`add`). Without it a failed read
+  // left the table on "No lessons yet" with nothing saying why.
+  const [lessonsLoadError, setLessonsLoadError] = useState<{ step: 'load' | 'add'; message: string } | null>(null)
   const [migrated, setMigrated] = useState(false)
   const [vectorActive, setVectorActive] = useState(false)
   // `vectorActive` reads false until the vector card's status answers, so the
@@ -322,7 +326,23 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
   // The tally's own clear timer, so a press that lands within four seconds of
   // the previous one cancels that one's clear instead of losing its tally to it.
   const consolidateClearRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const loadLessons = useCallback(async () => { const d = await api.lessons(); setLessons(d.lessons || []) }, [])
+  // Reads of the lessons list can overlap (a refresh during an Add). Only the
+  // newest one may set the list or its notice, so a slow older failure cannot
+  // land over a newer read that worked.
+  const lessonsReadSeq = useRef(0)
+  const loadLessons = useCallback(async () => {
+    const seq = ++lessonsReadSeq.current
+    const d = await api.lessons()
+    if (seq !== lessonsReadSeq.current) return
+    setLessons(d.lessons || [])
+    setLessonsLoadError(null)
+  }, [])
+  const showLessons = useCallback((step: 'load' | 'add') => {
+    const seq = lessonsReadSeq.current + 1
+    return loadLessons().catch((e: unknown) => {
+      if (seq === lessonsReadSeq.current) setLessonsLoadError({ step, message: (e instanceof Error && e.message) || String(e) })
+    })
+  }, [loadLessons])
   const { confirm, confirmDialog } = useConfirm()
   // Which step of a delete failed decides the banner's title: the request
   // itself (the row is still stored) or the list refresh after it succeeded
@@ -395,17 +415,17 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       if (!settingsEdited.current.days) setMaxDays(d.history_max_days ?? 90)
       setMigrated(d.migrated ?? false)
     }, (e: unknown) => setSettingsLoadError(e instanceof Error ? e.message : String(e)))
-    loadLessons()
-  }, [loadLessons])
-  // The page's own refresh signal. Invalidated by query-key PREFIX rather than
+  }, [])
+  // The page's own refresh signal, which also runs on mount and does the
+  // first lessons read. Invalidated by query-key PREFIX rather than
   // for the selected store only, so the rows cached for a store the user looked
   // at earlier cannot outlive the refresh and reappear on the next switch.
   useEffect(() => {
-    loadLessons()
+    void showLessons('load')
     for (const prefix of MEMORY_QUERY_PREFIXES) {
       queryClient.invalidateQueries({ queryKey: prefix })
     }
-  }, [refreshTrigger, loadLessons, queryClient])
+  }, [refreshTrigger, showLessons, queryClient])
   const consolidate = async () => {
     if (consolidateClearRef.current !== null) {
       clearTimeout(consolidateClearRef.current)
@@ -627,7 +647,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     }
     if (result.outcome === 'inserted' || result.outcome === 'enriched') {
       setRule('')
-      await loadLessons()
+      await showLessons('add')
       return
     }
     if (result.outcome === 'unchanged') {
@@ -880,6 +900,13 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       {/* No agent hand-off: it navigates away, and the Add row above may hold
           an unsaved rule draft. */}
       <ErrorNotice
+        title={i18nT(lessonsLoadError?.step === 'add' ? 'pages.overview.memoryTab.lesson_added_refresh_failed' : 'pages.overview.memoryTab.lessons_load_failed')}
+        message={lessonsLoadError?.message}
+        /* Not dismissible: clearing it would let the empty state claim a list
+           the read never returned. A later successful read clears it. */
+        askAgent={false}
+      />
+      <ErrorNotice
         title={i18nT(deleteError?.step === 'refresh' ? 'pages.overview.memoryTab.lessons_refresh_failed' : 'pages.overview.memoryTab.delete_failed')}
         message={deleteError?.step === 'nothing' ? i18nT('pages.overview.memoryTab.delete_matched_nothing') : deleteError?.message}
         onDismiss={() => setDeleteError(null)}
@@ -897,7 +924,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
       {/* Scrolls sideways rather than clipping: five columns plus a long path
           fragment overrun a narrow viewport, and the card hides overflow. */}
       <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.source')} sortKey="source" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessons.length === 0 && editing === null ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.length === 0 ? <tr><td colSpan={6}><FilteredEmpty query={lessonQuery} onClear={() => setLessonQuery('')} /></td></tr> : sortedLessons.map((l) => {
+        <tbody>{lessonsLoadError && lessons.length === 0 && editing === null ? null : lessons.length === 0 && editing === null ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.length === 0 ? <tr><td colSpan={6}><FilteredEmpty query={lessonQuery} onClear={() => setLessonQuery('')} /></td></tr> : sortedLessons.map((l) => {
           const key = lessonKey(l)
           // The rule cell holds the same text as a box while editing.
           const draft = editing?.key === key ? editing.text : null
