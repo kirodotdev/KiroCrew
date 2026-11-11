@@ -59,6 +59,33 @@ def walk_observes_descendants() -> bool:
     return not platform_compat.IS_WINDOWS
 
 
+#: How long a root whose tree showed no descendant is given before the tree is
+#: read once more: a root that has only just answered may fork a moment later.
+EMPTY_WALK_RETRY_DELAY = 0.5
+
+#: How long a process created a moment ago is given to fork before its tree is
+#: read for the first time. Not the retry delay: every start that can observe
+#: pays this one, so it is the shorter of the two, and it comes before any look
+#: where the retry comes after an empty one.
+EARLY_WALK_SETTLE_DELAY = 0.3
+
+
+async def wait_for_descendants(delay: float) -> bool:
+    """Wait *delay* seconds for a root to fork, where a walk could then see it.
+
+    ``True`` after the wait: the caller walks. ``False`` at once, with no wait,
+    where the walk cannot see a descendant (``walk_observes_descendants``): the
+    caller skips the walk it was waiting for.
+
+    Every wait for the tree walk goes through here, so no caller can sleep for
+    a walk that would read back empty however long it waited.
+    """
+    if not walk_observes_descendants():
+        return False
+    await asyncio.sleep(delay)
+    return True
+
+
 def _get_child_pids(parent_pid: int | None, _visited: set[int] | None = None) -> list[int]:
     """Return PIDs of all descendants recursively (best-effort).
 
