@@ -405,6 +405,64 @@ class TestDiscoverInstallStagedSwap:
         finally:
             await client.close()
 
+    async def test_a_failed_bundle_keeps_a_linked_install(
+        self, fake_home, reset_registry, tmp_path
+    ):
+        """A bundle that fails leaves a linked install linked, like a real directory."""
+        provider = FakeProvider()
+        client, skills_dir = await TestDiscoverInstall()._client(fake_home, provider)
+        try:
+            outside = tmp_path / "my-own-skill"
+            outside.mkdir()
+            (outside / "SKILL.md").write_text("# mine", encoding="utf-8")
+            provider_dir = skills_dir / "fakeprov"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            link = provider_dir / "fake-skill"
+            link.symlink_to(outside, target_is_directory=True)
+
+            provider._bundle = [("README.md", "# no skill here")]
+            resp = await client.post("/api/skills/-/discover/install", json=_OVERWRITE)
+
+            assert resp.status == 500
+            assert link.is_symlink()
+            assert (link / "SKILL.md").read_text(encoding="utf-8") == "# mine"
+            assert [p.name for p in provider_dir.iterdir()] == ["fake-skill"]
+        finally:
+            await client.close()
+
+    async def test_a_failed_publish_keeps_a_linked_install(
+        self, fake_home, reset_registry, tmp_path, monkeypatch
+    ):
+        """A publish that fails after the bundle verified still puts the old link back."""
+        from kiro_crew.dashboard.handlers import discover as discover_mod
+
+        provider = FakeProvider()
+        client, skills_dir = await TestDiscoverInstall()._client(fake_home, provider)
+
+        def _publish(src, dst):
+            raise PermissionError(13, "Access is denied", str(dst))
+
+        fake = SimpleNamespace(**{**vars(platform_compat), "publish_dir_noreplace": _publish})
+        monkeypatch.setattr(discover_mod, "platform_compat", fake)
+        try:
+            outside = tmp_path / "my-own-skill"
+            outside.mkdir()
+            (outside / "SKILL.md").write_text("# mine", encoding="utf-8")
+            provider_dir = skills_dir / "fakeprov"
+            provider_dir.mkdir(parents=True, exist_ok=True)
+            link = provider_dir / "fake-skill"
+            link.symlink_to(outside, target_is_directory=True)
+
+            provider._bundle = [("SKILL.md", "# v2")]
+            resp = await client.post("/api/skills/-/discover/install", json=_OVERWRITE)
+
+            assert resp.status == 500
+            assert link.is_symlink()
+            assert (link / "SKILL.md").read_text(encoding="utf-8") == "# mine"
+            assert [p.name for p in provider_dir.iterdir()] == ["fake-skill"]
+        finally:
+            await client.close()
+
     async def test_refused_swap_rename_keeps_the_old_install(
         self, fake_home, reset_registry, monkeypatch
     ):
