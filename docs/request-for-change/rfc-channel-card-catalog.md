@@ -18,6 +18,11 @@ superseded-by: []
   claim about the code below was checked against main at `b58eef1f9c`, or
   against the open pull request it names, at that PR's head on 2026-11-10.
 - Author: kseam
+- Review: the direction is signed for Phases 1 and 2. Phase 3 onward is
+  decided after Phase 1 lands. Two conditions are written in: a card that posts
+  today keeps today's behaviour over a cap (section 3, "Every field says what
+  happens over its cap"), and the wider secret screens stay where they run
+  today, with an off-by-default setting for the rest (section 3, step 3).
 - Prior art: [`@json-render/chat`](https://github.com/vercel-labs/json-render/tree/main/packages/chat)
   from vercel-labs/json-render (Apache-2.0, TypeScript, built on Vercel's Chat
   SDK). It gave us the idea of an agent picking components from a catalog, the
@@ -37,8 +42,9 @@ is too long. This RFC proposes one small Python package, `kiro_crew.messaging.ca
 2. One function, `render(spec, platform, limits=None)`, validates the spec,
    runs the shared redactor and mention defuser on every text field, checks
    every platform cap, and returns the native payload plus a plain-text
-   fallback. Over a cap it **refuses with structured issues**. It never cuts
-   text silently.
+   fallback. A card that posts today keeps today's behaviour over a cap: its
+   builder declares the cut or split it already does. New cards and agent
+   cards **refuse with structured issues** instead.
 3. Images, video, link previews and free-form URLs are not in the element set.
    A link exists only when one of a few gateway builders made it.
 
@@ -155,15 +161,16 @@ they live in the module where the bug was found, so the next card starts over.
 
 - One typed card spec for gateway-built cards, shared by Slack, Teams, Discord
   and a plain-text fallback.
-- One render path that redacts and defuses every text field, enforces every
-  platform cap and refuses on a breach, returning issues that name the field.
+- One render path that redacts and defuses every text field and checks every
+  platform cap. Each field states what happens over its cap; new cards and
+  agent cards refuse, returning issues that name the field.
 - Rebuilds (resolved, retired, answered) are new specs derived from the old
   spec, never edits of posted JSON.
 - No new zero-click fetch path: the element set has no image, video, preview or
   free URL.
 - Migration that changes no output: golden payloads prove each moved surface
-  renders what it rendered before. The one exception is text that is cut
-  silently today, and each phase names that change and tests it.
+  renders what it rendered before, over-cap text included. Changing a cut that
+  exists today is a separate, later decision per surface.
 
 ## Non-goals
 
@@ -189,7 +196,7 @@ standard components so the prior art stays easy to read side by side.
 class Text:
     runs: tuple[str | Link, ...]          # plain strings and builder-made links
     style: Literal["plain", "markdown", "code"] = "plain"
-    fit: Fit = Fit.REFUSE                 # see "Limits"
+    fit: Fit = Fit.REFUSE                 # see "Limits"; migrated builders declare theirs
 
 class Field:   label: str; value: Text
 class Fields:  items: tuple[Field, ...]
@@ -282,20 +289,25 @@ pass, in this order:
    `wrapup._redact_payload` does. Slack mrkdwn fields are escaped with
    `escape_mrkdwn`, and code runs get the backtick-pair break from
    `approval_card.py`.
-3. **Split secrets.** The shown text, in reading order, goes through
-   `card_lifecycle.readings_hide_secret`, the screen `tools.py` runs on agent
-   views today. It now runs on every card.
+3. **Split secrets, agent cards only.** The shown text, in reading order, goes
+   through `card_lifecycle.readings_hide_secret`, with the character-reference
+   decode, the screens `tools.py` runs on agent-authored views today. They run
+   where they run now: agent views and agent cards. A gateway-built card skips
+   them unless a setting, off by default, turns them on for every card. With
+   the setting off, a card that posts today behaves as it does today.
 4. **Limits.** Measured **after** redaction, because a redaction placeholder
    can make text longer.
 5. **Emit.** Build the native payload, then run the existing client-seam check
    (`blocks_request_remote_media`) as a backstop.
 
-**Limits never truncate silently.** `Limits` is a frozen dataclass per platform
+**Every field says what happens over its cap.** `Limits` is a frozen dataclass per platform
 (Slack: 50 blocks, 3,000 section characters, 75 label characters, 2,000
 value characters, 300 confirm-text characters; Discord: 2,000 content
 characters, 5×5 buttons, 80-character labels; and so on), each value linked to
 the platform's own docs. A caller can pass tighter limits, the way json-render
-takes `limits: {tables: 1}`. A breach becomes an `Issue`:
+takes `limits: {tables: 1}`. Every breach becomes an `Issue`. Under
+`Fit.REFUSE` the issues are raised; under any other fit they are only logged,
+so we can see how often a cap is hit without changing what posts:
 
 ```python
 @dataclass(frozen=True)
@@ -307,18 +319,25 @@ class Issue:
     message: str     # one plain sentence a model or a log reader can act on
 ```
 
-A field can opt into **one declared, visible** fit instead of refusing:
+The fits:
 
+- `Fit.REFUSE`, the default for a new card and for every agent card: over the
+  cap, `render` raises `CardError` and nothing posts.
 - `Fit.SPLIT`, for section text only: split losslessly across consecutive
   sections. The cut reuses `format._lossless_blocks`, so the sections join
   back to exactly the original text.
 - `Fit.MARKED`: cut at a word boundary and append a visible marker (today's
-  `_TRUNCATION_MARKER`). Allowed only where the full text is reachable another
-  way: a dashboard link on the same card, or the full value carried in the
-  button.
+  `_TRUNCATION_MARKER`).
+- `Fit.CUT(n)`: today's plain cut at `n` characters, kept byte for byte, for
+  a builder that cuts that way now (`wrap_up_blocks`' 2,800, the 75- and
+  80-character labels).
 
-Each fit is chosen in code and covered by a test. Nothing is cut because a
-builder forgot a cap.
+**A migrated builder declares the fit it has today**, so a card that posts
+today still posts and renders the same over a cap. Refusal on a migrated card
+is opt-in, field by field. Each fit is chosen in code and covered by a test, so
+no builder cuts because it forgot a cap. Turning a `Fit.CUT` into `SPLIT`,
+`MARKED` or `REFUSE` later is a behaviour change of its own, made per surface
+with its own test.
 
 Teams uses Adaptive Cards pinned to 1.4 (`teams/cards.py`), which has no
 `Table` element, so `Table` renders as a `ColumnSet`. Webex uses the same
@@ -397,18 +416,18 @@ unchanged; the
 renderer test suite below passes; no caller of those four functions changes.
 
 **Phase 2: code-channel wrap-up.** `wrap_up_blocks` and `_retired_blocks`
-become a spec and a `replace`. The summary uses `Fit.SPLIT`. Exit: goldens
-for every summary under the old 2,800 cap are unchanged. Over the cap, the
-only intended difference is that the summary is split instead of cut, with a
-test that fails on main. The Archive confirm keeps its exact text. The
-commit-point test covers `post_card` and `edit_card`.
+become a spec and a `replace`. The summary keeps today's cut, declared as
+`Fit.CUT(2800)`, and the notification fallback keeps `Fit.CUT(200)`. Exit:
+goldens are unchanged for every summary, including ones over the 2,800 cap.
+The Archive confirm keeps its exact text. The commit-point test covers
+`post_card` and `edit_card`.
 
 **Phase 3: OPTIONS card on Slack, Teams and Discord.** Adds the Adaptive Card
 and Discord renderers. This is the first card drawn on three platforms. Exit:
 goldens for `build_options_blocks`, `options_card` and
-`build_option_components`; the Discord 80-character cut and the Slack 75-character
-`options_button_label` become declared `Fit.MARKED` labels, since a click
-already sends the full choice. Blocked on open question 4, because
+`build_option_components`. Each label keeps today's fit: the Slack
+`options_button_label` cut with "…" is `Fit.MARKED`, and the Discord
+80-character cut is `Fit.CUT(80)`. Blocked on open question 4, because
 the Slack card's "Choose several…" overflow menu is not in the v1 element set.
 
 **Phase 4: approval cards.** One `approval_card` builder with a required
@@ -420,8 +439,7 @@ test that every approval surface's output contains the identity line.
 **Phase 5: code-channel board, tabs, bar and pickers.** Only after #21993,
 #22928 and #22370 have merged, so this work never conflicts with an open
 stack. The pickers need `Select` (open question 4). Exit: goldens per
-surface; `board/render.py`'s `[:2900]` becomes `Fit.SPLIT` or `Fit.MARKED` with
-a test.
+surface; `board/render.py`'s `[:2900]` becomes a declared `Fit.CUT(2900)`.
 
 **Phase 6 (optional): agent cards.** The `card` view type on
 `code_channel_set_view`, display-only. Exit: the issue-list answer is tested,
@@ -435,8 +453,9 @@ Later, unordered: `notifications/bridge_slack.py`, Ops Mission Control's
 Compatible. Every migrated builder keeps its function signature and returns
 the same payload, proven by goldens. Action ids, values and block ids do not
 change, so posted cards from before an upgrade still route to the same
-handlers. The only output that changes is text that today is cut silently;
-each such change is named in its phase with a test. A click on a card posted
+handlers. No output changes: over-cap text keeps today's cut or split through
+the declared fit, and the wider secret screens stay off for gateway-built
+cards. A click on a card posted
 before the upgrade brings that card's blocks in Slack's interaction payload,
 with no spec behind them; rebuilds of such cards keep today's JSON path until
 those cards are no longer answerable.
@@ -455,9 +474,12 @@ those cards are no longer answerable.
 - **No new fetch path.** The element set cannot express media, previews or
   free URLs. The client-seam refusal and `SUPPRESS_EMBEDS` stay unchanged, as
   a second layer.
-- **Wider screening.** The split-secret and character-reference screens that
-  #21429 built for agent views now run on every card. That can refuse a card
-  that posts today. Each phase's goldens show whether any of its fixtures do.
+- **Secret screening keeps its scope.** The split-secret and
+  character-reference screens that #21429 built run where they run today:
+  agent-authored views, and now agent cards. Gateway-built cards get them only
+  when a setting, off by default, turns them on. With it off, a card that posts
+  today never starts being refused. Every card still gets the shared
+  redaction and mention defuse.
 - **Buttons carry no authority.** Values stay lookup keys; nonces stay
   per-prompt; agent cards carry no buttons in v1.
 - **Stop fence.** Every card send passes through `commit()` with no await
@@ -472,10 +494,13 @@ those cards are no longer answerable.
   (credentials, a credential split across two fields, `<!channel>`,
   `@everyone`, nested character references, backtick runs), every display
   string in the output is a fixed point of `display_safe_for` for that
-  platform, and the split-secret screen finds nothing.
-- **Limit tests.** For each limit, a field at the cap renders and a field one
-  over refuses with the expected `path` and `code`; one case where redaction
-  pushes text over the cap.
+  platform. For agent cards, and for every card with the wider-screen setting
+  on, the split-secret screen finds nothing; with the setting off, a
+  gateway-built card renders as it does on main.
+- **Limit tests.** For each limit, a `Fit.REFUSE` field at the cap renders and
+  one over refuses with the expected `path` and `code`. A `Fit.CUT` or
+  `Fit.MARKED` field one over renders exactly as main does and logs its
+  issue. One case where redaction pushes text over the cap.
 - **No-media test.** For a generated corpus of specs, no Slack output satisfies
   `blocks_request_remote_media`, and no Discord payload has `embeds`.
 - **Commit point.** `post_card` and `edit_card` join
@@ -488,7 +513,7 @@ Python, so a sidecar adds a second runtime to install, update, sandbox and
 supervise on every host. Its standard catalog includes `Image` and
 `LinkButton`, which this repo's security floor refuses, so we would have to
 fork the catalog anyway. Chat SDK adapters also degrade content past a
-platform cap unless `limits` is passed, and our rule is to refuse.
+platform cap unless `limits` is passed, and new cards here refuse.
 
 **Keep hand-built blocks.** This is the status quo. The four bug classes above
 recur because each fix lives in the module that found it. More review rounds
@@ -506,8 +531,9 @@ out. A neutral spec is smaller than Block Kit and easier to validate.
 
 **Clamp silently, as some renderers do.** For example,
 [CopilotKit's `renderBlockKit`](https://docs.copilotkit.ai/reference/channels/slack/renderBlockKit)
-drops an 11th field or a 26th button without a marker. Rejected: that is bug
-class 1.
+drops an 11th field or a 26th button without a marker. Rejected as a default:
+a clamp no builder declared is bug class 1. Today's cuts survive only as a
+declared `Fit.CUT`.
 
 ## Open questions
 
@@ -533,3 +559,10 @@ class 1.
    egress site.
 6. **Package location.** Recommendation: `kiro_crew/messaging/cards/`, next to
    the channel-neutral `messaging/renderer.py` and `messaging/driver.py`.
+7. **Report-only screening for gateway-built cards, later?** With the
+   wider-screen setting off, gateway-built cards skip the split-secret and
+   character-reference screens. A possible later step runs those screens on
+   gateway-built cards in report-only mode: a match is logged and the card
+   posts unchanged. That would show which surfaces would trip them before
+   anyone considers enforcing them. It is not part of Phases 1 and 2, and it
+   changes no default.
