@@ -111,12 +111,12 @@ class ShellCommand(NamedTuple):
 
     @property
     def words(self) -> "tuple[ShellWord, ...]":
-        """Words split at live blanks; a live redirection starts its own word, keeping
-        a standalone fd prefix (``2``, ``{fd}``) glued in front of it."""
+        """Words split at live blanks and at a ``\\``-newline (bash drops it) before the first
+        word; a live redirection starts its own word, keeping a standalone fd prefix glued."""
         words: list[tuple[ShellStep, ...]] = []
         word: list[ShellStep] = []
         for step in self.steps:
-            if step.active and step.char in _BLANKS:
+            if step.active and step.char in _BLANKS or step.text == "\\\n" and not (words or word):
                 if word:
                     words.append(tuple(word))
                 word = []
