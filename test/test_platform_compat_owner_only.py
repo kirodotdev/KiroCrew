@@ -18,6 +18,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import threading
 
 import pytest
 
@@ -550,9 +551,16 @@ class TestMakeOwnerOnlyDir:
         """
         calls: list[str] = []
         wrong: list[str] = []
+        test_thread = threading.get_ident()
+
+        def _file_helper(p, **_kw):
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                wrong.append(str(p))
+
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "restrict_dir_to_owner", lambda p, **_kw: calls.append(str(p)))
-        monkeypatch.setattr(pc, "restrict_to_owner", lambda p, **_kw: wrong.append(str(p)))
+        monkeypatch.setattr(pc, "restrict_to_owner", _file_helper)
         target = tmp_path / "win"
         pc.make_owner_only_dir(target)
         assert target.is_dir()

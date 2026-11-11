@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -805,11 +806,14 @@ class TestWriteEnvUpdates:
         SecretVault(tmp_path).set_sync("SLACK_BOT_TOKEN", "placeholder-old")
 
         events: list[str] = []
+        test_thread = threading.get_ident()
         real_restrict = platform_compat.restrict_to_owner
         real_os_write = _os.write
 
         def _spy(path: Any) -> None:
-            events.append("restrict")
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                events.append("restrict")
             return real_restrict(path)
 
         def _tracking_write(fd: int, data: Any) -> int:

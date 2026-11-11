@@ -31,6 +31,7 @@ import ast
 import importlib
 import inspect
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -240,9 +241,14 @@ def test_persist_restricts_the_file_to_the_owner(spool: Path, monkeypatch: pytes
     left standing between the frame and another local account.
     """
     seen: list[str] = []
-    monkeypatch.setattr(
-        capture_macos.platform_compat, "restrict_to_owner", lambda path: seen.append(str(path))
-    )
+    test_thread = threading.get_ident()
+
+    def _spy(path):
+        # This thread only: the SEL writer thread re-locks its non-empty log per append.
+        if threading.get_ident() == test_thread:
+            seen.append(str(path))
+
+    monkeypatch.setattr(capture_macos.platform_compat, "restrict_to_owner", _spy)
     path = capture_macos.persist_jpeg(_JPEG)
     assert seen == [path]
 

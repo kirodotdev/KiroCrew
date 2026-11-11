@@ -1047,12 +1047,16 @@ class TestSchemaInit:
         from kiro_crew import vector_memory as vm
 
         seen: list[str] = []
+        test_thread = threading.get_ident()
         real = vm.platform_compat.restrict_to_owner
-        monkeypatch.setattr(
-            vm.platform_compat,
-            "restrict_to_owner",
-            lambda p: (seen.append(str(p)), real(p))[1],
-        )
+
+        def _spy(p):
+            # This thread only: the SEL writer thread re-locks its non-empty log per append.
+            if threading.get_ident() == test_thread:
+                seen.append(str(p))
+            return real(p)
+
+        monkeypatch.setattr(vm.platform_compat, "restrict_to_owner", _spy)
         db_path = tmp_path / "mem.db"
         store = VectorMemoryStore(db_path=db_path)
         try:
