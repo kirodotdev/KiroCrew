@@ -1141,7 +1141,12 @@ exit; a **wait** for the memory-preparation worker thread to drop its
 process-wide fence (`MemoryStartup`), because cancelling its awaiter does not
 stop the thread and a second boot on the same home would otherwise be refused
 with "Another gateway is still preparing memory" (a fence still held at the
-deadline fails the test by name); and a **reap** of every
+deadline fails the test by name), and for the MCP probe pool, shut down and
+joined after the reap below (the next boot builds a fresh one), because a
+cancelled probe's thread runs on until its server has exited and that server
+creates the boot's home as it starts, so one still starting would put
+`tmp_path / "home"` back after the test removed it (an overrun fails the test
+by name); and a **reap** of every
 asyncio task the boot added that `_shutdown()` left running (production leaves
 those to `os._exit`), failing the test by name if one ignores cancellation.
 The lists are kept honest by

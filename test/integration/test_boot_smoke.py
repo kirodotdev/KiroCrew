@@ -12,6 +12,7 @@ import inspect
 import os
 import signal
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -25,6 +26,7 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.platform import governance
 from kiro_crew.slack.gateway import GatewayOrchestrator
+from kiro_crew.testing.wait import async_wait_until
 
 try:
     import resource as _resource
@@ -806,6 +808,18 @@ async def test_a_run_that_dies_on_its_own_is_still_shut_down(gateway_boot) -> No
     leaked = _live_tasks() - tasks_before - {asyncio.current_task()}
     assert not [t.get_name() for t in leaked]
     assert _process_is_clean()
+
+
+def _mcp_probe_threads() -> list[str]:
+    return [t.name for t in threading.enumerate() if t.name.startswith("mc-mcpprobe")]
+
+
+@pytest.mark.asyncio
+async def test_a_boot_leaves_no_mcp_probe_thread_running(gateway_boot) -> None:
+    """Teardown joins the boot's MCP probe threads (conftest docstring, item 3)."""
+    async with gateway_boot():
+        await async_wait_until(_mcp_probe_threads, describe=lambda: "the boot ran no MCP probe")
+    assert not _mcp_probe_threads()
 
 
 @pytest.mark.asyncio
