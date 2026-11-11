@@ -2509,6 +2509,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.visual-refresh",
+    "label": "Visual refresh",
+    "labelKey": "pages.developer.featurePreviewsTab.visual_refresh",
+    "description": "A new look for the dashboard. Nothing changes yet.",
+    "hint": "Turns on the in-progress restyle of the dashboard. Nothing is restyled yet: pieces appear as they land, and may look unfinished or change between updates. Turn it off to go back to the current look.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.wake-bots-to-update-out-of-date-fields",
     "label": "Wake bots to update out-of-date fields",
     "labelKey": "pages.developer.featurePreviewsTab.dashboard_stale_wake",
