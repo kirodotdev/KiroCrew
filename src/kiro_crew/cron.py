@@ -1072,6 +1072,7 @@ class CronService:
                     ):
                         job.user_pause_generation += 1
                     job.user_paused = not enabled
+                    job.user_pause_requested = not enabled
                     job.enabled = enabled
                     # Re-enabling clears an execution auto-pause; without this a
                     # job auto-paused after failures would be re-derived as

@@ -178,7 +178,7 @@ async def api_crons(request: web.Request) -> web.Response:
                 # A fired one-shot is parked with the user-pause flags. This says
                 # the park is its run's, so a failed one-shot stays a health signal.
                 "parked_after_run": parked_by_its_run(
-                    j.schedule.kind, j.user_paused, j.last_run_ts
+                    j.schedule.kind, j.user_paused, j.user_pause_requested, j.last_run_ts
                 ),
                 "agent": _r(j.agent_id or "") or None,
                 "member_id": j.member_id or None,

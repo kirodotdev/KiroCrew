@@ -270,6 +270,16 @@ def test_a_failed_one_shot_its_run_parked_is_reported(world):
                 "user_paused": True,
                 "last_status": "error",
             },
+            {
+                "id": "held_after_run",
+                "name": "paused after its run",
+                "schedule": at,
+                "enabled": False,
+                "user_paused": True,
+                "user_pause_requested": True,
+                "last_status": "error",
+                "last_run_ts": when,
+            },
         ],
     )
     f = _run(world)["cron_failing"]

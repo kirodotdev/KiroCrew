@@ -119,12 +119,20 @@ class TestUnhealthyJobs:
             [
                 _record("fired", **parked, last_run_ts=1_700_000_001.0, last_status="error"),
                 _record("paused_at", **parked, last_status="error"),
+                _record(
+                    "paused_after_run",
+                    **parked,
+                    user_pause_requested=True,
+                    last_run_ts=1_700_000_001.0,
+                    last_status="error",
+                ),
                 _record("paused_every", user_paused=True, last_run_ts=1.0, last_status="error"),
             ]
         )
         assert cron.unhealthy_jobs_from_disk() == ([], [("fired", "job fired")], True)
         assert cron.job_pause_state_from_disk("fired") == "parked after its one-shot run"
         assert cron.job_pause_state_from_disk("paused_at") == "paused by the user"
+        assert cron.job_pause_state_from_disk("paused_after_run") == "paused by the user"
         assert cron.job_pause_state_from_disk("paused_every") == "paused by the user"
 
     def test_pause_state_per_job(self, store) -> None:
