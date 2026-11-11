@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         Any,
         GatewayOrchestrator,
         _stop_session_environments,
+        bind_refused_exit_code,
         drain_sign_in_refresher,
         flush_audit_queue,
         flush_audit_queue_before_hard_exit,
@@ -632,6 +633,10 @@ async def _shutdown_and_exit(
     # boot (a seccomp filter inherited from a torn-down sandbox turning
     # file opens into ENOSYS). That cannot be cured in-process, so it must
     # exit non-zero too for the supervisor to relaunch a fresh process.
+    #
+    # A refused bind address is a fourth: the policy refuses the address
+    # the gateway listens on and the in-app restart could not run, so a relaunch is
+    # what binds the address the policy permits.
     exit_code = (
         shutdown_exit_code(watchdog)
         or persistence_lost_exit_code(getattr(self, "_persistence_watchdog_task", None))
@@ -639,6 +644,7 @@ async def _shutdown_and_exit(
         or listener_guard_exit_code(
             getattr(self.dashboard_state, "_secondary_listener_guard", None)
         )
+        or bind_refused_exit_code(self.dashboard_state)
     )
 
     # Drop this gateway's run-marker BEFORE _shutdown() releases the

@@ -1029,7 +1029,8 @@ async def start_dashboard(
     # and an early child callback waits instead of being refused. Binding here
     # also makes --port auto (port == 0) real before the spawn: every
     # boot-spawned backend gets the true origin, fixed and auto alike.
-    _dashboard_sock = await _reserve_dashboard_port(bind_address_for(local_only), port)
+    state._bind_asked = bind_address_for(local_only)
+    _dashboard_sock = await _reserve_dashboard_port(state._bind_asked, port)
     runner: web.AppRunner | None = None
     try:
         _bind_ip = _export_reserved_bind_evidence(_dashboard_sock)

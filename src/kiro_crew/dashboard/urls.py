@@ -395,15 +395,7 @@ def _governed_bind(address: str) -> str:
     a policy that names it can widen the bind (RFC D3), and an ``oss`` build with no
     policy naming the key binds as before. Fail-closed: an error binds loopback.
     """
-    if address == _BIND_LOCAL:
-        return address
-    from kiro_crew.edition_locks import policy_permits
-
-    try:
-        item = str(ipaddress.ip_address(address))
-    except ValueError:
-        item = address
-    if policy_permits("bind_address", item, audit_tool="gateway_bind"):
+    if bind_permitted(address, audit_tool="gateway_bind"):
         return address
     logger.warning(
         "bind address %s is not permitted by governance (bind_address); binding %s",
@@ -411,6 +403,19 @@ def _governed_bind(address: str) -> str:
         _BIND_LOCAL,
     )
     return _BIND_LOCAL
+
+
+def bind_permitted(address: str, *, audit_tool: str = "") -> bool:
+    """Whether the ``bind_address`` policy permits *address*; ``127.0.0.1`` is never asked."""
+    if address == _BIND_LOCAL:
+        return True
+    from kiro_crew.edition_locks import policy_permits
+
+    try:
+        item = str(ipaddress.ip_address(address))
+    except ValueError:
+        item = address
+    return policy_permits("bind_address", item, audit_tool=audit_tool)
 
 
 # ---------------------------------------------------------------------------

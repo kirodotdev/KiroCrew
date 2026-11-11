@@ -828,6 +828,11 @@ class DashboardState:
         # read by the guards' lifecycle hooks, which withdraw the claim while the
         # address is not held and re-publish it once a rebind lands.
         self._listener_sidecars: dict[str, tuple[int, str, str]] = {}
+        # Set when the gateway stops itself because the policy refuses the primary
+        # listener's address; read for the exit status (``bind_refresh``).
+        self._bind_refused_stop: bool = False
+        # The address the primary bind asked ``bind_address`` for, IPv6 zone included.
+        self._bind_asked: str = ""
         # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
         # released/cancelled on shutdown; annotated here so the assignments in
         # start_dashboard type-check under mypy.
