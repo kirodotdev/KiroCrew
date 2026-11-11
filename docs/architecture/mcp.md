@@ -1952,11 +1952,26 @@ in any state is a claim on the name, keeps refusing.
 
 A Bot's worker runs on `kirocrew-mate-worker`, and both that base spec and
 the Bot's own file live in `~/.kiro/mates/agents/`, which the agents loop
-above never reads. So the gateway start passes that folder to the same pass
-(`rewrite_kwargs`' `mate_source_dir`), and `mcp_gateway/mate_overlays.py` writes
-one overlay per Bot file to `<overlay_dir>/mates/<id>.json`. That subdirectory
+above reads for one file only (the conductor, below). So the gateway start
+passes that folder to the same pass (`rewrite_kwargs`' `mate_source_dir`), and
+`mcp_gateway/mate_overlays.py` writes one overlay per Bot file to
+`<overlay_dir>/mates/<id>.json`. That subdirectory
 is never read by an agent-name lookup, so a Bot id cannot answer a session of
 an `~/.kiro/agents` agent of the same name, or the reverse.
+
+A Bot's chat runs the stock conductor spec, `kirocrew-mate-conductor.json` in
+that same folder, one file shared by every Bot, and its session looks its stubs
+up by that agent name. So the agents loop rewrites that one file as if it sat in
+`~/.kiro/agents/` (`mate_overlays.with_conductor_source`): its overlay is
+`<overlay_dir>/kirocrew-mate-conductor.json`, its stubs carry
+`--agent kirocrew-mate-conductor` whatever `name` the file declares (that
+folder is outside the sandbox's read-only seal), and its signature joins the fingerprint's
+`sources`. It takes the place of an `~/.kiro/agents` file with the same stem,
+which no Bot chat runs. A symlinked or non-folder `~/.kiro/mates/agents`, or a
+conductor file that is not a plain file, leaves the loop as it was. Without this
+overlay a Bot's chat would get no stub at all, so on Codex, which mounts Crew's
+own servers only as stubs, a routed `kirocrew-mate` would never reach the chat
+([providers](../system-specs/modules/providers.md#codex-dashboard-session-mount)).
 
 What the pass does with a Bot file is what it does with an agent spec: the
 same hardened reader, the same `_rewrite_single_spec`, the same launch approvals
