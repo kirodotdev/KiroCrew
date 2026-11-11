@@ -456,6 +456,33 @@ test("hit regions are read in page pixels at the page's zoom", async (t) => {
   assert.strictEqual(pet.ignore.at(-1)[0], false);
 });
 
+test("blanking an overlay stops the hit-region poll it no longer needs", async (t) => {
+  const { host, fake } = await started([appRow("pets", OVERLAY_APP)]);
+  t.after(() => host.stop());
+  const started_ = [];
+  const cleared = [];
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
+  t.mock.method(globalThis, "setInterval", (...args) => {
+    const handle = realSetInterval(...args);
+    started_.push(handle);
+    return handle;
+  });
+  t.mock.method(globalThis, "clearInterval", (handle) => {
+    cleared.push(handle);
+    return realClearInterval(handle);
+  });
+  const [pet] = fake.created;
+  fake.ipc[CHANNELS.ready](fromWindow(pet));
+  fake.ipc[CHANNELS.hitRegions](fromWindow(pet), [{ x: 0, y: 0, width: 50, height: 50 }]);
+  assert.strictEqual(started_.length, 1, "the poll starts once the overlay has regions");
+
+  pet.webContents.events["did-navigate"]({}, pet.loaded[0], 403);
+
+  assert.strictEqual(pet.isVisible(), false);
+  assert.deepStrictEqual(cleared, started_, "the blanked overlay's poll is cleared");
+});
+
 test("NEGATIVE: an error document is never revealed, and a later tick reloads it", async (t) => {
   const { host, fake } = await started([appRow("pets", OVERLAY_APP)]);
   t.after(() => host.stop());
