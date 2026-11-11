@@ -18274,6 +18274,7 @@
         "total_turns": "Всего ходов",
         "usage_tracking_is_not_available_for": "Отслеживание использования недоступно для {{provider}}.",
         "spend_over_time": "Расход во времени (кредиты)",
+        "spend_over_time_usd": "Расход во времени (доллары США)",
         "harness_unread": "Не удалось прочитать настройку бэкенда агента, поэтому график расходов не может определить, выставляет ли эта установка счёт в кредитах."
       },
       "vectorMemoryCard": {
@@ -18684,6 +18685,7 @@
       "view_details": "Подробнее",
       "wakatime": "WakaTime",
       "wakatime_not_connected": "Не подключено",
+      "today_harness_unread": "Не удалось прочитать настройку бэкенда агента, поэтому сегодняшние токены и стоимость не показаны.",
       "today_line": "Сегодня: {{summary}}",
       "today_sessions_one": "{{amount}} сессия",
       "today_sessions_few": "{{amount}} сессии",

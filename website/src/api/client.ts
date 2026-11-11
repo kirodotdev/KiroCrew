@@ -92,6 +92,7 @@ export type { WakaTimeStatsEntry, WakaTimeStats } from './client/telemetry'
 export type {
   UsageSeriesDimension,
   UsageSeriesLayer,
+  UsageSeriesMetric,
   UsageSeriesPayload,
 } from './client/telemetry'
 export type {

@@ -108,6 +108,19 @@ modification time. With no logs, or none holding a block, `codex` is `null`. Onl
 `rollout-*.jsonl` files are opened and a link at that name is refused, so `auth.json`
 is not read.
 
+`/api/usage/kiro` also carries `tokens`: the usage shards' 30-day token and
+dollar-cost history from `usage_history._parse_token_history` (totals, the
+per-day buckets by model and provider, and the filter lists), `{}` when no shard
+is in the window. The acp adapter maps it onto the report's `tokens`, `costUsd`
+and `tokenDailyHistory` fields. The Usage tab shows the Token Usage card and the
+Daily Token Usage chart from them only once a loaded config names a harness that
+records a dollar cost (`DOLLAR_HARNESS_BACKENDS`, Claude Code;
+`reportsDollars` in `api/acpBackend.ts`, named positively like `reportsCredits`),
+so a kiro-cli or KAS install's page is unchanged and a harness that reports no
+cost (codex, pi) shows no zeros. The Overview usage card's "Today" line adds today's tokens and cost on
+such a harness, read from today's local-day bucket of that history (its totals
+cover 30 days), and stays sessions and messages otherwise.
+
 The Overview usage summary and Usage report share a per-provider browser-memory
 cache for the dashboard lifetime. Opening either view shows the last successful
 report immediately. Data is fresh for five minutes; an older report refreshes
@@ -134,18 +147,24 @@ reason `cost_breakdown` documents: historical rows can carry a wrong but
 non-empty surface and the row schema has no writer marker, so the key is the
 authority and this chart buckets spend by the same closed channel vocabulary as
 the Spend panel. The model is canonicalised across provider id migrations like
-the daily chart does. The value stacked is the row's `credits`, the unit the
-kiro-cli backend and its KAS relay bill in; a harness that bills in tokens or
-dollars writes rows with no credits, so the Usage tab mounts the card only once
+the daily chart does. The value stacked is the row's `credits` by default, the
+unit the kiro-cli backend and its KAS relay bill in; `metric=cost` stacks the
+row's dollar `cost` instead (an unknown `metric` is a 400, `invalid_metric`, like
+an unknown `by`), and the payload names the `metric` it stacked. A harness that
+bills in dollars writes rows with zero credits, so the Usage tab mounts the
+credits card only once
 a loaded config names a credits-billing default harness (`agent.acp_backend`
 via `reportsCredits` in `api/acpBackend.ts`, stated positively like
-`isKiroBackend`), never on a guess and never as "not claude"; a config read
+`isKiroBackend`), never on a guess and never as "not claude"; a loaded config
+naming a harness in `DOLLAR_HARNESS_BACKENDS` (`reportsDollars`) mounts the same chart as "Spend over time (USD)"
+(`TokenStackedAreaChart metric="cost"`, its values formatted with `formatCost`);
+a config read
 that failed with nothing cached (`failedWithNoData`) is said in an
 `ErrorNotice` where the card would stand, carrying the failed request's report
 for the agent hand-off and a Try again button that re-reads, since on a
 kiro-cli install a silent absence would read as "this harness has no credits"; turns a crew
 member ran on another harness (`agent.member_acp_backend`) land in the same
-store and count whatever credits they recorded. The top seven buckets by
+store and count whatever they recorded in the metric shown. The top seven buckets by
 window total (the session palette's hue count) are kept and the rest fold into
 one `other` series carrying its member count; a row whose dimension value is
 empty or absent lands in an explicit `unattributed` series rather than being

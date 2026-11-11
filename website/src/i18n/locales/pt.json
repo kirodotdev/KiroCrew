@@ -17831,6 +17831,7 @@
         "total_turns": "Total de turnos",
         "usage_tracking_is_not_available_for": "O acompanhamento de uso não está disponível para {{provider}}.",
         "spend_over_time": "Gasto ao longo do tempo (créditos)",
+        "spend_over_time_usd": "Gasto ao longo do tempo (USD)",
         "harness_unread": "Não foi possível ler a configuração do backend do agente, então o gráfico de gasto não consegue saber se esta instalação cobra em créditos."
       },
       "vectorMemoryCard": {
@@ -18224,6 +18225,7 @@
       "view_details": "Ver detalhes",
       "wakatime": "WakaTime",
       "wakatime_not_connected": "Não conectado",
+      "today_harness_unread": "Não foi possível ler a configuração do backend do agente, por isso os tokens e o custo de hoje não podem ser exibidos.",
       "today_line": "Hoje: {{summary}}",
       "today_sessions_one": "{{amount}} sessão",
       "today_sessions_many": "{{amount}} sessões",

@@ -16945,6 +16945,7 @@
         "total_turns": "合計ターン",
         "usage_tracking_is_not_available_for": "{{provider}} では使用量のトラッキングを利用できません。",
         "spend_over_time": "支出の推移（クレジット）",
+        "spend_over_time_usd": "支出の推移（米ドル）",
         "harness_unread": "エージェントバックエンドの設定を読み込めなかったため、支出グラフはこのインストールがクレジット課金かどうかを判断できません。"
       },
       "vectorMemoryCard": {
@@ -17304,6 +17305,7 @@
       "view_details": "詳細を表示",
       "wakatime": "WakaTime",
       "wakatime_not_connected": "未接続",
+      "today_harness_unread": "エージェントのバックエンド設定を読み取れなかったため、今日のトークン数とコストを表示できません。",
       "today_line": "本日: {{summary}}",
       "today_sessions_other": "{{amount}} セッション",
       "today_messages_other": "{{amount}} 件のメッセージ",

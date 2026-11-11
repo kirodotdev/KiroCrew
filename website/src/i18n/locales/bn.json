@@ -17388,6 +17388,7 @@
         "total_turns": "মোট টার্ন",
         "usage_tracking_is_not_available_for": "{{provider}}-এর জন্য ব্যবহার ট্র্যাকিং উপলব্ধ নয়।",
         "spend_over_time": "সময়ের সাথে খরচ (ক্রেডিট)",
+        "spend_over_time_usd": "সময়ের সাথে খরচ (মার্কিন ডলার)",
         "harness_unread": "এজেন্ট ব্যাকএন্ড সেটিং পড়া যায়নি, তাই খরচের চার্ট বুঝতে পারছে না এই ইনস্টলটি ক্রেডিটে বিল করে কি না।"
       },
       "vectorMemoryCard": {
@@ -17764,6 +17765,7 @@
       "view_details": "বিবরণ দেখুন",
       "wakatime": "WakaTime",
       "wakatime_not_connected": "সংযুক্ত নয়",
+      "today_harness_unread": "এজেন্ট ব্যাকএন্ড সেটিং পড়া যায়নি, তাই আজকের টোকেন ও খরচ দেখানো যাচ্ছে না।",
       "today_line": "আজ: {{summary}}",
       "today_sessions_one": "{{amount}}টি সেশন",
       "today_sessions_other": "{{amount}}টি সেশন",

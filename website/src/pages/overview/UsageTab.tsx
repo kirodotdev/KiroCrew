@@ -6,7 +6,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useProvider } from '../../providers'
 import { providerUsageQuery } from '../../api/providerUsageQuery'
 import { api } from '../../api/client'
-import { reportsCredits } from '../../api/acpBackend'
+import { reportsCredits, reportsDollars } from '../../api/acpBackend'
 import { failedWithNoData } from '../../api/queryState'
 import { reportForError } from '../../utils/errorReport'
 import type { AcpBackendConfig } from '../../api/acpBackend'
@@ -51,6 +51,10 @@ export default function UsageTab() {
     queryFn: () => api.kirocrewConfig(),
   })
   const creditsHarness = reportsCredits(cfgQuery.data)
+  // A loaded config whose harness bills in dollars (Claude Code) records each
+  // turn's tokens and cost instead of credits, so the token card, the daily
+  // token chart and a spend chart in dollars stand in for the credit figures.
+  const dollarHarness = reportsDollars(cfgQuery.data)
   // A config read that failed with nothing cached is said where the card would
   // stand: on a kiro-cli install a silent absence would read as "this harness
   // has no credits". `failedWithNoData`, not `isError`, so the notice holds
@@ -94,7 +98,7 @@ export default function UsageTab() {
         </Card>
       )}
 
-      {data.tokens && (
+      {dollarHarness && data.tokens && (
         <Card>
           <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.token_usage')}</CardTitle>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
@@ -110,7 +114,7 @@ export default function UsageTab() {
         </Card>
       )}
 
-      {provider.id !== 'acp' && data.tokenDailyHistory && data.tokenDailyHistory.length > 0 && (
+      {dollarHarness && data.tokenDailyHistory && data.tokenDailyHistory.length > 0 && (
         <Card>
           <CardTitle><BarChart3 className="lucide-inline" /> {i18nT('pages.overview.usageTab.daily_token_usage')}</CardTitle>
           <TokenDailyChart
@@ -129,7 +133,14 @@ export default function UsageTab() {
       {creditsHarness ? (
         <Card>
           <CardTitle><ChartArea className="lucide-inline" /> {i18nT('pages.overview.usageTab.spend_over_time')}</CardTitle>
-          <TokenStackedAreaChart />
+          <TokenStackedAreaChart key="credits" />
+        </Card>
+      ) : dollarHarness ? (
+        <Card>
+          <CardTitle><ChartArea className="lucide-inline" /> {i18nT('pages.overview.usageTab.spend_over_time_usd')}</CardTitle>
+          {/* Keyed by unit: a harness switch remounts the chart, so the
+              credits series it held is never drawn under dollar ticks. */}
+          <TokenStackedAreaChart key="cost" metric="cost" />
         </Card>
       ) : harnessUnread ? (
         <Card>

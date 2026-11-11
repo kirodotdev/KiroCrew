@@ -34,6 +34,7 @@ from aiohttp import web
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.dashboard.handlers.codex_usage import read_codex_rate_limits
+from kiro_crew.dashboard.handlers.usage_history import _parse_token_history
 from kiro_crew.dashboard.handlers.usage_sessions import _CACHE_TTL, _usage_sessions_snapshot
 from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_series reads these per row
     _coerce_int,
@@ -712,6 +713,12 @@ async def api_kiro_usage(request: web.Request) -> web.Response:
             "sessions": sessions,
             "billing": billing,
             "codex": await asyncio.to_thread(read_codex_rate_limits),
+            # Every turn's tokens and dollar cost from the usage shards: what a
+            # harness that bills in dollars has instead of a credit plan.
+            "tokens": await asyncio.to_thread(_parse_token_history),
+            # The gateway's local calendar day, the key its usage rows file days
+            # under, so a browser in another zone picks today's bucket by it.
+            "local_day": datetime.now().strftime("%Y-%m-%d"),
             "refreshing": refreshing,
         }
 
@@ -781,7 +788,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TOKEN_CACHE_TS,
         _TOKEN_CACHE_TTL,
         _TOKEN_HISTORY_DAYS,
-        _parse_token_history,
     )
     from kiro_crew.dashboard.handlers.usage_sessions import (  # noqa: F401
         _SESSIONS_CACHE,

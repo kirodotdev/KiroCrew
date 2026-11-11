@@ -9946,6 +9946,7 @@
       "view_details": "View details",
       "wakatime": "WakaTime",
       "wakatime_not_connected": "Not connected",
+      "today_harness_unread": "Couldn’t read the agent backend setting, so today’s tokens and cost can’t be shown.",
       "today_line": "Today: {{summary}}",
       "today_sessions_one": "{{amount}} session",
       "today_sessions_other": "{{amount}} sessions",

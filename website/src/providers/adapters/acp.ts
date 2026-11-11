@@ -337,6 +337,8 @@ export class AcpAdapter implements ProviderAdapter {
         resets: b.resets,
         percentUsed: b.credits_plan ? Math.round((b.credits_used ?? 0) / b.credits_plan * 100) : undefined,
       } : null,
+      ...tokenUsage(data.tokens),
+      localDay: typeof data.local_day === 'string' ? data.local_day : undefined,
     }
   }
 
@@ -504,5 +506,83 @@ export class AcpAdapter implements ProviderAdapter {
       { id: 'trust', label: 'Trust All', description: 'Auto-approve all tool calls' },
       { id: 'yolo', label: 'YOLO', description: 'Skip all approval prompts (dangerous)' },
     ]
+  }
+}
+
+/** One token bucket from `/api/usage/kiro`'s `tokens` (snake_case on the wire). */
+interface RawTokenBucket {
+  input?: number
+  output?: number
+  cache_create?: number
+  cache_read?: number
+  cost_usd?: number
+}
+
+/** The `tokens` half of `/api/usage/kiro`: the usage shards' 30-day token history. */
+interface RawTokenHistory {
+  total_input?: number
+  total_output?: number
+  cache_creation?: number
+  cache_read?: number
+  total?: number
+  cost_usd?: number
+  daily_history?: (RawTokenBucket & {
+    date: string
+    models?: Record<string, RawTokenBucket>
+    providers?: Record<string, RawTokenBucket>
+    provider_models?: Record<string, Record<string, RawTokenBucket>>
+  })[]
+  providers?: string[]
+  models?: string[]
+  provider_models?: Record<string, string[]>
+}
+
+/** One normalized token bucket, the shape the daily token chart reads. */
+type TokenBucket = { input: number; output: number; cacheCreate: number; cacheRead: number; costUsd: number }
+
+function tokenBucket(v: RawTokenBucket): TokenBucket {
+  return {
+    input: v.input ?? 0,
+    output: v.output ?? 0,
+    cacheCreate: v.cache_create ?? 0,
+    cacheRead: v.cache_read ?? 0,
+    costUsd: v.cost_usd ?? 0,
+  }
+}
+
+function bucketMap(raw: Record<string, RawTokenBucket> | undefined): Record<string, TokenBucket> | undefined {
+  return raw ? Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, tokenBucket(v)])) : undefined
+}
+
+/**
+ * The token card and the daily token chart's fields, from the usage shards'
+ * token history. Nothing when the gateway sent none (an older gateway, or no
+ * shard in the window), so the page shows neither card.
+ */
+function tokenUsage(raw: RawTokenHistory | undefined): Pick<
+  NormalizedUsage, 'tokens' | 'costUsd' | 'tokenDailyHistory' | 'tokenProviders' | 'tokenModels' | 'tokenProviderModels'
+> {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.daily_history)) return {}
+  return {
+    tokens: {
+      input: raw.total_input ?? 0,
+      output: raw.total_output ?? 0,
+      cacheCreation: raw.cache_creation ?? 0,
+      cacheRead: raw.cache_read ?? 0,
+      total: raw.total ?? 0,
+    },
+    costUsd: raw.cost_usd,
+    tokenDailyHistory: raw.daily_history.map(d => ({
+      ...tokenBucket(d),
+      date: d.date,
+      models: bucketMap(d.models),
+      providers: bucketMap(d.providers),
+      providerModels: d.provider_models
+        ? Object.fromEntries(Object.entries(d.provider_models).map(([p, m]) => [p, bucketMap(m) ?? {}]))
+        : undefined,
+    })),
+    tokenProviders: raw.providers ?? [],
+    tokenModels: raw.models ?? [],
+    tokenProviderModels: raw.provider_models ?? {},
   }
 }

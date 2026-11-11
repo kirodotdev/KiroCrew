@@ -93,6 +93,8 @@ export interface NormalizedUsage {
   tokenProviders?: string[]
   tokenModels?: string[]
   tokenProviderModels?: Record<string, string[]>
+  /** The gateway's local calendar day (`YYYY-MM-DD`), the key `tokenDailyHistory` files days under. */
+  localDay?: string
 }
 
 export interface NormalizedProviderHook {

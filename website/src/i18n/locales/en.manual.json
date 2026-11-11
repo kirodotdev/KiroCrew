@@ -8205,6 +8205,7 @@
         "tokens": "Tokens",
         "usage_tracking_is_not_available_for": "Usage tracking is not available for {{provider}}.",
         "spend_over_time": "Spend over time (credits)",
+        "spend_over_time_usd": "Spend over time (USD)",
         "harness_unread": "Couldn’t read the agent backend setting, so the spend chart can’t tell whether this install bills in credits."
       },
       "vectorMemoryCard": {
