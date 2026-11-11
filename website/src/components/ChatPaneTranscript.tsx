@@ -22,10 +22,11 @@ import { speakReply } from '../pages/chat/speakReply'
 
 type Messages = Parameters<typeof foldEarlierConversation>[0]
 
-export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, revealActions = false, resume: { continuable, interrupted, continuing, onContinue } }: {
+export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, revealActions = false, resume: { continuable, interrupted, continuing, onContinue } }: {
   slotKey: string
   busyMode: ComposerBusyMode
   onFileOpen?: ChatPaneProps['onFileOpen']
+  onFolderOpen?: ChatPaneProps['onFolderOpen']
   onOpenCrewTab?: (slot: string) => void
   crewmate?: CrewmateIdentity
   crewmateTranscript: TranscriptRendererOptions['crewmateTranscript']
@@ -77,6 +78,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrew
       // Attachment cards / @mention chips open through the host's file viewer
       // (#9487); without it they render without an opener.
       onFileOpen,
+      onFolderOpen,
       onOpenCrewTab,
       crewmate,
       crewmateTranscript,
@@ -98,7 +100,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrew
       onSpeak: crewmate ? onSpeak : undefined,
       revealActions: !!crewmate && revealActions,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue, onSpeak, revealActions],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onFolderOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue, onSpeak, revealActions],
   )
   const renderers = useMemo(() => {
     // A crewmate's chat keeps each turn's browser call as a card row (crewmateBrowserLive).

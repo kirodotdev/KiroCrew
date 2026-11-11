@@ -905,6 +905,7 @@ export function createTranscriptRenderers(
                   content: c,
                   meta: mt,
                   onFileOpen: ctx.onFileOpen,
+                  onFolderOpen: ctx.onFolderOpen,
                   onSessionOpen: o.onSessionOpen,
                   sessions: o.sessions,
                   activeSession: o.activeSession,

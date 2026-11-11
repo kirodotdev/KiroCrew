@@ -353,10 +353,13 @@ export function useMembersPageSidePanel({
     setActionError(message)
     if (!besideRef.current) setOverlayOpen(false)
   }, [setOverlayOpen])
+  // Every caller just opened a tab for the person to look at, so an open reply
+  // thread, drawn opaque over the whole panel, steps aside for it.
   const revealPanelAfterOpen = useCallback(() => {
+    closeReplyThread()
     if (besideRef.current) setDockedOpen(true)
     else setOverlayOpen(true)
-  }, [setDockedOpen, setOverlayOpen])
+  }, [closeReplyThread, setDockedOpen, setOverlayOpen])
   const { openFile, openWorkingTreeDiff, openArtifact, saveFile } = usePanelDocumentActions({
     tabsCtl,
     slotRef: activeSlotRef,
@@ -402,6 +405,15 @@ export function useMembersPageSidePanel({
   const openFileGuarded = useCallback((...args: Parameters<typeof openFile>) => {
     void openFile(...args)
   }, [openFile])
+  // A folder a crewmate names in its reply opens as the panel's folder tab
+  // against the DM slot, the way the chat page's folder chips do. Without it
+  // the chip fell back to the OS file manager, which a remote or headless
+  // gateway can only answer by copying the path.
+  const { openFolder: openFolderTab } = tabsCtl
+  const openFolderGuarded = useCallback((path: string) => {
+    openFolderTab(path, activeSlotRef.current)
+    revealPanelAfterOpen()
+  }, [openFolderTab, revealPanelAfterOpen])
   // Same shape for an artifact a crewmate names in its reply: the panel's own
   // Artifacts opener (a document tab against the DM slot), fire-and-forget
   // like the file one. Without it the `/artifacts/<slug>` link opened the
@@ -485,7 +497,7 @@ export function useMembersPageSidePanel({
     threadsOn, openThreadMid, threadsQuery, closeReplyThread, threadHooks, setShownTabId,
     dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,
-    openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openArtifactGuarded,
+    openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openFolderGuarded, openArtifactGuarded,
     openSessionGuarded, drivingSessions,
     dashboardPreviewLink, focusPanelTab, leaveDashboardPreview, requestCloseOverlay, activeTabId,
   }

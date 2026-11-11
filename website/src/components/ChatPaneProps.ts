@@ -83,6 +83,11 @@ export interface ChatPaneProps {
    *  the pane shows every attachment but cannot open one. Capability by
    *  omission, like `openSideChat`. */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open a directory a reply names in the host's side panel. Without it a
+   *  folder chip falls back to the OS file manager, which a remote or
+   *  headless gateway answers by copying the path. Capability by omission,
+   *  like `onFileOpen`. */
+  onFolderOpen?: (path: string) => void
   /** Reveal the Crew (Workers) tab from a Crew Mode dispatch-notice row. The
    *  host's single reveal (`handleOpenCrewTab`), threaded down so a split pane
    *  uses the SAME path as the single-chat surface — it closes Find and rebinds
