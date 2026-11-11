@@ -119,6 +119,10 @@ def _named(prefix, rows):
             ("how do I run a task in the background", "subagents"),
             ("how do I add a skill", "skills"),
             ("how do I use artifacts", "artifacts"),
+            ("auto approve mcp tool", "tool-approvals"),
+            ("stop asking to authorize slack", "tool-approvals"),
+            ("how do I auto-approve slack read tools without Trust mode", "tool-approvals"),
+            ("always allow this tool", "tool-approvals"),
         ],
     )
     + _named(
@@ -128,6 +132,57 @@ def _named(prefix, rows):
 )
 def test_search_docs_ranks_the_page_the_query_is_about_first(query, top):
     assert mcp_guide.search_docs(query)["results"][0]["page"] == top
+
+
+def test_the_prompt_sends_a_withheld_grant_question_to_the_page_that_answers_it():
+    """Kiro Crew withholds ``allowedTools`` / ``autoApprove`` grants with only a
+    security-log record, so an agent recommended them as the fix for approval
+    prompts. The always-read prompt bullet names that, and the search it names
+    lands on the page with the working path (a KAS ``permissions.yaml`` rule)."""
+    from pathlib import Path
+
+    prompt = (Path(mcp_guide.__file__).parent / "config" / "prompt.md").read_text("utf-8")
+    (bullet,) = [ln for ln in prompt.splitlines() if ln.startswith("- **Your agent config is")]
+    assert "`allowedTools`" in bullet and "`autoApprove`" in bullet
+    query = bullet.split('`search_docs` "', 1)[1].split('"', 1)[0]
+    top, *_rest = mcp_guide.search_docs(query)["results"]
+    assert top["page"] == "tool-approvals"
+    page = mcp_guide.search_docs(page="tool-approvals")["text"]
+    assert "permissions.yaml" in page and "capability: mcp" in page
+
+
+def test_the_documented_permissions_rule_is_the_shape_crew_already_sends_kas():
+    """The page's ``permissions.yaml`` example parses to exactly the ``mcp`` allow
+    rule the KAS projection derives for the same ``@server/tool`` grants, the
+    shape KAS's own policy loader reads from that file."""
+    import yaml
+
+    from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+
+    page = mcp_guide.search_docs(page="tool-approvals")["text"]
+    block = page.split("```yaml\n", 1)[1].split("```", 1)[0]
+    documented = yaml.safe_load(block)
+    (rule,) = documented["rules"]
+    refs = [f"@{m}" for m in rule["match"]]
+    (derived,) = allowed_tools_to_permissions(refs)["rules"]
+    # The projection sorts `match`; KAS reads it as a set.
+    assert {**rule, "match": sorted(rule["match"])} == derived
+
+
+def test_the_page_calls_a_write_refused_only_where_the_write_gate_refuses_it():
+    """The page may say an agent's write to ``permissions.yaml`` is refused only
+    while the file-write gate refuses both spellings of that file. Otherwise it
+    promises the reader a protection that nothing enforces."""
+    import re
+
+    from kiro_crew.security import is_sensitive_write_path
+
+    page = mcp_guide.search_docs(page="tool-approvals")["text"]
+    claims_a_refusal = re.search(r"\bwrite\b[^.]*\brefused\b", page) is not None
+    refused = all(
+        is_sensitive_write_path(f"~/.kiro/settings/permissions.{ext}") for ext in ("yaml", "json")
+    )
+    assert refused or not claims_a_refusal
 
 
 def _docs(tmp_path, monkeypatch, pages: dict[str, str]) -> None:

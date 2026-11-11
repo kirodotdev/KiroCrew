@@ -156,6 +156,13 @@ GUIDE_NOT_SHOWN_NOTE = (
 )
 
 
+#: The instruction on every ``find_setting`` result. Some answers are not a
+#: Settings row (auto-approving one MCP tool on KAS is a ``permissions.yaml``
+#: rule), and the packaged docs say so where the registry cannot.
+_FIND_SETTING_NEXT = (
+    "If no row here is what was asked, it may not be a setting: call search_docs "
+    "with the same words before answering, and never suggest a config key from memory."
+)
 #: The instruction on a ``find_ui`` miss: search again with the control's words.
 _FIND_UI_RETRY_NOTE = (
     "No match for these words. Before answering, call find_ui again with only the "
@@ -987,7 +994,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if name == "find_setting":
         query = urllib.parse.urlencode({"q": args.get("query") or ""})
         d = _get(f"/api/cards/agent/settings?{query}", session_key=sk)
-        return _error_for(name, d) or _render({"settings": d.get("settings") or []})
+        return _error_for(name, d) or _render(
+            {"settings": d.get("settings") or [], "next": _FIND_SETTING_NEXT}
+        )
 
     if name == "get_member_capabilities":
         query = urllib.parse.urlencode({"member": args.get("member") or ""})
