@@ -754,9 +754,21 @@ class TestRefusedDefaultReadsAsNoModel:
 
     @pytest.mark.asyncio
     async def test_a_sagemaker_address_keeps_its_own_reading(self, audit, monkeypatch):
-        _ceiling(monkeypatch, "127.0.0.1")
+        _ceiling(monkeypatch, *SAGEMAKER_ONLY)
         _seed_endpoint(GOOD_ADDRESS)
         assert (await _get())["active"] == "sagemaker"
+
+    @pytest.mark.asyncio
+    async def test_a_refused_sagemaker_address_reads_none_and_leaves_the_config_alone(
+        self, audit, provider_config, monkeypatch
+    ):
+        _ceiling(monkeypatch, "127.0.0.1")
+        _seed_endpoint(GOOD_ADDRESS)
+        before = provider_config()
+        payload = await _get()
+        assert payload["active"] == "none"
+        assert payload["configured_endpoint"] == GOOD_ADDRESS
+        assert provider_config() == before
 
 
 class TestConnectionTest:

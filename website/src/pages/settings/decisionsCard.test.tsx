@@ -295,8 +295,9 @@ describe('Decisions (Jev) preview card', () => {
     } as never)
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/policy blocks Jev/)).toBeInTheDocument()
+      expect(screen.getByText(/Turned off by your organization's policy/)).toBeInTheDocument()
     }, { timeout: 5000 })
+    expect(screen.queryByText(/policy blocks Jev/)).toBeNull()
     expect(screen.queryByText(/^Sent to/)).toBeNull()
     expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
     expect(screen.queryByText('sagemaker://decision-model-a?region=us-west-2')).toBeNull()
