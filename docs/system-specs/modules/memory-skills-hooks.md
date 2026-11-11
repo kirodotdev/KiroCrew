@@ -5362,6 +5362,26 @@ covers the global scope only; a trusted project's scope is first read by the fir
 session in that project. A failed read is logged at debug, and the first session then
 reads for itself. Not started in test mode.
 
+**A due re-walk starts while the person types, not beside the prompt build.** Tier 2
+answers at once, but the re-walk it queues then runs beside whatever asked. When the
+first read after `_ITER_CACHE_TTL_SECS` is a session start's own, that is the prompt
+build, after the person has sent the message, and the two compete for the path gate.
+A person opening a chat a minute or more after the last session start is the ordinary
+case. The dashboard already announces a slot on composer focus and on a key press (the
+`slot_focused` frame, at most one per ten seconds per slot), so on an owner's frame
+`dashboard/skill_read_ahead.read_ahead` asks the loader for that slot's scope
+(`scoped_skills`, on a worker thread): a list that is still fresh is returned as it is,
+and an expired one queues its re-walk then. It reads only for a slot whose next turn
+builds a session-start context (no live session, or a started one no turn has claimed),
+at most once per scope every `MIN_INTERVAL_SECS` and never twice at once. The floor
+matches the frame's own throttle and sits well under the list's lifetime on purpose: a
+read of a fresh list refreshes nothing, so a floor as long as the lifetime could make
+the one read that matters wait a whole lifetime. The lifetime itself is unchanged, and
+it stays the bound on an out-of-band change, which sends no signal. Nothing is kept
+outside the loader, and nothing but the skill catalog is read: no memory, agent spec,
+steering file or hook. A send more than the lifetime after the last frame (the tab left
+alone, then a message pasted and sent at once) still starts its own re-walk, as today.
+
 The scope key is a digest of the skills root, the resolved `extra_paths` and the
 trusted project key (`_catalog_scope_id`), because two loaders can share a project
 and still enumerate different trees. Stored rows keep their **ordinal**: enumeration
