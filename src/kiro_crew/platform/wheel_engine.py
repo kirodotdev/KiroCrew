@@ -117,7 +117,12 @@ from kiro_crew.platform.wheel_engine_layout import (
     _realpath,
     managed_venv_layout,
 )
-from kiro_crew.platform.wheel_engine_transfer import _download_to_file, _fetch_bytes, _staging_dir
+from kiro_crew.platform.wheel_engine_transfer import (
+    _download_to_file,
+    _fetch_bytes,
+    _legacy_staging_dir,
+    _staging_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -971,10 +976,13 @@ def _sweep_layout_debris(layout: ManagedVenvLayout, cancel: ApplyCancel | None =
         if match and entry.is_symlink() and not _pid_alive(int(match.group(1))):
             with contextlib.suppress(OSError):
                 entry.unlink()
-    try:
-        staging = list(_staging_dir().iterdir())
-    except OSError:
-        staging = []
+    staging: list[Path] = []
+    # The legacy root too: a build that staged under trust/ may have left a run there.
+    for root in (_staging_dir(), _legacy_staging_dir()):
+        try:
+            staging.extend(root.iterdir())
+        except OSError:
+            continue
     now = time.time()
     for entry in staging:
         try:
@@ -1486,6 +1494,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         stable_launch_path,
     )
     from kiro_crew.platform.wheel_engine_transfer import (  # noqa: F401
+        _UPDATE_STAGING_LEAF,
         _read_bounded,
         _response_socket,
         _SinkWriteError,

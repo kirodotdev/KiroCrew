@@ -103,6 +103,14 @@ _LIVE_TARGET_STAGING_LEAF: str = "live-target-staging"
 #: needs no backend carve-out to hand the directory back to a sandboxed app.
 _AUTH_STORE_STAGING_LEAF: str = "auth-store-staging"
 
+#: The masked DIRECTORY the self-update engine downloads a release wheel into
+#: (``platform.wheel_engine_transfer._staging_dir``). The wheel's SHA-256 is checked as it
+#: lands and pip opens the same path seconds later, so a sandboxed writer that can reach
+#: the directory could replace the checked file before pip reads it. It is not under
+#: ``trust/``, which stays sandbox read-write for SEL. A top-level directory mask covers
+#: every name inside it, present and future, and the gateway is its only writer.
+_UPDATE_STAGING_LEAF: str = "update-staging"
+
 #: The mediated-secret request directory (``secrets_mediation.provenance.
 #: REQUEST_POLICY_DIRNAME``): the owner-signed authorization policy and its
 #: authorize lock. Hidden as a WHOLE directory and
@@ -403,6 +411,8 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # in-flight temp -- which holds the same key and chain-state bytes as the two leaves
     # above -- and any crash orphan are covered at every name, present and future.
     _AUTH_STORE_STAGING_LEAF,
+    # The self-update engine's wheel download directory (see ``_UPDATE_STAGING_LEAF``).
+    _UPDATE_STAGING_LEAF,
     "kas",
     "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",

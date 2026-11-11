@@ -16,6 +16,7 @@ from kiro_crew.sandbox_leaves import (
     _MD_NOTEBOOK_STAGING_LEAF,
     _MD_NOTEBOOK_STATE_LEAVES,
     _SECRET_REQUEST_POLICY_LEAF,
+    _UPDATE_STAGING_LEAF,
     MD_NOTEBOOK_APP_NAME,
 )
 
@@ -526,6 +527,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # (and the owner CLI publishes the policy) after a sandbox may already be running, so
     # the directory must exist, and be masked, before any namespace starts.
     _SECRET_REQUEST_POLICY_LEAF,
+    # The self-update wheel staging directory, by the same rule: the engine first creates it
+    # at an update, which can start while a sandbox is already running.
+    _UPDATE_STAGING_LEAF,
     # ``crew-panels`` is the same requirement seen from the mirror side of the
     # ceilings above: a read-only ceiling is materialised so the SEAL can apply,
     # a hidden leaf so the MASK can. The skip lands precisely on a fresh install,
