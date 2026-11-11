@@ -114,7 +114,8 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # 14: a settings server is injected only into an agent whose ``tools`` names it
 # (one with a ``secret://`` reference gets a refusing stub in any other agent),
 # and ``useLegacyMcpJson: false`` (kiro-cli's alias) also gets none.
-_FINGERPRINT_SCHEMA = 14
+# 15: an agent's own server is wrapped only when its ``tools`` names it.
+_FINGERPRINT_SCHEMA = 15
 
 # The fingerprint inputs of the latest pass into each overlay directory, kept so
 # a caller can read the settings a pass was built from without a second scan.

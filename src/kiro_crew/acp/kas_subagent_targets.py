@@ -176,6 +176,7 @@ def project_subagent_targets(
     verdict the session's own entry was built with
     (``kas_agents._project_mcp_servers``).
     """
+    from kiro_crew.mcp_gateway.rewriter_spec import _named_in_tools
     from kiro_crew.subagent import spawn_allowlist
 
     entry = next((a for a in custom_agents if a.get("id") == parent), None)
@@ -189,7 +190,11 @@ def project_subagent_targets(
     own_servers = entry.get("mcpServers") if isinstance(entry, dict) else None
     parent_servers = frozenset(own_servers) if isinstance(own_servers, dict) else frozenset()
     declared = parent_spec.get("mcpServers")
-    parent_declared = declared if isinstance(declared, dict) else {}
+    # A pooled stub launches only a declaration the spec's ``tools`` names; one it
+    # leaves out gets a stub that starts nothing, or none.
+    parent_declared = (
+        _named_in_tools(declared, parent_spec.get("tools")) if isinstance(declared, dict) else {}
+    )
     overflow = max(0, len(names) - MAX_SUBAGENT_TARGETS)
     entries: list[dict[str, Any]] = []
     notices: list[str] = []
@@ -302,8 +307,8 @@ def _project_target(
     not registered, whatever its freshness gate answers. *parent_servers* names
     the servers the session's own entry declares: a Kiro Crew server outside them
     refuses the target, and one inside them is left out of its entry.
-    *parent_declared* is the session's own spec's ``mcpServers``, which the pooled
-    stubs launch: a pooled server the target declares otherwise refuses it
+    *parent_declared* is the session's own spec's ``mcpServers`` its ``tools`` names,
+    which the pooled stubs launch: a pooled server the target declares otherwise refuses it
     (:func:`_pooled_elsewhere`). *session_hooks* are the session agent's own spec
     PreToolUse matchers, whose coverage the entry withholds too. A server the spec
     switches off is excluded whole (:func:`_excluding_switched_off`).

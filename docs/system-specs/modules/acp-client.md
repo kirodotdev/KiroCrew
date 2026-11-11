@@ -2708,7 +2708,8 @@ spec the same way kiro-cli v2 does where the wire allows it:
   declares a Crew server the session's own entry does not, whose copy would
   refuse every call as `identity_unattested`; and an agent that declares a pooled
   server other than the session's own spec does, or that the session's own spec
-  does not declare at all (a stub the global `mcp.json` supplies), because its
+  does not declare at all (a stub the global `mcp.json` supplies) or leaves out of
+  its `tools` (a stub that starts nothing), because its
   calls to that server would reach the session's stub, which launches another
   command, arguments, environment or endpoint (`_pooled_elsewhere`). A Crew
   server the session injects (a member's `kirocrew-dashboard` or

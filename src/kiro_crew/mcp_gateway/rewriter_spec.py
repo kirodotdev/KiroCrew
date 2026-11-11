@@ -556,6 +556,12 @@ def _rewrite_single_spec(
     (:func:`_must_stay_wrapped`), which that merge would start with the literal
     reference: it gets a stub that starts nothing and offers no tools
     (:func:`_refusing_stub_entry`), which outranks the merge.
+
+    A server the agent declares itself is wrapped only when its ``tools`` names
+    it, for the same reason. One ``tools`` leaves out whose env holds a
+    ``secret://`` reference gets the refusing stub, since its own entry would
+    start it with the literal reference. A withheld secret-reference server this
+    pass routes is the exception; the stub-decoupling design note says why.
     """
     agent_name = spec.get("name") or ""
     servers = spec.get("mcpServers") or {}
@@ -587,6 +593,7 @@ def _rewrite_single_spec(
     # would otherwise spawn a duplicate backend (e.g. a slash-named server and
     # its slash-free alias both pointing at the same proxy command).
     seen_targets: set[tuple[str, tuple[str, ...]]] = set()
+    granted = _named_in_tools(servers, spec.get("tools"))
     wrapped = 0
     for name, entry in servers.items():
         if not isinstance(entry, dict):
@@ -617,6 +624,11 @@ def _rewrite_single_spec(
             # HTTP/SSE MCP entries — already shareable by nature, skip.
             new_servers[name] = entry
             continue
+        withheld_now_routed = (
+            is_withheld_mute(entry)
+            and mcp_entry_is_muted(entry)
+            and routed_for_secret_reference(name, stub_servers)
+        )
         if mcp_entry_is_registry_governed(entry):
             # A registry-governed entry defers its launch to the administrator's
             # catalog, so there is nothing here to pool. Wrapping it produced a
@@ -629,11 +641,7 @@ def _rewrite_single_spec(
             # the client's own filter decides, like the mute below.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
-        if (
-            is_withheld_mute(entry)
-            and mcp_entry_is_muted(entry)
-            and routed_for_secret_reference(name, stub_servers)
-        ):
+        if withheld_now_routed:
             # The rebuild muted this entry only because it was not routed, and
             # this pass routes it (the launch probe asks before the routing is
             # saved). A wrapped server is started by the gateway, which resolves
@@ -688,6 +696,18 @@ def _rewrite_single_spec(
             # it lets the server through; every other server keeps the
             # exact-name rule.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
+        if name not in granted and not withheld_now_routed:
+            # Not in ``tools``: a stub would mount it anyway (see the docstring).
+            # Its own entry would start a ``secret://`` server with the literal
+            # reference, so that one gets a stub that starts nothing.
+            if secret_reference_keys(entry.get("env")):
+                new_servers[name] = _refusing_stub_entry(
+                    server_name=name, agent_name=agent_name, work_dir=work_dir
+                )
+                wrapped += 1
+            else:
+                new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
         # A reserved kirocrew-* name launches the managed invocation, whatever
         # the spec spelled -- before resolution, so the target the stub hashes,
