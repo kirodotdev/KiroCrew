@@ -363,6 +363,9 @@
     "release_notes_not_published_yet": "Заметки о выпуске {{release}} ещё не опубликованы. Вместо них показаны заметки о выпуске {{shown}}."
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "Сессия создана, но сервер её не вернул. Попробуй ещё раз."
+    },
     "pullRequestPanel": {
       "not_declared": "Это приложение не может показывать пул-реквесты: в его разрешениях не заявлен {{path}}."
     },

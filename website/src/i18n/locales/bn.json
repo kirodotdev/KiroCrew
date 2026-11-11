@@ -333,6 +333,9 @@
     "release_notes_not_published_yet": "{{release}}-এর রিলিজ নোট এখনো প্রকাশিত হয়নি। এর বদলে {{shown}}-এর নোট দেখানো হচ্ছে।"
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "সেশন তৈরি হয়েছে, কিন্তু সার্ভার সেটি ফেরত পাঠায়নি। আবার চেষ্টা করো।"
+    },
     "pullRequestPanel": {
       "not_declared": "এই অ্যাপ পুল রিকোয়েস্ট দেখাতে পারে না: এর অনুমতিতে {{path}} ঘোষণা করা নেই।"
     },

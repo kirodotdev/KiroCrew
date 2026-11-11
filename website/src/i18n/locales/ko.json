@@ -318,6 +318,9 @@
     "release_notes_not_published_yet": "{{release}} 릴리스 노트는 아직 게시되지 않았습니다. 대신 {{shown}}의 릴리스 노트를 표시합니다."
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "세션이 만들어졌지만 서버가 돌려주지 않았습니다. 다시 시도하세요."
+    },
     "pullRequestPanel": {
       "not_declared": "이 앱은 풀 리퀘스트를 표시할 수 없습니다. 권한에 {{path}}이(가) 선언되어 있지 않습니다."
     },

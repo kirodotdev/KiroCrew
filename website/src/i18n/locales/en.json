@@ -58,6 +58,9 @@
     "you_re_on_the_latest_version": "You're on the latest version"
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "The session was created, but the server didn't send it back. Try again."
+    },
     "pullRequestPanel": {
       "not_declared": "This app can't show pull requests: its permissions don't declare {{path}}."
     },

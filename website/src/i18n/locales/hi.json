@@ -333,6 +333,9 @@
     "release_notes_not_published_yet": "{{release}} के रिलीज़ नोट्स अभी प्रकाशित नहीं हुए हैं। इसके बजाय {{shown}} के नोट्स दिखाए जा रहे हैं।"
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "सेशन बन गया, लेकिन सर्वर ने उसे वापस नहीं भेजा। फिर से कोशिश करो।"
+    },
     "pullRequestPanel": {
       "not_declared": "यह ऐप पुल रिक्वेस्ट नहीं दिखा सकता: इसकी अनुमतियों में {{path}} घोषित नहीं है।"
     },

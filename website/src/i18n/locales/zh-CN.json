@@ -318,6 +318,9 @@
     "release_notes_not_published_yet": "{{release}} 的更新日志尚未发布，现改为显示 {{shown}} 的更新日志。"
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "会话已创建，但服务器没有返回它。请重试。"
+    },
     "pullRequestPanel": {
       "not_declared": "此应用无法显示拉取请求：其权限未声明 {{path}}。"
     },

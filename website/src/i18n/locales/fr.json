@@ -348,6 +348,9 @@
     "release_notes_not_published_yet": "Les notes de version de {{release}} ne sont pas encore publiées. Affichage des notes de {{shown}} à la place."
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "La session a été créée, mais le serveur ne l’a pas renvoyée. Réessaie."
+    },
     "pullRequestPanel": {
       "not_declared": "Cette app ne peut pas afficher de pull requests : ses autorisations ne déclarent pas {{path}}."
     },
