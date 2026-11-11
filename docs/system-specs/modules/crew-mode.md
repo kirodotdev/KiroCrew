@@ -2368,9 +2368,16 @@ treatment with its hover. Notes, Permissions, and Model follow.
 The pencil, Permissions, and Model entries open `CrewEditorModal`;
 the card introduces no configuration writer. Memory is a non-interactive binding
 readout — it never opens the unrelated generated Dashboard. The Workspace tile's
-label is the crew record's `workspace` field shown as-is: that field is the
+label comes from the crew record's `workspace` field: that field is the
 configured workspace's NAME (a key into the workspaces list, `default` for most
-Bots), not a directory, so no folder name is taken off it. Workspace opens
+Bots), not a directory, so no folder name is taken off it. A rename changes only
+the Bot's label, so the workspace made for it keeps its `member-<slug>` name and
+folder; when the field is exactly `member-<slug>` of the Bot's own roster slug,
+the tile reads the Bot's current name instead, and any other value (`default`, a
+named workspace, another Bot's `member-*`, or the Bot's own name shortened past
+40 characters or numbered on a collision) is shown as-is. The tooltip
+is the stored name either way, and the editor's Workspace field and the
+Workspaces list still show the stored name. Workspace opens
 SidePanel Files, and Files / Terminal are rooted in `projectDir` = the live DM
 slot's `project` — the directory the backend resolved that name to when it opened
 the member slot (`default_project_dir`) — never in the name itself, which rooted
