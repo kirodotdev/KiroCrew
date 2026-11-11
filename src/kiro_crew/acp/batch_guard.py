@@ -52,7 +52,6 @@ import asyncio
 import bisect
 import json
 import logging
-import ntpath
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -71,6 +70,7 @@ from kiro_crew.acp.batch_guard_tokens import (
     token_keys,
     tokens_of,
 )
+from kiro_crew.acp.program_name import windows_program_name
 from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE
 from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_ALIASES
 from kiro_crew.security import argv_rules as _argv_rules
@@ -342,14 +342,8 @@ def _prefix_words(extra_write_commands: tuple[str, ...]) -> list[list[str]]:
         words = _shell._shell_tokens(prefix.strip()) if isinstance(prefix, str) else []
         if words:
             # Compared with a command's program words, so reduced the same way.
-            prefixes.append([_program_name(_shell._program_basename(words[0])), *words[1:]])
+            prefixes.append([windows_program_name(_shell._program_basename(words[0])), *words[1:]])
     return prefixes
-
-
-def _program_name(word: str) -> str:
-    """*word* as the program Windows runs: ``git.exe``, ``Git`` and ``C:\\...\\git.exe`` are ``git``."""
-    name = ntpath.basename(word).casefold()
-    return name[:-4] if name.endswith(".exe") else name
 
 
 #: ``aws <service> <op>`` operations whose result carries a new id.
@@ -373,7 +367,7 @@ def _program_commands(command: str) -> list[list[str]]:
         tokens = _shell._shell_tokens(" ".join(text[w.start : w.end] for w in cmd.argv))
         program = _argv_rules._program_args(tokens)
         if program is not None:
-            out.append([_program_name(program[0]), *program[1]])
+            out.append([windows_program_name(program[0]), *program[1]])
     return out
 
 

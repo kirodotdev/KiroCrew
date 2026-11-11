@@ -3311,6 +3311,14 @@ configure`). It yields an `InteractiveClassification` — `risk`, `program`,
 A pager is advisory only (under the tool, stdout is a pipe, so a pager degrades
 to `cat` on its own); the other four classes are `INTERACTIVE_NARROWING_RISKS`.
 
+On Windows each segment's program word is read the way Windows runs it
+(`acp.program_name.windows_program_name`, the fold the batch write guard also
+applies): `git.exe`, `GIT.EXE`, `Git` and `C:\tools\vim.exe` classify as `git`
+and `vim`. POSIX keeps the exact, case-sensitive `/` basename. The oracle's
+`first_program` and process-row match keep that basename on every platform: the
+Windows shell check reads no argv (`_check_shell_child_windows`), so they never
+see a Windows spelling.
+
 The classifier never rewrites the command. The repo has no environment layer on
 the ACP tool path — the hook gate (`ToolHookResult`) can only allow or deny, and
 the `GIT_PAGER=cat` layer in `dashboard/terminal_commands.py` serves the human
