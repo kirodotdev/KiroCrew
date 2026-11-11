@@ -1392,8 +1392,11 @@ does not check again; a task started meanwhile checks its own, because the marke
 (`_ACQUIRING_TASK`) holds a weak reference to the task, not a flag. No check runs
 during the final drain (`final_drain_started`: a shutdown or re-exec, when no session outlives the
 process); during an update pause it still runs, because `try_acquire` stays open
-then and must not take a session the check would retire. A check that raises is
-logged and the acquire goes ahead. A sub-agent
+then and must not take a session the check would retire. A check that raises, or
+that has not finished within 30 seconds (`_IDENTITY_CHECK_BEFORE_ACQUIRE_TIMEOUT_SECS`),
+is logged and the acquire goes ahead. Giving up the wait does not cancel the sweep,
+which runs in a task of its own. An acquire that then cold-starts still queues for a
+start permit, so while that sweep holds every permit it waits for the sweep. A sub-agent
 that shares its parent's process opens its session on that process
 (`runtime.create_session`) and a background one-liner uses `get_bg_session`;
 neither acquires through the manager, and the next checked acquire's sweep or
