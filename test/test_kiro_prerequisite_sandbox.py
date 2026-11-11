@@ -8,7 +8,9 @@ reported, none of which is a missing binary.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -1134,6 +1136,76 @@ class TestTimedOutProbeIsNotAMissingBinary:
 
         assert status["probe_timed_out"] is False
         assert status["installed"] is False
+
+    @pytest.mark.asyncio
+    async def test_timed_out_probe_stamps_the_signed_in_account(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A timed-out latch records the account, so ordinary polls read it.
+
+        With no identity stamped, every unforced ``snapshot()`` sees the
+        signed-in account as "changed" and re-runs the slow probe.
+        """
+        monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro-home"))
+        _make_executable(tmp_path / ".local" / "bin" / "kiro-cli")
+        environ = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+        _write_signed_in_store(
+            prerequisite_module.kiro_identity_store_path("linux", tmp_path, environ)
+        )
+        calls: list[list[str]] = []
+
+        async def run(command: str, args: list[str], **_kwargs: Any) -> ProcessResult:
+            calls.append([command, *args])
+            return await self._timed_out(command, args)
+
+        service = self._service(tmp_path, run)
+        assert await service.current_identity_fingerprint() != ""
+
+        status = await service.snapshot(force=True)
+        for _ in range(3):
+            await service.snapshot()
+
+        assert status["probe_timed_out"] is True
+        assert len(calls) == 1, f"ordinary polls re-ran the timed-out probe: {calls}"
+        assert await service.identity_changed_since_probe() is False
+
+
+def _write_signed_in_store(path: Path) -> None:
+    """Write a kiro-cli identity store that names one signed-in account."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    start_url = "https://company.awsapps.com/start"
+    token = {
+        "access_token": "tok",
+        "refresh_token": "r",
+        "expires_at": "2099-01-01T00:00:00Z",
+        "region": "us-east-1",
+        "start_url": start_url,
+    }
+    con = sqlite3.connect(str(path))
+    with con:
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        con.execute("CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT)")
+        con.executemany(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            [
+                (
+                    "kirocli:odic:device-registration",
+                    json.dumps({"client_id": "client-aaa", "region": "us-east-1"}),
+                ),
+                ("kirocli:odic:token", json.dumps(token)),
+            ],
+        )
+        con.executemany(
+            "INSERT INTO state VALUES (?, ?)",
+            [
+                ("auth.idc.start-url", start_url),
+                ("auth.idc.region", "us-east-1"),
+                ("api.codewhisperer.profile", "arn:aws:codewhisperer:us-east-1:1111:profile/C"),
+            ],
+        )
+    con.close()
 
 
 class TestFailedProbeCarriesItsOwnDiagnostic:

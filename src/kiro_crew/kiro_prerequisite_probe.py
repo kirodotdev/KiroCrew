@@ -569,8 +569,7 @@ async def _probe(
                     bundled_cli=bundled,
                     probe_timed_out=True,
                 )
-                self._last_probe_at = self._clock()
-                self._has_probed = True
+                self._stamp_probe(probe_identity)
                 return self._status
             # Neither typed condition explains the failure, so carry the
             # probe's own account of it: without this the bare default below
