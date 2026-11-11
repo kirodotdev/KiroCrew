@@ -629,6 +629,9 @@ class CronService:
         # fires once per deferral episode, not once per deferred tick.
         self._admission_deferring: bool = False
         self._admission_last_log: float = 0.0
+        # The previous timer tick's clock, which bounds the cron minutes a late
+        # tick catches up (_on_timer). None until this process's first tick.
+        self._last_tick_ts: float | None = None
         # job_id -> ordered live session keys, each attributed to the run
         # (_RunClaim) that registered it. One job can hold several: an older
         # stateless run kept alive for pending sub-agents, or one key per agent
