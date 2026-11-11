@@ -1290,6 +1290,7 @@ def crew_fired_spec_hooks(
     translates_tools_settings: bool = False,
     session_key: str = "",
     discards_mcp_oauth: bool = False,
+    withholds_oauth_secret: bool = False,
 ) -> tuple[list[ScriptHook], list[str], int]:
     """The active agent spec's hooks as script hooks, the keys nothing carries, and
     how many ``confirm: true`` hooks are skipped.
@@ -1301,8 +1302,11 @@ def crew_fired_spec_hooks(
     cannot be read; the caller fails PreToolUse closed on that. *project_dir* is
     :func:`spec_project_dir` of the session. *translates_tools_settings* is true
     only for a KAS session, the one backend that receives ``toolsSettings`` as
-    ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session too,
-    the backend that drops a remote MCP server's ``oauth`` block. *session_key*
+    ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session whose
+    engine Crew knows drops a remote MCP server's ``oauth`` block.
+    *withholds_oauth_secret* is true for every KAS session: its projection sends
+    nothing, on any engine, from a block that names a ``clientSecret`` or keeps no
+    key it can send. *session_key*
     reads a crewmate's worker as that session's merged spec (:func:`_agent_spec`).
     """
     # circular import: the ACP layer imports the config loader, which sits below
@@ -1315,6 +1319,7 @@ def crew_fired_spec_hooks(
         spec,
         translates_tools_settings=translates_tools_settings,
         discards_mcp_oauth=discards_mcp_oauth,
+        withholds_oauth_secret=withholds_oauth_secret,
     )
     # Copies, so the cached conversion keeps no origin: the same hooks can come
     # from a user-level spec in one session and a project spec in another.
@@ -1585,7 +1590,7 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     session_key = provider_session_key(provider)
     # The keys the session runs without, read as the chat turn reads them.
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
-    from kiro_crew.agent_sdk.kas_engine import keeps_mcp_oauth
+    from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
 
     on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS
     try:
@@ -1595,7 +1600,8 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
                 agent_id,
                 spec_project_dir(provider),
                 translates_tools_settings=on_kas,
-                discards_mcp_oauth=on_kas and not keeps_mcp_oauth(provider),
+                discards_mcp_oauth=on_kas and discards_mcp_oauth(provider),
+                withholds_oauth_secret=on_kas,
                 session_key=session_key,
             )
         )
