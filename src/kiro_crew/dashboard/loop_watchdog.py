@@ -95,6 +95,13 @@ the normal budget.  A desktop budget (below ``stall_after``) defers
 nothing: the desktop app's own liveness probe ends a silent gateway within
 a minute regardless.
 
+**A wedged default executor is a stall too.**  Every ``asyncio.to_thread``
+call waits in the loop's default executor, so when its workers are all
+blocked no turn runs while the loop keeps beating.  The heartbeat beats only
+while :meth:`LoopStallWatchdog.default_executor_live` answers ``True``: a
+no-op probe that has waited :data:`EXECUTOR_STALL_SECS` withholds the beat,
+and the stages above take it from there.
+
 The class is deliberately split so the decision logic (:meth:`check`) is a
 pure, synchronous step that can be driven from tests with injected clocks
 and a dump callback, and the alarm arm/cancel calls are injectable too — so
@@ -103,6 +110,7 @@ tests verify the wiring without ever arming a real process-ending timer.
 
 from __future__ import annotations
 
+import asyncio
 import faulthandler
 import logging
 import os
@@ -148,6 +156,15 @@ PAGING_GRACE_MAX_SECS: float = 600.0
 #: other thread in the process is paging".  A shorter cap bounds how long a
 #: genuinely wedged loop can be kept alive by an unrelated thread's paging.
 PAGING_GRACE_MAX_SECS_MACOS: float = 120.0
+
+#: Longest a no-op may wait in the loop's default executor before the heartbeat
+#: stops beating (:meth:`LoopStallWatchdog.default_executor_live`).  Every
+#: ``asyncio.to_thread`` call waits in that one queue, so a pool whose workers
+#: are all blocked stops every turn while the loop itself stays live.  A busy
+#: pool runs the probe once the work ahead of it drains; five minutes is far
+#: past the seconds its bounded callers wait (tool policy 5s, MCP mount 30s),
+#: so a queue that deep has already failed them many times over.
+EXECUTOR_STALL_SECS: float = 300.0
 
 #: The WARNING a paging deferral logs, once per silence, in two forms selected
 #: by the grace cap -- already how the macOS watchdog is distinguished without a
@@ -233,6 +250,10 @@ def read_loop_pageins_under_pressure(
 #: default arm/cancel pair, and read by the cancel so it targets the deadline
 #: that was actually started, not the one :func:`exit_mechanism` would pick now.
 _armed_mechanism: str | None = None
+
+
+def _executor_noop() -> None:
+    """The probe :meth:`LoopStallWatchdog.default_executor_live` runs on the default executor."""
 
 
 def _default_dump(file: "typing.IO[str] | typing.Any | None" = None) -> None:
@@ -553,6 +574,12 @@ class LoopStallWatchdog:
         self._last_poll_suspend: float | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # The default-executor probe in flight, when it was submitted, and whether
+        # it has outwaited EXECUTOR_STALL_SECS. Written on the loop thread; the
+        # daemon thread reads the flag to skip the paging deferral.
+        self._executor_probe: asyncio.Future[None] | None = None
+        self._executor_probe_at = 0.0
+        self._executor_stalled = False
 
     def beat(self) -> None:
         """Record that the event loop is alive *now* and re-pet the alarm.
@@ -572,6 +599,39 @@ class LoopStallWatchdog:
         self._beat_generation += 1
         if self._later_active and self._exit_after is not None:
             self._rearm_alarm(self._exit_after)
+
+    def default_executor_live(self, loop: asyncio.AbstractEventLoop) -> bool:
+        """Probe *loop*'s default executor; ``False`` once a probe has waited too long.
+
+        The heartbeat beats only while this is ``True``.  With no probe in
+        flight it submits a no-op to the default executor, the queue every
+        ``asyncio.to_thread`` call waits in.  A probe still unrun after
+        :data:`EXECUTOR_STALL_SECS` means the pool is wedged while the loop runs
+        on: one ERROR, then ``False``, so the withheld beat meets the same
+        enrichment, dump and exit as a wedged loop.  Once the probe runs the
+        answer is ``True`` again and the stall recovers.  Loop thread only.
+        """
+        probe = self._executor_probe
+        if probe is not None and not probe.done():
+            waited = self._now() - self._executor_probe_at
+            if waited < EXECUTOR_STALL_SECS:
+                return True
+            if not self._executor_stalled:
+                self._executor_stalled = True
+                self._log.error(
+                    "default executor has not run a no-op in %.0fs while the event loop runs, "
+                    "so every to_thread call is stuck; withholding the heartbeat so the stall "
+                    "watchdog dumps every thread's stack (the 'event loop silent' lines that "
+                    "follow are this executor, not the loop)",
+                    waited,
+                )
+            return False
+        if self._executor_stalled:
+            self._executor_stalled = False
+            self._log.warning("default executor ran its probe again; heartbeat resumed")
+        self._executor_probe_at = self._now()
+        self._executor_probe = loop.run_in_executor(None, _executor_noop)
+        return True
 
     def _rearm_alarm(self, seconds: float, *, unless_beat_since: int | None = None) -> bool:
         """Cancel the pending alarm and arm a fresh one ``seconds`` from now.
@@ -835,10 +895,17 @@ class LoopStallWatchdog:
         Nothing is deferred when ``exit_after`` is below ``stall_after``: that
         is the desktop budget, where the desktop app's own liveness probe
         ends a silent gateway within a minute anyway, so a deferral would
-        only trade the alarm's stack dump for that kill.
+        only trade the alarm's stack dump for that kill.  Nor while the beat is
+        withheld for a wedged default executor: the loop thread is running
+        then, so its faults say nothing about the silence.
         """
         exit_after = self._exit_after
-        if not self._later_active or exit_after is None or exit_after < self._stall_after:
+        if (
+            not self._later_active
+            or exit_after is None
+            or exit_after < self._stall_after
+            or self._executor_stalled
+        ):
             return
         generation = self._beat_generation
         if silence < 2 * self._poll_interval:
