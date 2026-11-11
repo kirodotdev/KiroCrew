@@ -20,7 +20,6 @@ from pathlib import Path  # noqa: F401
 from typing import TYPE_CHECKING, Any, NamedTuple  # noqa: F401
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 
 from kiro_crew import members as members_mod  # noqa: F401
 from kiro_crew import model_registry  # noqa: F401

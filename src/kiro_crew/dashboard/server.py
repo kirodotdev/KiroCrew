@@ -8,6 +8,7 @@ import errno  # noqa: F401
 import faulthandler
 import functools
 import logging
+import mimetypes
 import os
 import socket  # noqa: F401
 import stat  # noqa: F401
@@ -512,11 +513,12 @@ if TYPE_CHECKING:
 # fallback, so aiohttp returns ``application/octet-stream`` for .woff/.woff2/.ttf.
 # Register the correct font MIME types into that singleton at import time so ALL
 # static routes (including ``/fonts``) serve proper Content-Type headers.
-from aiohttp.web_fileresponse import CONTENT_TYPES as _AIOHTTP_CONTENT_TYPES
+# aiohttp 3.9 has no such table (None here) and guesses with the stdlib's module table.
+from kiro_crew.dashboard.dist_file_response import _AIOHTTP_CONTENT_TYPES
 
-_AIOHTTP_CONTENT_TYPES.add_type("font/woff", ".woff")
-_AIOHTTP_CONTENT_TYPES.add_type("font/woff2", ".woff2")
-_AIOHTTP_CONTENT_TYPES.add_type("font/ttf", ".ttf")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/woff", ".woff")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/woff2", ".woff2")
+(_AIOHTTP_CONTENT_TYPES or mimetypes).add_type("font/ttf", ".ttf")
 
 logger = logging.getLogger(__name__)
 

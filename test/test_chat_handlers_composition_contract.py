@@ -45,7 +45,7 @@ _BASE_NAMES = frozenset("""
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS ARTIFACT_SLUG_RE AUTOCOMPACT_PCT_MAX
         AUTOCOMPACT_PCT_MIN AcpModelUnavailable AcpProvider Any Awaitable
         CHAT_TURN_TIMEOUT_MAX CHAT_TURN_TIMEOUT_MIN COLOR_HEX_RE Callable
-        ClientConnectionResetError DashboardState DeferredHoldFull DeferredHoldRebound
+        DashboardState DeferredHoldFull DeferredHoldRebound
         FavoritesUnreadable GrantDeadline HUMAN_TURN_META_KEY Iterable JEV_ROUTE_MODEL
         KiroCrewConfig LLMProvider MAX_COLOR_INDEX MAX_DEFERRED_NOTES
         MAX_DEFERRED_NOTE_CHARS MAX_SOURCE_LABEL_LEN MODEL_NAMESPACE_ACP Mapping
