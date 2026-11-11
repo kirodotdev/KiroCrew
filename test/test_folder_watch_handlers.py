@@ -209,6 +209,23 @@ class TestListSourceFiles:
             assert data["failed"] == 1
             assert data["skipped"] == 1
 
+    @pytest.mark.asyncio
+    async def test_a_deduped_file_counts_as_done_so_the_scan_can_finish(self, store):
+        sid = store.add_source("test", "local_folder", "/tmp/vault")
+        for name, status in (("a.md", "done"), ("b.md", "deduped")):
+            store.db.execute(
+                "INSERT INTO folder_file_state (source_id, file_path, last_seen, status, item_ids)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (sid, f"/tmp/vault/{name}", "2026-01-01", status, "[]"))
+        store.db.commit()
+
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.get(f"/api/knowledge/sources/{sid}/files")
+            data = await resp.json()
+        assert data["total"] == 2
+        assert data["done"] == 2
+        assert data["done"] + data["failed"] + data["skipped"] == data["total"]
+
 
 class TestRetryFile:
     @pytest.mark.asyncio
