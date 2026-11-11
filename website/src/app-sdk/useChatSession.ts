@@ -137,9 +137,10 @@ export function useChatSession(opts: ChatSessionOptions): ChatSessionState {
             ? 'loading'
             : 'no-session'
 
+  // One navigation, so one history entry and a single Back returns to the app.
+  // The routed chat resolves `?sid=` on hot navigation, as `useChatLauncher` relies on.
   const openChat = useCallback(() => {
-    hostNavigate('/')
-    setTimeout(() => hostNavigate('/chat?sid=' + encodeURIComponent(slotName)), 50)
+    hostNavigate('/chat?sid=' + encodeURIComponent(slotName))
   }, [hostNavigate, slotName])
 
   const createSession = useCallback(async () => {
