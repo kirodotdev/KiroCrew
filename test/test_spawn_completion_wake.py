@@ -390,6 +390,9 @@ class TestEveryEndingWakesTheWait:
         constructor, copy and comparison read it as the bool it was."""
         info = SubagentInfo(id="a1", task="t")
         assert info.done is False and SubagentInfo.done is False
+        # No descriptor on the class: the admission scans read ``done`` on
+        # every registered run per admission, so a read must stay a dict hit.
+        assert SubagentInfo.__dict__["done"] is False
         assert SubagentInfo(id="a1", task="t", done=True).done is True
         assert dataclasses.replace(info, done=True).done is True
         by_name = {f.name: f for f in dataclasses.fields(SubagentInfo)}

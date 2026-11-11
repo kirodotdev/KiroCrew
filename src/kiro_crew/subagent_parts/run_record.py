@@ -69,27 +69,6 @@ class _BareStateView(MutableMapping[str, Any]):
         return len(self._tracker.active_calls)
 
 
-class _DoneFlag:
-    """``SubagentInfo.done``: a plain bool whose first True wakes :func:`wait_done`.
-
-    Every ending flips this one field (the run loop, a stop, the reaper, a
-    refusal), so the wake-up lives on the field and no flip site can miss it.
-    """
-
-    def __get__(self, info: SubagentInfo | None, owner: type | None = None) -> bool:
-        if info is None:
-            return False  # the dataclass default
-        value: bool = info.__dict__.get("done", False)
-        return value
-
-    def __set__(self, info: SubagentInfo, value: bool) -> None:
-        info.__dict__["done"] = value
-        if value:
-            # Absent while ``__init__`` is still assigning the fields before it.
-            for wake in tuple(info.__dict__.get("_done_wakers", ())):
-                wake()
-
-
 @dataclass
 class SubagentInfo:
     """Metadata for a running subagent."""
@@ -97,7 +76,10 @@ class SubagentInfo:
     id: str
     task: str
     started: float = field(default_factory=time.time)
-    done: _DoneFlag = _DoneFlag()
+    # A plain field, so a read is an instance-dict hit: the admission paths
+    # scan every registered run on each admission. A write of True wakes
+    # :func:`wait_done` (see ``__setattr__``).
+    done: bool = False
     # True for work accepted behind the stagger/concurrency gate but never
     # started. The record returned by ``spawn`` is normally not registered in
     # ``_agents``; a queued stop registers a synthetic copy temporarily so batch
@@ -828,6 +810,16 @@ class SubagentInfo:
         ``stopped``/``error`` remain on the wire for compatibility.
         """
         return self.ending.coarse
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Every ending flips ``done`` (the run loop, a stop, the reaper, a
+        refusal), so the wake-up for :func:`wait_done` lives on that write and
+        no flip site can miss it. The read stays a plain attribute."""
+        object.__setattr__(self, name, value)
+        if name == "done" and value:
+            # Absent while ``__init__`` is still assigning the fields before it.
+            for wake in tuple(self.__dict__.get("_done_wakers", ())):
+                wake()
 
 
 # Callback: (subagent_info) -> None

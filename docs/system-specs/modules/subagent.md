@@ -4858,9 +4858,12 @@ a value that is not a finite, non-negative number is a `400` coded
 `invalid_wait_secs`. A run with no live record (queued, or read from disk) and
 a finished run are answered at once, whatever `wait_secs` says, as `/resume`
 answers a run it does not hold. The wake-up has ONE owner: `SubagentInfo.done` is a field
-whose first write of True calls the run's waiters (`_DoneFlag`,
+whose write of True calls the run's waiters (`SubagentInfo.__setattr__`,
 `subagent_parts/run_record.py`), and the route waits through `wait_done(info,
-timeout)`. Every ending writes that field (the run loop, a stop, the reaper, a
+timeout)`. The read stays a plain attribute with no descriptor on the class:
+the admission paths (`_live_run_ids`, the fairness lane reads, the startup
+population) scan every registered run on each admission, so a read that ran
+Python code would make a drain of n submissions pay it n² times. Every ending writes that field (the run loop, a stop, the reaper, a
 refusal, on whichever thread), so no flip site signals anything itself and a new
 one cannot forget to. The hold comes before the handler's `done` read, so that
 read still shares a step with the parent-turn read beside it. A caller that waits
