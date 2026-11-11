@@ -223,6 +223,20 @@ export function messageAuthor(meta: Record<string, unknown> | undefined): Public
   }
 }
 
+/** The app that sent a user row, or `null` when no app did. The gateway stamps
+ *  `meta.turnActor: "app"` on every send an app token makes. The app's id comes
+ *  from `meta.author`, the app's system principal labelled `app:<name>` (the
+ *  immediate send path), else from `meta.appLabel`, the verified app name a
+ *  steered answer carries. `name` is empty when the row carries neither. */
+export function appSender(meta: Record<string, unknown> | undefined): { name: string } | null {
+  if (meta?.turnActor !== 'app') return null
+  const author = messageAuthor(meta)
+  const label = author?.kind === 'system' ? author.display.name : ''
+  if (label.startsWith('app:')) return { name: label.slice('app:'.length) }
+  const appLabel = typeof meta.appLabel === 'string' ? meta.appLabel.split('/')[0] : ''
+  return { name: appLabel }
+}
+
 /** The id whose messages carry no byline: the verified viewer, so a reader's
  *  own messages stay unlabelled and everyone else's, the session creator's
  *  included, are named. Until the viewer read lands it is the session's

@@ -187,7 +187,10 @@ _SESSION_APPROVAL_DESC = (
 # The dashboard's line for ``permissions.memberThreads``
 # (``pages.appDetailPage.session_approval_member_threads``), shown only when the manifest
 # declares that scope beside the grant.
-_MEMBER_THREADS_DESC = "This includes your own chats with your Bots."
+_MEMBER_THREADS_DESC = (
+    "This includes your own chats with your Bots. "
+    "The app can send your Bots messages in your name."
+)
 
 
 def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:

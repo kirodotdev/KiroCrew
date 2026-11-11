@@ -1392,6 +1392,15 @@ reader's own. Until the viewer read lands, the session's recorded creator stands
 for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
 labelled. A single-operator transcript is unchanged, and a personal Crew, one with
 the preview off or one nobody else has joined shows no bylines at all. An Unknown author reads as Unknown.
+A message an app sent is the exception: in every mode, and on a steered row too,
+it reads "Sent by the <app> app" (`MessageByline.AppSenderByline`, the
+`components.mcpApp.from_app` string), keyed on the gateway's `meta.turnActor:
+"app"`, because an app holding a session grant writes into the owner's own chats
+and its message would otherwise read as the owner's typing. The app is named from
+its `app:<name>` system author, else from `meta.appLabel` (a steered answer), and
+shown by the installed app's display name. A row carrying the mark without either
+(a send that went through the busy-slot queue or the parked hold) reads "Sent by an
+app".
 
 ### Typing lease
 

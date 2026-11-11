@@ -2730,6 +2730,10 @@ whatever the manifest says. With it, `POST /api/chat/slots/{slot}/approve`,
 `POST /api/chat` turn (an `[OPTIONS:]` choice is one) reach the thread through
 the same session-control rule as a user session, the send's allow row naming
 the scope (`permissions.sessionApproval+memberThreads|slot=member-<slug>`).
+Such a turn speaks to the Bot in the owner's thread, so the consent text says
+so (`session_approval_member_threads`: the app can send the owner's Bots
+messages in the owner's name) and the transcript labels the row with the app
+that sent it (`MessageByline`, see shared-crew "Message attribution").
 It reaches no more than that: every `/api/members/*` and `/api/teams*` route
 still answers an app 404, the thread's transcript stays owner-only, a resume or
 `POST /v1/chat/completions` naming a member key stays refused, and an app still

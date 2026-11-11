@@ -2057,7 +2057,7 @@
         "user_session_reach_send": "Your chats can send messages to those sessions. Each message shows which chat sent it.",
         "user_session_reach_note": "Only chats you opened yourself. Incognito, temporary, scheduled and channel-linked chats cannot, and no chat can stop or close those sessions.",
         "session_approval_desc": "Sending messages or choosing response options in your chats, approving or denying tool prompts, and switching a chat's approval mode.",
-        "session_approval_member_threads": "This includes your own chats with your bots.",
+        "session_approval_member_threads": "This includes your own chats with your Bots. The app can send your Bots messages in your name.",
         "session_approval_modes": "Chat approval modes it can set",
         "revocable": "You can take this back at any time in Settings → Security → Third-party apps. The app stops working when you do.",
         "source": "Published at",
