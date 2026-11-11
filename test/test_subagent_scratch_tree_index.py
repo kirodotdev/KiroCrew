@@ -214,6 +214,25 @@ class TestAResumedKeyRejoinsItsTree:
         assert factory.call_args.kwargs["cwd"] is None
 
     @pytest.mark.asyncio
+    async def test_a_dropped_cwd_does_not_keep_its_project_profile(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """The default directory starts without the dropped project's AWS profile."""
+        _tree, work = self._hidden_cwd_in_recorded_tree(scratch_root, monkeypatch)
+        mgr, factory = self._manager("sid-1", None)
+        mgr._cfg.aws.project_profiles = {str(work): "project-account"}
+        mgr._session_map.get_cwd = MagicMock(return_value=str(work))
+        mgr._session_map.get_provider = MagicMock(return_value="another-harness")
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+            bound = mgr._sessions[mgr._fold_key("dashboard:chat-1")].aws_project_profile
+        finally:
+            await mgr.close_all()
+        assert factory.call_args.kwargs["cwd"] is None
+        assert "AWS_PROFILE" not in (factory.call_args.kwargs.get("extra_env") or {})
+        assert bound is None
+
+    @pytest.mark.asyncio
     async def test_a_failed_join_retry_drops_a_cwd_only_the_recorded_tree_kept(
         self, scratch_root: Path, monkeypatch
     ) -> None:
@@ -240,6 +259,112 @@ class TestAResumedKeyRejoinsItsTree:
         last = calls[-1]
         assert last.get("shared_scratch") is None
         assert last["cwd"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_failed_join_retry_preserves_focus_resume(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        trees.record_tree("dashboard:chat-1", tree)
+        mgr, factory = self._manager("sid-1", None)
+        make_provider = factory.side_effect
+        starts = []
+        monkeypatch.setattr(mgr, "_dispatch_hard_kill", MagicMock())
+
+        def build(*args, **kwargs):
+            provider = make_provider(*args, **kwargs)
+
+            async def start():
+                starts.append(provider.focus_resume)
+                if kwargs.get("shared_scratch") is not None:
+                    raise sc.SharedScratchJoinError("no join")
+
+            provider.start = AsyncMock(side_effect=start)
+            return provider
+
+        factory.side_effect = build
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew", focus_resume=True)
+        finally:
+            await mgr.close_all()
+        assert starts == [True, True]
+
+    def _cwd_bound_manager(self, made: list):
+        """A manager whose providers run a harness that serves a session only in its folder."""
+        from kiro_crew.acp.types import ACP_BACKEND_OPENCODE
+        from kiro_crew.providers.acp import AcpProvider, provider_label
+
+        mgr, factory = self._manager("sid-1", None)
+
+        def make(*args, **kwargs):
+            provider = MagicMock(spec=AcpProvider)
+            provider.start = AsyncMock()
+            provider.shutdown = AsyncMock()
+            provider.is_process_alive = MagicMock(return_value=True)
+            provider.exit_code = None
+            provider.cwd = kwargs.get("cwd") or ""
+            provider.work_scratch_dir = None
+            provider.client.backend = ACP_BACKEND_OPENCODE
+            if kwargs.get("shared_scratch") is not None:
+                provider.start = AsyncMock(side_effect=sc.SharedScratchJoinError("no join"))
+            made.append((kwargs, provider))
+            return provider
+
+        factory.side_effect = make
+        mgr._session_map.get_provider = MagicMock(return_value=provider_label(make(cwd="")))
+        made.clear()
+        return mgr
+
+    @pytest.mark.asyncio
+    async def test_a_failed_join_retry_does_not_load_a_cwd_bound_session_elsewhere(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """The retry drops the cwd the recorded tree kept, so the saved session would move."""
+        tree, work = self._hidden_cwd_in_recorded_tree(scratch_root, monkeypatch)
+        made: list = []
+        mgr = self._cwd_bound_manager(made)
+        mgr._session_map.get_cwd = MagicMock(return_value=str(work))
+        monkeypatch.setattr(mgr, "_dispatch_hard_kill", MagicMock())
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        joined = [p for kw, p in made if kw.get("shared_scratch") == tree]
+        assert joined and joined[-1].cwd == str(work)
+        joined[-1].client.set_resume_session_id.assert_called_once_with("sid-1")
+        last_kwargs, last = made[-1]
+        assert last_kwargs.get("shared_scratch") is None
+        assert last_kwargs["cwd"] is None
+        last.client.set_resume_session_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_tree_gone_on_reread_does_not_load_a_cwd_bound_session_elsewhere(
+        self, scratch_root: Path, monkeypatch
+    ) -> None:
+        """The second read finds no tree, so the cwd the first read kept is dropped."""
+        _tree, work = self._hidden_cwd_in_recorded_tree(scratch_root, monkeypatch)
+        real = trees.recorded_tree
+        reads: list = []
+
+        def recorded_once(key):
+            reads.append(key)
+            return real(key) if len(reads) == 1 else None
+
+        monkeypatch.setattr(trees, "recorded_tree", recorded_once)
+        made: list = []
+        mgr = self._cwd_bound_manager(made)
+        mgr._session_map.get_cwd = MagicMock(return_value=str(work))
+        try:
+            await mgr.get_or_create("dashboard:chat-1", agent="kirocrew")
+        finally:
+            await mgr.close_all()
+        assert len(reads) >= 2
+        last_kwargs, last = made[-1]
+        assert last_kwargs.get("shared_scratch") is None
+        assert last_kwargs["cwd"] is None
+        last.client.set_resume_session_id.assert_not_called()
 
     @requires_symlinks
     @pytest.mark.asyncio
@@ -787,8 +912,8 @@ class TestAResumedKeyRejoinsItsTree:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("exposes_tree", [False, True])
-    async def test_failed_retirement_names_the_index_and_refuses_allocation(
-        self, scratch_root: Path, monkeypatch, exposes_tree: bool
+    async def test_failed_retirement_warns_and_starts_the_session(
+        self, scratch_root: Path, monkeypatch, caplog, exposes_tree: bool
     ) -> None:
         scratch_root.mkdir(parents=True)
         tree = scratch_root / "recorded"
@@ -799,15 +924,25 @@ class TestAResumedKeyRejoinsItsTree:
         successor = scratch_root / "successor"
         successor.mkdir()
         mgr, _factory = self._manager("sid-1", successor if exposes_tree else None)
+        service = mgr._allocation_boundary()
+        service._deps = dataclasses.replace(
+            service._deps, is_acp_provider=MagicMock(return_value=True)
+        )
         monkeypatch.setattr(trees, "record_tree", MagicMock(return_value=False))
-        monkeypatch.setattr(trees, "abandon_tree", MagicMock(return_value=False))
+        monkeypatch.setattr(trees, "atomic_write", MagicMock(side_effect=OSError("full disk")))
         try:
-            with pytest.raises(OSError) as caught:
-                await mgr.get_or_create(key, agent="kirocrew")
-            assert str(scratch_root / trees.TREE_INDEX_FILENAME) in str(caught.value)
-            assert "repair or remove this index" in str(caught.value)
-            assert mgr.get_provider(key) is None
-            mgr._session_map.set.assert_not_called()
+            await mgr.get_or_create(key, agent="kirocrew")
+            assert mgr.get_provider(key) is not None
+            mgr._session_map.set.assert_called()
+            assert any(
+                record.levelname == "WARNING"
+                and "Could not persist scratch retirement" in record.message
+                and str(scratch_root / trees.TREE_INDEX_FILENAME) in record.message
+                for record in caplog.records
+            )
+            # The row stays on disk, but this process never hands the tree back.
+            assert trees._read_tree_index(scratch_root) == {key: tree.name}
+            assert trees.recorded_tree(key) is None
         finally:
             await mgr.close_all()
 
@@ -860,8 +995,8 @@ class TestAResumedKeyRejoinsItsTree:
         assert trees.recorded_tree(key) is None
 
     @pytest.mark.asyncio
-    async def test_an_undroppable_earlier_row_refuses_publishing_the_successor(
-        self, scratch_root: Path, monkeypatch
+    async def test_an_undroppable_earlier_row_warns_and_publishes_the_successor(
+        self, scratch_root: Path, monkeypatch, caplog
     ) -> None:
         scratch_root.mkdir(parents=True)
         earlier = scratch_root / "earlier"
@@ -873,10 +1008,20 @@ class TestAResumedKeyRejoinsItsTree:
         trees._TREE_INDEX_LIVE.clear()
         monkeypatch.setattr(trees, "atomic_write", MagicMock(side_effect=OSError("full disk")))
         mgr, _factory = self._manager("", successor)
+        service = mgr._allocation_boundary()
+        service._deps = dataclasses.replace(
+            service._deps, is_acp_provider=MagicMock(return_value=True)
+        )
         try:
-            with pytest.raises(OSError, match="Could not persist scratch retirement"):
-                await mgr.get_or_create(key, agent="kirocrew")
-            mgr._session_map.set.assert_not_called()
+            await mgr.get_or_create(key, agent="kirocrew")
+            assert mgr.get_provider(key) is not None
+            mgr._session_map.set.assert_called()
+            assert any(
+                record.levelname == "WARNING"
+                and "Could not persist scratch retirement" in record.message
+                for record in caplog.records
+            )
+            assert trees.recorded_tree(key) is None
         finally:
             await mgr.close_all()
         assert trees._read_tree_index(scratch_root) == {key: earlier.name}

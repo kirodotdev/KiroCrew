@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import json
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,7 +26,7 @@ from kiro_crew.testing.wait import await_until, default_timeout, finished, until
 @pytest.mark.parametrize("restart", [False, True])
 @pytest.mark.parametrize("retirement", ["persisted", "raises", "missing_write"])
 async def test_reset_to_provider_without_tree_retires_before_publishing(
-    scratch_root, monkeypatch, retirement, restart
+    scratch_root, monkeypatch, caplog, retirement, restart
 ):
     scratch_root.mkdir(parents=True)
     tree = scratch_root / "discarded-conversation"
@@ -82,12 +83,16 @@ async def test_reset_to_provider_without_tree_retires_before_publishing(
                 "atomic_write",
                 MagicMock(side_effect=OSError("full disk") if retirement == "raises" else None),
             )
-            with pytest.raises(OSError, match="Could not persist scratch retirement"):
-                await mgr.get_or_create(key, agent="kirocrew")
-            assert mgr.get_provider(key) is None
-            mgr._session_map.set.assert_not_called()
-            kill.assert_called_once_with(providers[-1])
-            assert key not in mapped
+            await mgr.get_or_create(key, agent="kirocrew")
+            assert mgr.get_provider(key) is not None
+            assert mapped[key] == "sid-replacement"
+            assert any(
+                record.levelname == "WARNING"
+                and "Could not persist scratch retirement" in record.message
+                for record in caplog.records
+            )
+            # The row stays on disk, but this process never hands the tree back.
+            assert trees.recorded_tree(key) is None
             index = scratch_root / trees.TREE_INDEX_FILENAME
             rows = json.loads(index.read_text(encoding="utf-8"))
             assert rows[key] == tree.name
@@ -147,15 +152,32 @@ async def test_no_tree_provider_starts_without_accessing_unusable_root(
         await mgr.close_all()
 
 
-def test_unreadable_real_root_does_not_count_as_no_binding(scratch_root, monkeypatch):
+@pytest.mark.parametrize("unreadable", ["index", "root"])
+def test_unreadable_real_root_does_not_count_as_no_binding(scratch_root, monkeypatch, unreadable):
     scratch_root.mkdir()
-    monkeypatch.setattr(
-        trees, "_read_tree_index", MagicMock(side_effect=PermissionError("unreadable index"))
-    )
+    tree = scratch_root / "bound-tree"
+    tree.mkdir()
+    key = "dashboard:unreadable-scratch"
+    assert trees.record_tree(key, tree)
+    if unreadable == "index":
+        monkeypatch.setattr(
+            trees, "_read_tree_index", MagicMock(side_effect=PermissionError("unreadable index"))
+        )
+    else:
+        real_lstat = trees.os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if Path(path) == scratch_root:
+                raise PermissionError("unreadable root")
+            return real_lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(trees.os, "lstat", lstat)
     write_index = MagicMock()
     monkeypatch.setattr(trees, "atomic_write", write_index)
-    assert not trees.abandon_tree("dashboard:unreadable-scratch")
+    assert not trees.abandon_tree(key)
     write_index.assert_not_called()
+    # A failed retirement still drops the in-memory binding.
+    assert not trees.holds_live_tree(key, tree)
 
 
 @pytest.mark.asyncio

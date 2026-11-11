@@ -904,8 +904,13 @@ async def _get_or_create_impl(
         cwd_kept_by_recorded_tree = False
         _skip_hidden_cwd()
 
+    # Stamped on the session this call registers, so a subagent asking to
+    # share its process can compare against the profile the process holds.
+    bound_profile: str | None = None
+
     async def _recheck_cwd_without_recorded_tree() -> bool:
         """Drop a cwd the recorded tree kept when that tree is left unbound."""
+        nonlocal extra_env, bound_profile
         if not cwd_kept_by_recorded_tree or effective_cwd is None:
             return False
         if extra_factory_kwargs.get("shared_scratch") is not None:
@@ -913,6 +918,10 @@ async def _get_or_create_impl(
         if not await asyncio.to_thread(_stored_cwd_is_hidden_scratch, str(effective_cwd), None):
             return False
         _skip_hidden_cwd()
+        # The project profile came from the dropped cwd; the default directory
+        # starts with the caller's own selection only.
+        extra_env = caller_env
+        bound_profile = None
         return True
 
     claim_crew = extra_factory_kwargs.get("crew_agent")
@@ -931,15 +940,12 @@ async def _get_or_create_impl(
 
     # The caller's own map, recorded on the session and passed to a won-race
     # retry: a successor's allocation and the retry apply the binding again.
-    caller_env = extra_env
+    caller_env: dict[str, str] | None = extra_env
     # A project bound to an AWS profile (aws.project_profiles) starts its
     # agent with AWS_PROFILE set, unless the caller chose a profile itself.
     # Set before the pool decision so a bound session never takes a pooled
     # process spawned without it. An empty map leaves extra_env untouched.
     project_profiles = configured_project_profiles(owner._cfg)
-    # Stamped on the session this call registers, so a subagent asking to
-    # share its process can compare against the profile the process holds.
-    bound_profile: str | None = None
     if project_profiles and effective_cwd:
         bound_env = await asyncio.to_thread(
             bound_profile_env, project_profiles, effective_cwd, extra_env
@@ -1265,6 +1271,30 @@ async def _get_or_create_impl(
             return candidate
 
         provider = build_provider()
+        # Bound here so the helper below can clear it; set from resume_sid below.
+        restores_history = False
+
+        def _drop_a_resume_that_would_move() -> None:
+            """Start fresh when the saved session's harness would load it in another folder."""
+            nonlocal resume_sid, restores_history
+            if not (
+                resume_sid
+                and self._deps.is_acp_provider(provider)
+                and _resume_would_move_the_session(provider, owner._session_map.get_cwd(key))
+            ):
+                return
+            # The saved sid stays in the map: the fresh session replaces it once it
+            # registers, and a start that fails before then leaves the chat as it was.
+            self._deps.logger.info(
+                "Not loading %s for %s in %s: its harness serves it only in the folder "
+                "it was created in; starting fresh with the conversation replayed",
+                resume_sid,
+                key,
+                provider.cwd,
+            )
+            resume_sid = None
+            restores_history = False
+
         if memory_mode != "persistent":
             resume_sid = None
         provider_switched = False
@@ -1281,21 +1311,7 @@ async def _get_or_create_impl(
                 resume_sid = None
                 provider_switched = True
                 owner._session_map.clear_sid(key)
-        if (
-            resume_sid
-            and self._deps.is_acp_provider(provider)
-            and _resume_would_move_the_session(provider, owner._session_map.get_cwd(key))
-        ):
-            # The saved sid stays in the map: the fresh session replaces it once it
-            # registers, and a start that fails before then leaves the chat as it was.
-            self._deps.logger.info(
-                "Not loading %s for %s in %s: its harness serves it only in the folder "
-                "it was created in; starting fresh with the conversation replayed",
-                resume_sid,
-                key,
-                provider.cwd,
-            )
-            resume_sid = None
+        _drop_a_resume_that_would_move()
 
         # Whether this start asks its process to restore a saved session.
         restores_history = bool(resume_sid)
@@ -1310,8 +1326,10 @@ async def _get_or_create_impl(
                 extra_factory_kwargs["shared_scratch"] = recorded_scratch
                 provider = build_provider()
         # A provider switch drops the resume, so the recorded tree is not bound.
+        # A cwd the tree kept is dropped then, which can move a cwd-bound resume.
         if await _recheck_cwd_without_recorded_tree():
             provider = build_provider()
+            _drop_a_resume_that_would_move()
 
         def configure_resume() -> None:
             if resume_sid:
@@ -1437,7 +1455,7 @@ async def _get_or_create_impl(
                     except agent_scratch.SharedScratchJoinError:
                         if attempt or recorded_scratch is None:
                             raise
-                        owner._dispatch_hard_kill(provider)
+                        await _end_started_provider(owner, provider)
                         # A cancelled join must finish retirement before another
                         # allocation can register a successor under this lock.
                         async with self._lock:
@@ -1454,10 +1472,13 @@ async def _get_or_create_impl(
                             exc_info=True,
                         )
                         extra_factory_kwargs.pop("shared_scratch")
-                        await _recheck_cwd_without_recorded_tree()
+                        cwd_dropped = await _recheck_cwd_without_recorded_tree()
                         provider = build_provider()
+                        if cwd_dropped:
+                            _drop_a_resume_that_would_move()
                         configure_resume()
                         provider.start_priority = start_priority
+                        provider.focus_resume = focus_resume
                     else:
                         break
             except (asyncio.CancelledError, Exception) as exc:
@@ -1637,27 +1658,24 @@ async def _get_or_create_impl(
                         # declare it must retire any predecessor binding.
                         work_scratch = getattr(provider, "work_scratch_dir", None)
                         if isinstance(work_scratch, Path):
-                            if not await self._record_scratch_tree(key, work_scratch):
-                                if not await run_to_completion(
-                                    asyncio.to_thread(agent_scratch_trees.abandon_tree, key)
-                                ):
-                                    raise OSError(
-                                        "Could not persist scratch retirement in "
-                                        f"{agent_scratch.scratch_root() / agent_scratch_trees.TREE_INDEX_FILENAME}; "
-                                        "repair or remove this index and retry session allocation"
-                                    )
-                        elif (
-                            had_resume_sid
-                            or await run_to_completion(
+                            must_retire = not await self._record_scratch_tree(key, work_scratch)
+                        else:
+                            must_retire = had_resume_sid or await run_to_completion(
                                 asyncio.to_thread(agent_scratch_trees.has_live_tree, key)
                             )
-                        ) and not await run_to_completion(
+                        # A retirement the index did not take still drops the
+                        # in-memory binding (``abandon_tree``), so this process
+                        # never hands that tree back: warn and start, the rule
+                        # a failed binding write follows too.
+                        if must_retire and not await run_to_completion(
                             asyncio.to_thread(agent_scratch_trees.abandon_tree, key)
                         ):
-                            raise OSError(
-                                "Could not persist scratch retirement in "
-                                f"{agent_scratch.scratch_root() / agent_scratch_trees.TREE_INDEX_FILENAME}; "
-                                "repair or remove this index and retry session allocation"
+                            self._deps.logger.warning(
+                                "Could not persist scratch retirement in %s; continuing "
+                                "session allocation. After a gateway restart this session "
+                                "may rejoin its earlier tree.",
+                                agent_scratch.scratch_root()
+                                / agent_scratch_trees.TREE_INDEX_FILENAME,
                             )
                     if self._closing:
                         raise SessionClosingError(

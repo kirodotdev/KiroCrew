@@ -19,6 +19,7 @@ from pathlib import Path
 
 from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read_fd
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def _read_tree_index(root: Path) -> dict[str, str]:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_size > _TREE_INDEX_MAX_BYTES:
             return {}
-        data = os.read(fd, _TREE_INDEX_MAX_BYTES + 1)
+        data = bounded_read_fd(fd, _TREE_INDEX_MAX_BYTES + 1)
     finally:
         os.close(fd)
     try:
@@ -254,6 +255,12 @@ def abandon_tree(key: str, only: Path | None = None) -> bool:
                 atomic_write(root / TREE_INDEX_FILENAME, json.dumps(rows, sort_keys=True))
             return key not in _read_tree_index(root)
         except (OSError, agent_scratch.ScratchBoundaryError):
+            # The disk row may stay, but this process must never hand it back.
+            with _TREE_INDEX_LIVE_LOCK:
+                live = _TREE_INDEX_LIVE.get(key)
+                if only is None or live is None or live == only:
+                    _exclude_tree_disk_fallback(key)
+                    _retire_tree_binding(key)
             logger.warning(
                 "agent-scratch: could not persist abandoned binding for %s; "
                 "it remains retired until gateway restart",

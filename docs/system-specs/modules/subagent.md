@@ -5177,8 +5177,8 @@ The mechanism is one extra window plus one env value, applied at three seams:
   fresh tree, as it did before scratch bindings were persisted. A binding
   that was not admitted (a stale ticket or a cap), or one whose earlier row
   for another tree was read and could not be dropped, is retired with
-  `abandon_tree`, under the fail-closed rule below. A provider
-  exposing no work tree must durably retire the key's prior binding with
+  `abandon_tree`, under the warn-and-start rule below. A provider
+  exposing no work tree retires the key's prior binding with
   `abandon_tree` before publishing its SID.
   Fresh no-tree starts, including pooled claims and reset successors, skip the
   retirement write when neither memory nor the persisted index has a binding
@@ -5186,9 +5186,9 @@ The mechanism is one extra window plus one env value, applied at three seams:
   including reset successors whose resume SID has already been cleared.
   Retirement screens the managed root from its existing `lstat` result, including
   Windows name-surrogate tags, instead of probing the name again.
-  The retirement is read back; a failed or missing write rolls allocation back,
-  so a reset followed by a no-tree provider cannot resume the discarded tree
-  after gateway restart. The old directory itself is left on disk.
+  The retirement is read back. The in-process binding is dropped first, so a
+  reset followed by a no-tree provider never resumes the discarded tree in this
+  process. The old directory itself is left on disk.
   A linked or absent managed root makes retirement a successful no-op: no index
   is read or written through it. An unreadable real root is not treated as absent.
   Registration, no-tree retirement and failed-join retirement drain their executor
@@ -5202,7 +5202,9 @@ The mechanism is one extra window plus one env value, applied at three seams:
   and does not advance the ticket floor beyond the binding it removes.
   Shutdown and end-of-session fences are
   checked again after the write attempt. If retirement cannot be persisted, allocation
-  fails closed and names the resolved index path for operator repair or removal. A resume
+  logs a warning naming the resolved index path and the session starts, as a resume
+  did before the index existed; after a gateway restart the key may rejoin its own earlier
+  tree, never another key's. A resume
   (`resume_sid` set, persistent memory only) reads the binding with `agent_scratch_trees.recorded_tree` as
   `shared_scratch`; the in-process cache is optional for restart durability.
   A fresh conversation on a reused key, including a provider switch, starts its own tree. The
