@@ -236,8 +236,96 @@ def _refuse_before_spawn_unless_toolless(session_key: str, authored_before_spawn
     )
 
 
+#: Guest spec repairs this process has started and finished. A turn reads the started
+#: count before the read that vouches for its spawn; :func:`_refuse_unless_toolless`
+#: confirms it only when, after the read that follows the start, no repair has started
+#: since and none is still running. A registered process that loaded the injected
+#: server is reset by the repair, and one a guest turn was starting is refused by that
+#: turn, which sees the count move.
+_guest_spec_repairs_started = 0
+_guest_spec_repairs_finished = 0
+
+#: Repairs in flight, held so a cancelled turn cannot drop one before it finishes.
+_guest_spec_repair_tasks: set[asyncio.Task[None]] = set()
+
+#: How long a repair waits for one guest session's reset. Every guest turn is refused
+#: until the repair finishes, so one hung teardown must not hold them all.
+_GUEST_RESET_TIMEOUT_SECS = 30.0
+
+#: Session key -> the provider a guest reset (a repair's or a refusal's) has not yet
+#: taken out of the registry. It may still mount the injected server, so the file it
+#: would be confirmed by does not vouch for it; only a reset that returns forgets it.
+_guest_resets_failed: dict[str, Any] = {}
+
+
+def _guest_spec_repair_count() -> int:
+    """How many guest spec repairs this process has started."""
+    return _guest_spec_repairs_started
+
+
+async def _restore_guest_spec(sessions: Any) -> None:
+    """Rewrite a drifted guest spec, then reset every live session bound to the guest agent.
+
+    A live guest process may still mount the injected server it loaded after the file
+    reads clean: kiro-cli applies a reload of a watched spec only at a turn boundary,
+    and not on every version. The resets run after the rewrite, so a session
+    restarted by one loads the template.
+    """
+    global _guest_spec_repairs_finished
+    from kiro_crew.agent import repair_guest_agent_spec
+
+    try:
+        if not await asyncio.to_thread(repair_guest_agent_spec):
+            return
+        for key in sessions.session_keys():
+            if sessions.get_agent(key) != TOOLLESS_TURN_AGENT:
+                continue
+            provider = sessions.get_provider(key)
+            if provider is not None:
+                _guest_resets_failed[key] = provider
+            try:
+                await asyncio.wait_for(sessions.reset(key), _GUEST_RESET_TIMEOUT_SECS)
+            except Exception:
+                logger.warning(
+                    "could not reset guest session %s after a guest spec repair",
+                    key,
+                    exc_info=True,
+                )
+            else:
+                _guest_resets_failed.pop(key, None)
+    finally:
+        _guest_spec_repairs_finished += 1
+
+
+async def _repair_toolless_spec(sessions: Any, session_key: str) -> tuple[bool, int]:
+    """Put :data:`TOOLLESS_TURN_AGENT`'s spec back to its template, then read it again.
+
+    Called when the pre-spawn read (:func:`_toolless_spec_before_spawn`) refused. A
+    tool that writes its own server into every spec in the agents directory leaves
+    Crew's ``kirocrew-guest.json`` mounting it, and only a rebuild re-derives the file,
+    so every ``deny_all_tools`` turn would be refused until then. An existing file that
+    is not its template is rewritten (``agent.repair_guest_agent_spec``) and the guest
+    sessions are reset (:func:`_restore_guest_spec`), shielded from this turn's
+    cancellation. Returns the second read, which decides, and the started count taken
+    before it.
+    """
+    global _guest_spec_repairs_started
+    _guest_spec_repairs_started += 1
+    task = asyncio.ensure_future(_restore_guest_spec(sessions))
+    _guest_spec_repair_tasks.add(task)
+    task.add_done_callback(_guest_spec_repair_tasks.discard)
+    await asyncio.shield(task)
+    repairs = _guest_spec_repairs_started
+    return await asyncio.to_thread(_toolless_spec_before_spawn, session_key), repairs
+
+
 async def _refuse_unless_toolless(
-    sessions: Any, session_key: str, provider: Any, *, authored_before_spawn: bool
+    sessions: Any,
+    session_key: str,
+    provider: Any,
+    *,
+    authored_before_spawn: bool,
+    repairs_before_spawn: int,
 ) -> None:
     """Raise :class:`ToollessTurnUnavailable` unless this turn can be tool-less.
 
@@ -249,8 +337,12 @@ async def _refuse_unless_toolless(
     Another program can rewrite a file under the agents directory at any time,
     and kiro-cli runs a tool listed in ``allowedTools`` with no permission
     request for the driver to refuse, so the spec on disk is checked on every
-    turn, warm or cold. Each refusal writes its SEL row first. A spec refusal
-    also resets the session, so the process that loaded that spec is not reused.
+    turn, warm or cold. A guest spec repair started since *repairs_before_spawn*
+    (the started count, read before the read that vouched for the spawn), or one still
+    running, leaves the spec unconfirmed too, and so does a provider a guest reset did not
+    finish taking out (``_guest_resets_failed``). Each refusal writes its SEL row first. A spec
+    refusal also resets the session, so the process that loaded that spec is not
+    reused.
     """
     # The tool-less agent is a SPEC, and only a backend that mounts
     # what the spec names honours it. On any other routing the
@@ -302,7 +394,12 @@ async def _refuse_unless_toolless(
             ) is True
         except Exception:
             logger.warning("tool-less spec confirmation failed", exc_info=True)
-    if not confirmed:
+    if (
+        not confirmed
+        or _guest_spec_repairs_started != repairs_before_spawn
+        or _guest_spec_repairs_finished != _guest_spec_repairs_started
+        or _guest_resets_failed.get(session_key) is provider
+    ):
         sel().log_api_access(
             caller=session_key,
             operation="turn_agent",
@@ -310,6 +407,7 @@ async def _refuse_unless_toolless(
             source="messaging",
             resources=f"deny_all_tools turn: {TOOLLESS_TURN_AGENT} spec is not tool-less",
         )
+        _guest_resets_failed[session_key] = provider
         try:
             await sessions.reset(session_key)
         except Exception:
@@ -318,6 +416,8 @@ async def _refuse_unless_toolless(
                 session_key,
                 exc_info=True,
             )
+        else:
+            _guest_resets_failed.pop(session_key, None)
         raise ToollessTurnUnavailable(
             f"deny_all_tools turn refused: the {TOOLLESS_TURN_AGENT} spec the harness "
             "loaded mounts a tool, a grant, an MCP server or a hook"
