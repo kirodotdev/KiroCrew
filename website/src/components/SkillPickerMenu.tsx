@@ -8,6 +8,7 @@ import { pickerQueryKey } from '../chat-core/composer/pickerSource'
 import { unwrapSkills } from '../lib/skillsPayload'
 import type { SkillsPayload } from '../lib/skillsPayload'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
+import { useAnchorTracking } from '../hooks/useAnchorTracking'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import { skillsCacheStaleTime } from '../lib/skillsCache'
 import { makeScoreThenNameComparator } from '../utils/fuzzyMatch'
@@ -286,6 +287,8 @@ export default function SkillPickerMenu({
     if (!open) return
     itemRefs.current[selectedRef.current]?.scrollIntoView({ block: 'nearest' })
   }, [results, open, selectedRef, itemRefs])
+
+  useAnchorTracking(open, anchorRef)
 
   if (!open || !anchorRef.current) return null
 
