@@ -60,6 +60,7 @@ __all__ = [
     "claude_adapter_cached_negative",
     "claude_adapter_honours_session_options",
     "goose_side_home_supported",
+    "mirror_withheld_crew_refs",
     "claude_adapter_install_command",
     "claude_components_resolve",
     "derived_agent_permissions",
@@ -637,6 +638,26 @@ def agent_spec_mcp_refs(
             continue
         rows.append((backend, unresolved, has_mirror(backend)))
     return True, sorted(rows)
+
+
+def mirror_withheld_crew_refs(agent: str) -> frozenset[str]:
+    """The ``@server`` refs of *agent* that a mirror leaves out by design.
+
+    Crew's own identity-bound servers that the shared translation mounts (defined,
+    granted, not muted or narrowed). A mirror that cannot hand them the session's
+    identity withholds exactly those (``providers.mirrors.identity``), since mounted
+    they would refuse every call; one that can (claude) mounts them, so it never
+    reports one of these unresolved. Never raises: unreadable answers the empty set.
+    """
+    from kiro_crew.acp.session_mcp import session_mcp_projection
+    from kiro_crew.providers.mirrors.identity import identity_bound_crew_servers
+
+    try:
+        projection = session_mcp_projection(agent)
+        bound = identity_bound_crew_servers() - projection.restricted
+    except Exception:
+        return frozenset()
+    return frozenset(f"@{e.get('name')}" for e in projection.servers if e.get("name") in bound)
 
 
 def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
