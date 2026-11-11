@@ -7,9 +7,8 @@ stale-asset watchdog shuts the gateway down then, the shutdown cancels the step
 mid-write, and a cancelled installer leaves a venv without its console scripts.
 
 So each such step registers here for as long as it rewrites the install
-(:func:`step`, :func:`owning`), and so does the restart into an applied update,
-which ``_restart_after_update`` and the dashboard's ``_restart_gateway`` own for
-as long as they run. The stale-asset watchdog stands down while any entry is
+(:func:`step`, :func:`owning`), and so does the dashboard's ``_restart_gateway``,
+which owns it for as long as it runs. The stale-asset watchdog stands down while any entry is
 live. Each kind carries a generous maximum duration: an entry past it stops
 counting, with a WARNING, so a step wedged on an unbounded wait cannot switch
 the watchdog off for good.
@@ -230,23 +229,3 @@ def current_owner() -> str | None:
     if _deferred_restart_until is not None and now < _deferred_restart_until:
         return "a deferred restart into an applied update"
     return None
-
-
-# --- the re-entry check's verdict -------------------------------------------------
-
-
-class Reentry(enum.Enum):
-    REENTERABLE = "reenterable"
-    REFUSED = "refused"
-    INCONCLUSIVE = "inconclusive"
-
-
-@dataclass(frozen=True)
-class ReentryVerdict:
-    """Whether the gateway's supervisor could relaunch it, and why not."""
-
-    status: Reentry
-    reason: str = ""
-    #: A REENTERABLE that ran the supervisor's own command check, as opposed to
-    #: one that had nothing to check (no service manager, no check at all).
-    probed: bool = False

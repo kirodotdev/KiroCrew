@@ -684,23 +684,20 @@ existing is a real state: an `apply_command` that installs into a new versioned
 tree and prunes the old one deletes the interpreter the running gateway was
 launched from.
 
-What made that state costly was the ORDERING, not the missing file. The
-orchestrator saved, fenced, closed every session and only then raised `ENOENT`
-from `os.execv`. Admission itself does come back —
-`_finish_auto_update_apply` calls `resume_turn_admission_after_update()` — but the
-sessions `close_all()` tore down do not, and `_pending_update_respawn` is cleared
-immediately before the exec, so `_retry_pending_update_restart` can never fire.
-What survived was a gateway with no sessions, running a different version from the
-install on disk. The dashboard's own path is worse by one step: its `close_all()`
-sets the closing flag without owning the update pause, so `resume_...` returns
-early and admission stays shut as well.
+What made that state costly was the ORDERING, not the missing file. A restart
+saved, fenced, closed every session and only then raised `ENOENT` from
+`os.execv`. Admission itself can come back (`_finish_auto_update_apply` calls
+`resume_turn_admission_after_update()`) but the sessions `close_all()` tore down
+do not. What survived was a gateway with no sessions, running a different version
+from the install on disk. The dashboard's path is worse by one step: its
+`close_all()` sets the closing flag without owning the update pause, so
+`resume_...` returns early and admission stays shut as well.
 
-Both consumers therefore ask before the point of no return. The dashboard's
-`_restart_gateway` refuses with `Cannot restart: invalid Python executable path`
-while every session is still answerable. The orchestrator defers, retaining
-`_pending_update_respawn` so `_retry_pending_update_restart` completes the update
-once the install is repaired. Neither drains on the chance that a restart might
-still work.
+The dashboard's `_restart_gateway`, the only in-app restart, therefore asks before
+the point of no return: it refuses with `Cannot restart: invalid Python executable
+path` while every session is still answerable, and does not drain on the chance
+that a restart might still work. The boot-time apply (`update_boot_apply`) asks
+the same question before it execs, with no session to lose.
 
 Asking early narrows that failure; it cannot remove it. The target can be
 replaced between the check and the call, and a file that is present and carries

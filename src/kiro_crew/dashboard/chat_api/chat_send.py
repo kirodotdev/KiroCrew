@@ -403,13 +403,13 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     # Whether a PERSON typed this send. An app token never did, and neither did a
     # hub conductor's send marked agent-origin (`agent_origin`), whose turn is
-    # the `crew` actor's. Every
-    # person-only grant below reads `_person_send`; the app-scope checks keep
-    # reading `request_app` as before.
-    from kiro_crew.dashboard.agent_origin import send_is_agent_origin
+    # the `crew` actor's. Every person-only grant below reads `_person_send`; the
+    # app-scope checks keep reading `request_app` as before.
+    from kiro_crew.dashboard.agent_origin import note_person_send, send_is_agent_origin
 
     _agent_origin = send_is_agent_origin(body)
     _person_send = not request.get("app", "") and not _agent_origin
+    note_person_send(state, _person_send)
     message = body.get("message", "")
     not_string = string_field_error("message", message)
     if not_string is not None:

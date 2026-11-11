@@ -298,6 +298,7 @@ from kiro_crew import (
     safety_override,
     sandbox,
     shutdown_event,
+    update_next_start,
 )
 from kiro_crew.acp import client as acp_client
 from kiro_crew.agent_sdk import host_auth
@@ -832,6 +833,7 @@ def _reset_home_bound_globals() -> None:
     dashboard_updates._auto_effect = None
     dashboard_updates._auto_effect_task = None
     dashboard_updates._shape_effect = None
+    update_next_start._differs_memo = None
     # Cleared in place, never rebound: the security facade re-exports
     # ``_path_resolve_degraded`` by identity, and the second-boot witness
     # compares each container's identity.

@@ -1,16 +1,16 @@
-"""When an available update applies, and the fence the restart into it passes.
+"""What the scheduler does with an available update, and what a restart waits on.
 
-The scheduled update checks (provider-driven and the legacy layout-aware one), the
-effect an update would have, the in-flight-work census that holds an apply back,
-the pause, drain and settle around an apply, and the claimed restart that re-execs
-the gateway.
+The scheduled update checks (provider-driven and the legacy layout-aware one) only
+stage a managed-venv build or announce an update: no unattended path applies an
+update or restarts a running gateway, and the scheduler has no restart code at all.
+Also here: the effect an update would have, the in-flight-work census, and the
+callback drain and pause release the user-clicked restart takes
+(:mod:`kiro_crew.restart_admission`).
 
-Orchestrator fields read: ``_MANDATORY_UPDATE_MAX_DEFER_SECS``, ``_UPDATE_BUSY_RETRY_SECS``,
-``_UPDATE_DRAIN_TIMEOUT_SECS``, ``_running_script_ids``, ``_session_tasks``, ``cron_svc``,
-``dashboard_state``, ``sessions``, ``subagent_mgr``, ``task_runner``.
-Orchestrator fields written: ``_mandatory_update_deferred_at``,
-``_mandatory_update_deferred_key``, ``_pending_update_respawn``,
-``_pending_update_version``, ``_update_apply_deferred``.
+Orchestrator fields read: ``_UPDATE_BUSY_RETRY_SECS``, ``_UPDATE_DRAIN_TIMEOUT_SECS``,
+``_running_script_ids``, ``_session_tasks``, ``cron_svc``, ``dashboard_state``,
+``sessions``, ``subagent_mgr``, ``task_runner``.
+Orchestrator fields written: ``_update_apply_deferred``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -37,28 +37,16 @@ if TYPE_CHECKING:
         MANAGED_BY_COMMAND,
         Any,
         AutoUpdateEffect,
-        Callable,
         GatewayOrchestrator,
         _remediation_command,
         _update_info,
         auto_update_effect,
-        close_sessions_for_restart,
         distribution,
-        flush_breadcrumb_writes,
         inbound_spool,
         logger,
-        platform_compat,
         record_auto_update_effect,
-        redact_credentials,
-        redact_exfiltration_urls,
         redact_log_via_context,
-        resolve_restart_launcher,
-        run_pre_exec_stops,
         shutdown_event,
-        stop_cron_before_restart,
-        subprocess_executor,
-        update_ownership,
-        wait_for_unwinding_turns,
     )
 
 
@@ -248,17 +236,52 @@ def _live_update_handler_tasks(self: GatewayOrchestrator) -> list[asyncio.Task[A
     return pending
 
 
-async def _drain_update_callback_work(self: GatewayOrchestrator, *, timeout: float | None) -> bool:
-    """Wait without cancellation until callbacks and refusal writes are durable."""
+async def _drain_update_callback_work(
+    self: GatewayOrchestrator, *, timeout: float | None, include_turns: bool = True
+) -> bool:
+    """Wait without cancellation until callbacks and refusal writes are durable.
+
+    ``include_turns=False`` leaves the running turn and handler tasks alone and
+    waits only for inbound callback reservations and refusal writes: a restart
+    the person confirmed cuts those turns (``close_all`` unwinds them), so
+    waiting on them would only end in a refusal nobody asked for.
+    """
     loop = asyncio.get_running_loop()
     deadline = None if timeout is None else loop.time() + max(0.0, timeout)
+
+    def _callback_claims() -> int:
+        # A claim spans the whole turn its message started, so a drain that does
+        # not wait for turns leaves out the claims held by tasks that own a
+        # running session turn: ``close_all`` cuts those turns, which releases
+        # the claims, and waiting on them only ends in a refusal.
+        sessions = self.sessions
+        if sessions is None:
+            return 0
+        count = max(0, int(sessions.inbound_callback_count))
+        if include_turns or count == 0:
+            return count
+        try:
+            boundary = sessions._allocation_boundary()
+            running = {
+                s.turn_owner for s in list(boundary._sessions.values()) if s.turn_owner is not None
+            }
+            held = sum(
+                1
+                for token in list(boundary._inbound_callback_reservations)
+                if getattr(token, "owner", None) in running
+            )
+            return max(0, count - held)
+        except Exception:
+            logger.debug("update restart: turn-owned callbacks unreadable", exc_info=True)
+            return count
+
     while True:
-        handlers = self._live_update_handler_tasks()
+        handlers = self._live_update_handler_tasks() if include_turns else []
         writes = list(inbound_spool.pending_refusal_writes())
         reservations = 0
         if self.sessions is not None:
             try:
-                reservations = max(0, int(self.sessions.inbound_callback_count))
+                reservations = _callback_claims()
             except Exception:
                 logger.warning("update restart: callback count unavailable", exc_info=True)
                 return False
@@ -267,13 +290,9 @@ async def _drain_update_callback_work(self: GatewayOrchestrator, *, timeout: flo
             # observe the closed gate, then recheck. The caller commits the
             # synchronous restart fence immediately after this returns.
             await asyncio.sleep(0)
-            handlers = self._live_update_handler_tasks()
+            handlers = self._live_update_handler_tasks() if include_turns else []
             writes = list(inbound_spool.pending_refusal_writes())
-            reservations = (
-                max(0, int(self.sessions.inbound_callback_count))
-                if self.sessions is not None
-                else 0
-            )
+            reservations = _callback_claims() if self.sessions is not None else 0
             if not handlers and not writes and reservations <= 0:
                 return True
         remaining = None if deadline is None else deadline - loop.time()
@@ -291,106 +310,12 @@ async def _drain_update_callback_work(self: GatewayOrchestrator, *, timeout: flo
 _UPDATE_BUSY_RETRY_SECS = 300.0
 
 
-_MANDATORY_UPDATE_MAX_DEFER_SECS = 600.0
-
-
 #: How long the pre-restart drain waits for callbacks and refusal writes to
-#: become durable before giving up and deferring the restart.
-#:
-#: Named rather than inlined at the call site so a test that is about the
-#: fetch/reset/venv SEQUENCE can shorten it. When nothing makes the drain
-#: condition true, ``_drain_update_callback_work`` polls at 10ms to the
-#: deadline, so an inlined 30.0 cost eleven such tests thirty seconds EACH --
-#: ~330s of pure sleeping per full suite run, asserted on by none of them.
-#: The value itself stays pinned by the test that IS about it
-#: (``test_restart_fences_then_closes_and_final_drains`` asserts
-#: ``drain:30.0``), so shortening it elsewhere cannot hide a change here.
+#: become durable before deferring the restart. Named so a test about the
+#: fetch/reset/venv SEQUENCE can shorten it (the drain polls at 10ms to the
+#: deadline, 30s of sleeping per test otherwise); the value itself stays pinned
+#: by the test that IS about it (``test_restart_fences_then_closes_and_final_drains``).
 _UPDATE_DRAIN_TIMEOUT_SECS = 30.0
-
-
-async def _prepare_auto_update_apply(
-    self: GatewayOrchestrator,
-    *,
-    mandatory: bool,
-    mandatory_key: str = "",
-) -> bool:
-    """Pause admission and reach an idle boundary before automatic apply."""
-    if shutdown_event.is_set():
-        # A stop is already under way: an installer admitted now would be
-        # stopped mid-write. The signal itself is the gate, because
-        # ``close_all`` (which closes turn admission) runs only at the end
-        # of the shutdown. ``pause_turn_admission_for_update`` checks it
-        # again under its lock, for a stop that lands while it waits.
-        logger.info("Auto-update not started: the gateway is shutting down")
-        return False
-    if not mandatory:
-        self._mandatory_update_deferred_at = None
-        self._mandatory_update_deferred_key = None
-    sessions = self.sessions
-    if sessions is None:
-        return True
-    try:
-        paused = await sessions.pause_turn_admission_for_update()
-    except Exception:
-        logger.exception("Auto-update could not pause turn admission")
-        self._update_apply_deferred = True
-        return False
-    if not paused:
-        self._update_apply_deferred = True
-        return False
-    # Read with no await since the pause returned, so the gate cannot slip in.
-    if getattr(self, "_update_pause_holder", None) == "restart_gate":
-        # The restart gate just told a caller this gateway is idle and holds
-        # the (re-entrant) pause for that caller's restart: an apply started
-        # now would be cut off by it. The pause stays the gate's.
-        logger.info("Auto-update deferred: a restart this gateway approved is pending")
-        self._update_apply_deferred = True
-        return False
-    self._update_pause_holder = "auto_update"
-
-    turn_busy, background_busy = self._in_flight_work_counts()
-    busy = turn_busy + background_busy
-    if busy <= 0:
-        self._mandatory_update_deferred_at = None
-        self._mandatory_update_deferred_key = None
-        return True
-
-    loop = asyncio.get_running_loop()
-    now = loop.time()
-    if mandatory:
-        target_key = mandatory_key or "mandatory"
-        if self._mandatory_update_deferred_key != target_key:
-            self._mandatory_update_deferred_key = target_key
-            self._mandatory_update_deferred_at = now
-        elif self._mandatory_update_deferred_at is None:
-            self._mandatory_update_deferred_at = now
-    mandatory_due = bool(
-        mandatory
-        and self._mandatory_update_deferred_at is not None
-        and now - self._mandatory_update_deferred_at >= self._MANDATORY_UPDATE_MAX_DEFER_SECS
-    )
-    if mandatory_due:
-        logger.warning(
-            "Mandatory update remains deferred after its grace period: "
-            "%d active turn(s), %d background workload(s)",
-            turn_busy,
-            background_busy,
-        )
-
-    # The holder is cleared only once the resume returned (no await between):
-    # a gate pause queued behind this resume returns re-entrantly on this
-    # apply's pause, and must still see it as the apply's, not take it.
-    try:
-        reopened = await sessions.resume_turn_admission_after_update()
-    finally:
-        self._update_pause_holder = None
-    if reopened:
-        self._schedule_inbound_replay()
-    self._update_apply_deferred = True
-    logger.info("Auto-update deferred: %d in-flight turn(s)", busy)
-    if self.dashboard_state:
-        self.dashboard_state.push_refresh("update_available")
-    return False
 
 
 async def _finish_auto_update_apply(self: GatewayOrchestrator) -> None:
@@ -418,127 +343,6 @@ async def _finish_auto_update_apply(self: GatewayOrchestrator) -> None:
         self._update_pause_holder = None
 
 
-#: How long an idle answer from the restart gate keeps turn admission paused
-#: while the caller's restart lands. A restart that never comes (the caller
-#: died, or its restart failed) must not leave the gateway refusing turns, so
-#: admission reopens after this.
-_RESTART_GATE_HOLD_SECS = 60.0
-
-
-async def _restart_gate_when_idle(self: GatewayOrchestrator) -> tuple[bool, int, int]:
-    """Say whether a restart now would interrupt work, as ``(idle, turns, background)``.
-
-    The check behind ``kirocrew restart --when-idle``. It takes the pause the
-    automatic apply takes (``pause_turn_admission_for_update``) and runs the
-    same census (``_in_flight_work_counts``), so a remote restart waits for the
-    work a local update would wait for. Busy: admission reopens at once and
-    the counts go back to the caller, who asks again later. Idle: admission
-    stays paused, so no turn starts between this answer and the restart, and
-    reopens after ``_RESTART_GATE_HOLD_SECS`` if no restart arrives. While that
-    hold is live every further ask answers busy and leaves the hold alone.
-
-    A pause someone else holds (an apply under way, or the final drain of a
-    stop) is not this gate's to take or release, so it answers busy. The pause
-    is re-entrant, so ``_update_pause_holder`` says whose it is: the gate sets
-    ``"restart_gate"``, ``_prepare_auto_update_apply`` sets ``"auto_update"``,
-    each right after its pause returns with no await between, and each
-    defers to the other. A gate ask whose pause returns on a pause another
-    gate ask still holds defers to it too. A stop
-    already signalled answers busy too: that gateway is going down anyway,
-    and the caller's next ask finds it gone.
-    """
-    if shutdown_event.is_set():
-        return False, 0, 0
-    sessions = self.sessions
-    # Fixtures built with ``__new__`` skip ``__init__``, hence the default.
-    hold = getattr(self, "_restart_gate_hold", None)
-    if hold is not None and not hold.done():
-        # A restart this gate already approved is on its way. Another ask is
-        # busy, and the approval's hold and pause are left exactly as they are:
-        # releasing them would reopen admission under that pending restart.
-        turns, background = self._in_flight_work_counts()
-        return False, turns, background
-    if sessions is not None:
-        if sessions.admission_closed:
-            turns, background = self._in_flight_work_counts()
-            return False, turns, background
-        try:
-            paused = await sessions.pause_turn_admission_for_update()
-        except Exception:
-            logger.exception("Restart gate could not pause turn admission")
-            paused = False
-        if not paused:
-            turns, background = self._in_flight_work_counts()
-            return False, turns, background
-        # Read with no await since the pause returned. The pause is re-entrant,
-        # so whoever took it while this waited for the lock still owns it -- an
-        # apply, or another gate ask whose resume is queued behind this pause:
-        # busy, and not this gate's to take or release.
-        if getattr(self, "_update_pause_holder", None) is not None:
-            turns, background = self._in_flight_work_counts()
-            return False, turns, background
-        self._update_pause_holder = "restart_gate"
-    turns, background = self._in_flight_work_counts()
-    # An update the dashboard started (``api_update_apply``) runs its policy
-    # installer as a tracked task the census does not count; the restart's
-    # shutdown would cancel it mid-install, so it is work a restart interrupts.
-    background += len(self._dashboard_policy_applies())
-    # So does its git update (the ``dashboard-update`` task): cut off between
-    # its fast-forward and its reinstall, it leaves a tree whose dependencies
-    # were never installed.
-    state = getattr(self, "dashboard_state", None)
-    background += sum(
-        1
-        for task in list(getattr(state, "_background_tasks", None) or ())
-        if callable(getattr(task, "get_name", None))
-        and task.get_name() == "dashboard-update"
-        and not task.done()
-    )
-    if turns + background > 0:
-        await self._finish_auto_update_apply()
-        logger.info(
-            "Restart gate: busy with %d turn(s) and %d background workload(s)", turns, background
-        )
-        return False, turns, background
-    if sessions is not None:
-        task = asyncio.create_task(self._release_restart_gate_hold(), name="restart-gate-hold")
-        self._restart_gate_hold = task
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-    logger.info("Restart gate: idle; turn admission paused for the restart")
-    return True, 0, 0
-
-
-def _restart_gate_held(self: GatewayOrchestrator) -> bool:
-    """Whether a restart the idle gate approved is still on its way.
-
-    Synchronous, so ``api_update_apply`` reads it and launches its installer
-    with no await between: an installer started under that hold is cut off by
-    the restart.
-    """
-    hold = getattr(self, "_restart_gate_hold", None)
-    return hold is not None and not hold.done()
-
-
-async def _release_restart_gate_hold(self: GatewayOrchestrator) -> None:
-    """Reopen admission the restart gate paused, once its restart did not arrive.
-
-    Left alone once an update restart fenced the pause, or once the pause is no
-    longer the gate's (``_update_pause_holder``).
-    """
-    await asyncio.sleep(self._RESTART_GATE_HOLD_SECS)
-    sessions = self.sessions
-    if sessions is None or getattr(sessions, "update_restart_fenced", False):
-        return
-    if getattr(self, "_update_pause_holder", None) != "restart_gate":
-        return
-    logger.warning(
-        "Restart gate: no restart within %ss of an idle answer; reopening turn admission",
-        self._RESTART_GATE_HOLD_SECS,
-    )
-    await self._finish_auto_update_apply()
-
-
 def _wheel_apply_module() -> Any:
     """The loaded managed-venv apply module, or ``None``. Never imports.
 
@@ -547,19 +351,6 @@ def _wheel_apply_module() -> Any:
     may have changed.
     """
     return sys.modules.get("kiro_crew.platform.wheel_apply")
-
-
-def _dashboard_policy_applies() -> list["asyncio.Task[Any]"]:
-    """Policy applies the dashboard started that are still running. Never imports.
-
-    Same ``sys.modules`` lookup as :meth:`_wheel_apply_module`: an apply can be
-    in flight only in a process whose dashboard update handlers are loaded, so
-    a module that is not resident has nothing to stop.
-    """
-    handlers = sys.modules.get("kiro_crew.dashboard.handlers.updates")
-    if handlers is None:
-        return []
-    return list(handlers.policy_applies_in_flight())
 
 
 async def _settle_update_work(
@@ -588,14 +379,7 @@ async def _run_update_checks(self: GatewayOrchestrator) -> None:
     while True:
         self._update_apply_deferred = False
         try:
-            # A queued restart the user put off must not stop the checks: a
-            # policy floor raised since, or a newer release, is still found,
-            # and its own apply replaces the held respawn.
-            if (
-                getattr(self, "_pending_update_respawn", None) is None
-                or await self._retry_pending_update_restart()
-            ):
-                await self._check_for_updates()
+            await self._check_for_updates()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -605,49 +389,6 @@ async def _run_update_checks(self: GatewayOrchestrator) -> None:
             self._UPDATE_BUSY_RETRY_SECS if self._update_apply_deferred else _UPDATE_CHECK_INTERVAL
         )
         await asyncio.sleep(delay)
-
-
-async def _retry_pending_update_restart(self: GatewayOrchestrator) -> bool:
-    """Run, or retry, only the safe restart after an update already applied.
-
-    Admission pauses here and nowhere earlier: an apply that builds beside
-    the live install leaves the gateway serving until this point. A pending
-    restart that serves a policy floor keeps its mandatory grace across
-    retries (``_pending_update_mandatory`` and its key).
-
-    A voluntary managed-venv restart the user put off ("Later" in the update
-    prompt, read for ``_pending_update_version``) waits: the respawn stays queued and the
-    badge stays lit, so the update starts when the user installs it or the
-    deferral lapses. A policy floor's restart does not wait.
-
-    Returns True only for that hold, so the caller still runs the update
-    check; every other outcome (restarted, busy, nothing queued) is False.
-    """
-    respawn = getattr(self, "_pending_update_respawn", None)
-    if respawn is None:
-        return False
-    mandatory = getattr(self, "_pending_update_mandatory", False)
-    version = getattr(self, "_pending_update_version", "")
-    if not mandatory and version:
-        from kiro_crew.config import KiroCrewConfig
-        from kiro_crew.update_deferral import user_deferred_update
-
-        cfg = await asyncio.to_thread(KiroCrewConfig.load)
-        if user_deferred_update(cfg, version):
-            logger.info("Update %s is ready but was put off by the user — not restarting", version)
-            if self.dashboard_state:
-                self.dashboard_state.push_refresh("update_available")
-            return True
-    if not await self._prepare_auto_update_apply(
-        mandatory=mandatory,
-        mandatory_key=getattr(self, "_pending_update_mandatory_key", ""),
-    ):
-        return False
-    try:
-        await self._restart_after_update(respawn)
-    finally:
-        await self._finish_auto_update_apply()
-    return False
 
 
 async def _check_for_updates(self: GatewayOrchestrator) -> None:
@@ -705,8 +446,8 @@ async def _auto_update_effect(
 
     Recorded for the status surface too, so the dashboard's auto-update
     switch reads the same derivation this loop branches on. ``notify`` never
-    reaches ``_prepare_auto_update_apply``: admission is not paused for an
-    update this install will not apply.
+    pauses admission or applies anything: an update this install will not
+    prepare is only announced.
     """
     effect = await asyncio.to_thread(auto_update_effect, provider=provider)
     # git_probes defaults True, so the derivation always answers here.
@@ -741,107 +482,19 @@ def _publish_provider_update_state(self: GatewayOrchestrator, result: object) ->
 
 
 async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: object) -> None:
-    """Provider-delegated update check and apply."""
+    """Provider-delegated update check. It reports; it never applies.
+
+    The policy's ``apply_command`` replaces the install this process runs from
+    in place, and a running gateway is never updated that way (decision entry
+    "updates never restart a running gateway"). So a voluntary update and a mandatory floor alike light
+    the dashboard's update notice, and a person's Update runs the command, behind
+    the same quiescence confirmation as a restart.
+    """
     from kiro_crew import __version__ as _running_version
-    from kiro_crew.config import KiroCrewConfig
-    from kiro_crew.platform.update_governance import (
-        min_version,
-        unattended_apply_allowed,
-        update_required,
-    )
+    from kiro_crew.platform.update_governance import min_version, update_required
     from kiro_crew.platform.update_provider import UpdateProvider
 
-    # Loaded BEFORE provider.apply(): the legacy-nested-venv migration the
-    # resolver exists for deletes the venv this process imports from, so a
-    # deferred import after a successful apply would raise
-    # ModuleNotFoundError and leave a closed-session gateway un-restarted
-    # (found in review). The module stays off the boot path either way —
-    # this method runs from the update timer, not from gateway start.
-    from kiro_crew.platform.wheel_apply import snapshot_memory_before_update, snapshot_refusal
-    from kiro_crew.platform.wheel_engine import respawn_executable
-
     assert isinstance(provider, UpdateProvider)
-
-    async def _snapshot_memory_or_skip(result: Any) -> bool:
-        """A fresh copy of every memory store before ``provider.apply()``; False skips it.
-
-        The same copy-or-refuse step `kirocrew update` and the git auto-update take.
-        Nobody is watching this path, so a copy that did not land skips the update and
-        says so; it never applies blind and never exits the gateway. Retried on the
-        next check.
-        """
-        copied, failure = await asyncio.to_thread(snapshot_memory_before_update)
-        if not failure:
-            logger.info("Auto-update: pre-update memory snapshot, %d store(s) copied", copied)
-            return True
-        failure, _ = redact_exfiltration_urls(failure)
-        failure, _ = redact_credentials(failure)
-        failure = failure[:500]
-        logger.warning("Auto-update skipped: pre-update memory snapshot failed: %s", failure)
-        message = snapshot_refusal(failure)
-        self._notice_wheel_update_once(
-            f"snapshot_failed:provider:{result.remote_version or ''}",
-            "Kiro Crew update skipped",
-            message,
-        )
-        self._publish_provider_update_state(result)
-        if self.dashboard_state:
-            self.dashboard_state.push_update_progress("failed", message)
-            self.dashboard_state.push_refresh("update_available")
-        return False
-
-    def _unattended_installs_turned_off(result: Any) -> bool:
-        """True, and reported, when policy turned unattended installs off mid-cycle.
-
-        The update stays offered for a person's Update; nothing was applied.
-        """
-        if unattended_apply_allowed():
-            return False
-        logger.info(
-            "Auto-update not applied: the security policy turned off unattended "
-            "installs while this update waited"
-        )
-        self._publish_provider_update_state(result)
-        if self.dashboard_state:
-            self.dashboard_state.push_refresh("update_available")
-        return True
-
-    async def _restart_unless_apply_changed_nothing(result: Any) -> None:
-        """Restart into the applied update, or report an apply that changed nothing.
-
-        The check runs again first. When it still offers the version the apply
-        was for, the apply left the install as it was (for example a package
-        manager pin the apply honours and the check ignores). Restarting then
-        would boot into the same check and the same apply on every cycle,
-        closing every session each time, so the outcome is reported and the
-        gateway keeps running. A re-check that errors, finds nothing, or offers
-        another version is not that loop, and the restart goes ahead.
-        """
-        assert isinstance(provider, UpdateProvider)
-        after = await provider.check()
-        offered = str(result.remote_version or "")
-        if after.available and not after.error and str(after.remote_version or "") == offered:
-            message = (
-                f"The update command finished, but the check still offers {offered}: "
-                "the install did not change, so Kiro Crew is not restarting. "
-                "Check the policy's apply_command and check_command."
-            )
-            logger.warning(
-                "Auto-update: apply_command exited 0 but the check still offers %s — "
-                "the install did not change; not restarting",
-                offered,
-            )
-            self._notice_wheel_update_once(
-                f"apply_unchanged:provider:{offered}",
-                "Kiro Crew update changed nothing",
-                message,
-            )
-            self._publish_provider_update_state(after)
-            if self.dashboard_state:
-                self.dashboard_state.push_update_progress("failed", message)
-                self.dashboard_state.push_refresh("update_available")
-            return
-        await self._restart_after_update(respawn_executable)
 
     # Say who owns updates on every path, "already latest" included, so the
     # dashboard need not run its own check to learn it.
@@ -850,80 +503,34 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
     # ``can_apply`` read off that one derivation rather than asked of the
     # provider again: it is the PROVIDER's answer, not the install shape's
     # (a reader told "cannot apply" because the shape is a wheel would be
-    # wrong on every policy-managed host), and the apply paths below never
-    # reach ``_publish_provider_update_state`` where a verdict is published.
+    # wrong on every policy-managed host).
     _update_info["can_apply"] = effect.route == AUTO_ROUTE_PROVIDER
     result = await provider.check()
 
     # The mandatory floor is an enterprise ceiling and is evaluated FIRST,
     # before any check-error early return: a host below min_version must
-    # still be updated even when the provider's check could not complete
-    # (a timed-out or misconfigured command must not strand the host below
-    # the policy floor).
-    mandatory_required = update_required(_running_version)
-    if not mandatory_required:
-        self._mandatory_update_deferred_at = None
-        self._mandatory_update_deferred_key = None
-    if mandatory_required:
-        # Guard against an infinite update→restart loop: only apply when the
-        # check found a NEWER build available. If the floor is pinned above
-        # the highest installable build (a policy typo, or a floor set ahead
-        # of the current release), applying would reinstall the same version,
-        # restart, and re-enter this branch forever. When no newer build is
-        # available we notify and stop — the git path's no-new-commits early
-        # return is the equivalent guard.
+    # still be told, even when the provider's check could not complete.
+    if update_required(_running_version):
         if not result.available:
+            # A floor pinned above the highest installable build (a policy typo,
+            # or a floor set ahead of the current release): nothing to apply.
             logger.warning(
                 "Version compliance: running %s is below the policy minimum %s, "
-                "but no newer build is available to apply — notifying, not looping",
+                "but no newer build is available to apply",
                 _running_version,
                 min_version(),
             )
-            self._publish_provider_update_state(result)
-            if self.dashboard_state:
-                self.dashboard_state.push_refresh("update_available")
-            return
-        if effect.effect != AUTO_EFFECT_MANDATORY:
-            # The floor mandates it but nothing here can apply it: tell the
-            # operator instead of pausing admission for an apply that fails.
+        else:
             logger.warning(
-                "Version compliance: running %s is below the policy minimum %s, "
-                "but %s — notifying",
-                _running_version,
-                min_version(),
-                effect.reason,
-            )
-            self._publish_provider_update_state(result)
-            if self.dashboard_state:
-                self.dashboard_state.push_refresh("update_available")
-            return
-        if not await self._prepare_auto_update_apply(
-            mandatory=True,
-            mandatory_key=f"provider:{min_version()}:{result.remote_version or ''}",
-        ):
-            self._publish_provider_update_state(result)
-            return
-        try:
-            if not await _snapshot_memory_or_skip(result):
-                return
-            logger.warning(
-                "Version compliance: running %s is below the policy minimum %s — "
-                "applying mandatory update via provider (overrides auto_update)",
+                "Version compliance: running %s is below the policy minimum %s; "
+                "the update command replaces the running install in place, so it "
+                "is applied by a person (Update), not while the gateway runs",
                 _running_version,
                 min_version(),
             )
-            if self.dashboard_state:
-                self.dashboard_state.push_update_progress("pulling", "Applying mandatory update…")
-            self._pending_update_version = ""
-            success = await provider.apply()
-            if success:
-                await _restart_unless_apply_changed_nothing(result)
-            elif self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "failed", "Update apply failed — run manually: kirocrew update"
-                )
-        finally:
-            await self._finish_auto_update_apply()
+        self._publish_provider_update_state(result)
+        if self.dashboard_state:
+            self.dashboard_state.push_refresh("update_available")
         return
 
     # Below the mandatory floor: a check error is a non-answer, not a
@@ -933,186 +540,16 @@ async def _check_for_updates_via_provider(self: GatewayOrchestrator, provider: o
         return
 
     if result.available:
-        from kiro_crew.update_deferral import user_deferred_update
+        from kiro_crew.config import KiroCrewConfig
 
         cfg = await asyncio.to_thread(KiroCrewConfig.load)
-        deferred = user_deferred_update(cfg, str(result.remote_version or ""))
-        if cfg.auto_update and effect.effect == AUTO_EFFECT_INSTALL and not deferred:
-            if not await self._prepare_auto_update_apply(mandatory=False):
-                self._publish_provider_update_state(result)
-                return
-            try:
-                # The effect was derived before the check and the drain, and a
-                # policy installed since then decides. Read before the memory
-                # copy so a refused install spends none, and after it, with no
-                # wait between that read and the apply.
-                if _unattended_installs_turned_off(result):
-                    return
-                if not await _snapshot_memory_or_skip(result):
-                    return
-                if _unattended_installs_turned_off(result):
-                    return
-                logger.info("Auto-update enabled — applying update via provider")
-                if self.dashboard_state:
-                    self.dashboard_state.push_update_progress("pulling", "Downloading update…")
-                # The provider replaced the install on disk, so its queued
-                # restart is not held: only the managed-venv route, whose
-                # running tree is untouched, waits for "Later".
-                self._pending_update_version = ""
-                success = await provider.apply()
-                if success:
-                    await _restart_unless_apply_changed_nothing(result)
-                elif self.dashboard_state:
-                    self.dashboard_state.push_update_progress(
-                        "failed", "Update apply failed — run manually: kirocrew update"
-                    )
-            finally:
-                await self._finish_auto_update_apply()
-        else:
-            if deferred:
-                logger.info(
-                    "Update %s was put off by the user — not installing it unattended",
-                    result.remote_version,
-                )
-            elif cfg.auto_update:
-                logger.info("Auto-update is on, but %s — notifying instead", effect.reason)
-            self._publish_provider_update_state(result)
-            if self.dashboard_state:
-                self.dashboard_state.push_refresh("update_available")
+        if cfg.auto_update:
+            logger.info("Auto-update is on, but %s; notifying instead", effect.reason)
+        self._publish_provider_update_state(result)
+        if self.dashboard_state:
+            self.dashboard_state.push_refresh("update_available")
     else:
         print("👻 Already on latest version")
-
-
-async def _restart_after_update_claimed(
-    self: GatewayOrchestrator, launcher: str | None, exe: str | None
-) -> None:
-    """The restart's drain-to-exec half, run with the process restart claimed."""
-    if self.dashboard_state:
-        self.dashboard_state.push_update_progress("restarting", "Preparing safe restart…")
-        from kiro_crew.dashboard.chat import save_all_slots_to_history
-
-        try:
-            await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(
-                    subprocess_executor(),
-                    save_all_slots_to_history,
-                    self.dashboard_state,
-                ),
-                timeout=5.0,
-            )
-        except Exception:
-            logger.debug(
-                "Dashboard slot save before update restart failed",
-                exc_info=True,
-            )
-    # Same reason as the dashboard restart path: os.execv does not drain the
-    # safety-override writer. No await is permitted between final drain and exec.
-    try:
-        await asyncio.to_thread(flush_breadcrumb_writes, 2.0)
-    except Exception:
-        logger.debug("Breadcrumb flush before update restart failed", exc_info=True)
-
-    if not await self._drain_update_callback_work(timeout=self._UPDATE_DRAIN_TIMEOUT_SECS):
-        self._update_apply_deferred = True
-        update_ownership.note_restart_deferred()
-        logger.warning("Update applied but restart deferred: callback/refusal work did not drain")
-        if self.dashboard_state:
-            self.dashboard_state.push_update_progress(
-                "restarting", "Update ready — restart deferred until messages are safe"
-            )
-        return
-
-    # Past the last deferral: the restart commits here, and a deferral it
-    # retried is over (a lost fence below means a real shutdown anyway).
-    update_ownership.restart_committed()
-    sessions = self.sessions
-    if sessions is not None:
-        # Yield-free with the successful drain above: a callback is now
-        # either already counted, or it observes this fence and writes its
-        # refusal synchronously before returning. That closes the final
-        # snapshot-to-exec window without holding ordinary retries closed.
-        if not sessions.fence_update_restart():
-            self._update_apply_deferred = True
-            logger.warning("Update restart fence lost to real shutdown; deferring restart")
-            return
-    # The exec skips _shutdown, so stop cron here, before close_all() as _shutdown orders it.
-    await stop_cron_before_restart(getattr(self, "cron_svc", None))
-    if sessions is not None:
-        # A planned restart: the turns close_all() cuts resume on the next boot.
-        # Already loaded by ``updates_apply``, so a replaced tree cannot fail it.
-        from kiro_crew.dashboard import restart_resume
-
-        await restart_resume.record_running_slots(self.dashboard_state)
-        # Bounded even against a task that outlives its cancel: close_all
-        # shuts turn admission first, and only the exec below ends this image.
-        await close_sessions_for_restart(sessions.close_all())
-        # close_all() cut every dashboard turn that was mid-reply, and each one
-        # saves the text its user watched stream as it unwinds, after the save
-        # above. The exec below would beat that save.
-        await wait_for_unwinding_turns(self.dashboard_state)
-
-    # The broker this gateway spawned dies with it, the same as ``_shutdown``
-    # does on a clean exit; an adopted daemon belongs to its own owner and is
-    # left alone, as ``GatewayManager.shutdown`` already does. The exec below
-    # skips that shutdown, and the successor can only replace a survivor whose
-    # owner pid is its own (an exec that kept the pid) or gone. Through a
-    # launcher that runs the new gateway as a child, this pid lives on as its
-    # supervisor: the daemon's owner-liveness check keeps passing, and the
-    # successor refuses a broker "owned by another live gateway" for its whole
-    # lifetime. Sessions are closed, so nothing is mid-call. The stop never
-    # raises and is bounded: the daemon's own drain budget on SIGTERM, then a
-    # SIGKILL and a reap of its pooled backends if the drain does not finish.
-    await self._stop_mcp_broker()
-    # Supervised children go the same way, for the same reason: the exec
-    # skips the cleanup hooks that stop them, and a child whose parent pid
-    # survives the exec is never reclaimed by the new image. Each owner
-    # registers its stop with the pre-exec seam. Bounded and never raises.
-    await run_pre_exec_stops()
-
-    from kiro_crew.dashboard import crash_dump_store
-
-    # Any callback that ran while close_all awaited used the synchronous
-    # fenced refusal path. Drain pre-fence workers and registered handlers
-    # one final time; never cancel or force through them. The exec skips the
-    # orderly exit that marks the crash dump clean, so mark it after that
-    # drain, never over it: a SIGKILL while it hangs must not read as clean.
-    # Then look once more without waiting: work that arrived while the mark
-    # was written withdraws it and is drained first. A drain that gave up (an
-    # unreadable callback count) goes on to the exec, as it always did.
-    while True:
-        drained = await self._drain_update_callback_work(timeout=None)
-        await crash_dump_store.mark_clean_exit()
-        try:
-            if not drained or await self._drain_update_callback_work(timeout=0.0):
-                break
-        except BaseException:
-            await crash_dump_store.unmark_clean_exit()
-            raise
-        await crash_dump_store.unmark_clean_exit()
-    if shutdown_event.is_set():
-        # The operator asked this process to stop while the restart was
-        # being prepared. Exec'ing would swallow that stop; the applied
-        # update takes effect at the next start instead.
-        await crash_dump_store.unmark_clean_exit()
-        logger.info("Update applied; restart skipped because the gateway is shutting down")
-        return
-    logger.info("Update callback drain complete, restarting gateway")
-    self._pending_update_respawn = None
-    self._pending_update_version = ""
-    # The exec is past the point of no return: the guard above removed the
-    # reachable failures, but only the kernel can refuse the image itself
-    # (wrong architecture, truncated, replaced since the check). Returning
-    # from here is what strands the gateway, so hand that outcome to the
-    # exec seam's own fatal partner instead of unwinding into the update
-    # coordinator, which logs and loops with every session already closed.
-    try:
-        if launcher is not None:
-            platform_compat.reexec_launcher(launcher, sys.argv[1:])
-        else:
-            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
-    except OSError:
-        await crash_dump_store.unmark_clean_exit()
-        await platform_compat.exit_after_failed_restart_exec(launcher or exe)
 
 
 async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
@@ -1143,11 +580,6 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
             record_auto_update_effect(effect)
         from kiro_crew.platform.update_governance import min_version, update_required
 
-        mandatory_target_key = (
-            f"legacy:{min_version()}:{info.get('channel') or ''}:"
-            f"{info.get('latest_version') or ''}:{info.get('managed_by') or ''}"
-        )
-
         # A policy-pinned minimum version makes the update MANDATORY: it
         # overrides the user's auto_update=False, because user config sits
         # under the enterprise ceiling and an operator opting out must not
@@ -1155,13 +587,10 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
         #
         # Checked BEFORE the `available` branch, and deliberately independent
         # of it: the mandate is about whether THIS host satisfies the floor,
-        # not about whether a newer build was advertised. `_auto_apply_update`
-        # still applies the source pin and its own no-new-commits early
-        # return, so this cannot bypass the ceiling or loop.
+        # not about whether a newer build was advertised. The apply
+        # (`kirocrew update` at the next start) still applies the source pin and
+        # its own no-new-commits early return, so this cannot bypass the ceiling.
         mandatory_required = update_required(_running_version)
-        if not mandatory_required:
-            self._mandatory_update_deferred_at = None
-            self._mandatory_update_deferred_key = None
         if mandatory_required:
             # A mandatory floor is handled by the route `auto_update_effect`
             # chose, because "apply" means different things per install shape:
@@ -1174,72 +603,22 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
             #     backend must not drive a git reset on a non-git tree nor show
             #     an inapplicable CLI-update badge.
             if effect.effect == AUTO_EFFECT_MANDATORY and effect.route == AUTO_ROUTE_GIT:
-                # Apply only when a newer build is available AND the checkout
-                # can take it cleanly — not on commit distance alone, and not
-                # over local divergence. `_auto_apply_update` resets hard onto
-                # the upstream tip, so the gate is two signals the successful
-                # check already computed:
-                #   * `version_newer` — the target's `__version__` outranks the
-                #     one this process imported. The same signal the voluntary
-                #     git branch below reads. Without it a primary-branch
-                #     checkout below the floor is reset to every intermediate
-                #     commit on every cycle and at every boot until `__version__`
-                #     meets the floor, which never advances the imported version
-                #     one commit at a time.
-                #   * `update_available` — `can_fast_forward or restart_pending`
-                #     (behind-only, or already pulled and awaiting a restart). A
-                #     DIVERGED checkout (ahead and behind) reads `version_newer`
-                #     true but `update_available` false, and resetting it would
-                #     discard the local commits. The destructive step has its
-                #     own ahead-count refusal, but gating here keeps a diverged
-                #     host on the clean notify path instead of a fetch-then-bail.
-                # A floor above the newest build, or a diverged checkout, then
-                # notifies rather than churning — the wheel branch's
-                # no-newer-build guard is the same stop.
-                if not (info.get("version_newer") and info.get("update_available")):
-                    # Keep a FAILED/unparseable check distinct from a healthy
-                    # "nothing newer / diverged" verdict: a non-answer must not
-                    # read as a compliance decision in the log. Either way, do
-                    # NOT write `update_available` into the shared check cache —
-                    # the wheel branch this mirrors only refreshes the badge, and
-                    # a write here would overwrite the real verdict (a failed or
-                    # diverged check) with a fabricated "update available".
-                    if info.get("check_status") != CHECK_SUCCEEDED:
-                        logger.warning(
-                            "Version compliance: running %s is below the policy minimum "
-                            "%s, but the update check did not succeed (status %s) — "
-                            "notifying, not resetting",
-                            _running_version,
-                            min_version(),
-                            info.get("check_status") or CHECK_UNCHECKED,
-                        )
-                    else:
-                        logger.warning(
-                            "Version compliance: running %s is below the policy minimum "
-                            "%s, but no newer build is cleanly applicable — notifying, "
-                            "not resetting to every upstream commit",
-                            _running_version,
-                            min_version(),
-                        )
-                    if self.dashboard_state:
-                        self.dashboard_state.push_refresh("update_available")
-                    return
-                if not await self._prepare_auto_update_apply(
-                    mandatory=True,
-                    mandatory_key=mandatory_target_key,
-                ):
-                    return
-                try:
-                    logger.warning(
-                        "Version compliance: running %s is below the policy minimum %s — "
-                        "applying a mandatory update (overrides auto_update)",
-                        _running_version,
-                        min_version(),
-                    )
-                    self._pending_update_version = ""
-                    await self._auto_apply_update(mandatory=True)
-                finally:
-                    await self._finish_auto_update_apply()
+                # A git reset rewrites the tree this process serves from, and a
+                # running gateway is never updated that way (decision entry "updates
+                # never restart a running gateway"): the floor's notice stays up and a person's Update
+                # applies it, behind the quiescence confirmation. Nothing is
+                # written into the shared check cache here: it holds the real
+                # verdict, and a fabricated "update available" would overwrite a
+                # failed or diverged check.
+                logger.warning(
+                    "Version compliance: running %s is below the policy minimum %s; "
+                    "a git update replaces the running checkout in place, so it is "
+                    "applied by a person (Update), not while the gateway runs",
+                    _running_version,
+                    min_version(),
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.push_refresh("update_available")
                 return
             # A managed-venv install cannot apply in-process, but the shadow
             # engine can, and a policy floor outranks auto_update. Runtime
@@ -1287,7 +666,6 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
                     str(info.get("channel") or ""),
                     str(info.get("latest_version") or ""),
                     mandatory=True,
-                    mandatory_key=mandatory_target_key,
                 )
                 return
             if effect.blocked:
@@ -1441,38 +819,19 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
             from kiro_crew.config import KiroCrewConfig
 
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            # `_auto_apply_update` replaces code with git fetch + reset, so it
-            # serves only the git route `auto_update_effect` chose. A managed
-            # venv is replaced by the shadow engine, which the branch below
-            # drives instead.
-            #
-            # `version_newer` is the other half, and it is not redundant:
-            # `update_available` is true on commit distance alone, which for a
-            # source checkout means any upstream commit — acting on that would
-            # `git reset --hard` a developer's tree within 12 hours of one,
-            # where before it only happened at a release. Commit distance
-            # without a version bump lights the badge below instead, and the
-            # dashboard's own apply path (`git pull`, dirty tree refused) is
-            # the non-destructive way in.
+            # Only the managed venv installs unattended, and only by building
+            # beside the running tree (the branch below). A git checkout's reset
+            # and a policy command rewrite the tree this process serves from, so
+            # `auto_update_effect` makes them `notify`: a person's Update applies
+            # them, and commit distance without a version bump only lights the
+            # badge.
             from kiro_crew.update_deferral import user_deferred_update
 
             # "Later" in an update prompt is the user's answer for that version:
-            # it stays offered, and is never installed and restarted unattended.
+            # it stays offered, and is never staged unattended.
             deferred = user_deferred_update(cfg, str(info.get("latest_version") or ""))
             installs = cfg.auto_update and effect.effect == AUTO_EFFECT_INSTALL and not deferred
-            if installs and effect.route == AUTO_ROUTE_GIT and info.get("version_newer"):
-                if not await self._prepare_auto_update_apply(mandatory=False):
-                    return
-                try:
-                    logger.info("Auto-update enabled — applying update")
-                    # The git route reloads `kiro_crew` after rebuilding, so a
-                    # held restart would leave the floor check reading the new
-                    # `__version__` for old code; its restart is not held.
-                    self._pending_update_version = ""
-                    await self._auto_apply_update()
-                finally:
-                    await self._finish_auto_update_apply()
-            elif installs and effect.route == AUTO_ROUTE_WHEEL and _remediation_command(info):
+            if installs and effect.route == AUTO_ROUTE_WHEEL and _remediation_command(info):
                 # Only the managed venv self-updates: the engine builds the new
                 # version beside the tree serving this process and flips the
                 # stable link, with admission open. Other source and wheel
@@ -1523,81 +882,3 @@ async def _check_for_updates_legacy(self: GatewayOrchestrator) -> None:
             )
     except Exception:
         logger.debug("Update check failed", exc_info=True)
-
-
-async def _restart_after_update_body(self: GatewayOrchestrator, respawn: Callable[[], str]) -> None:
-    """Save state and restart only after callback/refusal work is durable.
-
-    ``respawn`` is loaded before apply can replace the environment. If the
-    pre-fence drain cannot finish, retain it and retry the restart in five
-    minutes with admission reopened; never force through accepted work.
-
-    The interpreter is established BEFORE any of that. When it is missing, this
-    returns without saving, fencing or draining, because an exec that cannot
-    succeed must not be reached after every session has been closed.
-
-    Owns a missing bundle while it runs (``update_ownership``), so the
-    stale-asset watchdog does not race its teardown. A deferral while
-    callback work drains is owned for a while too, from the first deferral
-    on (a retry does not extend it), so the watchdog does not force the
-    restart it just put off.
-    """
-    logger.info("Update applied, preparing a callback-safe gateway restart")
-    self._pending_update_respawn = respawn
-    launcher = await asyncio.to_thread(resolve_restart_launcher)
-    exe = await asyncio.to_thread(respawn) if launcher is None else None
-    # Off-loop for the same reason as the two resolvers above: both predicates
-    # are metadata syscalls against a pathname this process does not control,
-    # and an interpreter on a stalled network mount would freeze every gateway
-    # task -- including the heartbeat -- rather than one restart.
-    usable = launcher is not None
-    if not usable and exe:
-        usable = await asyncio.to_thread(platform_compat.execv_target_available, exe)
-    if not usable:
-        # No usable interpreter: the apply pruned the tree this process was
-        # running from. RETURN BEFORE saving, fencing or draining. Reaching
-        # the exec with no interpreter closes every session first and then
-        # raises ENOENT. Admission itself does come back --
-        # ``_finish_auto_update_apply`` resumes it -- but the sessions
-        # ``close_all()`` tore down do not, and ``_pending_update_respawn``
-        # is cleared just before the exec, so nothing retries: what survives
-        # is a gateway with no sessions, running a different version from the
-        # install on disk. Deferring here keeps the sessions instead, and
-        # ``_pending_update_respawn`` stays set so
-        # ``_retry_pending_update_restart`` finishes the update once an
-        # operator repairs the install.
-        # Not a deferral the watchdog waits out: with the tree pruned the
-        # bundle is gone too, and its exit lets the supervisor relaunch
-        # through its own command, which a retry here cannot do. So one an
-        # earlier drain armed ends here too.
-        update_ownership.clear_restart_deferral()
-        self._update_apply_deferred = True
-        logger.error(
-            "Update applied but restart deferred: no usable interpreter. "
-            "Restore the interpreter and this retries itself -- the retry "
-            "re-resolves it, so no configuration change is needed."
-        )
-        if self.dashboard_state:
-            self.dashboard_state.push_update_progress(
-                "restarting",
-                "Update applied — restart needs a usable interpreter",
-            )
-        return
-    # ONE restart sequence per process: the dashboard's ``_restart_gateway``
-    # claims the same flag, and two sequences must never both drain sessions
-    # and race separate successors. A restart already under way owns the
-    # exec; this one stays pending and retries if that one is refused.
-    state = self.dashboard_state
-    if state is not None and getattr(state, "_gateway_restart_in_progress", False) is True:
-        self._update_apply_deferred = True
-        logger.info("A gateway restart is already in progress; the update restart waits")
-        return
-    if state is not None:
-        state._gateway_restart_in_progress = True
-    try:
-        # Through the class, not ``self``: the restart is also driven with a
-        # stand-in ``self`` that carries only the state it reads.
-        await GatewayOrchestrator._restart_after_update_claimed(self, launcher, exe)
-    finally:
-        if state is not None:
-            state._gateway_restart_in_progress = False

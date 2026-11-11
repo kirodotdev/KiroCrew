@@ -256,6 +256,20 @@ class SessionRegistryState:
     refused_spawns: dict[str, int] = field(default_factory=dict)
 
 
+class _CallbackToken:
+    """One counted callback claim, remembering the task that reserved it.
+
+    The owner is what lets a confirmed restart tell a claim held by a running
+    turn (``close_all`` cuts it, which releases the claim) from one that is
+    still admitting a message (the part a restart must wait for).
+    """
+
+    __slots__ = ("owner",)
+
+    def __init__(self, owner: asyncio.Task[Any] | None) -> None:
+        self.owner = owner
+
+
 class InboundCallbackReservation:
     """One counted inbound callback claim with idempotent release."""
 
@@ -1063,7 +1077,11 @@ class SessionAllocationService:
         """Claim one pre-turn callback atomically against update/shutdown admission."""
         if self._closing:
             return None
-        token = object()
+        try:
+            owner = asyncio.current_task()
+        except RuntimeError:
+            owner = None
+        token = _CallbackToken(owner)
         self._inbound_callback_reservations.add(token)
         return InboundCallbackReservation(self._inbound_callback_reservations, token)
 

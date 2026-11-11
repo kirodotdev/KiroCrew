@@ -145,6 +145,19 @@ export interface StatusData {
   update_required?: boolean
   /** The floor that made the update mandatory (bare release, '' when none). */
   update_min_version?: string
+  /**
+   * "Update ready, restart to use it": a new version is installed beside the
+   * running one (`staged`, `installed`), or the served bundle is gone
+   * (`assets_gone`). The gateway never restarts itself for it; a person does.
+   */
+  update_restart_ready?: boolean
+  update_restart_ready_version?: string
+  update_restart_ready_reason?: 'staged' | 'assets_gone' | ''
+  /** The person armed an update (Update when I restart): the gateway applies it at its
+   *  next start, before it serves anything. `null` when nothing is armed. */
+  update_armed_version?: string | null
+  /** Why the last boot-time apply failed; the old version is running. */
+  pending_apply_error?: string | null
   update_progress?: { step: string; detail: string } | null
   version?: string
   /**

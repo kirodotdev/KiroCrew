@@ -59,7 +59,7 @@ async function openConfirm() {
   fireEvent.click(trigger)
   const dialog = await screen.findByRole('dialog')
   // Wait for the pre-apply check to land so the dialog's controls settle.
-  await within(dialog).findByRole('button', { name: /^Update now$/i })
+  await within(dialog).findByRole('button', { name: /^Update when I restart$/i })
   return { trigger, dialog }
 }
 
@@ -81,7 +81,7 @@ describe('AboutPanel update confirm focus', () => {
   it('wraps Tab from the last control back to the first, and Shift+Tab back again', async () => {
     const { dialog } = await openConfirm()
     const close = within(dialog).getByRole('button', { name: /close/i })
-    const apply = within(dialog).getByRole('button', { name: /^Update now$/i })
+    const apply = within(dialog).getByRole('button', { name: /^Update when I restart$/i })
     apply.focus()
     fireEvent.keyDown(apply, { key: 'Tab' })
     expect(document.activeElement).toBe(close)
@@ -91,7 +91,7 @@ describe('AboutPanel update confirm focus', () => {
 
   it('keeps Tab inside while the update runs, and Close still refuses', async () => {
     const { dialog } = await openConfirm()
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Update now$/i }))
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Update when I restart$/i }))
     const close = within(dialog).getByRole('button', { name: /close/i })
     await waitFor(() => expect(close).toHaveAttribute('aria-disabled', 'true'))
     // The apply button is disabled now; focus has fallen out to the page.

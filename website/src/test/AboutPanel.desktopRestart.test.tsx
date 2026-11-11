@@ -162,7 +162,7 @@ describe('desktop About: Restart gateway', () => {
       // Self-updatable: the body's Update button, which drew a standing
       // gateway-side Restart row beside it.
       [{ update_available: true, update_check_status: 'succeeded', update_can_apply: true, update_managed_by: 'command' },
-        () => screen.findByText(i18nT('pages.settings.aboutPanel.update_now'))],
+        () => screen.findByText(i18nT('pages.settings.aboutPanel.update_when_i_restart'))],
       // Manual update: the body's installer-command card, which drew its own Restart.
       [{ update_available: true, update_check_status: 'succeeded', update_can_apply: false, update_command: 'brew upgrade kiro-crew' },
         () => screen.findByTestId('manual-update-command')],

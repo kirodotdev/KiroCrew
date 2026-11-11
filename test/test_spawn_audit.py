@@ -1061,13 +1061,13 @@ def test_gateway_spawns_all_own_session():
         spawns += 1
         if not any(kw.arg == "start_new_session" for kw in node.keywords):
             missing.append(f"{_GATEWAY_REL}:{node.lineno}")
-    assert spawns >= 9, (
+    assert spawns >= 2, (
         f"only {spawns} spawn sites found in {_GATEWAY_REL} — the audit's "
         "spawn matcher no longer matches the file's spawn idiom; fix the "
-        "matcher rather than deleting the ratchet. (The floor dropped from 10 "
-        "to 9 when the unattended apply's inline fetch moved to the shared "
-        "update_fetch.fetch_and_pin_upstream helper, which carries the same "
-        "start_new_session discipline and is covered by the spawn allowlist.)"
+        "matcher rather than deleting the ratchet. (The floor dropped from 9 "
+        "to 2 when the unattended apply left the gateway: the update now runs "
+        "at the next start from update_boot_apply, audited in the spawn "
+        "allowlist and the internal-python isolation inventory.)"
     )
     assert not missing, (
         "Spawn(s) in slack/gateway.py without start_new_session — a timeout "
@@ -1153,7 +1153,7 @@ def test_gateway_proc_waits_all_kill_on_timeout_and_cancel():
                     f"{_GATEWAY_REL}:{node.lineno} ({func.name}: {proc_name}) lacks a "
                     f"{lacking} arm that tree-kills the proc"
                 )
-    assert audited >= 10, (
+    assert audited >= 2, (
         f"only {audited} proc wait sites found in {_GATEWAY_REL} — the audit's "
         "wait matcher no longer matches the file's idiom; fix the matcher "
         "rather than deleting the ratchet"

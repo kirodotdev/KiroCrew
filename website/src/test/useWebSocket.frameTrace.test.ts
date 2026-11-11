@@ -1509,7 +1509,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action dashboard/setUpdateProgress {"step":"downloading","detail":"1/2"}',
     'action dashboard/setUpdateProgress {"step":"restarting","detail":""}',
     'action dashboard/setUpdateProgress {"step":"failed","detail":"boom"}',
-    'action dashboard/setUpdateProgress null',
+    'action dashboard/setUpdateProgress {"step":"done","detail":""}',
   ],
   "channel frames": [
     'event kirocrew-channel {"type":"channel_message","data":{"id":1}}',

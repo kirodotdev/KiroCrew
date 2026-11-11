@@ -477,13 +477,13 @@ describe('useWebSocket frame router', () => {
     expect(chat().automations).toEqual({})
   })
 
-  it('shows update progress and clears it on the done step', () => {
+  it('shows update progress and keeps the done step for the update flow', () => {
     const { ws } = mount()
     act(() => { ws.simulateMessage({ type: 'update_progress', data: { step: 'download', detail: '40%' } }) })
     expect(dash().updateProgress).toEqual({ step: 'download', detail: '40%' })
 
     act(() => { ws.simulateMessage({ type: 'update_progress', data: { step: 'done', detail: '' } }) })
-    expect(dash().updateProgress).toBeNull()
+    expect(dash().updateProgress).toEqual({ step: 'done', detail: '' })
   })
 
   it('bumps the refresh trigger for a session restart and a refine frame', () => {
