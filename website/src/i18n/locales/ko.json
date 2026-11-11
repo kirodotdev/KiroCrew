@@ -9488,6 +9488,7 @@
       "show_full_command": "전체 명령 보기"
     },
     "trustDropdown": {
+      "always_allow_this_tool": "이 도구 항상 허용",
       "trust": "신뢰",
       "trust_all_base": "<mono/> 명령 모두 신뢰",
       "trust_all_base_channel": "<mono/> 명령 모두 @{{role}}에 대해 신뢰 — {{productName}} 재시작 전까지",
@@ -16538,6 +16539,14 @@
         "default_crewmate_unknown_reason": "Bot 목록에 {{name}}이(가) 더 이상 없습니다"
       },
       "mcpTab": {
+        "always_allow": "항상 허용",
+        "always_allow_undo": "끄면 호출할 때마다 다시 묻습니다.",
+        "always_allow_hint": "이 도구를 호출하기 전에 더 이상 묻지 않습니다. {{productName}} 자체 안전 규칙은 계속 적용됩니다.",
+        "always_allow_failed": "항상 허용을 변경하지 못했습니다. 다시 시도하세요.",
+        "always_allow_refused_asks_every_time": "설정에서 이 서버의 도구를 호출할 때마다 묻도록 되어 있어 항상 허용할 수 없습니다.",
+        "always_allow_refused_set_elsewhere": "항상 허용은 이 컴퓨터의 로컬 설정 파일에서 관리되므로 여기서 변경할 수 없습니다.",
+        "always_allow_refused_crew_owned": "{{productName}} 자체 도구는 항상 묻습니다.",
+        "always_allow_refused_other": "이 도구들은 지금 항상 허용할 수 없습니다.",
         "share_refused_other": "공유하도록 설정한 서버 {{count}}개가 공유되지 않습니다: {{names}}. 실행하려면 승인이 필요해서 채팅마다 별도 사본이 실행됩니다.",
         "share_refused_restart": "MCP 서버에서 각각 공유를 승인하세요. 그런 다음 게이트웨이를 다시 시작하면(설정 → 정보 → 게이트웨이 다시 시작) 새 채팅이 공유 사본을 사용합니다.",
         "share_refused_review": "MCP 서버에서 검토",

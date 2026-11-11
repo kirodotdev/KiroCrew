@@ -9952,6 +9952,7 @@
       "show_full_command": "Mostra il comando completo"
     },
     "trustDropdown": {
+      "always_allow_this_tool": "Consenti sempre questo strumento",
       "trust": "Considera attendibile",
       "trust_all_base": "Fidati di tutti i comandi <mono/>",
       "trust_all_base_channel": "Fidati di tutti i comandi <mono/> per @{{role}} — fino al riavvio di {{productName}}",
@@ -17406,6 +17407,14 @@
         "default_crewmate_unknown_reason": "{{name}} non è più nell’elenco dei Bot"
       },
       "mcpTab": {
+        "always_allow": "Consenti sempre",
+        "always_allow_undo": "Disattiva per confermare di nuovo ogni chiamata.",
+        "always_allow_hint": "Non chiedere più prima di ogni chiamata a questo strumento. Le regole di sicurezza di {{productName}} restano valide.",
+        "always_allow_failed": "Impossibile modificare Consenti sempre. Riprova.",
+        "always_allow_refused_asks_every_time": "Le tue impostazioni chiedono prima di ogni chiamata agli strumenti di questo server, quindi non possono essere sempre consentiti.",
+        "always_allow_refused_set_elsewhere": "Consenti sempre è gestito da un file di impostazioni locale su questo computer, quindi non si può modificare qui.",
+        "always_allow_refused_crew_owned": "Gli strumenti di {{productName}} chiedono sempre.",
+        "always_allow_refused_other": "Questi strumenti non possono essere sempre consentiti in questo momento.",
         "share_refused_one": "{{count}} server che vuoi condividere non è condiviso: {{names}}. Il suo avvio richiede la tua approvazione, quindi ogni chat avvia una propria copia.",
         "share_refused_many": "{{count}} server che vuoi condividere non sono condivisi: {{names}}. Il loro avvio richiede la tua approvazione, quindi ogni chat avvia una propria copia.",
         "share_refused_other": "{{count}} server che vuoi condividere non sono condivisi: {{names}}. Il loro avvio richiede la tua approvazione, quindi ogni chat avvia una propria copia.",

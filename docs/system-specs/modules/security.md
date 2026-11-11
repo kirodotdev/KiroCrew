@@ -4960,7 +4960,10 @@ app-own-server grant, and an `auto_approve_tools` pattern matched against the id
 `Running: @server/tool` / `@server/tool` (never the lossy `mcp__server__tool`
 wire form, under which two identities can collide) INSTEAD of the title, for every caller, and only when the caller also
 threads the event's `mcp_identity_trusted` provenance flag (an identity that is
-present but unproven keeps the title match). A `hooks.confirm_tools` match
+present but unproven falls back to the title match for every `auto_approve_tools`
+pattern, identity spellings `@server/tool` and `Running: @server/tool` included;
+only a `hooks.auto_approve_tool_identities` entry never matches a
+title, because a shell call's title can be the model's own `description`). A `hooks.confirm_tools` match
 outranks that grant: the call asks, and no static grant on its server is
 written (see `docs/architecture/mcp.md`, "Servers the operator asked to
 confirm"). The user's `auto_deny_tools` globs
@@ -4991,6 +4994,51 @@ it already did on the dashboard (a tightening toward `POLICY ∩ PROFILE`). Ever
 grant that read the title, the payload's `kind` or a command — the read-only
 kind allow-list, the `_is_read_only_tool` title heuristic, trust-reads —
 stays downgraded for such a child exactly as before.
+
+**"Always allow" for one MCP tool** (`dashboard/always_allow_tool.py`). Two dashboard
+surfaces write the same `@server/tool` entry to their own list,
+`hooks.auto_approve_tool_identities`, and never to `hooks.auto_approve_tools`
+(the operator's list, which keeps its title fallback for hand-written entries): a per-tool toggle on Customize → MCP Servers
+(`/api/security/tool-grants`, `handlers/tool_grants.py`; GET lists the
+exact grants and a server's refusal code, POST adds, `/remove` drops) and the
+approval card's "Always allow this tool" row (`always_allow_tool` on
+`api_chat_slot_approve`). Both are owner-only: the routes call
+`require_owner_dashboard_request`, and the card decision additionally refuses an
+app token, a Crew Mode conductor's relay and any decide without the strict native
+target. The card grants only the `always_allow_tool_ref` the server stamped on the
+pending row (`card_fields`, from a verified `mcp_identity_trusted` pair that is not
+a shell, not unreadable, not a Connection's call, and for a low-fidelity child only
+with `child_mcp_identity_trusted`); the client's `pattern` must equal it and is
+never the grant. Neither surface grants a wildcard, a `kirocrew-*` server, a
+server a shipped app declares, or a server a Connection bridges
+(`server_is_crew_owned`), a server a `hooks.confirm_tools` pattern covers
+(`asks_every_time`), or while `config.local.json` sets the list (`set_elsewhere`);
+the toggle shows the reason and the card row is disabled with it. While
+`config.local.json` sets the list, removal is refused too (`409 set_elsewhere`,
+before any write), because a `config.json` edit cannot drop a grant the overlay
+supplies; the toggle offers no revoke then. The toggle, add and remove compare exact
+refs with the gate's lowercase comparison. Removal drops every matching case variant
+and preserves wider patterns. The switch shows its on/off state, with a visible undo
+hint when on. A card grant, a config change and a
+WebSocket reconnect each refresh the tool list's grant reading, so the toggle never
+shows OFF for a grant in force. The grant is
+written through `update_config_locked` (endorsed bytes, refused while a hand edit
+is pending) and applied by the watcher before the response. Every refusal from
+either surface (the card's own checks, a refusal code, `invalid_ref`, a pending hand
+edit) writes one SEL `log_api_access` record with outcome `denied` and the refusal
+code in `error`, through `always_allow_tool.refuse`; a success writes `success`. It never skips the
+gate: it is answered by the `operator-grants` tier after every deny tier and
+governance, so it does not ask `may_skip_gate_now`, which governs static
+`allowedTools` entries only. That tier matches an `auto_approve_tool_identities` entry only
+against a verified identity with case-insensitive literal equality, never glob matching,
+path normalization or the title. A stored `*`, `?` or bracket expression matches only
+its literal spelling, and `/` and `\` remain distinct on every platform. A shell call whose model-written
+description reads `@server/tool` is not approved by it, and `hooks.confirm_tools`
+outranks it as it outranks `auto_approve_tools` (`test/test_gate_tiers.py`). The
+toggle lists and removes only entries of that list; a hand-written
+`auto_approve_tools` entry is neither shown nor removed by it.
+KAS's own `allow_always` persistence and
+`permissions.yaml` are never written. Pinned by `test/test_always_allow_tool.py`.
 
 ### SEL Audit Logging (`sel.py`)
 

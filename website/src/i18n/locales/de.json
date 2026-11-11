@@ -9720,6 +9720,7 @@
       "show_full_command": "Vollständigen Befehl anzeigen"
     },
     "trustDropdown": {
+      "always_allow_this_tool": "Dieses Tool immer erlauben",
       "trust": "Vertrauen",
       "trust_all_base": "Allen <mono/>-Befehlen vertrauen",
       "trust_all_base_channel": "Allen <mono/>-Befehlen für @{{role}} vertrauen — bis {{productName}} neu startet",
@@ -16972,6 +16973,14 @@
         "default_crewmate_unknown_reason": "{{name}} steht nicht mehr in der Bot-Liste"
       },
       "mcpTab": {
+        "always_allow": "Immer erlauben",
+        "always_allow_undo": "Schalte es aus, um vor jedem Aufruf wieder gefragt zu werden.",
+        "always_allow_hint": "Vor jedem Aufruf dieses Tools nicht mehr fragen. Die eigenen Sicherheitsregeln von {{productName}} gelten weiterhin.",
+        "always_allow_failed": "„Immer erlauben“ konnte nicht geändert werden. Versuche es erneut.",
+        "always_allow_refused_asks_every_time": "Deine Einstellungen fragen vor jedem Aufruf der Tools dieses Servers, daher können sie nicht immer erlaubt werden.",
+        "always_allow_refused_set_elsewhere": "„Immer erlauben“ wird von einer lokalen Einstellungsdatei auf diesem Computer verwaltet und kann hier nicht geändert werden.",
+        "always_allow_refused_crew_owned": "Die eigenen Tools von {{productName}} fragen immer.",
+        "always_allow_refused_other": "Diese Tools können gerade nicht immer erlaubt werden.",
         "share_refused_one": "{{count}} Server, den du teilen willst, wird nicht geteilt: {{names}}. Sein Start braucht deine Freigabe, daher startet jeder Chat eine eigene Kopie.",
         "share_refused_other": "{{count}} Server, die du teilen willst, werden nicht geteilt: {{names}}. Ihr Start braucht deine Freigabe, daher startet jeder Chat eine eigene Kopie.",
         "share_refused_restart": "Gib in MCP-Server jeden davon zum Teilen frei. Starte danach das Gateway neu (Einstellungen → Über → Gateway neu starten), damit neue Chats die geteilte Kopie nutzen.",

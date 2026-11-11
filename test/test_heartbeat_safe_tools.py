@@ -800,6 +800,17 @@ class TestHeartbeatHooks:
         # via on_tool_approval, not on_tool_call.
         assert hb.on_tool_call("ReadInternalWebsites").action != TOOL_AUTO_APPROVE
 
+    def test_drops_user_tool_identity_grants(self) -> None:
+        """The per-tool "Always allow" grants do not carry into heartbeat hooks either."""
+        from kiro_crew.hooks import TOOL_AUTO_APPROVE
+        from kiro_crew.slack.gateway import _build_heartbeat_hooks
+
+        user = self._user_hooks(auto_approve_tool_identities=["@notes/lookup"])
+        call = dict(mcp_server_name="notes", mcp_tool_name="lookup", mcp_identity_trusted=True)
+        assert user.on_tool_call("Running: @notes/lookup", **call).action == TOOL_AUTO_APPROVE
+        hb = _build_heartbeat_hooks(user)
+        assert hb.on_tool_call("Running: @notes/lookup", **call).action != TOOL_AUTO_APPROVE
+
     def test_preserves_user_auto_deny_tools(self) -> None:
         """User's auto_deny_tools narrow what runs — those must carry over.
 

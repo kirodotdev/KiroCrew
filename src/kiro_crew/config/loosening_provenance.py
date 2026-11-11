@@ -642,6 +642,8 @@ _CONFIG_SECURITY_KEYS = (
     "agent.sandbox_allow_unsandboxed_exec",
     "agent.apps_allow_third_party",
     "hooks.auto_approve_tools",
+    # The per-tool "Always allow" grants, which widen what runs the same way.
+    "hooks.auto_approve_tool_identities",
     # The standing approve-every-tool grant, in each spelling the loader reads.
     "agent.dangerously_skip_permissions",
     "agent.dangerouslySkipPermissions",
