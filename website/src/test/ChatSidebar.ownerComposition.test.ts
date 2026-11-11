@@ -118,7 +118,7 @@ describe('the facade composition', () => {
     'useCollapsedCrews', 'useCollapsedCrewSpaces', 'useCrewEnable', 'useHoverHold', 'useLineageAvailable', 'useHoverPinLiveness', 'useStaleNarrowBridge',
     'useFolderFilterReveal', 'useConductorLane', 'useLaneCycle', 'useSidebarScrollPeek', 'useShortcutOrder',
     'useFolderFilterRows', 'useFolderMutations', 'useHoldPinnedHeaderOnCollapse', 'useRowAnimSettled', 'useBoardFolderCollapse',
-    'useNativeSessionDrag', 'useFolderDropOps',
+    'useNativeSessionDrag', 'useSessionSelection', 'useFolderDropOps',
     'useFolderTree', 'useSidebarReveal', 'useSidebarMoveUndo', 'useSidebarDragHandlers',
     'useFolderChatCreate', 'useSessionCreate', 'usePinnedKeyboardReorder', 'useManualKeyboardReorder', 'useRootFolderLanes',
   ]

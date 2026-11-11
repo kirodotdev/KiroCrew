@@ -65,3 +65,23 @@ export function closeConfirmPrompt(
     confirmLabel: i18nT('hooks.useSessionActions.close_confirm.confirm'),
   }
 }
+
+/**
+ * The one confirmation a batch close raises for all of its sessions. It always
+ * asks, whatever the "Confirm Before Closing Session" setting says: several
+ * sessions close on one press. The body counts the sessions with live work
+ * rather than listing each one's reasons, then gives the closing line a single
+ * close gives.
+ */
+export function closeManyConfirmPrompt(state: RootState, slotKeys: string[]): ConfirmOptions {
+  const working = slotKeys.filter(key => closeBusyReasons(state, key).length > 0).length
+  const count = slotKeys.length
+  return {
+    title: i18nT('pages.chatSidebar.selection.close_title', { count }),
+    body: createElement('div', { className: 'flex flex-col gap-2' },
+      working > 0 && createElement('p', { className: 'm-0' }, i18nT('pages.chatSidebar.selection.close_working', { count: working })),
+      createElement('p', { className: 'm-0' }, i18nT('pages.chatSidebar.selection.close_kept')),
+    ),
+    confirmLabel: i18nT('pages.chatSidebar.selection.close', { count }),
+  }
+}

@@ -14845,6 +14845,31 @@
       "could_not_repair_images": "Не удалось восстановить изображения"
     },
     "chatSidebar": {
+      "selection": {
+        "count_one": "Выбрано: {{count}}",
+        "count_few": "Выбрано: {{count}}",
+        "count_many": "Выбрано: {{count}}",
+        "count_other": "Выбрано: {{count}}",
+        "clear": "Снять выделение",
+        "actions": "Действия",
+        "actions_label": "Действия для выбранных сеансов",
+        "hint": "Нажми на сеанс, чтобы добавить или убрать его. Shift+щелчок выбирает диапазон.",
+        "select": "Выбрать",
+        "deselect": "Снять выбор",
+        "close_one": "Закрыть {{count}} сеанс",
+        "close_few": "Закрыть {{count}} сеанса",
+        "close_many": "Закрыть {{count}} сеансов",
+        "close_other": "Закрыть {{count}} сеанса",
+        "close_title_one": "Закрыть {{count}} сеанс?",
+        "close_title_few": "Закрыть {{count}} сеанса?",
+        "close_title_many": "Закрыть {{count}} сеансов?",
+        "close_title_other": "Закрыть {{count}} сеанса?",
+        "close_working_one": "В {{count}} из них ещё идёт работа. Закрытие остановит её.",
+        "close_working_few": "В {{count}} из них ещё идёт работа. Закрытие остановит её.",
+        "close_working_many": "В {{count}} из них ещё идёт работа. Закрытие остановит её.",
+        "close_working_other": "В {{count}} из них ещё идёт работа. Закрытие остановит её.",
+        "close_kept": "Разговоры и черновики в полях сообщений сохранятся, и сеансы можно открыть позже."
+      },
       "needsMeCard": {
         "card_label": "{{title}}: нужно твоё участие",
         "recap": "Сводка",

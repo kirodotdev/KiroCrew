@@ -22,7 +22,7 @@ import type { ReactNode } from 'react'
 import type { ChatSlot } from '../types'
 import enManual from '../i18n/locales/en.manual.json'
 
-const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn(), dashboardConfig: vi.fn(), chatSlotReload: vi.fn() }))
+const mocks = vi.hoisted(() => ({ setSlotPin: vi.fn(), forkChatSlot: vi.fn(), chatSlots: vi.fn(), dashboardConfig: vi.fn(), chatSlotReload: vi.fn(), deleteChatSlot: vi.fn() }))
 // The client mock re-exports the real ApiError, so the hook's instanceof check
 // and apiErrorCode's both see the refusals these tests build.
 vi.mock('../api/client', async () => {
@@ -44,6 +44,7 @@ vi.mock('../pages/chat/ChatSettings', () => cfgMock)
 import { store } from '../store'
 import { ApiError, statusErrText } from '../api/apiError'
 import { sseSlots, sseSlotPatch, markSlotUnread, updateSlotPin } from '../store/dashboardSlice'
+import { setActiveSlot } from '../store/chatSlice'
 import { useSessionActions, pinMutationKeysInFlight } from '../hooks/useSessionActions'
 import { recordError, __resetErrorJournalForTests } from '../utils/errorReport'
 import { stubAppConfirm, confirmText } from './appConfirmStub'
@@ -74,6 +75,7 @@ beforeEach(() => {
   mocks.forkChatSlot.mockResolvedValue({ ok: true, key: 'forked' })
   mocks.chatSlots.mockResolvedValue([])
   mocks.dashboardConfig.mockResolvedValue({})
+  mocks.deleteChatSlot.mockResolvedValue({ ok: true })
   cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
   vi.stubGlobal('confirm', vi.fn(() => true))
 })
@@ -641,5 +643,50 @@ describe('useSessionActions', () => {
     expect(ask).not.toHaveBeenCalled()
     expect(dispatchSpy).toHaveBeenCalled()
     dispatchSpy.mockRestore()
+  })
+
+  const MANY = ['chat-many-a', 'chat-many-b', 'chat-many-c']
+  const seedMany = () => store.dispatch(sseSlots(MANY.map(key => ({ key, title: key, messages: 1, running: key === MANY[2], folder_id: '' }))))
+  // Of the batch only: the shared store can still hold an earlier test's fork.
+  const openKeys = () => store.getState().dashboard.slots.map(s => s.key).filter(key => MANY.includes(key))
+
+  it('closeMany asks once for the whole batch, whatever confirmCloseSession says, and closes nothing when declined', async () => {
+    seedMany()
+    cfgMock.loadChatConfig.mockReturnValue({ confirmCloseSession: false })
+    const decline = stubAppConfirm(false)
+    const a = renderActions()
+    let closed: boolean | undefined
+    await act(async () => { closed = await a.current.closeMany(MANY) })
+    expect(closed).toBe(false)
+    expect(decline).toHaveBeenCalledTimes(1)
+    const asked = confirmText(decline.mock.calls[0][0])
+    expect(asked).toContain('Close 3 sessions?')
+    expect(asked).toContain('1 of them is still working.')
+    expect(decline.mock.calls[0][0].confirmLabel).toBe('Close 3 sessions')
+    expect(openKeys()).toEqual(MANY)
+    expect(mocks.deleteChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('closeMany closes every session on a yes, the open one last', async () => {
+    seedMany()
+    store.dispatch(setActiveSlot(MANY[0]))
+    stubAppConfirm(true)
+    const a = renderActions()
+    let closed: boolean | undefined
+    await act(async () => { closed = await a.current.closeMany(MANY) })
+    expect(closed).toBe(true)
+    await waitFor(() => expect(mocks.deleteChatSlot).toHaveBeenCalledTimes(3))
+    // The open chat's close switches to a survivor, so it goes after the others.
+    expect(mocks.deleteChatSlot.mock.calls.map(c => c[0])).toEqual([MANY[1], MANY[2], MANY[0]])
+    expect(openKeys()).toEqual([])
+  })
+
+  it('closeMany asks nothing for an empty batch', async () => {
+    const ask = stubAppConfirm(true)
+    const a = renderActions()
+    let closed: boolean | undefined
+    await act(async () => { closed = await a.current.closeMany([]) })
+    expect(closed).toBe(false)
+    expect(ask).not.toHaveBeenCalled()
   })
 })

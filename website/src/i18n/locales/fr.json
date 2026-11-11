@@ -14517,6 +14517,27 @@
       "could_not_repair_images": "Impossible de réparer les images"
     },
     "chatSidebar": {
+      "selection": {
+        "count_one": "{{count}} sélectionnée",
+        "count_many": "{{count}} sélectionnées",
+        "count_other": "{{count}} sélectionnées",
+        "clear": "Effacer la sélection",
+        "actions": "Actions",
+        "actions_label": "Actions pour les sessions sélectionnées",
+        "hint": "Clique sur une session pour l’ajouter ou la retirer. Maj+clic sélectionne une plage.",
+        "select": "Sélectionner",
+        "deselect": "Désélectionner",
+        "close_one": "Fermer {{count}} session",
+        "close_many": "Fermer {{count}} sessions",
+        "close_other": "Fermer {{count}} sessions",
+        "close_title_one": "Fermer {{count}} session ?",
+        "close_title_many": "Fermer {{count}} sessions ?",
+        "close_title_other": "Fermer {{count}} sessions ?",
+        "close_working_one": "{{count}} d’entre elles travaille encore. La fermeture arrête ce travail.",
+        "close_working_many": "{{count}} d’entre elles travaillent encore. La fermeture arrête ce travail.",
+        "close_working_other": "{{count}} d’entre elles travaillent encore. La fermeture arrête ce travail.",
+        "close_kept": "Les conversations et les brouillons de leurs zones de message sont conservés, et tu peux rouvrir les sessions plus tard."
+      },
       "needsMeCard": {
         "card_label": "{{title}} : a besoin de toi",
         "recap": "Résumé",

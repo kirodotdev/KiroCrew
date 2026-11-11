@@ -14517,6 +14517,27 @@
       "could_not_repair_images": "Impossibile riparare le immagini"
     },
     "chatSidebar": {
+      "selection": {
+        "count_one": "{{count}} selezionata",
+        "count_many": "{{count}} selezionate",
+        "count_other": "{{count}} selezionate",
+        "clear": "Annulla la selezione",
+        "actions": "Azioni",
+        "actions_label": "Azioni per le sessioni selezionate",
+        "hint": "Fai clic su una sessione per aggiungerla o rimuoverla. Maiusc+clic seleziona un intervallo.",
+        "select": "Seleziona",
+        "deselect": "Deseleziona",
+        "close_one": "Chiudi {{count}} sessione",
+        "close_many": "Chiudi {{count}} sessioni",
+        "close_other": "Chiudi {{count}} sessioni",
+        "close_title_one": "Chiudere {{count}} sessione?",
+        "close_title_many": "Chiudere {{count}} sessioni?",
+        "close_title_other": "Chiudere {{count}} sessioni?",
+        "close_working_one": "{{count}} di esse sta ancora lavorando. Chiuderle ferma quel lavoro.",
+        "close_working_many": "{{count}} di esse stanno ancora lavorando. Chiuderle ferma quel lavoro.",
+        "close_working_other": "{{count}} di esse stanno ancora lavorando. Chiuderle ferma quel lavoro.",
+        "close_kept": "Le conversazioni e le bozze nelle caselle dei messaggi vengono conservate, e puoi riaprire le sessioni in seguito."
+      },
       "needsMeCard": {
         "card_label": "{{title}}: ha bisogno di te",
         "recap": "Riepilogo",

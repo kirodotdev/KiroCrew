@@ -7789,6 +7789,23 @@
       "jump_to_new_other": "{{count}} new · Jump to latest"
     },
     "chatSidebar": {
+      "selection": {
+        "count_one": "{{count}} selected",
+        "count_other": "{{count}} selected",
+        "clear": "Clear selection",
+        "actions": "Actions",
+        "actions_label": "Actions for the selected sessions",
+        "hint": "Click a session to add or remove it. Shift-click selects a range.",
+        "select": "Select",
+        "deselect": "Deselect",
+        "close_one": "Close {{count}} session",
+        "close_other": "Close {{count}} sessions",
+        "close_title_one": "Close {{count}} session?",
+        "close_title_other": "Close {{count}} sessions?",
+        "close_working_one": "{{count}} of them is still working. Closing stops that work.",
+        "close_working_other": "{{count}} of them are still working. Closing stops that work.",
+        "close_kept": "The conversations and the drafts in their message boxes are kept, and you can reopen the sessions later."
+      },
       "needsMeCard": {
         "card_label": "{{title}}: needs you",
         "recap": "Recap",

@@ -14189,6 +14189,23 @@
       "could_not_repair_images": "छवियाँ ठीक नहीं की जा सकीं"
     },
     "chatSidebar": {
+      "selection": {
+        "count_one": "{{count}} चयनित",
+        "count_other": "{{count}} चयनित",
+        "clear": "चयन हटाओ",
+        "actions": "कार्रवाई",
+        "actions_label": "चुने गए सेशन के लिए कार्रवाइयाँ",
+        "hint": "किसी सेशन को जोड़ने या हटाने के लिए उस पर क्लिक करो। Shift-क्लिक से एक रेंज चुनी जाती है।",
+        "select": "चुनो",
+        "deselect": "चयन से हटाओ",
+        "close_one": "{{count}} सेशन बंद करो",
+        "close_other": "{{count}} सेशन बंद करो",
+        "close_title_one": "{{count}} सेशन बंद करो?",
+        "close_title_other": "{{count}} सेशन बंद करो?",
+        "close_working_one": "इनमें से {{count}} में अभी भी काम चल रहा है। बंद करने से वह काम रुक जाता है।",
+        "close_working_other": "इनमें से {{count}} में अभी भी काम चल रहा है। बंद करने से वह काम रुक जाता है।",
+        "close_kept": "बातचीत और संदेश बॉक्स के ड्राफ़्ट सहेजे रहते हैं, और तुम ये सेशन बाद में दोबारा खोल सकते हो।"
+      },
       "needsMeCard": {
         "card_label": "{{title}}: तुम्हारी ज़रूरत है",
         "recap": "सारांश",

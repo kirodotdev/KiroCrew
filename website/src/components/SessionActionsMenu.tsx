@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
+import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX, ListChecks } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -23,6 +23,7 @@ import { useConnected } from '../hooks/useConnected'
 import { offlineMenuRow } from '../utils/offline'
 import { useTagPopover } from '../hooks/useTagPopover'
 import { useNewFolderMove } from '../hooks/useNewFolderMove'
+import { useRowSelection } from '../hooks/useRowSelection'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
 import { useCopyAck } from './FilePathMenu'
@@ -172,7 +173,7 @@ function useFailedUntilCopied(status: 'idle' | 'copied' | 'failed'): boolean {
  * Canonical order, five groups (each renders only if it has surviving items,
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
- *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
+ *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags… · Select (sidebar rows only)
  *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Pop out · Split down (header only) · Reference in chat (sidebar rows only) · Copy link · Copy Kiro Crew session ID · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
@@ -195,6 +196,7 @@ export default function SessionActionsMenu({
   const poppedOut = !selfPopout && isPoppedOut(slotKey)
   const { open: openTagPopover } = useTagPopover()
   const newFolderMove = useNewFolderMove()
+  const selection = useRowSelection()
 
   // Store-derived per-slot state: the canonical live source, matching exactly
   // what the action handlers read at call time (so a label never drifts from
@@ -436,6 +438,13 @@ export default function SessionActionsMenu({
       <Item key="tags" onSelect={() => openTagPopover(slotKey)}>
         <TagIcon size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.tags')}
       </Item>,
+      // Sidebar rows only: picks this session for a batch action, the entry a
+      // touch screen has in place of Shift-click.
+      selection && (
+        <Item key="select" onSelect={() => selection.toggle(slotKey)}>
+          <ListChecks size={13} className="shrink-0 text-muted" /> {selection.has(slotKey) ? i18nT('pages.chatSidebar.selection.deselect') : i18nT('pages.chatSidebar.selection.select')}
+        </Item>
+      ),
     ],
     // Navigation / access
     [

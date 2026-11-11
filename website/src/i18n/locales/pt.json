@@ -14517,6 +14517,27 @@
       "could_not_repair_images": "Não foi possível reparar as imagens"
     },
     "chatSidebar": {
+      "selection": {
+        "count_one": "{{count}} selecionada",
+        "count_many": "{{count}} selecionadas",
+        "count_other": "{{count}} selecionadas",
+        "clear": "Limpar seleção",
+        "actions": "Ações",
+        "actions_label": "Ações para as sessões selecionadas",
+        "hint": "Clique em uma sessão para adicioná-la ou removê-la. Shift+clique seleciona um intervalo.",
+        "select": "Selecionar",
+        "deselect": "Desmarcar",
+        "close_one": "Fechar {{count}} sessão",
+        "close_many": "Fechar {{count}} sessões",
+        "close_other": "Fechar {{count}} sessões",
+        "close_title_one": "Fechar {{count}} sessão?",
+        "close_title_many": "Fechar {{count}} sessões?",
+        "close_title_other": "Fechar {{count}} sessões?",
+        "close_working_one": "{{count}} delas ainda está trabalhando. Fechar interrompe esse trabalho.",
+        "close_working_many": "{{count}} delas ainda estão trabalhando. Fechar interrompe esse trabalho.",
+        "close_working_other": "{{count}} delas ainda estão trabalhando. Fechar interrompe esse trabalho.",
+        "close_kept": "As conversas e os rascunhos nas caixas de mensagem são mantidos, e você pode reabrir as sessões depois."
+      },
       "needsMeCard": {
         "card_label": "{{title}}: precisa de você",
         "recap": "Resumo",
