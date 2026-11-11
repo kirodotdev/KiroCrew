@@ -277,6 +277,63 @@ async def test_a_probe_that_fails_keeps_the_latch(tmp_path):
     assert _not_ready_snapshot(True, cli_too_old=service.cli_too_old)["acp_supported"] is False
 
 
+def _route(monkeypatch, backend: str, bundle: bool) -> None:
+    """Make every config load answer *backend* and *bundle*, as a live edit would."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config import KiroCrewConfig
+
+    loaded = SimpleNamespace(agent=SimpleNamespace(acp_backend=backend, kas_bundle=bundle))
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: loaded))
+
+
+@pytest.mark.parametrize(
+    ("backend", "bundle", "relay"),
+    [("kas", False, True), ("kiro", False, False), ("kas", True, False)],
+)
+def test_only_the_kas_relay_route_counts(monkeypatch, backend, bundle, relay):
+    from kiro_crew.kiro_prerequisite_probe import _relay_route_configured
+
+    _route(monkeypatch, backend, bundle)
+    assert _relay_route_configured() is relay
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("backend", "bundle"), [("kiro", False), ("kas", True)])
+async def test_switching_off_the_relay_lifts_the_card_without_a_restart(
+    tmp_path, monkeypatch, backend, bundle
+):
+    """The card is about the relay's ``--auth-method``; the Kiro CLI harness and the
+    bundled engine do not pass it, so a live switch to either must not stay blocked."""
+    _route(monkeypatch, "kas", False)
+    service, _runtime = _service(tmp_path)
+    await service._probe()
+    service.mark_cli_too_old()
+    assert (await service.snapshot())["acp_supported"] is False
+
+    _route(monkeypatch, backend, bundle)
+    # An ordinary poll, as the dashboard makes, with the same binary installed.
+    after = await service.snapshot()
+    assert after["acp_supported"] is True
+    assert after["ready"] is True
+    assert service.cli_too_old is False
+
+
+@pytest.mark.asyncio
+async def test_a_still_kas_relay_route_keeps_the_card(tmp_path, monkeypatch):
+    _route(monkeypatch, "kas", False)
+    service, _runtime = _service(tmp_path)
+    await service._probe()
+    service.mark_cli_too_old()
+
+    polled = await service.snapshot()
+    auto = await service.snapshot(force=True, coalesce=True)
+    for snapshot in (polled, auto):
+        assert snapshot["acp_supported"] is False
+        assert snapshot["ready"] is False
+    assert service.cli_too_old is True
+
+
 @pytest.mark.asyncio
 async def test_a_successful_update_clears_the_latch(tmp_path):
     service, runtime = _service(tmp_path)
