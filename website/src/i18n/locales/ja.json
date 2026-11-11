@@ -317,6 +317,9 @@
     "release_notes_not_published_yet": "{{release}} のリリースノートはまだ公開されていません。代わりに {{shown}} のリリースノートを表示しています。"
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "セッションは作成されましたが、サーバーから返されませんでした。もう一度お試しください。"
+    },
     "pullRequestPanel": {
       "not_declared": "このアプリはプルリクエストを表示できません。権限に {{path}} が宣言されていません。"
     },

@@ -332,6 +332,9 @@
     "release_notes_not_published_yet": "Die Versionshinweise für {{release}} sind noch nicht veröffentlicht. Stattdessen werden die Hinweise zu {{shown}} angezeigt."
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "Die Sitzung wurde erstellt, aber der Server hat sie nicht zurückgegeben. Versuche es erneut."
+    },
     "pullRequestPanel": {
       "not_declared": "Diese App kann keine Pull Requests anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
     },
