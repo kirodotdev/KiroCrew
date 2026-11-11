@@ -207,6 +207,7 @@ from kiro_crew.subagent_ending import (  # noqa: F401
     SubagentEnding,
     classify_ending,
 )
+from kiro_crew.subagent_host_decision import HostSpawnDecision  # noqa: F401 - re-exported
 from kiro_crew.subagent_manager import (
     CancellationCoordinator,
     ClaimPoint,
@@ -304,7 +305,6 @@ from kiro_crew.subagent_parts.delivery import (  # noqa: F401
     NOT_DELIVERY_STATE,
     PARKS_WHEN_SET,
     PARKS_WHEN_UNSET,
-    HostSpawnDecision,
     SpawnApprovalCallback,
     SpawnApprovalUnreachable,
     SubagentEventCallback,
