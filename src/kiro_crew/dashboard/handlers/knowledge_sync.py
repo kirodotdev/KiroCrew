@@ -35,7 +35,11 @@ from kiro_crew.dashboard.handlers.knowledge_access import (
 )
 from kiro_crew.knowledge.agent_source import AGENT_SOURCE_URI
 from kiro_crew.knowledge.artifact_ingest import ARTIFACT_SOURCE_URI, ArtifactKnowledgeSync
-from kiro_crew.knowledge.ingestion import ImportChunkBudgetError, handoff_gate_context
+from kiro_crew.knowledge.ingestion import (
+    FileTooLargeError,
+    ImportChunkBudgetError,
+    handoff_gate_context,
+)
 from kiro_crew.knowledge.store import PENDING_REASON_IMPORT_BUDGET, PENDING_REASON_PROP
 from kiro_crew.knowledge.url_fetch import UrlFetchRefused, fetch_page, url_fetch_refusal
 from kiro_crew.security import is_sensitive_path, redact
@@ -343,7 +347,7 @@ async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
         is_cancel = isinstance(exc, asyncio.CancelledError)
         if is_cancel:
             logger.debug("Background ingestion cancelled for %s", path)
-        else:
+        elif not isinstance(exc, FileTooLargeError):  # the pipeline already warned
             logger.exception("Background ingestion failed for %s", path)
         await _finalize_sync_status(store, source_id, "error")
         if is_cancel:
@@ -645,7 +649,7 @@ async def _background_url_sync(  # type: ignore[no-untyped-def]
         is_cancel = isinstance(exc, asyncio.CancelledError)
         if is_cancel:
             logger.debug("URL sync cancelled: source=%s url=%s", source_id, url)
-        else:
+        elif not isinstance(exc, FileTooLargeError):  # the pipeline already warned
             logger.exception("URL sync failed: source=%s url=%s", source_id, url)
         await _finalize_sync_status(store, source_id, "error")
         if is_cancel:

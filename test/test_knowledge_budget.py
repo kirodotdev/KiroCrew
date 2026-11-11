@@ -9,6 +9,7 @@ Covers:
 """
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.config.loader import KnowledgeConfig
+from kiro_crew.knowledge.ingestion import FileTooLargeError
 
 # Config defaults
 
@@ -1055,7 +1057,13 @@ class TestBackgroundDeferralStaysRetryable:
             exporter.close()
             importer.close()
 
-    def test_local_file_ingest_still_errors_on_a_real_failure(self, tmp_path):
+    @pytest.mark.parametrize("exc, logs_error", [
+        (RuntimeError("disk gone"), True),
+        # The pipeline already warned about an oversized file: no second ERROR.
+        (FileTooLargeError("raise knowledge.max_ingest_file_mb in config to ingest it"), False),
+    ], ids=["read_error", "oversized"])
+    def test_local_file_ingest_failure_ends_in_error(
+            self, tmp_path, caplog, exc, logs_error):
         from types import SimpleNamespace
 
         from kiro_crew.dashboard.handlers import knowledge as kh
@@ -1063,11 +1071,14 @@ class TestBackgroundDeferralStaysRetryable:
         doc = tmp_path / "doc.md"
         doc.write_text("body", encoding="utf-8")
         store = self._recording_store()
-        pipeline = SimpleNamespace(ingest_file=AsyncMock(side_effect=RuntimeError("disk gone")))
+        pipeline = SimpleNamespace(ingest_file=AsyncMock(side_effect=exc))
 
-        asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
+        with caplog.at_level(logging.ERROR, logger=kh.logger.name):
+            asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
 
         assert self._states(store) == ["error"], store.db.statements
+        errors = [r for r in caplog.records if r.name == kh.logger.name]
+        assert bool(errors) is logs_error
 
 
 class TestUploadRefusesBeforeAccepting:
