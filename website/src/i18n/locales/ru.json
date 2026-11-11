@@ -248,6 +248,7 @@
     "dsk": "DSK",
     "expand_sidebar": "Развернуть боковую панель",
     "gateway_connected": "Шлюз подключён",
+    "gateway_connecting": "Подключение к шлюзу…",
     "gateway_offline_reconnecting": "Шлюз офлайн — переподключение",
     "relay_access_refused": "Ретранслятор отклонил подключение — повторная попытка",
     "relay_session_ended": "Сеанс ретранслятора завершён — открой эту Crew снова",

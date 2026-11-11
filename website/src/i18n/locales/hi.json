@@ -228,6 +228,7 @@
     "dsk": "DSK",
     "expand_sidebar": "साइडबार विस्तृत करें",
     "gateway_connected": "गेटवे कनेक्ट है",
+    "gateway_connecting": "गेटवे से कनेक्ट हो रहा है…",
     "gateway_offline_reconnecting": "गेटवे ऑफ़लाइन — फिर से कनेक्ट हो रहा है",
     "relay_access_refused": "रिले ने कनेक्शन अस्वीकार किया — फिर से प्रयास हो रहा है",
     "relay_session_ended": "रिले सत्र समाप्त — इस Crew को फिर से खोलो",

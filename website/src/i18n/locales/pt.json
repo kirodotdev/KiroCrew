@@ -238,6 +238,7 @@
     "dsk": "DSK",
     "expand_sidebar": "Expandir barra lateral",
     "gateway_connected": "Gateway conectado",
+    "gateway_connecting": "Conectando ao gateway…",
     "gateway_offline_reconnecting": "Gateway offline — reconectando",
     "relay_access_refused": "O relay recusou a conexão — tentando novamente",
     "relay_session_ended": "Sessão do relay encerrada — abra esta Crew novamente",

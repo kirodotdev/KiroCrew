@@ -238,6 +238,7 @@
     "dsk": "DSK",
     "expand_sidebar": "Développer la barre latérale",
     "gateway_connected": "Passerelle connectée",
+    "gateway_connecting": "Connexion à la passerelle…",
     "gateway_offline_reconnecting": "Passerelle hors ligne — reconnexion en cours",
     "relay_access_refused": "Le relais a refusé la connexion — nouvelle tentative",
     "relay_session_ended": "Session du relais terminée — rouvre cette Crew",

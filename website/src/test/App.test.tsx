@@ -1729,11 +1729,13 @@ describe('App routing', () => {
   })
 
   it('renders connection status', () => {
-    renderWithProviders(<App />, { route: '/chat' })
+    const { store } = renderWithProviders(<App />, { route: '/chat' })
     // Connection is a colored dot in the unified readout capsule ("Offline"
     // text was removed -- the capsule's red tint is the disconnected signal).
     // The dot's accessible name carries the cause; with no auth banner up it
-    // is the reconnecting variant (see #9692).
+    // is the reconnecting variant (see #9692). A socket that closed: before
+    // the first one opens or closes the dot says it is connecting (#34947).
+    act(() => { store.dispatch(sseDisconnected()) })
     expect(screen.getByLabelText(/Gateway offline/i)).toBeInTheDocument()
     return shellSettled()
   })

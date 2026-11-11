@@ -357,10 +357,12 @@ metrics, credits) is not rendered on the phone at all: a phone user does not act
 a resource readout, and the bar's right side holds two controls (bell + overflow
 menu) by the max-two-buttons-per-row rule. The capsule's one generic job -- the
 connection glyph switching to an unplugged plug (the capsule also tinting danger) on a transport drop -- is taken by `mobile-offline-strip`: a 24px
-`Gateway offline -- reconnecting` strip hanging off the bar (absolute, so the
+`Gateway offline -- reconnecting` strip, an announced inline `ErrorNotice`, hanging off the bar (absolute, so the
 header's three-child invariant holds), rendered while `isMobile && !connected &&
-!authRequired`, `pointer-events-none` because it hangs over the top 24px of whatever
-`<main>` paints. Auth expiry keeps its own banner from `api/client.ts`, so the strip
+!gatewayConnecting && !authRequired`, `pointer-events-none` because it hangs over the top 24px of whatever
+`<main>` paints. `gatewayConnecting` (`useGatewayConnecting`) is the page's first socket
+still opening: nothing has failed yet, so neither the strip nor the desktop capsule reports
+an outage then. Auth expiry keeps its own banner from `api/client.ts`, so the strip
 stays quiet then rather than pointing at the transport when pasting a token is the
 fix -- visibly: the banner has no live region and the capsule's sr-only carrier is not
 rendered on the phone, so an sr-only `role="status"` span (`mobile-offline-sr`) announces
