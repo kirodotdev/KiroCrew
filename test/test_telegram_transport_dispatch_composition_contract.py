@@ -887,7 +887,9 @@ async def test_a_facade_patch_reaches_each_moved_reader(monkeypatch: pytest.Monk
     monkeypatch.setattr(td, "channel_inbound_permitted", AsyncMock(return_value=True))
 
     granted: list[Any] = []
-    monkeypatch.setattr(td, "add_trusted_session", lambda key, sessions=None: granted.append(key))
+    monkeypatch.setattr(
+        td, "add_trusted_session", lambda key, sessions=None, strict=False: granted.append(key)
+    )
 
     class _Decider:
         @staticmethod

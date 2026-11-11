@@ -292,6 +292,17 @@ def invalidate_source_links(self: _ChatSlot) -> None:
     self._source_links_revision += 1
 
 
+def _dismissed_identity_keys(self: _ChatSlot) -> set[str]:
+    """This slot's dismissed keys, each folded the way ``SourceRef.identity`` is.
+
+    A key restored from disk can name a GitHub object in a mixed-case spelling;
+    folded, it matches the identity the derivation and the unlink route use.
+    """
+    from kiro_crew.dashboard.source_providers.contract import canonical_source_identity_key
+
+    return {canonical_source_identity_key(key) for key in self._dismissed_source_links}
+
+
 def dismiss_source_link(self: _ChatSlot, identity_key: str) -> bool:
     """Suppress one source-link identity from this session's derived chips.
 
@@ -303,7 +314,7 @@ def dismiss_source_link(self: _ChatSlot, identity_key: str) -> bool:
     a pull request. Returns ``True`` when the key was newly added, ``False``
     when it was already dismissed (an idempotent repeat).
     """
-    if identity_key in self._dismissed_source_links:
+    if identity_key in _dismissed_identity_keys(self):
         return False
     if len(self._dismissed_source_links) >= _MAX_DISMISSED_SOURCE_LINKS:
         # At the named ceiling: refuse to grow the retained set (and the

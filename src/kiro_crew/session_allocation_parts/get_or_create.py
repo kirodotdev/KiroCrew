@@ -22,8 +22,11 @@ Instance fields read: ``_closing``, ``_deps``, ``_lock``, ``_owner``, ``_start_s
 Through ``state`` it also changes the ending fence's and the capability records in place
 (``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
 ``capability_failures``) and reads ``ending_keys``. It also adds and removes an eager
-start's announcement (``speculative_starts``), which a real claim of no higher start
-priority joins.
+start's announcement (``speculative_starts``), which a real claim joins when it is of
+no higher start priority, and whatever its priority when the start is a resume prefetch
+past its spawn door. A person's claim that finds a resume prefetch short of that door
+marks it superseded (``superseded_speculative_starts``) and starts the session itself;
+the prefetch stands down at the door.
 """
 
 from __future__ import annotations
@@ -416,7 +419,8 @@ async def get_or_create(
                 # An eager start announces itself in the same lock hold that
                 # finds no session, so a real claim arriving while it runs can
                 # join it (``_get_or_create_impl``) instead of spawning a
-                # second process for the key.
+                # second process for the key. The reservation token says
+                # whether it is past its spawn door yet.
                 starts = self.state.speculative_starts
                 if (
                     speculative
@@ -424,7 +428,7 @@ async def get_or_create(
                     and reserved_key not in self._sessions
                 ):
                     started = asyncio.Event()
-                    starts[reserved_key] = (started, start_priority)
+                    starts[reserved_key] = (started, start_priority, speculative_resume, token)
         if held:
             fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
             continue
@@ -455,6 +459,7 @@ async def get_or_create(
                     entry = self.state.speculative_starts.get(reserved_key)
                     if entry is not None and entry[0] is started:
                         del self.state.speculative_starts[reserved_key]
+                    self.state.superseded_speculative_starts.discard(token)
                     started.set()
         except SessionEndingError:
             # The key was fenced while this allocation was in flight: a door
@@ -624,17 +629,26 @@ async def _get_or_create_impl(
                 # unless the claim outranks it. The eager start waits in every
                 # start queue at its own priority, so a person's FOREGROUND
                 # claim joining a BACKGROUND start would wait behind background
-                # work; that claim cold-starts at its own priority, as before.
+                # work; that claim cold-starts at its own priority instead.
+                # A BACKGROUND resume prefetch past its spawn door is joined
+                # all the same: it holds its cold-start permit and is starting
+                # the process that takes the saved session's per-session lock,
+                # so a second process could only wait that lock out and fall
+                # back to a fresh session plus history replay. One still short
+                # of the door has no process and no lock yet: the claim starts
+                # the session itself, and the prefetch stands down at its door
+                # (below).
                 entry = self.state.speculative_starts.get(key)
-                if (
-                    not speculative
-                    and entry is not None
-                    and not (
+                if not speculative and entry is not None:
+                    if not (
                         start_priority is StartPriority.FOREGROUND
                         and entry[1] is StartPriority.BACKGROUND
-                    )
-                ):
-                    joined_start = entry[0]
+                    ):
+                        joined_start = entry[0]
+                    elif entry[2] and entry[3] in self.state.spawning_reservations:
+                        joined_start = entry[0]
+                    elif entry[2]:
+                        self.state.superseded_speculative_starts.add(entry[3])
     finally:
         if stale_provider is not None:
             if stale_session is not None:
@@ -740,6 +754,12 @@ async def _get_or_create_impl(
         if not resume_sid:
             native_fork = owner._session_map.get_native_fork(key)
     if speculative and (resume_sid or native_fork) and not speculative_resume:
+        raise SpeculativeResumeRefused(key)
+    # A resume prefetch with nothing to load (its hint named an entry the
+    # lookup above pruned) would be refused once its start ended (below): refuse
+    # it before a warm-pool process or a cold start is spent, so a claim that
+    # joined it does not wait out a start it cannot use.
+    if speculative and speculative_resume and not (resume_sid or native_fork):
         raise SpeculativeResumeRefused(key)
 
     from kiro_crew.session_capabilities import prepare_runtime
@@ -1129,6 +1149,8 @@ async def _get_or_create_impl(
                 provider_switched = True
                 owner._session_map.clear_sid(key)
 
+        # Whether this start asks its process to restore a saved session.
+        restores_history = bool(resume_sid)
         if resume_sid:
             if self._deps.is_acp_provider(provider):
                 cast(Any, provider).client.set_resume_session_id(resume_sid)
@@ -1142,6 +1164,7 @@ async def _get_or_create_impl(
             owner._session_map.clear_native_fork(key)
             if memory_mode == "persistent" and self._deps.is_claude_backend(provider):
                 cast(Any, provider).client.set_fork_request(*native_fork)
+                restores_history = True
                 self._deps.logger.info(
                     "Attempting session/fork for %s (source=%s)", key, native_fork[0]
                 )
@@ -1205,16 +1228,29 @@ async def _get_or_create_impl(
                 # semaphore or the reads above: refuse before a process is
                 # spawned that the registration door would only refuse later.
                 self._refuse_if_ending(key, _reservation)
+                # A person's claim took this resume prefetch over while it was
+                # short of this door and is starting the session itself: stand
+                # down before a second process for the saved session exists.
+                # So does a resume prefetch left with nothing to restore (the
+                # memory mode or a provider switch cleared its saved session
+                # above, or its harness takes no fork): its fresh start would
+                # be refused once it ended.
+                if _reservation in self.state.superseded_speculative_starts or (
+                    speculative and speculative_resume and not restores_history
+                ):
+                    raise SpeculativeResumeRefused(key)
                 # Past the spawn door: from here until registration a process
                 # is being started that no map read can see -- what an
                 # ending caller's post-pass read (``spawn_in_flight``)
-                # must answer for. Same loop step as the check above.
+                # must answer for, and what a person's claim reads to join
+                # this start rather than supersede it. Same loop step as the
+                # checks above.
                 if _reservation is not None:
                     self.state.spawning_reservations.add(_reservation)
                 pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
                 await provider.start()
-            except (asyncio.CancelledError, Exception):
-                if preparation.revision:
+            except (asyncio.CancelledError, Exception) as exc:
+                if preparation.revision and not isinstance(exc, SpeculativeResumeRefused):
                     self._remember_capability_failure(key, preparation)
                 owner._dispatch_hard_kill(provider)
                 raise

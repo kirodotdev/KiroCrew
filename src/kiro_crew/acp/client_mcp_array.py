@@ -106,8 +106,9 @@ def spec_is_toolless(spec: object) -> bool:
     ``includeMcpJson`` is exactly ``False`` (kiro-cli defaults it to True and would
     then start every server in the user-level ``mcp.json``). An empty ``tools``
     alone is not enough: a server listed under ``mcpServers`` is still started, a
-    hook still runs a command, and either include flag widens the visible tools
-    (``acp.kas_agents`` forwards both), in a turn that must run none.
+    hook still runs a command, and either include flag widens what the turn can
+    reach (``acp.kas_agents`` forwards ``includePowers``, and the ``includeMcpJson``
+    opt-in decides which ``mcp.json`` servers KAS starts), in a turn that must run none.
 
     Fails closed: a non-dict and any key of the wrong type answer False.
     """

@@ -135,6 +135,13 @@ _EXPECTED: dict[str, tuple[list[str], list[str], str, list[str], str | None]] = 
         [],
         None,
     ),
+    "knowledge.add-source": (
+        ["Customize", "Knowledge", "Sources", "+ Add Source"],
+        ["自定义", "知识库", "来源", "+ 添加来源"],
+        "/capabilities?tab=knowledge",
+        [],
+        None,
+    ),
 }
 
 _PHRASINGS: list[tuple[str, str, str]] = [
@@ -173,6 +180,8 @@ _PHRASINGS: list[tuple[str, str, str]] = [
     ("刷新技能", "zh-CN", "skills.refresh"),
     ("test my MCP servers", "en", "mcp.probe"),
     ("检测 MCP 服务器", "zh-CN", "mcp.probe"),
+    ("add a folder to the knowledge base", "en", "knowledge.add-source"),
+    ("添加文件夹到知识库", "zh-CN", "knowledge.add-source"),
 ]
 
 

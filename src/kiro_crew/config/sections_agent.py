@@ -42,6 +42,7 @@ from kiro_crew.constants import (
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX as _SUBAGENT_TIMEOUT_MAX
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MIN as _SUBAGENT_TIMEOUT_MIN
 from kiro_crew.constants import SUBAGENT_TIMEOUT_SECS as _SUBAGENT_TIMEOUT_SECS
+from kiro_crew.crewmate_worktree import BRANCH_PREFIX as _BRANCH_PREFIX
 from kiro_crew.effort import EFFORT_LEVELS
 
 logger = logging.getLogger("kiro_crew.config.loader")
@@ -303,7 +304,13 @@ class AgentConfig:
             "(the dashboard's Sign in), never from kiro-cli's store. With nothing "
             "installed the gateway installs the pinned engine at the first spawn. "
             "With false, KAS still takes this route when kiro-cli's relay cannot "
-            "run on the host (no kiro-cli, or one that is not signed in).",
+            "run on the host (no kiro-cli, or one that is not signed in). "
+            "When unset, a Nightly build turns it on and every other build leaves "
+            "it off (config.loader_document.kas_bundle_build_default(), read from "
+            "the build's own stamp, not the update channel). A saved value always "
+            "wins, and save() leaves the key off disk until it is set. This "
+            "dataclass default stays false so the committed config-schema snapshot "
+            "is the same for every build.",
             # The running KAS runtime keeps its process across the switch, so
             # sessions move routes only once that process is replaced.
             restart=True,
@@ -326,6 +333,21 @@ class AgentConfig:
             # Declared in the engine's initialize, so a running KAS process keeps
             # what it declared until it is replaced.
             restart=True,
+        ),
+    )
+    kas_repair_kiro_cli_extract: bool = field(
+        default=True,
+        metadata=_meta(
+            "KAS: repair kiro-cli's broken engine copy",
+            "When true (the default) and a KAS start through kiro-cli's relay exits with "
+            "'failed to canonicalize KAS server path', Kiro Crew moves kiro-cli's "
+            "incomplete unpacked engine (kas/<version> under kiro-cli's data directory, "
+            "never anything else) out of kas/ to '<version>.kas-broken-<UTC time>' beside "
+            "it, and starts once more, "
+            "so kiro-cli unpacks a fresh copy. Nothing is deleted. When false, or when "
+            "the second start fails the same way, the start fails with one message "
+            "naming the directory and the mv command, and the warm pool stops "
+            "respawning until the directory is moved.",
         ),
     )
     kas_refuse_plain_http_mcp_headers: bool = field(
@@ -1338,6 +1360,21 @@ class AgentConfig:
             "disabling them. When on, their reach is still bounded to sessions "
             "they created themselves (creator ownership), the same fence that "
             "binds a member when Session Control is on.",
+        ),
+    )
+    member_branch_prefix: str = field(
+        default=_BRANCH_PREFIX,
+        metadata=_meta(
+            "Bot branch prefix",
+            "The start of the git branch a bot's new worktree is cut on, before "
+            "<bot>/<repo>: 'alice/' gives alice/reviewer/myservice. Each part "
+            "between slashes may use only letters, digits, '.', '_' and '-', may "
+            "not start or end with '.' or '-', has no '..' and no '.lock' ending, and "
+            "is at most 40 characters; an empty or rejected value uses crew/. The "
+            "first part must not be the name "
+            "of a branch the repository has, such as main. Takes effect live for the "
+            "next new worktree; one that exists keeps its branch, and one made again "
+            "after its folder was deleted takes the current prefix.",
         ),
     )
     conductor_own_child_verbs: bool = field(

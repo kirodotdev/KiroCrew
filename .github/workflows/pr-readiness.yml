@@ -1360,7 +1360,7 @@ jobs:
 
           # The monitored workflows whose `pull_request` trigger lists `edited`.
           # test_pr_readiness_evaluate.py pins this list to those triggers.
-          edited_lanes=" code-review.yml codex-review.yml issue-gate.yml pr-hygiene.yml "
+          edited_lanes=" codex-review.yml issue-gate.yml pr-hygiene.yml "
 
           # `${arr[@]+"${arr[@]}"}` rather than `"${arr[@]}"`: on the transport
           # failure path above the array is EMPTY, and bash < 4.4 (macOS ships
@@ -1675,6 +1675,22 @@ jobs:
               && jq -e --arg t "${PR_UPDATED_AT:-}" '.created_at < $t' <<<"$run" >/dev/null; then
               pending+=("$label (edit re-run not started)")
               continue
+            fi
+            # Code Review does not hear `edited`, so a base retarget starts no
+            # scan of the new diff. Its run-name records the base it scanned;
+            # a run made against another base answers nothing for this base
+            # and waits for a push or reopen. So does a run that recorded none
+            # when the default branch's workflows ran it. Off the default
+            # branch (a release branch cut earlier) such a run came from a
+            # code-review.yml that still rescans on a retarget, so it counts.
+            if [ "$file" = "code-review.yml" ]; then
+              scanned_base="$(jq -r '(.display_title // "")
+                | (capture("^\\[base (?<b>[^ ]+)\\]$").b // "")' <<<"$run")"
+              if [ "$scanned_base" != "$BASE_REF" ] \
+                && { [ -n "$scanned_base" ] || [ "$stacked" = false ]; }; then
+                pending+=("$label (scanned ${scanned_base:-an unrecorded base}; push or reopen)")
+                continue
+              fi
             fi
 
             status="$(jq -r '.status // ""' <<<"$run")"

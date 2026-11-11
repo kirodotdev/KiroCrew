@@ -514,8 +514,8 @@ def test_overlapping_failed_renames_leave_the_newest_title(tmp_path, monkeypatch
     monkeypatch.setattr(chat_title, "_persist_title", _slow_fail)
 
     result = _run_race(
-        lambda: chat_title.apply_manual_title(state, target, "A"),
-        lambda: chat_title.apply_manual_title(state, target, "B"),
+        lambda: chat_title.apply_manual_title(state, target, "A", route="test", caller="test"),
+        lambda: chat_title.apply_manual_title(state, target, "B", route="test", caller="test"),
         started,
         release,
     )
@@ -526,12 +526,12 @@ def test_overlapping_failed_renames_leave_the_newest_title(tmp_path, monkeypatch
 
 def test_the_sidebar_rename_keeps_its_best_effort_save(tmp_path, monkeypatch):
     """Unchanged from main: a failed save still answers ok with the live title."""
-    from kiro_crew.dashboard import chat_title
+    from kiro_crew.dashboard import chat_title, title_audit
 
     state = _make_state(tmp_path)
     target = state.get_or_create_slot("chat-2")
     _fail_persist(monkeypatch)
-    monkeypatch.setattr(chat_title, "sel", MagicMock())
+    monkeypatch.setattr(title_audit, "sel", MagicMock())
     request = MagicMock()
     request.app = {"state": state}
     request.match_info = {"slot": "chat-2"}
@@ -582,8 +582,8 @@ def test_an_overtaken_rename_broadcasts_the_current_title(tmp_path, monkeypatch)
     monkeypatch.setattr(state, "push_slot_title", lambda key, t, **kw: pushed.append(t))
 
     _run_race(
-        lambda: chat_title.apply_manual_title(state, target, "A"),
-        lambda: chat_title.apply_manual_title(state, target, "B"),
+        lambda: chat_title.apply_manual_title(state, target, "A", route="test", caller="test"),
+        lambda: chat_title.apply_manual_title(state, target, "B", route="test", caller="test"),
         started,
         release,
     )
@@ -614,7 +614,7 @@ def test_an_overtaken_rename_replies_with_the_current_title(tmp_path, monkeypatc
         lambda: sc.rename_target(
             state, caller_session_key=_key(caller), target="chat-2", title="A"
         ),
-        lambda: chat_title.apply_manual_title(state, target, "B"),
+        lambda: chat_title.apply_manual_title(state, target, "B", route="test", caller="test"),
         started,
         release,
     )
@@ -629,7 +629,7 @@ def test_a_channel_title_on_a_live_slot_renames_through_the_shared_helper(tmp_pa
 
     calls: list = []
 
-    async def _spy(state_, slot, title):
+    async def _spy(state_, slot, title, **_kw):
         calls.append((slot.key, title))
         return True
 
@@ -653,7 +653,7 @@ def test_a_channel_rename_reaches_an_open_channel_born_slot(tmp_path, monkeypatc
 
     calls: list = []
 
-    async def _spy(state_, slot, title):
+    async def _spy(state_, slot, title, **_kw):
         calls.append((slot.key, title))
         return True
 
@@ -881,3 +881,99 @@ def test_a_redacted_title_within_the_cap_is_stored_whole(tmp_path):
     assert target.title.startswith("deploy key [REDACTED")
     assert target.title.endswith("]")
     assert secret not in target.title
+
+
+def _rename_rows(monkeypatch) -> list[dict]:
+    from kiro_crew.dashboard import title_audit
+
+    rows: list[dict] = []
+    recorder = MagicMock()
+    recorder.log_tool_invocation.side_effect = lambda **kw: rows.append(kw)
+    monkeypatch.setattr(title_audit, "sel", lambda: recorder)
+    return rows
+
+
+def test_session_rename_records_the_caller_and_both_titles(tmp_path, monkeypatch):
+    """A stray rename must be attributable after the fact: one SEL row names the
+    calling session, the target, the route, and the title before and after."""
+    rows = _rename_rows(monkeypatch)
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = state.get_or_create_slot("chat-2")
+    target.title = "Before"
+
+    _rename(state, caller, "chat-2", "After")
+
+    [row] = [r for r in rows if r["tool_name"] == "chat.manual_rename"]
+    assert row["session_key"] == _key(caller)
+    assert row["resources"] == "chat-2"
+    assert row["metadata"] == {
+        "route": "session_rename",
+        "old_title": "Before",
+        "new_title": "After",
+    }
+
+
+def test_the_rename_route_records_its_app_on_the_dashboard_surface(tmp_path, monkeypatch):
+    """An app name is not a session key, so the route names the surface itself;
+    otherwise the SEL files the row under its "slack" fallback. The route's own
+    access row is kept as it was."""
+    from kiro_crew.dashboard import chat_title, title_audit
+
+    rows = _rename_rows(monkeypatch)
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("chat-2")
+    request = MagicMock()
+    request.app = {"state": state}
+    request.match_info = {"slot": "chat-2"}
+    request.get = lambda key, default=None: "some-app" if key == "app" else default
+
+    async def _body():
+        return {"title": "Via route"}
+
+    request.json = _body
+
+    asyncio.run(chat_title.api_chat_slot_rename(request))
+
+    [row] = rows
+    assert row["session_key"] == "some-app"
+    assert row["source"] == "dashboard"
+    assert row["metadata"]["route"] == "rename_route"
+    assert row["metadata"]["new_title"] == "Via route"
+    access = title_audit.sel().log_api_access
+    access.assert_called_once()
+    assert access.call_args.kwargs["operation"] == "chat.slot_rename"
+    assert access.call_args.kwargs["caller"] == "some-app"
+
+
+def test_a_channel_rename_records_its_channel_key(tmp_path, monkeypatch):
+    from kiro_crew.dashboard import channel_slots
+
+    rows = _rename_rows(monkeypatch)
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("chat-2").linked_session_key = "slack:1700.1"
+
+    asyncio.run(channel_slots.rename_channel_title_live(state, "slack:1700.1", "From Slack"))
+
+    [row] = rows
+    assert row["session_key"] == "slack:1700.1"
+    assert row["metadata"]["route"] == "channel_title"
+
+
+def test_an_audit_failure_does_not_fail_the_rename(tmp_path, monkeypatch):
+    """The SEL row is new on the verb and channel paths; a broken audit log must
+    leave those renames working as they did before it existed."""
+    from kiro_crew.dashboard import title_audit
+
+    def _broken():
+        raise RuntimeError("sel down")
+
+    monkeypatch.setattr(title_audit, "sel", _broken)
+    state = _make_state(tmp_path)
+    caller = state.get_or_create_slot("chat-1")
+    target = state.get_or_create_slot("chat-2")
+
+    out = _rename(state, caller, "chat-2", "Still renamed")
+
+    assert out["ok"] is True
+    assert target.title == "Still renamed"

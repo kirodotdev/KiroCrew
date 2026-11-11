@@ -162,6 +162,7 @@ class TestStore:
             "ABCDEF0123456789abcdef0123456789.png",  # uppercase hex
             "0123456789abcdef0123456789abcdef.svg",  # generated shape, refused type
             "0123456789abcdef0123456789abcdef.png.svg",
+            "0123456789abcdef0123456789abcdef.png\n",
             "",
         ],
     )
@@ -170,6 +171,12 @@ class TestStore:
         # not a barrier. The name check is.
         with pytest.raises(store.MeetingsPathError):
             store.note_image_path("m1", escape, root)
+
+    def test_a_trailing_newline_never_reaches_an_image_file_name(self, root: Path):
+        name = "0123456789abcdef0123456789abcdef.png\n"
+        with pytest.raises(store.MeetingsPathError):
+            store.write_note_image("m1", name, PNG, root)
+        assert not [p for p in root.rglob("*") if "\n" in p.name]
 
     def test_a_generated_name_is_accepted(self, root: Path):
         for ext in ("png", "jpg", "gif", "webp"):

@@ -449,7 +449,8 @@ every attribute value on it comes from a closed set. Histograms,
 | Crew sessions | `crew.session.started`, `crew.turn.started`, `crew.session.tree.depth`, `crew.session.tree.child`, `crew.session_control.calls` |
 | Work ledger and Ultra Mode | `work.created`, `work.item_closed`, `work.dispatches`, `work.reports`, `crew_mode.turned_on`, `crew_mode.new_chats`, `crew_mode.runs_finished`, `crew_mode.steers_per_run`, `crew_mode.worker_waits` |
 | Features | `cron.fires`, `artifact.created`, `workflow.runs`, `approval.decisions`, `autonudge.loops.started`, `autonudge.loops.stopped`, `autonudge.ticks`, `monitor.decisions`, `webhook.requests`, `memory.recalled`, `lesson.injected`, `skill.lazy_load.count`, `app.task.completed`, `channel.message.received`, `ui.control.clicked` |
-| Inventory (gauges) | `inventory.crons.active`, `inventory.monitor_loops.active`, `inventory.skills.installed`, `inventory.memory.migrated`, `inventory.knowledge.documents`, `inventory.lessons`, `inventory.mcp.servers`, `inventory.config.toggle`, `inventory.probe.failures`, `inventory.members` |
+| Inventory (gauges) | `inventory.crons.active`, `inventory.monitor_loops.active`, `inventory.skills.installed`, `inventory.memory.migrated`, `inventory.knowledge.documents`, `inventory.lessons`, `inventory.mcp.servers`, `inventory.config.toggle`, `inventory.probe.failures`, `inventory.members`, `inventory.voice.provider` |
+| Voice | `voice.stt.started`, `voice.stt.ended`, `voice.stt.errors`, `voice.unavailable`, `voice.tts.replies` |
 | Recommendations | `tips.feedback`, `feature_video.status`, `milestone.panel_opened`, `milestone.starter_clicked`, `milestone.reached`, `milestone.skipped`, `milestone.mark_all_done`, `milestone.notice_shown`, `milestone.features_completed` |
 
 `PRODUCT_METRICS` groups its names by the question they answer. One group covers
@@ -457,7 +458,7 @@ in-product recommendations (feature tips, the Explore panel, feature videos):
 
 | Metric | Attributes |
 |---|---|
-| `kirocrew.tips.feedback` | `Feature` = `tips`, `Activity` (the action: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`), `Entity` (a shipped feature doc name or `other`), `source` (`curated` / `catalog` / `generated` / `other`) |
+| `kirocrew.tips.feedback` | `Feature` = `tips`, `Activity` (the action: `shown` / `ack` / `dismiss` / `snooze` / `helpful` / `optout` / `optin` / `other`), `Entity` (a shipped curated tip id, a shipped feature doc name, or `other`), `source` (`curated` / `catalog` / `generated` / `other`) |
 | `kirocrew.feature_video.status` | `Feature` = `feature_video`, `Activity` (the status: `seen` / `dismissed` / `other`), `Entity` (a shipped feature key or `other`) |
 | `kirocrew.milestone.starter_clicked`, `.skipped` | `Feature` = `milestone`, `Activity` = the last name segment, `Entity` (a catalog milestone id, `all` or `other`), `surface`, and `send` on `starter_clicked` |
 | `kirocrew.milestone.reached` | `Feature` = `milestone`, `Activity` = `reached`, `Entity` (a catalog milestone id), `group`, `via`, `recommended_by` (`tip` / `explore` / `video` / `several` / `none`) |
@@ -470,6 +471,21 @@ collector can admit user behavior by scope without taking the inventory gauges.
 Every other metric uses the scope `kiro_crew`. `Feature` and `Activity` are
 constants or values the emit site already closed; `Entity` carries the closed
 target id that earlier releases sent as `feature` or `milestone`.
+
+The voice group (`src/kiro_crew/metrics/voice.py`) answers what a speech
+provider's own backend cannot: which provider each install uses, and how
+dictation and spoken replies end. `provider` is a built-in name, `registered` for
+a provider an edition registers through the speech seam, or `other`. Latency and
+length are bucket attributes, because the preset takes no histograms.
+
+| Metric | Attributes |
+|---|---|
+| `kirocrew.inventory.voice.provider` | `kind` (`stt` / `tts`), `provider`; value 1 |
+| `kirocrew.voice.stt.started` | `provider` |
+| `kirocrew.voice.stt.ended` | `provider`, `outcome` (`ok` / `error` / `timeout` / `refused` / `other`), `duration` (`lt_10s` … `gt_60m`), `first_partial` (`lt_500ms` … `gt_5s` / `none`), `transcript` (`nonempty` / `empty`) |
+| `kirocrew.voice.stt.errors` | `provider`, `code` (a dictation error code or `other`) |
+| `kirocrew.voice.unavailable` | `reason` (`forbidden_origin` / `stt_disabled` / `provider_off` / `streaming_off` / `provider_not_streaming` / `busy` / `other`) |
+| `kirocrew.voice.tts.replies` | `provider`, `outcome` (`ok` / `cancelled` / `busy` / `invalid` / `unavailable` / `sandbox_refused` / `error`), `first_audio` (`lt_500ms` … `gt_5s` / `none`) |
 
 None carries a tip id, a video id, a timestamp or tip text. `recommended_by` is
 computed on the machine from a 14-day local record and only the label is sent;
@@ -513,10 +529,12 @@ a gap in collection.
 
 ### Traces are not exported
 
-Kiro Crew emits the OpenTelemetry **metrics** signal only. There are no spans
-and no log records, so a trace-oriented backend (Langfuse, Jaeger, Tempo, or a
-vendor's trace view) receives nothing from it, and nothing in this page turns
-traces on. Pointing `otlp_endpoint` at a `/v1/traces` or `/v1/logs` URL does not
+Kiro Crew exports the OpenTelemetry **metrics** signal only. Turning on
+`telemetry.traces_enabled` records spans of agent turns, but only to local JSONL
+files under `~/.kiro/crew/traces`; nothing sends them anywhere yet, and there are
+no log records. So a trace-oriented backend (Langfuse, Jaeger, Tempo, or a
+vendor's trace view) receives nothing from Kiro Crew, and nothing in this page
+exports traces. Pointing `otlp_endpoint` at a `/v1/traces` or `/v1/logs` URL does not
 change that: the collector rejects every metric batch. The gateway logs a
 warning naming the destination when the endpoint's path is one of those routes.
 Trace support is tracked in issue #1643.

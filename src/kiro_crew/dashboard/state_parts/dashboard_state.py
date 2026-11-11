@@ -43,6 +43,7 @@ from kiro_crew.knowledge.store import KnowledgeStore
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging import turn_ceiling
 from kiro_crew.notifications.bridge import BridgeDispatcher, composite_sink
+from kiro_crew.notifications.bridge_actions import BridgeActionRegistry
 from kiro_crew.notifications.bus import NotificationBus
 from kiro_crew.notifications.push_store import PushSubscriptionStore
 from kiro_crew.notifications.rate_limit import AppRateLimiter
@@ -52,6 +53,8 @@ from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.safety_override import safety_override
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from kiro_crew.dashboard._types import (
         ContextBuilder,
         ConversationLog,
@@ -112,6 +115,7 @@ class DashboardState:
     # Typed here for the owner functions that read them through ``self``.
     notification_bus: NotificationBus
     notification_bridge: BridgeDispatcher
+    bridge_actions: BridgeActionRegistry
     notification_channel_settings: ChannelSettings
     resource_pressure_notifier: ResourcePressureNotifier
     file_indexes: FileIndexRegistry
@@ -405,6 +409,10 @@ class DashboardState:
         # Short reason from the failed connect attempt (e.g. "invalid_auth"),
         # empty when connected or never attempted. Read by the settings badge.
         self.slack_connect_error: str = ""
+        # Re-runs the Slack handshake from the saved credentials (POST
+        # /api/slack/reconnect). Set by the gateway that owns the Slack socket;
+        # None on a server with no socket owner.
+        self.slack_reconnect: Callable[[], Awaitable[dict[str, Any]]] | None = None
         # True once the Discord channel's Gateway WebSocket transport started
         # this session (set by maybe_start_discord). Read by the Discord
         # settings status badge.
@@ -536,6 +544,9 @@ class DashboardState:
         # _deliver_note is the delivery sink (log, count, broadcast, persist).
         # The bridge runs after it, so a chat transport never delays the
         # dashboard (notifications/bridge.py).
+        # Bindings from bridged notes to the decisions a chat app may answer
+        # (notifications/bridge_actions.py); in-process, so a restart drops them.
+        self.bridge_actions = BridgeActionRegistry()
         self.notification_bridge = BridgeDispatcher(
             settings=lambda: self.notification_channel_settings,
             subjects=lambda note, publisher: _dashboard_services.bridge_subjects(

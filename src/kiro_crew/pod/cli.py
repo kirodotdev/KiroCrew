@@ -374,7 +374,7 @@ def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_popul
             "cleanup after a failed start would otherwise be allowed to delete that "
             "existing state. To restart it unchanged: "
             f"kirocrew pod up {name}. To boot it fresh: "
-            f"kirocrew pod down {name} && kirocrew pod up {name} --seed {scenario}"
+            f"kirocrew pod down {name}, then kirocrew pod up {name} --seed {scenario}"
         )
     if landed == scenario:
         return
@@ -385,8 +385,8 @@ def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_popul
         f"  The per-pod boot override should point systemd at this checkout: "
         f"{rt.unit_mod.dropin_path(cfg, name)}.\n"
         f"  Its boot log: kirocrew pod logs {name}\n"
-        f"  Then retry:   kirocrew pod down {name} && kirocrew pod up {name} "
-        f"--seed {scenario}"
+        f"  Then retry:   kirocrew pod down {name}\n"
+        f"                kirocrew pod up {name} --seed {scenario}"
     )
 
 
@@ -470,7 +470,8 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
         if not prov.has_dist(checkout):
             _die(
                 f"no built dist for {name!r}.\n"
-                f"  Build it (slow, one-time):  cd {checkout / 'website'} && npm run build\n"
+                f"  Build it (slow, one-time):  cd {checkout / 'website'}\n"
+                f"                              npm run build\n"
                 f"  Or let pod do the full chain: kirocrew pod up {name} --provision"
             )
 
@@ -640,7 +641,7 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                 joined = " ".join(boot_flags)
                 # `pod restart` refuses on Windows, so name the remedy that works there.
                 apply_now = (
-                    f"`kirocrew pod down {name} && kirocrew pod up {name} {joined}` "
+                    f"`kirocrew pod down {name}`, then `kirocrew pod up {name} {joined}`, "
                     "applies it now with a fresh home."
                     if rt.IS_WINDOWS
                     else f"`kirocrew pod restart {name}` applies it now and keeps the pod's home."

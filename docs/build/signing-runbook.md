@@ -293,7 +293,7 @@ refuses a request body over 102,400 bytes, and the body lists every nested
 binary, so it grows with the backend. `sign.sh` sends a manifest under 100,000
 bytes as one request. A bigger one is signed in the order the service documents
 for nested code: the backend files under `Contents/Resources` go out in parts
-(each body under 90,000 bytes, all against the one uploaded tarball, each writing
+(each body under 90,000 bytes, each writing
 `signed/<channel>/<version>/<AppSlug>.part-<n>.zip`), `split-manifest.py merge`
 copies each part's signed files into the local `.app` (it refuses a file the
 service left unchanged), the app is re-packed to
@@ -303,11 +303,17 @@ that last request would leave the app's seal covering only one part. Every task
 ends with the service's app pass, which signs the frameworks under
 `Contents/Frameworks`, so every request also lists the shell entries (helper
 apps, frameworks, their Helpers, ShipIt); a request without them fails with
-`<framework>: code object is not signed at all`. `sign.sh` waits for every part
+`<framework>: code object is not signed at all`. A task's time follows the tree
+it unpacks, signs and seals, not the length of its list (a final request that
+lists only the shell took about as long as one that lists everything), so each
+part reads its own upload, `pre-signed/<channel>/<version>/<AppSlug>.part-<n>.tar.gz`:
+`split-manifest.py stage` builds it from the app with every backend file that
+part does not list taken out, and the whole unsigned app is not uploaded at all.
+Only the final request reads the whole app. `sign.sh` waits for every part
 before it fails and prints each answer. Exit 4 with the service's own text means
-a part or the final request failed; rerun the failed job. The flow adds one
-signing round, so the job takes roughly twice as long as a single request; the
-60-minute job timeout covers a normal run, not two full 45-minute waits.
+a part or the final request failed; rerun the failed job. The flow adds a short
+signing round ahead of the final request; the 60-minute job timeout covers a
+normal run, not two full 45-minute waits.
 
 **`notarytool` answers `signed.zip must be a zip archive` (exit 64) within seconds.**
 `notarytool` refused the signed zip itself, before it uploaded anything, so no

@@ -467,6 +467,26 @@ def classify_tool_args(
     return tuple(pairs)
 
 
+def classify_image_reads(raw_params: Optional[Mapping[str, object]]) -> Tuple[Tuple[str, str], ...]:
+    """``("filesystem.read", <path>)`` for each file a batch read's Image entries open.
+
+    An Image entry (``{"mode": "Image", "image_paths": [...]}``, ``paths`` in
+    kiro-cli's agent engine) lists its files under a key the shared walk does not
+    read. The entry's shape marks the read, not the ACP kind, which kiro-cli's
+    read permission request leaves empty.
+    """
+    ops = raw_params.get("operations") if isinstance(raw_params, Mapping) else None
+    if not isinstance(ops, list):
+        return ()
+    entries = [op for op in ops if isinstance(op, Mapping) and op.get("mode") == "Image"]
+    found = target_paths({"operations": entries}, ("image_paths", "paths"))
+    targets = _governed_targets(found, guest_root(raw_params), guest_also_local(raw_params))
+    pairs = [("filesystem.read", path) for path in targets]
+    if found.truncated:
+        pairs.append(("filesystem.read", _TRUNCATED_SCAN_ITEM))
+    return tuple(pairs)
+
+
 def mcp_title_to_ref(title: str) -> str:
     """Convert a gate tool title to the canonical ``@server`` / ``@server/tool``.
 

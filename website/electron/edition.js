@@ -10,10 +10,11 @@
 // file is read here.
 //
 // Anything but a regular file whose text is exactly "lts" (trailing
-// newline allowed) reads as "oss". An LTS build changes two things here:
-// a longer gateway wait, and the update channel lock
-// (runtime/update/policy-channel.js). A damaged file therefore also reopens the
-// Settings channel switcher. The file is packed into the signed, write-protected
+// newline allowed) reads as "oss". An LTS build changes four things here:
+// a longer gateway wait, the update channel lock
+// (runtime/update/policy-channel.js), the app name and Windows app ID
+// (main.js), and which gateway on the shared port it adopts
+// (instance-guard.js decideGatewayAction). A damaged file therefore also reopens the Settings channel switcher. The file is packed into the signed, write-protected
 // app.asar (RFC crew-lts-edition, Security considerations), so damaging
 // it means modifying the signed app itself.
 const fs = require("fs");

@@ -44,7 +44,9 @@ export function isMemberNeedsNewChatError(error: unknown): boolean {
 }
 
 /** What the shared switch notice shows. `newChatAgent` names a crewmate the
- *  notice offers to open a new chat with. `error` marks a failure or refused
+ *  notice offers to open a new chat with. `openSlot` names a session that
+ *  was started without opening it (a follow-up run), which the notice offers
+ *  to open. `error` marks a failure or refused
  *  request (a switch or setting write, a folder create), which the notice
  *  renders through ErrorNotice with its agent hand-off; without it the message
  *  is plain status text for something that did not fail (a deferred model
@@ -55,6 +57,7 @@ export interface AgentSwitchNotice {
    *  stays the raw failure so the agent hand-off can find its journal entry. */
   title?: string
   newChatAgent?: string
+  openSlot?: string
   error?: true
 }
 

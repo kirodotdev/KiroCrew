@@ -14,15 +14,11 @@ import {
   type SetStateAction,
 } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { useAppSelector, useAppStore, type RootState } from '../store'
+import { useAppSelector, useAppStore } from '../store'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
 import { fetchSlots, addSlotOptimistic, removeSlotOptimistic, armConfirmedCloseHold } from '../store/dashboardSlice'
 import { api } from '../api/client'
-import { loadDrafts } from '../utils/chatDrafts'
-import { loadFileDrafts } from '../utils/chatFileDrafts'
-import { loadSessionRefDrafts } from '../utils/chatSessionRefDrafts'
-import { isComposerSendHeld } from '../utils/composerSendHolds'
-import { closeBusyReasons } from '../lib/closeBusyGate'
+import { isUntouchedSession } from '../lib/untouchedSession'
 import { appPathname } from '../lib/basePath'
 import { isChatPath } from '../hooks/notificationBanner'
 import { sendTurn } from '../chat-core/transport/sendTurn'
@@ -60,23 +56,6 @@ export function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): Chat
   // the text can hand back the older session — which is the one case this
   // resolver exists to avoid, and the tie-break "New chat" depends on below.
   return [...matches].sort(byRecentActivity)[0]
-}
-
-/** True while the session holds nothing the user wrote and no live work: no
- *  transcript row, nothing a sidebar close would ask about (a turn, a queue, an
- *  approval, sub-agents, a workflow, a goal loop or monitor), and no unsent
- *  composer text, staged file or session reference. Files and session references
- *  are stored apart from the text. */
-function isUntouchedSession(state: RootState, slotKey: string): boolean {
-  const slot = state.dashboard.slots.find((x) => x.key === slotKey)
-  if (!slot || slot.messages > 0 || closeBusyReasons(state, slotKey).length > 0) return false
-  // A send shows here as an optimistic row before the slots snapshot counts it.
-  const rows = state.chat.activeSlot === slotKey ? state.chat.messages : state.chat.slotMessages[slotKey]
-  if (rows?.length) return false
-  if (loadFileDrafts()[slotKey]?.length || loadSessionRefDrafts()[slotKey]?.length) return false
-  // An upload still in flight has staged no path yet, but it holds the composer.
-  if (isComposerSendHeld(slotKey)) return false
-  return !loadDrafts()[slotKey]?.trim()
 }
 
 /** Carries the SLUG as well as the version: the retraction is artifact-scoped, and this page

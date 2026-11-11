@@ -207,7 +207,6 @@ src/kiro_crew/service/macos.py
 src/kiro_crew/skill_usage.py
 src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
-src/kiro_crew/slack/enterprise.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/webhooks.py
@@ -420,7 +419,6 @@ test/test_doctor_sandbox_verdict.py
 test/test_embedding_model_apply.py
 test/test_embedding_space_reconcile.py
 test/test_enable_embeddings_faiss.py
-test/test_enterprise.py
 test/test_env.py
 test/test_eval_harness.py
 test/test_events_forward.py
@@ -449,7 +447,6 @@ test/test_handlers_channel_clear_context.py
 test/test_handlers_channel_presets.py
 test/test_handlers_files_upload.py
 test/test_handlers_mcp_coverage.py
-test/test_heartbeat_prompt_deliver.py
 test/test_heartbeat_retention.py
 test/test_history.py
 test/test_history_atomic_rewrite.py
@@ -713,7 +710,6 @@ test/test_weixin_media.py
 test/test_windows_sim.py
 test/test_worker_pool.py
 test/test_workflow_permissions.py
-test/test_workflows_dsl.py
 test/test_workflows_resilience.py
 test/test_workflows_run_bounds.py
 test/test_workflows_store.py

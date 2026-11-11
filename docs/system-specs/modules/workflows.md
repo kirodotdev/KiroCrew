@@ -234,7 +234,10 @@ all, and returns results in input order. A task may be a zero-arg thunk
 both are accepted deliberately, because Python authors reach for the latter out of
 `gather(*coros)` habit and a coroutine is not callable, which would otherwise turn
 every task into `None`. A task that raises resolves to `None` and the call itself
-never raises, so callers filter falsy entries. An empty list returns `[]`.
+never raises, so callers filter falsy entries. The one exception is
+`BudgetExceeded`: it is held until every task has settled, so no sibling outlives
+the run, then raised, so a run ceiling hit inside a fan-out still ends the run. An
+empty list returns `[]`.
 
 **`pipeline(items, *stages)` has no barrier between stages.** Each item flows
 through all stages in its own chain, so item B can reach stage 2 while item A is
@@ -242,8 +245,9 @@ still in stage 1; wall clock is the slowest single chain, not the sum of the
 slowest per stage. Stages are called `stage(prev, item, index)`, **arity-adapted**
 (a 1-arg stage receives only `prev`); for stage 0, `prev` is the item itself. A
 stage may be sync or async. A stage that raises drops that item to `None` and
-skips its remaining stages. Results come back in input order; with no stages, the
-items are returned as-is.
+skips its remaining stages, except that a `BudgetExceeded` is held and raised once
+every chain has settled, as in `parallel`. Results come back in input order; with
+no stages, the items are returned as-is.
 
 Both take an optional `limit` at the `dsl` level (a semaphore); the runner passes
 its `concurrency`.
@@ -343,7 +347,8 @@ class Budget(Protocol):
 `run_failed` with `where="ceiling"`. The same exception is raised by
 `context.AgentCounter.increment()` once the per-run agent-call cap
 (`DEFAULT_MAX_AGENTS_PER_RUN` = 1000) is reached, so a runaway fan-out lands on the
-same terminal path.
+same terminal path; `parallel` and `pipeline` pass it on rather than resolving it to
+`None`.
 
 > Open question: nothing in the shipped engine calls `Budget.charge()`. The
 > ceiling is enforced (`would_exceed` before each call), but `spent()` stays 0 and
@@ -518,7 +523,7 @@ are allowed** so a journal stays forward-compatible.
 | `budget_update` | `spent`, `remaining` | **builder exists, nothing emits it** (see the Budget open question) |
 | `approval_requested` | `prompt`, `approval_id` | **builder exists, nothing emits it**; `ctx.approve` delegates straight to its port |
 | `run_finished` | `result`, `duration_s` | terminal. `result` is the script's return value; `duration_s` is host `time.monotonic()` elapsed |
-| `run_failed` | `error`, `where` | terminal. `where` is one of `author`, `validate`, `ceiling`, `exec`, `interrupted` |
+| `run_failed` | `error`, `where` | terminal. `where` is one of `author`, `validate`, `ceiling`, `exec`, `interrupted`. On a wall-clock `ceiling` the `error` text names the agent call(s) still running and how long the run had been silent (e.g. `run exceeded 3600s; agent a3 "compose" still running, no event for 3540s`), or `no agent call in flight` when the run was stuck in its own code |
 | `run_cancelled` | `reason` | terminal |
 
 **Ordering invariants**, asserted by `test_workflows_runner.py` and
@@ -697,7 +702,7 @@ None-guard, and `validate` rejects the inline unguarded dereference.
 
 | Ceiling | Constant | Value | Behavior at the limit |
 |---------|----------|-------|----------------------|
-| Wall clock per run | `runner.DEFAULT_RUN_TIMEOUT_SECS` | 3600s | `run_failed` with `where="ceiling"` and `error="run exceeded <N>s"`; the `RunResult.error` is `"timeout"` |
+| Wall clock per run | `runner.DEFAULT_RUN_TIMEOUT_SECS` | 3600s | `run_failed` with `where="ceiling"`; `error` starts with `run exceeded <N>s` and names the still-running agent call(s) and the silence, e.g. `run exceeded <N>s; agent aN "<label>" still running, no event for <M>s` (or `run exceeded <N>s; no agent call in flight, no event for <M>s`); the `RunResult.error` is `"timeout"` and `RunResult.terminal_error` (forwarded to the registry snapshot) holds that enriched text |
 | Wall-clock bounds | `MIN_RUN_TIMEOUT_SECS` / `MAX_RUN_TIMEOUT_SECS` | 60s / 21600s (6h) | a caller value is clamped into the range |
 | Agent calls per run | `context.DEFAULT_MAX_AGENTS_PER_RUN` | 1000 | `BudgetExceeded` -> `run_failed`, `where="ceiling"` |
 | Tool calls per agent step | `agent_exec._MAX_TURNS_PER_STEP` | 200 | `stream_and_collect` stops the step; prevents an infinite tool loop from prompt injection |
@@ -1226,8 +1231,9 @@ Customize > Workflows list and editor, `/workflow` with no name and
 `workflow_library_list` offer a ref that reaches the record, the slug first,
 else the id, and an offered command always runs the record it is listed on. With
 both listed no ref reaches it: the library list keeps the row, marked No slash
-command, the editor disables save, run and remove and says to give its file a
-new id and slug or delete it, and `/workflow`, `workflow_library_list` and their
+command, the editor draws its fields, source and run input read-only, disables
+save, run and remove and says to give its file a new id and slug or delete it,
+and `/workflow`, `workflow_library_list` and their
 search leave it out; authoring references may still show it, since an adaptation
 records `id@revision`. The dashboard sends each request to the id, or to the
 slug when the id does not reach the record. Save and Remove also send the id the
@@ -1282,7 +1288,9 @@ An explicit id or slug reference takes the opposite path: `start_definition`
 executes the exact current saved source. Python definitions place free-form
 slash-command input in `ctx.args["input"]`. `task-plan` definitions delegate
 their exact YAML to TaskRunner without LLM decomposition and retain the saved
-definition id, slug, and revision on both the project and shared run.
+definition id, slug, and revision on both the project and shared run. While Task
+Runner is switched off in Library, a `task-plan` definition is refused before it
+is planned (TaskRunner spec, "Starting is refused").
 
 The chat run card offers explicit promotion after an ad-hoc Python run reaches
 `finished`. Customize > Workflows has **Workflow library** and **Runs**
@@ -1527,6 +1535,25 @@ never spawns `kiro-cli` in tests. Two production adapters:
   `surface="workflow"` on a best-effort basis, with deliberately **narrow** guards:
   one wide try around import plus context read plus persist would let a single
   import failure silently drop every row from the workflow surface.
+
+  **Person-only directives are refused out loud.** A step is never a person's
+  turn and no session applier reads its stream, so a `USER_ORIGIN_DIRECTIVES`
+  call (`set_project`, `reset_conversation`, `chat_tag`, `suggest_followup`)
+  would otherwise leave only the tool's own "requested" text and no audit row
+  (#32461). Every executor path streams with `person_only_directive_refuser`
+  (`dashboard/session_directive_apply.py`, the one the cron turn uses) as
+  `on_event`: each completed call is refused with
+  `refuse_user_origin_directive` (its wording, and a SEL `denied` row on the
+  step's own session key), and the refusals lead the step's text before
+  redaction (`agent_exec.step_text`). Nothing is applied. A `schema=` step is
+  the exception: its text is parsed as JSON, and a refusal line ahead of a
+  scalar reply would fail that parse and spend the step's re-asks, so there the
+  refusal stays in its SEL row and an INFO log line and the text is left as the
+  model wrote it. The cold path reads the step's `opts`; a pooled worker's
+  `send_message` carries no options, so the pooled `agent_fn` sets the
+  `_STEP_HAS_SCHEMA` context variable around the call (`WorkerPool.send` awaits
+  the worker in the caller's task). Covered by
+  `test/test_workflow_user_origin_directive_refusal.py`.
 - **`agent_pool.build_pooled_agent_fn`** (warm sessions; the service default,
   `pool_agents=True`). Per-call sessions make every call pay a full cold start
   (subprocess spawn plus ACP `initialize` plus `session/new`, which loads the MCP
@@ -1674,7 +1701,7 @@ launch a script under a trusted chat's identity.
 | `GET /api/workflows/definitions/{id-or-slug}` | | one definition including revisions and lineage |
 | `PATCH /api/workflows/definitions/{id-or-slug}` | `{source, expected_revision, name?, description?, slug?}` | append a revision; 404 when unknown, 409 on stale revision |
 | `DELETE /api/workflows/definitions/{id-or-slug}` | | owner only; tombstone the definition and answer `{ok, id, removed_at}`; 404 `workflow_definition_not_found` when unknown or already removed; one SEL `api_access` row with outcome `completed` per removal |
-| `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 503 when its executor is unavailable |
+| `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 409 `app_disabled` for a `task-plan` definition while Task Runner is off, 503 when its executor is unavailable |
 
 Every mutation route that accepts JSON requires a top-level object. A syntactically
 valid scalar or array is rejected with 400 and `code: invalid_json` instead of
@@ -2014,7 +2041,7 @@ delivery milestone markers, not gates, and have no entry here.
 |---|---|---|---|
 | A3 | `pipeline()` has NO barrier between stages (an item may reach a later stage while another item is still in an earlier one), while `parallel()` IS a barrier (it awaits every thunk before returning). | `test_workflows_dsl.py::test_pipeline_no_inter_stage_barrier_deadlock_proof`, `::test_parallel_is_a_barrier` | `dsl.py` |
 | A4 | `Budget` is a HARD ceiling: `charge()` that reaches or passes `total` raises `BudgetExceeded`; `total=None` means unbounded and `remaining()` is `inf`. | `test_workflows_context.py::test_budget_hard_ceiling_raises_at_total`, `::test_budget_hard_ceiling_raises_over_total`, `::test_budget_unbounded_when_total_none` | `context.py` (`Budget`) |
-| A5 | A failing thunk or pipeline stage resolves to `None`; the combinator itself never raises, so callers filter `None` instead of handling exceptions. | `test_workflows_dsl.py::test_parallel_failed_thunk_becomes_none_and_does_not_raise`, `::test_pipeline_failed_stage_drops_item_to_none` | `dsl.py` |
+| A5 | A failing thunk or pipeline stage resolves to `None`; the combinator itself never raises, so callers filter `None` instead of handling exceptions. The one exception is `BudgetExceeded`, raised once every task has settled. | `test_workflows_dsl.py::test_parallel_failed_thunk_becomes_none_and_does_not_raise`, `::test_pipeline_failed_stage_drops_item_to_none`, `::test_budget_exceeded_is_raised_after_every_task_settles` | `dsl.py` |
 | A7 | A run emits exactly the documented event vocabulary, in order, with contiguous `seq` from zero: `run_started` first, one of `run_finished` / `run_failed` / `run_cancelled` last. `REQUIRED_DATA_KEYS` covers exactly `EVENT_TYPES`, and the validator rejects an unknown type or a missing required key. | `test_workflows_events.py::test_required_keys_cover_exactly_event_types`, `::test_every_event_type_has_a_builder_and_validates`, `::test_seq_is_monotonic_from_zero`, `::test_validate_rejects_unknown_type`, `::test_validate_rejects_missing_required_keys`; `test_workflows_runner.py::test_happy_path_emits_full_stream_in_order`, `::test_run_started_first_and_finished_last` | `events.py`, `runner.py`, `__init__.py` (`EVENT_TYPES`) |
 
 ### Group B: sandbox, ceilings, and audit
@@ -2031,7 +2058,7 @@ by name; the two together are why a single missed AST pattern is not an escape.
 | B2 | No dunder attribute or name access (`().__class__`, `__builtins__`, and the rest), no private (`_`-prefixed) attribute access, and no `.format` / `.format_map` call — their template is interpreted at run time, so a traversal can be assembled from parts no static fold can resolve (f-strings are the replacement: their fields are real AST and are already checked). An inline adversarial-escape corpus is rejected wholesale. | `test_workflows_invariants.py::test_b2_dunder_attribute_rejected`, `::test_b2_adversarial_escapes_rejected` | `validate.py` |
 | B3 | The nondeterminism modules (`time`, `random`, `uuid`) are unreachable, statically (they cannot be imported) and at run time (no `__import__` in the sandbox namespace, and `SAFE_BUILTINS` excludes nondeterministic and I/O builtins). Determinism is what makes a run stream resume-stable. | static: `test_workflows_invariants.py::test_b3_determinism_modules_rejected`, `::test_b3_safe_builtins_exclude_nondeterminism_and_io`; runtime: `test_workflows_context.py::test_import_statement_fails_in_safe_globals`, `::test_hostile_snippet_fails_at_runtime_in_safe_globals` | `validate.py`, `context.py` (`build_safe_globals`) |
 | B4 | Event persistence is JSON only: `serialize_events` / `deserialize_events` round-trip through `json`, reject non-JSON and non-array input, and the module imports no `pickle` / `marshal` / `shelve`. | `test_workflows_events.py::test_round_trip_through_json`, `::test_serialize_output_is_pure_json`, `::test_deserialize_rejects_non_json`, `::test_events_module_has_no_pickle_import` | `events.py` |
-| B5 | A wall-clock timeout terminates a runaway run and reports it as a clean `run_failed` with `where == "ceiling"` (event error `run exceeded <N>s`) and a `RunResult` whose `error == "timeout"`. The ceiling is one deadline for the whole run, taken when `run()` starts: an in-run authoring phase spends it too, and the script gets only what authoring left. The guard must never let an `asyncio.CancelledError` escape `run()` to the caller, during authoring or during the script; a caller cancel returns `error == "cancelled"` with a final `run_cancelled` event. | `test_workflows_runner.py::test_wall_clock_timeout_kills_runaway`, `::test_timeout_never_leaks_cancellederror`, `::test_wall_clock_timeout_covers_in_run_authoring`, `::test_in_run_authoring_and_its_script_share_one_deadline`, `::test_cancel_during_in_run_authoring_returns_a_result`, `::test_wall_clock_timeout_still_ends_an_authored_script` | `runner.py` |
+| B5 | A wall-clock timeout terminates a runaway run and reports it as a clean `run_failed` with `where == "ceiling"` and a `RunResult` whose `error == "timeout"`. The event error starts with `run exceeded <N>s` and names the agent call(s) still in flight and how long the run had been silent (e.g. `run exceeded <N>s; agent aN "<label>" still running, no event for <M>s`, or `... no agent call in flight, no event for <M>s`), snapshotted at the ceiling before the run's cancellation and cleanup run. That enriched text is also carried on `RunResult.terminal_error` and forwarded to the registry terminal snapshot, so the Runs detail / completion summary show it instead of a bare `timeout`. The ceiling is one deadline for the whole run, taken when `run()` starts: an in-run authoring phase spends it too, and the script gets only what authoring left. The guard must never let an `asyncio.CancelledError` escape `run()` to the caller, during authoring or during the script; a caller cancel returns `error == "cancelled"` with a final `run_cancelled` event. | `test_workflows_runner.py::test_wall_clock_timeout_kills_runaway`, `::test_ceiling_names_the_silent_agent_in_flight`, `::test_ceiling_in_flight_empty_when_no_agent_in_flight`, `::test_ceiling_silence_snapshot_predates_cleanup_logs`, `::test_timeout_never_leaks_cancellederror`, `::test_wall_clock_timeout_covers_in_run_authoring`, `::test_in_run_authoring_and_its_script_share_one_deadline`, `::test_cancel_during_in_run_authoring_returns_a_result`, `::test_wall_clock_timeout_still_ends_an_authored_script` | `runner.py` |
 | B6 | `AgentCounter` caps lifetime `ctx.agent()` calls per run (default `DEFAULT_MAX_AGENTS_PER_RUN = 1000`) and the cap is enforced through the runner: an unbounded agent loop stops at the limit and ends as `run_failed` at the ceiling. | `test_workflows_context.py::test_agent_counter_raises_past_limit`, `::test_agent_counter_default_limit`; `test_workflows_runner.py::test_agent_count_cap_enforced` | `context.py` (`AgentCounter`), `runner.py` |
 | B7 | The exec namespace exposes only `SAFE_BUILTINS` plus `ctx`, so a script has no filesystem or egress reach: `open`, `eval`, `exec`, `compile`, `__import__`, `input` and `getattr` are absent, and benign safe builtins still work. | `test_workflows_context.py::test_safe_globals_only_exposes_ctx_and_safe_builtins`, `::test_hostile_snippet_fails_at_runtime_in_safe_globals`, `::test_safe_builtins_actually_usable` | `context.py` (`build_safe_globals`) |
 | B9 | Every hostile script in the on-disk escape corpus (`test/workflows/malicious/*.py`) is statically rejected, with a non-empty error. The corpus directory must exist and be non-empty, and a new escape idea is added by dropping a file in it: the test parametrizes over the directory. | `test_workflows_malicious.py::test_every_malicious_script_is_rejected`, `::test_corpus_dir_exists_and_is_populated` | `validate.py`, `test/workflows/malicious/` |

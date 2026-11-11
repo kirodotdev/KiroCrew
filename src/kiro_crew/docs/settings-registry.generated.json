@@ -888,6 +888,13 @@
       "hint": "How many lines the latest-message preview can use before it is cut off"
     },
     {
+      "id": "chat.quick-reply-card-on-hover",
+      "label": "Quick Reply Card on Hover",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.quick-reply-card-on-hover",
+      "hint": "Resting on a session that waits on you, or pressing → on it, opens a card to reply without leaving this chat."
+    },
+    {
       "id": "chat.quick-send",
       "label": "Quick Send",
       "tab": "chat",
@@ -935,6 +942,13 @@
       "route": "/settings/chat/models?highlight=key%3Adashboard.model_picker_hidden_models",
       "hint": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible.",
       "configKey": "dashboard.model_picker_hidden_models"
+    },
+    {
+      "id": "chat.send-follow-ups-with-one-click",
+      "label": "Send follow-ups with one click",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.send-follow-ups-with-one-click",
+      "hint": "For follow-up suggestion cards only. When this is on, Start becomes Run and sends the card's prompt to the new session at once. When it is off, Start opens the new session with the prompt in its message box, and nothing is sent until you press send."
     },
     {
       "id": "chat.send-shortcut",
@@ -1420,6 +1434,14 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
       "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
+    },
+    {
+      "id": "developer.send-pending-approvals-to-chat-apps",
+      "label": "Send pending approvals to chat apps",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.send-pending-approvals-to-chat-apps",
+      "description": "Tells a connected chat app when a tool needs approval.",
+      "hint": "When a tool approval opens, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard."
     },
     {
       "id": "developer.session-environments",
@@ -2220,6 +2242,14 @@
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.tap-vs-hold-cutoff",
       "hint": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on."
+    },
+    {
+      "id": "voice.tell-the-agent-this-was-dictated",
+      "label": "Tell the agent this was dictated",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.dictation_note",
+      "hint": "Ends a message that holds dictated text with a note telling the agent it may contain transcription errors. Messages you only typed never get it, and the note shows in the transcript too.",
+      "configKey": "stt.dictation_note"
     },
     {
       "id": "voice.tidy-up-transcripts-with-ai",

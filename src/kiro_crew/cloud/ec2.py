@@ -900,6 +900,9 @@ def deploy(
     extra_managed_policy_arns = tuple(
         host_policy.managed_policy_arns(_account_of_policy_arn(boundary_arn))
     )
+    # A policy the account lacks would fail the role's attach with IAM's raw 404
+    # after the upload; refuse here instead, naming it.
+    host_policy.require_managed_policies(extra_managed_policy_arns, profile, region)
 
     # Package + upload the local source so the box installs from S3 (no GitHub
     # access needed). Fall back to a git clone only if source shipping is off.
@@ -960,8 +963,6 @@ def deploy(
         argv = [*argv, "--disable-rollback"]
     rc, out, err = aws.run_aws(argv, profile, region, timeout=_DEPLOY_TIMEOUT, proc_sink=proc_sink)
     if rc != 0 and "No changes to deploy" not in (out + err):
-        missing = aws.map_missing_action(err)
-        hint = f" — grant `{missing}` and retry" if missing else ""
         # The `aws cloudformation deploy` error is generic ("Failed to
         # create/update the stack"); the real cause is in the stack's FAILED
         # events (which now include the on-box bootstrap log tail). Fetch and
@@ -971,18 +972,32 @@ def deploy(
         if failures:
             lines = "; ".join(f"{f['resource']}: {f['reason']}" for f in failures[:4])
             detail = f" — root cause: {lines}"
-        # A denied attach of the edition's host policies means the second
-        # launcher policy was never applied. CloudFormation reports it only in
-        # the stack events, so name the one step that fixes it; the dashboard
-        # launch shows this same message.
+        missing = aws.map_missing_action(err)
+        # The whole stderr, so its describe-stack-events command keeps the full
+        # stack name. The remedy leads, as in aws.checked, so the dashboard's
+        # 400-character cut keeps it.
+        cause = err.strip()
         if extra_managed_policy_arns and "iam:AttachRolePolicy" in (err + detail):
-            detail += (
-                " — this build attaches host policies to the instance role: apply the "
-                "second launcher policy from `kirocrew cloud iam-policy --host-policies`"
+            # A denied attach of the edition's host policies means the second
+            # launcher policy was never applied; the first already grants the one
+            # attach it allows, so its grant line would not fix this.
+            cause = (
+                "this build attaches host policies to the instance role: apply the second "
+                "launcher policy from `kirocrew cloud iam-policy --host-policies` and retry"
+                f" — {cause}"
             )
+        else:
+            # A denial CloudFormation meets creating a resource (iam:PassRole for the
+            # instance) is only in the events. The WaitCondition's reason is the
+            # instance's own setup log, so a denial there is not the launcher's grant.
+            for f in failures:
+                if not missing and f["resource"] != "WaitCondition":
+                    missing = aws.map_missing_action(f["reason"])
+            if missing:
+                cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
         _cleanup_uploaded_source()
         raise aws.AWSError(
-            f"cloudformation deploy failed: {err.strip()[:200]}{hint}{detail}",
+            f"cloudformation deploy failed: {cause}{detail}",
             action="cloudformation:CreateStack",
             missing_action=missing,
             returncode=rc,
@@ -1026,8 +1041,11 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
         if "does not exist" in err:
             return None
         missing = aws.map_missing_action(err)
+        cause = err.strip()[:300]
+        if missing:
+            cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
         raise aws.AWSError(
-            f"could not query stack {stack_name(tag)}: {err.strip()[:300]}",
+            f"could not query stack {stack_name(tag)}: {cause}",
             action="cloudformation:DescribeStacks",
             missing_action=missing,
             returncode=rc,
@@ -1202,6 +1220,11 @@ def describe(tag: str, profile: str = "", region: str = "") -> dict[str, Any]:
 
 
 def _instance_state(instance_id: str, profile: str, region: str) -> str:
+    """The state name; ``""`` when EC2 has no such instance; ``"unknown"`` when unread.
+
+    For an instance EC2 does not return, ``--output text`` prints the literal ``None``;
+    a failed call, or one that printed nothing, says nothing about the instance.
+    """
     rc, out, _err = aws.run_aws(
         [
             "ec2",
@@ -1217,7 +1240,10 @@ def _instance_state(instance_id: str, profile: str, region: str) -> str:
         region,
         timeout=_POLL_TIMEOUT,
     )
-    return out.strip() if rc == 0 else "unknown"
+    if rc != 0:
+        return "unknown"
+    state = out.strip()
+    return "" if state == "None" else state or "unknown"
 
 
 def list_instances(profile: str = "", region: str = "") -> list[dict[str, Any]]:
@@ -1244,10 +1270,10 @@ def list_instances(profile: str = "", region: str = "") -> list[dict[str, Any]]:
         tag = tags.get(INSTANCE_TAG_KEY, "")
         instance_id = arn.rsplit("/", 1)[-1] if "/" in arn else ""
         state = _instance_state(instance_id, profile, region) if instance_id else ""
-        # The tagging API keeps returning terminated instances for a while; only
+        # The tagging API keeps returning an instance after it is gone; only
         # surface live ones (running/stopped/pending/stopping/...), not
-        # terminated/shutting-down.
-        if state in ("terminated", "shutting-down"):
+        # terminated/shutting-down or one EC2 does not have at all ("").
+        if state in ("", "terminated", "shutting-down"):
             continue
         out.append({"tag": tag, "instance_id": instance_id, "instance_state": state})
     return sorted(out, key=lambda r: r["tag"])

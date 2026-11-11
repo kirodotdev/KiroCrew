@@ -117,6 +117,9 @@ class AcpRuntime:
     # The spawn entry point: ``kiro_crew.acp.runtime_spawn_entry``.
     spawn = _rt_entry.spawn
     _spawn_admitted_rederiving_once = _rt_entry._spawn_admitted_rederiving_once
+    _spawn_admitted_repairing_kas_extract = _rt_entry._spawn_admitted_repairing_kas_extract
+    _broken_kas_server_path = _rt_entry._broken_kas_server_path
+    kas_extract_broken_message = _rt_entry.kas_extract_broken_message
     _revive_after_failed_start = _rt_entry._revive_after_failed_start
     # What a session start is built from: ``kiro_crew.acp.runtime_session_setup``.
     _session_work_dir = _rt_setup._session_work_dir
@@ -212,6 +215,7 @@ class AcpRuntime:
     settle_stderr = _rt_liveness.settle_stderr
     saw_sandbox_init_failure = _rt_liveness.saw_sandbox_init_failure
     saw_delegate_launch_failure = _rt_liveness.saw_delegate_launch_failure
+    saw_kas_engine_refusal = _rt_liveness.saw_kas_engine_refusal
     redacted_stderr_tail = _rt_liveness.redacted_stderr_tail
     _exit_watch_loop = _rt_liveness._exit_watch_loop
     _reader_has_buffered_input = _rt_liveness._reader_has_buffered_input
@@ -287,6 +291,7 @@ class AcpRuntime:
         launch_agent: str = "",
         native_skill_projection: bool = True,
         harness_pin: str = "",
+        governance_scope: tuple[str, str] | None = None,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -315,6 +320,11 @@ class AcpRuntime:
         # sessions created on this runtime; a warm-pool rekey overwrites it so
         # later sessions inherit the claiming crew, not the pool's spawn state.
         self._crew_agent = crew_agent
+        # The (session key, governance app) of the provider that built this
+        # runtime: the app-bound profile a session started under that key runs
+        # under. None for a runtime no provider built (the background runtime,
+        # a review pool), whose sessions' app is then not known.
+        self._governance_scope = governance_scope
         self._acp_backend = acp_backend
         # The Bot pin of the session this process was started for, as stored
         # (``SpawnContext.harness_pin``); ``""`` when it pins no harness.
@@ -638,8 +648,20 @@ class AcpRuntime:
         # fails before ``initialize`` completes, so the pre-``_first_session_ready``
         # window is where it is caught; see the arming guard in ``_drain_stderr``.
         self._saw_delegate_launch_failure = False
+        # The fix-it message for a KAS start that died on a broken kiro-cli extract
+        # and could not be repaired; empty otherwise. Set and cleared by
+        # ``_spawn_admitted_repairing_kas_extract`` alone, once per spawn.
+        self._kas_extract_broken_message = ""
+        # The server path from kiro-cli's ``failed to canonicalize KAS server path``
+        # line, latched by ``_drain_stderr`` before the first session is ready
+        # (whatever ``recording_allowed`` says) and cleared by a revive.
+        self._kas_extract_server_path = ""
+        # Latched observation of kiro-cli refusing its v3 (KAS) engine on this host.
+        # Same sink, ring-turnover reason and startup-only lifetime as the delegate
+        # latch: the refusal is printed before ``initialize`` and the child exits.
+        self._saw_kas_engine_refusal = False
         # Whether a session handle has ever been produced on this runtime. The
-        # startup window the two latches above arm in, and the reason it is a separate
+        # startup window the latches above arm in, and the reason it is a separate
         # flag from ``_initialized``: the handshake is the middle of startup, not
         # its end.
         self._first_session_ready = False

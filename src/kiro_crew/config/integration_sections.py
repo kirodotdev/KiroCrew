@@ -37,6 +37,7 @@ from kiro_crew.instances.constants import (
     RECOVER_BACKOFF_MAX_CEILING_SECS as _RECOVER_BACKOFF_CEILING,
 )
 from kiro_crew.instances.constants import WARM_SET_CAP_AUTO as _WARM_SET_CAP_AUTO
+from kiro_crew.remote_control.defaults import REMOTE_CONTROL_ON_BY_DEFAULT
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
@@ -1103,7 +1104,7 @@ class TunnelConfig:
         ),
     )
     relay_enabled: bool = field(
-        default=False,
+        default=REMOTE_CONTROL_ON_BY_DEFAULT,
         metadata=_meta(
             "Kiro Relay",
             "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
@@ -1153,6 +1154,18 @@ class TunnelConfig:
             "sign-in. EXTERNAL_IDP for a token from an outside identity provider, "
             "API_KEY for a team Crew's crew API key. Any other value keeps Remote "
             "Control from starting.",
+            restart=True,
+        ),
+    )
+    relay_handle_email_domains: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Relay Handle Email Domains",
+            "Email domains, for example example.com, whose addresses label a relayed "
+            "person by the part before the @ when the relay sent no name. The whole "
+            "domain must match, ignoring case, so a subdomain or a longer domain keeps "
+            "the full address. Empty (the default) labels everyone by their full "
+            "address. Display only: it never changes who a person is or what they may do.",
             restart=True,
         ),
     )

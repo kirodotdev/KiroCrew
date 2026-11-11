@@ -422,6 +422,36 @@ class TestWatcherSelfHeal:
         ).fetchone()
         assert row["status"] == "cancelled"
 
+    async def test_stop_cancels_the_detached_reembed_task(self, store):
+        # stop() must cancel the detached self-heal re-embed. On the reconfigure
+        # path the gateway drops this watcher for a new one and only awaits
+        # stop(); a task left running keeps embedding, holds the bulk pool and
+        # the db write lock, and the fresh watcher's rebuild contends with it.
+        # _run_reembed_job's CancelledError branch (above) is the finalize that
+        # this cancel is what triggers -- without it that branch is dead on
+        # shutdown.
+        embedder = _FakeEmbedder()
+        watcher = self._watcher(store, embedder)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _long_reembed():
+            started.set()
+            await release.wait()  # bounded: stop()'s cancel unblocks this
+
+        task = asyncio.create_task(_long_reembed())
+        watcher._reembed_task = task
+        await started.wait()  # the task is actually running before we stop
+
+        # release is never set, so a stop() that does not cancel would leave the
+        # task blocked forever -- the assertions below would then fail.
+        await watcher.stop()
+
+        assert watcher._reembed_task is None
+        # The detached task is finished (cancelled), not orphaned and running.
+        assert task.done()
+        assert task.cancelled()
+
 
 class TestEmbedSignature:
     def test_base_url_ignored_by_signature(self):

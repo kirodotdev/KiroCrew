@@ -509,6 +509,7 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     message = raw or str(exc)
     counted = False
     code = ""
+    hints: dict[str, str] = {}
     if raw:
         try:
             parsed = json.loads(raw)
@@ -526,6 +527,13 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
                 raw_code = parsed.get("code")
                 if isinstance(raw_code, str) and _re.fullmatch(r"[a-z0-9_.-]{1,64}", raw_code):
                     code = raw_code
+                # The how-to-retry text a refusal carries next to its sentence
+                # (deploy's "use ttl_hours=0" and the command to run). Redacted
+                # below with the message, since it is the same untrusted body.
+                for key in ("details", "remediation"):
+                    value = parsed.get(key)
+                    if isinstance(value, str) and value:
+                        hints[key] = value
         except Exception:
             pass
     message, _ = redact_exfiltration_urls(message)
@@ -584,4 +592,8 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
         out["counted"] = True
     if code:
         out["code"] = code
+    for key, value in hints.items():
+        value, _ = redact_exfiltration_urls(value)
+        value, _ = redact_credentials(value)
+        out[key] = value
     return out

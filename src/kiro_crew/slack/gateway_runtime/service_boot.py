@@ -267,8 +267,11 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     try:
         from kiro_crew.dashboard.chat_persistence import watch_config as _watch_entry_cache_config
         from kiro_crew.metrics.provider import watch_config as _watch_telemetry_config
+        from kiro_crew.tracing.provider import watch_config as _watch_tracing_config
 
         _watch_telemetry_config()
+        # Same section, separate switch: telemetry.traces_enabled re-read on a write.
+        _watch_tracing_config()
         # Entry-cache bounds are memoised on the chat save path; the watcher
         # drops the memo so a new bound applies to the next flush.
         _watch_entry_cache_config()
@@ -638,12 +641,20 @@ def _init_task_runner(self: GatewayOrchestrator) -> None:
             return False
         clean_title, _ = redact_exfiltration_urls(task.title or "")
         clean_title, _ = redact_credentials(clean_title)
+        # The record names the run this gate holds as well as its task:
+        # up to three runs execute at once and their task indexes
+        # overlap, so the index alone cannot say whose gate it is. A
+        # project page reads both fields from the listing and decides
+        # each gate by the record's instance; the id is opaque. The
+        # executor sets the task's run before it awaits this callback.
         approval_id = f"task-gate-{task.index}-{uuid.uuid4().hex[:8]}"
         result = await self.dashboard_state.request_approval(
             approval_id=approval_id,
             source="taskrunner",
             tool=f"Task {task.index}: {clean_title}",
             tool_purpose="Task requires manual approval before execution",
+            run_task_id=task.run_task_id,
+            task_index=task.index,
         )
         sel().log_api_access(
             caller="taskrunner",
@@ -958,6 +969,8 @@ async def run(self: GatewayOrchestrator) -> None:
     await cautious_boot.initialize()
 
     seen = SeenCache()
+    # Kept for a Slack reconnect, so a rebuilt socket still drops redeliveries.
+    self._slack_seen = seen
     await self._init_services()
 
     # Wire in-process embeddings (always-on) and kick background model download
@@ -1023,6 +1036,18 @@ async def run(self: GatewayOrchestrator) -> None:
 
     gc.freeze()
     gc.enable()
+    # Opt-in (KIROCREW_GC_WARM_FREEZE, off by default): a higher gen-2 threshold
+    # now, and one more freeze once the restored tabs are in (kiro_crew.gc_tuning).
+    from kiro_crew import gc_tuning
+
+    if gc_tuning.apply_threshold() and state is not None:
+        _freeze_task = asyncio.create_task(gc_tuning.freeze_when_warm(state.startup_tabs_rebuilt))
+        self._background_tasks.add(_freeze_task)
+        _freeze_task.add_done_callback(self._background_tasks.discard)
+    # A slot fold with nothing to resume folds cold in a child process from now on.
+    from kiro_crew.crew_log import slot_backfill_child
+
+    slot_backfill_child.enable()
     # The dashboard/API socket is bound now. A missing wrapper can take the
     # full pip timeout to repair, so track that work without delaying READY.
     # The task itself catches and logs failures; startup remains available.
@@ -1300,6 +1325,12 @@ async def run(self: GatewayOrchestrator) -> None:
             if self._dashboard_runner is not None:
                 _app, _loop = self._dashboard_runner.app, asyncio.get_running_loop()
                 register_post_install_hook(lambda: withdraw_refused_origins(_app, _loop))
+                # A policy that refuses the terminal ends the shells already open.
+                from kiro_crew.dashboard.handlers.terminal_lifecycle import (
+                    end_shells_if_policy_refuses,
+                )
+
+                register_post_install_hook(lambda: end_shells_if_policy_refuses(_app, _loop))
                 # A policy that withdraws the redaction opt-in must purge open dashboards.
                 from kiro_crew.dashboard.handlers import credential_redaction as _redaction
 
@@ -1580,6 +1611,26 @@ async def run(self: GatewayOrchestrator) -> None:
     if self.dashboard_state:
         self.dashboard_state.slack_socket_connected = connected
         self.dashboard_state.slack_connect_error = getattr(self, "_slack_connect_error", "")
+    # Pin the workspace of the Web API client boot published (none published,
+    # nothing pinned), so a later reconnect refuses to switch workspaces in
+    # place; the probe names the workspace, or releases the pin when Slack
+    # proves the token belongs to none. Fire-and-forget like the probe below:
+    # boot latency is unaffected.
+    from kiro_crew.slack.reconnect import pin_boot_workspace
+
+    _workspace_task = pin_boot_workspace(self)
+    if _workspace_task is not None:
+        self._background_tasks.add(_workspace_task)
+        _workspace_task.add_done_callback(self._background_tasks.discard)
+    if self.dashboard_state and not self._no_dashboard:
+        # POST /api/slack/reconnect calls this. Published only once boot's own
+        # Slack bring-up has returned, so a reconnect never builds a socket
+        # that boot's init_socket_mode then replaces without closing; until
+        # then the route answers 503 slack_reconnect_unavailable. The
+        # API-only server leaves it None.
+        from kiro_crew.slack.reconnect import reconnect_slack
+
+        self.dashboard_state.slack_reconnect = lambda: reconnect_slack(self)
 
     # Deferred tracked-channel capability probe (fire-and-forget, never
     # awaited — boot latency is unaffected). A Slack install created before

@@ -235,6 +235,15 @@ class TestListThemesSync:
         (themes_dir / "linked").symlink_to(real, target_is_directory=True)
         assert th._list_themes_sync() == []
 
+    def test_junctioned_directory_is_never_listed(
+        self, themes_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Windows junction is a directory that is not a symlink; it is left out like one."""
+        d = _make_pack(themes_dir / "linked")
+        monkeypatch.setattr(platform_compat, "_ISJUNCTION", lambda p: Path(p) == d)
+        assert d.is_dir() and not d.is_symlink()
+        assert th._list_themes_sync() == []
+
     # On Windows a read that meets a save's or reinstall's replace raises
     # PermissionError (a sharing violation). That is a valid theme mid-write, so
     # the list retries it instead of dropping the theme like a corrupt file.

@@ -228,7 +228,11 @@ class TestLoaderCredentialHelpers:
         # every host: under a CP1252 (Windows ANSI) locale it would decode cleanly
         # and the read would be definitive, making this assertion host-dependent.
         monkeypatch.setattr(
-            loader, "_locale", SimpleNamespace(getpreferredencoding=lambda _=False: "utf-8")
+            loader,
+            "_locale",
+            SimpleNamespace(
+                getpreferredencoding=lambda _=False: "utf-8", getencoding=lambda: "utf-8"
+            ),
         )
         (home / ".env").write_bytes(b"TELEGRAM_BOT_TOKEN=\xe9caf\xe9\n")
         definitive: list[bool] = []

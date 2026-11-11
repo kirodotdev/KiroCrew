@@ -957,6 +957,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.hooks import (  # noqa: F401
         safe_read_file,
+        safe_read_file_bytes,
     )
     from kiro_crew.json_line import (  # noqa: F401
         parse_json_object_line,
@@ -1008,4 +1009,5 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.user_json import (  # noqa: F401
         loads_user_jsonc,
+        wide_bom_reason,
     )

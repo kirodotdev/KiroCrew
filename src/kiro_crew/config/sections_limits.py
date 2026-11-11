@@ -389,8 +389,8 @@ def _limit_int(value: object, key: str, *, lo: int, hi: int | None = None) -> in
 class ResourceLimitsConfig:
     """Kernel confinement ceilings for spawned agent processes.
 
-    THREE mechanisms read this one block, and a key shared between two of them
-    does NOT mean the same thing on both. That is the whole reason this section
+    THREE mechanisms read this one block, and ``0`` does NOT mean the same
+    thing on each of them. That is the whole reason this section
     has a schema: without it every consumer parses the raw dict itself, leaving
     the incompatible domains written down nowhere and free to drift apart.
 
@@ -429,12 +429,26 @@ class ResourceLimitsConfig:
         default=None,
         metadata=_meta(
             "Max processes",
-            "READ BY TWO MECHANISMS with different meanings for 0. As "
-            "RLIMIT_NPROC it caps processes for the child's real UID, and 0 "
-            "leaves the inherited limit unchanged (the default -- see the "
-            "per-UID caveat in security._RLIMIT_DEFAULTS). As the cgroup "
-            "TasksMax it counts TASKS (threads) in the scope, where 0 is "
-            "rejected by systemd, so 0 or unset means the module default.",
+            "Per-scope TASK budget: the cgroup TasksMax on Linux, which counts "
+            "TASKS (threads), and the Job object ActiveProcessLimit on Windows. "
+            "0 is rejected by systemd, so 0 or unset means the module default. "
+            "It sets no POSIX rlimit; the per-user process cap is the separate "
+            "max_user_processes.",
+            nullable=True,
+        ),
+    )
+    max_user_processes: int | None = field(
+        default=None,
+        metadata=_meta(
+            "Max user processes",
+            "RLIMIT_NPROC on the tool and build processes the gateway spawns, "
+            "opt-in; the ACP session host and what it starts keep the "
+            "inherited limit. The kernel counts every process and thread of "
+            "the gateway's user, not one spawn's tree, so a cap below what "
+            "that user already runs stops those spawns from forking. 0 or "
+            "unset leaves the inherited limit unchanged (the default). Set it "
+            "only when the gateway runs as its own dedicated user. Not used by "
+            "the cgroup path.",
             nullable=True,
         ),
     )
@@ -576,6 +590,9 @@ class ResourceLimitsConfig:
         return cls(
             max_open_files=_limit_int(section.get("max_open_files"), "max_open_files", lo=0),
             max_processes=_limit_int(section.get("max_processes"), "max_processes", lo=0),
+            max_user_processes=_limit_int(
+                section.get("max_user_processes"), "max_user_processes", lo=0
+            ),
             max_memory_mb=_limit_int(section.get("max_memory_mb"), "max_memory_mb", lo=0),
             max_address_space_mb=_limit_int(
                 section.get("max_address_space_mb"), "max_address_space_mb", lo=0

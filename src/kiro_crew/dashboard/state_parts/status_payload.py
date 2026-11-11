@@ -121,6 +121,7 @@ def status_snapshot(
     update_bundled_by_app: bool = False,
     version_display: str = "",
     bundle_id: str = "",
+    background_turns: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Core status fields shared by /api/status, SSE, and WebSocket pushes.
 
@@ -133,6 +134,11 @@ def status_snapshot(
     loop thread -- the ``no-blocking-call-on-event-loop`` freeze class this
     emitter path exists to avoid. ``None`` means the count is unknown and
     renders as a loading skeleton, never an authoritative 0.
+
+    ``background_turns`` comes from the same caller for the same reason:
+    until the first unattended turn sizes the cap's semaphore,
+    :meth:`background_turn_stats` reads ``config.json`` for the cap. It is
+    computed here only when a caller passes none.
     """
     uptime = int(time.time() - self.start_time)
     branch, commit = self._build_info
@@ -285,7 +291,9 @@ def status_snapshot(
         # Cap / in-flight / queued counts for unattended app-owned
         # turns. Published so a fleet parked behind the cap is visibly
         # throttled rather than looking like a set of hung workers.
-        "background_turns": self.background_turn_stats(),
+        "background_turns": (
+            background_turns if background_turns is not None else self.background_turn_stats()
+        ),
     }
 
 

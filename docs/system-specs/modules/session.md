@@ -832,7 +832,16 @@ recorded mode back at its next turn (`crewmate_approval.seed_for_turn`); a Profi
 seeds less still gets the notice.
 The record grants nothing: no reader turns it back into a mode, and the notice names
 the live chat's own title, so a forged record can at most notify a chat that is open.
-`test_chat_trust_restart_notice.py` pins it.
+The system row carries `meta.kind = "trust_reset_notice"` and `meta.approval_mode`;
+the dashboard draws it as a localized card (`pages/chat/TrustResetNoticeCard.tsx`)
+with one **Turn Trust back on** (or **Turn Reads back on**) button, gone once the chat holds
+the mode again. The button is the person's pick: it dispatches the composer picker's
+own `changeApprovalMode`, so `POST /api/chat/mode` and `apply_approval_mode` run with
+every caller check, and the inherited-posture walk re-raises the chat's workers whose
+creation edge the crew log records, exactly as a picker pick does. An Ultra Mode lead
+is an ordinary owner chat here, so it gets the card. A crew window's peer rows leave
+it out (`PEER_SAFE_ROWS`), because the pick would go to this gateway.
+`test_chat_trust_restart_notice.py` and `TrustResetNoticeCard.test.tsx` pin it.
 
 **A person's steer is a ledger event.** The work ledger accepts a `steer` event
 (`work_vocab`: actor `person`, kind `steer`, the person's own text redacted and cut
@@ -2584,7 +2593,14 @@ against sweep completeness, and are torn down at `close_all`.
   whose runtime-anchor members have all died is never reclaimed, even if every
   survivor still has the marker or is an attributable env-cleared descendant;
   old skipped scopes are summarized at INFO by stable reason category, making
-  that residual operator-visible. Each member's `/proc/<pid>/stat` is read as
+  that residual operator-visible, and `kirocrew doctor` names each such
+  `kirocrew-rt-*` scope by unit with its stop command (`kept_scopes`;
+  [cli.md](cli.md) doctor item 24). The
+  gateway still never stops such a scope itself, and neither does one holding a
+  member that is not this install's: what is left can be a server an agent was
+  asked to keep running, so ending it is the operator's call
+  ([decision](../../decisions/2026-11-10-a-runtime-scope-with-no-agent-runtime-left-is-the-operators-to-stop.md)).
+  Each member's `/proc/<pid>/stat` is read as
   BYTES through `platform_compat.read_proc_stat`; it, `environ` and `cmdline` are
   read lazily and at most once per pid per evaluation, and the reclaim reuses
   those reads (a scope rejected at (i) with an active-enter stamp reads no stat):
@@ -2659,21 +2675,56 @@ against sweep completeness, and are torn down at `close_all`.
   build with no queue) still answers straight away.
   The `/proc` parent→child map is built ONCE per tick off-loop
   (`_build_child_map(session_members=True)` on the maintenance executor) and shared across
-  candidate trees (`_rss_mb_from_tree`). On Linux that map also lists each
-  process under its session leader, so a job a timed-out shell command left
-  running (reparented to init, still in the runtime's session) counts against
-  its runtime's ceiling (#33843). It is a measurement map only: the kill paths
-  build theirs without session members, so nothing is signalled that was not
-  before. macOS and Windows still measure live descendants only. Resident pages are summed across the
+  candidate trees (`_rss_mb_from_tree`). That map also lists each process under
+  its session leader, so a job a timed-out shell command left running
+  (reparented to init, still in the runtime's session, whether or not it left
+  the runtime's process group under `set -m`) counts against its runtime's
+  ceiling. macOS counts the same members in `darwin_footprint_tree_mb`: xnu has
+  no `KERN_PROC_SESSION` listing (`sysctl_prochandle` answers ENOTSUP), so the
+  members are `KERN_PROC_ALL` filtered by `getsid`. Windows has no sessions and
+  measures live descendants only. The orphan kill paths build their own map
+  without session members. **Leftovers** (`session_pid.find_session_leftovers`:
+  members of the runtime's session outside its live parent tree, read twice
+  around their start identities while the root is alive) are then handled by
+  `session_cleanup_leftovers`: a recycled session's leftovers, read before
+  `reset`, are ended after it through `platform_compat.terminate_pids_pinned`
+  once the runtime root is no longer the process it was (`end_after_recycle`;
+  a same-group leftover is already ended by the runtime's own group signal).
+  A session over the ceiling with a turn in flight is still never recycled:
+  its leftovers are logged (pid, size, name) whenever the set changes and the
+  session gets one `leftover_memory` notice per turn (re-armed when the turn releases the session)
+  (`SessionManager.on_leftover_memory`, wired by the dashboard). With
+  `session.watchdog_end_leftovers_mid_turn` (default off) they are also ended
+  then. Ending is Linux only, as the pinned terminator is; macOS reports.
+  Resident pages are summed across the
   tree and converted to MiB once at the end. The tree RSS is measured once per
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,
   and at most one SUCCESSFUL reset happens per runtime pid per tick: the pid joins
   `recycled_pids` only after `reset` returns True, so a declined co-tenant does not
   spend the budget. Each successful recycle is remembered per key for
-  `RSS_REBOUND_WINDOW_SECS` (24h); the next ceiling crossing by that key inside
-  the window logs one `RSS recycle rebound` WARNING with the ceiling, the current
-  and pre-recycle RSS and the elapsed time — a sign that
-  `session.watchdog_rss_max_mb` sits below the workload's steady footprint. Measurement happens off-lock, so
+  `RSS_REBOUND_WINDOW_SECS` (24h) with the count of rebounds that led to it
+  (`session_rss_rebound`, which judges every crossing). A later ceiling crossing
+  by that key inside the window is a rebound, a sign that
+  `session.watchdog_rss_max_mb` sits below the workload's steady footprint: the
+  recycled session restores its whole conversation with `session/load`, so a
+  history that alone is over the ceiling puts every fresh process straight back
+  over it. The first crossing after each recycle logs one `RSS recycle rebound`
+  WARNING with the ceiling, the current and pre-recycle RSS and the elapsed
+  time, and a rebound recycle's notice reason names `session.watchdog_rss_max_mb`
+  and its value. A crossing updates the record and never drops it, so one a
+  later guard declines keeps both the count and the single warning. The
+  `RSS_REBOUND_HOLD_AFTER`-th (third) rebound in a row is HELD instead of
+  recycled, so the loop ends after three recycles: one `RSS recycle held`
+  WARNING, and the owner's `on_rss_hold(key, RssHold)` seam is called once.
+  `wire_session_recycle_callback` subscribes it and posts a notice tagged
+  `meta={"kind": "compaction", "notice": "rss_hold"}` into a `dashboard:` tab
+  that has a conversation, naming the footprint, `session.watchdog_rss_max_mb`
+  with its value and the Watchdog RSS Limit setting. The hold ends with the
+  record, 24h after the last recycle, and a held tree that grows past
+  `RSS_REBOUND_HOLD_GROWTH_FACTOR` (2x) the RSS it was held at is recycled
+  anyway; the next rebound is held again with a new notice. That bound is a
+  multiple of the held footprint, not of the ceiling, because a footprint over
+  twice the ceiling would otherwise never be held. Measurement happens off-lock, so
   the victim's session object is captured at collection time and handed to
   `reset(expect_session=..., skip_if_busy=True)`, which re-verifies identity +
   not-busy atomically under the lock; a recycle that actually happened logs a
@@ -2752,7 +2803,7 @@ against sweep completeness, and are torn down at `close_all`.
 | Method | Purpose |
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm sessions, and the background session on backends without a shared runtime; on a shared-runtime backend (`kiro`) the background session is created by `get_or_create` on its first turn. It is always created as the background agent (`kirocrew-lite`), whatever agent the first caller names, and concurrent first users share one cold start. `blocking=False` for non-blocking mode. |
-| `get_or_create(key, agent=None, channel_id=None, approval_policy="", model=None, cwd=None, extra_env=None, speculative=False, speculative_resume=False, wait_if_busy=True, start_priority=BACKGROUND, **factory_kwargs)` | Returns `(LLMProvider, is_new, resumed)`. `start_priority` orders a cold start in the start queues; only a caller a person is waiting on passes FOREGROUND ([acp-client](acp-client.md) § Session-start gate). Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the warm pool, recovering pool-hit startup latency. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Before that decision, a `cwd` inside a directory bound in `aws.project_profiles` sets `AWS_PROFILE` and `AWS_DEFAULT_PROFILE` in `extra_env` unless the caller already set `AWS_PROFILE` / `AWS_DEFAULT_PROFILE`, so such a session takes `bypass_env`; an empty map or an unbound `cwd` hands the caller's `extra_env` through unchanged ([config](config.md) § Project AWS profiles). A caller that names no `model` gets the session layer's own default-model ladder, `session._session_model`, which answers through `config.loader.resolve_effective_model` (the resolver the model chip reads) from the manager's watcher-refreshed `_cfg`, never a fresh load: the crew's pin, then its template's pin (the named template when there is no crew; `kirocrew` tracks the global), then `apps.<name>.model` for an `app_name=` the caller passes (taken out of the factory kwargs), then `agent.model`, then the installed agent file; `""` and `"auto"` inherit at every tier. Each tier is scoped to the backend the factory will select for this key (`members.select_provider_backend`: a `backend_override`, the member-DM route, else the configured one). It runs off the event loop; every tier deferring, or a resolver error (logged), passes `model=None` and leaves the factory's own fallback to choose, so the ladder never fails a cold start. The value is the allocation's `requested_model` stamp. `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. A load the provider would replace with a fresh session plus replay (Tool Search on, kiro backend, direct dashboard key — `resume_takes_tool_search_replay`, providers.md → Native-resume compatibility) never reaches this call speculatively: `chat_turn.eager_spawn._eager_spawn` reads that predicate first and leaves the slot to its first turn, because such a load can only come back `resumed=False` and be refused after a full spawn. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. |
+| `get_or_create(key, agent=None, channel_id=None, approval_policy="", model=None, cwd=None, extra_env=None, speculative=False, speculative_resume=False, wait_if_busy=True, start_priority=BACKGROUND, **factory_kwargs)` | Returns `(LLMProvider, is_new, resumed)`. `start_priority` orders a cold start in the start queues; only a caller a person is waiting on passes FOREGROUND ([acp-client](acp-client.md) § Session-start gate). Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the warm pool, recovering pool-hit startup latency. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Before that decision, a `cwd` inside a directory bound in `aws.project_profiles` sets `AWS_PROFILE` and `AWS_DEFAULT_PROFILE` in `extra_env` unless the caller already set `AWS_PROFILE` / `AWS_DEFAULT_PROFILE`, so such a session takes `bypass_env`; an empty map or an unbound `cwd` hands the caller's `extra_env` through unchanged ([config](config.md) § Project AWS profiles). A caller that names no `model` gets the session layer's own default-model ladder, `session._session_model`, which answers through `config.loader.resolve_effective_model` (the resolver the model chip reads) from the manager's watcher-refreshed `_cfg`, never a fresh load: the crew's pin, then its template's pin (the named template when there is no crew; `kirocrew` tracks the global), then `apps.<name>.model` for an `app_name=` the caller passes (taken out of the factory kwargs), then `agent.model`, then the installed agent file; `""` and `"auto"` inherit at every tier. Each tier is scoped to the backend the factory will select for this key (`members.select_provider_backend`: a `backend_override`, the member-DM route, else the configured one). It runs off the event loop; every tier deferring, or a resolver error (logged), passes `model=None` and leaves the factory's own fallback to choose, so the ladder never fails a cold start. The value is the allocation's `requested_model` stamp. `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. A load the provider would replace with a fresh session plus replay (Tool Search on, kiro backend, direct dashboard key — `resume_takes_tool_search_replay`, providers.md → Native-resume compatibility) never reaches this call speculatively: `chat_turn.eager_spawn._eager_spawn` reads that predicate first and leaves the slot to its first turn, because such a load can only come back `resumed=False` and be refused after a full spawn. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. While a speculative allocation for the key is still starting (`SessionRegistryState.speculative_starts`), a real claim that finds no live session waits for it and claims what it registered instead of cold-starting a second process, and cold-starts as it would have when that start registered nothing. A FOREGROUND claim does not wait on a BACKGROUND start, which waits in every start queue at its own priority. A BACKGROUND resume prefetch (`speculative_resume=True`) past its spawn door (its reservation token, the announcement's last field, is in `spawning_reservations`) is joined all the same: it holds its cold-start permit and is starting the process that takes the saved session's per-session lock, so a second start could only wait that lock out and fall back to a fresh session plus history replay. One still short of the door (queued for its permit behind background starts, say) has no process and no lock yet, so the claim does not wait for it: it records the prefetch's token in `superseded_speculative_starts` and cold-starts at its own priority, and the prefetch stands down at its spawn door with `SpeculativeResumeRefused` instead of starting a second process for the saved session (`test_session_get_or_create.py::TestRealClaimJoinsAnInFlightEagerStart`, `test_session_resume_prefetch_join.py`). A resume prefetch left with nothing to restore is refused the same way before it spends a start, because its fresh start would be refused once it ended and a claim joined to it would wait that out: when the `SessionMap.get` lookup pruned the entry its hint named, before it claims a warm-pool process; when the memory mode or a provider switch cleared the saved session, or its harness takes no fork, at its spawn door. |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 70%), warns one `CONTEXT_WARN_MARGIN_PCT` below it. |
 | `compact_if_needed(key)` | Awaitable twin of the `check_context_usage` trigger for callers that must not start their next turn while a compaction is pending (the task runner's between-steps check, #4686). Same gates in the same order — both entry points consume the shared `_compaction_gate_decision` ladder, the single owner of the gate order (its docstring documents each rung) — then AWAITS `_compact_session`. Returns the outcome: `"absent"`, `"reset"` (the settled verdict on the prior attempt was ineffective-and-still-critical and the promoted escalation reset the session here, awaited), `"cc_managed"` (checked before the threshold, mirroring `check_context_usage`), `"below_threshold"`, `"compact_unsupported"` (the provider names a backend outside `ACP_BACKENDS_COMPACT`, so no `/compact` is dispatched and no semaphore is taken — checked AFTER the threshold so a declined backend keeps its per-turn usage log, #7812), `"unconfirmed"`, `"in_progress"`, `"cooldown"`, `"ok"`, `"busy"`, `"recycled"`, `"failed"`. A `"busy"` decline means a turn holds the semaphore — the caller leaves the session alone and retries later, never falls back to a direct `provider.compact()`. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
@@ -2766,7 +2817,7 @@ against sweep completeness, and are torn down at `close_all`.
 | `destroy(key)` | Permanently remove the live provider, compaction override, and session-map entry. The map entry is deleted in the yield-free registry-pop span before the awaited end metric, so a dashboard slot cannot adopt the predecessor binding during that metric write. |
 | `destroy_if(key, expected_generation, should_destroy, *, preserve_autocompact_override=False)` | Conditional permanent removal for the monotonic canonical-key generation captured by `session_generation(key)`. Under the manager lock it requires no current allocation/claim reservation, requires the generation to remain equal, requires the current session semaphore to be idle, then evaluates the synchronous slot-owner predicate immediately before the registry pop and yield-free session-map delete. Any reservation, generation mismatch (including absent→successor→absent ABA), busy session, false predicate, or predicate exception leaves provider, override, and map untouched. History deletion passes `preserve_autocompact_override=True` because another process can claim the same logical transcript; ordinary conditional and unconditional destroy keep clearing the old override. Returns whether destruction occurred. |
 | `remove_if_unclaimed(key)` | Conditional `remove` for the resume-prefetch TTL: removes the session only if the one-shot `first_turn` observation is still armed (not `NOTHING_ARMED` — no real turn claimed it) AND the per-session semaphore is unheld, checked atomically under the manager lock, AND the parent owes no sub-agent work. The free semaphore proves only that the parent's own turn ended, so the decision takes the identity sweep's spare-children shape: a tentative teardown fence opens under the lock; off the lock it asks `has_pending_work_for_async` (queued, running, a finished child whose report is not registered yet, a follow-up watcher) and the fence-aware store read; `has_unfinished_report_for` (a registered terminal report still delivering after its run's task ended, which the pending-work signal does not see) is asked both off and under the lock; back under the lock it re-asks the in-memory half (`has_live_or_queued_children`, `has_in_memory_pending_work_for`, a pending completion injection) and commits only if `commit_identity_sweep_retire` promotes the fence. Any owed work or a failed read keeps the session and releases the fence. Preserves the session map (mirrors `remove`'s revivable shape), so the next focus or first message resumes normally. Returns `True` iff a session was removed. A claimant handed the session object but not yet holding the semaphore loses benignly: its re-validate fails and it cold-starts. |
-| `close_all(drain_timeout=None)` | Pre-shutdown **drain** of in-flight turns (via `drain_active_turns`), then save all active session mappings, shut down every session, and drain the warm pool. `drain_timeout` bounds that drain (`None` = full default budget); a caller wrapping `close_all()` in its own hard deadline (Slack's restart wraps it in `wait_for(..., 5s)`) passes a smaller budget (e.g. `2.0`) so the kill path still fits inside the deadline. A cancel that fires mid-drain (outer deadline) **propagates** (CancelledError is deliberately not caught) so the caller's hard deadline stays honest; recovery of a still-held native-session lock is the next-startup orphan reaper's job. |
+| `close_all(drain_timeout=None)` | Pre-shutdown **drain** of in-flight turns (via `drain_active_turns`), then save all active session mappings, shut down every session, and drain the warm pool. `drain_timeout` bounds that drain (`None` = full default budget); a caller with its own hard deadline (Slack's restart caps it at 5 s) passes a smaller budget (e.g. `2.0`) so the kill path still fits inside the deadline. Its cancel-then-await of the cleanup task and of every owned background task has no deadline of its own, so every in-process restart awaits `close_all()` through `restart_session_close.close_sessions_for_restart`, an owned-task wait that cancels the close and leaves it at the deadline; a `wait_for` would wait for a task that outlives its cancel. A cancel that fires mid-drain (outer deadline) **propagates** (CancelledError is deliberately not caught) so the caller's hard deadline stays honest; recovery of a still-held native-session lock is the next-startup orphan reaper's job. |
 | `drain_active_turns(timeout=None)` | Best-effort co-operative drain that brings in-flight prompts to a safe turn boundary **before** teardown, so kiro-cli closes its native turn and releases its session lock (`~/.kiro/sessions/cli/<uuid>.json`) on the subsequent SIGTERM — otherwise the next gateway's `session/load` hits "active in another process" and the slot returns empty completions (the Make-Live empty-response incident, #200). For each registered session with an **unfinished** turn (native turn-done not yet acked — independent of cancel state, so an already-cancelled-but-not-acked turn is still drained), it issues a graceful `session/cancel` and waits (bounded) for the ack; a turn already cancelled (`cancel()` → `"no_turn"`) is waited on directly via `wait_turn_done`. The whole operation is bounded by `timeout` (`None` → `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS`, default 5.0s; internal cap is `timeout+1.0`); on timeout it logs and returns so the caller falls through to the SIGTERM-first kill path — never hangs teardown, never raises. `timeout <= 0` disables the drain. Providers explicitly reporting `turn_survives_disconnect` (only Kiro Cloud Sessions) are excluded: shutdown stops their local relay without cancelling remote work. Explicit user Stop is unchanged. Returns the count of unfinished turns selected for draining (observability/tests). Only registered user sessions are drained; the warm pool holds never-prompted processes. |
 | `pause_turn_admission_for_update()` | Atomically pauses new turn admission under the session registry lock by setting the existing `_closing` gate and recording `update_pause_owned`. Returns `False` when real shutdown already owns `_closing`, or when a gateway stop is already signalled (`shutdown_event`, checked under the lock), so update logic cannot mask or replace shutdown and no installer starts into one. The pause covers both new `get_or_create` calls and already-issued leases reaching `begin_turn`. Channel callbacks claim a synchronous `reserve_inbound_callback()` before card or command handling; task-backed callbacks hold it until their handler task ends, while inline pollers scope it to one dispatch so the poll task does not keep updates busy forever. Admitted callbacks and pre-start client `_handler_tasks` are census-visible, while a claim refused after the pause writes the existing resend-notice route before any pre-turn side effect. Subagent, direct cron script/command, TaskRunner, and dynamic-workflow launchers read the same `admission_closed` state immediately before registering work, with no suspension before registration: a launch either registers before the pause and appears in the busy count, or is rejected after it. The subagent pump's two re-registrations read it too — the window refill (`_refill_apply`) and a resume reservation (`resume_reserve`) — because both would grow the busy count AFTER the census read even though the store already accepted that work: a hydrated row would only be refused by the spawn gate, and a resumed run would run on in a process about to be replaced. The gateway treats this boundary as apply-safe only when provider/Slack turns, every live dashboard `slot.task` (including pre-provider and remote-relay turns), shielded refusal writers, and all background workloads are idle. Subagent idleness is lifecycle-based rather than slot-based: queued/running work, unexpected-cancel recovery, shielded terminal reports, accepted follow-up watchers, one-shot orphan reconciliation, and detached state writers must all settle; the perpetual maintenance reaper is excluded. After apply, it drains callback tasks and refusal writers again; a timeout defers only the restart, reopens admission, and retries in five minutes without reapplying. A successful drain is followed immediately by `fence_update_restart()`, making any later refusal write synchronous through session teardown and the final drain, with no `await` between that drain and re-exec. Mandatory updates use a target-keyed ten-minute grace only for escalation logging; they still defer behind every active turn and background workload indefinitely. Automatic update preparation never calls `drain_active_turns()` and never cancels user work. On the managed-venv wheel route the build runs beside the live venv with admission OPEN, and the pause brackets only the restart into the promoted tree; the git and policy routes are as above. |
 | `resume_turn_admission_after_update()` | Releases `_closing` only when `update_pause_owned` is still true and no gateway stop is signalled (`shutdown_event`, checked under the lock); returns `True` only when admission actually reopened, and the gateway schedules its inbound-spool replay only then. `close_all()` revokes that ownership under the same lock before draining, so an update failure racing real shutdown cannot reopen admission. Used when automatic apply returns instead of replacing the process; during a shutdown (which stops the update first) the pause is kept so inbound turns keep being spooled. |
@@ -2979,9 +3030,11 @@ A mid-turn steer (a `user` row, or a monitor wake's `nudge` row, whose `meta.ste
 true, `replay._is_steer_row`)
 never opens the turn: the walk passes it on the way to the opener, and each steer
 is carried in the partial output, in the order it was sent, prefixed
-`[Steered mid-turn]`. A steer whose `meta.steerState` is `requeued` is walked
-past but not carried: the turn never took it, and it runs as its own turn from the
-queue. A window that holds steers but no opener restores nothing. The partial
+`[Steered mid-turn]`. A steer whose `meta.steerState` is `requeued` or
+`superseded` is walked past but not carried: the turn never took it, and it runs as
+its own turn from the queue. `superseded` marks a requeued row once that turn has
+written its own row with the same text; the client stops drawing the old row, and
+its `meta.supersededBy` names the new row's `mid` so pins and links land there. A window that holds steers but no opener restores nothing. The partial
 output's length cap bounds the assistant text alone, cut where it always was; a
 carried steer never spends it (each steer is capped like the request), so a
 redirect sent after a long stream is kept.
@@ -4489,7 +4542,10 @@ a fresh one; once the cancel is claimed, later sends queue as today.
 The grace belongs to a steer. A send that cannot steer -- a harness whose client
 does not advertise `supports_steer` (and any client before its handshake), or a
 steer the backend refused -- has nothing for the running turn to consume, so it
-is queued and claims the cancel at once, with no grace.
+is queued and claims the cancel at once, with no grace. A manual `/compact` turn
+(`slot._compact_command_turn`) refuses every steer and is a compaction like the
+session's own: the send queues with the `compacting` receipt and nothing is
+cancelled.
 
 Otherwise, a running parent gets at most one bounded `cancel_owned_turn` attempt against the
 exact Python turn owner and effective session captured by that turn. The
@@ -5933,14 +5989,15 @@ a trust root on its own; publication therefore also writes a
   rename rather than a truncate so the hook's `>>` keeps working and no record is
   cut mid-write, never raises. An over-cap file that stays over the cap after the
   attempt — the `.1` slot blocked by a planted directory, a sharing violation
-  that never clears — is logged at WARNING, since the primitive
-  swallows its own failure by contract and nothing else would tell a stuck bound
-  from a file under the cap; the line is throttled to one per
+  that never clears — is logged at WARNING with its sizes, since the primitive
+  tells its caller nothing and its own hourly WARNING carries the path, the
+  error class and the cap of a refused rename but no sizes (and there is none at
+  all for a lock file it could not open); the line is throttled to one per
   `shell_audit_log.SHELL_AUDIT_LOG_WARN_INTERVAL_SECS` (an hour) per data home,
   not one per attempt, because the tick retries for the gateway's whole life and
   a blocked slot does not clear itself, and it names the usual causes rather than
-  a determined one (the primitive reports no reason, only that the file is still
-  over the cap). The cap is `shell_audit_log.SHELL_AUDIT_LOG_MAX_BYTES`
+  a determined one (the sweep learns no reason from the primitive, only that the
+  file is still over the cap). The cap is `shell_audit_log.SHELL_AUDIT_LOG_MAX_BYTES`
   (8 MiB).
   The steady-state bound on disk is that cap plus at most one tick interval of
   shell activity of overshoot on the live file, times two generations; the first
@@ -6513,7 +6570,9 @@ taken on the loop because it walks live objects; the classification
 (`SessionHealthMonitor.compute`), the store read and the log tail run off it.
 The `gateway.log` regex scan (`scan_log_for_stalls`) is a SECONDARY source: it
 adds evidence to a running slot and is the sole source only when no state
-objects are reachable; it never overrides a structured wait.
+objects are reachable; it never overrides a structured wait. A signature that
+follows the `ACP error frame in slot` label (`session_health.RAW_FRAME_LOG_LABEL`)
+is provider text echoed into the raw-frame record, so it is not read as a stall.
 
 Payload: `{generated_at, stalled{slot: {reason, since_ts, evidence, age_secs}},
 slots{slot: {classification, evidence, age_secs, since_ts, source, native_children?}},

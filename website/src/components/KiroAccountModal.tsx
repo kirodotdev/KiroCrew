@@ -11,7 +11,7 @@ import { forecastCreditRunOut } from '../api/creditForecast'
 import { providerUsageQuery } from '../api/providerUsageQuery'
 import { getAdapter } from '../providers/registry'
 import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
-import { configuredAcpBackend, type AcpBackendConfig } from '../api/acpBackend'
+import { configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/acpBackend'
 import { failedWithNoData } from '../api/queryState'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
@@ -489,17 +489,17 @@ function RefreshButton({
       {pending
         ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
         : <RefreshCw className="lucide-inline" aria-hidden="true" />}
-      {/* Both labels share one grid cell, so the button is as wide as the
-          longer one in every locale and keeps its size when the state flips.
-          Only the shown label is in the accessible name. */}
-      <span className="inline-grid text-left">
-        <span className={`col-start-1 row-start-1 ${pending ? 'invisible' : ''}`} aria-hidden={pending || undefined}>
-          {idleLabel}
-        </span>
-        <span className={`col-start-1 row-start-1 ${pending ? '' : 'invisible'}`} aria-hidden={!pending || undefined}>
-          {pendingLabel}
-        </span>
-      </span>
+      {/* One label, swapped with the state, so the button is the width of the
+          word it currently shows and the idle button reserves no room for the
+          longer pending one. It therefore CHANGES width on press, which is the
+          accepted trade. What must not come back is `transition-all` in the
+          class list above: animating that resize is what left a stale copy of
+          the button painted over it on mobile WebKit, and only colors
+          transition now. Holding both labels in one grid cell is the other way
+          to keep that residue away, and it costs the idle button the pending
+          label's width in every locale. The accessible name is this same label,
+          so it needs no `aria-label` to say which state the button is in. */}
+      {pending ? pendingLabel : idleLabel}
     </button>
   )
 }
@@ -720,13 +720,15 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
  * it, the same deep link the chat's "Sign in to Kiro" row uses. The label names
  * Settings and the icon is an arrow: pressing it moves, it signs nothing out.
  *
- * Shown only on a LOADED config whose selected harness is KAS. That card signs
- * out Crew's own Kiro sign-in, which is the account this popup names only on
- * KAS; on kiro-cli the popup names the kiro-cli login, which the card cannot
- * touch, so a link there would promise a sign-out that does not happen. On
- * KAS with Crew's sign-in empty the same holds for sign-out, so the label then
- * offers only the switch, which that card's sign-in does perform. A
- * failed config read says so here rather than dropping the link silently.
+ * Shown only on a LOADED config where something runs on KAS (`kasInUse`). That
+ * card signs out Crew's own Kiro sign-in, which is the account this popup names
+ * only when the main harness is KAS; on kiro-cli the popup names the kiro-cli
+ * login, which the card cannot touch, so a link there would promise a sign-out
+ * that does not happen. So where only Bots run on KAS the label names the Bots'
+ * sign-in instead. On KAS with Crew's sign-in empty the same holds for sign-out,
+ * so the label then offers only the switch, which that card's sign-in does
+ * perform. A failed config read says so here rather than dropping the link
+ * silently.
  */
 function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: KiroAccountUsage }) {
   const navigate = useNavigate()
@@ -738,7 +740,8 @@ function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: Ki
     queryFn: () => api.kirocrewConfig(),
     refetchOnMount: false,
   })
-  const onKas = cfgQuery.data !== undefined && configuredAcpBackend(cfgQuery.data) === KIRO_SIGN_IN_BACKEND
+  const onKas = cfgQuery.data !== undefined && kasInUse(cfgQuery.data)
+  const mainOnKas = cfgQuery.data !== undefined && configuredAcpBackend(cfgQuery.data) === KIRO_SIGN_IN_BACKEND
   // Crew's own sign-in, under the key the card's flow polls (`KasLoginGate`).
   // Signed in: the card can sign that account out or switch it. Not signed in
   // (or not yet known): the popup names kiro-cli's login, which the card cannot
@@ -777,9 +780,11 @@ function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: Ki
       className="inline-flex cursor-pointer items-center gap-1 text-[12px] text-accent hover:underline focus-ring-accent"
       data-testid="kiro-account-sign-in-settings"
     >
-      {i18nT(vaultSignedIn
-        ? 'components.kiroAccountModal.sign_out_or_switch'
-        : 'components.kiroAccountModal.switch_in_settings')} <ArrowRight className="lucide-inline" aria-hidden="true" />
+      {i18nT(!mainOnKas
+        ? 'components.kiroAccountModal.bots_sign_in_in_settings'
+        : vaultSignedIn
+          ? 'components.kiroAccountModal.sign_out_or_switch'
+          : 'components.kiroAccountModal.switch_in_settings')} <ArrowRight className="lucide-inline" aria-hidden="true" />
     </button>
   )
 }

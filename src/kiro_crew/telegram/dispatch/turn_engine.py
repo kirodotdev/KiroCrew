@@ -766,7 +766,11 @@ async def _run_turn(
                 session_key,
                 exc_info=True,
             )
-        self._active_renderers.pop(session_key, None)
+        # Identity-checked, as Discord does: a second message admitted before this
+        # turn acquired the session publishes its own renderer under the same key,
+        # and this turn must not take it away from that turn's steers.
+        if self._active_renderers.get(session_key) is renderer:
+            del self._active_renderers[session_key]
         if _acquired:
             self.sessions.release(session_key)
         await asyncio.to_thread(facade.cleanup_attachments, attachment_temp_paths)

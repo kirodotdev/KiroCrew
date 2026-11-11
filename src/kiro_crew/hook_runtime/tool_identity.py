@@ -161,11 +161,15 @@ class ToolCall:
     #: read-only built-in proof.
     identity_trusted: bool = False
     #: ``AcpEvent.mcp_identity_unreadable``: the frame PRESENTED an MCP server or
-    #: tool name longer than Crew's own tool surface admits, so ``mcp_tool`` is
-    #: empty because the name could not be retained, not because there was none.
-    #: The exact ``@server/tool`` deny it may be under cannot be checked, so the
-    #: gate denies the call outright rather than judging it by title.
+    #: tool name Crew cannot read (``identity_unreadable_reason`` says which
+    #: check), so ``mcp_tool`` is empty because the name could not be retained,
+    #: not because there was none. The exact ``@server/tool`` deny it may be
+    #: under cannot be checked, so the gate denies the call outright rather than
+    #: judging it by title.
     identity_unreadable: bool = False
+    #: ``AcpEvent.mcp_identity_unreadable_reason``: the check that set
+    #: ``identity_unreadable``, which the gate's deny names.
+    identity_unreadable_reason: str = ""
     #: ``AcpEvent.kas_builtin_ids``: the permission event came from a harness in
     #: ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), whose built-in ids
     #: (``read_file``, ``run_command``) are the ones ``platform.tool_names``
@@ -180,6 +184,11 @@ class ToolCall:
     #: ``spec-builtin-grant`` tier only, after every deny tier and governance.
     #: Empty (every other harness, a sub-session, a hand-built call) grants nothing.
     spec_granted_builtins: frozenset[str] = frozenset()
+    #: ``AcpEvent.spec_hook_held``: the ``@server/tool`` grants of the KAS session's
+    #: own agent a PreToolUse hook kept at ``ask``. Read by the ``batch-guard-grant``
+    #: row only, and only when the surface fires those hooks
+    #: (``GateFacts.pre_tool_hooks_fire``). Empty grants nothing.
+    spec_hook_held: frozenset[str] = frozenset()
     #: ``AcpEvent.spec_granted_commands``: the KAS session's own agent's
     #: ``toolsSettings.shell.allowedCommands`` as Python regexes, written the same
     #: way. Read by the ``spec-builtin-grant`` tier only, against the recovered
@@ -272,8 +281,12 @@ class ToolCall:
             "mcp_tool": getattr(event, "tool_name", "") or "",
             "identity_trusted": bool(getattr(event, "mcp_identity_trusted", False)),
             "identity_unreadable": bool(getattr(event, "mcp_identity_unreadable", False)),
+            "identity_unreadable_reason": _plain_str(
+                getattr(event, "mcp_identity_unreadable_reason", "")
+            ),
             "kas_builtin_ids": bool(getattr(event, "kas_builtin_ids", False)),
             "spec_granted_builtins": _granted_names(getattr(event, "spec_granted_builtins", None)),
+            "spec_hook_held": _granted_names(getattr(event, "spec_hook_held", None)),
             "spec_granted_commands": _granted_patterns(
                 getattr(event, "spec_granted_commands", None)
             ),
@@ -314,8 +327,10 @@ class ToolCall:
             "mcp_tool_name": self.mcp_tool,
             "mcp_identity_trusted": self.identity_trusted,
             "mcp_identity_unreadable": self.identity_unreadable,
+            "mcp_identity_unreadable_reason": self.identity_unreadable_reason,
             "kas_builtin_ids": self.kas_builtin_ids,
             "spec_granted_builtins": self.spec_granted_builtins,
+            "spec_hook_held": self.spec_hook_held,
             "spec_granted_commands": self.spec_granted_commands,
             "spec_shell_allowlist": self.spec_shell_allowlist,
             "spec_write_allowlist": self.spec_write_allowlist,

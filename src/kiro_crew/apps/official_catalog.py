@@ -112,17 +112,21 @@ def _cache_path() -> Path:
     return config_dir() / "cache" / "official-catalog.json"
 
 
-#: Marks a cache entry as "the fetch failed recently", distinguishable from a
-#: real document because no catalog document carries this key.
+def _failure_path() -> Path:
+    """The failure memory, BESIDE the document so a failed fetch never replaces it."""
+    return _cache_path().with_suffix(".failed.json")
+
+
+#: The failure memory's content. No catalog document carries this key, so a
+#: document file holding it reads as no document.
 _FAILED_KEY = "_fetchFailedAt"
 
 
 def _read_cache() -> dict[str, Any] | None:
-    """Return the cached document, or None when there is nothing usable.
+    """Return the cached document, or None when there is no fresh one.
 
-    A cached FAILURE returns the sentinel rather than None, because the caller
-    has to tell "no cache, go fetch" apart from "the fetch failed a moment ago,
-    do not hammer it".
+    The failure memory is a separate question (:func:`_failed_recently`): a
+    fetch that failed a moment ago must not hide a document that is still fresh.
     """
     path = _cache_path()
     try:
@@ -132,11 +136,17 @@ def _read_cache() -> dict[str, Any] | None:
         data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or _FAILED_KEY in data:
         return None
-    if _FAILED_KEY in data:
-        return data if age <= FAILURE_TTL else None
     return data if age <= CACHE_TTL else None
+
+
+def _failed_recently() -> bool:
+    """Whether a fetch failed within ``FAILURE_TTL``, read from the memory's mtime."""
+    try:
+        return time.time() - _failure_path().stat().st_mtime <= FAILURE_TTL
+    except OSError:
+        return False
 
 
 def _write_cache(doc: dict[str, Any]) -> None:
@@ -149,23 +159,26 @@ def _write_cache(doc: dict[str, Any]) -> None:
 
 def _write_failure() -> None:
     """Remember that the fetch just failed, so the next caller does not wait again."""
-    _write_cache({_FAILED_KEY: time.time()})
+    try:
+        atomic_write(_failure_path(), json.dumps({_FAILED_KEY: time.time()}))
+    except OSError:
+        logger.debug("could not record the official catalog fetch failure", exc_info=True)
 
 
 def forget_cache() -> None:
     """Drop the cached document AND any failure memory, so the next read re-fetches.
 
-    The server half of the store's manual refresh: deleting the file is the one
-    operation that clears both a stale document (``CACHE_TTL`` not yet expired)
-    and a ``_fetchFailedAt`` sentinel (``FAILURE_TTL`` back-off) in a single
-    step. It never fetches anything itself -- the caller's next read pays the
-    fetch, so a refresh that cannot reach the CDN degrades exactly like a cold
-    start rather than inventing a third failure mode.
+    The server half of the store's manual refresh: deleting both files clears a
+    stale document (``CACHE_TTL`` not yet expired) and the ``_fetchFailedAt``
+    memory (``FAILURE_TTL`` back-off). It never fetches anything itself -- the
+    caller's next read pays the fetch, so a refresh that cannot reach the CDN
+    degrades exactly like a cold start rather than inventing a third failure mode.
     """
-    try:
-        _cache_path().unlink(missing_ok=True)
-    except OSError:
-        logger.debug("could not drop the official catalog cache", exc_info=True)
+    for path in (_cache_path(), _failure_path()):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("could not drop the official catalog cache", exc_info=True)
 
 
 def cached_entries() -> tuple[list[dict[str, Any]], float | None]:
@@ -416,9 +429,9 @@ def load_official_catalog(fetcher: Any = None) -> list[dict[str, Any]]:
     it did before this module existed.
     """
     doc = _read_cache()
-    if doc is not None and _FAILED_KEY in doc:
-        # A recent fetch failed. Answer from the seed WITHOUT another attempt --
-        # the point of remembering the failure is not paying its timeout again.
+    if doc is None and _failed_recently():
+        # Answer from the seed WITHOUT another attempt -- the point of remembering
+        # the failure is not paying its timeout again.
         return []
     if doc is None:
         doc = (fetcher or _download)()
@@ -798,7 +811,7 @@ def fetch_inventory_entries(*, ignore_failure_memory: bool = False) -> list[dict
     interpreted, so a caller cannot mistake "could not ask" for "nothing there".
 
     *ignore_failure_memory* is for the EXPLICIT-INSTALL path
-    (:func:`inventory_for_install`). The failure sentinel lives in the same
+    (:func:`inventory_for_install`). The failure memory sits beside the
     agent-writable cache file the install path is defined to ignore, and it
     records what a STORE LISTING fetch saw: one bad listing-page response must
     not turn an install click into a refusal-without-an-attempt for
@@ -826,10 +839,8 @@ def fetch_inventory_entries(*, ignore_failure_memory: bool = False) -> list[dict
     # answer. The file is agent-writable, so an attacker can clear the memory -- and the
     # worst that buys them is one real fetch attempt, which is the same fail-closed
     # answer by a slower route.
-    if not ignore_failure_memory:
-        cached = _read_cache()
-        if isinstance(cached, dict) and _FAILED_KEY in cached:
-            raise CatalogUnavailable("a recent catalog fetch failed; not retrying yet")
+    if not ignore_failure_memory and _failed_recently():
+        raise CatalogUnavailable("a recent catalog fetch failed; not retrying yet")
 
     doc = fetch_document(OFFICIAL_CATALOG_URL)
     if not isinstance(doc, dict):

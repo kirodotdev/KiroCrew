@@ -233,6 +233,7 @@ _BASE_ROUTES = (
     ("POST", "/api/chat/slots/{slot}/stop", "api_chat_slot_stop"),
     ("POST", "/api/chat/slots/{slot}/summary", "api_chat_slot_summary_generate"),
     ("POST", "/api/chat/slots/{slot}/turn-timeout", "api_chat_slot_turn_timeout"),
+    ("POST", "/api/chat/slots/{slot}/ultracode", "api_chat_slot_ultracode"),
     ("POST", "/api/chat/slots/{slot}/workspace", "api_chat_slot_workspace"),
     ("PUT", "/api/chat/slots/{slot}/queue/order", "api_chat_slot_queue_reorder"),
 )
@@ -540,6 +541,7 @@ _OWNER_MODULES = frozenset(
         "project_lists",
         "prompt_queue",
         "resume",
+        "resume_identity",
         "resume_window",
         "session_relaunch",
         "slot_approval",
@@ -673,7 +675,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "resume_slot_from_history",
             "async function",
-            "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
+            "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', expected_created_at: 'str | None' = None, containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
         ),
     ),
     "resume_window": (
@@ -769,7 +771,7 @@ project_lists | api_favorite_projects | async function | (request: 'web.Request'
 project_lists | api_favorite_project_add | async function | (request: 'web.Request') -> 'web.Response'
 project_lists | api_favorite_project_remove | async function | (request: 'web.Request') -> 'web.Response'
 session_relaunch | api_chat_slot_reload | async function | (request: 'web.Request') -> 'web.Response'
-session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str', after_reset_in_lock: 'Callable[[str], Awaitable[None]] | None' = None) -> 'web.Response'
+session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str', after_reset_in_lock: 'Callable[[str], Awaitable[None]] | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>) -> 'web.Response'
 session_relaunch | api_chat_slot_workspace | async function | (request: 'web.Request') -> 'web.Response'
 session_relaunch | api_chat_slot_project | async function | (request: 'web.Request') -> 'web.Response'
 slot_approval | _internal_session_approval_refusal | async function | (request: 'web.Request', operation: 'str') -> "'web.Response | None'"
@@ -780,7 +782,7 @@ slot_approval | _end_trust_scopes | async function | (slots: 'list[Any]', audit_
 slot_approval | _still_owning | function | (state: 'Any', slots: 'list[Any]', key: 'str') -> 'list[Any]'
 slot_approval | _end_trust_scope | async function | (scope: 'str', caller: 'str') -> 'None'
 slot_approval | api_chat_mode | async function | (request: 'web.Request') -> 'web.Response'
-slot_approval | apply_approval_mode | async function | (state: 'DashboardState', *, mode: 'str', slot: '_ChatSlot | None', slot_key: 'str | None', request_app: 'str', cron_creator: 'str', audit_caller: 'Callable[[str], str]') -> 'web.Response'
+slot_approval | apply_approval_mode | async function | (state: 'DashboardState', *, mode: 'str', slot: '_ChatSlot | None', slot_key: 'str | None', request_app: 'str', cron_creator: 'str', audit_caller: 'Callable[[str], str]', still_live: 'Callable[[], bool] | None' = None, cascade_may_raise: 'bool' = True) -> 'web.Response'
 slot_approval | _get_pattern_from_pending | function | (slot: '_ChatSlot', request_id: 'str', field: 'str') -> 'str'
 slot_approval | _deny_approval_mode | function | (*, caller: 'str', operation: 'str', mode: 'str', resource: 'str' = '') -> 'web.Response'
 slot_approval | _grant_deadline | function | (ttl: 'int | None') -> 'GrantDeadline | None'
@@ -1693,7 +1695,7 @@ _SYNC_IO_PLANTS = {"time": "time.sleep(1)", "os": 'os.system("true")'}
 _SYNC_IO_REACH_PENDING = frozenset({"resume", "slot_lifecycle"})
 
 #: Owners that define no coroutine, so the gate has nothing in them to reach.
-_SYNC_ONLY_OWNERS = frozenset({"crew_steer"})
+_SYNC_ONLY_OWNERS: frozenset[str] = frozenset()
 
 
 def _sync_io_gate() -> types.ModuleType:

@@ -129,7 +129,9 @@ async def test_get_lists_every_preregistered_provider_unconfigured(home):
         assert record["client_secret_set"] is False
         assert record["client_secret_source"] is None
         assert record["redirect_uri"] == f"http://127.0.0.1:{port}/callback"
-        assert record["registration_guide"] == f"oauth-app-registration/{slug}.md"
+        # The six Google cards share one app, so they share one guide.
+        guide = "google" if slug == "gmail" or slug.startswith("google-") else slug
+        assert record["registration_guide"] == f"oauth-app-registration/{guide}.md"
         assert "client_secret" not in record
 
 

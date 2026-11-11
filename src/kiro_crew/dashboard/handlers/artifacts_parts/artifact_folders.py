@@ -313,6 +313,9 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     if folder is None:  # exists() checked above; guards against a concurrent delete
         return _err("folder not found", status=404)
 
+    # A null name asks for no rename: str(None) would rename the folder "None".
+    renaming = body.get("name") is not None
+
     # Set by _apply_updates when it renames: the icon epoch the rename's own
     # bump produced, read inside that same critical section. The handler must
     # arm background generation with THIS value and never re-read the epoch
@@ -329,14 +332,14 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         # before the first write. name, color and order are checked here from the
         # body alone; reparent is the one check that reads the tree, so it is the
         # first write -- once it lands, no later write can be refused as invalid.
-        if "name" in body:
+        if renaming:
             fstore.clean_name(str(body["name"]))
         if "color" in body:
             fstore.clean_color(str(body.get("color") or ""))
         order = body_int(body["order"]) if "order" in body else None
         if "parent_id" in body:
             f = fstore.reparent(fid, str(body.get("parent_id") or ""))
-        if "name" in body:
+        if renaming:
             f, armed_icon_epoch["value"] = fstore.rename(fid, str(body["name"]))
         if "icon" in body:
             f = fstore.set_icon(fid, str(body.get("icon") or ""))
@@ -376,7 +379,7 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
     )
     # A rename re-derives the emoji icon from the new name (chat-folder
     # parity) — unless this same request set an explicit icon, which wins.
-    if "name" in body and "icon" not in body:
+    if renaming and "icon" not in body:
         # Arm with the epoch the rename itself produced, captured under the
         # rename's own lock. Re-reading it here instead would pick up a manual
         # icon set that landed in between and let the generated icon overwrite

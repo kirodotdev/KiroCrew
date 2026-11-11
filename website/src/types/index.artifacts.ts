@@ -28,9 +28,10 @@ export interface ArtifactPublication {
   notice: string
   /** Machine discriminator for `notice`, so the UI can pick the right copy
    *  instead of assuming every notice is "still rolling out". One of
-   *  `"rolling_out"` | `"distribution_disabled"` | `"unknown"`, or empty when
-   *  there is no notice. The frontend selects its string from this and falls
-   *  back to a generic (no time promise) line for an unrecognised value.
+   *  `"rolling_out"` | `"distribution_disabled"` | `"origin_mismatch"` |
+   *  `"unknown"`, or empty when there is no notice. The frontend selects its
+   *  string from this and falls back to a generic (no time promise) line for an
+   *  unrecognised value.
    *  Optional so an older gateway that omits it reads as "". */
   notice_code?: string
 }

@@ -93,7 +93,9 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row under Invites: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
   'TailscaleInvites.tsx': 'the People invite dialog: a one-time invite form and the Tailscale credential connect field, both actions with their own Connect and Disconnect routes; no setting and no control writes a config path',
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
+  'RemoteControlCard.tsx': "the Remote Crew tab's personal Remote Control status and its one-click Turn off; it writes only an explicit off through its own route, holding no searchable setting",
   'ReleasesPanel.tsx': 'read-only changelog viewer, zero persistent settings',
+  'RemoteCrewWindowsNotice.tsx': "the Remote Crew Set-up tab's Windows-gateway notice in place of the AWS checklist; text and a guide link, zero controls",
   'ReportProblemCard.tsx': 'feedback action card, no settings',
   'SettingsSearch.tsx': 'the settings search box itself — indexing it would be self-referential',
   'SlackManifestUpdate.tsx': "the Slack Code section's update-your-Slack-app panel (install status, copy manifest, App Manifest link, Check again); it reports and acts on the installed app and holds no setting",
@@ -335,9 +337,9 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason: 'the settings search box itself',
   },
   'SlackCodeChannelDefaults.tsx': {
-    counts: { SimpleSelect: 3 },
+    counts: { SimpleSelect: 4 },
     reason:
-      'the code-channel default folder, agent and effort pickers: one nested ' +
+      'the code-channel default folder, agent, effort and approval-mode pickers: one nested ' +
       'slack.code_channel_defaults object, reached through the Code channels switch the ' +
       'extractor indexes (channels.code-channels-slack), which reveals them',
   },
@@ -411,6 +413,14 @@ describe('settings coverage gate — bare controls', () => {
  * skipped"; this pins each one so a new silent skip fails the build.
  */
 const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> = {
+  'ConnectionsPanel.tsx': {
+    count: 1,
+    reason:
+      'the shared-save switch on each Google card is labelled with the other Google ' +
+      'products the list returned ("Also save on Google Drive, …"), so there is no fixed ' +
+      'label; search reaches the card through the manual "OAuth app" entry, and the ' +
+      'switch sits inside that card',
+  },
   'BrowserLiveSection.tsx': {
     count: 1,
     reason:

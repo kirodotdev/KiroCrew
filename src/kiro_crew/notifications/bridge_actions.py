@@ -1,7 +1,9 @@
 """The notification bridge's action binding: a bridged reply resolves a live decision.
 
-RFC ``rfc-notification-bridge-actions.md``, phase B4a. Nothing here is wired to a
-transport: no chat app can reach it until a later phase registers a reader.
+RFC ``rfc-notification-bridge-actions.md``, phases B4a, B4c and B4d. The readers
+are the Slack Approve and Deny buttons on a pending-approval note and a Telegram
+``approve`` / ``deny`` reply to it, behind the default-off ``bridge_approvals``
+preview (:func:`actions_enabled`).
 
 A pending decision (a tool-approval prompt's future) is BOUND to a token when the
 bridge posts it, and the posted message is LINKED to that token, so a press on the
@@ -63,6 +65,29 @@ def bridge_clock() -> float:
     caller passes its own ``ttl_s`` and the expiry tests drive this seam instead.
     """
     return time.monotonic()
+
+
+#: The Slack ``action_id`` prefix of a bridged action button; the answer follows
+#: it (``bridge_action_approve``) and the button's ``value`` is the token.
+SLACK_ACTION_PREFIX = "bridge_action_"
+
+
+def actions_enabled(cfg: Any = None) -> bool:
+    """Whether a bridged action may be offered or resolve anything. Default off.
+
+    It reads the ``bridge_approvals`` feature preview from *cfg*, or from the live
+    config when none is given. Any failure reads as off, so no answer is given.
+    """
+    try:
+        if cfg is None:
+            from kiro_crew.config import KiroCrewConfig
+
+            cfg = KiroCrewConfig.load()
+        from kiro_crew.notifications.bridge_approval_note import enabled
+
+        return enabled(cfg)
+    except Exception:
+        return False
 
 
 class ActionOutcome(str, Enum):
@@ -198,9 +223,14 @@ class BridgeActionRegistry:
         self._messages[(transport, message_ref)] = token
 
     def token_for_message(self, transport: str, message_ref: str) -> str:
-        """The token linked to a posted message, or ``""`` when none is live."""
+        """The token linked to a posted message, or ``""`` when the registry forgot it.
+
+        A link outlives its binding as long as the expired binding is remembered
+        (:data:`EXPIRED_MEMORY`), so a late reply still names its decision and is
+        resolved and audited as ``expired``, never read as an ordinary message.
+        """
         token = self._messages.get((transport, message_ref), "")
-        if token and self._live(token) is None:
+        if token and self._live(token) is None and self._expired_context(token) is None:
             del self._messages[(transport, message_ref)]
             return ""
         return token
@@ -264,6 +294,9 @@ class BridgeActionRegistry:
             self._expired[key] = (binding.nonce, binding.context)
         while len(self._expired) > EXPIRED_MEMORY:
             self._expired.popitem(last=False)
-        live = {build_approval_token("", k, b.nonce) for k, b in self._bindings.items()}
-        for ref in [r for r, token in self._messages.items() if token not in live]:
+        for ref in [
+            r
+            for r, token in self._messages.items()
+            if self._live(token) is None and self._expired_context(token) is None
+        ]:
             del self._messages[ref]

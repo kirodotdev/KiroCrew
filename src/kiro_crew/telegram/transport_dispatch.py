@@ -560,6 +560,15 @@ class TelegramDispatcher:
         if not permitted:
             logger.info("telegram inbound dropped: denied by channels governance policy")
             return
+        # A reply answering a bridged approval note is decided here and starts no
+        # turn; a re-entered drain was checked already. Lazy: the facade binds
+        # owner handles only.
+        from kiro_crew.telegram.dispatch.bridge_reply import consume_bridged_reply
+
+        if interpret_commands and await consume_bridged_reply(
+            self.dashboard_state, msg, lambda note: self._notify(chat_id, note)
+        ):
+            return
         native_session_key = self._session_key(route)
 
         async def _resolve_refused_route() -> RoutingDecision:

@@ -275,7 +275,8 @@ _POD_SAFE_VERBS = frozenset(
 # The pod-native equivalent to suggest for the verbs users are most likely to try.
 _POD_EQUIVALENT: dict[str, str] = {
     "stop": "kirocrew pod down {name}",
-    "restart": "kirocrew pod down {name} && kirocrew pod up {name}",
+    # The hint wraps the value in backticks, so this closes and reopens them.
+    "restart": "kirocrew pod down {name}`, then `kirocrew pod up {name}",
     "gateway": "kirocrew pod up {name}",
     "logs": "kirocrew pod logs {name}",
 }

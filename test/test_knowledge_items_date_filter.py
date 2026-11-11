@@ -101,7 +101,7 @@ async def test_a_date_sorted_search_sorts_one_window_on_every_page(tmp_path):
     s = KnowledgeStore(str(tmp_path / "many.db"))
     ids = [s.add_item(f"hit {n}", "report", "note") for n in range(70)]
     retriever = MagicMock()
-    retriever.search.side_effect = lambda _q, limit: [
+    retriever.search.side_effect = lambda _q, limit, status: [
         {"id": i, "score": 1.0, "match_type": "keyword"} for i in ids[:limit]
     ]
     query = {"q": "report", "status": "active", "sort": "oldest", "limit": "20"}

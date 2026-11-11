@@ -1440,7 +1440,9 @@ warning.
 
 A **governance profile** governs the same lists: the writers ask `may_skip_gate_now`, which
 withholds a grant whenever any configured profile could govern the ref, so a profile saved
-after the spec was written has to re-derive it exactly as a ceiling move does. The memo the
+after the spec was written has to re-derive it exactly as a ceiling move does. These writers
+have no session to resolve a profile for; the KAS projection of a spec's `toolsSettings`,
+built per session, asks only that session's profiles (below). The memo the
 hook compares is therefore `governance_answer_generation()` (ceiling plus profiles), read
 after `poll_profiles_fresh` re-stats the profiles directory. Every `rebuild_agent_config`
 reads that answer before it derives any grant and publishes it
@@ -1480,9 +1482,37 @@ this one predicate, so the grant is withheld on every backend and channel alike:
 own spec, the KAS wire projection, and the `permissions` block written to disk. With no such
 policy nothing changes. On KAS that includes a spec's `toolsSettings.subagent.trustedAgents`,
 which travels as a name-scoped `subagent` allow (#25320): it goes through the same merge as
-an authored allow, so the ceiling is asked about every ref of the sub-agent tool and one
-refusal drops the rule. Its sibling `availableAgents` travels as a `deny` with the listed
-names in `exclude`, which only narrows and so travels whatever the ceiling says.
+an authored allow, so every ref of the sub-agent tool is asked about and one refusal drops
+the rule. Its sibling `availableAgents` travels as a `deny` with the listed names in
+`exclude`, which only narrows and so travels whatever the ceiling says.
+
+The projection is built per session, so the translated merge asks
+`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`. The ceiling
+and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
+resolve for one of that session's calls count
+(`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
+picks (the surface bind, or the unattended deny-all), every `task` bind (a call's agent may
+name any of them), and the `app` bind of the session's governance app. A profile bound to
+another surface or another app never judges this session's spawns, so a profile that turns
+spawning off for the `subagent` or `cron` surface, or for one app, does not withhold the allow
+from an attended dashboard chat; a `subagent:` or `cron:` session, or a chat under that app,
+still withholds it. The app is the provider's `owning_app`, handed to its runtime with its session
+key (`AcpRuntime(governance_scope=...)`) and down to the projection
+(`runtime_session_setup._kas_custom_agents`). An allocation that names no app runs under no
+app, which counts no `app` bind, so the projection answers for the gate only when that
+`owning_app` is the app the gate judges the session's calls under: a caller that hands its
+gate an app names the same app at allocation. A dashboard app slot passes it as `app_name`; a
+subagent spawn and an in-process app runner that hands its gate its own app (an app's
+`AgentTurnSDK.run`, which the meetings `dispatch_to_agent` is, and the auto-improvement
+`MemberSessionRunner`) pass it as `owning_app`.
+Any other session on that process (a subagent on its parent's runtime, a session a pooled
+process starts after its claim) and every session of a runtime no provider built (the
+background runtime, a review pool) gets the app as not known, which counts every `app`
+bind. An unkeyed projection, an unresolved store and a reload between the bind read and the
+surface resolution answer as the static writers do; an error withholds. The session-start
+notice asks the same predicate with the provider's session key and app
+(`spec_keys_without_carrier`). As for every grant the projection records, a profile saved
+after the session started does not narrow it.
 
 One grant is made INSIDE the gate rather than by a writer: the KAS `spec-builtin-grant`
 row (security.md § KAS spec built-in grant), which approves a built-in the spec granted
@@ -2634,13 +2664,27 @@ real arguments** the ACP event carries:
   Windows, and spelled so that `~` / `$VAR` / `%VAR%` expansion leaves it
   unchanged, since the matcher expands it but the reading tool may not; or a
   guest path its workdir anchors) and every batch `operations` entry names a
-  path (an Image entry's `image_paths` is not scanned, so its title is kept), `gate_decision` judges the read on them and drops the
+  path (an Image entry keeps its title), `gate_decision` judges the read on them and drops the
   title's pair: the title is display text (`Reading a.ts:10-29`, `Reading
   listing workspace`), and a relative item is anchored at the gateway's working
   directory, where an allow-mode `filesystem.read` refuses it. A call whose
   arguments name no read path, a relative local one, or only a marker (no
   target, truncated scan) keeps the title's pair beside them, so a title naming
   a denied file is still refused.
+- A batch read's Image files are `filesystem.read` items too
+  (`classify_image_reads`): each string under `image_paths` (`paths` in
+  kiro-cli's agent engine) in an `operations` entry whose `mode` is `"Image"`,
+  through the same bounded walk, whatever the call's kind (kiro-cli's
+  permission request for its read built-in states none). Those keys anywhere
+  else are another tool's arguments and are not read. `gate_decision` adds the
+  items after it has decided the own-scope `_NO_TARGET_ITEM` and whether the
+  title's pair is dropped, so they never stand in for either: both are decided
+  from `classify_tool_args` alone. Each is matched
+  like any read item, a relative one anchored at the gateway's working
+  directory, so a deny-mode rule that covers an image refuses the read, and so
+  does an allow-mode confinement the image falls outside. A read naming as many
+  images as the walk's cap, or more, carries `_TRUNCATED_SCAN_ITEM`, which an
+  allow-mode confinement refuses.
 - `tool_kind == "edit"` + `raw_params["path"]` → `filesystem.write`.
 - `tool_kind == "fetch"` + `raw_params["url"]` → `network.egress` (the host is
   extracted from the URL so the `host` matcher applies).
@@ -2984,11 +3028,15 @@ denials leave the same forensic trail.
 - **The web terminal PTY is an ungoverned plane today.**
   `dashboard/handlers/terminal.py` spawns a real PTY, and neither it nor its
   `terminal_*` owners contain any `is_denied` / `is_sensitive_bash_command` /
-  governance call, so
+  per-command governance call, so
   `screencapture` typed into it is bounded by neither the `commands` scope nor
   any `computer_use.*` scope. It is an operator-only surface. Routing PTY input
   through the same effective-deny floor as `on_tool_call` is tracked as its own
-  follow-up; do not describe computer-use governance as covering it.
+  follow-up; do not describe computer-use governance as covering it. The one
+  policy control it has is all-or-nothing: a stated `boot.allow_terminal` that is
+  not `true` refuses every terminal route and ends open shells when a refresh
+  installs it; a policy that leaves the key out has no say, and so does a
+  translated enterprise document, whose stated value is read as left out.
 - **Raster capture has two channels and neither is governed.** Computer use has no
   `observations` scope any more, and the `browser` tool's `screenshot` op sits
   behind `capabilities.browse`, not behind computer-use governance. A fleet that
@@ -3746,6 +3794,20 @@ Plugin sync asks `extensions:plugin:<package>` for each package `plugins_out_of_
 {"version": 1, "app_versions": {"mode": "allow", "allow": ["file-explorer@1.*"]}, "capabilities": {"extension_install": {"scopes": {"extensions": {"mode": "allow", "allow": ["mcp:github", "skill:*"]}}}, "app_dev_mode": {"enabled": false}}}
 ```
 
+### Discovery registries — `external_access.registry_hosts`
+
+The RFC [crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md) appendix row "Extension sources" ([#12677](https://github.com/kirodotdev/KiroCrew/issues/12677)). A ruleset with the `host` matcher, like `network.egress`, that lists the skill and MCP discovery registries the Discover surfaces may query.
+
+- **Where it is asked.** `dashboard/handlers/_shared_access.admits_registry`, the one gate all four registry call sites go through: skills.sh, GitHub and edition-contributed providers in `discover.py`, and the official MCP registry in `mcp_discover.py`. The agent's `skill_discover` reaches the registry through the gateway's discover endpoint, so the key binds it too. `extension_governance.registry_host_denied` asks `governance_permits` on the host key and audits like the keys above. Unlike them it fails open: a governance error is logged and written to the SEL as `governance_degraded`, and the registry is admitted, as Discover did before the key existed. The edition's `external_access.admits_registry` is asked only after the key admits, so the stricter of the two wins; the key sits in the shared gate rather than in `DefaultExternalAccessPolicy` because an edition replaces that slot whole. The admission is then audited as before (`external_access:registry:<kind>`).
+- **Item asked.** `_url_host(api_base)`: the host of the provider's base URL, never its self-chosen name or the raw URL, so `skills.sh` matches `https://skills.sh/api` and a provider that repoints at another host stops being admitted. A provider with no network host is asked about `""`, which an allow list admits only through a pattern that matches it, such as `*`.
+- **One list for both catalogs.** The item is a host and the three built-in registries are on three different hosts, so one list can already admit one catalog and refuse the other. The cost: an allow list that names only skill hosts also refuses the official MCP registry (`registry.modelcontextprotocol.io`).
+- **Defaults.** An unnamed key admits every registry, as before, in `oss` and LTS alike: the key is in `BASELINE_UNGATED`, so only a policy that names it narrows Discover. An allow or deny list a policy sets applies on both.
+- **When it binds.** Both catalogs build their provider registry once per process, on first use, in a worker thread (`asyncio.to_thread(_get_registry)`), and a refused provider is never registered. A policy change therefore binds at the next gateway start, as for `agent_backend`.
+
+```json
+{"version": 1, "external_access": {"registry_hosts": {"mode": "allow", "allow": ["skills.sh", "api.github.com", "registry.modelcontextprotocol.io"]}}}
+```
+
 ### "Share as image" — `capabilities.social_share`
 
 The chat's *More actions → Share as image* turns an assistant reply into a branded
@@ -4310,10 +4372,20 @@ operation / item / reason are ALSO redacted via `redact_via_context` **before**
 
 ## CLI
 
-`kirocrew policy {show | validate | explain <scope> <item> | profile <name> | source | fetch [--force]}` —
+`kirocrew policy {show | validate | explain <scope> <item> [--json] | explain --batch FILE | profile <name> | source | fetch [--force]}` —
 operator diagnostics; `source` and `fetch` are the central-distribution verbs. `show` reports the ceiling's **proven** provenance
 (`signed and verified` / `signed but UNVERIFIED` / `unsigned`) rather than a bare
-issuer string. `explain` traces the rule/layer/reason and the live gate verdict. Deliberately **not** exposed as an MCP tool: it surfaces
+issuer string. `explain` traces the rule/layer/reason of `resolve(ceiling, profile, scope, item)` —
+the question `gate_decision`'s main loop asks of each pair, though its alias groups, deny-only
+aliases and `own_scopes` off-scope pairs refuse on an allow-mode miss less often (an explicit deny
+binds in all of them) — and, as `gate verdict`, `gate_decision` over the item read as a display
+title with no arguments, which ignores the scope. `--json` prints that answer as one object (the
+inputs plus `verdict`, `profile`, `rule`, `layer`, `reason`, `explicit_deny`, `gate_verdict`,
+`gate_reason`); `--batch FILE` (`-` = stdin; a path is read through `safe_read_file`) answers one
+JSON Lines request per line (`scope`, `item`, optional `session_key`/`agent`/`app` defaulting to the
+flags; other keys ignored) in one boot, each record carrying its `line`, writes an error record
+`{"line", "error"}` for an unreadable line or unknown scope, and exits 1 at the end if any line
+errored. Deliberately **not** exposed as an MCP tool: it surfaces
 governance internals that the agent (the governed subject) should not enumerate.
 
 ## Companion (separate package, separate CR)
@@ -4374,7 +4446,11 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `update_governance`'s guarded probe. A killed fetch keeps none of its download, so the
   check's deadline (`updates_check._GIT_FETCH_TIMEOUT_S`, 300s) must cover the whole
   transfer of a far-behind checkout; after every fetch, timed-out ones included, it reaps
-  stale `tmp_pack_*` from the checkout's object store through `git_tmp_packs`.
+  stale `tmp_pack_*` from the checkout's object store through `git_tmp_packs`. The
+  throwaway dir carries no scratch owner record, so the scratch sweep never reclaims it:
+  it is removed on every path, including an error while it is built and a cancel that
+  lands while the off-loop prepare step is still building it. A cancel does not wait on
+  that worker: whichever side sees the other's mark under one lock removes the dir.
 - `platform/policy_distribution.py` — central distribution: source resolution
   (env ∘ the policy's `distribution` block), the append-only
   `register_policy_fetcher` transport seam, the last-known-good cache, the

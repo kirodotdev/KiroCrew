@@ -1268,6 +1268,20 @@ overlay's value is what loads, and the warning points at `config get` and
 `config set --local`. The overlay's value is not printed. For a shadowed `agent.bot_name` the "will load as" sanitizer warning is
 left out, since the typed name does not load at all (#32802).
 
+### Who owns an overlay key (`config/overlay_owners.py`)
+
+`overlay_pins(*key_path)` (`loader_locations`) answers only whether the overlay sets
+a key, and `overlay_entry(*key_path)` adds the value it holds there, read the same
+best-effort way. Neither can say who wrote the entry: a person's own `config set
+--local` and an edition's boot-time seed go through the same writer. So
+`overlay_owners.overlay_pin(*key_path)` also asks the owner a downstream edition
+registered for that key (`register_overlay_owner`, an edition seam described in
+[platform-context](platform-context.md#edition-seam-additions-v1-no-contract_version-bump))
+and reports `overlay_source` `"user"` or `"policy"`, with the policy's label and
+detail for the latter. The public core registers no owner, so every pin it reports
+is the person's own. The `auto_update` answers that carry these fields are in
+[cli](cli.md).
+
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
 
@@ -1854,11 +1868,19 @@ value comes back different from the unbounded coercion, the read logs a WARNING
 naming the DTO, the key, the stored value and the value used. `load()` runs the
 builders on every call, so each DTO, key and value warns once per disk read of the
 config files (`_REPORTED_CLAMPS`, cleared by `read_config_document` beside the
-validation that warns on the same read). A clamp outside `read`'s bounds is not
-reported this way: a coercer of its own (`_clamp_compact_wait_secs`,
-`_title_refresh_every_turns`), a direct `_safe_*` call, a `max()` or `min()` around a
-read, or a DTO's `__post_init__`; `_clamp_security_bounds` reports the fields it
-lists before the builders run. A `default_factory` field gives a
+validation that warns on the same read). A builder states a floor or ceiling as
+`read`'s bounds rather than as a `max()` or `min()` around the read or a clamp in the
+DTO's `__post_init__`, so the warning covers it. A coercer that clamps on its own
+passes `unclamped=`, the same reading without its clamp, and the read compares
+against that instead: `_clamp_compact_wait_secs`, `_title_refresh_every_turns` and the
+one `_crew_autocompact_pct` reads with (each keeps `0` as "use the default"), and the
+one for `knowledge.extraction_pool_size`. `_clamp_security_bounds` reports the fields
+it lists before the builders run, so those reach their builders in range, and
+`_load_background_hold_secs` logs its own clamp.
+Still clamped outside `read` and not reported: the channel
+`soft_threshold_pct`/`hard_threshold_pct` pair, a WhatsApp group's `cooldown_s`,
+`messaging.idle_reset_minutes` and `daily_reset_hour`, and the `agent` start widths
+(`session_start_concurrency` and its two siblings). A `default_factory` field gives a
 fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
 `__post_init__`, `from_raw` or `from_dict`, and a reader a builder calls (the MCP
 stub-override reader `_resolve_stub_overrides`, `_tailscale_config_from`,
@@ -1917,6 +1939,14 @@ reader:
 - An omitted key that does not read the field default:
   - `agent.sandbox_allow_unsandboxed_exec` folds in the platform default
     (`unsandboxed_exec_platform_default`).
+  - `agent.kas_bundle` folds in the build default
+    (`loader_document.kas_bundle_build_default`): on only in a build whose
+    `_build_info.BUILD_CHANNEL` is `nightly` (`kiro_crew.build_channel`, stamped by
+    `scripts/stamp-distribution.sh` from the `build_channel` input `nightly.yml`
+    passes to every build workflow), off everywhere else. The unloaded-document
+    branch applies it too, so a fresh nightly home gets it. `save()` strips both
+    keys while undeclared (`strip_undeclared_resolved_defaults`), and
+    `acp_backend_bundle_route()` reads the same default for an absent key.
   - `session.pool_size` reads `DEFAULT_POOL_SIZE` at call time, a patched seam.
   - An external registry entry that omits `branch` keeps the legacy `mainline`.
   - `dashboard.import_onboarded` and `dashboard.privacy_acked` fall back to
@@ -1947,8 +1977,8 @@ reader:
     `load()` they read their field default (when jsonschema is installed).
   - The read stage reads a present non-boolean `auto_update` as off
     (`fields._coerce_bool`) and a present non-boolean `agent.session_control`,
-    `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in` or
-    `skills.project_skills_enabled`
+    `agent.member_dispatch`, `agent.crew_panel`, `agent.kas_persist_mcp_sign_in`,
+    `agent.kas_repair_kiro_cli_extract` or `skills.project_skills_enabled`
     as `false` before validation can remove it, and resolves `stt.provider` and
     `dashboard.default_memory_mode` by the builders' rules, so those keys load as
     above.
@@ -2297,7 +2327,8 @@ later, and the first signal after the window starts normally. (The window double
 up to a 300s ceiling, which only a larger cap would reach.) After 3 failures in a row (`_EAGER_SPAWN_FAILURE_CAP`),
 background starts for that slot stay **off until a start succeeds or the gateway
 restarts**. `schedule_eager_spawn` refuses the slot, and the stop is logged once
-at ERROR and posted once as an error row in the chat. The row's last-error text
+at ERROR and posted once as an error row in the chat (a policy-blocked start,
+below, posts none). The row's last-error text
 is redacted and bounded to 500 characters. The user's next message still starts
 the agent, and its success clears the count. The count lives only on the
 in-memory `_ChatSlot`, so a gateway restart starts it at zero.
@@ -2309,7 +2340,11 @@ speculative-resume refusal, or a capability refusal raised before any process ra
 (`CapabilityError`, or a `CapabilityStartupError` code in
 `_PRE_SPAWN_CAPABILITY_CODES`). A failed pending-reset consume, binding or
 selection write, or admission step spawned no agent and is logged without
-counting. Pinned by `test/test_eager_spawn_start_backoff.py`.
+counting. A start Windows policy refused (`AcpSpawnBlocked`, read by its
+`windows_spawn_blocked` tag) goes to the cap at its first failure, logged at ERROR
+and with no stop row of its own: every retry meets the same policy, and the user's next
+message shows the policy card itself. Pinned by
+`test/test_eager_spawn_start_backoff.py`.
 
 `register_app` (`apps/bridges_register.py`) backs the from-source recovery with a **visible
 error**: when a manifest declares agents but `_register_agents` materializes none
@@ -3279,7 +3314,10 @@ Consequences, and they are the point:
   (`"whatsapp"`) stays allowed: its applier adopts the section's live fields
   and ignores the marked leaf. `agent.approval_mode` is marked for this reason:
   every channel dispatcher resolves it once at start, so no single consumer may
-  take it live.
+  take it live. One deliberate exception: the Remote Control guard's section-wide
+  `"tunnel"` applier (`remote_control/guard.py`) reads `tunnel.relay_enabled`, which
+  stays `restart=True` because turning it on needs a restart, and acts on its off
+  edge live by stopping the relay; it never starts one.
 - **Review checklist for a new field.** An unmarked field is a UI-visible
   promise ("this applied live"), and nothing mechanical ties that promise to
   code. So a PR that adds a config field must name, in its description, one of:
@@ -3487,7 +3525,8 @@ class SessionConfig:
     idle_compaction_min_context_pct: float = 50.0  # context usage % below which an idle chat is left alone; below about 40% on kiro a compaction costs more than the cold resend it saves (rfc-idle-compaction-before-cache-expiry.md, section 2.3). Load-time clamped to its own [40.0, 90.0] pair, IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN and IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX in config/sections_limits.py, so a value below 40 loads as 40
     pool_size: int = 0             # pre-warmed kiro-cli processes kept ready for instant session start; 0 (the default) disables. Single source of truth: DEFAULT_POOL_SIZE, read by both the field default and load()'s file-parse fallback. Load-time clamped to [0, 10]
     kas_delete_delay_secs: int = 0  # on kas, seconds a task-runner session's record and a reused workflow worker's previous conversation stay on disk after the session ends, before the released_sessions sweep deletes them; 0 (the default) deletes at once, as does a process the sandbox launched (sandbox_launch_mark). Load-time clamped to [KAS_DELETE_DELAY_SECS_MIN, KAS_DELETE_DELAY_SECS_MAX] = [0, 86400]. Point-of-use reads: open_task_session reads SessionManager._cfg (kept current by the session applier) as each task session opens; the workflow worker reads KiroCrewConfig.load() before each reuse. Needs an engine that advertises sessionCapabilities.close. A record that comes due while another backend is selected waits until kas is selected again. See session.md "Released KAS session records".
-    watchdog_rss_max_mb: int = 4096   # DEFAULT_WATCHDOG_RSS_MAX_MB: recycle a session when its process tree RSS exceeds this many MiB; 4096 sits above a healthy tree with many MCP servers (1.4-2.6 GB measured) and still bounds a runaway one; 0 disables; the internal background runtime recycles at BACKGROUND_RSS_FALLBACK_MB (1536), or at this value when it is lower. Busy sessions (turn in flight) are never recycled, and neither is a parent whose sub-agents are still running, queued, or delivering their results on its runtime.
+    watchdog_rss_max_mb: int = 4096   # DEFAULT_WATCHDOG_RSS_MAX_MB: recycle a session when its process tree RSS exceeds this many MiB; 4096 sits above a healthy tree with many MCP servers (1.4-2.6 GB measured) and still bounds a runaway one; 0 disables; the internal background runtime recycles at BACKGROUND_RSS_FALLBACK_MB (1536), or at this value when it is lower. Busy sessions (turn in flight) are never recycled, and neither is a parent whose sub-agents are still running, queued, or delivering their results on its runtime. A session whose fresh process keeps going straight back over it is held after three recycles in a row and its chat names this setting (session.md "RSS-threshold recycle").
+    watchdog_end_leftovers_mid_turn: bool = False  # a session over watchdog_rss_max_mb DURING a turn whose memory is held by processes in its runtime's session but outside its process tree (a timed-out shell command's job, reparented to init): False logs them and posts one notice per turn; True also ends them then (Linux, pinned pidfd signals). Off by default because such a process can be deliberate background work. Read at the point of use, every cleanup tick (session_cleanup_leftovers.end_mid_turn_enabled), so no applier and no restart.
     harness_background_hold_secs: int = 3600  # DEFAULT_HARNESS_BACKGROUND_HOLD_SECS: how long after a harness (Claude Code) launches background work (a Workflow or backgrounded Bash) the idle sweep and the RSS recycle still keep its session (session_background_hold.background_hold_secs, read every sweep). Load-time clamped to [HARNESS_BACKGROUND_HOLD_SECS_MIN, HARNESS_BACKGROUND_HOLD_SECS_MAX] = [300, 86400] with a warning; non-int loads as the default. Config-file-only (no dashboard write path). An idle-sweep reset past the hold posts the recycle notice naming the launched work. See session.md "Harness background work".
 
 @dataclass
@@ -3508,6 +3547,7 @@ class MemoryConfig:
     writes_enabled: bool = True      # off = the same automatic writers persistence_enabled stops, while injection and memory_recall continue (read-only memory)
     lesson_extraction_enabled: bool = True  # off = consolidation (default and member stores) and the task runner save no extracted lessons; other writes and learn_add continue
     kind_routing: str = "off"        # off | shadow | enforce: whether consolidation tags each project.* write with a kind (fact/event/state) and what it does with it; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log; unknown values read as off (memory_kind_routing.py)
+    lesson_origin_gate: str = "off"  # off | shadow | enforce: whether a lesson from a consolidation span with no person-sent turn, or a learn_add an agent or automatic turn triggered, may be a standing rule; off keeps today's prompt and writes, shadow writes as before and keeps a bounded log, enforce stores it on_topic; unknown values read as off (memory_origin_gate.py)
     inject_memory: bool = True       # inject the stored memory block (preferences, activity index, recent-session snippets) into new-session context
     inject_lessons: bool = True      # inject the [Learned corrections] + [USER PROFILE] blocks into new-session context
     inject_lessons_per_turn: bool = False  # on follow-up messages, add up to 3 matching lessons the session was not shown; requires inject_lessons
@@ -3547,6 +3587,7 @@ class SttConfig:
     slide_to_send: bool = False    # phone hold bar: up-right sends or steers; only while submit_on_release is off
     polish: bool = False           # hand the FINISHED transcript (never the audio) to a fast model; off = nothing leaves the machine
     dictation_panel: bool = True   # animated recording panel; falls back to the status bar
+    dictation_note: bool = False   # end a message holding dictated words with a note for the agent (website chat-core/composer/dictationProvenance.ts)
     timeout_secs: int = 300
     transcribe_region: str = "us-east-1"   # transcribe provider only
     transcribe_profile: str = ""           # transcribe provider only; empty = default credential chain
@@ -4105,13 +4146,14 @@ closing the direct-config-edit DoS gap.
 `ResourceLimitsConfig` (`config/sections_limits.py`, re-exported by
 `config/loader.py`) carries the kernel confinement ceilings for spawned agent
 processes. It is the one config block whose keys are
-read by more than one enforcement mechanism, and `max_processes` means
+read by more than one enforcement mechanism, and `0` means
 **different things** to two of them:
 
 | Key | POSIX rlimit (`security.apply_resource_limits`) | cgroup v2 scope (`sandbox.cgroup_scope_argv`) | xdist (`resource_status`) |
 |---|---|---|---|
 | `max_open_files` | `RLIMIT_NOFILE`; `0` = leave inherited | — | — |
-| `max_processes` | `RLIMIT_NPROC`; `0` = leave inherited | `TasksMax` (counts THREADS); `0` = use default | — |
+| `max_processes` | - | `TasksMax` (counts THREADS); `0` = use default | - |
+| `max_user_processes` | `RLIMIT_NPROC` (per UID), opt-in; `0` = leave inherited | - | - |
 | `max_memory_mb` | - | `MemoryMax` (resident); `0` = use default | - |
 | `max_address_space_mb` | `RLIMIT_AS` (virtual), opt-in; `0` = leave inherited | - | - |
 | `max_cpu_seconds` | `RLIMIT_CPU`; `0` = leave inherited | — | — |
@@ -4128,8 +4170,8 @@ On Windows a fourth mechanism applies: a Job object attached to each agent spawn
 (`ActiveProcessLimit`) and `max_memory_mb` (`JobMemoryLimit`). The other keys
 (`cpu_weight`, `max_address_space_mb`, `max_cpu_percent`, `max_cpu_seconds`,
 `max_open_files`, `max_total_memory_mb`, `max_total_processes`,
-`scope_memory_high_pct`, `slice_reclaim_trigger_pct`) are accepted but not
-enforced there, and one warning names the ones that are set
+`max_user_processes`, `scope_memory_high_pct`, `slice_reclaim_trigger_pct`) are
+accepted but not enforced there, and one warning names the ones that are set
 (`sandbox._WINDOWS_INERT_RESOURCE_LIMIT_KEYS`).
 
 `max_memory_mb` sets no rlimit. A resident cap must not also cap the address
@@ -4140,6 +4182,13 @@ a cap sized like a memory budget stops them from starting. `max_address_space_mb
 is the opt-in `RLIMIT_AS` for fleets that need a virtual cap anyway, and
 `kirocrew config set` warns when it is given a positive value. The `extractor`
 profile keeps its own fixed `RLIMIT_AS` and reads neither key.
+
+`max_processes` sets no rlimit either. The kernel counts `RLIMIT_NPROC`
+against every process and thread of the gateway's real UID, not one spawn's
+tree, so a value sized as a scope's task budget stops every tool child from
+forking. `max_user_processes` is the opt-in `RLIMIT_NPROC`, for a gateway that
+runs as its own dedicated user. Off Linux and Windows nothing reads
+`max_processes`.
 
 The slice task default is sized once per process from the host
 (`host_task_sizing.host_task_facts`: affinity CPUs, RAM, `kernel.pid_max`,
@@ -4633,6 +4682,20 @@ The placement is load-bearing: both frame markers are in
 peer's message is rewritten to `[marker-removed]`, and a frame that rode inside
 the scrubbed block would be rewritten too. The genuine frame is therefore
 minted only after the scrub, exactly as the post-compaction skills index is.
+
+Every follow-up turn that is not a post-compaction re-injection also carries a
+short frame holding only `## Reply language`
+(`sections.py::reply_language_refresh`) when a language is set. Its body is
+`_reply_language_rule` itself, so it keeps the "only when the user asks"
+exception: a user who asks for another language mid-conversation is not
+overruled by the next turn's reminder. A long session's
+later turns -- auto-nudge and monitor cycles, work-ledger wakes, worker reports
+via `session_send`, crons -- carry English nudge templates and tool output and
+no other copy of the rule, so without it the model drifts to English. The
+reminder is minted in `build_message` beside the `[RUNTIME]` refresh, the one
+place every follow-up turn is built; the templates and tool output themselves
+are never translated. A worker reads the same line, and its prompt tells it to
+write `work_report` `summary` (shown on the goal board) in that language.
 
 A `subagent:` session is the one kind that does NOT receive the frame
 (`_response_preferences_apply`, resolved through the same runtime-source seam

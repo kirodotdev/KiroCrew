@@ -136,6 +136,25 @@ async def test_agent_no_app_declares_gets_the_generic_reason(agents_dir, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_a_missing_default_agent_names_the_setting_as_the_fix(agents_dir, tmp_path):
+    """Every session that names no agent starts from ``agent.default_agent``, so a
+    default nothing defines refuses all of them until the setting changes."""
+    from kiro_crew.config import config_path
+
+    config_path().write_text(json.dumps({"agent": {"default_agent": "worker"}}), encoding="utf-8")
+
+    with pytest.raises(AcpAgentUnavailable) as caught:
+        await _start("worker", tmp_path)
+
+    assert str(caught.value) == (
+        'The agent "worker" can\'t start: its agent definition is missing. It is '
+        "agent.default_agent, which setup does not write. Run `kirocrew config set "
+        "agent.default_agent kirocrew`, or pick another default in the chat agent "
+        "picker, then start a new session."
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_spec_on_disk_is_still_projected(agents_dir, tmp_path):
     """Only a missing definition takes the new refusal; a present spec runs as before."""
     _install_app(enabled=True)

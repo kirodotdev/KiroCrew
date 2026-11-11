@@ -114,6 +114,11 @@ Either one opens a new draft session, as `autoSend: false` does: the `message` i
 staged in the composer for the user to send. A host older than these options opens an
 ordinary new chat instead.
 
+A new draft session the user leaves without having typed, clicked or changed anything
+in it (for example, they read the staged message and go back to your app) is discarded
+by the host, so it leaves nothing behind in the sidebar or History. A later `openChat`
+creates a new session as usual.
+
 With `slotKey` naming a session your app created moments earlier (for example through
 `POST /api/chat/slots`), the chat page waits up to five seconds for its session list to
 show it before opening it, so an immediate `openChat` after the create lands on the new
@@ -615,8 +620,10 @@ Set `conversationOnly` when the host app already provides navigation and needs t
 without ChatPage's sessions rail. This mode keeps the native transcript, composer, and composer
 controls, and it leaves the host page in charge of the browser URL. The panel stays on the
 `slotKey` session (or the session a memory-mode pick replaces it with), switching back when
-another session becomes active, so mount one `conversationOnly` panel at a time. Without
-`conversationOnly`, a session the user picks in the rail is shown.
+another session becomes active, so mount one `conversationOnly` panel at a time: two on
+different sessions take it from each other until one gives up after a run of quick switch-backs,
+logs a console warning and stops switching back, showing no chat, until it gets a different
+`slotKey` or remounts. Without `conversationOnly`, a session the user picks in the rail is shown.
 
 ```tsx
 <ChatPanel slotKey="coder-abc123" conversationOnly />
@@ -978,6 +985,11 @@ An `approval_resolved` frame says a pending approval is no longer waiting. Its
   ended, so a card raised for a later request under the same id stays live.
 - `decision`: absent for an ordinary decision. `"expired"` means the wait timed
   out and the request was denied.
+
+A request that takes over a live request's id raises its own `approval` frame
+with a new `instance`; no `approval_resolved` frame retires the request it
+replaced. A decide that names the old `instance` is refused, so a card kept for
+the replaced request cannot decide the new one.
 
 The app `slots` event (`mc:app:slots`) fires after the dashboard applies each
 `slots` or `slot_patch` frame. Its `detail` is `null`: the event says the slot

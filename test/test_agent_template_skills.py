@@ -148,6 +148,24 @@ class TestExtractSkills:
         }
         assert _extract_skills(data) == ["babysit", "other"]
 
+    def test_non_string_builder_mcp_filter_value_is_ignored_not_raised(self):
+        """A foreign/mistyped ``--skill-name-filter`` value must not drop the agent.
+
+        ``~/.kiro/agents`` is shared, so the value after the flag is untrusted: a
+        list, number or null there once raised ``AttributeError`` on ``.split``,
+        and the scan skips a spec whose row construction throws -- silently
+        dropping the whole agent from the roster. Each bad value now contributes
+        no skills, and a valid ``skill://`` resource on the same spec still maps.
+        """
+        for bad in (["a", "b"], None, 5, {"x": 1}):
+            data = {
+                "resources": ["skill://~/.kiro/skills/babysit/SKILL.md"],
+                "mcpServers": {"builder-mcp": {"args": ["--skill-name-filter", bad]}},
+            }
+            assert _extract_skills(data) == ["babysit"]
+        # ``args`` that is not a list at all also yields no builder-mcp skills.
+        assert _extract_skills({"mcpServers": {"builder-mcp": {"args": "x"}}}) == []
+
     def test_wildcard_pattern_is_surfaced_not_dropped(self):
         data = {"resources": ["skill://~/.kiro/skills/*/SKILL.md"]}
         assert _extract_skills(data) == ["*"]

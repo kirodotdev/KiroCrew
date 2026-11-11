@@ -66,6 +66,8 @@ ADMISSION_SITES: dict[Site, frozenset[str]] = {
     ("acp/client_start.py", "_spawn"): frozenset({FORK, FRESH}),
     ("acp/harness/kas.py", "KasHarness.session_extras._build"): frozenset({FORK, FRESH}),
     ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"): frozenset({FORK}),
+    # A KAS session's sub-agent target, registered in the same batch as its agent.
+    ("acp/kas_subagent_targets.py", "_project_target"): frozenset({FORK, FRESH}),
     ("acp/runtime_mode_activation.py", "_activate_mode_bracketed"): frozenset({FRESH}),
     ("acp/runtime_spawn_launch.py", "_resolve_spawn_plan"): frozenset({FRESH}),
     ("acp/session_mcp.py", "_agent_spec_and_snapshot_for"): frozenset({FRESH}),
@@ -121,6 +123,10 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
     ),
     ("mcp_gateway/rewriter_spec.py", "_build_stub_entry"): (
         "not a kiro-cli spawn: the agent name is an argument to the MCP gateway stub"
+    ),
+    ("mcp_gateway/rewriter_spec.py", "_refusing_stub_entry"): (
+        "not a kiro-cli spawn: the agent name is an argument to the MCP gateway stub, "
+        "which runs with --refuse and starts nothing"
     ),
     ("testing/workflow_memory_scenario.py", "respond"): (
         "not a kiro-cli spawn: a test scenario reading its own argv"

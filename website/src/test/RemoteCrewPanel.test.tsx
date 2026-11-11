@@ -650,7 +650,7 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     // The localized "not installed" line still explains the gap…
-    expect(await screen.findByText(/Session Manager plugin/i)).toBeInTheDocument()
+    expect(await screen.findByText('Session Manager plugin')).toBeInTheDocument()
     // …but no Copy button appears with nothing to copy.
     expect(screen.queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
   })
@@ -684,10 +684,10 @@ describe('RemoteCrewPanel', () => {
     const raw = within(notice).getByText("aws: [ERROR]: [Errno 2] No such file or directory: 'sso-cred-helper'")
     expect(raw).not.toBe(lead)
     expect(raw.className).toMatch(/\bfont-mono\b/)
-    // The row's warning circle is the only triangle.
+    // The row's error circle is the only failure mark: it blocks Launch.
     const row = notice.closest('li') as HTMLElement
-    expect(row.querySelectorAll('.lucide-triangle-alert')).toHaveLength(1)
-    expect(notice.querySelector('.lucide-triangle-alert')).toBeNull()
+    expect(row.querySelectorAll('.lucide-x')).toHaveLength(1)
+    expect(notice.querySelector('.lucide-x, .lucide-triangle-alert')).toBeNull()
     // The plugin's install link belongs to the plugin row only.
     expect(within(row).queryByRole('link', { name: /install page/ })).toBeNull()
   })
@@ -757,12 +757,12 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 
     const profileInput = await screen.findByLabelText(/AWS profile/i)
-    const credsRow = await screen.findByText(/Credentials/i)
+    const credsRow = await screen.findByText('AWS credentials')
     // compareDocumentPosition: 4 = FOLLOWING — the row comes after the input.
     expect(profileInput.compareDocumentPosition(credsRow) & 4).toBeTruthy()
-
-    // And the probed identity is stated, not left implicit.
-    expect(await screen.findByText(/Checked against profile .* in us-east-1/i)).toBeInTheDocument()
+    // And the probed identity is stated in plain words, never as a profile named "none set".
+    expect(await screen.findByText('Checked with your default AWS credentials in us-east-1.')).toBeInTheDocument()
+    expect(screen.getByText('Using your default AWS credentials → account 1234•••7890.')).toBeInTheDocument()
   })
 
   it('promises only what the gateway actually delivers while a launch runs', async () => {
@@ -914,9 +914,9 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
     // Prereq checklist rendered; a missing plugin blocks Launch.
     expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
-    expect(screen.getByText(/Session Manager plugin/i)).toBeInTheDocument()
+    expect(screen.getByText('Session Manager plugin')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled())
-    expect(screen.getByText(/Finish the AWS setup above/i)).toBeInTheDocument()
+    expect(screen.getByText('Fix “Session Manager plugin” above to enable this.')).toBeInTheDocument()
   })
 
   it('renders each size card headlined by its interpolated sub-agent count', async () => {

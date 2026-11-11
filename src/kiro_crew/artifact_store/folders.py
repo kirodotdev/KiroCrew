@@ -206,7 +206,10 @@ class ArtifactFolderStore:
 
     @staticmethod
     def clean_name(name: Any) -> str:
-        cleaned = str(name or "").strip()[:100]
+        # Strip again after the cut: a cut that lands on a space would keep it,
+        # and resolve_path compares stored names stripped, so the next resolve
+        # of the same long path would miss the folder and create another.
+        cleaned = str(name or "").strip()[:100].rstrip()
         if not cleaned:
             raise ArtifactValidationError("folder name required")
         return cleaned

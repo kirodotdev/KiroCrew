@@ -489,7 +489,16 @@ async def _auto_migrate_memory(self: GatewayOrchestrator) -> None:
                 f"skipped={counts['skipped']}"
             )
             try:
-                store._log_event("migration", "system", "auto_migrate", None, summary, "auto")
+                await loop.run_in_executor(
+                    maintenance_executor(),
+                    store._log_event,
+                    "migration",
+                    "system",
+                    "auto_migrate",
+                    None,
+                    summary,
+                    "auto",
+                )
             except Exception:
                 logger.debug("auto-migrate audit log failed", exc_info=True)
             logger.info("Auto-migrated legacy memory: %s", summary)

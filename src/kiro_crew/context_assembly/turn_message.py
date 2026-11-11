@@ -559,6 +559,18 @@ def build_message(
         if _active_model:
             parts.append(_active_model)
 
+    # Every follow-up re-states the reply language: a nudge, wake or worker-report
+    # turn is all English text, and the session-start frame alone loses to it.
+    # A post-compaction turn re-sends the whole frame below, so it skips this.
+    if (
+        not is_new_session
+        and not needs_reinjection
+        and ctx._response_preferences_apply(session_key or "", runtime_source)
+    ):
+        _lang = _sections.reply_language_refresh(ctx.KiroCrewConfig.load())
+        if _lang:
+            parts.append(_lang)
+
     # Post-compaction re-injection: the skills index was lost when the
     # session-start context was compacted. Re-inject it so the model can
     # still discover skills by name/$token/skill_search.

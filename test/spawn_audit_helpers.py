@@ -29,6 +29,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Pin scan child: this interpreter, -P, a fixed module and a fixed scan kind;
         # the reply is one JSON line on stdout. No agent input reaches the spawn.
         "sandbox_pin_scan_child.py::scan_in_child",
+        # Slot backfill child: this interpreter, -P, a fixed module; the home, slot and
+        # fold travel on stdin as one JSON object, never as argv. No agent input
+        # reaches the spawn.
+        "crew_log/slot_backfill_child.py::backfill",
         # Recall pool child: this interpreter, -P, a fixed module; jobs travel on its
         # pipes as data, never as argv. No agent input reaches the spawn.
         "recall_pool.py::_spawn",
@@ -632,6 +636,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
         # ``chat _ get-kas-token`` spawn is gone rather than moved.
         "kiro_cli.py::kas_relay_help",
+        # ``<kiro-cli> acp --agent-engine v3`` start probe for the KAS floor and
+        # doctor: fixed argv (the tail is ``acp.kas_transport``'s constants), run on
+        # ``pin_kiro_cli``'s own install, or by the operator's doctor on the binary
+        # its ``acp --help`` row already ran, 30s-capped, no shell, stdin and stdout
+        # ``/dev/null`` so the engine reads EOF and serves nothing. Only its stderr
+        # is read, for kiro-cli's "V3 is currently not supported on this system"
+        # refusal, which ``acp --help`` cannot show; no credential is passed or read
+        # by Kiro Crew.
+        "kiro_cli.py::kas_relay_start_output",
         # ``<kiro-cli> chat --help`` engine probe for the ``/usage`` scrape: fixed
         # argv, 15s-capped, no shell, no agent-influenced arguments, no credential.
         # It reads which ``--agent-engine`` values this kiro-cli accepts, so the
@@ -1312,7 +1325,10 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # (`/dev/fd/N`) of the snapshot it already validated and copied — a hostile
         # value can only name a bad input, never a second command, and the output
         # path (`_extract_segment`) is a gateway-chosen name under the snapshot dir,
-        # not agent input.
+        # not agent input. `_registered_clip` reuses `_extract_segment` to give a
+        # registered STT provider a WAV copy: same fixed flags, the input is the
+        # clip `transcribe_audio` already path-checked, and the output a fresh
+        # mkstemp name.
         "transcribe.py::_detect_silence_ends",
         "transcribe.py::_extract_segment",
         "transcribe_aws.py::_transcribe_aws",

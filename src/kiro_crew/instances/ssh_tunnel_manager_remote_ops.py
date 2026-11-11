@@ -124,6 +124,7 @@ async def diagnose(self: SshTunnelManager, instance_id: str) -> dict | None:
             aws_profile=inst.aws_profile,
             aws_region=inst.aws_region,
             ssm_run_as=inst.ssm_run_as,
+            remote_bin=inst.remote_bin,
         )
     elif method not in CONNECTION_METHODS:
         # Nothing to probe: this build has no transport for the method, and

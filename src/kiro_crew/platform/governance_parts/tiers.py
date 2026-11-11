@@ -258,7 +258,9 @@ def _intersect_ceilings(
         merged[scope] = _compose_controls(existing, sub_control)
     boot = BootControls(
         require_sandbox=authority.boot.require_sandbox or subordinate.boot.require_sandbox,
-        allow_terminal=authority.boot.allow_terminal and subordinate.boot.allow_terminal,
+        allow_terminal=_compose_allow_terminal(
+            authority.boot.allow_terminal, subordinate.boot.allow_terminal
+        ),
         fail_closed=authority.boot.fail_closed or subordinate.boot.fail_closed,
     )
     # ``fallback_profile`` is deliberately NOT listed: ``replace(authority, ...)``
@@ -270,6 +272,17 @@ def _intersect_ceilings(
         updates=_intersect_update_pins(authority.updates, subordinate.updates),
         yolo_max_seconds=_lower_cap(authority.yolo_max_seconds, subordinate.yolo_max_seconds),
     )
+
+
+def _compose_allow_terminal(
+    authority: Optional[bool], subordinate: Optional[bool]
+) -> Optional[bool]:
+    """A tier that refuses wins; a tier that is silent (``None``) has no say."""
+    if authority is False or subordinate is False:
+        return False
+    if authority is None and subordinate is None:
+        return None
+    return True
 
 
 def _lower_cap(authority: int, subordinate: int) -> int:

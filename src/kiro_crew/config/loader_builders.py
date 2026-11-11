@@ -17,6 +17,7 @@ from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
     _raw_agent_section,
     _raw_stt_provider,
+    kas_bundle_build_default,
     unsandboxed_exec_platform_default,
 )
 from kiro_crew.config.loader_locations import config_path
@@ -82,6 +83,7 @@ from kiro_crew.config.sections import (
     coerce_role_models,
 )
 from kiro_crew.constants import SUBAGENT_TIMEOUT_MAX, SUBAGENT_TIMEOUT_MIN
+from kiro_crew.crewmate_worktree import coerce_branch_prefix
 from kiro_crew.session_start_sizing import AUTO as _SESSION_START_AUTO
 from kiro_crew.session_start_sizing import is_auto as _session_start_is_auto
 
@@ -187,6 +189,22 @@ def _clamp_compact_wait_secs(raw: object, default: float) -> float:
     """
     value = _safe_float(raw, default, lo=0.0, hi=_sections.COMPACT_WAIT_SECS_MAX)
     return value if value == 0 else max(_sections.COMPACT_WAIT_SECS_MIN, value)
+
+
+def _lane_weights_from(
+    raw: object, default: dict[str, int], lo: int | None = None, hi: int | None = None
+) -> dict[str, int]:
+    """``agent.lane_weights``: each named lane's weight as an int in [*lo*, *hi*].
+
+    A weight it cannot read takes 1; a non-dict takes *default*, the field's.
+    """
+    if not isinstance(raw, dict):
+        return default
+    return {
+        lane: _safe_int(weight, 1, lo, hi)
+        for lane, weight in raw.items()
+        if isinstance(lane, str) and lane
+    }
 
 
 _DEFAULT_MEMORY_MODES = frozenset({"persistent", "incognito", "temporary"})
@@ -525,7 +543,7 @@ def _read_backend_choice(
     elif key == _MEMBER_HARNESS_KEY and value == ACP_BACKEND_KIRO:
         value = ACP_BACKEND_KAS
         _note_member_remap(agent_data.get(key), value)
-    elif value == ACP_BACKEND_KIRO and not section.read("kas_bundle", _safe_bool):
+    elif value == ACP_BACKEND_KIRO and not _resolved_kas_bundle(agent_data):
         # The one place a stored Kiro CLI pick in ``agent.acp_backend`` moves onto
         # KAS: once the gateway's probe confirmed v3 and while KAS is selectable.
         # Here, not in the gate, so a Kiro CLI id the gate already answered (a
@@ -534,6 +552,17 @@ def _read_backend_choice(
         # there spawns Kiro Crew's bundled engine instead.
         value = kiro_cli_pick_backend()
     return _normalize_acp_backend(value)
+
+
+def _resolved_kas_bundle(agent_data: Mapping[str, object]) -> bool:
+    """``agent.kas_bundle`` as loaded: the stored value, else the build's default.
+
+    An undeclared key reads :func:`kas_bundle_build_default` (on in a nightly build
+    only), not the field's ``False``, the way ``sandbox_allow_unsandboxed_exec``
+    reads its platform default; ``save()`` keeps the undeclared key off disk.
+    """
+    default = kas_bundle_build_default()
+    return _safe_bool(agent_data.get("kas_bundle", default), default)
 
 
 #: Whether the member-backend remap was logged in this process (see below).
@@ -755,8 +784,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             section, agent_data, "member_acp_backend", inherit=main_backend
         ),
         acp_failover=_sections.normalize_acp_failover(section.get("acp_failover")),
-        kas_bundle=section.read("kas_bundle", _safe_bool),
+        kas_bundle=_resolved_kas_bundle(agent_data),
         kas_persist_mcp_sign_in=section.read("kas_persist_mcp_sign_in", _safe_bool),
+        kas_repair_kiro_cli_extract=section.read("kas_repair_kiro_cli_extract", _safe_bool),
         kas_refuse_plain_http_mcp_headers=section.read(
             "kas_refuse_plain_http_mcp_headers", _safe_bool
         ),
@@ -867,6 +897,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # the `_validate_config_data` call. `_safe_bool` here is the
         # final guard for a real bool.
         member_dispatch=section.read("member_dispatch", _safe_bool),
+        member_branch_prefix=coerce_branch_prefix(section.get("member_branch_prefix")),
         # Default true; a present-but-malformed value is coerced to False upstream,
         # with the other fail-closed agent switches.
         conductor_own_child_verbs=section.read("conductor_own_child_verbs", _safe_bool),
@@ -908,15 +939,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         start_collect_timeout_secs=section.read("start_collect_timeout_secs", _safe_int, 10, 3600),
         # Fairness lanes (taskq/lanes.py): weights shape the share of
         # picks; the reserve keeps children startable under full parents.
-        lane_weights=(
-            {
-                lane: _safe_int(weight, 1, 1, 64)
-                for lane, weight in _lane_weights.items()
-                if isinstance(lane, str) and lane
-            }
-            if isinstance(_lane_weights := section.get("lane_weights"), dict)
-            else section.default("lane_weights")
-        ),
+        lane_weights=section.read("lane_weights", _lane_weights_from, 1, 64),
         child_reserve=section.read("child_reserve", _safe_int, 0, 8),
         # Shared recovery ladder schedule (recovery/policy.py bounds).
         recovery_backoff_base_secs=section.read(
@@ -995,14 +1018,10 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             else section.default("log_level")
         ),
         bot_name=_sanitize_bot_name(section.get("bot_name")),
-        max_channels=section.get("max_channels"),
-        max_channel_agents=section.get("max_channel_agents"),
-        soft_stop_budget_secs=max(
-            SOFT_STOP_BUDGET_MIN,
-            min(
-                SOFT_STOP_BUDGET_MAX,
-                section.read("soft_stop_budget_secs", _safe_float),
-            ),
+        max_channels=section.read("max_channels", _safe_int, 1, 5),
+        max_channel_agents=section.read("max_channel_agents", _safe_int, 1, 10),
+        soft_stop_budget_secs=section.read(
+            "soft_stop_budget_secs", _safe_float, SOFT_STOP_BUDGET_MIN, SOFT_STOP_BUDGET_MAX
         ),
     )
 
@@ -1117,7 +1136,9 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         # hand-edited negative collapses to 0 (fallback) and an oversized value
         # is capped. Bounds are referenced via the module handle, not imported:
         # this module's top-level names are a frozen compatibility facade.
-        compact_wait_secs=section.read("compact_wait_secs", _clamp_compact_wait_secs),
+        compact_wait_secs=section.read(
+            "compact_wait_secs", _clamp_compact_wait_secs, unclamped=_safe_float
+        ),
         pool_size=_safe_int(
             session_data.get("pool_size", DEFAULT_POOL_SIZE),
             DEFAULT_POOL_SIZE,
@@ -1150,6 +1171,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _sections.SEARCH_SCAN_WINDOW_MAX,
         ),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
+        watchdog_end_leftovers_mid_turn=section.read("watchdog_end_leftovers_mid_turn", _safe_bool),
         harness_background_hold_secs=_load_background_hold_secs(section),
         # Clamped HERE as well as in the `_SECURITY_BOUNDED_FIELDS` sweep, for the
         # reason `_safe_int` states: that sweep runs over the raw dict and skips
@@ -1188,6 +1210,7 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         # checked where destinations are resolved (metrics/otlp_endpoints.py),
         # which skips a bad one with a warning rather than failing the load.
         otlp_endpoints=section.read("otlp_endpoints", _otlp_endpoint_rows),
+        traces_enabled=bool(section.get("traces_enabled")),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
     )
@@ -1276,7 +1299,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         avatar=section.get("avatar"),
         merge_queued_messages=section.get("merge_queued_messages"),
         title_refresh_every_turns=section.read(
-            "title_refresh_every_turns", _title_refresh_every_turns
+            "title_refresh_every_turns", _title_refresh_every_turns, unclamped=_safe_int
         ),
         title_ticket_prefix=section.read("title_ticket_prefix", _safe_bool),
         upload_max_mb=section.read(

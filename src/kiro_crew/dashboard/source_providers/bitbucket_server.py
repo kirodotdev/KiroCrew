@@ -452,6 +452,7 @@ async def _fetch_pull_request(ref: SourceRef) -> dict[str, Any]:
     async def work(client: _Client) -> dict[str, Any]:
         pr = await client.pull_request()
         partial: list[str] = []
+        failed: list[str] = []
         head = _head_sha(pr)
         commits, changes, diff, activities, builds = await asyncio.gather(
             client.get(
@@ -484,7 +485,7 @@ async def _fetch_pull_request(ref: SourceRef) -> dict[str, Any]:
             if isinstance(value, BaseException):
                 if isinstance(value, SourceProviderNotConfigured):
                     raise value
-                projection._mark_partial(partial, section)
+                projection._mark_failed(partial, failed, section)
         commit_page = projection._or_empty(commits)
         if projection._as_dict(commit_page).get("isLastPage", True) is False:
             projection._mark_partial(partial, "commits")
@@ -523,6 +524,7 @@ async def _fetch_pull_request(ref: SourceRef) -> dict[str, Any]:
             "comments": _comment_rows(client, projection._or_empty(activities), partial),
             "files": files,
             "partialSections": partial,
+            "failedSections": failed,
         }
 
     return await _with_client(ref, work)

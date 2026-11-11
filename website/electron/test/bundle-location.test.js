@@ -11,6 +11,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const {
   classifyBundleLocation,
+  appBundlePath,
   containingDirForBundle,
   canInstallUpdates,
   shouldOfferRelocation,
@@ -120,6 +121,27 @@ test("containingDirForBundle refuses to guess on an unusable shape", () => {
   // Returning "" keeps a caller from probing (and judging) an unrelated dir.
   for (const bad of [undefined, null, "", 42, "relative/path", "/"]) {
     assert.equal(containingDirForBundle(bad), "", String(bad));
+  }
+});
+
+// ── appBundlePath: the .app itself (for LaunchServices re-register) ──────────
+
+test("appBundlePath strips Contents/Resources, keeping the .app", () => {
+  assert.equal(
+    appBundlePath("/Applications/KiroCrew.app/Contents/Resources"),
+    "/Applications/KiroCrew.app",
+  );
+  assert.equal(
+    appBundlePath("/Users/x/.toolbox/tools/kirocrew/1.2.3/payload/KiroCrew.app/Contents/Resources"),
+    "/Users/x/.toolbox/tools/kirocrew/1.2.3/payload/KiroCrew.app",
+  );
+});
+
+test("appBundlePath refuses a shape that is not a .app", () => {
+  // No Contents/Resources suffix, or the stripped path is not a .app: "" so a
+  // caller never force-registers an unrelated directory.
+  for (const bad of [undefined, null, "", 42, "relative/path", "/", "/opt/kirocrew", "/x/KiroCrew.app"]) {
+    assert.equal(appBundlePath(bad), "", String(bad));
   }
 });
 

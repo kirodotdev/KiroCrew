@@ -233,7 +233,7 @@ from kiro_crew.dashboard.agent_admin.crew_removal import (  # noqa: F401
     _prune_private_copy_of_deleted_crew,
     _prune_private_copy_outcome,
     _reclaim_deleted_member_crew_log,
-    _reclaim_deleted_member_dashboard_lock,
+    _reclaim_deleted_member_page_offer,
     _remove_goal_check_ins,
     _remove_member_leftovers,
     api_kirocrew_agent_delete,
@@ -319,6 +319,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     TEMPLATE_DEFINITION_KEYS,
+    TEMPLATE_READ_ONLY_KEYS,
     ControlPlaneNotDeclarable,
     apply_definition_patch,
     control_plane_declarations,

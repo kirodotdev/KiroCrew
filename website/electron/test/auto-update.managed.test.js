@@ -132,6 +132,30 @@ test("managed check() with updateCommand+checkCommand emits found with the print
   );
 });
 
+test("a managed edition build stamped -N reports stable bytes, after a check too", async (t) => {
+  // An edition's Toolbox install: build-desktop.sh carries its 0.13.0.11 into
+  // the shell as 0.13.0-11. About keys the prerelease note on stampedChannel,
+  // and the managed lane never records a lane answer that could exempt the
+  // bytes, so the stamp itself has to read as the stable release it builds.
+  const { deps } = makeDeps({
+    appVersion: "0.13.0-11",
+    externallyManaged: {
+      managedBy: "toolbox",
+      updateCommand: "toolbox update kirocrew",
+      checkCommand: "toolbox check kirocrew",
+    },
+  });
+  const { restore } = stubSpawn({ code: 1, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const info = u.getInfo();
+  assert.strictEqual(info.version, "0.13.0-11");
+  assert.strictEqual(info.stampedChannel, "stable");
+  assert.strictEqual(info.channel, "stable");
+  assert.strictEqual(info.runningAheadOfLane, null, "a managed lane answers no feed comparison");
+});
+
 test("managed check(): non-zero exit -> not-available (ran, nothing new)", async (t) => {
   const { deps, states } = makeDeps({
     externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },

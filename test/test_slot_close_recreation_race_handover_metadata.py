@@ -9,6 +9,7 @@ the line's ``tab_id``. Close-vs-recreate guards live in
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 from chat_test_helpers import _make_state
@@ -748,3 +749,57 @@ async def test_cleanup_divergent_transcript_still_archives_the_original(tmp_path
     ], "archiving the original's own transcript dropped its tail"
     assert state._slots.get(NAME) is replacement, "the replacement was clobbered by cleanup"
     assert state.sessions.remove.await_count == 0, "the replacement's session was torn down"
+
+
+@pytest.mark.asyncio
+async def test_a_save_the_closed_slot_issues_after_its_archive_keeps_the_close(
+    tmp_path,
+) -> None:
+    """A late save of the dismissed slot does not bring the tab back after a restart.
+
+    A turn that outlives the close's cancel wait still saves its slot when it ends.
+    That slot reads open only because it is stale, so rebuilding the line from it
+    would erase the close its own archive committed a moment earlier.
+    """
+    state = _make_state(tmp_path)
+    slot = await _slot_with_committed_and_uncommitted_rows(state)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+    assert resp.status == 200
+    archived = state.conversation_log.get_metadata(HKEY)
+    assert archived.get("closed") is True, "the close did not archive the transcript"
+
+    slot.append("assistant", "LATE-5")
+    slot.drain()
+    assert await handlers.save_slot_off_loop(state, slot, best_effort=False)
+
+    meta = state.conversation_log.get_metadata(HKEY)
+    assert meta.get("closed") is True, "a stale save of the closed slot reopened its tab"
+    assert meta.get("closed_at") == archived.get("closed_at")
+    assert meta.get("closed_id") == archived.get("closed_id")
+    assert _disk_contents(state)[-1] == "LATE-5", "the late save did not keep its row"
+
+
+@pytest.mark.asyncio
+async def test_a_late_save_of_a_closed_linked_slot_keeps_the_close_time(tmp_path) -> None:
+    """The late save leaves a linked transcript's mtime where the archive put it.
+
+    A channel- or cron-linked tab reopens when its file is newer than the close
+    (``channel_slots._close_stands``). A row the dismissed slot writes late is not
+    activity on that conversation, so it must not move the file's time either.
+    """
+    state = _make_state(tmp_path)
+    linked = "cron:job7"
+    slot = await _linked_slot_with_a_tail(state, linked)
+
+    resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+    assert resp.status == 200
+    path = state.conversation_log._path(linked)
+    os.utime(path, (1000.0, 1000.0))
+
+    slot.append("assistant", "LATE-3")
+    slot.drain()
+    assert await handlers.save_slot_off_loop(state, slot, best_effort=False)
+
+    assert state.conversation_log.get_metadata(linked).get("closed") is True
+    assert path.stat().st_mtime == 1000.0, "the late save read as activity after the close"

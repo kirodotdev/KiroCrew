@@ -137,7 +137,8 @@ Three structural facts explain most of the rest:
   the shared hosted pool) plus pickup
   slack. The first verdict is final: a run that concludes without
   success fails the check on the tick that reads it, with no rerun and no wait
-  for the lanes still running, and the job holds only `actions: read`. A rerun
+  for the lanes still running, and the job holds only `actions: read`,
+  `checks: read` and `contents: read`. A rerun
   inside the queue would hold every group queued behind this one for the
   rerun's whole duration -- a CI rerun is ~40 minutes -- and two of them push a
   failing group's ejection past the point where main has moved and every group
@@ -147,8 +148,10 @@ Three structural facts explain most of the rest:
   failed API call is retried until the budget runs out; only a run still absent
   after the five-minute appear window, or one that concluded without success,
   fails the check. Each tick reads ONE runs listing for the
-  commit, not one per workflow, every 60 s while a run may still be appearing
-  and every 180 s once all six are seen: the installation token is shared by
+  commit, not one per workflow (an empty one is also read through the
+  commit's check-runs and each run they name, ~8 calls, as *An empty runs
+  listing is not "no runs"* below describes), every 60 s while a run may still
+  be appearing and every 180 s once all six are seen: the installation token is shared by
   every workflow, and 40 queued groups then cost ~800 calls an hour instead of
   ~4,800. A rate-limited call sleeps until the limit's reset (read from
   `gh api rate_limit`, which does not count against it) plus jitter, within
@@ -448,7 +451,10 @@ name never fires and never says so.
 
 A scheduled job's token shares the installation rate limit with the rest of the
 fleet, so one `gh` call made while it is spent fails the run, although the limit
-resets within the hour. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
+resets within the hour. The same holds for an event-triggered check that fails
+closed and is recomputed only by the PR's next event: Fork PR Description and
+Sensitive Change Review install the wrapper too, from their default-branch
+checkout. `.github/actions/gh-rate-limit` puts a `gh` wrapper on
 PATH for the rest of the job: it retries only a call whose error names a rate
 limit, at most twice, waiting for the earliest reported reset (60 s for a
 secondary limit) inside one job-wide budget (`max-wait`, 20 minutes by default).
@@ -1389,7 +1395,7 @@ stops landing on the enterprise-shared standard pool.
 **What reaches this leg is mostly NOT fork traffic, which is the thing to
 measure rather than assume.** The fleet branch admits the `pull_request` actions
 `opened` and `synchronize` only, and these workflows subscribe to more than
-that: `code-review.yml` and `pr-hygiene.yml` add `reopened` and `edited`,
+that: `code-review.yml` adds `reopened`, `pr-hygiene.yml` adds `reopened` and `edited`,
 `pr-policy.yml` adds `reopened`, `edited`, `labeled` and `unlabeled`,
 `dependency-review.yml` adds `reopened`, `labeled` and `unlabeled`,
 `macos-on-demand.yml` adds `reopened` and `labeled`, and `codeql.yml` adds
@@ -2908,16 +2914,18 @@ No model, no secrets, so it is safe on forks and always runs. It is the grep-hal
 of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
 
 Its three diff jobs read the diff and nothing else. `pr-hygiene`, which judges
-the title and body, is the whole of `pr-hygiene.yml`. Both files hear `edited`
-and both are readiness lanes.
+the title and body, is the whole of `pr-hygiene.yml`. Both are readiness lanes;
+only `pr-hygiene.yml` hears `edited`.
 
-`code-review.yml` keeps `edited` because a base retarget is an `edited` event,
-and a retarget moves the diff the scans read. So a title or body edit re-runs
-the scans too. They cannot skip it: Readiness keeps a lane's newest run, so a
-run with the scans skipped would replace one whose scan failed (#26840). And
-without `edited`, a head could keep a scan made against an earlier base. Letting
-an edit skip the scans needs Readiness to check which base a run scanned
-(#31076).
+A title or body edit starts no Code Review run, so the last scan stays the
+lane's verdict, a failed one included. A base retarget is an `edited` event too,
+and it moves the diff the scans read. So each run records the base it scanned in
+its run-name (`[base <ref>]`), and Readiness counts the newest run only while
+that base is the PR's current base. A run of another base reads `scanned <base>;
+push or reopen` and holds the PR pending until a push or reopen rescans it
+(#31076). So does a run with no base recorded when the default branch's
+workflows ran it. Off the default branch (a release branch cut earlier) such a
+run came from a `code-review.yml` that still hears `edited`, so it counts.
 
 - **`autosde-rules`** blocks unambiguous frontend violations on added lines: an
   inline `<svg viewBox>` outside brand-mark components (`KiroGhost.tsx`, `*Logo.tsx`,
@@ -4562,6 +4570,16 @@ Two subtleties:
   verdict goes green up to one tick plus the lag later than the event made it, never
   earlier.
 
+  Two limits keep the sweep's dispatches from draining that REST budget (#34120). A
+  pending or failure re-fire waits while another check-run on the head is still queued
+  or in progress, because the next completion re-opens it; the last completion
+  re-fires once, and a check-run still running `STALE_MINUTES` past the newest
+  completion stops holding it. The green arm is never held, since a stale green permits
+  a merge. Before dispatching, the sweep reads `/rate_limit` (free) and dispatches only
+  as many recomputes as fit above a reserve of `RATE_RESERVE_PERCENT` of the pool's limit
+  at `DISPATCH_COST` each; the rest wait for the next tick, oldest first. A stale-green
+  rescue is never deferred by the reserve. `test_pr_readiness_sweep_debounce.py` pins both.
+
   `in_progress` stays because it is the one signal completions cannot carry: a monitored
   workflow going BACK to running. A re-run reuses the same run and increments its attempt,
   so `requested` never fires for it and the runs page shows the pre-re-run conclusion
@@ -4743,7 +4761,10 @@ Two subtleties:
   that event on that exact head. A named run that cannot be fetched makes the
   evaluation `could not be evaluated`, never `(not started)`. The evaluation and the
   publish step's success re-check read runs through it, and
-  `ai-review-human-override.yml` and `republish_withheld_verdict.py` apply the same
+  `ai-review-human-override.yml`, `republish_withheld_verdict.py`,
+  `pr-size-override.yml` (the PR Policy run it re-runs after an approval),
+  `sensitive-change-review-comment.yml` (the Sensitive Change Review run it re-runs)
+  and `merge-queue-readiness.yml` (each tick's `merge_group` listing) apply the same
   rule to their run lookups.
 - **A transport error during evaluation is non-terminal.** Every read-only `gh`
   call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
@@ -5421,7 +5442,7 @@ carrying an older expected SHA is ignored, so a late
 run cannot relabel the new revision. A code-free `pull_request_target` handler
 updates same-repository and fork PRs from the trusted base workflow. Actions
 that start or restart validation for the same SHA, including a PR description
-edit that re-runs Code Review and PR Hygiene, force the aggregate to `checking` before run
+edit that re-runs PR Hygiene, force the aggregate to `checking` before run
 lookup so an older successful same-SHA run cannot keep readiness green. A lane's
 completion, same-repository or `fork-*`, reaches readiness only through
 `pr-readiness-sweep.yml`, within one sweep tick (~5 minutes): `pr-readiness.yml`

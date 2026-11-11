@@ -117,7 +117,7 @@ Evidence, strongest first (`identity.derive_principal`):
 
 | Request | Principal | Provenance |
 |---|---|---|
-| A request the Crew's relay client handed over and the relay ingress verified (`kiro_relay.caller.published_relay_caller`), checked first in `identity._derive_actor` and never followed by a `whois` | a teammate: `human` under provider `kiro`, issuer `kiro-relay`, keyed by the exact Kiro user ID (no case folding), labelled with the relay's name, else its email, else `Kiro user ...` and the ID's last 6 characters; the relayed owner of a personal Crew: the local operator's own principal id for the admitted owner subject, so the machine tab and the relay tab are one person | `kiro_relay` |
+| A request the Crew's relay client handed over and the relay ingress verified (`kiro_relay.caller.published_relay_caller`), checked first in `identity._derive_actor` and never followed by a `whois` | a teammate: `human` under provider `kiro`, issuer `kiro-relay`, keyed by the exact Kiro user ID (no case folding), labelled with the relay's name, else its email (only the part before the `@` when the whole domain is listed in `tunnel.relay_handle_email_domains`), else `Kiro user ...` and the ID's last 6 characters; the relayed owner of a personal Crew: the local operator's own principal id for the admitted owner subject, so the machine tab and the relay tab are one person | `kiro_relay` |
 | An app identity (an app token, or an internal caller the middleware derived an app for) | `system`, component `app:<name>` | `internal` |
 | The internal loopback secret (kiro-cli, MCP, doctor) | `system`, component `internal` | `internal` |
 | Loopback peer forwarded by local `tailscale serve`, resolved and allowlisted by `tailnet.resolve_forwarded_peer` | `human` keyed by tailnet login; `machine` keyed by node for a tagged node | `tailscale_serve` |
@@ -129,7 +129,11 @@ Evidence, strongest first (`identity.derive_principal`):
 
 A relayed principal's email and name are display only. Its display `login` is always
 empty: an author stamp read back from a transcript loses its provenance, so a login there
-could reach an audit record. The email is only the label when the relay sent no name, and
+could reach an audit record. The email is only the label when the relay sent no name.
+`tunnel.relay_handle_email_domains` (empty by default, read at gateway start into the
+`RelayIngress`) lists domains whose addresses are labelled by their handle: the domain
+after the last `@` must equal a listed one ignoring case, so `a@sub.example.com` and
+`a@example.com.example.io` keep the full address when only `example.com` is listed.
 `audit.audit_principal` blanks the login of any `kiro_relay` principal as a backstop.
 People records the relayed owner under the local operator's provenance
 (`identity._people_principal`), so the owner's one entry never flips with whichever tab
@@ -1774,7 +1778,8 @@ among the people a sharing path admitted by its own check
 (`routes_identity._tailnet_person`: the direct listener after checking the access
 set, or the SSM listener on a live invite), and the owner. The People,
 sessions and mode reads also admit a team Crew teammate the Kiro relay verified
-(`routes_identity._relay_teammate`); the name-and-picture edit does not. A
+(`routes_identity._relay_teammate`), as does a narrowed Bots roster read
+(`GET /api/members`, see member-event-log); the name-and-picture edit does not. A
 non-owner dashboard link session (a Telegram, Teams or Webex allowlist link) goes through `require_owner_for_dashboard_caller` and is refused,
 as it is for the read. The record is keyed by stable Tailscale user id in the invite store's
 `display` map, so it follows a renamed login and works for a person who was never

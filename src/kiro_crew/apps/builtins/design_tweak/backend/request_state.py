@@ -30,7 +30,10 @@ logger = logging.getLogger(__name__)
 JsonObject = dict[str, Any]
 
 COMMENT_STATUSES = ("new", "sent", "done")
-REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# ``\Z``, not ``$``: ``$`` also matches before a trailing newline, which would let
+# "abc\n" pass as a request id, be looked up as a second id, and be stored as a
+# follow-up link.
+REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]+\Z")
 
 
 class PathEscape(ValueError):

@@ -155,7 +155,7 @@ describe('feature-request routing', () => {
   // emphasis is stripped first so moving the bold does not read as a change.
   it('cites a security policy that reports privately by email', () => {
     expect(contactUrl(/security/i)).toMatch(/\/blob\/main\/SECURITY\.md$/)
-    expect(securityPolicy.replace(/\*/g, '')).toMatch(/do not create a public/i)
+    expect(securityPolicy.replace(/\*/g, '')).toMatch(/do not open a public/i)
     expect(securityPolicy).toContain('mailto:')
   })
 

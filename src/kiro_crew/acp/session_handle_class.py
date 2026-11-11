@@ -226,6 +226,7 @@ class AcpSessionHandle:
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
     _refuse_unreadable_mcp_identity = _sh_permissions._refuse_unreadable_mcp_identity
     _refuse_unretained_provenance = _sh_permissions._refuse_unretained_provenance
+    _reject_with_host_notice = _sh_permissions._reject_with_host_notice
     _audit_handle_reject = _sh_permissions._audit_handle_reject
     apply_session_permission_routing = _sh_permissions.apply_session_permission_routing
     _build_permission_event = _sh_permissions._build_permission_event
@@ -690,6 +691,10 @@ class AcpSessionHandle:
         # their permission requests itself, after the deny floor, the
         # sensitive-path check and the governance ceiling. Empty with no batch.
         self.kas_crew_answered: frozenset[str] = frozenset()
+        # The ``@server/tool`` grants a PreToolUse hook kept at ``ask``
+        # (``kas_hook_coverage.projected_hook_held``): answered the same way, but
+        # only on a surface that fires the hooks. Empty with no batch.
+        self.kas_hook_held: frozenset[str] = frozenset()
         # The agent's `toolsSettings.shell.allowedCommands` as the gate matches
         # them (``kas_permissions.crew_answered_commands``), answered the same way.
         self.kas_crew_answered_commands: tuple[str, ...] = ()
@@ -782,6 +787,11 @@ class AcpSessionHandle:
         # The bare model a pair pin landed as when its effort was refused
         # (mirrors AcpClient.model_pin_partial).
         self.model_pin_partial: str = ""
+        # The model ``set_model(..., inherit=True)`` applied from kiro-cli's
+        # ``chat.defaultModel``, or ``""``. Not a pin: ``_model`` stays unpinned,
+        # so effort binding and fallback promotion read the session as unpinned,
+        # and a handle swap re-applies it the same way. Any other set_model clears it.
+        self.inherited_model: str = ""
         self._config_options: list[dict[str, Any]] = []
         self._available_models: list[dict[str, str]] = []
         # Set by ``_feed_advertised_model_cache`` when the capture changed the
@@ -790,11 +800,14 @@ class AcpSessionHandle:
         # ``AcpClient._advertised_models_changed`` on the direct-spawn path.
         self._advertised_models_changed: bool = False
         # Read by KAS only: the listed id a session born on an unlisted ``auto`` moves to,
-        # or "". One answer read from the ``model`` select, never the list itself:
-        # nobody has shown that list to be the account's complete served set, so
-        # it must not become the entitlement list the picker and the explicit-pick
-        # guard narrow by.
+        # or "". One answer read from the ``model`` select, never the list itself.
         self._kas_auto_fallback: str = ""
+        # Read by KAS only: the ids the ``model`` select listed, for ONE question in
+        # ``set_model``: is the pin about to be sent one the account is served? It
+        # never becomes ``_available_models`` (the picker's list). A live capture
+        # matched kiro-cli v2's ``models`` block id for id, and the one catalog model
+        # it left out failed the turn with ``InvalidModelError``.
+        self._kas_served_ids: list[str] = []
         # Read-path revalidation bookkeeping (see maybe_refresh_available_models).
         # The session-init snapshot is one unconfirmed answer captured at one
         # instant, and the read path (the dashboard picker filter) has no

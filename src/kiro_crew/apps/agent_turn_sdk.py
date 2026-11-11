@@ -227,7 +227,12 @@ class AgentTurnSDK:
         key = self.check_key(key)
         sessions = self._manager()
         asked = await self._require_spawn_permit(key, agent)
-        provider, _is_new, _resumed = await sessions.get_or_create(key, agent=asked)
+        # ``owning_app`` is the app the gate below judges this session's calls
+        # under, so the session's own governance reads (its KAS projection among
+        # them) judge under the same app.
+        provider, _is_new, _resumed = await sessions.get_or_create(
+            key, agent=asked, owning_app=self._app
+        )
         try:
             running = await self._require_recorded_agent(sessions, key, asked)
         except BaseException:

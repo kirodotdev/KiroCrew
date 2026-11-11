@@ -16,6 +16,11 @@ import { errMessage, isMissingSlotError } from '../utils/thunkError'
 
 import { i18nT } from '../i18n/t'
 
+// A run of switch-backs, each less than SWITCH_BACK_GAP_MS after the one
+// before, stops after MAX_SWITCH_BACKS: see the watch effect.
+const MAX_SWITCH_BACKS = 10
+const SWITCH_BACK_GAP_MS = 5_000
+
 // The session a memory-mode switch handed `slotKey` over to, if any.
 function replacementOf(slotKey: string): string | undefined {
   const live = resolveSlotSuccession(slotKey)
@@ -88,12 +93,17 @@ export function useOwnSlotChat({
   // the session active and listed, so it must not take the shortcut below and
   // show a chat the gateway never loaded.
   const retryRef = useRef(false)
+  // The current run of switch-backs to the session: see the watch effect.
+  const switchBacksRef = useRef({ key: slotKey, count: 0, at: 0 })
 
   // Make the session the active slot: when the host hands one over or changes
   // it, and when the watch effect below finds another session active.
   useEffect(() => {
     setFailure('')
     setReadyKey(null)
+    // A new session starts a new run of switch-backs; a re-run for the same
+    // session (a switch-back, `retry`) keeps the run, so the cap holds.
+    if (switchBacksRef.current.key !== slotKey) switchBacksRef.current = { key: slotKey, count: 0, at: 0 }
     if (!slotKey) return
     seenInListRef.current = false
     closeSeenRef.current = false
@@ -165,6 +175,20 @@ export function useOwnSlotChat({
       return
     }
     if (activeSlot === slotKey || (replacement && activeSlot === replacement)) return
+    // Two such panels on different sessions take the active slot from each
+    // other back to back, a gateway read each time. A run of quick switch-backs
+    // stops at the cap for that session, showing no chat; one after a quiet gap
+    // starts a new run, so a lone panel's occasional switch-backs never reach it.
+    const backs = switchBacksRef.current
+    if (backs.count > MAX_SWITCH_BACKS) return
+    const now = Date.now()
+    backs.count = now - backs.at < SWITCH_BACK_GAP_MS ? backs.count + 1 : 1
+    backs.at = now
+    if (backs.count > MAX_SWITCH_BACKS) {
+      // eslint-disable-next-line no-console -- an app mounting two such panels has no other signal
+      console.warn(`useOwnSlotChat: stopped switching back to session ${slotKey}: another embedded chat keeps making a different session active. Mount one conversationOnly ChatPanel at a time.`)
+      return
+    }
     switchAgain()
   }, [followsNavigation, switchingElsewhere, slots, activeSlot, slotKey, readyKey, closePhase, listPartial, onSessionGone, onSessionReplaced])
 

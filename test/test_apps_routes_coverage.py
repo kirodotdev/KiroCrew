@@ -28,6 +28,7 @@ app secret, backend URL resolution and the reverse proxy). The helpers they shar
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import threading
 from pathlib import Path
@@ -635,6 +636,32 @@ class TestInstallValidation:
             assert resp.status == 400
             assert "999.0.0" in (await resp.json())["error"]
         assert not (home / "apps" / APP).exists()
+
+    @pytest.mark.asyncio
+    async def test_a_manifest_saved_with_a_byte_order_mark_installs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows editors save app.json with a UTF-8 byte-order mark. The route's
+        # identity read and install_app's parse both read it like the same file
+        # without one.
+        _setup_env(tmp_path, monkeypatch)
+        src = _make_app_source(tmp_path)
+        manifest = src / APP_MANIFEST_FILENAME
+        manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+
+        async def _register(name: str):
+            return routes_mod.RegistrationResult()
+
+        async def _start(name: str) -> None:
+            return None
+
+        monkeypatch.setattr(routes_mod, "_register_app_off_loop", _register)
+        monkeypatch.setattr(routes_mod, "_start_backend_after_install", _start)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post("/api/apps/install", json={"source": str(src)})
+            body = await resp.json()
+        assert resp.status == 201, body
+        assert body["name"] == APP
 
     @pytest.mark.asyncio
     async def test_local_install_declaring_session_approval_does_not_start(

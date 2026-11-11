@@ -610,6 +610,19 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
   })
 
+  it('a background check that ran without a verdict is not "Not checked yet"', async () => {
+    // The backend stamps `update_last_checked_at` on failure too, so the card
+    // reads "Last checked ..." and the hero must not deny the check ran.
+    stubFetch({})
+    pushStatus({ update_check_status: 'failed', update_last_checked_at: 1_700_000_000 })
+    mountWeb()
+    await screen.findByText(/Last checked/)
+    expect(screen.queryByTestId('hero-not-checked')).toBeNull()
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
+    // Deferred: #34868 -- a failed background check has no notice yet.
+    expect(screen.queryByTestId('check-failed')).toBeNull()
+  })
+
   it('the hero pill goes green once a check reports current', async () => {
     stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
     mountWeb()
@@ -663,6 +676,18 @@ describe('AboutPanel gateway update check', () => {
     expect(autoUpdateRow()).toBe(row)
   })
 
+  it('reads off, not on, where the gateway cannot install (GH #34684)', async () => {
+    // The saved value is still `true` (the schema default), but a notify-only
+    // install never installs on its own: a held switch drawn on says it does.
+    stubFetch({})
+    pushStatus({ update_auto_effect: 'notify', update_can_apply: false })
+    mountWeb()
+
+    await waitFor(held)
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+    expect(note()).toHaveTextContent(NOTIFY_ONLY)
+  })
+
   it.each([
     ['mandatory', 'pages.settings.aboutPanel.gateway_auto_update_mandatory_note'],
     // A gateway without the field has not said what the switch does.
@@ -690,6 +715,7 @@ describe('AboutPanel gateway update check', () => {
     mountWeb()
 
     await waitFor(held)
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
     expect(note()).toHaveTextContent(i18nT('pages.settings.aboutPanel.auto_update_notify_manual_apply'))
     expect(note()).not.toHaveTextContent(NOTIFY_ONLY)
   })
@@ -845,7 +871,7 @@ describe('AboutPanel gateway update check', () => {
     // The dashboard client's default: nothing goes stale on its own.
     mountWeb({ staleTime: Infinity })
     await waitFor(live)
-    const pinText = i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned')
+    const pinText = i18nT('pages.settings.aboutPanel.auto_update_pinned_user')
 
     pinned = true
     fireEvent.click(screen.getByRole('switch', { name: LABEL }))
@@ -871,7 +897,7 @@ describe('AboutPanel gateway update check', () => {
     mountWeb()
 
     const pin = await screen.findByTestId('auto-update-pin-note')
-    expect(pin).toHaveTextContent(i18nT('pages.settings.privacyPanel.recordMetricsOverlayPinned'))
+    expect(pin).toHaveTextContent(i18nT('pages.settings.aboutPanel.auto_update_pinned_user'))
     await waitFor(held)
     expect(screen.getByRole('switch', { name: LABEL }).closest('[aria-describedby]')?.getAttribute('aria-describedby') ?? '')
       .toContain(pin.id)
@@ -879,6 +905,57 @@ describe('AboutPanel gateway update check', () => {
     const calls = fetchSpy.mock.calls.map(([u, init]) => `${(init as RequestInit | undefined)?.method ?? 'GET'} ${String(u)}`)
     expect(calls.some(c => c.includes('/api/update/check'))).toBe(false)
     expect(calls.some(c => c.startsWith('POST') && c.includes('/api/update/auto'))).toBe(false)
+  })
+
+  // An edition that writes the entry back on every boot owns it: the note names
+  // its policy, and never tells the person to remove what the next boot restores.
+  const POLICY = { label: 'Example update policy', detail: 'Example installs updates; see its doctor.' }
+  const policyPin = { overlay_override: true, overlay_source: 'policy', overlay_policy: POLICY }
+  const policyText = () => i18nT('pages.settings.aboutPanel.auto_update_pinned_policy', POLICY).trim()
+
+  it("names an edition's policy pin from the first read, holds the switch, and gives no removal advice", async () => {
+    stubFetch({}, { autoUpdatePin: () => ({ status: 200, body: policyPin }) })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+
+    const pin = await screen.findByTestId('auto-update-pin-note')
+    await waitFor(() => expect(pin).toHaveTextContent(policyText()))
+    expect(pin.textContent).toContain(POLICY.label)
+    expect(pin.textContent).toContain(POLICY.detail)
+    expect(pin.textContent).not.toContain(i18nT('pages.settings.aboutPanel.auto_update_pinned_user'))
+    expect(pin.textContent ?? '').not.toMatch(/config\.local\.json/)
+    await waitFor(held)
+    expect(screen.getByRole('switch', { name: LABEL }).closest('[aria-describedby]')?.getAttribute('aria-describedby') ?? '')
+      .toContain(pin.id)
+  })
+
+  it("names the edition's policy when a refused save is the first word of the pin", async () => {
+    stubFetch({}, {
+      autoUpdateSave: () => ({ status: 409, body: { error: 'held', code: 'auto_update_overlay_owned', ...policyPin } }),
+    })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb({ staleTime: Infinity })
+    await waitFor(live)
+
+    fireEvent.click(screen.getByRole('switch', { name: LABEL }))
+    expect(await screen.findByTestId('auto-update-save-error')).toHaveTextContent(policyText())
+    held()
+  })
+
+  it('names the policy a check reports, and goes back to the removal advice once the entry is the person\'s', async () => {
+    let answer: Record<string, unknown> = policyPin
+    stubFetch({ check_status: 'succeeded', ...policyPin }, { autoUpdatePin: () => ({ status: 200, body: answer }) })
+    pushStatus({ update_auto_effect: 'install' })
+    mountWeb()
+    await pressCheck()
+    await waitFor(() => expect(screen.getByTestId('auto-update-pin-note')).toHaveTextContent(policyText()))
+
+    answer = { overlay_override: true, overlay_source: 'user', overlay_policy: null }
+    act(() => { focusManager.setFocused(false) })
+    act(() => { focusManager.setFocused(true) })
+    await waitFor(() => expect(screen.getByTestId('auto-update-pin-note'))
+      .toHaveTextContent(i18nT('pages.settings.aboutPanel.auto_update_pinned_user')))
+    act(() => { focusManager.setFocused(undefined) })
   })
 
   it('leaves the switch usable when the pin cannot be read', async () => {

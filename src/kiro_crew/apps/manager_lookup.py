@@ -39,6 +39,7 @@ from kiro_crew.apps.manager_records import (
 )
 from kiro_crew.apps.manifest import AppManifest, contain_command_agents
 from kiro_crew.apps.message_action_grants import message_action_grant_row
+from kiro_crew.apps.protected_app_state import owner_disabled
 from kiro_crew.apps.selection_action_grants import selection_action_grant_row
 from kiro_crew.apps.worker_auto_approve import worker_auto_approve_grant_row
 from kiro_crew.platform_compat import is_link_or_junction
@@ -328,8 +329,10 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
     """Why a session cannot start on *agent*, whose definition is gone, and the fix.
 
     *member* is the Crew Member the session belongs to, when there is one; the
-    reason then names the member rather than the agent. Blocking file I/O through
-    :func:`owning_app_for_agent`; call it off the event loop.
+    reason then names the member rather than the agent. An agent no app declares
+    that is the configured ``agent.default_agent`` also gets the setting as the
+    fix. Blocking file I/O through :func:`owning_app_for_agent` and a config load;
+    call it off the event loop.
     """
     owner = owning_app_for_agent(agent)
     subject = f'Bot "{member}"' if member else f'The agent "{agent}"'
@@ -340,7 +343,15 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
                 f'{subject} can\'t start: its agent template "{agent}" is missing. '
                 "Pick another template on its Agent Template tab."
             )
-        return f"{subject} can't start: its agent definition is missing."
+        reason = f"{subject} can't start: its agent definition is missing."
+        # A session that names no agent starts from agent.default_agent, so a
+        # default with no spec refuses every one of them until the setting changes.
+        from kiro_crew.dashboard.side_readonly_spec import missing_default_agent_explanation
+
+        default = missing_default_agent_explanation(agent)
+        if default is not None:
+            reason += f" It is agent.default_agent, which setup does not write. {default[1]}"
+        return reason
     if not owner.enabled:
         return (
             f"{subject} comes from the {owner.label} app, which is disabled. "
@@ -602,7 +613,8 @@ def app_enabled_state(name: str) -> bool | None:
             logger.warning("Metadata path %s is not a regular file", meta_path)
             return None
         data = json.loads(meta_path.read_text(encoding="utf-8"))
-        return bool(InstalledApp.from_dict(data).enabled)
+        # The owner's disable, kept outside the app's tree, outranks this file.
+        return bool(InstalledApp.from_dict(data).enabled) and not owner_disabled(name)
     # No `json.JSONDecodeError` member: it subclasses ValueError, so pairing the two is
     # redundant and the repo ratchets against it.
     except (OSError, ValueError, TypeError, KeyError) as exc:

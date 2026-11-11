@@ -189,6 +189,10 @@ class _Session:
     # Consumed one-shot by the next prompt builder to re-inject the skills
     # index so the model can still discover skills post-compaction.
     needs_context_reinjection: bool = False
+    # The exit-0 stdout of this session's ``agentSpawn`` hooks, kept from the
+    # session's first turn so a turn after a compaction can send it again
+    # without running the hooks a second time.
+    agent_spawn_context: tuple[str, ...] = ()
     # Set when this session's cold start consumed a replay suppression, so it
     # started with NO conversation. Cleared by the compaction coordinator once
     # the first confirmed reading is recorded below. Lives on the session so it
@@ -220,6 +224,8 @@ class _Session:
         self.consecutive_failures = 0
         self.prev_turn_cancelled = False
         self.needs_context_reinjection = False
+        # The fresh provider's first turn runs the agentSpawn hooks again.
+        self.agent_spawn_context = ()
         # A recycled provider replays history on its first turn, so its first
         # reading is not a floor; the measurement belongs to the old provider.
         self.floor_pending = False

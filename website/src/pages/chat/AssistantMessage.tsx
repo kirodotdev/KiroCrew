@@ -29,6 +29,7 @@ import { extractInlineThinking } from '../../app-sdk/protocol/inlineThinking'
 import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
+import { usePagerFocus } from '../../hooks/usePagerFocus'
 import type { PlanStepInput } from '../../api/client'
 import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
 import { i18nT } from '../../i18n/t'
@@ -224,6 +225,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   const rawBoxHeightRef = useRef(rawBoxHeight); rawBoxHeightRef.current = rawBoxHeight
   useEffect(() => { if (rawBoxHeightRef.current !== null) setRawBoxHeight(null) }, [content, variantIdx])
   const [localIdx, setLocalIdx] = useState<number | null>(null)
+  const versionPager = usePagerFocus()
   const localIdxRef = useRef(localIdx); localIdxRef.current = localIdx
   useEffect(() => { if (localIdxRef.current !== null) setLocalIdx(null) }, [content, variants?.length])
 
@@ -845,7 +847,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
           const switchFn = onSwitchVariant || ((i: number) => setLocalIdx(i))
           return (
             <div className="flex items-center gap-0.5 ml-1 text-[11px] leading-4 text-muted">
-              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.previous_version')} aria-label={i18nT('pages.chat.assistantMessage.previous_version')} disabled={curIdx <= 0 || !!slotRunning} onClick={() => switchFn(curIdx - 1)}><ChevronLeft size={14} /></button>
+              <button ref={versionPager.prevRef} className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.previous_version')} aria-label={i18nT('pages.chat.assistantMessage.previous_version')} disabled={curIdx <= 0 || !!slotRunning} onClick={() => { switchFn(curIdx - 1); versionPager.pressedPrev() }}><ChevronLeft size={14} /></button>
               {/* No `font-mono`, same as the timestamp two elements to the left:
                   "2/3" is a pagination counter, not code, and it sits in the
                   SAME hover row — leaving it on `var(--mono)` would have made
@@ -853,7 +855,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
                   it. `tabular-nums` also stops the chevrons shifting when the
                   index crosses into two digits. */}
               <span className="tabular-nums">{curIdx + 1}/{variants!.length}</span>
-              <button className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.next_version')} aria-label={i18nT('pages.chat.assistantMessage.next_version')} disabled={curIdx >= variants!.length - 1 || !!slotRunning} onClick={() => switchFn(curIdx + 1)}><ChevronRight size={14} /></button>
+              <button ref={versionPager.nextRef} className="hover:text-text p-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-default cursor-pointer" title={i18nT('pages.chat.assistantMessage.next_version')} aria-label={i18nT('pages.chat.assistantMessage.next_version')} disabled={curIdx >= variants!.length - 1 || !!slotRunning} onClick={() => { switchFn(curIdx + 1); versionPager.pressedNext() }}><ChevronRight size={14} /></button>
             </div>
           )
         })()}

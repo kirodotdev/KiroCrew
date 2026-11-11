@@ -49,7 +49,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self, session_key: 'str', approval_id: 'str', approved: "
-        "'bool', decision: 'str' = '', *, instance: 'str' = '') -> 'None'",
+        "'bool', decision: 'str' = '', *, origin: 'str' = '', instance: 'str' = '', "
+        "mid: 'str' = '') -> 'None'",
     ),
     "_audit_approval": (
         "function",
@@ -615,7 +616,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, approval_id: 'str', source: 'str', tool: 'str', *, tool_input: "
         "'str' = '', tool_purpose: 'str' = '', slot: 'str' = '', is_background: "
-        "'bool' = False) -> 'bool'",
+        "'bool' = False, run_task_id: 'str' = '', task_index: 'int | None' = None) -> 'bool'",
     ),
     "request_question": (
         "function",
@@ -764,7 +765,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "update_can_arm: 'bool' = False, update_auto_effect: 'str' = 'unknown', "
         "update_auto_manual_only: 'bool' = False, "
         "update_bundled_by_app: 'bool' = False, version_display: 'str' = '', "
-        "bundle_id: 'str' = '') -> 'dict[str, Any]'",
+        "bundle_id: 'str' = '', background_turns: 'dict[str, int] | None' = None) "
+        "-> 'dict[str, Any]'",
     ),
     "subscribe_logs": ("function", False, False, "(self, ws: 'web.WebSocketResponse') -> 'None'"),
     "subscribe_subagents": (

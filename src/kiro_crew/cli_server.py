@@ -343,7 +343,7 @@ async def _gateway(
         logging.getLogger(__name__).warning(
             "Dashboard dist/ not found — the dashboard will show the "
             "'not built' guidance page until the SPA is bundled. "
-            "Run `npm ci && npm run build` in the website/ directory to build "
+            "Run `npm ci`, then `npm run build`, in the website/ directory to build "
             "the full dashboard."
         )
 
@@ -778,7 +778,7 @@ def _tail_log_file(path: Path, lines: int, follow: bool) -> None:
     try:
         while True:
             try:
-                fd = platform_compat.open_log_file_for_tail(path)
+                fd = platform_compat.open_file_for_shared_read(path)
             except FileNotFoundError:
                 if not follow:
                     raise
@@ -884,6 +884,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GatewayLogMark,
         _incumbent_from_lock_holder,
         _own_console_script,
+        _print_running_cron_runs,
         _print_still_starting,
         _print_token_url,
         _probe_gateway_ready,
@@ -908,6 +909,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _pid_exited,
         _process_path,
         _refuse_desktop_supervised,
+        _refuse_if_gateway_outlived_service_stop,
         _refuse_if_lock_held,
         _refuse_lock_holder,
         _refuse_service_alias,
@@ -923,6 +925,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.cli_server_update import (  # noqa: F401
         _DETACHED_BRANCH_ORDER,
         _detached_upstream_branch,
+        _gateway_holds_update_lock,
         _refresh_agent_config,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,

@@ -578,6 +578,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     saveDrafts,
     searchParams,
     slots,
+    splitMode,
     tokenConsumingRef,
   })
   const {
@@ -588,6 +589,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     ensureSlotTab,
     handleResumeSession,
     highlightTs,
+    launchedDraftInteracted,
     initialMidRef,
     initialMsgRef,
     initialSidRef,
@@ -694,7 +696,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // widget action's prefill.
   useAutoSendIntake({ connected, send, autoSendTick, autoSendRef, appLaunchSendRef, widgetPrefillRef, setInput, raisePrefillHint })
   const {
-    approve, dismissApproval, switchAgent, pickModel, setProject, projectSwitching,
+    decideRow, switchAgent, pickModel, setProject, projectSwitching,
   } = useSessionChoices({
     dispatch, queryClient, activeSlot, codexPairModels, setModelDropdown, modelPickerReturnsFocusRef, setPendingAgent, setPendingModel, setPendingProject,
   })
@@ -781,12 +783,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     openFollowupSession,
   } = useOpenFollowupSession({
-    mode, dispatch,
+    mode, dispatch, send, setActionError,
   })
   const {
     followupStartInWorktree, followupStartInNewChat,
   } = useFollowupStarts({
-    activeSlot, currentSlot, followupTsRef, followupBranchFor, openFollowupSession,
+    activeSlot, currentSlot, followupTsRef, followupBranchFor, openFollowupSession, setActionError,
   })
 
   // Outside events feeding the side panel, the dock terminal and the composer,
@@ -992,7 +994,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     embedded, mode, popout, filteredSlots, connected, activeSlot, voiceRecoverySlot, appToolCallIds, mcpAppPanel, messages, messagesRef, slotRunning, toolDisclosure, setToolDisclosureFor, slotState,
     activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, chatConfig, activeSlotRemoteBound, automationId, setAutomationOpen, handleArtifactOpen, handleFileOpen,
     handleFolderOpen, handleOpenDiff, handleSubagentPanelOpen, sessionTitles, handleFork, forkDirectionChoice, highlightTs, selectSessionTab, linkPreviewsOn, socialShareOn, connectionsUiOn, planTaskId, showRefusedPress, handleOpenCrewTab,
-    approve, dismissApproval, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
+    decideRow, revealAppInPanel, lastTextIdx, regenerating, handleRegenerate, replacingMids, continuable, continuing, freshSession, handleContinue, handleFreshSession, repairImages, handleRepairImages, interrupted,
     openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openModelPickerFromError, openTurnLimitSetting, quoteWholeMessage, handleAsk, handleQuote, handleEditResend, editLast, farmPassRef,
     handleEditConsumed, renderUserContentCb, transcriptHot, toggleAct, handleSpeak, handleApplyPlan, renderedDisplayItems, stableMsgKey, handleLoadEarlier, isPinned, handleJumpToQuote,
     handleTogglePinForMessage, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures,
@@ -1112,7 +1114,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
 
       {/* Chat pane */}
       {embedMode !== 'sessions' && (
-      <div ref={setChatPaneEl} className={`relative flex flex-col ${embedded || popout ? 'bg-bg ' : ''}min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
+      <div ref={setChatPaneEl} onPointerDownCapture={launchedDraftInteracted} onKeyDownCapture={launchedDraftInteracted} onInputCapture={launchedDraftInteracted} onChangeCapture={launchedDraftInteracted} className={`relative flex flex-col ${embedded || popout ? 'bg-bg ' : ''}min-w-0 min-h-0 h-full overflow-hidden ${(activityOpen && !activitySlot) || search.isOpen ? 'flex-[1_1_60%]' : 'flex-1'}`} style={{ transition: 'flex 0.2s', ...(!sidebarOpen && !isMobile ? { marginLeft: -COLLAPSED_PANE_RECLAIM_PX } : {}), '--mc-content-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).messages, '--mc-input-width': scaleContentWidth(CONTENT_WIDTH[chatConfig.contentWidth], chatConfig.contentWidth, chatConfig.messageFontSize).input } as React.CSSProperties}>
         <ChatPaneChrome
           embedded={embedded} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} navigate={navigate} provider={provider} setVoiceRecoverySlot={setVoiceRecoverySlot}
           switchSlotGone={switchSlotGone} titleInTopbar={titleInTopbar} undeletableHistory={undeletableHistory} unresumableResume={unresumableResume} crewWindow={crewWindow} messages={messages}
@@ -1180,8 +1182,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               completedTurnCount={completedTurnCount} cursorIsForActiveSlot={cursorIsForActiveSlot} kiroCrewVersion={kiroCrewVersion} loadingOlder={loadingOlder} olderFailed={olderFailed}
               setTurnDisclosureFor={setTurnDisclosureFor} slotHasMore={slotHasMore} slotLoading={slotLoading} slotRunning={slotRunning} slotState={slotState} environmentStart={environmentStart} slotStopping={slotStopping}
               slotSwitchTarget={slotSwitchTarget} turnDisclosure={turnDisclosure} turnRowMayBeLive={turnRowMayBeLive} setInput={setInput} isWelcomeState={transcriptWelcome} crewModeOn={crewModeOn || crewWelcomeHeld} openTaskBoard={openTaskBoard} chatConfig={chatConfig}
-              scrollerRef={scrollerRef} bindScroller={bindScroller} handleSurveyLayoutChange={handleSurveyLayoutChange} onScrollPin={onScrollPin} pinned={pinned} approve={approve}
-              dismissApproval={dismissApproval} currentSlot={currentSlot} projectDir={transcriptProjectDir} regenerating={regenerating} sendUnconfirmed={sendUnconfirmed} dockH={dockH} lastRole={lastRole} streamTick={streamTick}
+              scrollerRef={scrollerRef} bindScroller={bindScroller} handleSurveyLayoutChange={handleSurveyLayoutChange} onScrollPin={onScrollPin} pinned={pinned} decideRow={decideRow}
+              currentSlot={currentSlot} projectDir={transcriptProjectDir} regenerating={regenerating} sendUnconfirmed={sendUnconfirmed} dockH={dockH} lastRole={lastRole} streamTick={streamTick}
               footerActivityKey={!slotLoading && slotSwitchTarget !== activeSlot && (slotRunning || !currentSlot?.preparing) ? transcriptActivityKey(messages) : undefined}
               footerSentHere={turnSentHere(messages)}
               toggleAct={toggleAct} renderedDisplayItems={renderedDisplayItems} stableMsgKey={stableMsgKey} virtualKey={virtualKey} handleLoadEarlier={handleLoadEarlier}
@@ -1198,7 +1200,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               defaultAgentFailed={defaultAgentFailed} effectiveAgents={effectiveAgents} filteredAgents={filteredAgents} installedAgents={installedAgents} setAgentDropdown={setAgentDropdown}
               setAgentFilter={setAgentFilter} toggleDefaultAgent={toggleDefaultAgent} codexPairModels={codexPairModels} filteredModels={filteredModels} hiddenModelsQ={hiddenModelsQ}
               ownModelsFailed={ownModelsFailed} ownModelsFetching={ownModelsQuery.isFetching} retryOwnModels={() => { void ownModelsQuery.refetch() }}
-              modelsBackend={selectionCapabilitiesQ.data?.models_backend}
+              modelsBackend={selectionCapabilitiesQ.data?.models_backend} ultracode={selectionCapabilitiesQ.data?.ultracode}
               jevRouteOn={jevRouteOn} modelDropdown={modelDropdown} modelDropdownRef={modelDropdownRef} modelFilter={modelFilter} modelInputRef={modelInputRef}
               modelPickerConfigured={modelPickerConfigured} modelPickerReturnsFocusRef={modelPickerReturnsFocusRef} setModelDropdown={setModelDropdown} setModelFilter={setModelFilter}
               onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote}

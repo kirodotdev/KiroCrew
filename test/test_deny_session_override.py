@@ -398,6 +398,72 @@ async def _run_answered(state, slot, answer: str):
         await _drain(task)
 
 
+class TestOverrideIsNeverRelayedToACodeChannel:
+    @pytest.mark.asyncio
+    async def test_a_code_channel_workers_override_card_stays_on_the_dashboard(
+        self, tmp_path, monkeypatch
+    ):
+        """A Slack Code channel relays its workers' prompts into the channel, but
+        an override is answered on the dashboard alone (as the linked mirror
+        rules): a Slack Approve would be read as a decline under an approved card."""
+        # The turn resolves the relay through chat_runner's composed namespace.
+        from kiro_crew.dashboard import chat_runner
+
+        _no_pins(monkeypatch)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot()
+        slot._created_by = "chat-1-1"  # a worker a code channel's session created
+        relayed: list[object] = []
+
+        def relay(*args, **kwargs):
+            relayed.append(args)
+            return None
+
+        monkeypatch.setattr(chat_runner, "start_worker_approval_relay", relay)
+        _set_stream(client, _stream())
+
+        await _run_answered(state, slot, "deny_override_once")
+
+        assert _permission_rows(slot), "the override card is still shown on the dashboard"
+        assert relayed == []
+        client.approve_tool.assert_called_once_with("req-1", deny_waivers=frozenset({_RM_ROOT}))
+
+    @pytest.mark.asyncio
+    async def test_a_relayed_mcp_prompt_carries_its_trusted_identity(self, tmp_path, monkeypatch):
+        """The runner hands the relay the event's MCP identity, so the channel's
+        card names the proven server/tool, not only the model-written title."""
+        from kiro_crew.dashboard import chat_runner
+
+        _no_pins(monkeypatch)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([]))
+        slot = _make_slot()
+        slot._created_by = "chat-1-1"
+        relayed: list[dict] = []
+
+        def relay(*args, **kwargs):
+            relayed.append(kwargs)
+            return None
+
+        monkeypatch.setattr(chat_runner, "start_worker_approval_relay", relay)
+        event = _shell_event(
+            title="email_send",
+            tool_kind="other",
+            tool_input="{}",
+            is_shell=False,
+            mcp_server_name="mail",
+            tool_name="send",
+            mcp_identity_trusted=True,
+        )
+        _set_stream(client, _stream(event))
+
+        await _run_answered(state, slot, "approved")
+
+        assert relayed, "the prompt reached the code-channel relay"
+        assert relayed[-1]["mcp_server_name"] == "mail"
+        assert relayed[-1]["tool_name"] == "send"
+        assert relayed[-1]["mcp_identity_trusted"] is True
+
+
 class TestDashboardOverrideCard:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("mode", ["normal", "trust", "yolo"])
@@ -423,6 +489,25 @@ class TestDashboardOverrideCard:
         client.approve_tool.assert_called_once_with("req-1", deny_waivers=frozenset({_RM_ROOT}))
         client.reject_tool.assert_not_called()
         assert slot._deny_waivers == set()
+
+    @pytest.mark.asyncio
+    async def test_an_override_card_gets_no_chat_app_buttons(self, tmp_path, monkeypatch):
+        # A plain Approve from a chat app refuses an override card's call, so the
+        # bridged note must not offer one: the dashboard alone answers it.
+        _no_pins(monkeypatch)
+        handed: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.notifications.bridge_approval_note.schedule_pending_approval",
+            lambda state, fut, **kw: handed.append(kw),
+        )
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot()
+        _set_stream(client, _stream())
+
+        await _run_answered(state, slot, "deny_override_once")
+
+        [kw] = handed
+        assert kw["answerable"] is False
 
     @pytest.mark.asyncio
     async def test_card_asks_for_no_rejection_reason(self, tmp_path, monkeypatch):
@@ -1309,7 +1394,13 @@ class TestApproveRouteEndToEnd:
             if c.args[0] == "approval_resolved"
         ]
         assert frames == [
-            {"id": "rid-1", "approved": True, "slot": slot.key, "mid": body["request_mid"]}
+            {
+                "id": "rid-1",
+                "approved": True,
+                "slot": slot.key,
+                "mid": body["request_mid"],
+                "origin": "native",
+            }
         ]
 
     @pytest.mark.asyncio

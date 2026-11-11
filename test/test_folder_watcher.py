@@ -390,6 +390,48 @@ class TestFolderWatcherScan:
         assert stats["capped"] == 5
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("props", [
+        {"max_files": "5"},          # a string from a hand-written add-source body
+        {"max_files": 0.5},          # positive, but truncates to a cap of 0
+        {"ignore_patterns": "*.log"},  # a bare string, not a list
+        {"ignore_patterns": [1]},    # a non-string entry
+    ])
+    async def test_a_malformed_scan_property_falls_back_instead_of_breaking_the_scan(
+        self, store, pipeline, tmp_path, props
+    ):
+        """The add-source route stores ``properties`` as sent. A wrong-shaped
+        value is ignored, as the preview already ignores it, so the scan takes
+        every file rather than raising or ignoring them all."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        for i in range(3):
+            (vault / f"note{i}.md").write_text(f"Note {i}")
+        fw = FolderWatcher(store, pipeline)
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": json.dumps(props)}
+
+        stats = await fw.scan_source(source)
+        assert stats["new"] == 3
+        assert stats["capped"] == 0
+
+    @pytest.mark.asyncio
+    async def test_an_int_cap_of_zero_still_caps_every_file(self, store, pipeline, tmp_path):
+        """An int cap is used as stored, so 0 keeps capping every file."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        for i in range(3):
+            (vault / f"note{i}.md").write_text(f"Note {i}")
+        fw = FolderWatcher(store, pipeline)
+        source_id = store.add_source("test", "local_folder", str(vault))
+        source = {"id": source_id, "uri": str(vault), "source_type": "local_folder",
+                  "properties": json.dumps({"max_files": 0})}
+
+        stats = await fw.scan_source(source)
+        assert stats["new"] == 0
+        assert stats["capped"] == 3
+
+    @pytest.mark.asyncio
     async def test_changed_file_reingested(self, store, pipeline, vault):
         fw = FolderWatcher(store, pipeline)
         source_id = store.add_source("test", "local_folder", str(vault))

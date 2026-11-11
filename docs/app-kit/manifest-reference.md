@@ -1,6 +1,8 @@
 # App Manifest Reference
 
 The app manifest (`app.json`) declares your app's identity, resources, and requirements.
+Save it as UTF-8. One leading UTF-8 byte-order mark, which Windows editors write for
+"UTF-8 with BOM", is accepted.
 
 ## Required Fields
 

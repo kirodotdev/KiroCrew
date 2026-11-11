@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+from sidecar_fault_helpers import fail_one_sidecar_read
+
 from kiro_crew import agent_state
 
 
@@ -85,6 +88,52 @@ def test_falsy_cc_model_strips_without_lifting(caplog):
     assert "cc_model" not in config
     assert agent_state.get_cc_model("kirocrew") is None
     assert caplog.text == ""
+
+
+# --- One transient sidecar read error ----------------------------------------
+#
+# The unset check feeds a write, so it reads strict: an unreadable sidecar must
+# raise, not read as "unset" and lift a stale spec value over the owner's pick.
+
+
+def test_a_failed_read_does_not_lift_a_stale_model_managed_over_the_owner_pick(monkeypatch):
+    agent_state.set_model_managed("agentx", False)
+    fail_one_sidecar_read(monkeypatch, "lift_and_strip_bookkeeping", "agentx")
+
+    with pytest.raises(PermissionError):
+        agent_state.lift_and_strip_bookkeeping({"model_managed": True}, "agentx")
+
+    assert agent_state.get_model_managed("agentx") is False
+
+
+def test_a_failed_read_does_not_lift_a_stale_cc_model_over_the_owner_pick(monkeypatch):
+    agent_state.set_cc_model("agentx", "owner-pick")
+    fail_one_sidecar_read(monkeypatch, "lift_and_strip_bookkeeping", "agentx")
+
+    with pytest.raises(PermissionError):
+        agent_state.lift_and_strip_bookkeeping({"cc_model": "stale-spec-model"}, "agentx")
+
+    assert agent_state.get_cc_model("agentx") == "owner-pick"
+
+
+def test_a_failed_read_in_a_spec_refresh_keeps_the_pinned_model(monkeypatch):
+    from kiro_crew.agent import _refresh_dynamic_fields
+
+    agent_state.set_model_managed("agentx", False)
+    config = {"name": "agentx", "model": "pinned-model-x", "model_managed": True}
+    fail_one_sidecar_read(monkeypatch, "lift_and_strip_bookkeeping", "agentx")
+
+    with pytest.raises(PermissionError):
+        _refresh_dynamic_fields(config)
+
+    assert config["model"] == "pinned-model-x"
+    assert agent_state.get_model_managed("agentx") is False
+
+
+def test_claim_records_the_given_value_only_when_unset():
+    assert agent_state.claim_model_managed_if_unset("agentx", False) is True
+    assert agent_state.claim_model_managed_if_unset("agentx", True) is False
+    assert agent_state.get_model_managed("agentx") is False
 
 
 # --- Fork lineage sidecar (forked_from / private_to) -------------------------

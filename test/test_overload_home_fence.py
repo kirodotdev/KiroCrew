@@ -9,7 +9,7 @@ sandbox (``sandbox._CREW_HIDDEN_LEAVES``):
   accepted work and the scheduler's authority. Hidden + fenced.
 
 Plus the per-process scratch root (``scratch/``): every session spawn gets its
-own ``<home>/scratch/<label>-<rand>``; the sandbox masks the root as a whole
+own ``<home>/scratch/<rand>``; the sandbox masks the root as a whole
 and re-exposes only the spawn's own directory as a private window
 (``extra_private_dirs``), so one session's scratch is never readable from a
 sibling session's sandbox.

@@ -967,6 +967,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.cli_commands_security import (  # noqa: F401
         _TIME_SELECTOR_RE,
         _TIME_SELECTOR_UNITS,
+        _explain_batch,
+        _explain_record,
         _policy,
         _policy_fetch,
         _print_denied_command_summary,

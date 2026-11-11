@@ -549,6 +549,9 @@ def main() -> None:
     cli_parser_admin.register_security_parser(sub)
     cli_parser_admin.register_eval_parser(sub, _jail_opts)
     cli_parser_admin.register_tailnet_parser(sub)
+    from kiro_crew.remote_control.cli import register_parser as _register_remote_control
+
+    _register_remote_control(sub)
     cli_parser_admin.register_telemetry_parser(sub)
     cli_parser_admin.register_policy_parser(sub)
 
@@ -752,6 +755,11 @@ def main() -> None:
         print(BANNER)
         parser.print_help()
         return
+
+    if args.command == "gateway":  # before companion code can repoint SSH_AUTH_SOCK
+        from kiro_crew.mcp_gateway.agent_socket import record_boot_agent_socket
+
+        record_boot_agent_socket()
 
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE, before any subcommand spins up
@@ -1053,6 +1061,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _tailnet
 
         _tailnet(args)
+    elif args.command == "remote-control":
+        from kiro_crew.remote_control.cli import run as _remote_control
+
+        _remote_control(args)
     elif args.command == "telemetry":
         from kiro_crew.cli_commands import _telemetry
 

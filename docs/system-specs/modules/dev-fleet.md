@@ -2151,7 +2151,8 @@ unusable worktree instead of promising a cutover that would then be refused.
 Rejects with a distinct message for each: empty/blank value; control characters
 (ord < 0x20 or 0x7F); unresolvable path; path is not a directory; missing
 `target_bin` (`.venv/bin/kirocrew`, or `.venv/Scripts/kirocrew.exe` on Windows);
-`target_bin` not executable; no `src/kiro_crew` directory in the checkout.
+`target_bin` not executable; no `src/kiro_crew` directory in the checkout; a
+checkout, `target_bin` or `src/kiro_crew` that cannot be stat'ed.
 Returns the resolved checkout path on success.
 
 ### Rollback semantics

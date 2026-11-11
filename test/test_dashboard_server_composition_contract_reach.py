@@ -667,6 +667,7 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: the caller) are appended after the explicit list.
 _DASHBOARD_CHAIN = (
     ("route_latency_middleware", "make_route_latency_middleware.<locals>."),
+    ("card_turn_arrival_middleware", "card_turn_arrival_middleware"),
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
@@ -677,6 +678,7 @@ _DASHBOARD_CHAIN = (
     ("csrf_middleware", "_make_csrf_middleware.<locals>."),
     ("middleware", "token_auth_middleware.<locals>."),
     ("sel_audit_middleware", "_install_dashboard_middlewares.<locals>."),
+    ("card_turn_delegation_middleware", "card_turn_delegation_middleware"),
     ("slot_ownership_middleware", "slot_ownership_middleware"),
     ("spa_fallback", "_install_dashboard_middlewares.<locals>."),
     ("_workflow_ready", "_register_workflow_lifecycle.<locals>."),
@@ -787,7 +789,7 @@ _DASHBOARD_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred
-    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred
+    _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred
     register_all subprocess_executor subprocess_executor subprocess_executor
     subprocess_executor subprocess_executor subprocess_executor subprocess_executor
     _register_deploy_routes
@@ -874,7 +876,7 @@ _API_BOOT = tuple("""
     _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred _deferred _deferred _deferred _deferred _deferred _deferred
     _deferred
-    _deferred _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred
+    _deferred _deferred_instances _deferred_instances _deferred_instances _deferred _deferred _deferred
     _register_deploy_routes _register_stt_hooks _register_own_host_warm
     _register_config_watch _register_prevent_sleep_shutdown
     _register_listener_guard_shutdown
@@ -1119,8 +1121,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 350
-_MCP_TABLE_DIGEST = "2fcf89ed86d95098d2a687a43d20f61b5f75a8c1ad6320c59c82aca3d4c8b3c8"
+_MCP_TABLE_ROWS = 349
+_MCP_TABLE_DIGEST = "61d9ef7fba135cb39fc2ee458bca1cbded52ff9c29bf1bb9222fad86c44997e8"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:

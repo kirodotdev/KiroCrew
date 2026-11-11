@@ -826,9 +826,10 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         // A stored title is never resent: a cached one may predate a rename.
         title: meta?.title ? undefined : fallbackTitle,
         preset: selectedPreset || undefined,
-        // OMITTED, not `[]`, while the roster is still unknown: absent means "use
-        // the configured defaults" to the server, which is what an unloaded config
-        // should fall back to. See `rosterIsKnown`.
+        // OMITTED, not `[]`, while the roster is still unknown: absent means "no
+        // choice made" to the server, which keeps the roster the meeting already
+        // holds and falls back to the configured defaults when it holds none. See
+        // `rosterIsKnown`.
         agents_enabled: rosterIsKnown ? enabledIds : undefined,
         muted_agents: mutedAgents,
         restart: opts.restart,

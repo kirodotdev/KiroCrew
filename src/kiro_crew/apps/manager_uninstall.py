@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import credential_masks, protected_app_state
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
     invalidate_orphan_cache,
@@ -28,8 +28,11 @@ from kiro_crew.apps.manager_builtins import (
 from kiro_crew.apps.manager_records import (
     AppResult,
     InstalledApp,
+    _import_app_tree_grants,
     _read_installed,
     app_dir,
+    hold_app_record_lock,
+    holds_app_record_locks,
     refresh_app_config_keys,
 )
 from kiro_crew.apps.manager_tree import (
@@ -73,6 +76,7 @@ def _rmtree_app_dir(dest: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@holds_app_record_locks
 def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = False) -> AppResult:
     """Uninstall an app while preserving its ``data/`` directory by default.
 
@@ -82,6 +86,9 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     """
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
+    # Held to the end, rollback included: a disable or enable in another process
+    # waits, so a rollback never restores a disable record older than theirs.
+    hold_app_record_lock(name)
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
@@ -114,7 +121,23 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     # destroyed, the user fixes the cause (typically an overlay-owned setting) and
     # runs uninstall again. Same reasoning as the revoke path, which runs teardown
     # before its config write for exactly this reason.
+    # The owner's approvals and disable, kept outside the app's tree, are read
+    # before anything is withdrawn: one that cannot be read refuses the uninstall
+    # with every grant still in place. The one-time import runs first, so no
+    # importer recreates the set after it is forgotten.
     try:
+        _import_app_tree_grants()
+        prior_records = protected_app_state.snapshot_app(name)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"not uninstalling {name!r}: its approved permissions could not be read ({exc})",
+        )
+    try:
+        # The approved set goes first, so a removal that fails leaves the execution
+        # grant untouched; the disable stays until the uninstall commits.
+        protected_app_state.forget_grants(name)
         # Recorded BEFORE the withdrawal so a failed delete below can put back
         # exactly what was there — and only when there WAS something. Restoring a
         # grant the app never held would be granting, not restoring.
@@ -130,6 +153,15 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         revoke_worker_auto_approve(name)
     except Exception as exc:  # noqa: BLE001 - refuse rather than half-uninstall
         logger.warning("trust-grant cleanup on uninstall of %r failed", name, exc_info=True)
+        # The app stays installed: put back the approvals a removal took.
+        try:
+            protected_app_state.restore_app(name, prior_records)
+        except (OSError, ValueError):
+            logger.warning(
+                "could not restore %r's approvals and disable after a failed removal",
+                name,
+                exc_info=True,
+            )
         return AppResult(
             ok=False,
             name=name,
@@ -408,6 +440,18 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         # failed uninstall with no side effect on trust.
         restore_note = ""
         try:
+            protected_app_state.restore_app(name, prior_records)
+        except (OSError, ValueError) as restore_exc:
+            logger.warning(
+                "could not restore %r's approvals and disable after a failed uninstall",
+                name,
+                exc_info=True,
+            )
+            restore_note = (
+                f" Its approved permissions and disable could not be restored "
+                f"({restore_exc}). Review and re-approve the app in Settings."
+            )
+        try:
             _restore_trust_grant(
                 name,
                 had_grant,
@@ -421,13 +465,20 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 name,
                 exc_info=True,
             )
-            restore_note = (
+            restore_note += (
                 f" Its third-party execution grant could not be safely restored "
                 f"({restore_exc}). Review the current installed app, then re-grant "
                 f"it in Settings only if you still trust that occupant."
             )
         return AppResult(ok=False, name=name, error=f"failed to remove app: {exc}{restore_note}")
 
+    # Committed: only now does the owner's disable go, so the app was never seen
+    # enabled while its tree was on disk. A failure leaves it for a later app
+    # under this name, which then starts disabled (fail closed).
+    try:
+        protected_app_state.set_owner_disabled(name, False)
+    except (OSError, ValueError):
+        logger.warning("could not clear an uninstalled app's disable record", exc_info=True)
     refresh_app_config_keys()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 

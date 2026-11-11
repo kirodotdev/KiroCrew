@@ -274,7 +274,10 @@ _LOG_PORT_LIMIT = dev_preview.LOG_PORT_LIMIT
 _ANSI_RE = dev_preview.ANSI_RE
 _LOG_URL_RE = dev_preview.LOG_URL_RE
 
-_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+# An upstream header name never reaches here with a newline (http.client stops
+# parsing at a malformed line); ``\Z`` and the escaped ``\$`` keep the package free
+# of ``$`` for the regex-anchor contract without changing a match.
+_HEADER_NAME_RE = re.compile(r"^[!#\$%&'*+.^_`|~0-9A-Za-z-]+\Z")
 _LSOF_TIMEOUT = 4
 _PROBE_TIMEOUT = 1.5
 _START_TIMEOUT = 45

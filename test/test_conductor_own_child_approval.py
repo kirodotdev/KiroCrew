@@ -259,6 +259,8 @@ def _decide(
     turn._native_tracker, turn._native_child_tc = {}, set()
     turn._refusal_notices, turn._refusal_reasons = [], []
     turn._wt_pending_coding, turn.assistant_text = set(), ""
+    # A person's turn, not a Dashboard card's (a bare MagicMock attribute is truthy).
+    turn._card_origin = False
     event = MagicMock(**vars(_event(target=target)))
     event.tool_call_id, event.title, event.request_id, event.tool_kind = "", "send", "r1", "other"
     event.child_unconditional_grant_eligible, event.child_low_fidelity = True, False

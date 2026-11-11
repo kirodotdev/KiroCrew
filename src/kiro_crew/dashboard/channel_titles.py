@@ -43,7 +43,9 @@ async def rename_channel_title_live(
         return False
 
     for slot in slots:
-        if not await apply_manual_title(dashboard_state, slot, title):
+        if not await apply_manual_title(
+            dashboard_state, slot, title, route="channel_title", caller=session_key
+        ):
             logger.warning("channel title update is live but not yet durable for %s", session_key)
     return True
 

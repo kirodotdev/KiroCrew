@@ -57,6 +57,7 @@ class _ChatSlot:
         "_dismissed_txn_depth",
         "_dismissed_txn_pending",
         "_closing",
+        "_close_recorded",
         "credential_evidence",
         "segment_raw_text",
         "segment_shown_sha",
@@ -182,6 +183,7 @@ class _ChatSlot:
         "_pending_model_pick",
         "_deferred_model_switch_key",
         "_eager_spawn_task",
+        "_eager_spawn_reported_resume",
         "_eager_spawn_failures",
         "_eager_spawn_retry_at",
         "_prefetch_ttl_task",
@@ -329,6 +331,7 @@ class _ChatSlot:
         "_last_turn_children_announced",
         "_crew_dispatch_notice_turn_gen",
         "_steer_segment_cut",
+        "_compact_command_turn",
         "_owed_segment_cut",
         "_native_subagent_tracker",
         "_native_subagent_output",
@@ -365,6 +368,7 @@ class _ChatSlot:
         "_question_pending",
         "_embed_question_polled_at",
         "_welcomed_agent",
+        "_welcome_preview",
     )
 
     # Initialised by state_parts/source_links.py.
@@ -406,6 +410,7 @@ class _ChatSlot:
     crew_mode_agent: str
     app_agent_owner: str
     _welcomed_agent: str
+    _welcome_preview: tuple[str, str, str, str]
     jev_route: bool
     _model_withheld: bool
     _model_withheld_for: str
@@ -461,6 +466,7 @@ class _ChatSlot:
     _pending_model_pick: Any
     _deferred_model_switch_key: str
     _eager_spawn_task: asyncio.Task[None] | None
+    _eager_spawn_reported_resume: bool
     _eager_spawn_failures: int
     _eager_spawn_retry_at: float
     _prefetch_ttl_task: asyncio.Task[None] | None
@@ -487,6 +493,7 @@ class _ChatSlot:
     _buffers: SlotBufferCoordinator
     _queue_repository: SlotQueueRepository
     _closing: int
+    _close_recorded: bool
     credential_evidence: CredentialEvidence
     segment_raw_text: str | None
     segment_shown_sha: Any  # a ``hashlib.sha256()`` object
@@ -644,6 +651,7 @@ class _ChatSlot:
     _compaction_fail_streak: int
     _compaction_fail_cooldown_until: float
     _steer_segment_cut: Callable[[], None] | None
+    _compact_command_turn: bool
     _owed_segment_cut: Callable[[], None] | None
     _native_subagent_tracker: dict[str, dict[str, Any]]
     _native_subagent_output: dict[str, list[str]]
@@ -1089,7 +1097,7 @@ class _ChatSlot:
         *,
         extra_meta: dict[str, Any] | None = None,
         relay_meta: dict[str, Any] | None = None,
-        workflow_followup: bool = False,
+        gateway_prompt_kind: str = "",
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1110,11 +1118,11 @@ class _ChatSlot:
         containment keys win a collision, since the drain's own authorization
         decision must not be overwritable by a caller's extra fields.
 
-        *workflow_followup* marks *prompt* as the gateway's own prompt after a
-        workflow result: queued under ``WORKFLOW_FOLLOWUP_KIND``, or appended
-        directly as the ``inject`` row (``injectKind: workflow``) that kind
-        drains to, so neither arm draws it as the person's bubble. The caller
-        hands a *run_chat_coro* that runs it as a synthetic payload.
+        *gateway_prompt_kind* (a key of ``GATEWAY_PROMPT_INJECT_KINDS``: a
+        workflow follow-up, a heartbeat prompt) marks *prompt* as the gateway's
+        own words: queued under that kind, or appended directly as the ``inject``
+        row that kind drains to, so neither arm draws it as the person's bubble.
+        The caller hands a *run_chat_coro* that runs it as a synthetic payload.
 
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
@@ -1124,10 +1132,16 @@ class _ChatSlot:
         # An Ultra Mode "Pause all" holds this session: queue, never start.
         from kiro_crew import crew_pause
 
+        # circular import: chat_utils_injected_rows imports through state.
+        from kiro_crew.dashboard.chat_utils_injected_rows import GATEWAY_PROMPT_INJECT_KINDS
+
+        # Checked before either arm, so an unknown kind fails the same way
+        # whether the slot is idle or busy.
+        if gateway_prompt_kind and gateway_prompt_kind not in GATEWAY_PROMPT_INJECT_KINDS:
+            raise ValueError(f"unknown gateway prompt kind: {gateway_prompt_kind!r}")
         if self.running or crew_pause.holds_slot(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
-            from kiro_crew.dashboard.chat_utils_injected_rows import WORKFLOW_FOLLOWUP_KIND
             from kiro_crew.dashboard.session_control import containment_meta
 
             # Stamp the containment constraints holding at ADMISSION, so the
@@ -1146,9 +1160,7 @@ class _ChatSlot:
             if relay_meta:
                 _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
-            self.queue_append(
-                prompt, kind=WORKFLOW_FOLLOWUP_KIND if workflow_followup else "", meta=_meta
-            )
+            self.queue_append(prompt, kind=gateway_prompt_kind, meta=_meta)
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the
             # prompt's only record -- so a restart inside the periodic flush
@@ -1163,8 +1175,13 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        if workflow_followup:
-            self.append("inject", prompt, "msg msg-inject", meta={"injectKind": "workflow"})
+        if gateway_prompt_kind:
+            self.append(
+                "inject",
+                prompt,
+                "msg msg-inject",
+                meta={"injectKind": GATEWAY_PROMPT_INJECT_KINDS[gateway_prompt_kind]},
+            )
         else:
             # The run arm has no queue entry, so a cross-session sender stamp is
             # applied directly to the user row it appends (``extra_meta`` is queue-only).
@@ -1264,6 +1281,7 @@ class _ChatSlot:
     # state_parts/slot_turns.py
     begin_close = _slot_turns.begin_close
     cancel_close = _slot_turns.cancel_close
+    note_close_recorded = _slot_turns.note_close_recorded
     push_wire_frame = _slot_turns.push_wire_frame
     drain = _slot_turns.drain
     _retry_deferred_release = _slot_turns._retry_deferred_release

@@ -519,6 +519,8 @@ _EMIT_PRIMITIVES: dict[str, int] = {
     # and the dashboard disagreeing. Its two callers pass the type as a LITERAL so
     # this extractor can still read the vocabulary off the syntax.
     "_append_dashboard": 1,
+    # The pending-open append: replays entries held for the unit, then appends this one.
+    "write_when_opened": 1,
 }
 
 

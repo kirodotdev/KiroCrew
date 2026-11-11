@@ -33,6 +33,8 @@ from session_transfer_helpers import (  # noqa: F401 -- the autouse fixture regi
     _state,
 )
 
+from conftest import requires_symlinks
+
 # --------------------------------------------------------------------------- #
 # the file's own privacy contract gates the bundle, not only the live slot
 # --------------------------------------------------------------------------- #
@@ -681,7 +683,7 @@ def test_staging_sweep_removes_only_files_older_than_this_process(monkeypatch, t
     assert late.exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX directory symlink")
+@requires_symlinks
 def test_a_symlinked_staging_dir_is_never_swept(monkeypatch, tmp_path):
     """A link planted where the staging directory should be must not turn the
     sweep onto the files it points at."""

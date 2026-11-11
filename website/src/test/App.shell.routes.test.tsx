@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
-import { lazyPage, TasksRedirect, ChatRedirect, OrchestratedRedirect } from '../shell/routes'
+import { lazyPage, ConnectionsRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from '../shell/routes'
 
 function Where() {
   const { pathname, search } = useLocation()
@@ -26,6 +26,14 @@ function at(entry: string, path: string, element: React.ReactElement) {
 }
 
 describe('shell route redirects', () => {
+  it('/connections lands on the MCP tab with its query', async () => {
+    expect(await at('/connections?view=mcp-servers', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/capabilities\?tab=mcp&view=mcp-servers$/)
+  })
+
+  it('/connections with no query lands on the MCP tab alone', async () => {
+    expect(await at('/connections', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/capabilities\?tab=mcp$/)
+  })
+
   it('/tasks lands on /projects with its query', async () => {
     expect(await at('/tasks?x=1', '/tasks', <TasksRedirect />)).toHaveTextContent(/^\/projects\?x=1$/)
   })

@@ -202,6 +202,15 @@ export function useActiveSlotState({
     seenResumeRef.current = lastResumeActivation
     if (lastResumeActivation?.leaveSplit) setSplitMode(false)
   }, [lastResumeActivation])
+  // A slot switch can ask to replace Split View with the requested session.
+  // The value present at mount is not a request for this page instance.
+  const leaveSplitSeq = useAppSelector(s => s.chat.leaveSplitSeq)
+  const seenLeaveSplitRef = useRef(leaveSplitSeq)
+  useEffect(() => {
+    if (leaveSplitSeq === seenLeaveSplitRef.current) return
+    seenLeaveSplitRef.current = leaveSplitSeq
+    setSplitMode(false)
+  }, [leaveSplitSeq])
   // A crew session opens as a window over the pane (see CrewChatWindow); a
   // local session taking focus closes it. Only a MOVE between two local
   // sessions counts, so the reload restore (none -> restored) keeps it open.

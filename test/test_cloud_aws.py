@@ -277,6 +277,24 @@ class TestChecked:
         assert "grant `ec2:RunInstances`" in str(ei.value)
         assert ei.value.returncode == 255
 
+    @pytest.mark.parametrize(
+        ("denial", "remedy"),
+        [
+            (" is not authorized to perform: ec2:DescribeVpcs", "grant `ec2:DescribeVpcs`"),
+            (" UnauthorizedOperation", "add the missing permission"),
+        ],
+    )
+    def test_failure_leads_with_the_remedy(self, monkeypatch, denial, remedy):
+        # The dashboard keeps a launch error's first 400 characters; a long role
+        # ARN alone fills them, so a remedy after the raw text never shows there.
+        err = "User: arn:aws:sts::123456789012:assumed-role/" + "r" * 400 + denial
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (254, "", err))
+        with pytest.raises(aws.AWSError) as ei:
+            aws.checked(["ec2", "describe-vpcs"], "dev", action="ec2:DescribeVpcs")
+        assert str(ei.value).startswith(
+            f"ec2:DescribeVpcs failed: {remedy} (see `kirocrew cloud iam-policy`) and retry — "
+        )
+
     def test_failure_non_auth_has_no_missing_action(self, monkeypatch):
         monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (2, "", "Parameter validation failed"))
         with pytest.raises(aws.AWSError) as ei:

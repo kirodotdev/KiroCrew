@@ -5,7 +5,8 @@
  *  bucket, so every aggregate skips the active key there. */
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
-import type { SubagentActivity, SubagentInfo } from '../../types'
+import type { CoordinatorApprovalTarget, SubagentActivity, SubagentInfo } from '../../types'
+import { sameApprovalTarget } from '../../types/approvalTarget'
 import { parseSubagentQueuedReason, type SubagentQueuedEvent } from '../../pages/chat/subagentQueuedReason'
 import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
@@ -522,12 +523,13 @@ export const subagentReducers = {
       }
     }
   },
-  sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string }>) {
+  sseSubagentPending(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; approval_id: string; approval_target?: CoordinatorApprovalTarget }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const entry: SubagentActivity = {
       id: action.payload.id, task: action.payload.task, agent: '',
       status: 'pending', streaming: '', lastTool: '', startedAt: Date.now(), elapsed: 0,
       approval_id: action.payload.approval_id,
+      ...(action.payload.approval_target ? { approval_target: action.payload.approval_target } : {}),
     }
     if (action.payload.slot !== state.activeSlot) {
       const c = state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }
@@ -535,6 +537,16 @@ export const subagentReducers = {
       return
     }
     state.subagents[safeKey(action.payload.id)] = entry
+  },
+  /** Bind a pending spawn card to the request it was raised for. The `approval`
+   *  frame dispatches it right after `sseSubagentPending`, so the card's decide
+   *  names its owner-bound target. */
+  setSubagentApprovalTarget(state: ChatState, action: PayloadAction<{ slot: string; id: string; approval_target: CoordinatorApprovalTarget }>) {
+    if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
+    const entry = action.payload.slot !== state.activeSlot
+      ? state.slotActivity[safeKey(action.payload.slot)]?.subagents[safeKey(action.payload.id)]
+      : state.subagents[safeKey(action.payload.id)]
+    if (entry) entry.approval_target = action.payload.approval_target
   },
   markSubagentApproving(state: ChatState, action: PayloadAction<{ id: string; approving: boolean }>) {
     if (isUnsafeKey(action.payload.id)) return
@@ -546,15 +558,19 @@ export const subagentReducers = {
     }
   },
   /** One owner for a terminal refusal, so the side panel and the composer
-   *  banner, which resolve the same id, both withdraw it (#11180). */
-  markSubagentApprovalGone(state: ChatState, action: PayloadAction<{ id: string; approval_id: string }>) {
+   *  banner, which resolve the same id, both withdraw it (#11180). A refusal
+   *  that names the request it was for (`target`) marks only a card still
+   *  raised for that request: a newer request that took over the id keeps its
+   *  card live. */
+  markSubagentApprovalGone(state: ChatState, action: PayloadAction<{ id: string; approval_id: string; target?: CoordinatorApprovalTarget | null }>) {
     if (isUnsafeKey(action.payload.id)) return
+    const { approval_id, target } = action.payload
     const mark = (a: SubagentActivity | undefined) => {
       if (!a) return false
       // Only the approval that was refused: a newer one on this card stays live.
-      if (a.approval_id === action.payload.approval_id) {
+      if (a.approval_id === approval_id && (!target || sameApprovalTarget(a.approval_target, target))) {
         a.approving = false
-        a.approvalGone = action.payload.approval_id
+        a.approvalGone = approval_id
       }
       return true
     }
@@ -945,7 +961,7 @@ export const subagentReducers = {
       // A snapshot never turns retrying ON (it has no attempt field); it only
       // preserves what a live frame already set.
       retrying: existing?.retrying,
-      approval_id: existing?.approval_id, approving: existing?.approving,
+      approval_id: existing?.approval_id, approval_target: existing?.approval_target, approving: existing?.approving,
     }
     // A reconnect replays every running card. One that repeats what the card
     // holds keeps the held object, so its card and every whole-map reader

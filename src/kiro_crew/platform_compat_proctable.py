@@ -294,9 +294,15 @@ def darwin_footprint_tree_mb(
     attach a stranger's subtree. A pid in *exclude_pids* is skipped with its
     subtree, and a descendant whose footprint cannot be read adds nothing.
 
+    The members of *pid*'s session (:func:`darwin_session_pids`) are counted
+    with their subtrees too: a runtime is spawned as a session leader, and a
+    job its timed-out shell command left running is reparented to launchd,
+    out of every child list, while it keeps that session id.
+
     None when the root itself cannot be read: "unknown, do not judge", the
     contract :func:`proc_rss_tree_mb_for_pid` keeps on Windows. In-process
-    libproc calls only, one or two per process; executor thread, never the loop.
+    libproc calls only, one or two per process, plus one host-wide process
+    listing for the session; executor thread, never the loop.
     """
     if not IS_MACOS:
         return None
@@ -307,6 +313,12 @@ def darwin_footprint_tree_mb(
         return None
     seen = {pid}
     frontier = [pid]
+    for member in darwin_session_pids(pid) or ():
+        if member in seen or member in exclude_pids:
+            continue
+        seen.add(member)
+        total += _darwin_process_phys_footprint_bytes(member) or 0
+        frontier.append(member)
     while frontier:
         for child in darwin_child_pids(frontier.pop()) or ():
             if child in seen or child in exclude_pids:
@@ -470,8 +482,12 @@ _DARWIN_PROCARGS_ENV_BUFSIZE = 1024 * 1024
 # layout these offsets assume does not hold, so the answer is refused rather
 # than sliced out of the wrong place (the rule the libproc probes follow). A pid
 # that does not exist is not an error: the call succeeds with a zero-length
-# answer. ``KERN_PROC_PGRP`` lists every member of a process group the same way.
+# answer. ``KERN_PROC_PGRP`` lists every member of a process group the same way,
+# and ``KERN_PROC_ALL`` every process on the host. xnu has no session selector:
+# ``sysctl_prochandle`` answers ``KERN_PROC_SESSION`` (3) with ENOTSUP, so a
+# session's members are read as ``KERN_PROC_ALL`` filtered by ``getsid``.
 _DARWIN_KERN_PROC = 14
+_DARWIN_KERN_PROC_ALL = 0
 _DARWIN_KERN_PROC_PID = 1
 _DARWIN_KERN_PROC_PGRP = 2
 _DARWIN_KINFO_PROC_SIZE = 648
@@ -989,10 +1005,45 @@ def darwin_pgroup_members(pgid: int) -> list[DarwinKinfoProc] | None:
     """
     if pgid <= 0:
         return None
+    return _darwin_kinfo_members(_DARWIN_KERN_PROC_PGRP, pgid)
+
+
+def darwin_session_pids(sid: int) -> list[int] | None:
+    """Running processes whose session id is *sid* on macOS; None when unreadable.
+
+    xnu lists no process by session (see ``_DARWIN_KERN_PROC_ALL``), so this
+    reads every process on the host once and keeps those ``getsid`` places in
+    *sid*. ``getsid`` answers for any process, with no permission check
+    (``bsd/kern/kern_prot.c``). A zombie, or a process that exits before it is
+    asked, is left out.
+    """
+    if not IS_MACOS or sid <= 1:
+        return None
+    members = _darwin_kinfo_members(_DARWIN_KERN_PROC_ALL, 0)
+    if members is None:
+        return None
+    pids: list[int] = []
+    for member in members:
+        if member.zombie:
+            continue
+        try:
+            if os.getsid(member.pid) == sid:
+                pids.append(member.pid)
+        except OSError:
+            continue
+    return pids
+
+
+def _darwin_kinfo_members(selector: int, arg: int) -> list[DarwinKinfoProc] | None:
+    """Every ``kinfo_proc`` record ``KERN_PROC/<selector>/<arg>`` lists, or None.
+
+    The sized, retried read :func:`darwin_pgroup_members` describes, for any
+    selector that answers a list.
+    """
     libc = _darwin_sysctl_handle()
     if libc is None:
         return None
-    mib = (ctypes.c_int * 4)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROC, _DARWIN_KERN_PROC_PGRP, pgid)
+    mib = (ctypes.c_int * 4)(_DARWIN_CTL_KERN, _DARWIN_KERN_PROC, selector, arg)
     slack = _DARWIN_KINFO_PGRP_SLACK
     for _attempt in range(_DARWIN_KINFO_PGRP_ATTEMPTS):
         try:
@@ -1001,9 +1052,7 @@ def darwin_pgroup_members(pgid: int) -> list[DarwinKinfoProc] | None:
                 return None
         except Exception:
             return None
-        raw = _darwin_kinfo_query(
-            _DARWIN_KERN_PROC_PGRP, pgid, size.value + slack * _DARWIN_KINFO_PROC_SIZE
-        )
+        raw = _darwin_kinfo_query(selector, arg, size.value + slack * _DARWIN_KINFO_PROC_SIZE)
         if raw is not None:
             members: list[DarwinKinfoProc] = []
             for start in range(0, len(raw), _DARWIN_KINFO_PROC_SIZE):
@@ -1414,13 +1463,35 @@ def linux_pgroup_members(
     None -- off Linux, and when ``/proc`` cannot be listed -- means "unknown",
     never "empty". *proc_root* substitutes a fixture process table on every host.
     """
+    return _linux_stat_members(2, pgid, proc_root, "linux_pgroup_members")
+
+
+def linux_session_members(
+    sid: int, *, proc_root: "Path | None" = None
+) -> "dict[int, int | None] | None":
+    """``{pid: start_ticks}`` for every RUNNING process in session *sid*. Linux only.
+
+    :func:`linux_pgroup_members` keyed on the session (``stat`` field 6) instead
+    of the group, with the same reads and the same None. A process can only be
+    in a session by inheriting it from a process already in it, so every member
+    descends from the leader; and the kernel does not hand the leader's pid to a
+    new process while any member keeps the session, so *sid* names one session
+    for as long as it has members, leader alive or not.
+    """
+    return _linux_stat_members(3, sid, proc_root, "linux_session_members")
+
+
+def _linux_stat_members(
+    index: int, value: int, proc_root: "Path | None", caller: str
+) -> "dict[int, int | None] | None":
+    """Running processes whose post-``comm`` ``stat`` token *index* is *value*."""
     proc_root = _linux_proc_root(proc_root)
     if proc_root is None:
         return None
     try:
         names = os.listdir(proc_root)
     except OSError:
-        logger.debug("linux_pgroup_members: cannot list %s", proc_root, exc_info=True)
+        logger.debug("%s: cannot list %s", caller, proc_root, exc_info=True)
         return None
     members: dict[int, int | None] = {}
     for name in names:
@@ -1433,7 +1504,7 @@ def linux_pgroup_members(
             continue  # exited between the listing and the read
         if (
             tokens
-            and _stat_token_int(tokens, 2) == pgid
+            and _stat_token_int(tokens, index) == value
             and tokens[0].decode("ascii", "replace") not in _LINUX_EXITED_STATES
         ):
             members[int(name)] = _stat_token_int(tokens, 19)

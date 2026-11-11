@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         logger,
         plain_markdown_document,
         project_agents_dir,
+        read_agent_spec_strict,
         read_session_execution,
         readonly_base_name,
         redact_via_context,
@@ -512,39 +513,69 @@ def parent_spawn_allowlists(
     only in a project's ``.kiro/agents`` is not resolved here (its declaration
     is resolved only when *project_dirs* is given -- see :func:`parent_project_dirs`.
     """
+    return _resolve_parent_spawn_allowlists(
+        parent_template, project_dirs, parent_session_key=parent_session_key
+    )[0]
+
+
+#: :func:`parent_spawn_allowlists`'s answer together with the spec files that
+#: made it unknown, as :func:`_describe_unreadable_specs` describes them
+#: (``()`` for every answer that is not ``None``). The descriptions travel with
+#: the answer, in the :data:`ParentSpawnPolicy` the gate receives, so a
+#: refusal names the files of its own resolution and no other session's.
+_ParentSpawnResolution = tuple["tuple[tuple[str, ...], ...] | None", "tuple[str, ...]"]
+
+
+def _resolve_parent_spawn_allowlists(
+    parent_template: str,
+    project_dirs: Sequence[str | Path] = (),
+    *,
+    parent_session_key: str = "",
+) -> _ParentSpawnResolution:
+    """:func:`parent_spawn_allowlists`, plus the unreadable files behind a ``None``."""
     # ``match``, not ``fullmatch``: the pattern is anchored, and the roster
     # ratchet reserves the ``fullmatch`` spelling for ``visible_agent_names``.
     if not parent_template or not _AGENT_NAME_RE.match(parent_template):
-        return ()
-    user_lists, user_found = _scope_spawn_allowlists(
+        return (), ()
+    user_lists, user_found, unreadable = _scope_spawn_allowlists(
         _kiro_agents_dir(), parent_template, _PARENT_ALLOWLIST_MEMO, "spawn_available_agents"
     )
     project_dirs = tuple(dict.fromkeys(str(d) for d in project_dirs if d))
     if not project_dirs:
         if user_lists is not None and not user_found and parent_session_key:
             _surface_unresolved_parent_spec(parent_template, parent_session_key)
-        return user_lists
+        return user_lists, unreadable
     if user_lists is None:
-        return None
+        return None, unreadable
     lists = user_lists
     for directory in project_dirs:
-        project_lists, _project_found = _scope_spawn_allowlists(
+        project_lists, _project_found, unreadable = _scope_spawn_allowlists(
             project_agents_dir(directory),
             parent_template,
             _PARENT_PROJECT_ALLOWLIST_MEMO,
             "spawn_available_agents_project",
         )
         if project_lists is None:
-            return None
+            return None, unreadable
         # Every scope applies (tightest-wins): an added list can only refuse more.
         lists = lists + project_lists
-    return lists
+    return lists, ()
 
 
-#: ``(allowlists, found)`` for one agents directory: *allowlists* as
+#: How many unreadable files a refusal names, and how long each error may be.
+_MAX_UNREADABLE_IN_ERROR = 5
+
+
+_MAX_UNREADABLE_ERROR_CHARS = 200
+
+
+#: ``(allowlists, found, unreadable)`` for one agents directory: *allowlists* as
 #: :func:`parent_spawn_allowlists` answers it for that directory alone, *found*
-#: whether any readable spec there resolved the parent's name at all.
-_ScopeAllowlists = tuple["tuple[tuple[str, ...], ...] | None", bool]
+#: whether any readable spec there resolved the parent's name at all, and
+#: *unreadable* the spec files that made the answer unknown, as
+#: :func:`_describe_unreadable_specs` describes them (``()`` for every other
+#: answer). The memo keeps this answer, which is why *unreadable* is bounded.
+_ScopeAllowlists = tuple["tuple[tuple[str, ...], ...] | None", bool, "tuple[str, ...]"]
 
 
 def _scope_spawn_allowlists(
@@ -562,10 +593,10 @@ def _scope_spawn_allowlists(
         with os.scandir(agents_dir):
             pass
     except FileNotFoundError:
-        return (), False
+        return (), False, ()
     except OSError as exc:
         logger.warning("agents directory %s is not scannable (%s); refusing spawn", agents_dir, exc)
-        return None, False
+        return None, False, ()
     try:
         from kiro_crew.agent_spec_pins import pinned_memo_key, spec_pins
 
@@ -581,7 +612,7 @@ def _scope_spawn_allowlists(
         )
     except OSError as exc:  # the directory walk itself failed: an unknown answer
         logger.warning("agents directory %s is not scannable (%s); refusing spawn", agents_dir, exc)
-        return None, False
+        return None, False, ()
 
 
 #: Parent templates already warned about by :func:`_surface_unresolved_parent_spec`
@@ -690,8 +721,9 @@ def _scan_parent_spawn_allowlists(
 ) -> _ScopeAllowlists:
     """One fresh walk of *agents_dir* for :func:`parent_spawn_allowlists`.
 
-    Answers ``(allowlists, found)``; *found* is whether a readable spec resolved
-    the parent's name (by declared ``name`` or filename stem).
+    Answers ``(allowlists, found, unreadable)``; *found* is whether a readable
+    spec resolved the parent's name (by declared ``name`` or filename stem), and
+    *unreadable* describes the files that made ``allowlists`` ``None``.
 
     Every spec file goes through the hardened reader under the gate's own SEL
     labels (*operation* tells the user scope from the project scope), and a file the reader refuses is kept as UNREADABLE rather than
@@ -745,7 +777,7 @@ def _scan_parent_spawn_allowlists(
             parent_template,
             pin,
         )
-        return None, False
+        return None, False, ()
     # The parent session runs the pinned claimant when ``agent.spec_pins`` chooses
     # one, so its allowlist is the one that applies. Any other case keeps every
     # claimant, the strictest reading.
@@ -767,10 +799,59 @@ def _scan_parent_spawn_allowlists(
                 parent_template,
                 ", ".join(repr(path.name) for path in unreadable),
             )
-            return None, False
+            scope = "project" if operation == "spawn_available_agents_project" else "user"
+            return None, False, _describe_unreadable_specs(unreadable, scope, operation)
         declared = [data for data, path in rows if path.stem == parent_template]
     lists = (spawn_allowlist(data) for data in declared)
-    return tuple(allowlist for allowlist in lists if allowlist is not None), bool(declared)
+    return tuple(allowlist for allowlist in lists if allowlist is not None), bool(declared), ()
+
+
+def _describe_unreadable_specs(
+    paths: Sequence[Path], scope: str, operation: str
+) -> tuple[str, ...]:
+    """At most :data:`_MAX_UNREADABLE_IN_ERROR` descriptions of *paths*, in order.
+
+    When more files were unreadable, the last description ends ``(+N more)``
+    with the count of the files left out. The answer is bounded here, before
+    the memo keeps it, and only the files it names are read a second time.
+    """
+    named = [
+        _describe_unreadable_spec(path, scope, operation)
+        for path in paths[:_MAX_UNREADABLE_IN_ERROR]
+    ]
+    withheld = len(paths) - len(named)
+    if named and withheld > 0:
+        named[-1] += f" (+{withheld} more)"
+    return tuple(named)
+
+
+def _describe_unreadable_spec(path: Path, scope: str, operation: str) -> str:
+    """``'<file name>' (<scope> scope): <error>`` for a spec the hardened reader refused.
+
+    The error comes from a second read through
+    :func:`kiro_crew.agent_discovery.read_agent_spec_strict`, which keeps the
+    failure class the listing reader folds into ``None``. A link is not read
+    again: its refusal (a broken link, a sensitive target) is already audited,
+    and a second read would audit it twice. Only the first line of the error is
+    kept, bounded, because the refusal is one line of text.
+    """
+    if path.is_symlink():
+        reason = "a link the agent spec reader refused"
+    else:
+        try:
+            # Literal labels at each call, so the reader's label ratchet attributes both.
+            if operation == "spawn_available_agents_project":
+                read_agent_spec_strict(
+                    path, operation="spawn_available_agents_project", source="subagent"
+                )
+            else:
+                read_agent_spec_strict(path, operation="spawn_available_agents", source="subagent")
+            reason = "not an agent spec object"
+        except (OSError, ValueError) as exc:
+            reason = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+    if len(reason) > _MAX_UNREADABLE_ERROR_CHARS:
+        reason = reason[: _MAX_UNREADABLE_ERROR_CHARS - 3] + "..."
+    return f"{path.name!r} ({scope} scope): {reason}"
 
 
 class ParentRecordUnreadable(RuntimeError):
@@ -805,11 +886,14 @@ def _parent_template_for_spawn(parent_session_key: str) -> str:
 
 
 #: What the spawn gate needs to know about the CALLING session's agent spec:
-#: ``(parent_template, allowlists)``. ``allowlists`` is ``()`` when nothing is
-#: declared (allow all), one or more glob tuples when it is, and ``None`` when
-#: the answer is unknown (refuse): the parent's spec candidate or the parent's
-#: execution record could not be read -- see :func:`parent_spawn_allowlists`.
-ParentSpawnPolicy = tuple[str, "tuple[tuple[str, ...], ...] | None"]
+#: ``(parent_template, allowlists, unreadable)``. ``allowlists`` is ``()`` when
+#: nothing is declared (allow all), one or more glob tuples when it is, and
+#: ``None`` when the answer is unknown (refuse): the parent's spec candidate or
+#: the parent's execution record could not be read -- see
+#: :func:`parent_spawn_allowlists`. ``unreadable`` describes the spec files
+#: behind a ``None`` answer (see :data:`_ParentSpawnResolution`), ``()``
+#: otherwise; a two-item policy is read as having none.
+ParentSpawnPolicy = tuple[str, "tuple[tuple[str, ...], ...] | None", "tuple[str, ...]"]
 
 
 def _accepted_project_dirs(value: object) -> tuple[str, ...]:
@@ -837,19 +921,29 @@ def parent_spawn_policy(parent_session_key: str, accepted_dirs: object = ()) -> 
     inline for callers that are not on the loop.
 
     *accepted_dirs* are the project directories a queued row recorded when it
-    was accepted; see :func:`parent_template_allowlists`.
+    was accepted; see :func:`parent_template_spawn_policy`.
     """
     try:
         template = _parent_template_for_spawn(parent_session_key)
     except ParentRecordUnreadable:
-        return "", None
-    return template, parent_template_allowlists(parent_session_key, template, accepted_dirs)
+        return "", None, ()
+    return parent_template_spawn_policy(parent_session_key, template, accepted_dirs)
 
 
 def parent_template_allowlists(
     parent_session_key: str, template: str, accepted_dirs: object = ()
 ) -> tuple[tuple[str, ...], ...] | None:
+    """The allowlists of :func:`parent_template_spawn_policy`'s answer."""
+    return parent_template_spawn_policy(parent_session_key, template, accepted_dirs)[1]
+
+
+def parent_template_spawn_policy(
+    parent_session_key: str, template: str, accepted_dirs: object = ()
+) -> ParentSpawnPolicy:
     """:func:`parent_spawn_allowlists` for *template*, in the parent session's project.
+
+    Answers the whole :data:`ParentSpawnPolicy`, so the unreadable spec files
+    behind an unknown answer reach the gate's refusal with it.
 
     The one spelling every gate entry point uses once it holds the parent's
     template, so each resolves the user scope AND the parent session's project
@@ -863,17 +957,54 @@ def parent_template_allowlists(
     a directory in only one of the two sets can only add restrictions.
     """
     if not template:
-        return ()
+        return template, (), ()
     dirs = tuple(
         dict.fromkeys(
             (*parent_project_dirs(parent_session_key), *_accepted_project_dirs(accepted_dirs))
         )
     )
-    return parent_spawn_allowlists(
+    lists, unreadable = _resolve_parent_spawn_allowlists(
         template,
         dirs,
         parent_session_key=parent_session_key,
     )
+    if lists is None:
+        return template, None, unreadable
+    worker = _bot_worker_allowlist(template, parent_session_key)
+    if worker is None:
+        return template, None, ()
+    return template, lists + worker, unreadable
+
+
+def _bot_worker_allowlist(
+    template: str, parent_session_key: str
+) -> tuple[tuple[str, ...], ...] | None:
+    """The ``availableAgents`` list a Bot's worker session carries, as one more list.
+
+    A Bot's worker runs its session's merged spec, which lives in the Bot's folder
+    rather than ``~/.kiro/agents``, so the directory scan above never sees the
+    list a template brought onto it (``mate_spec_policy``). ``()`` for any other
+    template or a worker that declares nothing; ``None`` (refuse) when the merged
+    spec cannot be read, since the list it may hold is then unknown.
+    """
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT, mate_service_scope_spec
+
+    if template != MATE_WORKER_AGENT:
+        return ()
+    try:
+        scoped = mate_service_scope_spec(template, parent_session_key)
+    except Exception:  # noqa: BLE001 - any failure leaves the list unknown
+        logger.warning(
+            "Bot worker %s: merged spec unreadable; refusing its spawns",
+            parent_session_key,
+            exc_info=True,
+        )
+        return None
+    spec = scoped[0] if scoped is not None else None
+    if spec is None:
+        return None
+    declared = spawn_allowlist(spec)
+    return () if declared is None else (declared,)
 
 
 def conductor_spawn_refusal(parent_template: str) -> str | None:
@@ -909,9 +1040,12 @@ def _vet_parent_available_agents(
     calling-app identity (see :func:`agent_matches_allowlist`).
     The denial is returned when the parent's spec declares
     ``toolsSettings.subagent.availableAgents`` AND *agent* matches none of its
-    globs, or when that answer cannot be established because the parent's own
-    spec file is present but unreadable (:func:`parent_spawn_allowlists` returns
-    ``None``; a security gate does not fail open on a file it cannot read). No
+    globs, or when that answer cannot be established (:func:`parent_spawn_allowlists`
+    returns ``None``; a security gate does not fail open on a file it cannot read).
+    That happens when no readable spec declares the parent's name while some spec
+    file in the user or project agents directory could not be read, and the file
+    need not be the parent's own; the refusal then names each such file, its
+    scope and its error. No
     parent, no spec, or an omitted key is ``None`` -- kiro-cli's "omit to allow
     all" -- so a session whose agent never declared the key sees no change. An
     empty *agent* is ``None`` too: the gate resolves the effective template
@@ -926,13 +1060,23 @@ def _vet_parent_available_agents(
         return refused
     if not agent:
         return None
-    parent_template, allowlists = policy
+    parent_template, allowlists = policy[0], policy[1]
     if allowlists is None:
         if not parent_template:
             return (
                 "the parent session's execution record could not be read, so its agent "
                 "spec's toolsSettings.subagent.availableAgents is unknown; refusing "
                 "(fail-closed)"
+            )
+        unreadable = policy[2] if len(policy) > 2 else ()
+        if unreadable:
+            # Already bounded, with any ``(+N more)`` count, by _describe_unreadable_specs.
+            named = "; ".join(redact_via_context(item) for item in unreadable)
+            return (
+                f"the parent agent {redact_via_context(parent_template)!r} spec could not be "
+                "read, so its toolsSettings.subagent.availableAgents is unknown; refusing "
+                f"(fail-closed) -- these agent spec files could not be read: {named}; "
+                "fix or remove them"
             )
         return (
             f"the parent agent {redact_via_context(parent_template)!r} spec could not be "

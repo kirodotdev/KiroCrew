@@ -597,6 +597,46 @@ def test_poll_loop_backs_off_on_ret_keyed_session_expiry(tmp_path, monkeypatch):
     assert sleeps == [600]  # the long session-expiry pause, not a spin
 
 
+def test_an_expired_session_flips_the_badge_off_once_and_back_on_after_login(tmp_path, monkeypatch):
+    """Inbound is dead while iLink answers -14, so the badge must not say connected.
+
+    It flips off once for the whole streak, not on every 10-minute retry, and
+    back on with the first poll that answers without an error. A client-side
+    timeout is no answer, so it leaves the badge off.
+    """
+    t, client, _ = _make(tmp_path)
+    states: list[tuple[bool, str]] = []
+    polls: list[int] = []
+    t.on_state_change = lambda connected, error: (
+        states.append((connected, error)),
+        polls.append(len(polls_done)),
+    )
+    polls_done: list[int] = []
+    replies = [{"ret": -14}, {"ret": -14}, {"ret": 0, "msgs": [], "_timed_out": True}, {"msgs": []}]
+
+    async def fake_sleep(_d):
+        return None
+
+    async def poll(_buf):
+        polls_done.append(1)
+        if not replies:
+            t._running = False
+            return {"msgs": []}
+        return replies.pop(0)
+
+    client.get_updates = poll  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "kiro_crew.weixin.transport.asyncio.sleep", fake_sleep
+    )  # flake-ok: skips the 600s backoff
+    t._running = True
+    asyncio.run(t._poll_forever())
+    assert [c for c, _ in states] == [False, True]
+    assert "session expired" in states[0][1]
+    assert states[1] == (True, "")
+    # Off on the first -14; back on only with the fourth poll, not the timeout.
+    assert polls == [1, 4]
+
+
 def test_poll_loop_backs_off_on_ret_keyed_rate_limit(tmp_path, monkeypatch):
     t, client, _ = _make(tmp_path)
     sleeps: list[float] = []

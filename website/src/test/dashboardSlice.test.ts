@@ -45,11 +45,11 @@ describe('dashboardSlice', () => {
   })
 
   describe('sseStatus', () => {
-    it('sets status and connected', () => {
+    it('sets status and leaves connected to the socket', () => {
       const status = { uptime: '1h', sessions: 2, messages: 10, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
       const state = reducer(initial, sseStatus(status))
       expect(state.status).toEqual(status)
-      expect(state.connected).toBe(true)
+      expect(state.connected).toBe(false)
     })
 
     it('syncs yolo mode from backend', () => {

@@ -48,6 +48,75 @@ class TestStopViaService:
         assert "Stopped kirocrew service" in capsys.readouterr().out
         assert sel_rec.calls[0]["resources"].endswith("via=service")
 
+    def test_a_refused_service_stop_exits_1_without_signalling(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 5476)
+
+        def refused():
+            raise cli_server.service_controller.ServiceStopRefused(["sudo systemctl stop kirocrew"])
+
+        def unreachable(port):  # pragma: no cover - asserts nothing is signalled
+            raise AssertionError("a refused service stop must not fall to the port path")
+
+        monkeypatch.setattr(cli_server.service_controller, "stop_service", refused)
+        monkeypatch.setattr(platform_compat, "find_listening_pids", unreachable)
+        with pytest.raises(SystemExit) as excinfo:
+            cli_server._stop(None)
+        assert excinfo.value.code == 1
+        out = capsys.readouterr().out
+        assert "refused to stop" in out and "sudo systemctl stop kirocrew" in out
+        assert "Stopped kirocrew service" not in out
+        assert sel_rec.calls[0]["outcome"] == "denied"
+
+    def test_a_lock_still_held_after_the_service_stop_names_the_holder_and_spares_it(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        """A gateway started by hand holds the lock while the unit crash-loops: the
+        service stop does not end it, so it is named and its MCP daemon is kept."""
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 5476)
+        monkeypatch.setattr(cli_server.service_controller, "stop_service", lambda: True)
+        monkeypatch.setattr(
+            cli_server.service_controller, "current_platform", lambda: Platform.SYSTEMD
+        )
+        monkeypatch.setattr(
+            cli_server,
+            "lock_holder",
+            lambda home: LockHolder(pid=4242, alive=True, source="flock_owner"),
+        )
+
+        def unreachable():  # pragma: no cover - asserts the daemon is spared
+            raise AssertionError("the holder's MCP gateway daemon must be left running")
+
+        monkeypatch.setattr(cli_server, "_stop_mcp_gateway_daemon", unreachable)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Stopped kirocrew service, but pid 4242 still holds" in out
+        assert "`kirocrew stop` again" in out
+        assert cli_server._manual_stop_command(4242) in out
+        assert "✅" not in out
+
+    def test_a_launchd_stop_does_not_read_the_lock(self, monkeypatch, sel_rec, capsys) -> None:
+        """``bootout`` returns before the agent's gateway exits, so its lock may still
+        be held by that same gateway: the stop reports as before."""
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 5476)
+        monkeypatch.setattr(cli_server.service_controller, "stop_service", lambda: True)
+        monkeypatch.setattr(
+            cli_server.service_controller, "current_platform", lambda: Platform.LAUNCHD
+        )
+
+        def unreachable(home):  # pragma: no cover - asserts the launchd path
+            raise AssertionError("the lock is not read after a launchd stop")
+
+        stopped: list[bool] = []
+        monkeypatch.setattr(cli_server, "lock_holder", unreachable)
+        monkeypatch.setattr(cli_server, "_stop_mcp_gateway_daemon", lambda: stopped.append(True))
+        cli_server._stop(None)
+        assert "✅ Stopped kirocrew service" in capsys.readouterr().out
+        assert stopped == [True]
+
     def test_explicit_port_bypasses_the_service(self, monkeypatch, sel_rec, capsys) -> None:
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 8123)
 

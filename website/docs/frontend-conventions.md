@@ -97,6 +97,9 @@ Other shared modules:
   constrain the text column's height while reserving room for the hand-off.
   `messagePlacement` is `'beside'` by default; `'below'` puts the raw message on
   its own line under a plain-language `title`, and is ignored without a `title`.
+  `actionPlacement="below-on-phone"` puts the hand-off under the message only
+  below `sm` and beside it from `sm` up, in both variants, so a notice that
+  spans a settings card keeps its sentence the row's width on a phone.
 - `Clickable.tsx` (accessible clickable div; see below)
 - `SegmentedControl.tsx` (sliding pill, Framer Motion) — see the switcher rule below.
   It is a WAI-ARIA radiogroup: each segment is `role="radio"` with `aria-checked`
@@ -227,6 +230,7 @@ and every other concern has one owner under `components/markdown/`.
 | `MarkdownRenderer.tsx` | the ordered remark and rehype chains, and the parser built from them that the source repairs read (`AUTOLINK_PARSER`); `MD_COMPONENTS`, the element-to-renderer map, with the fence `code` override and the link overrides `MdAnchor` / `MdParagraph`; the per-block source passes and their order (`MarkdownBlock`); fence dispatch (`BlockRenderer`); the root component and its providers |
 | `markdown/contexts.ts` | every context the pipeline's modules share, each created once; the facade re-exports the six public ones (`MediaApprovedCtx` stays private to `markdown/remoteMedia.tsx`, which both provides and reads it) |
 | `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions, sidebar folder paths (folder-chip resolution); path candidates, `file:line` suffixes, probe resolution and activation |
+| `markdown/linkAddressTip.tsx` | a link's address bubble: which links show their address (`linkAddress`), the hover pause, and stepping aside for an app's link-preview card |
 | `markdown/sanitize.ts` | the tag and attribute allowlist (`rehypeSanitize`) and `remarkVerbatimUnknownTags` |
 | `markdown/treeTransforms.ts` | fenced-code marking, block unwrapping, soft breaks, source positions, position-stable root keys |
 | `markdown/streamingEffects.ts` | the streaming tail's glow, reveal and caret |

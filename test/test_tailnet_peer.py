@@ -570,3 +570,15 @@ class TestCliPathTrust:
     def test_missing_binary_is_none(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (str(tmp_path / "absent"),))
         assert tailnet._cli_path() is None
+
+    def test_windows_keeps_only_the_windows_install_path(self) -> None:
+        """Read at import, so each platform's CI lane checks its own list."""
+        windows = r"C:\Program Files\Tailscale\tailscale.exe"
+        posix = (
+            "/usr/bin/tailscale",
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale",
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        )
+        expected = (*posix, windows) if tailnet.IS_POSIX else (windows,)
+        assert tailnet._CLI_CANDIDATE_PATHS == expected

@@ -2432,7 +2432,8 @@ Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
 dead button that only reproduces in a packaged build.
 
 Editor links that name a file get a fourth verdict, `confirm`:
-`vscode://file/<path>` and `vscode://vscode-remote/ssh-remote+<host>/<path>`
+`vscode://file/<path>`, `vscode://file/<drive>:/<path>` (a Windows drive letter,
+local files only) and `vscode://vscode-remote/ssh-remote+<host>/<path>`
 (and `vscode-insiders://`), with an optional `:line[:col]`. The handler shows a
 native dialog with the full URL and hands it to the OS only if the user picks
 Open, one dialog at a time. Its "Don't ask again" box skips the dialog for

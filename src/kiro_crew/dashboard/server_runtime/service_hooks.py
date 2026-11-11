@@ -14,6 +14,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         DashboardState,
+        logger,
         register_status_delta_sink,
         unregister_status_delta_sink,
     )
@@ -46,7 +47,10 @@ def _register_kiro_service_shutdown(app: web.Application) -> None:
     """
 
     async def _kiro_prerequisite_shutdown(app_: web.Application) -> None:
-        await app_["kiro_prerequisite_service"].close()
+        try:
+            await app_["kiro_prerequisite_service"].close()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Kiro prerequisite service close failed", exc_info=True)
 
     app.on_cleanup.append(_kiro_prerequisite_shutdown)
 
@@ -56,7 +60,10 @@ def _register_kiro_service_shutdown(app: web.Application) -> None:
         # KAS request has nothing to close.
         service = app_.get("kas_login_service")
         if service is not None:
-            await service.close()
+            try:
+                await service.close()
+            except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+                logger.warning("KAS login service close failed", exc_info=True)
 
     app.on_cleanup.append(_kas_login_shutdown)
 
@@ -77,4 +84,7 @@ async def _stop_remote_puller(_app: web.Application) -> None:
     """Cleanup: stop the puller. Imports nothing when it was never loaded."""
     module = sys.modules.get("kiro_crew.dashboard.handlers.remote_puller")
     if module is not None:
-        await module.stop()
+        try:
+            await module.stop()
+        except Exception:  # noqa: BLE001 — one cleanup hook must not suppress later hooks
+            logger.warning("Remote report puller stop failed", exc_info=True)

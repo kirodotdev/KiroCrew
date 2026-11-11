@@ -40,6 +40,7 @@ from kiro_crew._sqlite_compat import (
 )
 from kiro_crew.config.loader import config_dir
 from kiro_crew.context_assembly.budget import _MEMORY_PROJECTS_CAP
+from kiro_crew.memory_history_stamps import is_history_day_header, is_history_stamp
 from kiro_crew.memory_recall import recall_terms
 from kiro_crew.memory_startup import require_memory_ready
 from kiro_crew.memory_stores import named_store_operation
@@ -925,16 +926,19 @@ class MemoryStore:
             source_remaining = share
             candidates = []
             first_line = True
+            history_day = label != "Projects"
             for line in body.splitlines():
                 if not line.strip():
                     first_line = True
+                elif history_day and (is_history_day_header(line) or is_history_stamp(line)):
+                    first_line = True  # the entry's own first line takes the slot
                 elif line.startswith(("#", "- ", "* ")):
                     candidates.append(line.strip())
                     first_line = line.startswith("#")
                 elif first_line:
                     candidates.append(line.strip())
                     first_line = False
-            if label != "Projects":
+            if history_day:
                 candidates.reverse()
             for title in candidates:
                 line = f"- {label}: {title[:160]}\n"

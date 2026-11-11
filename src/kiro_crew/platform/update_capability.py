@@ -365,11 +365,8 @@ class UpdateCapability:
             return self
 
         # Function-local for the same cycle reason as the import in the factory.
-        from kiro_crew.platform.update_layout import channel_is_published, wheel_update_command
+        from kiro_crew.platform.update_layout import wheel_update_command
 
-        if not channel_is_published(channel):
-            # No command cli.sh would accept (RFC D11 lts before it publishes).
-            return replace(self, remediation=_unpublished_remediation(channel))
         repinned = dict(self.remediation)
         repinned["command"] = wheel_update_command(channel)
         return replace(self, remediation=repinned)
@@ -389,13 +386,6 @@ class UpdateCapability:
 
 def _command_remediation(message: str, command: str) -> dict[str, str]:
     return {"kind": "command", "message": message, "command": command}
-
-
-def _unpublished_remediation(channel: str) -> dict[str, str]:
-    """A message with no command, for a channel with no builds yet."""
-    from kiro_crew.platform.update_layout import unpublished_channel_note
-
-    return {"kind": "message", "message": unpublished_channel_note(channel)}
 
 
 def derive_capability(
@@ -482,13 +472,8 @@ def derive_capability(
 
     # Function-local: update_layout imports this module for its own shape
     # detection, so importing it at module scope would close a cycle.
-    from kiro_crew.platform.update_layout import (
-        channel_is_published,
-        release_channel,
-        wheel_update_command,
-    )
+    from kiro_crew.platform.update_layout import release_channel, wheel_update_command
 
-    channel = release_channel()
     return UpdateCapability(
         supported=True,
         managed_by=MANAGED_BY_KIROCREW,
@@ -498,13 +483,9 @@ def derive_capability(
         # executing. The wheel engine that makes it survivable is a later phase.
         can_apply=False,
         requires_restart=True,
-        remediation=(
-            _command_remediation(
-                "Re-run the installer to upgrade.",
-                wheel_update_command(channel),
-            )
-            if channel_is_published(channel)
-            else _unpublished_remediation(channel)
+        remediation=_command_remediation(
+            "Re-run the installer to upgrade.",
+            wheel_update_command(release_channel()),
         ),
     )
 

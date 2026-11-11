@@ -24,17 +24,24 @@ if TYPE_CHECKING:
 
 
 def _doctor_managed_service_policy(issues: list[str]) -> None:
-    """Surface installed service definitions that predate launch-class policy."""
+    """Surface installed service definitions that predate launch-class policy, and
+    a loaded systemd unit that lags this build's (the lines `service status`
+    prints, :func:`kiro_crew.service.controller.stale_unit_notes`)."""
     state = cli_doctor.service_controller.installed_service_has_managed_marker()
     if state is None:
         return
     print("\nManaged Service")
     if state:
         print("  watchdog:    ✅ managed-service policy marker installed")
-        return
-    print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
-    print("               Fix: run `kirocrew service install` once, then restart the service")
-    issues.append("managed service definition is outdated")
+    else:
+        print("  watchdog:    ⚠️  installed definition predates managed-service defaults")
+        print("               Fix: run `kirocrew service install` once, then restart the service")
+        issues.append("managed service definition is outdated")
+    notes = cli_doctor.service_controller.stale_unit_notes()
+    for note in notes:
+        print(f"  unit:        ⚠️  {note}")
+    if notes:
+        issues.append("managed service unit lags this build")
 
 
 def _doctor_pod_session_bus(issues: list[str]) -> None:
@@ -105,11 +112,7 @@ def _doctor_pod_session_bus(issues: list[str]) -> None:
         return
 
     print(f"  session bus: ✅ {result.socket}")
-    user = (
-        os.environ.get("USER")
-        or os.environ.get("LOGNAME")
-        or str(getattr(os, "getuid", lambda: -1)())
-    )
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
     if cli_doctor._linger_enabled(user) is False:
         print("  linger:      ⚠️  disabled — the per-user systemd instance exits on logout,")
         print(f"               taking running pods with it. Fix: loginctl enable-linger {user}")

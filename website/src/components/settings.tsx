@@ -33,6 +33,12 @@ interface SettingsToggleProps {
   checked: boolean
   onChange: (value: boolean) => void
   disabled?: boolean
+  /** Opt-in: the toggle is saving its own change right now. The switch keeps
+   *  keyboard focus (not taken out of the tab order like a plain `disabled`,
+   *  which drops focus to the page) and ignores presses while the save runs,
+   *  announced as `aria-disabled` + `aria-busy`. The row click is ignored too.
+   *  Default unset keeps today's behaviour, so no other caller changes. */
+  busy?: boolean
   /** Backend config key this toggle writes (e.g. 'telemetry.beacon_enabled'). Used by the settings registry and SettingRef linking. */
   configKey?: string
   /** Stable highlight anchor (`data-setting-id`) for a row with no gateway
@@ -63,7 +69,13 @@ interface SettingsToggleProps {
   anchor?: boolean
 }
 
-export function SettingsToggle({ label, description, hint, checked, onChange, disabled, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
+  // Busy refuses the row click. The row is disabled for assistive tech while it
+  // runs -- `aria-disabled` plus `aria-busy`, out of the tab order -- so a screen
+  // reader does not announce an active button that does nothing. Focus is not
+  // lost: the inner switch carries its own `busy` and keeps its tab stop, so the
+  // user stays on the control they pressed. The dimmed look stays either way.
+  const inert = disabled || busy
   /**
    * Did this activation come from the "?" tip rather than the row?
    *
@@ -76,7 +88,7 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
   const fromHint = (e?: React.MouseEvent | React.KeyboardEvent) =>
     e?.target instanceof HTMLElement && e.target.closest('[data-settings-hint]') !== null
   return (
-    <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} className={`flex items-center justify-between py-1.5 group ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!fromHint(e)) onChange(!checked) }} disabled={disabled}>
+    <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} aria-busy={busy || undefined} className={`flex items-center justify-between py-1.5 group ${inert ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!inert && !fromHint(e)) onChange(!checked) }} disabled={inert}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-1.5">
           <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
@@ -90,7 +102,7 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
           toggling; the inner Toggle carries all keyboard/AT semantics. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
       <div onClick={e => e.stopPropagation()}>
-        <Toggle checked={checked} onChange={onChange} disabled={disabled} label={label} describedBy={describedBy} />
+        <Toggle checked={checked} onChange={onChange} disabled={disabled} busy={busy} label={label} describedBy={describedBy} />
       </div>
     </Clickable>
   )
@@ -135,13 +147,18 @@ interface SettingsSelectProps {
   /** Optional action at top of dropdown (e.g. "+ New workspace…") */
   action?: { label: string; onSelect: () => void }
   disabled?: boolean
+  /** Opt-in: this select is saving its own change right now. It keeps keyboard
+   *  focus instead of going native `disabled` (which would drop focus to the
+   *  page) and refuses picks while the save runs. See `SimpleSelect`'s `busy`.
+   *  Default unset keeps today's behaviour, so no other caller changes. */
+  busy?: boolean
   /** Schema-backed config key this select writes. */
   configKey?: string
   /** Explicit UI row identity for deep links, independent of the config schema. */
   settingId?: string
 }
 
-export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, configKey, settingId }: SettingsSelectProps) {
+export function SettingsSelect({ label, description, hint, value, options, optionLabels, onChange, action, disabled, busy, configKey, settingId }: SettingsSelectProps) {
   // Per-instance id pairing the caption's htmlFor with the select trigger, so
   // the visible caption is the control's programmatic label. The aria-label
   // below stays as a fallback: it wins the accessible-name computation and
@@ -157,6 +174,7 @@ export function SettingsSelect({ label, description, hint, value, options, optio
         onChange={onChange}
         action={action}
         disabled={disabled}
+        busy={busy}
         aria-label={label}
         triggerFallback={optionLabels?.[options.indexOf(value)] ?? (value || '—')}
       />

@@ -9,6 +9,7 @@ import { isWinElectron } from '../../lib/electron'
 import { setNativeBadgeCount } from '../platform/electronBridge'
 import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import ErrorNotice from '../../components/ErrorNotice'
 import { useNotificationSheet, NotificationSheet } from '../notifications/notificationSheet'
 import InstanceTabBar from '../../components/InstanceTabBar'
 import { getTopBarWidgets } from '../../apps/topBarWidgets'
@@ -33,7 +34,11 @@ import { useExplorePreview } from '../../hooks/usePreviewFlag'
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
 const UpdatePill = lazy(() => import('../../components/UpdatePill'))
-const RelayCrewsMenu = lazy(() => import('../../components/RelayCrewsMenu'))
+// The switcher with its Team Crews group, lazy so the relay list's code stays
+// out of the app core. Only the desktop app has the bridge it needs.
+const TeamCrewsSwitcher = lazy(() => import('../../components/TeamCrewsGroup'))
+const hasRelayCrewBridge = () =>
+  typeof (window as { relayCrewAPI?: { open?: unknown } }).relayCrewAPI?.open === 'function'
 
 // Corner radius, in px, of the top bar's Liquid Glass pills (the search
 // trigger, the readout capsule; components/FeedbackPill.tsx carries the same
@@ -283,11 +288,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               <MobileNavGlyph avatar={avatar} />
             </button>
           )}
-          <InstanceTabBar variant="inline" />
-          {/* Desktop app only, and only while the relay viewer is on: renders nothing otherwise. */}
-          <Suspense fallback={null}>
-            <RelayCrewsMenu />
-          </Suspense>
+          {/* Desktop app only: the same switcher, plus Team Crews while the relay
+              viewer is on. Until its code loads, the plain switcher stands in. */}
+          {hasRelayCrewBridge() ? (
+            <Suspense fallback={<InstanceTabBar variant="inline" />}>
+              <TeamCrewsSwitcher variant="inline" />
+            </Suspense>
+          ) : <InstanceTabBar variant="inline" />}
           </div>
         </div>
         )}
@@ -618,6 +625,26 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               </motion.div>
             )
           })()}
+          {/* Desktop: the offline cause in words, beside the dot it explains.
+              The dot carries the cause only in its tooltip and sr-only text,
+              and the phone's strip below cannot do this job here: the header
+              is its own stacking layer, so the rail and the chat panes paint
+              over anything hanging below it. In flow in the actions group, so
+              the collapse ladder makes room for it (shell-chrome.css). The
+              same inline ErrorNotice as MetricsErrorNotice beside it, with
+              `announce` off: the dot's `role="status"` span already announces
+              `gatewayStatusMsg`. Quiet while the session-expired banner speaks. */}
+          {!isMobile && !connected && !authRequired && (
+            <ErrorNotice
+              variant="inline"
+              announce={false}
+              noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
+              message={gatewayStatusMsg}
+              messageClassName="tb-offline-notice-msg"
+              className="tb-offline-notice shrink-0"
+              testId="topbar-offline-notice"
+            />
+          )}
           {!isMobile && <MetricsErrorNotice metrics={metrics} />}
           {/* Explore (RFC "Milestones for New-User Feature Discovery" 4.6): its
               own pill next to the readout capsule (after the capsule's own
@@ -710,7 +737,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             className="absolute left-0 right-0 top-full z-[1] pointer-events-none flex items-center justify-center gap-1.5 h-6 text-[12px] font-medium text-danger-text bg-danger-subtle border-b border-danger/30"
           >
             <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none" />
-            {i18nT('app.gateway_offline_reconnecting')}
+            {gatewayStatusMsg}
           </div>
         )}
         {/* Session expired on the phone: the auth banner (api/client.ts) is the

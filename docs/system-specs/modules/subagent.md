@@ -1585,7 +1585,7 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   honouring the project scope only ever narrows. Every unreadable or
   unscannable rule below applies to the project directory too, and either
   scope answering UNKNOWN refuses. Every entry point resolves it the same way
-  (`subagent.parent_template_allowlists(parent_session_key, template)`).
+  (`subagent.parent_template_spawn_policy(parent_session_key, template)`).
 - **Unresolved parent = surfaced.** When the project directory is unknown (no
   resolver in this process, a session with no slot project, a sub-agent run
   with no cwd) and no user-level spec names the parent, a project-scope
@@ -1639,8 +1639,18 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   file in the directory (`iter_agent_spec_files`, minus the `._` AppleDouble
   sidecars the reader rejects by design) did not parse, that answer is UNKNOWN
   — the declaration may be inside the very file that did not parse — and the
-  gate refuses with the same `agent_not_available` code, logging the
-  unreadable file, rather than failing open. A parent whose declaration is
+  gate refuses with the same `agent_not_available` code rather than failing
+  open. The refusal names each unreadable file as
+  `'<file name>' (<user|project> scope): <parse error>`, up to five and then
+  `(+N more)`, so a broken file shows up in the refusal as well as in the
+  WARNING log line. The bound is applied before the scan memo keeps the answer
+  (`_describe_unreadable_specs`): the memo holds at most five descriptions,
+  and only those five files are read a second time to recover their errors.
+  The descriptions travel with the answer, as the
+  third item of the `ParentSpawnPolicy` the gate receives
+  (`parent_template_spawn_policy`), so a refusal names only the files of its
+  own resolution, never those of another session that resolved the same
+  template in a different project. A parent whose declaration is
   readable is never refused by an unrelated broken file. The accepted cost: a
   parent with no user-level spec at all (a project-scope or edition agent)
   cannot be told apart from one whose declaring spec broke, so it is refused
@@ -1649,7 +1659,7 @@ declaration itself (`subagent._vet_parent_available_agents`, called from
   (probed with `os.scandir` before the snapshot read, which folds a walk
   failure into "no specs") refuses too, while an absent directory declares
   nothing; and so does a parent session whose execution record exists but
-  cannot be read (`ParentRecordUnreadable` → policy `("", None)`): an
+  cannot be read (`ParentRecordUnreadable` → policy `("", None, ())`): an
   unreadable parent is not a parent without a spec. A caller with no session,
   or a session with no record, is parentless and unrestricted.
 - **When it bites**: ONLY when the parent's spec declares the key. No parent
@@ -2834,7 +2844,10 @@ A dashboard approval refusal and process liveness are separate facts. A terminal
 approval response (expired/already decided) immediately removes decision controls,
 but remains conservatively active because another browser may already have approved
 and launched the same id. A reconnect that finds a spawn approval gone with no known
-outcome records the same verdict. The client immediately reconciles against
+outcome records the same verdict. The verdict names the request the card was raised
+for, its coordinator target (`types/approvalTarget.ts`): a refusal for one request never
+withdraws a card that a newer request under the same id raised, and a press on a card
+that names no request takes the verdict with nothing sent. The client immediately reconciles against
 `GET /api/spawn`, matching the record by run id alone (a nested, cron- or channel-born
 run's `parent` is not its tab key): a non-terminal record promotes the card to
 running/tool once `awaiting_approval` is false, a terminal record adopts its `outcome`,
@@ -4026,6 +4039,14 @@ the count of members not submitted or spawned, which may be resubmitted.
 Collection steps only build result text. `on_settled` writes the tool's own SEL
 row once the driver accepts that text; cancellation discards a collect result,
 and the audited wrapper writes the tool's terminal invocation row once.
+
+A member's result over `COMPLETION_KEEP_DEFAULT_CHARS` comes back as the
+`spawn_run` summary plus a disk path, and that path is the `result_path` a
+finished run's `GET /api/spawn/{id}` carries, never one the tool builds. The
+gateway spells it with `agent_dir_for_display`; the MCP process runs on the
+resolved data home, so a path built there would name a symlinked
+`KIROCREW_HOME` by its target, not as it was configured. A status read that
+names no `result_path` gets the whole result inline.
 
 **A returned result is delivered once, and a reply that never landed loses nothing.** A
 member the call returns inline still has its completion event, the other way its

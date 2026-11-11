@@ -131,18 +131,19 @@ _SCOPED_SEARCH_START = 200
 _SCOPED_SEARCH_MAX = 20000
 
 
-async def _search_until_exhausted(retriever, q: str, limit: int) -> list[dict]:
+async def _search_until_exhausted(retriever, q: str, limit: int, status: str | None) -> list[dict]:
     """Retrieve hybrid-search candidates until the retriever runs out.
 
     A source scope is applied *after* ranking, so a fixed window can hide every
     matching item behind higher-ranked hits from other sources. Growing the
     window until the retriever returns fewer rows than requested means the
     caller has seen the whole ranking, so its filtered count is the true total.
+    ``status`` is passed to the retriever (``None`` searches every status).
     """
     want = max(limit * 3, _SCOPED_SEARCH_START)
     results: list[dict] = []
     while True:
-        results = await run_in_embed_pool(retriever.search, q, limit=want)
+        results = await run_in_embed_pool(retriever.search, q, limit=want, status=status)
         # Short read means the ranking is exhausted; nothing further to fetch.
         if len(results) < want or want >= _SCOPED_SEARCH_MAX:
             return results
@@ -306,8 +307,14 @@ async def list_items(request: web.Request) -> web.Response:
                 matches.append(item)
             return matches
 
+        # The status filter goes into retrieval too, so every leg ranks only
+        # that status, and "All statuses" (no status) searches every status.
+        # Agent search keeps the retriever's "active" default.
+        search_status = status or None
         if source_id:
-            filtered = await _ranked_matches(await _search_until_exhausted(retriever, q, limit))
+            filtered = await _ranked_matches(
+                await _search_until_exhausted(retriever, q, limit, search_status)
+            )
         else:
             # type/status/namespace are post-ranking filters too, but the
             # dashboard sends status=active on every search, so exhausting the
@@ -322,7 +329,9 @@ async def list_items(request: web.Request) -> web.Response:
             need = want if sort else max(want, offset + limit)
             narrowed = bool(item_type or status or namespace or added_from or added_to)
             while True:
-                results = await run_in_embed_pool(retriever.search, q, limit=want)
+                results = await run_in_embed_pool(
+                    retriever.search, q, limit=want, status=search_status
+                )
                 filtered = await _ranked_matches(results)
                 if (
                     not narrowed

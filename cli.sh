@@ -25,7 +25,7 @@
 # build starts; KIROCREW_ALLOW_SOURCE_BUILDS=1 opts back into compiling.
 #
 # Options / env:
-#   --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
+#   --channel <nightly|insider|stable|lts>   (default: stable; env KIROCREW_CHANNEL)
 #   --version <X.Y.Z>                    pin an exact version, verified against
 #                                        its immutable signed CLI manifest
 #   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
@@ -42,8 +42,9 @@
 # KAS engine: after the wheel is installed, the installer runs the new
 # `kirocrew kas install`, which fetches the engine this release pins into the
 # data home (`engines/kas/`) and verifies it against the pin. A failed download
-# only warns and prints the command to retry; the install still succeeds. The
-# switch (agent.kas_bundle) is never turned on here.
+# only warns and prints the command to retry; the install still succeeds. A
+# first install on a host that cannot run the engine at all keeps the install
+# and exits 3. The switch (agent.kas_bundle) is never turned on here.
 # ──────────────────────────────────────────────────────────────────────
 set -eu
 
@@ -125,7 +126,7 @@ then installs it (pipx if available, else a managed venv BESIDE the data home �
 Records the channel in the data home. There is no unsigned fallback.
 
 Options / env:
-  --channel <nightly|insider|stable>   (default: stable; env KIROCREW_CHANNEL)
+  --channel <nightly|insider|stable|lts>   (default: stable; env KIROCREW_CHANNEL)
   --version <X.Y.Z>                    pin an exact version, verified against
                                        its immutable signed CLI manifest
   --cdn <base-url>                     (default CloudFront; env KIROCREW_CDN_BASE)
@@ -504,9 +505,11 @@ _restore_tree() {
 # segment (docs/build/release.md -> "Deliberately not built"). So there is
 # no name-to-prefix mapping. Reject anything outside the known set here: a
 # typo'd channel otherwise reaches the CDN and surfaces as an opaque 403.
+# lts is the LTS edition's own channel (release-lts.yml); it installs that
+# edition's distribution, kirocrew-lts, built for it alone.
 case "$CHANNEL" in
-  nightly|insider|stable) ;;
-  *) err "unknown channel '$CHANNEL' (expected one of: nightly, insider, stable)" ;;
+  nightly|insider|stable|lts) ;;
+  *) err "unknown channel '$CHANNEL' (expected one of: nightly, insider, stable, lts)" ;;
 esac
 CHANNEL_PATH="$CHANNEL"
 
@@ -671,8 +674,16 @@ _provision_python_via_uv() {
   # uv draws its own download progress on a terminal and reuses an already
   # installed interpreter without a download, so it is not wrapped in _run_step.
   echo "Installing Python ($UV_PYTHON_SERIES) into $_uv_py_dir via uv ..."
-  UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
-    || return 1
+  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES"; then
+    # uv trusts its own bundled CA roots, not the system store curl uses, so
+    # behind a TLS-intercepting proxy it fails (UnknownIssuer) where curl got
+    # through. Retry once on the system store unless the user set UV_NATIVE_TLS
+    # (the pinned uv's name); uv pins the archive's SHA-256 either way.
+    [ -z "${UV_NATIVE_TLS:-}" ] || return 1
+    echo "Retrying the Python download with the system certificate store (UV_NATIVE_TLS=1) ..."
+    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
+      || return 1
+  fi
   # only-managed: resolve the interpreter just installed, never a system one
   # that happens to satisfy the series (matters under --managed-python, where
   # a usable system 3.12 may exist but was explicitly opted out of).
@@ -926,7 +937,8 @@ try:
         ord(char) < 0x20 or ord(char) > 0x7E for char in payload["python_requires"]
     ):
         raise ValueError
-    wheel_name = f"kirocrew-{version}-py3-none-any.whl"
+    stem = "kirocrew_lts" if expected_channel == "lts" else "kirocrew"
+    wheel_name = f"{stem}-{version}-py3-none-any.whl"
     expected_url = f"{artifact_base}/cli/{expected_channel}/{version}/{wheel_name}"
     if payload["wheel_url"] != expected_url:
         raise ValueError
@@ -944,7 +956,8 @@ read_field() {
 WHEEL_URL="$(read_field wheel_url)"
 SHA="$(read_field sha256)"
 VER="$(read_field version)"
-WHEEL_NAME="kirocrew-${VER}-py3-none-any.whl"
+if [ "$CHANNEL" = lts ]; then _WHEEL_STEM=kirocrew_lts; else _WHEEL_STEM=kirocrew; fi
+WHEEL_NAME="${_WHEEL_STEM}-${VER}-py3-none-any.whl"
 WHL="$TMP/$WHEEL_NAME"
 
 echo "Downloading kirocrew $VER ..."
@@ -974,7 +987,8 @@ echo "Verified SHA-256."
 #
 # _KC_REPLACED_INSTALL turns 1 when this run writes over an existing install
 # (both branches install into the same tree a running gateway was loaded
-# from); the closing restart hint is printed only then.
+# from); the closing restart hint is printed only then, and only a run without
+# it ends with exit 3 on a host that cannot run the KAS engine.
 _KC_REPLACED_INSTALL=0
 _KC_PREV_UMASK="$(umask)"
 umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
@@ -1005,7 +1019,9 @@ if command -v pipx >/dev/null 2>&1; then
   # lock a file nobody else opens.
   _PIPX_VENV_BACKUP=""
   _PIPX_VENV="$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null || true)"
-  _PIPX_VENV="${_PIPX_VENV:+${_PIPX_VENV%/}/kirocrew}"
+  # pipx names the venv after the distribution: kirocrew-lts on the lts channel.
+  if [ "$CHANNEL" = lts ]; then _PIPX_PKG=kirocrew-lts; else _PIPX_PKG=kirocrew; fi
+  _PIPX_VENV="${_PIPX_VENV:+${_PIPX_VENV%/}/${_PIPX_PKG}}"
   if [ -n "$_PIPX_VENV" ]; then
     _PIPX_LOCK="$_PIPX_VENV.install.lock"
     mkdir -p "${_PIPX_VENV%/*}" 2>/dev/null || true
@@ -1353,40 +1369,73 @@ esac
 # command to retry. A version already on disk is a success with no fetch, so a
 # re-run is cheap. agent.kas_bundle is left alone: turning the route on is the
 # user's own step.
+#
+# Exit 3 is `kas install`'s "this host cannot run the engine" (cli_kas.py
+# HOST_UNSUPPORTED_EXIT): it already printed why, and a retry cannot help.
+# Kiro Crew stays installed, but the next steps would lead to a chat the
+# default agent cannot start here, so the run says that instead. A first
+# install then ends with the same 3, so a provisioning script sees it. A re-run
+# over an existing install keeps 0: every released `kirocrew update` re-runs
+# this live script on a pipx install and reads any non-zero as a failed update.
+# --no-kas skips the engine for an agent that does not use it.
 _KAS_RETRY="$BIN/kirocrew kas install"
+_KC_EXIT=0
+_kas_rc=0
 if [ "$INSTALL_KAS" = "1" ]; then
   echo ""
   echo "Downloading the built-in KAS engine (kirocrew kas install; skip with --no-kas) ..."
-  # Exit 3 is `kas install`'s "this host cannot run the engine" (cli_kas.py
-  # HOST_UNSUPPORTED_EXIT): it already printed why, and a retry cannot help.
-  _kas_rc=0
   if [ -x "$BIN/kirocrew" ]; then
     "$BIN/kirocrew" kas install || _kas_rc=$?
   else
     _kas_rc=1
   fi
   _tolerate "$_kas_rc"
-  if [ "$_kas_rc" -eq 3 ]; then
-    echo "NOTE: this host cannot run the built-in KAS engine (see above); Kiro Crew is installed without it." >&2
-  elif [ "$_kas_rc" -ne 0 ]; then
+  if [ "$_kas_rc" -ne 0 ] && [ "$_kas_rc" -ne 3 ]; then
     echo "WARNING: could not download the built-in KAS engine; Kiro Crew is installed without it." >&2
     echo "Retry when online: $_KAS_RETRY" >&2
   fi
 fi
-# Point at the actual next step, not just --help: a user who ran the one-liner
-# wants a running gateway. The persistent-service path (systemd/launchd) is
-# otherwise buried in the docs, which is the #1 remote-crew onboarding
-# complaint. `service install` is the durable path; `gateway` is the foreground
-# one for a quick look.
-echo ""
-echo "Next steps:"
-echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
-echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
-echo "  kirocrew --help             # everything else"
-echo ""
-echo "Need a non-default port (e.g. 5476 is already taken)?"
-echo "  kirocrew gateway --port 5477                  # for a foreground run"
-echo "  KIROCREW_PORT=5477 kirocrew service install   # for the service (baked into its unit)"
+# Ubuntu 23.10+ ships kernel.apparmor_restrict_unprivileged_userns=1, and there
+# the agent sandbox cannot start, so every agent is refused (fail closed), until
+# the kirocrew-userns AppArmor profile is installed. Writing it needs root, which
+# this installer never asks for, so it says so here, before the next steps that
+# would otherwise lead to a chat that cannot run. Both reads are the ones
+# `kirocrew doctor` makes, and neither needs root. The paths are arguments so a
+# test can hand it files of its own.
+_userns_profile_notice() {
+  [ -r "$1" ] || return 0
+  _un_value=""
+  IFS= read -r _un_value < "$1" 2>/dev/null || true
+  [ "$_un_value" = 1 ] || return 0
+  [ -f "$2" ] && return 0
+  echo "" >&2
+  echo "NOTE: this host restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1)," >&2
+  echo "so agents cannot run until Kiro Crew's AppArmor profile is installed. Install it with:" >&2
+  echo "  kirocrew service install    # needs sudo; it also runs Kiro Crew as a service" >&2
+}
+_userns_profile_notice /proc/sys/kernel/apparmor_restrict_unprivileged_userns /etc/apparmor.d/kirocrew-userns
+if [ "$_kas_rc" -eq 3 ]; then
+  echo "" >&2
+  echo "Kiro Crew is installed, but this host cannot run the built-in KAS engine (the reason is above)." >&2
+  echo "Without a signed-in kiro-cli, the default agent runs on that engine, so a chat cannot start here." >&2
+  echo "An agent that does not use the engine is not affected; pass --no-kas to skip this step next time." >&2
+  [ "$_KC_REPLACED_INSTALL" = 1 ] || _KC_EXIT=3
+else
+  # Point at the actual next step, not just --help: a user who ran the one-liner
+  # wants a running gateway. The persistent-service path (systemd/launchd) is
+  # otherwise buried in the docs, which is the #1 remote-crew onboarding
+  # complaint. `service install` is the durable path; `gateway` is the foreground
+  # one for a quick look.
+  echo ""
+  echo "Next steps:"
+  echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
+  echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
+  echo "  kirocrew --help             # everything else"
+  echo ""
+  echo "Need a non-default port (e.g. 5476 is already taken)?"
+  echo "  kirocrew gateway --port 5477                  # for a foreground run"
+  echo "  KIROCREW_PORT=5477 kirocrew service install   # for the service (baked into its unit)"
+fi
 
 # A re-run installs into the same tree a running gateway was loaded from, so
 # that gateway keeps its already-imported old modules while every later import
@@ -1484,3 +1533,4 @@ if [ "$_KC_REPLACED_INSTALL" = 1 ]; then
     echo "  $_KC_RESTART_CMD" >&2
   fi
 fi
+exit "$_KC_EXIT"

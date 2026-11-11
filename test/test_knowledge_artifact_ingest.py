@@ -842,6 +842,118 @@ class TestReconcile:
             "it would be deferred on every start")
 
 
+# A lost-run deadline: a regression fails the awaiting assertion instead
+# of hanging the xdist worker.
+_STOP_DEADLINE_S = 60.0
+
+
+class TestArtifactKnowledgeSyncStop:
+    """The start-time reconcile pass ends when the sync is stopped.
+
+    Detaching the store listener alone left the pass running, against a
+    pipeline being torn down at gateway exit or beside a fresh sync a
+    re-enable starts. The pass is asked to stop, never cancelled mid-ingest.
+    """
+
+    @staticmethod
+    async def _running_sync(pipeline, art_store, monkeypatch, in_hand=None):
+        started = asyncio.Event()
+        ended = []
+
+        async def _reconcile(pipeline_, art_store_, source_id, kinds, *, stop=None, **kw):
+            started.set()
+            await asyncio.wait_for(stop.wait(), _STOP_DEADLINE_S)
+            if in_hand is not None:
+                # The ingest already under way when the stop arrived.
+                await asyncio.wait_for(in_hand.wait(), _STOP_DEADLINE_S)
+            ended.append(True)
+            return 0, 0, 0
+
+        monkeypatch.setattr(artifact_ingest, "reconcile_artifacts", _reconcile)
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync.start()
+        task = sync._reconcile_task
+        await asyncio.wait_for(started.wait(), _STOP_DEADLINE_S)
+        return sync, task, ended
+
+    @pytest.mark.asyncio
+    async def test_stop_ends_the_running_reconcile_without_cancelling_it(
+        self, pipeline, art_store, monkeypatch
+    ):
+        """The stop returns at once; the pass finishes the ingest in hand and
+        returns on its own, never cancelled mid-ingest."""
+        in_hand = asyncio.Event()
+        sync, task, ended = await self._running_sync(
+            pipeline, art_store, monkeypatch, in_hand=in_hand)
+        sync.stop()
+        assert sync._stop_requested.is_set()
+        assert not task.done(), "the stop must not cut the in-hand ingest short"
+        in_hand.set()
+        await asyncio.wait_for(task, _STOP_DEADLINE_S)
+        assert not task.cancelled() and ended == [True]
+
+    @pytest.mark.asyncio
+    async def test_turning_auto_ingest_off_stops_the_reconcile(
+        self, pipeline, art_store, monkeypatch
+    ):
+        """The live-config applier is bounded by a timeout, so the toggle-off
+        path must return without waiting on the pass."""
+        from kiro_crew.dashboard.handlers import knowledge_lifecycle
+
+        in_hand = asyncio.Event()
+        sync, task, ended = await self._running_sync(
+            pipeline, art_store, monkeypatch, in_hand=in_hand)
+        monkeypatch.setattr(knowledge_lifecycle, "get_default_store", lambda: art_store)
+        app = {"artifact_knowledge_sync": sync}
+        await asyncio.wait_for(
+            knowledge_lifecycle._stop_artifact_ingest(app), _STOP_DEADLINE_S)
+        assert "artifact_knowledge_sync" not in app
+        assert sync._stop_requested.is_set() and not task.done()
+        in_hand.set()
+        await asyncio.wait_for(task, _STOP_DEADLINE_S)
+        assert ended == [True]
+
+    @pytest.mark.asyncio
+    async def test_a_stop_finishes_the_artifact_in_hand_and_defers_the_rest(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """A stop landing during an ingest lets that ingest finalize (so its
+        chunks are owned) and defers every artifact not yet started."""
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="A", content="alpha body", kind="markdown")
+        art_store.create(name="B", content="bravo body", kind="markdown")
+        stop = asyncio.Event()
+        real_ingest = artifact_ingest.ingest_artifact
+
+        async def _ingest_then_stop(*args, **kwargs):
+            stop.set()
+            return await real_ingest(*args, **kwargs)
+
+        monkeypatch.setattr(artifact_ingest, "ingest_artifact", _ingest_then_stop)
+        result = await asyncio.wait_for(
+            reconcile_artifacts(pipeline, art_store, sid, DEFAULT_KINDS, stop=stop),
+            _STOP_DEADLINE_S)
+        assert result == (1, 0, 1)
+        assert len(artifact_ingest._known_kinds(kstore, sid)) == 1, "the in-hand ingest kept its ownership row"
+
+    def test_app_exit_runs_the_same_stop(self):
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import knowledge_lifecycle
+
+        app = web.Application()
+        app["state"] = MagicMock()
+        app["knowledge_pipeline"] = MagicMock()
+        knowledge_lifecycle.setup_knowledge_routes(app)
+        cleanup = list(app.on_cleanup)
+        assert knowledge_lifecycle._stop_artifact_ingest in cleanup
+        # The reconcile extracts through the pools, so it stops first.
+        assert cleanup.index(knowledge_lifecycle._stop_artifact_ingest) < cleanup.index(
+            knowledge_lifecycle._shutdown_knowledge_pools)
+
+
 class TestArtifactKnowledgeSync:
     @pytest.mark.asyncio
     async def test_handle_upsert_then_delete(self, pipeline, art_store, kstore):

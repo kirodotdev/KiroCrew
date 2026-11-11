@@ -39,21 +39,32 @@ test("the baked edition decides the required channel", () => {
   assert.strictEqual(requiredUpdateChannelFor()(), "");
 });
 
-test("LTS: an insider preference never reads an oss feed, and the switcher is locked", async () => {
-  // lts has no desktop publish lane until the release pipeline publishes it, so
-  // the build reports that instead of falling back to the stable (oss) feed.
+test("LTS: an insider preference reads the lts feed, never an oss one, and the switcher is locked", async () => {
+  // release-lts.yml publishes lts, so the LTS app reads its own feed only.
   const { deps, calls } = makeDeps({ appVersion: "1.0.0" });
   deps.getChannelPreference = () => "insider";
   deps.getRequiredChannel = requiredUpdateChannelFor("lts");
   const u = initAutoUpdate(deps);
-  assert.strictEqual(u.disabled, "channel");
+  assert.strictEqual(u.disabled, undefined);
   await u.check();
-  assert.strictEqual(calls.setFeedURL.length, 0);
-  assert.strictEqual(calls.checkForUpdates, 0);
+  assert.deepStrictEqual(new Set(feedUrls(calls)), new Set(["https://cdn.example.dev/feed/lts/"]));
   const info = u.getInfo();
   assert.strictEqual(info.channel, "lts");
   assert.strictEqual(info.channelSwitchable, false);
   assert.strictEqual(info.channelLockedByPolicy, true);
+});
+
+test("LTS: an older lts release is not auto-downloaded (lts is the default lane, not a switch)", async () => {
+  const { deps, calls, emit, stateNames } = makeDeps({ appVersion: "0.14.0" });
+  deps.getRequiredChannel = requiredUpdateChannelFor("lts");
+  deps.getAutoDownloadPreference = () => true;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "0.13.0" });
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(calls.downloadUpdate, 0);
+  assert.ok(!stateNames().includes("found"));
+  assert.ok(!stateNames().includes("downloading"));
 });
 
 test("LTS: a promoted insider-stamped build stays on stable", async () => {
@@ -126,4 +137,13 @@ test("a requirement that changes to one the build cannot follow stops the next c
   assert.strictEqual(calls.setFeedURL.length, before, "no feed is pointed at");
   assert.strictEqual(calls.checkForUpdates, checksBefore, "no feed is read");
   assert.strictEqual(states[states.length - 1].state, "error");
+});
+
+test("manualDownloadUrl: the lts channel names the LTS app's own files", () => {
+  const { manualDownloadUrl } = require("../auto-update");
+  assert.match(manualDownloadUrl("lts", "darwin", "arm64"), /\/desktop\/lts\/latest\/KiroCrew-LTS\.dmg$/);
+  assert.match(manualDownloadUrl("lts", "linux", "x64", "deb"), /\/desktop\/lts\/latest\/KiroCrew-LTS-x86_64\.deb$/);
+  assert.match(manualDownloadUrl("lts", "win32", "x64"), /\/desktop\/lts\/latest\/KiroCrew-LTS-Setup\.exe$/);
+  // oss channels keep their published names.
+  assert.match(manualDownloadUrl("stable", "darwin", "arm64"), /\/desktop\/stable\/latest\/KiroCrew\.dmg$/);
 });

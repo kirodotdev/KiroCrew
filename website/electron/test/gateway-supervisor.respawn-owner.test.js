@@ -308,3 +308,26 @@ test("a dialog Retry while a recovery is already starting a gateway joins it, so
 
   assert.strictEqual(built.spawnCalls.length - before, 1, `exactly one gateway is spawned:\n${built.logs.join("\n")}`);
 });
+
+// A spawn that fails with only an `error` event (ENOENT for a launcher that is not
+// on PATH: Node emits no `exit` after it) must leave no child behind, or the
+// dialog's Retry reads the dead child as running and starts nothing.
+test("a dialog Retry after a spawn error with no exit starts a new gateway", async () => {
+  const built = windowsHarness(await freePort());
+  await bootOwnGateway(built);
+  const enoent = Object.assign(new Error("spawn kirocrew ENOENT"), { code: "ENOENT" });
+  built.spawnCalls[0].child.emit("error", enoent);
+
+  const tab = fakeAppWindow();
+  built.supervisor.connect(tab);
+  await settle(built.timers);
+  assert.strictEqual(built.dialogs.windows.length, 1, `the failure dialog opened:\n${built.logs.join("\n")}`);
+  const before = built.spawnCalls.length;
+
+  built.dialogs.windows[0].click("retry");
+  await settle(built.timers);
+
+  assert.strictEqual(built.spawnCalls.length - before, 1, `the Retry spawned a gateway:\n${built.logs.join("\n")}`);
+  tab.destroyed = true;
+  built.mainWindow.destroyed = true;
+});

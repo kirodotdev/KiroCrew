@@ -113,8 +113,9 @@ docker run -d --name kirocrew \
   ghcr.io/kirodotdev/kirocrew:stable
 ```
 
-See the [Docker guide](docs/guides/docker.md) for first-run login, channel tags, and
-the container security model.
+See the [Docker guide](docs/guides/docker.md) for first-run login, channel tags,
+[upgrades](docs/guides/docker.md#state-and-upgrades), and the container security
+model.
 
 ### Build from source
 
@@ -1156,6 +1157,7 @@ make this tool possible:
 <a href="https://github.com/rjullien" title="Rene Jullien"><img src="https://github.com/rjullien.png?size=64" width="64" height="64" alt="Rene Jullien" /></a>
 <a href="https://github.com/rkeely" title="Rkee"><img src="https://github.com/rkeely.png?size=64" width="64" height="64" alt="Rkee" /></a>
 <a href="https://github.com/rlunar" title="Roberto Luna-Rojas"><img src="https://github.com/rlunar.png?size=64" width="64" height="64" alt="Roberto Luna-Rojas" /></a>
+<a href="https://github.com/rmartin" title="Roy Martin"><img src="https://github.com/rmartin.png?size=64" width="64" height="64" alt="Roy Martin" /></a>
 <a href="https://github.com/rmkumari0704" title="rmkumari0704"><img src="https://github.com/rmkumari0704.png?size=64" width="64" height="64" alt="rmkumari0704" /></a>
 <a href="https://github.com/rnoack1" title="Robert Noack"><img src="https://github.com/rnoack1.png?size=64" width="64" height="64" alt="Robert Noack" /></a>
 <a href="https://github.com/robchahin" title="robchahin"><img src="https://github.com/robchahin.png?size=64" width="64" height="64" alt="robchahin" /></a>

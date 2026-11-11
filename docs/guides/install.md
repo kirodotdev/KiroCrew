@@ -170,7 +170,13 @@ Once the wheel is in, the installer runs the new `kirocrew kas install` to
 download the [built-in KAS engine](#first-run) this release pins (about 55-70 MB
 for your platform). If that download fails, for example on a host with no
 access to the CDN, the install still succeeds and the installer prints the
-command to retry. Pass `--no-kas` (or set `KIROCREW_INSTALL_KAS=0`) to skip it:
+command to retry. On a host that cannot run the engine at all (no build for its
+platform, or a glibc older than the engine needs), Kiro Crew stays installed and
+the installer says why a chat on the default agent cannot start there in place
+of its next steps. A first install then exits 3; a re-run over an existing
+install, which is what `kirocrew update` does, exits 0. Pass `--no-kas` (or set
+`KIROCREW_INSTALL_KAS=0`) to skip the engine, for example on a host whose agent
+does not use it:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --no-kas
@@ -201,9 +207,8 @@ installed by the installer. Every release from `0.1.2` onward can be pinned.
 **These two releases will not be backfilled.** Signing an already-published
 digest today would create a fresh attestation for bytes that no signing
 pipeline produced, which asserts a provenance the project cannot re-establish
-after the fact. [SECURITY.md](../../SECURITY.md) already limits active support
-to the latest release, so the trust surface would widen for two releases that
-are several minor versions behind current `stable` and are supported by nobody.
+after the fact. Backfilling would also widen the trust surface for two releases
+that are several minor versions behind current `stable`.
 Their artifacts stay published and their `SHA256SUMS` stays fetchable for
 archival inspection, but the installer has no checksum-only path, so it will
 not install them.
@@ -270,7 +275,11 @@ interpreter cannot be downloaded and a usable system Python 3.12+ exists, the
 run falls back to it with a warning (and retries the managed default next
 time); air-gapped hosts can point `KIROCREW_UV_URL` at a mirror of the uv
 release tree and `UV_PYTHON_INSTALL_MIRROR` at a mirror of the interpreter
-archives — the pinned SHA-256 digests are enforced either way. The signed
+archives — the pinned SHA-256 digests are enforced either way. Behind a
+TLS-intercepting proxy, uv's own bundled certificate roots refuse the
+interpreter download (`UnknownIssuer`) even when the system trusts the proxy's
+CA, so the installer retries that download once on the system certificate store
+(`UV_NATIVE_TLS=1`); a `UV_NATIVE_TLS` you set yourself is left as it is. The signed
 installer never pipes an unsigned third-party script into a shell: uv is
 fetched as a tarball and verified against pinned digests, exactly like the
 wheel itself. On a terminal the wheel download draws curl's progress bar and
@@ -493,8 +502,8 @@ command installed on `PATH`.
 
 Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
 cannot resolve — install an extra's own distributions into the environment that
-runs the gateway instead (e.g. `pip install 'boto3>=1.34,<2'
-'amazon-transcribe>=0.6.3,<1' 'pywhispercpp>=1.5,<2'` for `voice`). The dashboard
+runs the gateway instead (e.g. `pip install "boto3>=1.34,<2"
+"amazon-transcribe>=0.6.3,<1" "pywhispercpp>=1.5,<2"` for `voice`). The dashboard
 prints the exact command, already pointed at the right interpreter.
 
 | Extra | Adds | For |
@@ -880,7 +889,11 @@ When another gateway already serves the same data home, the unit exits 78 and
 goes `failed` once instead of restarting, because the unit's
 `RestartPreventExitStatus=` names that code. A unit file without that directive
 keeps relaunching against the refusal; re-run `kirocrew service install` to
-rewrite it. See [Service Management](../system-specs/modules/cli.md#service-management)
+rewrite it. A unit installed before v0.10.0 on systemd 219 (Amazon Linux 2,
+RHEL 7) has the same fix: its restart cap sits where 219 does not read it, so a
+gateway that fails at boot restarts without end. `kirocrew service status` and
+`kirocrew doctor` name either one. See
+[Service Management](../system-specs/modules/cli.md#service-management)
 in the CLI spec for the details.
 
 ### SELinux-enforcing hosts with kirocrew under `$HOME`
@@ -1078,6 +1091,10 @@ profile cannot be written, loaded, or verified, you get a warning and the
 install continues. `kirocrew service uninstall` unloads and removes it, so a
 host is left as it was found rather than carrying an orphaned userns permission.
 
+The one-line installer (`cli.sh`) reads the same sysctl. When it is `1` and
+`/etc/apparmor.d/kirocrew-userns` is not there, the installer says, before its
+next steps, that agents cannot run until this command installs the profile.
+
 The installer skips the profile silently, with a reason it can print, when
 AppArmor is not an active LSM, when the sysctl is not `1`, when
 `apparmor_parser` is absent, or when the parser is older than 4.x (the `userns`
@@ -1130,7 +1147,10 @@ that need it (`install`, `apparmor_parser`, `aa-exec`) and prompts you for a
 password when it does; running the whole thing as root would execute application
 code with privilege for no reason.
 
-Then restart the app. To check whether the launch you are looking at is covered:
+Then restart the app. The same restriction is why the AppImage starts the app
+with Chromium's sandbox off (`--no-sandbox`); the app shows a notice with this
+command when it does, and the profile turns both sandboxes back on. To check
+whether the launch you are looking at is covered:
 
 ```bash
 kirocrew sandbox status

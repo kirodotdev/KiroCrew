@@ -1303,6 +1303,22 @@ _RUNTIME_PATH_MODULES = (
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     (
+        "src/kiro_crew/acp/runtime_spawn_entry.py",
+        "spawn",
+    ): "moving kiro-cli's broken KAS extract aside and retrying is a repair for the "
+    "KAS relay alone (kiro-cli's v3 engine copy); every other harness, Kiro CLI "
+    "included, starts exactly as before",
+    (
+        "src/kiro_crew/acp/runtime_liveness.py",
+        "_drain_stderr",
+    ): "the broken-KAS-extract stderr latch feeds only the KAS repair; a non-KAS "
+    "runtime never latches it. "
+    '"V3 is currently not supported on this system" is kiro-cli refusing the v3 '
+    "engine KAS runs on, so the host verdict it records is KAS's alone "
+    "(``mark_backend_unservable`` of KAS). No other harness runs that engine, and "
+    "recording it from another child would move KAS off a host on a line about "
+    "something else.",
+    (
         "src/kiro_crew/acp/session_handle_turn.py",
         "_build",
     ): (

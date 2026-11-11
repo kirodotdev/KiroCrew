@@ -102,6 +102,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # Dropping this would leave every spec-granted KAS built-in prompting on
         # this surface: the gate's spec-builtin-grant row reads it.
         spec_granted_builtins=e.spec_granted_builtins,
+        # Same row: dropping this would leave every hook-held MCP grant prompting.
+        spec_hook_held=e.spec_hook_held,
         # Same row: dropping this would leave every allowedCommands match prompting.
         spec_granted_commands=e.spec_granted_commands,
         # Dropping this would let a `denyByDefault` spec's unlisted command run on

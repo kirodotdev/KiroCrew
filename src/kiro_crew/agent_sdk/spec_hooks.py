@@ -114,9 +114,9 @@ OBSERVER_HOOK_EVENTS = frozenset(
 #: so a matcher on any other event is dropped rather than applied to the context.
 _TOOL_EVENTS = frozenset({HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE})
 
-#: Bound on the hooks taken from one spec, the same total the materialized spec is
-#: capped at, so a hand-written spec cannot make every turn spawn without limit.
-_MAX_SPEC_HOOKS = 20
+#: Bound on the hooks taken from one spec, so a runaway spec cannot make every turn
+#: spawn without limit, set high enough that an installed agent's set runs whole.
+_MAX_SPEC_HOOKS = 64
 
 #: Bound on a retained command: the longest command the shell gate scans, so a
 #: spec hook is held to the same ceiling as a shell tool call's command and every
@@ -1290,6 +1290,8 @@ def crew_fired_spec_hooks(
     translates_tools_settings: bool = False,
     session_key: str = "",
     discards_mcp_oauth: bool = False,
+    governance_session_key: str = "",
+    governance_app: str | None = None,
 ) -> tuple[list[ScriptHook], list[str], int]:
     """The active agent spec's hooks as script hooks, the keys nothing carries, and
     how many ``confirm: true`` hooks are skipped.
@@ -1304,6 +1306,8 @@ def crew_fired_spec_hooks(
     ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session too,
     the backend that drops a remote MCP server's ``oauth`` block. *session_key*
     reads a crewmate's worker as that session's merged spec (:func:`_agent_spec`).
+    *governance_session_key* and *governance_app* are the session and app the KAS
+    projection judged a ``trustedAgents`` allow for, so the notice judges it alike.
     """
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
@@ -1315,6 +1319,8 @@ def crew_fired_spec_hooks(
         spec,
         translates_tools_settings=translates_tools_settings,
         discards_mcp_oauth=discards_mcp_oauth,
+        session_key=governance_session_key,
+        governance_app=governance_app,
     )
     # Copies, so the cached conversion keeps no origin: the same hooks can come
     # from a user-level spec in one session and a project spec in another.
@@ -1483,12 +1489,27 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     """The session-start notice for spec keys this backend never receives.
 
     A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
-    more sentence, because what it costs is sign-in, not a setting. So does a
-    refused ``permissions`` block, because it is what keeps the agent's granted
-    shell and file tools asking.
+    more sentence, because what it costs is sign-in, not a setting. So do a refused
+    ``permissions`` block and an ``allow`` it leaves out (``permissions.rules[<i>]``),
+    since what they grant keeps asking, and, last, each unreadable ``allowedCommands``
+    entry (``<key>.allowedCommands: <entry> (<reason>)``): the other entries apply
+    unless the list is also named whole.
     """
+    from kiro_crew.agent_sdk.kas_tool_view import allow_exclude_limit
     from kiro_crew.mcp_oauth_projection import oauth_servers_in
+    from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
 
+    unread = [key for key in keys if MARK in key]
+    keys = [key for key in keys if MARK not in key]
+    whole = {key.partition(MARK)[0] + ".allowedCommands" for key in unread} & set(keys)
+    others = "" if whole else "; the agent's other entries still apply"
+    entries = (
+        f"Agent {agent} has allowedCommands entries Kiro Crew cannot read: {'; '.join(unread)}. "
+        "Each allows nothing, so a command only it matches asks for approval, or is refused "
+        f"when denyByDefault is set{others}. Run kirocrew doctor to list them."
+    )
+    if unread and not keys:
+        return f"ℹ️ {entries}"
     notice = (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
         "receive, so they have no effect in this session."
@@ -1506,6 +1527,13 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
             "or is malformed or too large. With a policies bundle, the agent's shell "
             "and file tools also ask for approval even where allowedTools grants them."
         )
+    if any(key.startswith("permissions.rules[") for key in keys):
+        notice += (
+            f" An allow rule whose exclude list has more than {allow_exclude_limit()} "
+            "patterns is not sent, so what it allows asks for approval."
+        )
+    if unread:
+        notice += f" {entries}"
     return notice
 
 
@@ -1633,12 +1661,19 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
     with no spec on disk (a KAS built-in mode) has no spec hooks, so only the Hooks
     page's hooks count; a spec that exists but cannot be read answers True:
     re-projecting is the safe direction. A crewmate's worker is read
-    as the provider's own session's merged spec (:func:`_agent_spec`).
+    as the provider's own session's merged spec (:func:`_agent_spec`). Each entry
+    of the batch is checked on its own, a registered sub-agent target's included:
+    its calls run inside this agent's turn under its own entry's permissions.
     """
     if not capabilities_of(provider).crew_fires_spec_hooks:
         return False
     approved = getattr(provider, "kas_auto_approved_capabilities", None)
-    if not approved:
+    if approved is None:
+        return False
+    from kiro_crew.acp.kas_subagent_targets import registered_unprompted
+
+    parts = registered_unprompted(approved, getattr(provider, "kas_registered_agents", None))
+    if not parts:
         return False
     agent_id = session_agent(provider, agent_id)
     if not agent_id:
@@ -1658,12 +1693,16 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
 
         # A built-in mode with no spec: only the Hooks page's hooks count.
         spec = _agent_spec(agent_id, None, session_key)
-        covered = hook_gated_capabilities(
-            pre_tool_hook_matchers(agent_id, spec),
-            mcp_servers=approved_mcp_servers(approved),
-            mcp_tool_names=cached_mcp_tool_names,
-        )
-        return hook_gated_auto_approved(covered, approved)
+        matchers = pre_tool_hook_matchers(agent_id, spec)
+        still: set[str] = set()
+        for part in parts:
+            covered = hook_gated_capabilities(
+                matchers,
+                mcp_servers=approved_mcp_servers(part),
+                mcp_tool_names=cached_mcp_tool_names,
+            )
+            still |= hook_gated_auto_approved(covered, part)
+        return still
 
     try:
         still_approved = await asyncio.to_thread(_covered)

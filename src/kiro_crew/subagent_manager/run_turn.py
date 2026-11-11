@@ -592,6 +592,8 @@ async def _run_inner_impl(
             session_key=session_key,
             agent=info.agent or "",
             app=info.app or "",
+            # The ladder's SpecHooks floor fired the PreToolUse hooks first.
+            pre_tool_hooks_fire=True,
             **hook_gate_kwargs(event),
         )
         return verdict

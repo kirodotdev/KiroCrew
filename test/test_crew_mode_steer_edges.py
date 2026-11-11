@@ -9,6 +9,7 @@ session, and answers an outstanding question on the board.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -18,6 +19,7 @@ import work_ledger_helpers
 from work_ledger_helpers import CONDUCTOR, WORKER, _new_item
 
 from kiro_crew import work_ledger as wl
+from kiro_crew.testing.wait import finished
 
 _isolated_home = work_ledger_helpers._isolated_home
 
@@ -32,6 +34,14 @@ def _routing_live(_floor_monkeypatch):
     from kiro_crew import crew_mode
 
     _floor_monkeypatch.setattr(crew_mode, "APPROVAL_ROUTING_LIVE", True)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_steer_record_locks(_floor_monkeypatch):
+    # A record a test left unawaited must not leave its owed count on the next test.
+    from kiro_crew.dashboard import chat_handlers
+
+    _floor_monkeypatch.setattr(chat_handlers, "_STEER_RECORD_LOCKS", {})
 
 
 def _bound(board: str = CONDUCTOR, worker: str = WORKER) -> str:
@@ -198,14 +208,18 @@ async def test_X1_a_composer_send_to_a_worker_records_the_steer_and_says_so(monk
     # The send path runs on the chat_handlers facade (``_facade_compose``).
     monkeypatch.setattr(chat_handlers, "_api_chat_send", fake_send)
     monkeypatch.setattr(crew_workers, "person_steer", fake_steer)
-    resp = await chat_handlers.api_chat(_Req(SimpleNamespace()))  # type: ignore[arg-type]
-    assert calls == [(CONDUCTOR, WORKER, "use main")]
+    state = SimpleNamespace(_background_tasks=set())
+    resp = await chat_handlers.api_chat(_Req(state))  # type: ignore[arg-type]
+    # Answered once delivered; the record is owed and written in the background.
     assert json.loads(resp.text) == {
         "ok": True,
         "slot": WORKER,
-        "ledger_event": "it_1",
+        "ledger_event": None,
         "ledger_error": None,
+        "ledger_pending": True,
     }
+    await asyncio.gather(*state._background_tasks)
+    assert calls == [(CONDUCTOR, WORKER, "use main")]
 
 
 @pytest.mark.asyncio
@@ -461,7 +475,9 @@ def _steer_route(monkeypatch, delivered: dict[str, Any], queue: list[dict[str, A
 
     calls: list[tuple[str, str, str]] = []
     worker = SimpleNamespace(key=WORKER, _app="", _queue=queue)
-    state = SimpleNamespace(get_slot=lambda key: worker if key == WORKER else None)
+    state = SimpleNamespace(
+        get_slot=lambda key: worker if key == WORKER else None, _background_tasks=set()
+    )
 
     async def no_gate(*_a, **_k):
         return None
@@ -605,7 +621,7 @@ async def test_G2_the_panel_steer_route_records_a_steer_into_a_running_turn_when
 
 
 @pytest.mark.asyncio
-async def test_G2_the_panel_steer_route_records_an_idle_start_at_once(monkeypatch):
+async def test_G2_the_panel_steer_route_records_an_idle_start_in_the_background(monkeypatch):
     from kiro_crew.dashboard.handlers import crew_workers
 
     state, calls = _steer_route(
@@ -617,8 +633,11 @@ async def test_G2_the_panel_steer_route_records_an_idle_start_at_once(monkeypatc
         _SteerReq(state, CONDUCTOR, WORKER, "now")  # type: ignore[arg-type]
     )
     body = json.loads(resp.text)
+    # Started now: the receipt answers at once and the record is written in the
+    # background, in send order (``record_crew_steer_later``).
+    assert body["ledger_pending"] is True and body["ledger_event"] is None
+    await asyncio.gather(*state._background_tasks)
     assert calls == [(CONDUCTOR, WORKER, "now")]
-    assert body["ledger_event"] == "it_1" and "ledger_pending" not in body
 
 
 # ── R3 G6: a queued steer restored after a restart is delivered, never recorded ──
@@ -656,3 +675,158 @@ async def test_G6_a_restored_entry_is_never_recorded_as_the_persons_steer(monkey
     queue_drain._record_queued_crew_steers(state, [restored])  # type: ignore[arg-type]
     await asyncio.gather(*list(state._background_tasks))
     assert calls == []
+
+
+# ── the send answers before the ledger record is written ─────────────────────
+
+
+class _Owners(SimpleNamespace):
+    """A state that keeps the frames sent to the owner's tabs."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(_background_tasks=set(), frames=[], **kw)
+
+    def broadcast_ws_owners(self, msg_type: str, data: dict[str, Any]) -> None:
+        self.frames.append((msg_type, data))
+
+
+def _started_send(monkeypatch, message: str = "use main") -> None:
+    from aiohttp import web
+
+    from kiro_crew.dashboard import chat_handlers
+
+    async def fake_send(request):
+        # The send itself is the composer's ordinary path; this is what it leaves.
+        request[chat_handlers._CREW_PERSON_STEER] = (CONDUCTOR, WORKER, request["text"])
+        return web.json_response({"ok": True, "slot": WORKER, "started": True})
+
+    monkeypatch.setattr(chat_handlers, "_api_chat_send", fake_send)
+
+
+class _TextReq(_Req):
+    def __init__(self, state: Any, text: str) -> None:
+        super().__init__(state)
+        self["text"] = text
+
+
+@pytest.mark.asyncio
+async def test_a_stuck_crew_log_writer_cannot_hold_the_send_past_the_client_timeout(
+    monkeypatch,
+):
+    import threading
+
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.dashboard import chat_handlers
+
+    item_id = _bound()
+    # The crew-log writer is stuck: the real record path (board lock, ledger write,
+    # then the commit wait) blocks in its thread until the test lets it go.
+    released = threading.Event()
+    committed: list[dict[str, Any]] = []
+
+    def stuck_commit(unit: str, data: dict[str, Any], **_k: Any) -> bool:
+        released.wait(30)
+        committed.append(data)
+        return True
+
+    monkeypatch.setattr(crew_log_emit, "on_work_recorded", stuck_commit)
+    monkeypatch.setattr(crew_log_emit, "enabled", lambda: True)
+    _started_send(monkeypatch)
+    state = _Owners(sessions=_Sessions({f"dashboard:{WORKER}": "unit-w"}), _slots={})
+    try:
+        # The writer is released only after the send answers, so a send that
+        # waited on it would hang here and fail by name.
+        resp = await finished(
+            chat_handlers.api_chat(_TextReq(state, "use main")),  # type: ignore[arg-type]
+            "api_chat while the crew-log writer is stuck",
+        )
+        body = json.loads(resp.text)
+        assert body["ledger_pending"] is True and body["ledger_event"] is None
+        assert committed == []
+    finally:
+        released.set()
+    await asyncio.gather(*list(state._background_tasks))
+    assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)][-1] == "steer"
+    assert len(committed) == 1 and state.frames == []
+
+
+@pytest.mark.asyncio
+async def test_back_to_back_steers_are_recorded_in_send_order_and_leave_no_lock(monkeypatch):
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    landed: list[str] = []
+    delays = {"one": 0.05, "two": 0.01, "three": 0.0}
+
+    async def slow_first(state, root, worker, message, **_k):
+        # Without the per-worker lock the later, faster records would land first.
+        await asyncio.sleep(delays[message])
+        landed.append(message)
+        return {"ledger_event": "it_1", "ledger_error": None}
+
+    monkeypatch.setattr(crew_workers, "person_steer", slow_first)
+    _started_send(monkeypatch)
+    state = _Owners(_slots={})
+    for text in ("one", "two", "three"):
+        resp = await chat_handlers.api_chat(_TextReq(state, text))  # type: ignore[arg-type]
+        assert json.loads(resp.text)["ledger_pending"] is True
+    assert chat_handlers._STEER_RECORD_LOCKS[WORKER][1] == 3
+    await asyncio.gather(*list(state._background_tasks))
+    await asyncio.sleep(0)
+    assert landed == ["one", "two", "three"]
+    assert chat_handlers._STEER_RECORD_LOCKS == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", ["returns", "raises"])
+async def test_a_failed_background_record_is_logged_and_shown_to_the_owner(
+    monkeypatch, caplog, fails
+):
+    import logging
+
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    async def failing(state, root, worker, message, **_k):
+        if fails == "raises":
+            raise RuntimeError("board write failed")
+        return {"ledger_event": None, "ledger_error": "not_recorded"}
+
+    monkeypatch.setattr(crew_workers, "person_steer", failing)
+    _started_send(monkeypatch)
+    state = _Owners(_slots={})
+    with caplog.at_level(logging.INFO, logger=chat_handlers.logger.name):
+        await chat_handlers.api_chat(_TextReq(state, "use main"))  # type: ignore[arg-type]
+        tasks = list(state._background_tasks)
+        await asyncio.gather(*tasks)
+    # Never raised into the loop; the composer hears the same reason a receipt gave.
+    assert all(t.exception() is None for t in tasks)
+    assert state.frames == [
+        (chat_handlers.CREW_STEER_UNRECORDED_FRAME, {"slot": WORKER, "reason": "not_recorded"})
+    ]
+    assert any("not recorded" in r.getMessage() for r in caplog.records)
+    if fails == "raises":
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_background_record_is_cancelled_and_not_reported(monkeypatch):
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    started = asyncio.Event()
+
+    async def hangs(state, root, worker, message, **_k):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(crew_workers, "person_steer", hangs)
+    state = _Owners()
+    chat_handlers.record_crew_steer_later(state, CONDUCTOR, WORKER, "x")
+    [task] = list(state._background_tasks)
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+    assert state.frames == [] and chat_handlers._STEER_RECORD_LOCKS == {}

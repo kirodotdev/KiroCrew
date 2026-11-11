@@ -247,6 +247,18 @@ class SessionConfig:
             "flight) are never recycled.",
         ),
     )
+    watchdog_end_leftovers_mid_turn: bool = field(
+        default=False,
+        metadata=_meta(
+            "End Leftover Processes During a Turn",
+            "When a session is over the Watchdog RSS Limit during a turn and the "
+            "memory is held by processes its commands left running outside the "
+            "agent's process tree (for example a job a timed-out shell command "
+            "started), end those processes at once instead of only reporting them. "
+            "Off by default: such a process can be work the agent started on purpose. "
+            "Linux only. Read every cleanup tick, so a change needs no restart.",
+        ),
+    )
     harness_background_hold_secs: int = field(
         default=DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
         metadata=_meta(
@@ -421,6 +433,23 @@ class KiroCrewAgentConfig:
             "dragging its row there. 1 is the top; 0 means not placed yet, which "
             "sorts after every placed crew. Cleared when the crew is unstarred. "
             "Purely a display preference, like starred.",
+        ),
+    )
+    # Preview, off by default: a crewmate must opt in before any Dashboard card
+    # button can send a turn. Absent or non-bool reads as off (see card_send),
+    # so this changes nothing until it is turned on and the page-to-host `send`
+    # behaves exactly as `act` (fill the composer) meanwhile.
+    dashboard_card_send: bool = field(
+        default=False,
+        metadata=_meta(
+            "Dashboard card send (preview)",
+            "Preview, off by default. When on, a button on this crewmate's "
+            "Dashboard tab may send its reply straight into the crewmate's own "
+            "thread with one click. Off (the default), such a button only puts "
+            "the reply in the chat box and the person presses send, which is what "
+            "every card did before. A card-sent turn is tagged '[Dashboard "
+            "card]', is never an approval, and is refused while the thread has an "
+            "open approval or question.",
         ),
     )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``

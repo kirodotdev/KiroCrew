@@ -508,6 +508,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # doubles (test_acp_tool_identity), and telemetry must not be
             # the reason such a double stops working.
             scope=getattr(self, "_session_id", "") or "",
+            tool_name=identity.tool_name,
         )
         input_str = ""
         if tool_call_id and raw_input:

@@ -19,6 +19,7 @@ import reducer, {
   approvalDecisionSettled,
   liveApprovalRows,
   dismissLocalApprovalRow,
+  approvalDecideTarget,
 } from '../store/notificationsSlice'
 import type { Notification } from '../types'
 
@@ -525,6 +526,10 @@ describe('notificationsSlice: server-confirmed removal', () => {
 describe('notificationsSlice: approval decision lifecycle', () => {
   const row: Notification = { kind: 'approval', ts: 'r', title: 't', body: 'b', approval_id: 'apr', acked: false, _local: true }
   const seeded = () => reducer(undefined, addNotification(row))
+  // The same row naming its request, for the reads that find live rows by target.
+  const targetedRow: Notification = { ...row, approval_instance: 'inst-apr' }
+  const rowTarget = approvalDecideTarget(targetedRow)!
+  const seededTargeted = () => reducer(undefined, addNotification(targetedRow))
   // mulberry32: a fixed seed per case, so a failure names a reproducible case.
   const rng = (seed: number) => () => {
     seed = (seed + 0x6D2B79F5) | 0
@@ -543,7 +548,7 @@ describe('notificationsSlice: approval decision lifecycle', () => {
   })
 
   it('the last press failing on a row a frame ended retires it with that failure; an earlier one does not', () => {
-    let state = reducer(seeded(), approvalDecisionBegan('r'))
+    let state = reducer(seededTargeted(), approvalDecisionBegan('r'))
     state = reducer(state, approvalDecisionBegan('r'))
     state = reducer(state, endApprovalRow('r'))
     state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: '' }))
@@ -551,11 +556,11 @@ describe('notificationsSlice: approval decision lifecycle', () => {
     state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: 'needs an owner' }))
     expect(state.retiredApprovals).toEqual({ r: { failed: 'needs an owner' } })
     expect(state.items.map(n => [n.ts, n.acked])).toEqual([['r', true]])
-    expect(liveApprovalRows(state, 'apr')).toEqual([])
+    expect(liveApprovalRows(state, rowTarget)).toEqual([])
     // A failure on a row no frame ended leaves it live, buttons and all.
-    const live = reducer(reducer(seeded(), approvalDecisionBegan('r')), approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: '' }))
+    const live = reducer(reducer(seededTargeted(), approvalDecisionBegan('r')), approvalDecisionSettled({ ts: 'r', outcome: 'failed', reason: '' }))
     expect(live.retiredApprovals ?? {}).toEqual({})
-    expect(liveApprovalRows(live, 'apr').map(n => n.ts)).toEqual(['r'])
+    expect(liveApprovalRows(live, rowTarget).map(n => n.ts)).toEqual(['r'])
   })
 
   // A double press, or one press from the feed and one from the panel, settles
@@ -582,9 +587,11 @@ describe('notificationsSlice: approval decision lifecycle', () => {
   })
 
   it('a decided row whose DELETE failed is not live, so a later frame for its id leaves it', () => {
-    let state = reducer(seeded(), approvalDecisionBegan('r'))
+    // Live before the decision, so the read below is not vacuous.
+    expect(liveApprovalRows(seededTargeted(), rowTarget).map(n => n.ts)).toEqual(['r'])
+    let state = reducer(seededTargeted(), approvalDecisionBegan('r'))
     state = reducer(state, approvalDecisionSettled({ ts: 'r', outcome: 'dismiss_failed' }))
-    expect(liveApprovalRows(state, 'apr')).toEqual([])
+    expect(liveApprovalRows(state, rowTarget)).toEqual([])
     expect(state.dismissFailed).toEqual({ r: 'decided' })
   })
 

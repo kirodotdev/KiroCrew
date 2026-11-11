@@ -432,9 +432,19 @@ ACP_BACKENDS_REMOTE_MCP_OAUTH = frozenset({ACP_BACKEND_KIRO})
 # The bridge's stdio child reads its snapshot from ``crew-oauth-bridge``, the one
 # snapshot leaf an enforced harness's child may read (``kas-mcp-launch`` stays
 # withheld). kiro-cli never joins: it runs the vendor's OAuth itself.
+# goose names the server in ``_meta.goose.toolCall`` and its ``rawInput`` is the
+# ``arguments`` it sends (``confirmation_request`` and ``McpClient::call_tool``).
+# dsh names the tool only by the name it registers and dispatches by, the
+# ``tool_call`` title, split for a bridged server alone
+# (``permission_requests.bridged_title_identity``); its ``rawInput`` is the args
+# object its MCP client sends. opencode stays out: its ask carries ``rawInput`` ``{}``
+# and the arguments arrive only after the answer
+# (``acp_frames/opencode/crew-oauth-bridge-args-live.jsonl``), so no approval binds them.
 # Captured live: kas ``acp_frames/kas/mcp-live-apply-live.jsonl`` (``_meta.kiro.mcpTool``
 # on the request), claude ``acp_frames/claude/mcp-stdio-mount-live.jsonl`` (the placed
-# server on ``_meta.claudeCode.mcpServer``); replayed into an approval by
+# server on ``_meta.claudeCode.mcpServer``), goose
+# ``acp_frames/goose/crew-oauth-bridge-args-live.jsonl``, deepseek
+# ``acp_frames/deepseek/crew-oauth-bridge-args-live.jsonl``; replayed into an approval by
 # ``test/test_crew_oauth_bridge_harnesses.py``.
 # codex: ``rawInput`` is ``{server, tool, arguments}`` and ``arguments`` is what the
 # server's ``tools/call`` carried, ``acp_frames/codex/crew-oauth-bridge-args-live.jsonl``;
@@ -456,6 +466,8 @@ ACP_BACKENDS_CREW_OAUTH_BRIDGE = frozenset(
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_DEEPSEEK,
     }
 )
 

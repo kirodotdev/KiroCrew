@@ -27,7 +27,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 import kiro_crew
 import kiro_crew._facade_mirror as _facade_mirror
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import aws_consent, beacon, platform_compat, stt
+from kiro_crew import aws_consent, beacon, edition, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -374,11 +374,13 @@ async def _liveness_payload(request: web.Request) -> dict[str, object]:
         # The desktop production/nightly cross-app guard calls over loopback and
         # needs exact identity to decide whether it can reuse the shared port.
         # Anonymous non-loopback probes get only the liveness bit, avoiding an
-        # exact-version fingerprint on the public probe boundary.
+        # exact-version fingerprint on the public probe boundary. `edition`
+        # lets an LTS shell tell its own gateway from an oss one on the port.
         payload.update(
             {
                 "app": "kirocrew",
                 "version": kiro_crew.__version__,
+                "edition": edition.EDITION,
                 "gateway_id": await asyncio.to_thread(gateway_id),
             }
         )
@@ -769,6 +771,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _changed_paths_need_restart,
         _config_body,
         _hot_apply_after_write,
+        _kas_in_use,
         _mask_agent_free_text,
         _mask_strings,
         _masked_config_dict,
@@ -1187,7 +1190,18 @@ async def api_app_token(request: web.Request) -> web.Response:
             source="app_auth",
             error="invalid secret",
         )
-        return web.json_response({"error": "invalid secret"}, status=403)
+        return web.json_response(
+            {
+                "error": "invalid secret",
+                # One message for every refusal reason, so it tells a caller nothing
+                # about which check failed. The second sentence is the upgrade path.
+                "hint": (
+                    "The app must be enabled by the owner. An app installed before "
+                    "this version must be turned off and on once in the App Store."
+                ),
+            },
+            status=403,
+        )
 
     token = generate_token(app_name, app=app_name)
     sel().log_api_access(

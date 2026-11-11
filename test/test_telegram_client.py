@@ -23,7 +23,7 @@ from kiro_crew.telegram.client import TelegramClient
 from kiro_crew.telegram.commands import bot_command_payload
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, default_timeout
 
 
 class TestClientSession:
@@ -770,7 +770,8 @@ class _NonJsonResponse:
         self._text = text
 
     async def json(self, content_type: Any = None) -> Any:
-        return json.loads(self._text)
+        # aiohttp answers an empty body with None instead of raising.
+        return json.loads(self._text) if self._text.strip() else None
 
     async def __aenter__(self) -> "_NonJsonResponse":
         return self
@@ -944,6 +945,26 @@ class TestClientHealth:
         except aiohttp.ClientConnectionError:
             pass
 
+    def test_get_me_non_bot_api_reply_is_not_auth_error(self, monkeypatch) -> None:
+        """A proxy's empty body (json() -> None) or ok-less JSON error
+        is unverifiable, not a rejected token."""
+        from kiro_crew.telegram.client import TelegramAuthError
+
+        for body in (None, {"message": "Internal server error"}):
+            client = self._client()
+
+            async def _call_raw(method, params, timeout=15, _b=body):
+                return _b
+
+            monkeypatch.setattr(client, "_call_raw", _call_raw)
+            try:
+                asyncio.run(client.get_me())
+                raise AssertionError("expected ConnectionError")
+            except TelegramAuthError:
+                raise AssertionError(f"{body!r} read as a rejected token")
+            except ConnectionError:
+                pass
+
     def test_notify_status_swallows_callback_errors(self) -> None:
         client = self._client()
 
@@ -964,7 +985,7 @@ class TestClientHealth:
 
         results: list[Any] = [None, None, None, []]  # 3 failures then success
 
-        async def _get_updates():
+        async def _get_updates(err_out=None):
             if not results:
                 client._closed = True
                 return []
@@ -975,7 +996,7 @@ class TestClientHealth:
 
         monkeypatch.setattr(client, "_get_updates", _get_updates)
         monkeypatch.setattr(asyncio, "sleep", _no_sleep)
-        asyncio.run(client._polling_loop())
+        asyncio.run(asyncio.wait_for(client._polling_loop(), default_timeout()))
         assert transitions[0][0] is False  # reported unhealthy at threshold
         assert "getUpdates" in transitions[0][1]
         assert transitions[1] == (True, "")  # recovered on next success
@@ -990,16 +1011,107 @@ class TestClientHealth:
 
         results: list[Any] = [[]]  # immediate success
 
-        async def _get_updates():
+        async def _get_updates(err_out=None):
             if not results:
                 client._closed = True
                 return []
             return results.pop(0)
 
         monkeypatch.setattr(client, "_get_updates", _get_updates)
-        asyncio.run(client._polling_loop())
+        asyncio.run(asyncio.wait_for(client._polling_loop(), default_timeout()))
         assert transitions and transitions[0] == (True, "")
         assert len(transitions) == 1  # deduped: repeat successes don't re-fire
+
+
+class _FailingPollSession:
+    """Fails every call: raises a fresh *exc* when given, else answers *reply*."""
+
+    closed = False
+
+    def __init__(self, reply: Any = None, exc: Any = None) -> None:
+        self._reply = reply
+        self._exc = exc
+
+    def post(self, url: str, **kwargs: Any) -> Any:
+        if self._exc is not None:
+            raise self._exc()
+        return self._reply
+
+
+class TestPollingFailureReason:
+    """The badge reason for a failing getUpdates names the cause it had.
+
+    Only the Bot API's own ok:false answer points at the bot token. A network
+    failure, or an error page that is not the Bot API's reply, does not.
+    """
+
+    @pytest.mark.parametrize(
+        ("session", "reason"),
+        [
+            (
+                _FailingPollSession(exc=aiohttp.ClientConnectionError),
+                "getUpdates transport error (ClientConnectionError)",
+            ),
+            (
+                _FailingPollSession(_NonJsonResponse(502, _GATEWAY_PAGE)),
+                "getUpdates failed (HTTP 502, not a Bot API reply)",
+            ),
+            (
+                _FailingPollSession(_NonJsonResponse(502, "")),
+                "getUpdates failed (HTTP 502, not a Bot API reply)",
+            ),
+            (
+                _FailingPollSession(
+                    _NonJsonResponse(502, json.dumps({"message": "Internal server error"}))
+                ),
+                "getUpdates failed (HTTP 502, not a Bot API reply)",
+            ),
+            (
+                _FailingPollSession(_NonJsonResponse(502, "5")),
+                "getUpdates failed (HTTP 502, not a Bot API reply)",
+            ),
+            (
+                _FailingPollSession(
+                    _NonJsonResponse(
+                        401,
+                        json.dumps({"ok": False, "error_code": 401, "description": "Unauthorized"}),
+                    )
+                ),
+                "getUpdates rejected by Telegram (check the bot token)",
+            ),
+        ],
+        ids=[
+            "transport-error",
+            "non-json-502",
+            "empty-502",
+            "json-without-ok-502",
+            "json-not-an-object-502",
+            "ok-false-401",
+        ],
+    )
+    def test_three_failures_after_a_healthy_start_report_their_cause(
+        self, monkeypatch, session, reason
+    ) -> None:
+        client = TelegramClient(token="12345:testtoken")
+        client._session = session  # type: ignore[assignment]
+        client._last_status = True  # what the gateway sets after a good getMe
+        transitions: list[tuple[bool, str]] = []
+        client.on_status = lambda healthy, why: transitions.append((healthy, why))
+        delays: list[float] = []
+        real_backoff = client._poll_backoff
+
+        def _backoff(attempt: int, why: str) -> float:
+            # The real back-off (it reports the status), without waiting it out.
+            delays.append(real_backoff(attempt, why))
+            if len(delays) == 3:
+                client._closed = True
+            return 0.0
+
+        monkeypatch.setattr(client, "_poll_backoff", _backoff)
+        asyncio.run(asyncio.wait_for(client._polling_loop(), default_timeout()))
+
+        assert transitions == [(False, reason)]
+        assert delays == [1.0, 2.0, 4.0]
 
 
 class TestMalformedUpdateDoesNotDropTheBatch:
@@ -1035,7 +1147,7 @@ class TestMalformedUpdateDoesNotDropTheBatch:
         ]
         results: list[Any] = [batch]
 
-        async def _get_updates():
+        async def _get_updates(err_out=None):
             if not results:
                 client._closed = True
                 return []
@@ -1045,7 +1157,7 @@ class TestMalformedUpdateDoesNotDropTheBatch:
         # and here every poll succeeds (the batch dispatches, then the empty
         # follow-up poll closes the loop), so it never reaches a sleep.
         monkeypatch.setattr(client, "_get_updates", _get_updates)
-        asyncio.run(client._polling_loop())
+        asyncio.run(asyncio.wait_for(client._polling_loop(), default_timeout()))
 
         # 2 raised and was dropped; 1, 3 and 4 all still reached dispatch.
         assert dispatched == [1, 3, 4]

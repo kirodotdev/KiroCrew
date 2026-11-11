@@ -560,6 +560,45 @@ class TestApplyWheelUpdateOrchestration:
             wheel_engine.release_update_lock(fd)
         wheel_engine.release_update_lock(wheel_engine.hold_update_lock())
 
+    def test_the_holder_is_named_only_while_it_holds_the_lock(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A run that loses the lock can name who has it; a released lock names nobody."""
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+        lock_path = wheel_engine._update_lock_path(layout)
+        fd = wheel_engine.hold_update_lock()
+        try:
+            assert lock_path.read_bytes() == f"{os.getpid()}\n".encode()
+            assert wheel_engine.update_lock_holder_pid() == os.getpid()
+            # Where the kernel names no holder (macOS), the recorded pid does.
+            monkeypatch.setattr(wheel_engine, "flock_owner_pid", lambda _path: None)
+            assert wheel_engine.update_lock_holder_pid() == os.getpid()
+        finally:
+            wheel_engine.release_update_lock(fd)
+        assert lock_path.read_bytes() == b""
+        assert wheel_engine.update_lock_holder_pid() is None
+
+    def test_the_kernel_names_the_holder_over_a_stale_stamp(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A pid an exec left in the file does not outrank the kernel's record of who
+        holds the lock (for ``cli.sh``, which writes none, a pid that is not the gateway)."""
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+        wheel_engine._update_lock_path(layout).write_bytes(b"1\n")
+        monkeypatch.setattr(wheel_engine, "flock_owner_pid", lambda _path: 4242)
+        assert wheel_engine.update_lock_holder_pid() == 4242
+
+    @pytest.mark.parametrize("link", [os.link, os.symlink])
+    def test_the_holder_is_never_written_through_a_link(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, link
+    ) -> None:
+        layout, _calls = self._wire(monkeypatch, tmp_path)
+        other = tmp_path / "other"
+        other.write_bytes(b"kept")
+        link(other, wheel_engine._update_lock_path(layout))
+        wheel_engine.release_update_lock(wheel_engine.hold_update_lock())
+        assert other.read_bytes() == b"kept"
+
     def test_a_failed_memory_snapshot_refuses_the_promotion(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

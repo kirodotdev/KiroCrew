@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,6 +85,39 @@ class TestBestEffort:
         rotate_jsonl_at(live, CAP)  # must not raise
         assert (tmp_path / "log.jsonl.1").is_dir()
         assert live.exists(), "a failed rotation must leave the live file appendable"
+
+    def test_refused_rename_warns_once_per_interval(self, tmp_path, caplog, monkeypatch):
+        """A refused rename is the log passing its bound; it must leave a record,
+        but not one per append while the holder keeps refusing."""
+        clock = [1_000.0]
+        monkeypatch.setattr(
+            jsonl_util, "time", SimpleNamespace(monotonic=lambda: clock[0]), raising=False
+        )
+        live = tmp_path / "log.jsonl"
+        live.write_bytes(b"x" * (CAP + 10))
+        (tmp_path / "log.jsonl.1").mkdir()
+
+        def warnings() -> list[str]:
+            return [
+                r.getMessage()
+                for r in caplog.records
+                if r.levelno == logging.WARNING and r.name == "kiro_crew.jsonl_util"
+            ]
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.jsonl_util"):
+            rotate_jsonl_at(live, CAP)
+            assert len(warnings()) == 1, "a refused rename must leave a record"
+            assert str(live) in warnings()[0]
+            assert "IsADirectoryError" in warnings()[0] or "PermissionError" in warnings()[0]
+
+            clock[0] += 300.0  # the next append, well inside the interval
+            rotate_jsonl_at(live, CAP)
+            assert len(warnings()) == 1, "a retry inside the interval repeats nothing"
+
+            clock[0] += jsonl_util.ROTATE_REFUSED_WARN_INTERVAL_SECS
+            rotate_jsonl_at(live, CAP)
+            assert len(warnings()) == 2, "the interval elapsed: the stuck bound is reported again"
+        assert live.exists()
 
     def test_lock_open_failure_does_not_raise(self, tmp_path):
         """An unopenable lock file (fd exhaustion, restrictive dir ACL) must

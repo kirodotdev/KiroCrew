@@ -199,9 +199,11 @@ function createPortHolders({
         ["-nP", `-iTCP:${probePort}`, "-sTCP:LISTEN", "-t"],
         { timeout: 5000 },
         (error, stdout) => {
-          // lsof exits non-zero with empty output for no match. Only an EXECUTE
-          // failure is unknown; treating it as a free port permits blind kills.
-          if (error && (error.code === "ENOENT" || error.code === "EACCES")) {
+          // lsof exits non-zero with empty output for no match. An EXECUTE
+          // failure, or a run killed at the timeout, is unknown: reading it as
+          // a free port would report a held port free and permit blind kills.
+          if (error && (error.code === "ENOENT" || error.code === "EACCES" ||
+              error.killed || error.signal)) {
             reject(error);
             return;
           }
@@ -242,8 +244,9 @@ function createPortHolders({
     });
   }
 
-  // PPID 1 distinguishes service-managed gateways (and conservative orphans)
-  // which must never be evicted into a launchd/systemd respawn race.
+  // PPID 1 marks a gateway a service manager may own, which must never be
+  // evicted into a launchd/systemd respawn race. An orphan has that parent too;
+  // on macOS isLaunchdJob tells the two apart.
   function psPpid(pid) {
     return new Promise((resolve) => {
       execFile(
@@ -280,6 +283,12 @@ function createPortHolders({
       if (sets.some((set) => set === null)) return null;
       return new Set(sets.flatMap((set) => [...set]));
     });
+  }
+
+  // macOS only: whether launchd runs `pid` as a job. null when the job list
+  // cannot be read, which the service-managed check reads as a service.
+  function isLaunchdJob(pid) {
+    return launchdJobPids().then((jobs) => (jobs ? jobs.has(Number(pid)) : null));
   }
 
   // Every live descendant of `pid`, deepest first. Empty when ps cannot run
@@ -338,6 +347,8 @@ function createPortHolders({
       getListenPids: lsofListenPids,
       getCommand: psCommand,
       getPpid: psPpid,
+      // An orphan nothing restarts is evicted like any wedged holder.
+      isLaunchdJob: processObj.platform === "darwin" ? isLaunchdJob : null,
       kill: (pid, signal) => processObj.kill(pid, signal),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       log: glog,
@@ -354,6 +365,7 @@ function createPortHolders({
     psCommand,
     psPpid,
     launchdJobPids,
+    isLaunchdJob,
     snapshotGatewayPortPids,
     unverifiedIncumbent,
     waitForIncumbentExit,

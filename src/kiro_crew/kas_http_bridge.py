@@ -42,6 +42,10 @@ _READ_TIMEOUT_SECS = 600.0
 _DRAIN_SECS = 5.0
 #: JSON-RPC "server error" range; the bridge's own failures use it.
 _BRIDGE_ERROR = -32000
+#: Sent unless the entry's own headers name one. urllib's default
+#: ``Python-urllib/x.y`` is refused 403 by bot filters (Atlassian Rovo's), which
+#: then reads as a bad auth header.
+_USER_AGENT = "kirocrew-mcp-bridge/1"
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -146,6 +150,8 @@ class Bridge:
     ) -> None:
         self._url = url
         self._headers = dict(headers)
+        if not any(name.lower() == "user-agent" for name in self._headers):
+            self._headers["User-Agent"] = _USER_AGENT
         self._server = server
         self._out, self._err = out, err
         self._opener = opener or _opener(url)

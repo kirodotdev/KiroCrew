@@ -52,8 +52,9 @@ def _client_ns(**over):
         ("", False),
         ("claude", True),
         ("strands", True),
+        ("goose", True),
         ("opencode", False),
-        ("deepseek", False),
+        ("deepseek", True),
     ],
 )
 def test_the_chat_backend_decides_custody(monkeypatch, backend, expected):

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
+from kiro_crew.agent_sdk.host_auth import for_terminal
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
@@ -55,7 +56,7 @@ from kiro_crew.providers.base import (
     LLMEvent,
     LLMProvider,
 )
-from kiro_crew.sandbox import SandboxCeilingUnsealable
+from kiro_crew.sandbox import SandboxCeilingUnsealable, SandboxUnavailableError
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.shell_audit_log import rotate_shell_audit_log
@@ -111,6 +112,9 @@ _TRUST_UNSUPPORTED_NOTICE = (
 #: ``error="hook_deny"``: an audit record must not restate the path or command a
 #: gate reason names.
 _HOOK_DENY_CODE = "hook_deny"
+#: The running agent spec's own PreToolUse hooks refused the call (see
+#: :func:`_spec_hook_refusal`).
+_SPEC_HOOK_CODE = "spec_hook"
 _NONINTERACTIVE_CODE = "noninteractive"
 _USER_DENY_CODE = "user_denied"
 #: The person refused the call by typing a reply for the agent instead (``o``).
@@ -300,9 +304,12 @@ class _ToolGate:
     hooks: HookManager
     session_key: str = _CLI_SESSION_KEY
     agent: str = ""
+    #: The kiro agent the session runs, whose spec's hooks apply: a crew member's
+    #: bound agent, while ``agent`` stays the member for governance.
+    kiro_agent: str = ""
 
 
-def _build_tool_gate(agent: str = "") -> _ToolGate:
+def _build_tool_gate(agent: str = "", kiro_agent: str = "") -> _ToolGate:
     """Load the security gate for this CLI process.
 
     Opt-out state comes from the keystone ``denied_commands.json`` rather than
@@ -312,6 +319,7 @@ def _build_tool_gate(agent: str = "") -> _ToolGate:
     return _ToolGate(
         hooks=HookManager(hooks_config_from_config_dict(KiroCrewConfig.load().hooks)),
         agent=agent,
+        kiro_agent=kiro_agent,
     )
 
 
@@ -392,7 +400,7 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     provider.child_fidelity_aware = True
     # Built once per process, not per request: a permission request must not
     # depend on a config read succeeding while the turn is parked.
-    gate = _build_tool_gate(agent_name or "")
+    gate = _build_tool_gate(agent_name or "", kiro_agent)
     # Imported here so the other CLI commands do not pay for the context stack.
     from kiro_crew.cli_chat_context import build_cli_session_context
 
@@ -461,7 +469,10 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
     NOT in the ``AcpError`` hierarchy, so ``_send_and_print``'s handler never sees it
     and it escaped here as an unhandled exception. The remedy was technically on screen,
     buried under a stack trace that reads as a Kiro Crew crash, which is the wrong thing
-    to tell an operator whose actual problem is one extra file link.
+    to tell an operator whose actual problem is one extra file link. The launcher's
+    ``SandboxUnavailableError`` (no sandbox backend on this host, for one a stock Ubuntu
+    whose AppArmor restricts unprivileged user namespaces) is outside that hierarchy too,
+    and its text already names the host's remedy, so it is printed the same way.
 
     Printed verbatim: the exception's own text names the path and the one-step fix, and a
     summary here would be a second wording of it that could drift.
@@ -477,7 +488,7 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
         asyncio.run(_chat(message, model, agent=agent))
     except KeyboardInterrupt:
         print("\nBye! 👻")
-    except SandboxCeilingUnsealable as exc:
+    except (SandboxCeilingUnsealable, SandboxUnavailableError) as exc:
         # Escaped HERE as well as in the formatters that build these sentences, and the
         # duplication is the point: this handler takes ANY builder of this exception,
         # including ones in modules it does not own, and several embed a filename read
@@ -491,6 +502,11 @@ def _run_chat(message: str | None, model: str | None, agent: str | None = None) 
             "   Run `kirocrew doctor` to see this before the next spawn.",
             file=sys.stderr,
         )
+        sys.exit(1)
+    except AcpError as exc:
+        # A backend that fails to start, before any turn, prints its message as a
+        # failed turn does in ``_send_and_print``, not as a traceback.
+        print(f"\n❌ {for_terminal(str(exc))}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -1001,6 +1017,26 @@ def _audit(
     )
 
 
+async def _spec_hook_refusal(provider: LLMProvider, gate: _ToolGate, event: LLMEvent) -> str | None:
+    """Why the running agent spec's own PreToolUse hooks refuse *event*, or ``None``.
+
+    Asked only where Crew runs the spec's hooks (KAS and the other backends whose
+    harness never receives them); there the projection sends every call such a hook
+    covers here. The agent-channel member's gate (:mod:`kiro_crew.channel_spec_hooks`):
+    the spec's hooks alone, through an empty store, so the CLI runs none of the Hooks
+    page's, and a spec that cannot be read refuses.
+    """
+    # Deferred, as in messaging.tool_hooks: the agent_sdk package reaches acp.client.
+    from kiro_crew.agent_sdk.capabilities import capabilities_of
+    from kiro_crew.agent_sdk.spec_hooks import running_agent, turn_spec_hooks
+    from kiro_crew.channel_spec_hooks import pre_tool_refusal
+
+    if not capabilities_of(provider).crew_fires_spec_hooks:
+        return None
+    spec = await turn_spec_hooks(provider, running_agent(provider, gate.kiro_agent))
+    return await pre_tool_refusal(spec, provider, event, gate.session_key)
+
+
 async def _answer_permission(
     provider: LLMProvider,
     event: LLMEvent,
@@ -1023,6 +1059,7 @@ async def _answer_permission(
     not just ``title``: for a shell tool the title may be an LLM-authored
     description, so a dangerous command behind a benign label is exactly what
     keying on the title alone would let through (see ``AcpEvent.shell_command``).
+    The agent spec's own PreToolUse hooks answer next (:func:`_spec_hook_refusal`).
 
     Its verdict is a deny CEILING: ``TOOL_AUTO_APPROVE`` still asks, because
     honouring it here would add a second path that runs a tool with no human
@@ -1109,6 +1146,9 @@ async def _answer_permission(
             # Lifts the shell allowlist only for a read-only command, as above.
             spec_shell_readonly=getattr(event, "spec_shell_readonly", False) is True,
         )
+        spec_refusal: str | None = None
+        if decision.action != TOOL_DENY:
+            spec_refusal = await _spec_hook_refusal(provider, gate, event)
     except Exception:
         logger.warning("CLI permission gate failed; refusing the request", exc_info=True)
         await _reject_internal_failure(
@@ -1144,6 +1184,25 @@ async def _answer_permission(
             _print_permission_notice(f"\nBlocked by security policy: {safe_title} -- {reason}")
         except Exception:
             logger.warning("Could not prepare the CLI policy-denial notice", exc_info=True)
+        return
+    if spec_refusal is not None:
+        # The agent's own guard refused it, as kiro-cli would before asking anyone.
+        await _refuse_host_deny(
+            provider,
+            gate,
+            event,
+            error=_SPEC_HOOK_CODE,
+            cause=DENY_CAUSE_POLICY,
+            reason=spec_refusal,
+        )
+        try:
+            reason = _for_consent(spec_refusal, stream=sys.stderr)
+            safe_title = _for_consent(title, stream=sys.stderr)
+            _print_permission_notice(
+                f"\nBlocked by the agent's PreToolUse hooks: {safe_title} -- {reason}"
+            )
+        except Exception:
+            logger.warning("Could not prepare the CLI hook-denial notice", exc_info=True)
         return
 
     if _unverifiable_shell(event):
@@ -1384,7 +1443,7 @@ async def _send_and_print(
         print("\n⏱️  Response timed out.", file=sys.stderr)
         sys.exit(1)
     except AcpError as e:
-        print(f"\n❌ {e}", file=sys.stderr)
+        print(f"\n❌ {for_terminal(str(e))}", file=sys.stderr)
         sys.exit(1)
     if undelivered:
         print(

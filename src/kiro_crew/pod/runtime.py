@@ -143,7 +143,8 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
     )
 
 # Pod names become systemd instance names and path segments; keep them strict.
-_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$")
+# ``\Z``, not ``$``: ``$`` also matches before a trailing newline.
+_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}\Z")
 
 
 class PodError(RuntimeError):
@@ -918,7 +919,14 @@ def systemctl(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
             "pods require `systemctl --user`, but no systemctl executable was found "
             "in trusted system directories; refusing to resolve it from PATH."
         )
-    return _run([systemctl_bin, "--user", *args], timeout=timeout)
+    try:
+        return _run([systemctl_bin, "--user", *args], timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # Not PodBackendAbsent: a manager that did not answer is no proof of none.
+        raise PodError(
+            f"`systemctl --user {args[0] if args else ''}` did not answer within "
+            f"{exc.timeout}s; run `systemctl --user is-system-running` to see why"
+        ) from exc
 
 
 def is_active(cfg: PodConfig, name: str) -> bool:
@@ -1050,16 +1058,21 @@ def recent_journal(
     if since is not None and JOURNAL_SINCE_USEC in since:
         secs, usecs = divmod(since[JOURNAL_SINCE_USEC], 1_000_000)
         bound.append(f"--since=@{secs}.{usecs:06d}")
-    cp = subprocess.run(
-        ["journalctl", "--user", "-u", pod_unit(cfg, name), "-n", str(lines), "--no-pager", *bound],
-        capture_output=True,
-        timeout=10,
-        env=_systemctl_env(),
-        # The journal stores UTF-8 and journalctl prints it raw, even under the
-        # LC_ALL=C that _systemctl_env pins, so a locale decode can garble or
-        # raise on a non-ASCII path in the very boot failure this surfaces.
-        **UTF8_TEXT,
-    )
+    unit = pod_unit(cfg, name)
+    try:
+        cp = subprocess.run(
+            ["journalctl", "--user", "-u", unit, "-n", str(lines), "--no-pager", *bound],
+            capture_output=True,
+            timeout=10,
+            env=_systemctl_env(),
+            # The journal stores UTF-8 and journalctl prints it raw, even under the
+            # LC_ALL=C that _systemctl_env pins, so a locale decode can garble or
+            # raise on a non-ASCII path in the very boot failure this surfaces.
+            **UTF8_TEXT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Said, not raised: `pod up` prints this tail and must still stop the unit.
+        return f"(could not read the pod journal: {exc})"
     return cp.stdout
 
 

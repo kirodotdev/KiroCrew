@@ -921,3 +921,70 @@ class TestDoctorEmbeddings:
         out = capsys.readouterr().out
         assert "model url:   ❌ unreachable" in out
         assert "Check network connectivity" in out
+
+
+class TestModelUrlUnreachableCause:
+    """The unreachable model url line leads with the cause and keeps url secrets off screen."""
+
+    @staticmethod
+    def _probe(monkeypatch, capsys, url, exc):
+        import kiro_crew.cli_doctor as doc
+
+        monkeypatch.setattr(doc, "_resolve_model_url", lambda: url)
+        with patch("urllib.request.urlopen", side_effect=exc):
+            doc._doctor_model_url_reachable([])
+        return capsys.readouterr().out
+
+    def test_unresolved_host_names_the_cause(self, monkeypatch, capsys):
+        import socket
+
+        err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        out = self._probe(monkeypatch, capsys, "https://mirror.example/m.gguf", err)
+        assert (
+            "❌ unreachable (the host name could not be resolved) https://mirror.example/m.gguf"
+            in out
+        )
+        assert "Errno" not in out
+
+    def test_refused_connection_names_the_cause(self, monkeypatch, capsys):
+        err = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        out = self._probe(monkeypatch, capsys, "https://mirror.example/m.gguf", err)
+        assert "❌ unreachable (connection refused)" in out
+
+    def test_other_failures_keep_their_text(self, monkeypatch, capsys):
+        out = self._probe(
+            monkeypatch, capsys, "https://mirror.example/m.gguf", OSError("disk on fire")
+        )
+        assert "❌ unreachable (disk on fire)" in out
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:hunter2@mirror.example/m.gguf",
+            "https://user:pa:hunter2@mirror.example/m.gguf",
+            "https://mirror.example/m.gguf?sig=hunter2",
+            "https://mirror.example/m.gguf#hunter2",
+        ],
+        ids=["password", "password-with-colon", "query", "fragment"],
+    )
+    def test_a_secret_bearing_url_never_reaches_the_error_text(self, monkeypatch, capsys, url):
+        out = self._probe(
+            monkeypatch, capsys, url, ValueError("nonnumeric port: 'hunter2@x' hunter2")
+        )
+        assert "hunter2" not in out
+        assert "❌ unreachable (the model url could not be opened)" in out
+
+    def test_a_real_urllib_error_for_a_colon_password_is_not_echoed(self, monkeypatch, capsys):
+        import kiro_crew.cli_doctor as doc
+
+        url = "https://user:pa:hunter2@mirror.example/m.gguf"
+        monkeypatch.setattr(doc, "_resolve_model_url", lambda: url)
+        doc._doctor_model_url_reachable([])
+        out = capsys.readouterr().out
+        assert "hunter2" not in out
+        assert "❌ unreachable (the model url could not be opened)" in out
+
+    def test_a_secret_bearing_url_still_names_a_known_cause(self, monkeypatch, capsys):
+        err = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        out = self._probe(monkeypatch, capsys, "https://user:pw@mirror.example/m.gguf", err)
+        assert "❌ unreachable (connection refused)" in out

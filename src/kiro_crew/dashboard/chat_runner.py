@@ -238,6 +238,7 @@ from kiro_crew.dashboard.chat_turn.session_reset import (
 )
 from kiro_crew.dashboard.chat_turn.slash_commands import (  # noqa: F401
     _answer_slash_without_channel,
+    _begin_compact_command,
     _forwards_harness_command,
     _turn_compact_command,
     _turn_slash_gate,
@@ -359,6 +360,7 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive,
     apply_session_directive_outcome,
 )
+from kiro_crew.dashboard.session_health import RAW_FRAME_LOG_LABEL
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_CONSUMED_MERGE_CARDS,
     _MAX_CONTEXT_PER_SOURCE,
@@ -479,13 +481,17 @@ from kiro_crew.session_agent_selection import (  # noqa: F401
     restore_agent_selection,
     session_agent_selection_kind,
 )
+from kiro_crew.slack.code_channels.approval_picker import keep_card as keep_code_channel_card
 from kiro_crew.slack.code_channels.binding import mirror_post_thread as code_channel_post_thread
 from kiro_crew.slack.code_channels.binding import notify_turn_end as notify_code_channel_turn_end
 from kiro_crew.slack.code_channels.binding import (
     notify_turn_start as notify_code_channel_turn_start,
 )
+from kiro_crew.slack.code_channels.worker_approvals import finish as finish_worker_approval
+from kiro_crew.slack.code_channels.worker_approvals import start as start_worker_approval_relay
 from kiro_crew.slack.handler import post_linked_approval
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.trust_patterns import (  # noqa: F401 -- compatibility re-export
     _mask_quoted_separators,
 )
@@ -729,6 +735,18 @@ def _hands_off_queue_on_exit(
         turn_exit = _TurnExit()
         closing = False
         setup_failed = False
+        # A Dashboard card's turn is registered for its whole length, so the spawn gate
+        # can tell that the parent is one (see card_send.card_turn). Not read off the
+        # session's approval policy: other writers rewrite that.
+        from kiro_crew.dashboard import card_send
+
+        card_mark = (
+            card_send.card_turn(effective_session_key(slot))
+            if kwargs.get("_card_origin") is True
+            else None
+        )
+        if card_mark is not None:
+            card_mark.__enter__()
         try:
             # Shared Crew fair admission for a turn no admitted work started
             # (shared_crew.turn_gate); a pass-through when admission is off.
@@ -754,6 +772,10 @@ def _hands_off_queue_on_exit(
                 setup_failed = not turn_exit.local_command
             raise
         finally:
+            # Released FIRST, before anything that can await: the turn's own work is
+            # over, and a cancel the tail below defers and re-raises must not skip it.
+            if card_mark is not None:
+                card_mark.__exit__(None, None, None)
             if not closing and not turn_exit.handed_off:
                 try:
                     # A cancel landing inside the tail is deferred until the
@@ -924,6 +946,13 @@ async def _run_chat(
     # before the mirror posted its echo. Set only by the drain, from the entry's
     # ``MIRROR_ECHO_OWED_META_KEY`` stamp, so the replay is echoed once.
     _recovery_echo_owed: bool = False,
+    # The turn runs a Dashboard card's reply (``card_send``): words a page chose, not
+    # words the person typed. It never inherits an auto-approval, so every tool call
+    # it makes reaches the approval card, whatever the thread's trust, trust-reads,
+    # trusted patterns, hook auto-approve list or YOLO say (``_on_permission_request``).
+    # Stamped by ``api_chat``, carried through a recovery requeue by the entry's
+    # ``cardOrigin`` meta, and read by nothing else.
+    _card_origin: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -970,6 +999,7 @@ async def _run_chat(
         _directive_owner_origin=_directive_owner_origin,
         _commands_off=_commands_off,
         _recovery_echo_owed=_recovery_echo_owed,
+        _card_origin=_card_origin,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
@@ -1035,6 +1065,8 @@ async def _run_chat(
     # turn's task and context) hides the open record from every gate and phase
     # it reaches, and gives it back on the way out.
     _timing_hidden = None if _timed else turn_timing.suspend()
+    # This turn's id is the trace id of the ACP turns it streams (tracing/turns.py).
+    _trace_root = trace_turns.bind_turn_root(getattr(turn, "_recovery_turn_id", ""))
     try:
         if _timed:
             turn_timing.mark("admit_start")
@@ -1084,6 +1116,8 @@ async def _run_chat(
         if _agent_started:
             event_stream = turn._agent_turn_stream = client.stream_unsolicited()
         elif is_slash:
+            if turn.first_word == "/compact":
+                _begin_compact_command(turn)
             event_stream = client.stream_command(message)
         else:
             event_stream = client.stream(_segment_user_span(turn, full_message))
@@ -1280,6 +1314,14 @@ async def _run_chat(
         _escalation = turn._escalation
         message = turn.message
         logger.warning("ACP error in slot %s: [%s] %s", slot.key, type(exc).__name__, exc)
+        # A curated message hides the harness's own frame; log that frame
+        # (already redacted and bounded) on its own line so a diagnostics
+        # bundle carries the cause. Kept off the line above, which the
+        # session-health scanner parses; the scanner skips provider text
+        # inside this record by its label.
+        _raw_detail = getattr(exc, "raw_detail", "")
+        if _raw_detail:
+            logger.warning("%s %s: %s", RAW_FRAME_LOG_LABEL, slot.key, _raw_detail)
         _msg = str(exc)
         turn._msg = _msg
         # Retry-eligible transients:
@@ -1381,6 +1423,7 @@ async def _run_chat(
     except Exception as exc:
         await _on_error(turn, exc)
     finally:
+        trace_turns.release_turn_root(_trace_root)
         state.release_turn_heartbeat(turn)
         if _timed:
             # A turn with no visible output (error, stop, tool-only, cancel)

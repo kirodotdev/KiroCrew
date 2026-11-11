@@ -432,6 +432,37 @@ class TestDeliverResultRouting:
         orch.slack.open_dm.assert_awaited_once_with("U_OWNER")
         orch.slack.post_message.assert_not_awaited()
 
+    @pytest.mark.parametrize("connected", [True, False])
+    @pytest.mark.asyncio
+    async def test_slack_only_arm_waits_out_a_reconnect(self, connected: bool):
+        # A report finishing while a Reconnect has cleared the client posts with
+        # the client the attempt publishes; when the attempt fails, the
+        # Slack-only arm keeps the report as a notification instead of dropping it.
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.slack = None
+        new_client = _mock_slack(dm="D9")
+
+        async def _attempt() -> dict:
+            orch._slack_reconnecting = False
+            if connected:
+                orch.slack = new_client
+            else:
+                orch._slack_client_lost = True
+            return {"connected": connected}
+
+        orch._slack_reconnecting = True
+        orch._slack_reconnect_task = asyncio.create_task(_attempt())
+        await orch._deliver_result("Title", "task", "result", "slack")
+        if connected:
+            new_client.open_dm.assert_awaited_once_with("U_OWNER")
+            assert new_client.post_message.await_args.args[0] == "D9"
+            ds.notify.assert_not_called()
+        else:
+            new_client.open_dm.assert_not_awaited()
+            ds.notify.assert_called_once_with("heartbeat", "Title", "task\n\nresult")
+
     @pytest.mark.asyncio
     async def test_slack_channel_arm_without_ts_posts_to_the_channel(self, monkeypatch):
         # "slack:C1" names a channel and no thread: post there as a new message

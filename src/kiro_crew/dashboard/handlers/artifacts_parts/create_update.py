@@ -135,7 +135,9 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     if source_path:
         store = get_default_store()
         try:
-            existing = store.find_by_source_path(source_path)
+            # Off the loop: it takes the store lock, which a write holds across
+            # its fsyncs, and then reads every meta.json in the store.
+            existing = await _run_off_loop(lambda: store.find_by_source_path(source_path))
         except (ArtifactError, OSError) as exc:
             # find_by_source_path scans meta.json files; on a corrupt store
             # we fall through to the regular create path rather than

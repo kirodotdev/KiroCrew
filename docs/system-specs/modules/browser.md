@@ -606,7 +606,11 @@ retry. The claim and the op route share one per-session fence
 claim takes the lock first (so no new op starts), cancels the op in flight and is
 confirmed only once the route has left the fence, so a takeover never lands
 inside an op; `in_control` is published only if the lock is still held after the
-claim's own awaits (an Esc in between has already said `live`). A claim on a
+claim's own awaits (an Esc in between has already said `live`). Only a lock
+release leaves `in_control`: a supervisor state reported while the person holds
+the browser (`waiting_allow`, `error`), and a non-`live` state the claim took over,
+is queued on the session and published by the hand-back instead of `live`; the
+turn's fold, a new turn and a started stream drop it. A claim on a
 finished card (`done`, `error`) is refused (409 `turn_over`). **An agent op is
 not lost while the person is in control: it waits for the hand-back and then
 runs**, which is how the agent resumes by itself after a sign-in. The wait lives in
@@ -995,8 +999,8 @@ the last navigate or snapshot.
 |---|---|
 | `navigate`, `back` | stamp the old document and wait for a new one (or a matching href) with an injected clock |
 | `snapshot` | the accessibility walker, run in the page; refs are per snapshot |
-| `click` | a ref or `x`,`y`; `clicks: 2` is a double click |
-| `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers) |
+| `click` | a ref or `x`,`y`; `clicks: 2` is a double click. A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
+| `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
 | `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
@@ -1344,9 +1348,11 @@ The config section is `browser`: `choice`, `live.enabled`, `live.quality`,
 
 `dashboard.use_builtin_browser` and `dashboard.browser_view_port` configured the
 agent browser this stack replaced. They are no longer fields. A `config.json`
-that still carries them loads, logs ONE warning naming them
-(`config/resolution.py`, `warn_retired_section_keys`), and drops them on the
-next save (`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
+that still carries them loads, logs ONE warning naming each one whose value
+differs from the default older builds wrote into every config they saved
+(`use_builtin_browser: true`, `browser_view_port: 0`; `config/resolution.py`,
+`warn_retired_section_keys`), and drops them on the next save
+(`_SECTION_KEYS_DELIBERATELY_DROPPED`). `PUT /api/dashboard/config`
 no longer accepts `use_builtin_browser`, and the change-card catalog no longer
 offers `browser.use-the-built-in-browser`.
 

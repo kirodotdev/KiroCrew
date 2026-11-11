@@ -386,6 +386,60 @@ def test_click_by_ref_resolves_then_clicks_the_centre(fake: FakeBrowser) -> None
     assert fake.steps == ["Click e1"]
 
 
+def test_click_by_ref_waits_for_the_layout_to_settle_after_scrolling(fake: FakeBrowser) -> None:
+    # The page collapses a header after the scroll: the first read is 60 px low.
+    reads = iter([422, 362, 362])
+    scrolls: list[bool] = []
+
+    def resolve(ref: str, scroll: bool = True) -> dict[str, Any]:
+        scrolls.append(scroll)
+        return {"ok": True, "x": 100, "y": next(reads), "tag": "a"}
+
+    fake.page["resolve"] = resolve
+    out = run(ops.run_op("click", {"ref": "e1"}, fake.ctx()))
+    assert out["ok"] is True
+    assert fake.calls[-1] == ("click", {"x": 100.0, "y": 362.0, "button": "left", "clicks": 1})
+    # Only the first read scrolls: a re-scroll would re-centre and hide any later shift.
+    assert scrolls == [True, False, False]
+
+
+def test_click_by_ref_reads_past_an_empty_frame_and_stops_after_the_last_try(
+    fake: FakeBrowser,
+) -> None:
+    ys = iter([10, None, *range(20, 20 + 10 * ops.RESOLVE_SETTLE_TRIES, 10)])
+
+    def resolve(ref: str, scroll: bool = True) -> dict[str, Any]:
+        y = next(ys)
+        return {"ok": False, "code": "ref_stale"} if y is None else {"ok": True, "x": 1, "y": y}
+
+    fake.page["resolve"] = resolve
+    out = run(ops.run_op("click", {"ref": "e1"}, fake.ctx()))
+    assert out["ok"] is True
+    assert fake.page_methods().count("resolve") == 1 + ops.RESOLVE_SETTLE_TRIES
+    assert fake.calls[-1][1]["y"] == 10.0 + 10 * (ops.RESOLVE_SETTLE_TRIES - 1)
+
+
+def test_click_by_ref_needs_two_good_reads_in_a_row_after_an_empty_one(fake: FakeBrowser) -> None:
+    ys = iter([10, None, 10, 10])
+
+    def resolve(ref: str, scroll: bool = True) -> dict[str, Any]:
+        y = next(ys)
+        return {"ok": False, "code": "ref_stale"} if y is None else {"ok": True, "x": 1, "y": y}
+
+    fake.page["resolve"] = resolve
+    assert run(ops.run_op("click", {"ref": "e1"}, fake.ctx()))["ok"] is True
+    assert fake.page_methods().count("resolve") == 4
+
+
+def test_click_by_ref_refuses_a_ref_the_page_dropped_after_scrolling(fake: FakeBrowser) -> None:
+    fake.page["resolve"] = lambda ref, scroll=True: (
+        {"ok": True, "x": 1, "y": 2} if scroll else {"ok": False, "code": "ref_stale"}
+    )
+    out = run(ops.run_op("click", {"ref": "e1"}, fake.ctx()))
+    assert out["code"] == "ref_stale"
+    assert "click" not in fake.helper_names()
+
+
 def test_click_by_coordinates_double_and_right(fake: FakeBrowser) -> None:
     out = run(ops.run_op("click", {"x": 5, "y": 6, "clicks": 2, "button": "right"}, fake.ctx()))
     assert out["ok"] is True
@@ -419,7 +473,11 @@ def test_hover_moves_the_mouse(fake: FakeBrowser) -> None:
 
 
 def test_drag_resolves_both_ends(fake: FakeBrowser) -> None:
-    fake.page["resolve"] = lambda ref: {"ok": True, "x": 1 if ref == "e1" else 9, "y": 2}
+    fake.page["resolve"] = lambda ref, scroll=True: {
+        "ok": True,
+        "x": 1 if ref == "e1" else 9,
+        "y": 2,
+    }
     out = run(ops.run_op("drag", {"ref": "e1", "to_ref": "e2"}, fake.ctx()))
     assert out == {"ok": True, "from": [1.0, 2.0], "to": [9.0, 2.0]}
     assert fake.calls[-1] == ("drag", {"x": 1.0, "y": 2.0, "to_x": 9.0, "to_y": 2.0})

@@ -182,6 +182,8 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'pages.devFleetPage.remove_name', // ASCII quotes → locale pair #5725
   'pages.chat.quickAsk.confirm_then', // {{button}} is page-authored DOM text, quoted in all catalogs at introduction
   'pages.overview.agentTemplatesTab.delete_confirm', // quoted in all catalogs at introduction (#12481)
+  'pages.overview.agentTemplatesTab.unlisted_delete_confirm', // file-name operand, quoted in all catalogs at introduction
+  'pages.overview.agentTemplatesTab.unlisted_delete_confirm_body_duplicate', // file, agent and stem operands, quoted in all catalogs at introduction
   'pages.overview.promptsTab.delete_confirm', // quoted in all catalogs at introduction (#4634)
   'pages.overview.skillsTab.delete_confirm',
   'pages.overview.skillsTab.dismiss_confirm',

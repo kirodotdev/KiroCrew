@@ -59,6 +59,7 @@ from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
 from kiro_crew.platform_compat import (  # noqa: F401 - re-export
     IS_POSIX,
+    flock_owner_pid,
     kill_popen_tree,
     make_owner_only_dir,
     open_create_or_existing,
@@ -340,6 +341,16 @@ def _verify_over_nofollow_files(
         raise WheelUpdateError("manifest signature verification failed — refusing to install")
 
 
+def wheel_filename(channel: str, version: str) -> str:
+    """The wheel a channel publishes: the LTS edition's own distribution on lts.
+
+    publish-cli.yml, ``packaging/signing/cli-manifest.py`` and ``cli.sh`` pair
+    the same stem with the same channel.
+    """
+    stem = "kirocrew_lts" if channel == "lts" else "kirocrew"
+    return f"{stem}-{version}-py3-none-any.whl"
+
+
 def parse_and_validate_manifest(
     raw: bytes,
     *,
@@ -391,7 +402,7 @@ def parse_and_validate_manifest(
     requires = manifest["python_requires"]
     if len(requires) > 128 or any(not (0x20 <= ord(c) <= 0x7E) for c in requires):
         raise WheelUpdateError("manifest python_requires fails validation")
-    wheel_name = f"kirocrew-{version}-py3-none-any.whl"
+    wheel_name = wheel_filename(channel, version)
     expected_url = f"{artifact_base}/cli/{channel}/{version}/{wheel_name}"
     if manifest["wheel_url"] != expected_url:
         raise WheelUpdateError("manifest wheel_url is not the canonical artifact URL")
@@ -437,7 +448,7 @@ def download_verified_wheel(
     """Download the wheel the SIGNED payload names and verify its SHA-256."""
     url = payload["wheel_url"]
     expected_sha = payload["sha256"]
-    wheel_path = dest_dir / f"kirocrew-{payload['version']}-py3-none-any.whl"
+    wheel_path = dest_dir / wheel_filename(payload.get("channel", ""), payload["version"])
     _download_to_file(
         url,
         wheel_path,
@@ -1050,6 +1061,9 @@ def hold_update_lock() -> int:
     filesystem that cannot lock is never mistaken for a busy one). The caller
     owns the descriptor: pass it to :func:`apply_wheel_update` as ``held_lock_fd``
     and close it afterwards (closing releases the lock).
+
+    The holder's pid is written into the lock file while it is held, so a
+    caller that loses the lock can tell who has it (:func:`update_lock_holder_pid`).
     """
     path = _update_lock_path(managed_venv_layout())
     try:
@@ -1066,14 +1080,52 @@ def hold_update_lock() -> int:
         raise WheelUpdateBusy(
             "another kirocrew update is already in progress — wait for it to finish and re-run"
         )
+    with contextlib.suppress(OSError):
+        # Only into the file this name holds, never through a link to another file.
+        held = os.fstat(fd)
+        if held.st_nlink == 1 and os.path.samestat(held, os.lstat(path)):
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, _holder_stamp())
     return fd
 
 
+def _holder_stamp() -> bytes:
+    return f"{os.getpid()}\n".encode()
+
+
 def release_update_lock(fd: int) -> None:
-    """Release and close a descriptor :func:`hold_update_lock` returned."""
+    """Release and close a descriptor :func:`hold_update_lock` returned.
+
+    This holder's pid is cleared first, while the lock is still held, so a
+    later holder that records none (``cli.sh``) is not named as this one.
+    """
+    with contextlib.suppress(OSError):
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.read(fd, 64) == _holder_stamp():
+            os.ftruncate(fd, 0)
     with contextlib.suppress(OSError):
         release_lock(fd)
     os.close(fd)
+
+
+def update_lock_holder_pid() -> int | None:
+    """The pid holding the update lock, or ``None`` when it cannot be named.
+
+    The kernel's record of who took the lock comes first (Linux). Elsewhere it
+    is the pid the holder wrote into the file: ``cli.sh`` writes none, and an
+    exec that skipped :func:`release_update_lock` leaves its own behind.
+    """
+    path = _update_lock_path(managed_venv_layout())
+    owner = flock_owner_pid(path)
+    if owner is not None:
+        return owner
+    try:
+        with open(path, "rb") as lock_file:
+            text = lock_file.read(64).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return int(text) if text.isdigit() else None
 
 
 # ── The apply ───────────────────────────────────────────────────────────────

@@ -45,6 +45,17 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 │                            or version-skewed install); non-retryable, and not an
 │                            AcpProcessDied, so the chat shows the reinstall
 │                            message instead of a respawn loop
+├── AcpKasExtractBroken    — kiro-cli's unpacked KAS engine (kas/<version>) is
+│                            incomplete and could not be moved aside, or the fresh
+│                            copy failed the same way; non-retryable, not an
+│                            AcpProcessDied, and the message names the directory
+│                            and the mv command
+├── AcpKasEngineRefused    -- kiro-cli refused its v3 (KAS) engine on this host
+│                            ("V3 is currently not supported on this system",
+│                            acp/kas_engine_refusal.py); non-retryable, and the
+│                            runtime that met it records KAS unservable, in memory
+│                            and in the data home, so new sessions take the Kiro
+│                            CLI launch
 ├── AcpToolGateUnroutable  — tool calls would bypass the PreToolUse gate;
 │                            non-retryable, wraps acp_tool_gate.ToolGateUnroutable
 ├── PiGateExtensionTampered — a shipped gate extension (Pi or DeepSeek) failed its digest check
@@ -92,11 +103,13 @@ instead of the row simply disappearing.
 | Boundary | Strategy |
 |----------|----------|
 | ACP → CLI | Catch `AcpError`, print user-friendly message, `sys.exit(1)` |
+| Sandbox refusal → CLI and boot logs | `SandboxCeilingUnsealable` and `SandboxUnavailableError` sit outside the `AcpError` hierarchy, and each one's own text names the host's remedy. `kirocrew chat` (`cli_chat._run_chat`) prints that text as one line through `safe_terminal_line` and exits 1; the built-in adoption STAGE pass logs a `SandboxUnavailableError` as one warning carrying it. Neither prints a stack trace |
 | JSON-RPC read | Non-JSON lines silently skipped (kiro-cli debug output) |
 | Config load | Invalid JSON → log warning, return defaults |
 | Integer field in a dashboard JSON body | Read through `dashboard/body_numbers.body_int`, which raises `ValueError` for `1e999`/`-1e999` (infinite floats after `json.loads`) where `int()` raises `OverflowError`. The handler's own `except (TypeError, ValueError)` then gives the infinite value the same 400 or fallback any other malformed value gets there, never a 500. A site does not add `OverflowError` to its own except clause instead |
 | Skill index (`list_skills`) | One global SKILL.md that is not UTF-8 or cannot be opened → one warning naming the file, that row dropped, every other row listed. Never a failed listing: the index feeds every chat turn and `GET /api/skills`. Rationale: [memory-skills-hooks](../modules/memory-skills-hooks.md) |
 | Process spawn | Backend-specific executable resolver, including trusted-path checks where required; clear error if missing |
+| A host that does not answer (`kirocrew kas login`, the KAS engine manifest fetch) | The message names the host and leads with the cause in plain words. `asset_downloader.network_failure_cause` reads it from the exception types (urllib's `URLError.reason`, aiohttp's `os_error`), never their text: `connection refused`, `the host name could not be resolved` or `timed out`. Any other failure keeps the library's own text, which is then the only clue there is, and so does an aiohttp exception with no `host` (a connect timeout names its host only in its text) |
 | Notes git subprocess (`md_notebook/git_ops.py`) | A non-zero exit reports git's last 3 stderr lines PLUS the first transport-caused line when one sits outside that tail. git ends every fetch/push failure with the same access-rights boilerplate and prints an SSH diagnosis first, so a tail alone reports a permission problem the operator does not have (a host reachable only via `~/.ssh/config` never resolved at all). The extra line widens what the message reports; it does not decide whether the command failed. |
 | Auto-Improvement git step (`auto_improvement/backend/clone_setup.py`) | A failed clone, branch list, checkout or fetch reports git's last 2 stderr lines after dropping blank lines and git's access-rights advisory (`Please make sure you have the correct access rights` / `and the repository exists.`), redacted and then bounded. The advisory follows every transport or auth fatal, so keeping it reports a repository problem in place of the `Permission denied (publickey).` line above it. |
 | App Store install clone, pinned fetch and pull (`apps/registry_pipeline/checkout.py`) | A credential-free (catalog or `index`-tier registry) fetch of an ssh remote whose output holds ssh's own `ssh: Could not resolve hostname` line returns `git_clone_failed_strict_ssh_route` with a fixed sentence: the fetch ran in the strict sandbox, which hides `~/.ssh`, so neither `~/.ssh/config` nor the ssh-agent applied, and a host reachable only through an ssh config route is installed from the operator's own clone with `kirocrew app install <dir>`. It carries no proxy hint, because ssh never reads `HTTPS_PROXY`; an owner-credentialed clone and an HTTPS remote keep the network hint. |
@@ -176,7 +189,31 @@ user would otherwise paste the log into, and a history row holds no draft.
 backend errors into actionable user text (`_format_acp_error`) and decides
 retry-eligibility (`_is_transient_raw_error`).
 Both key off the SAME module-level `_RE_*` patterns so wording and retry verdict
-never drift. Notable terminal (non-retryable) classes:
+never drift.
+
+When a curated branch words the message (`user_worded=True`), that wording
+replaces the provider's text: a named 5xx, an HTTP 50x and a "please try again"
+hint all read "transient error (HTTP 5xx)", and a dispatch failure reads the
+connection card. `_raise_acp_error`
+therefore keeps the frame itself on `AcpError.raw_detail` (on the early
+`AcpPromptBusy` raise too) through
+`raw_error_detail` (`acp/error_frames.py`): `code`, `message` and `data` rendered as one line of compact
+ASCII JSON (`ensure_ascii`, so neither a newline nor a Unicode line break such as
+U+2028 in provider text can forge a log line). Every string in the frame
+is scrubbed by `redact_exfiltration_urls` then `redact_credentials` in its own
+spelling BEFORE the escaping, because escaping puts a backslash before each
+quote and a quoted `"aws_session_token": "..."` inside a provider string would
+no longer match; the rendered whole is scrubbed again, which catches a
+key/value pair in a structured `data`. Only then is it cut to
+`RAW_ERROR_DETAIL_MAX_CHARS` (2000) with the dropped length named. The dashboard
+turn logs it at WARNING as `ACP error frame in slot <key>: <frame>`, on a line of
+its own beside `ACP error in slot ...`, which the session-health scanner parses
+and which keeps its shape. The scanner ignores a stall signature that follows
+the raw-frame label, so a frame echoing one cannot mark a slot stalled. A fallback message already carries the provider's
+text, so its `raw_detail` stays empty and no second line is written. Pinned by
+`test/test_acp_error_raw_frame_log.py`.
+
+Notable terminal (non-retryable) classes:
 
 - **Context window overflow**: the provider's exact "The context window
   overflowed" rejection becomes an ordinary `AcpError` with `transient=False`,

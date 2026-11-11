@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import secrets
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -268,7 +269,9 @@ def _verify_operational(
             ui.warn(
                 f"The instance is signed in to a DIFFERENT Kiro identity than {target.describe()}."
             )
-            ui.detail(f"Sign the wrong account out first, then re-run: {target.recovery_command()}")
+            ui.detail(
+                f"Sign the wrong account out and the right one in: {target.recovery_command()}"
+            )
             return "mismatch"
     except AWSError as exc:
         # Transient SSM/API failure — we could not *check*, which is not the
@@ -533,6 +536,11 @@ def launch(
                 default=True,
             ):
                 ui.info("Aborted — nothing was created.")
+                if not sys.stdin.isatty():
+                    ui.detail(
+                        "Not run from a terminal: re-run the same command with --yes "
+                        "to accept the defaults."
+                    )
                 return 0
     else:
         ui.detail("Keeping the existing stack; instance size is unchanged.")

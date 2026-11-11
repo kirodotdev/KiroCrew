@@ -254,10 +254,11 @@ def _open_contained_nofollow(base: Path, target: Path) -> int:
     openat per component and the final name is opened O_NOFOLLOW through
     it, so neither an ancestor swap nor a final-component link can escape
     the app root. Where the platform cannot pin
-    (``supports_pinned_walk()`` is False - Windows), the fallback is a
-    single O_NOFOLLOW-less open behind the caller's is_symlink pre-check,
-    backed by symlink creation being privileged there; junction swaps of
-    the DATA dir are separately caught by _PinnedDir.verify.
+    (``supports_pinned_walk()`` is False - Windows), only the final name is
+    settled: the fallback opens it with
+    :func:`platform_compat.open_file_no_reparse`, which refuses a link there
+    in the same operation; junction swaps of the DATA dir are separately
+    caught by _PinnedDir.verify.
     """
     # Windows' ``\\?\`` prefix folded off both sides first, so a resolve that
     # kept it on one operand is not read as an escape. Lexical only.
@@ -269,7 +270,7 @@ def _open_contained_nofollow(base: Path, target: Path) -> int:
     if not rel_parts:
         raise OSError("requirements path resolves to the app root itself")
     if not pinned_fs.supports_pinned_walk():
-        return os.open(str(target), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        return platform_compat.open_file_no_reparse(target, links_only=True)
     return pinned_fs.open_in_pinned_parent(
         str(target.parent),
         rel_parts[-1],
@@ -672,8 +673,9 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
         # the RESOLVED path is opened, itself O_NOFOLLOW-bound. Every race
         # collapses to a refusal or to reading a different in-root file
         # (app-controlled either way: no out-of-root bytes can ever be read
-        # or digested). On Windows os.O_NOFOLLOW is absent; the is_symlink
-        # pre-check substitutes (symlink creation is privileged there).
+        # or digested). On Windows, where os.O_NOFOLLOW is absent and the
+        # parent chain is not pinned, the open refuses a link at the final
+        # name itself (_open_contained_nofollow).
         try:
             resolved = requirements_in_tree(root, req_file)
             if resolved is None:
@@ -733,9 +735,8 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
         if bool(digest) and not volatile:
             try:
                 # On Windows os.O_NOFOLLOW is absent; the is_link pre-check
-                # substitutes (same pattern as the requirements read) - a
-                # planted stamp link must read as "unprovisioned", not
-                # through to an arbitrary file.
+                # substitutes - a planted stamp link must read as
+                # "unprovisioned", not through to an arbitrary file.
                 if platform_compat.is_link_or_junction(stamp):
                     raise OSError("stamp is a symlink/junction")
                 sfd = os.open(str(stamp), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))

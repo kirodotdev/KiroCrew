@@ -31,8 +31,9 @@ export function isSystemDelivery(m: ChatMessage): boolean {
  *      stalled tool / interrupted / empty response), which the gateway
  *      re-queues automatically and which surface as a compact RecoveryCard in
  *      the transcript once dequeued, and
- *    - the gateway's follow-up prompt after a workflow result
- *      (`meta.kind` `workflow_followup`), a collapsed note once dequeued.
+ *    - the gateway's own prompts, a collapsed note once dequeued: the
+ *      follow-up after a workflow result (`meta.kind` `workflow_followup`)
+ *      and a heartbeat task's prompt (`heartbeat_prompt`).
  *  Editing or cancelling any of them would corrupt an automatic effect, so they are
  *  filtered out of the QueueStack (sub-agent deliveries are still counted for
  *  the progress line via isSystemDelivery). */
@@ -40,7 +41,8 @@ export function isNonInteractiveQueued(m: ChatMessage): boolean {
   return (
     isSystemDelivery(m) ||
     parseRecoveryMessage(m.content || '') !== null ||
-    m.meta?.kind === 'workflow_followup'
+    m.meta?.kind === 'workflow_followup' ||
+    m.meta?.kind === 'heartbeat_prompt'
   )
 }
 
@@ -279,7 +281,7 @@ export function SubagentDeliveryProgress({ count }: { count: number }) {
         <Bot size={13} className="text-accent/70 shrink-0" />
         <Loader2 size={12} className="animate-spin text-accent/70 shrink-0" />
         <span>
-          {i18nT('components.queueStack.sub_agent_result', { count: count })} {i18nT('components.queueStack.ready_processing_after_the_current_turn')}
+          {i18nT('components.queueStack.sub_agent_results_ready', { count: count })}
         </span>
       </Glass>
     </div>
@@ -293,6 +295,9 @@ const EXPANDED_GAP = 4
 const SCALE_STEP = 0.04
 const HIDDEN_EXTRA_SCALE = 0.02
 const OVERLAP = 11 // overlap to fuse with input area below
+// A third of the server's 90 s hold (`EDIT_HOLD_SECONDS`): a background tab's
+// timers can slip to once a minute, which still lands inside the hold.
+const EDIT_HOLD_RENEW_MS = 30_000
 
 const SPRING = { type: 'spring' as const, stiffness: 400, damping: 30 }
 
@@ -462,8 +467,9 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
    *  tokens the edit kept, in token order (empty when it kept none), for the
    *  row to carry on. Absent when the entry had none to begin with. */
   onEdit?: (queueId: string, content: string, pastes?: PasteBlock[]) => void
-  /** The editor opened (`true`) or closed without a save (`false`), so the host
-   *  can hold the entry meanwhile. A save goes through `onEdit` alone: a release
+  /** The editor opened or is still open (`true`, repeated every 30 s to renew
+   *  the hold) or closed without a save (`false`), so the host can hold the
+   *  entry meanwhile. A save goes through `onEdit` alone: a release
    *  sent beside it could reach the server first and drain the old words. */
   onEditOpen?: (queueId: string, open: boolean) => void
   onEditDraft?: (queueId: string, content: string | undefined) => void
@@ -526,6 +532,15 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
   useEffect(() => () => {
     if (openEditRef.current) onEditOpenRef.current?.(openEditRef.current, false)
   }, [])
+  // The hold lapses on its own deadline, so an editor left open renews it; a
+  // closed or killed tab stops renewing and the queue moves on soon after.
+  useEffect(() => {
+    if (!editingId) return
+    const timer = setInterval(() => {
+      if (openEditRef.current === editingId) onEditOpenRef.current?.(editingId, true)
+    }, EDIT_HOLD_RENEW_MS)
+    return () => clearInterval(timer)
+  }, [editingId])
   const openEdit = (queueId: string) => {
     if (openEditRef.current && openEditRef.current !== queueId) onEditOpen?.(openEditRef.current, false)
     openEditRef.current = queueId

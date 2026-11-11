@@ -119,13 +119,13 @@ def _unproven_remedy(cfg: PodConfig, name: str, port: int) -> str:
             f"cannot add one: a pod's gateway is its worktree's own venv binary, so "
             f"this checkout predates the start-identity sidecar. Update that "
             f"worktree to a build that writes one and re-provision it "
-            f"(`kirocrew pod provision {name}`), then `kirocrew pod down {name} && "
-            f"kirocrew pod up {name}`."
+            f"(`kirocrew pod provision {name}`), then `kirocrew pod down {name}`, "
+            f"then `kirocrew pod up {name}`."
         )
     return (
         f"A record left behind by a crash cannot attest, so restarting it is what "
-        f"re-establishes the proof: `kirocrew pod down {name} && "
-        f"kirocrew pod up {name}`."
+        f"re-establishes the proof: `kirocrew pod down {name}`, then "
+        f"`kirocrew pod up {name}`."
     )
 
 

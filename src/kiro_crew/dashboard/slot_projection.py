@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from kiro_crew.dashboard.agent_welcome import welcome_preview
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
@@ -155,24 +156,33 @@ class SlotProjection:
             source_link_path_markers,
             source_ref_label,
         )
-        from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
+        from kiro_crew.dashboard.source_providers.contract import (
+            canonical_source_identity_key,
+            source_ref_identity_key,
+        )
         from kiro_crew.dashboard.source_providers.links import iter_source_url_candidates
 
         # Identities the user has explicitly unlinked from this session. The set
         # is keyed on the serialized identity, so a dismissed change stays gone
-        # no matter which URL shape re-mentions it. Snapshotting it as a frozenset
+        # no matter which URL shape re-mentions it. Each key is folded the way
+        # the identity is, so a key stored under a mixed-case GitHub spelling
+        # still matches. Snapshotting it as a frozenset
         # keeps the loop's membership test cheap and immune to a concurrent mutate.
         # Read defensively: this scanner is a staticmethod designed to run against
         # a bare ``object.__new__``-built slot that supplies only the fields the
         # walk reaches, so a slot that never ran ``__init__`` (and thus has no
         # dismissed set) must read as "nothing dismissed" rather than raise.
-        dismissed = frozenset(getattr(slot, "_dismissed_source_links", ()) or ())
+        dismissed = frozenset(
+            map(canonical_source_identity_key, getattr(slot, "_dismissed_source_links", ()) or ())
+        )
         # Keys added under an in-flight (uncommitted) unlink transaction are NOT
         # yet suppressed: publishing them here would let a concurrent broadcast
         # show a chip removed before its guarded write commits (and possibly
         # rolled back). Subtract them so the chip stays visible until commit.
         # Read defensively for the same bare-slot reason as ``dismissed`` above.
-        _txn_pending = frozenset(getattr(slot, "_dismissed_txn_pending", ()) or ())
+        _txn_pending = frozenset(
+            map(canonical_source_identity_key, getattr(slot, "_dismissed_txn_pending", ()) or ())
+        )
         if _txn_pending:
             dismissed = dismissed - _txn_pending
 
@@ -512,6 +522,7 @@ class SlotProjection:
                     redact(str(record["tool_purpose"])), limit=_MAX_TOOL_PURPOSE
                 )
 
+        durable_rows = sum(1 for message in rows if message.get("role") not in transient_roles)
         return {
             "key": slot.key,
             "title": redact(slot.display_title),
@@ -557,7 +568,11 @@ class SlotProjection:
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
             # Durable rows only, like ``last_ts``: the save path keeps no other row.
-            "messages": sum(1 for message in rows if message.get("role") not in transient_roles),
+            "messages": durable_rows,
+            # The greeting the welcome page draws while the chat has no row (an
+            # unstarted chat writes none, ``agent_welcome``); "" from the first
+            # row on, when the transcript's welcome row carries it.
+            "welcome_message": "" if durable_rows else redact(welcome_preview(slot)),
             # A turn waiting in fair admission is still in flight, so Stop
             # stays available; ``admission_queued`` says it has not started.
             "running": turn_in_flight,

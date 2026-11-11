@@ -546,6 +546,124 @@ class TestRunFreezesBootHeap:
         assert freezes == [(0, 1, False)]
 
 
+class TestRunGcWarmFreeze:
+    """``KIROCREW_GC_WARM_FREEZE``: off changes nothing; on, gen-2 threshold 100 and one warm freeze."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_gc(self):
+        import gc
+
+        from kiro_crew import gc_tuning
+
+        before = gc.get_threshold()
+        gc_tuning.reset_for_tests()
+        try:
+            yield
+        finally:
+            gc.set_threshold(*before)
+            gc_tuning.reset_for_tests()
+
+    @staticmethod
+    async def _boot(monkeypatch, *, switch: str | None) -> tuple[asyncio.Event, list[bool]]:
+        """Drive run() past the bind-time freeze; return the warm-up event and the freezes.
+
+        Each recorded freeze is ``gc.isenabled()`` at the call. run() is stopped at the
+        step right after the GC block (``slot_backfill_child.enable``), so nothing past
+        it needs a fake.
+        """
+        import gc
+
+        import kiro_crew
+        from kiro_crew import gc_tuning
+
+        if switch is None:
+            monkeypatch.delenv(gc_tuning.SWITCH_ENV, raising=False)
+        else:
+            monkeypatch.setenv(gc_tuning.SWITCH_ENV, switch)
+        gc.set_threshold(700, 10, 10)
+        orch = _make_orchestrator()
+        for name in ("_init_services", "_start_embeddings", "_auto_migrate_memory", "_init_cron"):
+            setattr(orch, name, AsyncMock())
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = MagicMock()
+        orch._init_task_runner = MagicMock()
+        orch._init_dashboard = AsyncMock()
+        orch._announce_cron_quarantine = MagicMock()
+        warm = asyncio.Event()
+        # What a started dashboard leaves behind; the mocked _init_dashboard builds none.
+        orch.dashboard_state = SimpleNamespace(startup_tabs_rebuilt=warm)
+        freezes: list[bool] = []
+        # A spy, not the real freeze: freezing would park this worker's whole heap.
+        monkeypatch.setattr(gc, "freeze", lambda: freezes.append(gc.isenabled()))
+        was_enabled = gc.isenabled()
+        gc.disable()
+        kiro_crew.shutdown_event.set()
+        loop = asyncio.get_running_loop()
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(loop, "add_signal_handler"))
+                for target in (
+                    "kiro_crew.platform_compat.raise_nofile_soft_limit",
+                    "kiro_crew.slack.events.init_socket_mode",
+                    "kiro_crew.slack.interactions.init",
+                    "kiro_crew.slack.events.SeenCache",
+                    "kiro_crew.session.cleanup_orphaned_sessions",
+                    "os._exit",
+                ):
+                    stack.enter_context(patch(target))
+                stack.enter_context(
+                    patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+                )
+                stack.enter_context(
+                    patch(
+                        "kiro_crew.crew_log.slot_backfill_child.enable",
+                        side_effect=_BootMovedOn(),
+                    )
+                )
+                with pytest.raises(_BootMovedOn):
+                    await orch.run()
+        finally:
+            kiro_crew.shutdown_event.clear()
+            if was_enabled:
+                gc.enable()
+        return warm, freezes
+
+    @pytest.mark.asyncio
+    async def test_switch_off_freezes_only_at_bind_and_keeps_thresholds(self, monkeypatch):
+        import gc
+
+        warm, freezes = await self._boot(monkeypatch, switch=None)
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert freezes == [False]
+        assert gc.get_threshold() == (700, 10, 10)
+
+    @pytest.mark.asyncio
+    async def test_switch_on_sets_threshold_and_freezes_once_after_warm_up(self, monkeypatch):
+        import gc
+
+        from kiro_crew import gc_tuning
+
+        warm, freezes = await self._boot(monkeypatch, switch="1")
+        assert gc.get_threshold() == (700, 10, gc_tuning.GEN2_THRESHOLD)
+        # Warm-up has not finished: only the bind-time freeze so far.
+        assert freezes == [False]
+
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        # The warm-up freeze runs with GC already back on, after the bind-time one.
+        assert freezes == [False, True]
+
+        # A second warm-up signal does not freeze again.
+        warm.clear()
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert freezes == [False, True]
+
+
 class _BootStopsHere(BaseException):
     """Ends ``run()`` at the release, so no boot step after it needs a fake."""
 

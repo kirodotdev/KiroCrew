@@ -27,6 +27,8 @@ DECLARED_SITES = frozenset(
     {
         ("acp/harness/pi.py", "_pi_gate_artifact_dir"),
         ("acp/harness/strands_project_pin.py", "_collect"),
+        ("acp/kas_bundle.py", "sweep_stale_staging"),
+        ("acp/kas_extract_repair.py", "repair"),
         ("acp/prompt_blocks.py", "build_prompt_blocks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_alias_locks"),
         ("acp/skill_projection_parts/alias_reclaim.py", "_sweep_orphan_sidecars_in"),
@@ -129,7 +131,9 @@ DECLARED_SITES = frozenset(
         ("dashboard/handlers/prompts_authoring.py", "_api_prompt_write._apply_locked"),
         ("dashboard/handlers/prompts_authoring.py", "_api_user_prompt_detail._read"),
         ("dashboard/handlers/themes.py", "_copy_installed_theme"),
+        ("dashboard/handlers/themes.py", "_list_themes_sync"),
         ("dashboard/handlers/themes.py", "_resolve_local_source"),
+        ("dashboard/theme_validate.py", "_validate_theme_dir"),
         ("deploy/__init__.py", "_register_core_skills"),
         ("diagnostics.py", "_usable_dir"),
         ("feature_videos_cache.py", "_remove_release_held"),

@@ -367,6 +367,46 @@ _REAPER_RESET_TIMEOUT = 30.0  # max seconds for session reset in reaper
 #: registered after the last round is a kill failure, audited ``failed``. Each
 #: round spends at most ``_REAPER_RESET_TIMEOUT`` plus the kill's own bounds.
 _ENDING_ROUNDS = 2
+#: How long ``stop()`` waits for the notices of the runs it interrupted
+#: (``set_interrupt_alert``) before it returns. Bounded because it spends the
+#: gateway's graceful-shutdown budget; the bell note comes first, so a slow
+#: Slack or channel post is what a cut loses.
+_INTERRUPT_ALERT_WAIT_SECS = 3.0
+#: How long a planned in-app restart waits for ``stop()``
+#: (``stop_cron_before_restart``): the runs' unwind, then the notices' own
+#: ``_INTERRUPT_ALERT_WAIT_SECS``, so it is above that bound.
+_RESTART_STOP_SECS = 5.0
+
+
+async def stop_cron_before_restart(crons: CronService | None) -> None:
+    """Stop the gateway's cron service for a planned in-app restart. Never raises.
+
+    The dashboard Restart (and update apply), the gateway's update restart and
+    the Slack ``/kirocrew restart`` end in an exec or a hard exit, so the
+    gateway's ``_shutdown``, where ``stop()`` runs on a SIGTERM, never runs. A
+    run in flight would end with the process image: no history row, no notice
+    (``set_interrupt_alert``), and, as an exec keeps the pid, an in-flight marker
+    whose writer still reads as alive. Each of those restarts calls this past
+    its last refusal and before its ``close_all()``, the order ``_shutdown``
+    takes. Bounded by ``_RESTART_STOP_SECS``: a stop still running then is
+    cancelled, not awaited, and the restart goes on. ``None`` is a no-op.
+    """
+    if crons is None:
+        return
+    try:
+        stop = asyncio.ensure_future(crons.stop())
+    except Exception:
+        logger.warning("Cron: could not stop the service before the restart", exc_info=True)
+        return
+    done, _ = await asyncio.wait({stop}, timeout=_RESTART_STOP_SECS)
+    if stop not in done:
+        stop.cancel()
+        logger.warning(
+            "Cron: the stop before the restart ran past %.0fs; restarting anyway",
+            _RESTART_STOP_SECS,
+        )
+    elif not stop.cancelled() and stop.exception() is not None:
+        logger.warning("Cron: the stop before the restart failed", exc_info=stop.exception())
 
 
 async def _sleep_out_jitter(jitter: float) -> None:
@@ -612,6 +652,10 @@ class CronService:
         # and the alerts in flight: the loop keeps only weak references to tasks.
         self._timeout_alert: Callable[[CronJob, str], Coroutine[Any, Any, None]] | None = None
         self._timeout_alerts: set[asyncio.Task[None]] = set()
+        # The gateway's notice for a run stop() cut short (set_interrupt_alert),
+        # and the notices in flight, which stop() waits for before it returns.
+        self._interrupt_alert: Callable[[CronJob, str], Coroutine[Any, Any, None]] | None = None
+        self._interrupt_alerts: set[asyncio.Task[None]] = set()
         _cfg = KiroCrewConfig.load().cron_history
         _history_dir = base_dir if base_dir is not None else _default_dir()
         # History is BEST-EFFORT: a raise here would take down the whole cron
@@ -720,6 +764,7 @@ class CronService:
     running_since = _run_registry.running_since
     set_refresh_callback = _run_registry.set_refresh_callback
     set_timeout_alert = _run_registry.set_timeout_alert
+    set_interrupt_alert = _run_registry.set_interrupt_alert
     trigger_run = _run_registry.trigger_run
     run_job = _run_registry.run_job
     _run_claimed_manual = _run_registry._run_claimed_manual
@@ -733,6 +778,7 @@ class CronService:
     _run_job_isolated = _run_execution._run_job_isolated
     _execute_with_timeout = _run_execution._execute_with_timeout
     _alert_timeout = _run_execution._alert_timeout
+    _alert_interrupt = _run_execution._alert_interrupt
     _execute = _run_execution._execute
     # Landing a run's result: ``kiro_crew.cron_service.service.run_merge``.
     _hold_run_record = _run_merge._hold_run_record

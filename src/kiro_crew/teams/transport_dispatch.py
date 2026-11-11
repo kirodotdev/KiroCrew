@@ -861,8 +861,13 @@ class TeamsDispatcher:
             # are tapped after on_done, and without the renderer every tap reads as
             # stale. Bounded: one renderer per session, replaced by the next turn.
             # An approval card resolves while the turn still waits on the decider.
-            if not renderer.has_pending_choices:
-                self._active_renderers.pop(session_key, None)
+            # Identity-checked: a second message admitted before this turn acquired
+            # the session publishes its own renderer under the same key.
+            if (
+                not renderer.has_pending_choices
+                and self._active_renderers.get(session_key) is renderer
+            ):
+                del self._active_renderers[session_key]
 
         # Answer anything that arrived mid-turn. Runs after the semaphore is
         # released so the drained turn can acquire it.

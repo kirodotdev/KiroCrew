@@ -499,6 +499,10 @@ jobs:
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.wheel_version }}
+      # Bakes the lane into _build_info.py: a nightly build defaults
+      # agent.kas_bundle on (kiro_crew.build_channel). Every build caller
+      # below passes the same; release.yml passes none.
+      build_channel: nightly
 
   build-desktop:
     name: Build Desktop
@@ -506,6 +510,7 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      build_channel: nightly
       # A failed arm64 build must not skip the x64 publishers (#2645). Safe on
       # THIS lane specifically: a nightly run publishes per-arch keys, per-arch
       # feeds and per-arch aliases and records no cross-arch completeness claim
@@ -544,6 +549,7 @@ jobs:
     uses: ./.github/workflows/build-windows.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      build_channel: nightly
       soft_fail: true
       use_prod_environment: true
     # Explicit passthrough, not `secrets: inherit`: the callee declares

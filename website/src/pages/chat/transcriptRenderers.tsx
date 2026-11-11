@@ -47,6 +47,7 @@ import NoticeCard from './NoticeCard'
 import { kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
+import TrustResetNoticeCard, { type LostMode } from './TrustResetNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -435,6 +436,18 @@ export function createTranscriptRenderers(
       match: m => m.meta?.kind === 'crew_paused_notice',
       render: (m, ctx) => ctx.row(
         <CrewPausedNoticeCard key={ctx.key} stopped={Number(m.meta?.stopped) || 0} />,
+      ),
+    },
+    {
+      // The row a restart leaves on a chat it took Trust or Reads from, with
+      // the one-click re-pick. A crew window's peer rows keep it out
+      // (crewWindowRenderers' PEER_SAFE_ROWS): the pick goes to this gateway.
+      id: 'trust_reset_notice',
+      roles: ['system'],
+      match: m => m.meta?.kind === 'trust_reset_notice'
+        && (m.meta?.approval_mode === 'trust' || m.meta?.approval_mode === 'trust_reads'),
+      render: (m, ctx) => ctx.row(
+        <TrustResetNoticeCard key={ctx.key} slot={o.slot} mode={m.meta?.approval_mode as LostMode} />,
       ),
     },
     // ── Shape-matched rows, ahead of anything keyed only by role ──

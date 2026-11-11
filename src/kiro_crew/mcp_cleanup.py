@@ -17,7 +17,7 @@ import logging
 import os
 import re
 import stat
-from collections.abc import Collection, Iterable, Sized
+from collections.abc import Collection, Iterable, Mapping, Sized
 from pathlib import Path
 from typing import Any
 
@@ -171,6 +171,25 @@ def mcp_scope_muted_aliases() -> frozenset[str]:
         for key, entry in servers.items()
         if isinstance(key, str) and mcp_entry_is_muted(entry)
     )
+
+
+# The reader of an agent spec's mcp.json opt-in that the gateway rewriter and the
+# KAS projection share, here because both import this module: the rewriter may
+# not import ``kiro_crew.acp`` (``scripts/check_agent_sdk_boundary.py``), and
+# ``kiro_crew.acp.kas_settings_mcp`` re-exports it. Two readers of one flag would
+# hand the same agent different servers on the two sides.
+def include_mcp_json(spec: Mapping[str, Any]) -> bool | None:
+    """The spec's mcp.json opt-in under either spelling, ``None`` when unstated.
+
+    ``includeMcpJson`` wins when both are set; kiro-cli refuses such a spec as a
+    duplicate field, so either answer is a guess and the canonical one is kept.
+    A non-bool is unstated: the wire's ``z.boolean()`` would drop the whole agent.
+    """
+    for key in ("includeMcpJson", "useLegacyMcpJson"):
+        value = spec.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
 
 
 logger = logging.getLogger(__name__)

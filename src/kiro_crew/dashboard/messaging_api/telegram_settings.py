@@ -67,11 +67,13 @@ async def _validate_telegram_token(token: str) -> str | None:
         # client's own method calls.
         async with session.get(verify_url, allow_redirects=False, proxy=proxy) as resp:
             data = await resp.json(content_type=None)
-            if isinstance(data, dict) and data.get("ok"):
+            if not isinstance(data, dict) or "ok" not in data:
+                # Not a Bot API reply (empty body, or a proxy's own JSON error):
+                # unverifiable, not rejected.
+                raise ConnectionError(f"getMe got no Bot API reply (HTTP {resp.status})")
+            if data.get("ok"):
                 return None
-            desc = ""
-            if isinstance(data, dict):
-                desc = str(data.get("description", "") or "")
+            desc = str(data.get("description", "") or "")
             return (desc or "rejected")[:60]
 
 

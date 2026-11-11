@@ -191,6 +191,11 @@ queue, a deployer, a published artifact -- has exactly one child that lands it.
 Testing and review are their own item, dispatched to a different child than the
 author: an author grading its own work reports the result it already believes.
 
+**Fix a routine incident yourself when it fits one turn.** goal-conductor's
+Patrol lists the routine incidents a conductor handles without its manager. A
+conductor dispatches the fix. You may do it in this turn when it passes the
+do-it-yourself test in section 3.
+
 ## 6. When another conductor dispatched you
 
 Everything above still holds, and `goal-conductor`'s "When a conductor dispatched

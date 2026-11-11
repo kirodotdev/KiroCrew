@@ -282,6 +282,15 @@ def owns_session_limit(provider: Any) -> bool:
     return getattr(provider, "owns_session_limit", False) is True
 
 
+def needs_pcm_wav(provider: Any) -> bool:
+    """Whether *provider* declared ``needs_pcm_wav`` as exactly ``True``.
+
+    Such a provider reads only a 16 kHz mono 16-bit PCM WAV, so
+    ``transcribe.transcribe_audio`` converts any other clip before handing it over.
+    """
+    return getattr(provider, "needs_pcm_wav", False) is True
+
+
 def language_identifying_stt_names(builtins: "Tuple[str, ...]") -> "Tuple[str, ...]":
     """The built-in *builtins* that identify languages, then each edition provider that does.
 

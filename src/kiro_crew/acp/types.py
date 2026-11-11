@@ -1151,7 +1151,7 @@ class AcpEvent:
     #: permission request refuses it outright instead of judging it by title.
     mcp_identity_unreadable: bool = False
     #: mcp_identity_unreadable_reason: which check set ``mcp_identity_unreadable``,
-    #: a key of ``_dispatch.UNREADABLE_IDENTITY_REASONS`` (the first that fired);
+    #: a key of ``deny_notice.UNREADABLE_IDENTITY_REASONS`` (the first that fired);
     #: empty when the identity is readable. The refusal names it in its log line,
     #: its audit row and the notice steered to the model.
     mcp_identity_unreadable_reason: str = ""
@@ -1175,6 +1175,12 @@ class AcpEvent:
     #: tier and governance, and approves only a host-identified built-in it names.
     #: Empty everywhere else, which grants nothing.
     spec_granted_builtins: frozenset[str] = frozenset()
+    #: spec_hook_held: on the same requests, the ``@server/tool`` grants a
+    #: PreToolUse hook kept at ``ask`` (``AcpSessionHandle.kas_hook_held``), written
+    #: the same way. The gate's ``batch-guard-grant`` row approves one only for a
+    #: surface that says it fires the PreToolUse hooks on the request. Empty
+    #: everywhere else, which grants nothing.
+    spec_hook_held: frozenset[str] = frozenset()
     #: spec_granted_commands: on the same requests, the agent's
     #: ``toolsSettings.shell.allowedCommands`` as Python regexes
     #: (``AcpSessionHandle.kas_crew_answered_commands``), written the same way. The

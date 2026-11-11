@@ -2250,19 +2250,21 @@ off-shift instance could never re-arm itself (`test_store_and_gate_arming.py` as
 `enabled: false`, and `POST /rotation/arm` arms *only* the `on_shift` tier — it cannot
 pause an `always` job and deliberately leaves `primary` alone (see "Arming is
 server-side"). So a cron on any other tier that ships disabled stays disabled **forever**.
-"It must not fire before a provider is configured" is answered by the step-0 cheap exit, not
-by shipping paused.
+"It must not fire before a provider is configured" is answered by each enabled cron's cheap
+exit, not by shipping paused.
 
 What ships enabled is therefore exactly the non-`on_shift` crons: `rotation-check` (`always`)
-and `ledger-hygiene` (`primary`), each with an explicit step-0 guard (`configured=true` → else
-`NO output`), so a fresh install still pays nothing. `ledger-hygiene` is the ONLY caller of the
+and `ledger-hygiene` (`primary`). `ledger-hygiene` carries an explicit step-0 guard
+(`configured=true` → else `NO output`). `rotation-check` has no early stop: it always POSTs
+`/rotation/arm` and stays silent on an empty `changed` list, because that route is the only
+thing that pauses `dispatch` and `reconcile` again once the last signal source is removed. `ledger-hygiene` is the ONLY caller of the
 git ledger sync, the vector-index import, and closed-incident pruning, so a paused one would
 leave all three dead in production. `reconcile` and `dispatch` are `on_shift` crons
 (`rotation.TIER_CRONS`): they ship paused (`enabled: false`) and `POST /rotation/arm` arms them,
 because `reconcile` POSTs `incident/transition` and edits the incident's Slack message, and on
 a team every armed instance would race to do the same. Two tests pin the rule generically —
-every non-`on_shift` cron must ship enabled, and every *enabled* cron must carry the cheap
-exit — rather than naming one job.
+every non-`on_shift` cron must ship enabled, and every *enabled* cron must carry a cheap
+exit (the `configured=true` stop or the arm route) — rather than naming one job.
 
 ### Rotation without a rotation service (`providers/schedule_file.py`)
 
@@ -2410,8 +2412,8 @@ PagerDuty has no roster yet. `/oncalls` accepts `since`/`until`, so the same bui
 ### Arming is server-side: `POST /rotation/arm`
 
 **The agent does not choose which crons to pause, and no longer holds `cron_pause` at
-all.** `rotation.apply_tiers(shift, cron_service)` computes the tier map and moves the
-app's jobs itself; the rotation-check cron just POSTs `/rotation/arm` and reports whether
+all.** `rotation.apply_tiers(shift, cron_service, watching=...)` computes the tier map and
+moves the app's jobs itself; the rotation-check cron just POSTs `/rotation/arm` and reports whether
 `changed` came back non-empty.
 
 This replaced an agent-driven loop, and the reason is worth keeping: off shift the armed
@@ -2928,8 +2930,14 @@ that tier. `rotation-check` must start live to arm it; otherwise a user can enab
 and configure CloudWatch while dispatch never starts. `ledger-hygiene` starts live and
 is primary-gated by its route instead of by cron arming.
 
-Safe to arm because its SOP's **step 0** exits with no output when no provider reports
-`configured: true`, so a fresh install pays nothing for a 5-minute poller. Both halves
+Safe to ship enabled because `POST /rotation/arm` keeps the `on_shift` tier paused while
+no signal source is configured, so a fresh install never arms `dispatch` (a model turn
+every 2 minutes). The built-in "Always on shift" rotation and "Observe only" action sink
+always report `configured: true`, so a `configured` check in `/state` cannot answer this;
+the route asks `registry.may_be_watching()`. That answers False only when every signal
+source says it is not set up: a `configured()` that raises, or an app config or secret
+store that exists but cannot be read, counts as maybe watching, so a transient fault never
+pauses a live shift. Both halves
 are pinned (`test_rotation_check_ships_enabled_or_nothing_ever_arms`,
 `test_rotation_check_exits_cheaply_when_unconfigured`) plus the Playwright cron check.
 

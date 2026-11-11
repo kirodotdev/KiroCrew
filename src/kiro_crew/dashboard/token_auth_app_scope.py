@@ -41,6 +41,9 @@ logger = logging.getLogger("kiro_crew.dashboard.token_auth")
 _APP_PERMS_TTL = 30.0
 _app_perms_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 _app_perms_lock = threading.Lock()
+# Apps whose cache entry ``_prime_app_api_allowlist`` pinned empty because the
+# owner-enable marker was gone; re-read in full once the marker is back.
+_app_perms_denied: set[str] = set()
 
 
 def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
@@ -51,6 +54,9 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
     """
     now = time.time()
     with _app_perms_lock:
+        # A denial the prime recorded wins over any cached or in-flight grants.
+        if app_name in _app_perms_denied:
+            return ()
         entry = _app_perms_cache.get(app_name)
         if entry is not None and now - entry[0] < _APP_PERMS_TTL:
             return entry[1]
@@ -59,9 +65,15 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
         # circular import: apps.manager imports generate_app_secret/
         # write_app_secret from token_auth, which loads this module, so a top-level
         # `import` here would form a cycle. Kept function-local deliberately.
+        from kiro_crew.apps.host_exec_grants import host_exec_granted
         from kiro_crew.apps.manager import get_app_manifest, staged_app_grants
 
         def _declared() -> list[str] | None:
+            # Grants are honoured only while the sealed owner-enable marker stands
+            # (``apps.host_exec_grants``): a token outlives a disable or uninstall until it
+            # expires, and the manifest and grant files below are agent-writable.
+            if not host_exec_granted(app_name):
+                return None
             manifest = get_app_manifest(app_name)
             if manifest is None:
                 return None
@@ -77,6 +89,10 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
         )
         allow = ()
     with _app_perms_lock:
+        # A refresh that read the marker before a disable must not publish its
+        # grants over the denial a later request recorded.
+        if app_name in _app_perms_denied:
+            allow = ()
         _app_perms_cache[app_name] = (now, allow)
     return allow
 
@@ -97,12 +113,26 @@ async def _prime_app_api_allowlist(app_name: str) -> None:
     """
     if not app_name:
         return
+    # The owner-enable marker is re-read on EVERY request, never cached: a disable
+    # or uninstall must end an existing token's grants at once, not when the cache
+    # expires. A disabled app's entry is pinned empty for the synchronous check below.
+    # Imported here, as the manifest helpers are below, so this module serves no
+    # name of the app platform through the token_auth facade.
+    from kiro_crew.apps.host_exec_grants import host_exec_granted
+
+    enabled = await asyncio.to_thread(host_exec_granted, app_name)
     with _app_perms_lock:
+        if not enabled:
+            _app_perms_cache[app_name] = (time.time(), ())
+            _app_perms_denied.add(app_name)
+            return
         entry = _app_perms_cache.get(app_name)
         if entry is not None:
-            if time.time() - entry[0] < _APP_PERMS_TTL - _APP_PERMS_PRIME_MARGIN:
+            fresh = time.time() - entry[0] < _APP_PERMS_TTL - _APP_PERMS_PRIME_MARGIN
+            if fresh and app_name not in _app_perms_denied:
                 return
             del _app_perms_cache[app_name]
+        _app_perms_denied.discard(app_name)
     await asyncio.to_thread(_app_api_allowlist, app_name)
 
 

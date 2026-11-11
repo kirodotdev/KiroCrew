@@ -38,6 +38,8 @@ const STATUS_LABEL_KEY = {
 } as const
 
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { editableEventTarget } from '../../utils/editableTarget'
 import { useRovingTabs } from '../../components/Tablist'
@@ -273,6 +275,8 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
   const selectTab = (t: Tab) => { setTab(t); setSelectedId(null); setSelectedItems(new Set()) }
   const rovingTab = useRovingTabs(ROVING_TABS, tab, selectTab)
+  // find_ui's guide to Add Source steps through the Sources tab until this reads open.
+  useGuideRevealScope('open:knowledge.sources-tab', tab === 'sources')
   // Items currently rendered by each expanded SourceGroup. Selection-wide
   // actions read this instead of the react-query cache, so they can never reach
   // an item that is not on screen (a retained cache from a previously expanded
@@ -695,15 +699,26 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
           sits outside it because a tablist may only own tabs. */}
       <div className="flex gap-1 px-4 md:px-6 border-b border-border overflow-x-auto">
         <div role="tablist" aria-label={i18nT('pages.knowledge.index.knowledge_library')} className="flex gap-1">
-          {TABS.map((t, i) => (
-            <button key={t} type="button" role="tab" id={tabId(t)}
-              aria-selected={tab === t} aria-controls={TAB_PANEL_ID}
-              {...rovingTab(i)}
-              onClick={() => selectTab(t)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`}>
-              {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
-            </button>
-          ))}
+          {TABS.map((t, i) => {
+            const { ref, ...roving } = rovingTab(i)
+            const tabClass = `flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium border-b-2 transition-all bg-transparent cursor-pointer shrink-0 whitespace-nowrap ${tab === t ? 'border-accent text-text font-semibold' : 'border-transparent text-muted hover:text-text'}`
+            return t === 'sources' ? (
+              // Its own render site, so find_ui can read the registered tab's label key.
+              <button key={t} type="button" role="tab" id={tabId(t)}
+                aria-selected={tab === t} aria-controls={TAB_PANEL_ID}
+                {...roving} {...uiLocation('knowledge.sources-tab', ref)}
+                onClick={() => selectTab(t)} className={tabClass}>
+                <FolderSync size={14} /> {i18nT('pages.knowledge.index.sources_tab')}
+              </button>
+            ) : (
+              <button key={t} type="button" role="tab" id={tabId(t)}
+                aria-selected={tab === t} aria-controls={TAB_PANEL_ID}
+                {...roving} ref={ref}
+                onClick={() => selectTab(t)} className={tabClass}>
+                {TAB_ICON[t]} {i18nT(TAB_LABEL_KEY[t])}
+              </button>
+            )
+          })}
         </div>
         {embedded && (
           <span className="ml-auto self-center shrink-0 pb-0.5">

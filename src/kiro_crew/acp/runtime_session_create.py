@@ -9,7 +9,8 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe_result``,
-``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
+``_entitlement_probe_result_at``, ``_first_session_ready``, ``_saw_delegate_launch_failure``,
+``_saw_kas_engine_refusal``, ``_saw_sandbox_init_failure``,
 ``_session_cwds``, ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``, ``_stderr_lines``,
 ``recording_allowed``.
 
@@ -389,14 +390,28 @@ async def create_session(
     wire_servers = self._remote_session_servers(
         self._harness.session_mcp_servers(mcp_servers, agent_capabilities=self._agent_capabilities)
     )
-    kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
+    # A sub-agent the workspace cannot hold to its own rules is left out and named.
+    remote_notices: list[str] = []
+    registered = len(kas_agents or ())
+    kas_agents = self._remote_workspace_agents(
+        kas_agents, wire_servers, active_agent=active_agent, notices_out=remote_notices
+    )
+    if len(kas_agents or ()) < registered:
+        # A pooled stub only a left-out target loaded leaves with it. Wrapped again so
+        # a mcp.json server named like the workspace server cannot take its entry along.
+        wire_servers = self._remote_session_servers(
+            without_excluded_stubs(wire_servers, kas_agents)
+        )
+    withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
     params = build_session_new_params(
         session_work_dir,
         mcp_servers=wire_servers,
         kas_custom_agents=kas_agents,
     )
     # The host's last word on the request and on the agent it activates
-    # (harness-parity H13): every served host returns both unchanged.
+    # (harness-parity H13): every served host returns both unchanged, except
+    # that KAS names the customAgents batch's first entry, the session's own
+    # agent, as _meta.kiro.modeId on session/new.
     params, agent = self._harness.session_request(
         METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )
@@ -1009,6 +1024,7 @@ async def _finish_create_session(
     self._first_session_ready = True
     self._saw_sandbox_init_failure = False
     self._saw_delegate_launch_failure = False
+    self._saw_kas_engine_refusal = False
     try:
         await self._snapshot_descendants()
     except BaseException:

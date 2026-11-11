@@ -1,0 +1,19 @@
+{
+  "about": "Input -> id vectors for the deterministic trace/span id formula (kiro_crew/tracing/ids.py; docs/system-specs/modules/metrics.md, Traces). An external producer that computes these ids must reproduce every expected value.",
+  "version": "kirocrew.v1",
+  "namespace": "00112233445566778899aabbccddeeff",
+  "vectors": [
+    {"fn": "span_id", "kind": "turn", "parts": ["3f9a1c2e4b5d6e7f8091a2b3c4d5e6f7", 1], "expected": "f451c35f3109f976"},
+    {"fn": "span_id", "kind": "turn", "parts": ["3f9a1c2e4b5d6e7f8091a2b3c4d5e6f7", 2], "expected": "9968125cb0bda0b1"},
+    {"fn": "span_id", "kind": "chat", "parts": ["3f9a1c2e4b5d6e7f8091a2b3c4d5e6f7", 1], "expected": "3144ea56d9b31e36"},
+    {"fn": "span_id", "kind": "user.prompt", "parts": ["3f9a1c2e4b5d6e7f8091a2b3c4d5e6f7", 1], "expected": "12b710f2d710f5c5"},
+    {"fn": "span_id", "kind": "turn.complete", "parts": ["3f9a1c2e4b5d6e7f8091a2b3c4d5e6f7", 1], "expected": "37df060b37d7ed35"},
+    {"fn": "span_id", "kind": "tool", "parts": ["sess-a", "tooluse_1"], "expected": "da7effeee5f4ca03"},
+    {"fn": "span_id", "kind": "tool", "parts": ["sess-b", "tooluse_1"], "expected": "adb3a9dadc24d902"},
+    {"fn": "span_id", "kind": "tool", "parts": ["a|b", "c"], "expected": "4ae2d6216df1189f"},
+    {"fn": "span_id", "kind": "tool", "parts": ["a", "b|c"], "expected": "7f03a8ada7ca7b54"},
+    {"fn": "span_id", "kind": "tool", "parts": ["100%", "x"], "expected": "3d0b2c6e9666e420"},
+    {"fn": "trace_id", "kind": "turn", "parts": ["not-a-hex-turn-id"], "expected": "d022a054d5d2db47d9139c6d89baefc2"},
+    {"fn": "turn_trace_id", "kind": "turn", "parts": ["3F9A1C2E4B5D6E7F8091A2B3C4D5E6F7"], "expected": "3f9a1c2e4b5d6e7f8091a2b3c4d5e6f7"}
+  ]
+}

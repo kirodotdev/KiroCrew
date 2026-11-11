@@ -343,11 +343,12 @@ def test_otlp_constructor_failure_never_logs_endpoint(monkeypatch, caplog):
     endpoint = "https://user:super-secret@example.test/v1/metrics?token=hidden"
 
     class _FailingOTLPMetricExporter:
-        def __init__(self, *, endpoint):
+        def __init__(self, *, endpoint, **kwargs):
             raise ValueError(f"invalid endpoint: {endpoint}")
 
     mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
     mod.OTLPMetricExporter = _FailingOTLPMetricExporter  # type: ignore[attr-defined]
+    mod._load_session_from_envvar = lambda _variable: None  # type: ignore[attr-defined]
     monkeypatch.setitem(
         sys.modules,
         "opentelemetry.exporter.otlp.proto.http.metric_exporter",
@@ -451,7 +452,10 @@ def test_otlp_reader_built_when_endpoint_set(monkeypatch):
         mod,
     )
 
-    session = object()  # stands in for a requests.Session carrying rotating auth
+    import requests
+
+    session = requests.Session()
+    session.auth = ("edition", "rotating")  # stands in for rotating auth
     cfg = TelemetryConfig(enabled=True, otlp_endpoint="http://localhost:4318/v1/metrics")
     reader = _build_otlp_reader(
         _dest("http://localhost:4318/v1/metrics", session=session),
@@ -459,7 +463,7 @@ def test_otlp_reader_built_when_endpoint_set(monkeypatch):
     )
     assert reader is not None, "a supplied destination must build an OTLP reader"
     assert captured["endpoint"] == "http://localhost:4318/v1/metrics"
-    assert captured["session"] is session, "the edition's authenticated transport"
+    assert captured["session"].auth is session.auth, "the edition's authenticated transport"
     # Clean shutdown so the reader's daemon thread doesn't linger.
     try:
         reader.shutdown()

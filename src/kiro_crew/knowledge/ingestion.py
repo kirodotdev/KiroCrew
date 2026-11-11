@@ -120,24 +120,24 @@ class EmbedRateLimiter:
 
     async def acquire(self) -> None:
         """Wait until a token is available. No-op when rate_limit is 0."""
-        if self._rate_limit <= 0:
-            return
-        async with self._lock:
-            now = _time.monotonic()
-            elapsed = now - self._last_refill
-            # Refill at rate_limit tokens per 60 seconds.
-            refill = elapsed * (self._rate_limit / 60.0)
-            self._tokens = min(float(self._rate_limit), self._tokens + refill)
-            self._last_refill = now
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
-                return
-        # No token available — wait for one to accrue.
-        wait_secs = (1.0 - self._tokens) / (self._rate_limit / 60.0)
-        await asyncio.sleep(max(0.01, wait_secs))
-        async with self._lock:
-            self._tokens = 0.0
-            self._last_refill = _time.monotonic()
+        while True:
+            async with self._lock:
+                if self._rate_limit <= 0:
+                    return
+                now = _time.monotonic()
+                elapsed = now - self._last_refill
+                # Refill at rate_limit tokens per 60 seconds.
+                refill = elapsed * (self._rate_limit / 60.0)
+                self._tokens = min(float(self._rate_limit), self._tokens + refill)
+                self._last_refill = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait_secs = (1.0 - self._tokens) / (self._rate_limit / 60.0)
+            # No token yet: wait for one to accrue, then take it under the lock
+            # like any other caller. Waiters that slept together each go back
+            # for their own token, so one refill admits one of them, not all.
+            await asyncio.sleep(max(0.01, wait_secs))
 
 
 # Singleton rate limiter — initialized from config on first use.
@@ -643,6 +643,18 @@ class IngestionPipeline:
             "UPDATE ingestion_jobs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
             (str(exc)[:2000], datetime.now().isoformat(), job_id))
         db.commit()
+        self._mark_source_failed(source_id, content_hash)
+
+    def _mark_source_failed(self, source_id: str, content_hash: str) -> None:
+        """Stamp the source ``error`` and forget *content_hash* when it holds it.
+
+        A source an ingest creates stores the document's hash up front, and the
+        unchanged-hash check skips any later ingest of that same text. Kept after
+        a failed or rolled-back ingest, it would make every retry of the same
+        document a no-op, leaving the source with no items until the text
+        changes. A source that already held another hash keeps it. Synchronous:
+        run it inside the caller's off-loop hop.
+        """
 
         # A delta under the store's write lock, never a snapshot rewrite: a
         # concurrent pause or scan stamp on the same row must survive.
@@ -1035,9 +1047,8 @@ class IngestionPipeline:
                     self.store.db.execute(
                         "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
                         (datetime.now().isoformat(), job_id))
-                    self.store.db.execute(
-                        "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
                     self.store.db.commit()
+                    self._mark_source_failed(source_id, content_hash)
 
                 await run_to_completion(_mark_failed)
             except Exception:  # noqa: BLE001 - never mask the original error
@@ -1226,7 +1237,7 @@ class IngestionPipeline:
                 # empty group, which the doc-state recovery paths treat as "re-
                 # attempt", so the next scan restores a complete copy.
                 self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self._mark_source_failed(source_id, content_hash)
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? WHERE id = ?",
                 (_job_status(processed, total), processed, now, job_id))
@@ -1362,19 +1373,31 @@ class IngestionPipeline:
 
         await run_to_completion(_insert_job)
 
-        chunks = await asyncio.to_thread(self.chunker.chunk, text)
-        total = len(chunks)
-
-        chunk_contents = [chunk['content'] for chunk in chunks]
         try:
+            chunks = await asyncio.to_thread(self.chunker.chunk, text)
+            total = len(chunks)
+            chunk_contents = [chunk['content'] for chunk in chunks]
             with extraction_source(source_id):
                 extractions = await self.extractor.extract_batch(chunk_contents)
         except Exception as exc:
-            # The LTS harness refusal fails the job (see ingest_file); any
-            # other extraction error keeps its existing path.
+            # Either way the job ends 'failed' and this ingest's hash is
+            # forgotten, as in ingest_file: a job left 'processing' is never
+            # finished, and a kept hash blocks retrying the same text.
             if _is_harness_refusal(exc):
                 await run_to_completion(functools.partial(
                     self._record_harness_refusal, job_id, source_id, content_hash, exc))
+            else:
+                def _mark_failed() -> None:
+                    self.store.db.execute(
+                        "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
+                        (datetime.now().isoformat(), job_id))
+                    self.store.db.commit()
+                    self._mark_source_failed(source_id, content_hash)
+
+                try:
+                    await run_to_completion(_mark_failed)
+                except Exception:  # noqa: BLE001 - never mask the original error
+                    logger.warning("failed to mark ingestion job %s failed", job_id, exc_info=True)
             raise
 
         # What THIS call wrote, collected at the write itself rather than
@@ -1459,7 +1482,7 @@ class IngestionPipeline:
                 # duplicate-gate attacher, or that attacher keeps a truncated
                 # document its unchanged hash never lets a rescan repair.
                 self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self._mark_source_failed(source_id, content_hash)
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
                 (_job_status(processed, total), total, processed, now, job_id))

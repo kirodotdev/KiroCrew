@@ -372,6 +372,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,
+    api_slack_reconnect,
     api_spawn,
     api_spawn_continue,
     api_spawn_delete,
@@ -573,6 +574,12 @@ async def api_task_cancel(request):
 
 async def api_task_detail(request):
     from kiro_crew.dashboard.handlers.tasks import api_task_detail as handler
+
+    return await handler(request)
+
+
+async def api_task_timeline(request):
+    from kiro_crew.dashboard.handlers.tasks import api_task_timeline as handler
 
     return await handler(request)
 

@@ -308,7 +308,9 @@ The pane's error then says it cannot reach the port and names it. It also gives
 one `ssh -L` line that forwards every crew's pane port, each with the same
 number on both sides. Run it beside your dashboard forward, with your gateway
 host in place of `<gateway-host>`, or open the dashboard on the gateway host
-itself.
+itself. The desktop app does this for you when it holds the tunnel (**Keep an SSH
+tunnel to this crew open**, above): it forwards each pane's port as the pane
+opens, and again after Retry moves it.
 
 ### Named HTTPS tunnel (phone)
 

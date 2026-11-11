@@ -13,9 +13,9 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``, ``_bound_workspace_fd``,
-``_child_env_names``, ``_expect_mcp_reports``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
-``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_member_context``,
-``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
+``_child_env_names``, ``_expect_mcp_reports``, ``_governance_scope``, ``_kiro_native_spec_lookup``,
+``_launch_agent``, ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
+``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
 ``_native_skill_projection``, ``_session_queues``, ``_ssh_auth_sock_forwarded``, ``_start_launch_name``,
 ``_tool_search_wire``, ``_wire_mode_id``, ``_work_dir``.
 """
@@ -308,7 +308,13 @@ def _refuse_if_loader_unreachable(self: AcpRuntime, active_agent: str, kas_agent
     wire = getattr(self, "_tool_search_wire", {}).get("toolSearch")
     if not (isinstance(wire, dict) and wire.get("enabled")) or not kas_agents:
         return
-    if any(spec_grants_tool_search(a) for a in kas_agents if isinstance(a, dict)):
+    # The session's own entry only: a sub-agent registered beside it
+    # (``kas_subagent_targets``) lends the session none of its tools.
+    if any(
+        spec_grants_tool_search(a)
+        for a in kas_agents
+        if isinstance(a, dict) and a.get("id") == active_agent
+    ):
         return
     raise AcpToolSurfaceBindingError(
         f"agent {active_agent!r} grants no tool_search loader, but this process "
@@ -399,10 +405,17 @@ async def _kas_custom_agents(
     only when it is one (a KAS crewmate worker), so every other host's call is
     unchanged. *session_cwd* is the session's own directory, for a host that reads
     workspace settings beside the session.
+
+    The governance app goes down only for the session this runtime was built to
+    serve (``_governance_scope``). Any other session on the same process, such as
+    a subagent sharing its parent's or one a pooled process starts after a claim,
+    gets ``None``, an app not known, for which every app-bound profile counts.
     """
     worker: dict[str, Any] = (
         {} if worker_stub_names is None else {"worker_stub_names": worker_stub_names}
     )
+    scope = getattr(self, "_governance_scope", None)
+    governance_app = scope[1] if scope is not None and scope[0] == session_key else None
     extras = await self._harness.session_extras(
         agent,
         work_dir=getattr(self, "_work_dir", None),
@@ -413,6 +426,7 @@ async def _kas_custom_agents(
         engine_features=kas_engine_features.advertised(getattr(self, "_agent_capabilities", {})),
         session_cwd=session_cwd,
         ssh_auth_sock_forwarded=getattr(self, "_ssh_auth_sock_forwarded", False),
+        governance_app=governance_app,
         **worker,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new

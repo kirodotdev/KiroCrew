@@ -9,11 +9,13 @@ depends on what the host running the suite has alive.
 from __future__ import annotations
 
 import inspect
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from kiro_crew import cli_doctor, platform_compat, session_pid
+from kiro_crew import cli_doctor, platform_compat, session_pid, session_scope_reap
 from kiro_crew.constants import (
     KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWNED_ENV,
@@ -545,6 +547,52 @@ def test_the_report_carries_no_command_line(monkeypatch, capsys, table: _Table) 
     assert "runtimes:    1 alive: 1 owned by the running gateway" in out
     assert _SECRET not in out
     assert "api-key" not in out
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="agent scopes are Linux/systemd only")
+def test_a_scope_the_cleanup_keeps_is_listed_with_its_stop_command(
+    monkeypatch, capsys, tmp_path: Path, table: _Table
+) -> None:
+    """A runtime scope the reaper never stops (no agent runtime left, or a process it cannot
+    attribute) is named with the command that ends it; a tracked scope, one the reaper
+    stops itself and a name no spawn could have minted are not."""
+    slice_dir = tmp_path / "slice"
+    table.add(1, 0, ["/sbin/init"])
+    table.add(201, 1, ["node", "mcp-server.js"], env=_MARKED)
+    table.add(301, 1, ["/opt/kiro-cli", "acp"], env=_MARKED)
+    table.add(401, 1, ["/opt/kiro-cli", "acp"], env=_MARKED)
+    table.add(501, 1, ["java", "-jar", "build-daemon.jar"], env={})
+    table.add(601, 1, ["node", "mcp-server.js"], env=_MARKED)
+    scopes = (("left", 201), ("live", 301), ("stray", 401), ("daemon", 501), ("x;sh", 601))
+    for unit, pid in scopes:
+        scope = slice_dir / f"kirocrew-rt-{unit}.scope"
+        scope.mkdir(parents=True)
+        (scope / "cgroup.procs").write_text(f"{pid}\n")
+    (slice_dir / "kirocrew-rt-left.scope" / "memory.current").write_text(str(700 * 1024 * 1024))
+    (slice_dir / "kirocrew-rt-left.scope" / "pids.current").write_text("55")
+    entered = int((time.clock_gettime(time.CLOCK_MONOTONIC) - 3 * 3600) * 1_000_000)
+    monkeypatch.setattr(session_scope_reap, "_scope_active_enter_us", lambda _unit: entered)
+    monkeypatch.setattr(session_scope_reap, "_instance_scope_dir", lambda: (slice_dir, ""))
+    monkeypatch.setattr(cli_doctor.session_pid, "_read_tracked_agent_pids", lambda: ({301}, True))
+    monkeypatch.setattr(resources.sys, "platform", "linux")
+    monkeypatch.setattr(resources, "_PROC_ROOT", table.root)
+    monkeypatch.setattr(resources, "_ACP_CPU_WINDOW_SECS", 0.0)
+    monkeypatch.setattr(resources, "_gateway_lock_indeterminate", lambda: False)
+    monkeypatch.setattr(cli_doctor, "_read_gateway_pid", lambda: 1)
+    monkeypatch.setattr(cli_doctor, "data_home", lambda: Path(_HOME))
+    monkeypatch.setattr(cli_doctor.session_pid, "tracked_session_roots", lambda: {301: (1, "500")})
+    monkeypatch.setattr(cli_doctor.session_pid, "_tracked_agent_pids", lambda: {301})
+
+    resources._doctor_acp_runtimes([])
+
+    out = capsys.readouterr().out
+    assert "kept scopes: ⚠️  2 runtime scope(s) no session tracks" in out
+    assert "kirocrew-rt-left.scope: up 3.0h, 700 MiB, 55 tasks, no agent runtime left" in out
+    assert "kirocrew-rt-daemon.scope: up 3.0h, ? MiB, ? tasks, it holds a process Kiro" in out
+    assert "systemctl --user stop kirocrew-rt-left.scope" in out
+    assert "systemctl --user stop kirocrew-rt-daemon.scope" in out
+    for absent in ("kirocrew-rt-live", "kirocrew-rt-stray", "x;sh"):
+        assert absent not in out
 
 
 def test_the_orchestrator_runs_the_section_after_memory_pressure() -> None:

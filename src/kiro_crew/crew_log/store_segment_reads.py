@@ -108,7 +108,9 @@ def _parses_to_object(blob: bytes) -> dict[str, Any] | None:
     """*blob* as a JSON object, or ``None``. Never raises."""
     try:
         parsed = json.loads(blob.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: a record nested past the stack limit fits well under
+        # MAX_ENTRY_BYTES, and it is a RuntimeError, so ValueError misses it.
         return None
     return parsed if isinstance(parsed, dict) else None
 
@@ -267,7 +269,7 @@ def _iter_entries(path: Path, end: int | None = None) -> Iterator[Entry]:
 
 
 def _iter_entries_located(
-    path: Path, end: int | None = None, *, start: int = 0
+    path: Path, end: int | None = None, *, start: int = 0, contains: bytes | None = None
 ) -> "Iterator[tuple[Entry, int]]":
     """Every parseable entry in *path* and the byte offset its record begins at.
 
@@ -320,6 +322,8 @@ def _iter_entries_located(
                 stripped = raw.strip()
                 if not stripped:
                     continue
+                if contains is not None and contains not in stripped:
+                    continue  # the caller's prefilter: never decoded (``CrewLog.iter_from``)
                 parsed = _parses_to_object(stripped)
                 if parsed is None:
                     continue

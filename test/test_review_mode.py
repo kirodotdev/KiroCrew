@@ -7,6 +7,7 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from slack_sdk.errors import SlackApiError
 from slack_wire_helpers import slack_wire
 
 from kiro_crew.slack.blocks import (
@@ -778,6 +779,38 @@ class TestHandleReviewApprove:
         assert _has_sel_call(sel_mock, "allowed")
 
     @pytest.mark.asyncio
+    async def test_failed_draft_post_keeps_the_draft_for_a_retry(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A post Slack refuses leaves the draft approvable from the same buttons."""
+        from slack_sdk.errors import SlackApiError
+
+        _review_drafts_set("C1|ts1|abc", "the reply", REQUESTER_ID)
+        refused = SlackApiError("ratelimited", {"ok": False, "error": "ratelimited"})
+        mock_orch.slack.post_message = AsyncMock(side_effect=refused)
+        with pytest.raises(SlackApiError):
+            await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        assert _review_drafts_get("C1|ts1|abc") == ("the reply", REQUESTER_ID)
+        assert not _has_sel_call(sel_mock, "allowed")
+
+        mock_orch.slack.post_message = AsyncMock()
+        await _handle_review_approve(_make_payload(user_id=REQUESTER_ID), _make_action())
+        mock_orch.slack.post_message.assert_awaited_once()
+        assert mock_orch.slack.post_message.await_args.args[1] == "the reply"
+        assert _review_drafts_get("C1|ts1|abc") == ("", "")
+
+    @pytest.mark.asyncio
+    async def test_a_lost_response_does_not_restore_the_draft(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A dropped connection may have posted the draft, so a retry must not repost it."""
+        _review_drafts_set("C1|ts1|abc", "the reply", REQUESTER_ID)
+        mock_orch.slack.post_message = AsyncMock(side_effect=ConnectionResetError("reset"))
+        with pytest.raises(ConnectionResetError):
+            await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        assert _review_drafts_get("C1|ts1|abc") == ("", "")
+
+    @pytest.mark.asyncio
     async def test_stranger_denied_and_notified(
         self,
         mock_orch,
@@ -878,6 +911,83 @@ class TestHandleReviewEditSubmit:
         await _handle_review_edit_submit(payload)
         mock_orch.slack.post_message.assert_awaited_once()
         assert _review_drafts_get("C1|ts1|abc") == ("", "")
+
+    @pytest.mark.asyncio
+    async def test_failed_submit_keeps_edit_and_reposts_card(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """A failed post stores the edited text and re-posts a review card to retry."""
+        _review_drafts_set("C1|ts1|abc", "original", REQUESTER_ID)
+        mock_orch.slack.post_message.side_effect = SlackApiError(
+            "boom", {"ok": False, "error": "internal_error"}
+        )
+        payload = _make_payload(
+            user_id=OWNER_ID,
+            view={
+                "private_metadata": "C1|ts1|abc",
+                "state": {
+                    "values": {
+                        "mc_review_edit_block": {"mc_review_edit_input": {"value": "edited text"}}
+                    }
+                },
+            },
+        )
+        await _handle_review_edit_submit(payload)
+        assert _review_drafts_get("C1|ts1|abc") == ("edited text", REQUESTER_ID)
+        mock_orch.slack.post_ephemeral.assert_awaited_once()
+        call = mock_orch.slack.post_ephemeral.await_args
+        assert call.args[:3] == ("C1", OWNER_ID, "edited text")
+        assert call.kwargs["thread_ts"] == "ts1"
+        assert call.kwargs["blocks"] == review_draft_blocks("edited text", "C1|ts1|abc")
+        mock_orch.slack.set_thread_status.assert_not_awaited()
+
+        # The re-posted card's Approve button now posts the edited text.
+        mock_orch.slack.post_message.side_effect = None
+        mock_orch.slack.post_message.reset_mock()
+        await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
+        mock_orch.slack.post_message.assert_awaited_once_with("C1", "edited text", "ts1")
+
+    @pytest.mark.asyncio
+    async def test_failed_submit_reposts_channel_level_card_unthreaded(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        key = "C1|ts1|abc|root"
+        _review_drafts_set(key, "original", REQUESTER_ID)
+        mock_orch.slack.post_message.side_effect = SlackApiError(
+            "boom", {"ok": False, "error": "internal_error"}
+        )
+        payload = _make_payload(
+            user_id=OWNER_ID,
+            view={
+                "private_metadata": key,
+                "state": {
+                    "values": {
+                        "mc_review_edit_block": {"mc_review_edit_input": {"value": "edited text"}}
+                    }
+                },
+            },
+        )
+        await _handle_review_edit_submit(payload)
+        assert mock_orch.slack.post_ephemeral.await_args.kwargs["thread_ts"] is None
+
+    @pytest.mark.asyncio
+    async def test_stale_modal_submit_without_draft_posts_nothing(
+        self, mock_orch, owner_patch, sel_mock
+    ) -> None:
+        """An owner's stale modal must not post once the draft was already claimed."""
+        payload = _make_payload(
+            user_id=OWNER_ID,
+            view={
+                "private_metadata": "C1|ts1|abc",
+                "state": {
+                    "values": {
+                        "mc_review_edit_block": {"mc_review_edit_input": {"value": "edited text"}}
+                    }
+                },
+            },
+        )
+        await _handle_review_edit_submit(payload)
+        mock_orch.slack.post_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stranger_submit_denied(self, mock_orch, owner_patch, sel_mock) -> None:

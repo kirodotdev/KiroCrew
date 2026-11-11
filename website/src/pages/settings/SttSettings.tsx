@@ -80,6 +80,8 @@ interface SttConfig {
   submit_on_release?: boolean
   slide_to_send?: boolean
   dictation_panel?: boolean
+  /** End a message holding dictated words with a note telling the agent so. Off by default. */
+  dictation_note?: boolean
   transcribe_region?: string
   transcribe_profile?: string
   /** Amazon Transcribe custom vocabulary name; '' for none. */
@@ -464,6 +466,7 @@ function TranscribeVocabularyPicker({
         <ErrorNotice
           variant="inline"
           className="-mt-1 mb-1"
+          actionPlacement="below-on-phone"
           testId="stt-vocabularies-error"
           report={reportForError(listError)}
           message={accessDenied
@@ -719,7 +722,7 @@ function PushToTalkConfig() {
         onChange={v => patch({ enabled: v })}
       />
       {saveError && (
-        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className="my-1" />
+        <ErrorNotice variant="inline" message={saveError} askAgent testId="ptt-save-error" className="my-1" actionPlacement="below-on-phone" />
       )}
 
       <SettingsSelect
@@ -1016,6 +1019,7 @@ export default function SttSettings({ cardIndex }: {
         <ErrorNotice
           message={errMessage(sttQ.error) || i18nT('pages.settings.sttSettings.config_load_failed')}
           askAgent
+          actionPlacement="below-on-phone"
         />
       ) : (
         <FormSkeleton rows={['toggle', 'info', 'field', 'field', 'field', 'info']} />
@@ -1196,6 +1200,7 @@ export default function SttSettings({ cardIndex }: {
         onDismiss={() => setErr('')}
         className="mb-4 animate-rise"
         askAgent={awsDraftsSaved}
+        actionPlacement="below-on-phone"
       />
       <SettingsCard index={cardIndex}>
         <SettingsToggle label={i18nT('pages.settings.sttSettings.enabled')} hint={i18nT('pages.settings.sttSettings.transcribe_voice_into_the_message_box_when_you_c')} checked={stt.enabled} onChange={v => set({ enabled: v })} disabled={saving} />
@@ -1249,7 +1254,7 @@ export default function SttSettings({ cardIndex }: {
             disabled state is status text. */}
         {!available && unavailableText && !providerNotice && (
           INSTALLED_BUT_REFUSED_CODES.has(status?.code ?? '')
-            ? <ErrorNotice variant="inline" className="-mt-1 mb-1" message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
+            ? <ErrorNotice variant="inline" className="-mt-1 mb-1" actionPlacement="below-on-phone" message={unavailableText} askAgent={awsDraftsSaved} testId="stt-unavailable-error" />
             : <p className="text-[12px] text-muted -mt-1 mb-1">{unavailableText}</p>
         )}
         {/* The probe itself failed: the badge above is then showing the config's
@@ -1259,6 +1264,7 @@ export default function SttSettings({ cardIndex }: {
           <ErrorNotice
             variant="inline"
             className="-mt-1 mb-1"
+            actionPlacement="below-on-phone"
             message={errMessage(statusQ.error) || i18nT('pages.settings.sttSettings.status_unavailable')}
             askAgent
           />
@@ -1388,6 +1394,7 @@ export default function SttSettings({ cardIndex }: {
                       <ErrorNotice
                         variant="inline"
                         className="mt-1"
+                        actionPlacement="below-on-phone"
                         message={selectedModel?.error ?? ''}
                         askAgent
                         testId="stt-custom-model-missing"
@@ -1455,6 +1462,7 @@ export default function SttSettings({ cardIndex }: {
                   <ErrorNotice
                     variant="inline"
                     className="-mt-1 mb-1"
+                    actionPlacement="below-on-phone"
                     id={CUSTOM_MODEL_ERROR_ID}
                     message={customErr}
                     askAgent
@@ -1495,6 +1503,7 @@ export default function SttSettings({ cardIndex }: {
               <ErrorNotice
                 variant="inline"
                 className="-mt-1 mb-1"
+                actionPlacement="below-on-phone"
                 message={download.model === CUSTOM_MODEL
                   ? download.error
                   : i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
@@ -1595,6 +1604,8 @@ export default function SttSettings({ cardIndex }: {
           <SettingsToggle label={i18nT('pages.settings.sttSettings.slide_to_send')} hint={i18nT('pages.settings.sttSettings.slide_to_send_desc')} checked={!!stt.slide_to_send} onChange={v => set({ slide_to_send: v })} disabled={saving || !!stt.submit_on_release} configKey="stt.slide_to_send" />
 
           <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} hint={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
+
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_note')} hint={i18nT('pages.settings.sttSettings.dictation_note_desc')} checked={!!stt.dictation_note} onChange={v => set({ dictation_note: v })} disabled={saving} configKey="stt.dictation_note" />
 
           {/* The thread picker is the local provider's alone: the others run their
               recogniser somewhere this setting cannot reach. Its options come from

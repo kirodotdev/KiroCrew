@@ -12,7 +12,13 @@ channel TOP-LEVEL (a code channel is one session, never a thread).
 agent from the explicit default, else the default folder's ``default_agent``,
 else Slack's default agent; model and effort explicit or the agent's own; the
 default folder when it exists; project from the folder chain, else the origin
-thread's ``!project``, else the dashboard default.
+thread's ``!project``, else the dashboard default; approval mode explicit, else
+``ask``. A ``trust_reads`` / ``trust`` mode is put on the new slot through
+:func:`kiro_crew.dashboard.slot_approval_seed.seed_slot_approval` -- the same
+per-slot flags and ``mode_change:<mode>`` SEL record the dashboard picker
+writes -- once the session is bound, so the channel's first turn already runs
+in it. The user can change it on the session afterwards; like every slot's
+trust it is in-memory, so a gateway restart returns the session to asking.
 
 **How Slack reaches it.** The session's Slack link is recorded against the ts
 of the kickoff message this gateway posts when it binds the channel (the
@@ -70,6 +76,12 @@ class SessionSpec:
     reasoning_effort: str = ""
     folder_id: str = ""
     project_dir: str = ""
+    #: ``ask`` / ``trust_reads`` / ``trust``.
+    approval_mode: str = features.CODE_CHANNEL_APPROVAL_ASK
+
+
+#: The SEL caller a code channel's approval seed is recorded under.
+APPROVAL_SEED_CALLER = "slack:code_channel"
 
 
 class BindingUnavailable(Exception):
@@ -165,6 +177,7 @@ async def resolve_session_spec(state: Any, cfg: Any, *, origin_thread_ts: str = 
         reasoning_effort=resolved.reasoning_effort or "",
         folder_id=folder_id,
         project_dir=project,
+        approval_mode=resolved.approval_mode,
     )
 
 
@@ -204,6 +217,7 @@ async def create_bound_session(
         effective_session_key,
         slot_history_key,
     )
+    from kiro_crew.dashboard.slot_approval_seed import seed_slot_approval
     from kiro_crew.dashboard.slot_persistence import metadata_codec
     from kiro_crew.effort import is_valid_effort
 
@@ -334,6 +348,22 @@ async def create_bound_session(
         except BaseException:
             _retract(state, slot, anchor_ts, _sync_dashboard_slots)
             raise
+        # Bound and recorded: only now put the slot on its configured posture, so
+        # a retracted newborn never leaves a SEL record for a session that does
+        # not exist, and the published slot is already in it. ``ask`` is the
+        # starting posture and changes nothing. A channel the policy refuses
+        # (narrowed during the awaits above) gets no raised posture.
+        from kiro_crew.slack.code_channels import surface
+
+        if (
+            spec.approval_mode != features.CODE_CHANNEL_APPROVAL_ASK
+            and surface.channel_policy_refusal(
+                channel_id, operation="slack.code_channel.write", caller=APPROVAL_SEED_CALLER
+            )
+        ):
+            logger.info("code channel %s: approval mode not seeded (channel policy)", channel_id)
+        elif seed_slot_approval(state, slot, spec.approval_mode, caller=APPROVAL_SEED_CALLER):
+            logger.info("code channel %s: session starts in %s", channel_id, spec.approval_mode)
         state.push_slots_update()
     return slot
 
@@ -469,6 +499,28 @@ def bound_slot(state: Any, binding: Binding) -> Any | None:
     if state is None or not hasattr(state, "get_linked_slot"):
         return None
     return state.get_linked_slot(binding.anchor_ts)
+
+
+def channel_session(state: Any, binding: Binding) -> Any | None:
+    """:func:`bound_slot`, only while it is still the session *binding* recorded.
+
+    The binding store is the gateway's own record; the slot's routing is read
+    back from its transcript, which an agent can rewrite. A change of the
+    channel's agent or approval mode acts on the slot only while its key is the
+    binding's ``session_key`` and its turns run on that same session: a code
+    channel's session is never linked to another, so a ``linked_session_key``
+    read back onto it names some other session and the change is refused.
+    """
+    from kiro_crew.dashboard.chat_utils import effective_session_key, session_key_for
+
+    slot = bound_slot(state, binding)
+    if slot is None or str(getattr(slot, "key", "") or "") != binding.session_key:
+        return None
+    if getattr(slot, "linked_session_key", ""):
+        return None
+    if effective_session_key(slot) != session_key_for(binding.session_key):
+        return None
+    return slot
 
 
 def active_binding(channel_id: str | None, thread_ts: str | None = None) -> Binding | None:

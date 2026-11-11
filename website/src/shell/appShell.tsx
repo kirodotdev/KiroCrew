@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
+import { offlineReason } from '../utils/offlineReason'
 import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
@@ -166,6 +167,7 @@ export function useAppShell() {
   // The slice also carries the slot list and the subagent maps, so selecting all of
   // it would re-render the root on dashboard traffic neither of these fields reads.
   const connected = useAppSelector(s => s.dashboard.connected)
+  const offlineCause = useAppSelector(s => s.dashboard.offlineCause)
   // Gateway (web) update flag OR desktop updater availability (mirrored from
   // Electron update-state by useUpdateSubscription) -- both light the same
   // Settings nav dot in the rails.
@@ -208,7 +210,7 @@ export function useAppShell() {
     ? i18nT('app.gateway_offline_session_expired_see_banner_above')
     : connected
       ? i18nT('app.gateway_connected')
-      : i18nT('app.gateway_offline_reconnecting')
+      : offlineReason(offlineCause)
   // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
   // focus mode the top bar (and its toggle) is inert, so this chord is the only
   // keyboard route back; it is spoken when focus mode turns on and declared on

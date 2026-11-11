@@ -87,6 +87,10 @@ WITHHELD_RECORD_FIELDS = frozenset(
         # The starred crew's left-dock position: same home as ``starred``,
         # read only from ``GET /api/members`` by the dock.
         "star_order",
+        # The Profile tab's one-click-card-send switch: shipped on GET /api/members
+        # (the profile card's own read), not here, so the crew editor does not
+        # round-trip it.
+        "dashboard_card_send",
         # Shipped on GET /api/members (the profile card's own read), not here:
         # the crew editor echoes this row back, and must not round-trip it.
         "approval_mode",

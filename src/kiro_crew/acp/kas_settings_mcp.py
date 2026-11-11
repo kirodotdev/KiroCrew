@@ -8,6 +8,8 @@ here closes one of those gaps from the Crew side; KAS is not changed.
 
 * :func:`include_mcp_json` -- kiro-cli accepts ``useLegacyMcpJson`` as well as
   ``includeMcpJson`` (``#[serde(alias)]``); KAS's wire knows only the second.
+  Defined in :mod:`kiro_crew.mcp_cleanup` and re-exported here, so the gateway
+  rewriter reads the opt-in through the same function.
 * :func:`stamp_settings_mcp` reads the files in the projection thread, and
   :func:`finish_settings_mcp` applies them when the wire envelope is built: the
   ``mcp.json`` servers the agent does not declare are excluded unless the agent
@@ -15,7 +17,9 @@ here closes one of those gaps from the Crew side; KAS is not changed.
   ``@server/<pattern>``, and every declared server without a ``timeout`` gets
   kiro-cli's 120 s default instead of KAS's 60 s.
 
-"Opted in" means the flag is ``true``. An agent FILE that leaves it out reads
+"Opted in" means the spec states the flag ``true``, under either spelling. The
+wire never carries that ``true`` (:func:`kiro_crew.acp.kas_agents.to_client_custom_agent`),
+so the opt-in travels in the stamp. An agent FILE that leaves it out reads
 as ``false`` on kiro-cli: the field is ``#[serde(default, alias =
 "includeMcpJson")] use_legacy_mcp_json: bool``, so a missing key is
 ``bool::default()``, and the mcp.json servers are loaded only behind
@@ -33,7 +37,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.kas_tool_limits import kas_globs, unmatched_disabled_globs
-from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
+from kiro_crew.mcp_cleanup import (  # noqa: F401 - include_mcp_json is re-exported
+    KIROCREW_BIN_MCP_SERVERS,
+    include_mcp_json,
+    mcp_entry_is_muted,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_mcp import NativeSettingsUnreadable
@@ -54,20 +62,6 @@ KAS_MAX_MCP_TIMEOUT_MS = 600_000
 #: KAS's always-started servers (``ASBX_KIRO_MANDATORY_MCPS``). KAS starts them
 #: whatever the agent says, so an exclusion would only hide their tools.
 _MANDATORY_ENV = "ASBX_KIRO_MANDATORY_MCPS"
-
-
-def include_mcp_json(spec: Mapping[str, Any]) -> bool | None:
-    """The spec's mcp.json opt-in under either spelling, ``None`` when unstated.
-
-    ``includeMcpJson`` wins when both are set; kiro-cli refuses such a spec as a
-    duplicate field, so either answer is a guess and the canonical one is kept.
-    A non-bool is unstated: the wire's ``z.boolean()`` would drop the whole agent.
-    """
-    for key in ("includeMcpJson", "useLegacyMcpJson"):
-        value = spec.get(key)
-        if isinstance(value, bool):
-            return value
-    return None
 
 
 def _unreadable_line(exc: NativeSettingsUnreadable) -> str:
@@ -185,6 +179,7 @@ def stamp_settings_mcp(
     legacy_mcp_json: bool = False,
     notices: list[str] | None = None,
     unmatched: set[tuple[str, str]] | None = None,
+    opted_in: bool = False,
 ) -> list[dict[str, Any]]:
     """The batch with what :func:`finish_settings_mcp` needs stamped on the ACTIVE entry.
 
@@ -200,6 +195,8 @@ def stamp_settings_mcp(
     *notices* gets one session-start line per mcp.json file that could not be read.
     *unmatched* gets ``(server, pattern)`` for each file glob of a server this
     block carries that KAS cannot match (:func:`kas_tool_limits.unmatched_globs_notice`).
+    *opted_in* is the spec's own :func:`include_mcp_json` ``true``, which the wire
+    entry does not carry.
     """
     files = {
         n: e
@@ -211,6 +208,7 @@ def stamp_settings_mcp(
         "fileServers": {name: _glob_disabled_tools(entry) for name, entry in files.items()},
         "declared": sorted(n for n in declared if isinstance(n, str)),
         "legacy": legacy_mcp_json,
+        "optedIn": opted_in,
     }
     stamped = [
         (
@@ -270,16 +268,22 @@ def finish_settings_mcp(agent: dict[str, Any]) -> dict[str, Any]:
 
 
 def without_excluded_stubs(servers: list[Any], agents: Any) -> list[Any]:
-    """*servers* without the pooled stub of any server :func:`excluded_whole` excludes.
+    """*servers* without the pooled stub of a server every stamped agent excludes.
 
     The gateway also pools the settings files' own servers into the session-level
-    array, which would mount one past the exclusion. The runtime calls this before
-    it binds the array every consumer reads (request, report, unresolved-ref
+    array, which would mount one past the exclusion. That array is the whole
+    batch's, so a stub stays while one stamped agent (the session's own or a
+    sub-agent target) still loads its server; each agent that does not keeps its
+    ``@server`` exclusion (:func:`finish_settings_mcp`). The runtime calls this
+    before it binds the array every consumer reads (request, report, unresolved-ref
     guard), so they all describe what was sent. *servers* is returned as is when
     nothing is excluded.
     """
     batch = agents if isinstance(agents, list) else []
-    dropped = set().union(*(excluded_whole(a) for a in batch if isinstance(a, dict)))
+    stamped = [
+        a for a in batch if isinstance(a, dict) and isinstance(a.get(CREW_SETTINGS_MCP_KEY), dict)
+    ]
+    dropped = set.intersection(*(excluded_whole(a) for a in stamped)) if stamped else set()
     if not dropped:
         return servers
     # Imported here: mcp_session_report reaches this module through kas_permissions.
@@ -316,11 +320,7 @@ def excluded_whole(agent: Mapping[str, Any]) -> set[str]:
     whatever it is told. Empty for an unstamped, opted-in or legacy entry.
     """
     stamp = agent.get(CREW_SETTINGS_MCP_KEY)
-    if (
-        not isinstance(stamp, dict)
-        or agent.get("includeMcpJson") is True
-        or stamp.get("legacy") is True
-    ):
+    if not isinstance(stamp, dict) or stamp.get("optedIn") is True or stamp.get("legacy") is True:
         return set()
     own = _declared_names(agent)
     mandatory = {n.strip() for n in os.environ.get(_MANDATORY_ENV, "").split(",") if n.strip()}

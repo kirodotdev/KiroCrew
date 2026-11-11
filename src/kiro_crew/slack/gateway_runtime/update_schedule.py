@@ -5,10 +5,9 @@ effect an update would have, the in-flight-work census that holds an apply back,
 the pause, drain and settle around an apply, and the claimed restart that re-execs
 the gateway.
 
-Orchestrator fields read: ``_MANDATORY_UPDATE_MAX_DEFER_SECS``,
-``_UPDATE_BUSY_RETRY_SECS``, ``_UPDATE_DRAIN_TIMEOUT_SECS``, ``_running_script_ids``,
-``_session_tasks``, ``dashboard_state``, ``sessions``, ``subagent_mgr``,
-``task_runner``.
+Orchestrator fields read: ``_MANDATORY_UPDATE_MAX_DEFER_SECS``, ``_UPDATE_BUSY_RETRY_SECS``,
+``_UPDATE_DRAIN_TIMEOUT_SECS``, ``_running_script_ids``, ``_session_tasks``, ``cron_svc``,
+``dashboard_state``, ``sessions``, ``subagent_mgr``, ``task_runner``.
 Orchestrator fields written: ``_mandatory_update_deferred_at``,
 ``_mandatory_update_deferred_key``, ``_pending_update_respawn``,
 ``_pending_update_version``, ``_update_apply_deferred``.
@@ -43,6 +42,7 @@ if TYPE_CHECKING:
         _remediation_command,
         _update_info,
         auto_update_effect,
+        close_sessions_for_restart,
         distribution,
         flush_breadcrumb_writes,
         inbound_spool,
@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         resolve_restart_launcher,
         run_pre_exec_stops,
         shutdown_event,
+        stop_cron_before_restart,
         subprocess_executor,
         update_ownership,
         wait_for_unwinding_turns,
@@ -1034,12 +1035,17 @@ async def _restart_after_update_claimed(
             self._update_apply_deferred = True
             logger.warning("Update restart fence lost to real shutdown; deferring restart")
             return
+    # The exec skips _shutdown, so stop cron here, before close_all() as _shutdown orders it.
+    await stop_cron_before_restart(getattr(self, "cron_svc", None))
+    if sessions is not None:
         # A planned restart: the turns close_all() cuts resume on the next boot.
         # Already loaded by ``updates_apply``, so a replaced tree cannot fail it.
         from kiro_crew.dashboard import restart_resume
 
         await restart_resume.record_running_slots(self.dashboard_state)
-        await sessions.close_all()
+        # Bounded even against a task that outlives its cancel: close_all
+        # shuts turn admission first, and only the exec below ends this image.
+        await close_sessions_for_restart(sessions.close_all())
         # close_all() cut every dashboard turn that was mid-reply, and each one
         # saves the text its user watched stream as it unwinds, after the save
         # above. The exec below would beat that save.

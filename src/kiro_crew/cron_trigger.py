@@ -15,13 +15,30 @@ _JOB_ID_RE = re.compile(r"[a-f0-9]{6,12}")
 _TIMEOUT_SECS = 10  # endpoint returns immediately after starting execution
 
 
+#: HTTP status the run endpoint answers when the job already has a run in flight.
+ALREADY_RUNNING_STATUS = 409
+
+
 def trigger_cron_job(job_id: str, port: int, secret_path: Path) -> tuple[bool, str]:
     """POST to the gateway dashboard to trigger a cron job immediately.
 
     Returns (success, message) tuple.
     """
+    ok, message, _status = trigger_cron_job_status(job_id, port, secret_path)
+    return ok, message
+
+
+def trigger_cron_job_status(
+    job_id: str, port: int, secret_path: Path
+) -> tuple[bool, str, int | None]:
+    """:func:`trigger_cron_job` plus the HTTP status of a refused trigger.
+
+    The status is ``None`` on success and when no HTTP answer arrived, so a caller
+    can tell "already running" (:data:`ALREADY_RUNNING_STATUS`) from a failure
+    without reading the message text.
+    """
     if not _JOB_ID_RE.fullmatch(job_id):
-        return False, f"Invalid job ID format: {job_id}"
+        return False, f"Invalid job ID format: {job_id}", None
 
     url = f"http://127.0.0.1:{port}/api/crons/{job_id}/run"
     headers: dict[str, str] = {}
@@ -71,19 +88,23 @@ def trigger_cron_job(job_id: str, port: int, secret_path: Path) -> tuple[bool, s
             body = json.loads(resp.read())
             if body.get("ok"):
                 name = body.get("name", job_id)
-                return True, f"Triggered job: {name} ({job_id})"
-            return False, f"Error: {body.get('error', 'unknown')}"
+                return True, f"Triggered job: {name} ({job_id})", None
+            return False, f"Error: {body.get('error', 'unknown')}", None
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            return False, f"Job not found: {job_id}"
+            return False, f"Job not found: {job_id}", e.code
         reason = http_error_reason(e)
         if reason:
-            return False, f"Error: HTTP {e.code}: {reason}"
-        return False, f"Error: HTTP {e.code}"
+            return False, f"Error: HTTP {e.code}: {reason}", e.code
+        return False, f"Error: HTTP {e.code}", e.code
     except (urllib.error.URLError, OSError) as e:
         # A timeout means the gateway took the trigger and is still working, so
         # it is up but busy, not gone. The trigger POST is not idempotent, so
         # the message does not invite a blind retry.
         if deadline_expired(e):
-            return False, "Error: gateway is busy (up but did not answer); the trigger may have run"
-        return False, "Error: cannot reach gateway. Is `kirocrew gateway` running?"
+            return (
+                False,
+                "Error: gateway is busy (up but did not answer); the trigger may have run",
+                None,
+            )
+        return False, "Error: cannot reach gateway. Is `kirocrew gateway` running?", None

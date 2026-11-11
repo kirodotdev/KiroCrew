@@ -74,6 +74,27 @@ def _audit_owner_read(request: web.Request, operation: str) -> None:
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
 
 
+def _audit_teammate_read(request: web.Request, operation: str) -> None:
+    """Record a relay teammate's granted read, as :func:`_audit_owner_read` records the owner's.
+
+    Filed under the relay caller's own audit label (``relay:<Kiro user ID>``), so the
+    trail says which teammate read the roster. Best effort, like the owner's row.
+    """
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
+
+    relayed = published_relay_caller(request)
+    try:
+        _sel().log_api_access(
+            caller=relayed.audit_label if relayed is not None else "",
+            operation=operation,
+            outcome="allowed",
+            source="dashboard",
+            resources="relay_teammate",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
 def _member_name_is_addressable(value: object) -> bool:
     return members_mod.is_dispatchable_member_name(value)
 

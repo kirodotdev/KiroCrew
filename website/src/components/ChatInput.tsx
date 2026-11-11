@@ -73,6 +73,7 @@ import { useDictationControls, useHoldToTalk } from './chat-input/voice'
 import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/VoiceControls'
 import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
 import { useAutoCompactThreshold } from './chat-input/autoCompact'
+import { useOfflinePlaceholder } from './chat-input/offlinePlaceholder'
 import { AttachMenu, usePlusMenu } from './chat-input/attach'
 import { ComposerActionMenuItems, useComposerActionMenu } from './chat-input/composerActions'
 import { BusySendControls, CompactingIndicator, useComposerSend } from './chat-input/busySend'
@@ -355,6 +356,7 @@ function ChatInput({
   // each streamed frame. useAppStore returns the Provider-injected store, the
   // same pattern ChatPane uses for its at-send reads.
   const chatStore = useAppStore()
+  const offlinePlaceholder = useOfflinePlaceholder()
   const terminal = useTerminalCommand({
     value, slotId, project, target: terminalCommands,
     hasAttachments: pendingFiles.length > 0 || pendingDirs.length > 0 || pendingSessions.length > 0 || !!knowledgeChip,
@@ -925,7 +927,7 @@ function ChatInput({
   const fillFromSuggestion = useCallback((v: string) => { valueFromUserRef.current = true; onChange(v) }, [onChange])
   const followUpGhost = useFollowUpGhost({ options: followUpOptions, value, onUserEdit: fillFromSuggestion, composerControl, claimKey: ime.claimKey,
     enabled: !touchInput && !!onFollowUpSelect && !showGhost && connected && !typingLock && !disabledProp && !voiceRecording && !transcribingIsHonest && !continuePlaceholder && !voiceModePlaceholder && !optimizing })
-  const activePlaceholder = !connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : typingLock ? '' : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || followUpGhost.placeholder || resolvedPlaceholder
+  const activePlaceholder = !connected ? offlinePlaceholder : typingLock ? '' : disabledProp ? (lockedPlaceholder ?? i18nT('components.chatInput.stopping')) : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : transcribingIsHonest ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || followUpGhost.placeholder || resolvedPlaceholder
   // The sigil hint is a label and may be cut to one line. Every other
   // placeholder here is a sentence the user needs whole, so it still wraps —
   // including a caller's own `placeholder`, which `resolvedPlaceholder` carries.
@@ -1418,7 +1420,7 @@ function ChatInput({
         {/* The overlay itself lets taps through; only the pill's Cancel takes
             them. Without Cancel a mis-tap on Optimize (it sits beside Send on
             a phone) leaves the draft read-only until the request settles. */}
-        {optimizing && <span className="optimize-overlay absolute inset-0 flex items-center justify-center backdrop-blur-md pointer-events-none z-10 rounded-2xl"><span className="optimize-overlay-pill inline-flex items-center gap-2 pl-4 pr-1.5 py-1.5 rounded-full text-sm font-medium text-text"><Sparkles size={15} className="text-accent animate-pulse shrink-0" /> {i18nT('components.chatInput.optimizing_prompt')}<button
+        {optimizing && <span className="optimize-overlay absolute inset-0 flex items-center justify-center backdrop-blur-md pointer-events-none z-10 rounded-2xl"><span className="optimize-overlay-pill inline-flex items-center gap-2 pl-4 pr-1.5 py-1.5 rounded-full text-sm font-medium text-text"><Loader2 size={15} className="text-accent animate-spin shrink-0" aria-hidden="true" /> {i18nT('components.chatInput.optimizing_prompt')}<button
           type="button"
           className="optimize-overlay-cancel pointer-events-auto w-7 h-7 shrink-0 rounded-full border-none flex items-center justify-center cursor-pointer bg-transparent text-muted hover:text-text hover:bg-text/10 focus-visible:outline-2 focus-visible:outline-accent"
           onClick={(e) => { e.stopPropagation(); e.preventDefault(); cancelOptimize() }}

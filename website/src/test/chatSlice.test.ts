@@ -369,6 +369,24 @@ describe('switchSlot.pending', () => {
     expect(state.slotLoading).toBe(true)
   })
 
+  it('records only switches that ask to leave Split View', () => {
+    let state = reducer(initial, {
+      type: 'chat/switchSlot/pending',
+      meta: { arg: { key: 'new', leaveSplit: true }, requestId: 'r1', requestStatus: 'pending' },
+    })
+    expect(state.leaveSplitSeq).toBe(1)
+    state = reducer(state, {
+      type: 'chat/switchSlot/pending',
+      meta: { arg: { key: 'other' }, requestId: 'r2', requestStatus: 'pending' },
+    })
+    expect(state.leaveSplitSeq).toBe(1)
+    const ordinary = reducer(initial, {
+      type: 'chat/switchSlot/pending',
+      meta: { arg: 'other', requestId: 'r3', requestStatus: 'pending' },
+    })
+    expect(ordinary.leaveSplitSeq).toBeUndefined()
+  })
+
   it('gates sseChatMessage from old slot after pending', () => {
     let state = { ...initial, activeSlot: 'old', slotRunning: true, slotState: 'streaming' as const,
       messages: [{ role: 'streaming' as const, content: 'partial', cls: 'msg msg-a' }] }

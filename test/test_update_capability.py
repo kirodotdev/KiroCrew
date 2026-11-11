@@ -500,27 +500,6 @@ class TestRemediationTracksTheReportedChannel:
         # callers are still holding.
         assert "stable" in (capability.remediation or {})["command"]
 
-    def test_an_unpublished_channel_offers_no_installer_command(self, monkeypatch):
-        """RFC D11: an LTS install follows lts before the pipeline publishes it.
-
-        cli.sh refuses ``--channel lts``, so neither the derived capability nor a
-        re-pin may carry that command; the dashboard then shows the message alone.
-        """
-        monkeypatch.setattr("kiro_crew.platform.update_layout.release_channel", lambda: "lts")
-        capability = derive_capability(install_root="", dist="kirocrew")
-        assert "command" not in (capability.remediation or {})
-        assert "no published builds yet" in (capability.remediation or {})["message"]
-
-        monkeypatch.setattr("kiro_crew.platform.update_layout.release_channel", lambda: "stable")
-        repinned = derive_capability(install_root="", dist="kirocrew").for_channel("lts")
-        assert "command" not in (repinned.remediation or {})
-
-        from kiro_crew.platform.update_layout import non_managed_pip_upgrade_command
-
-        hint = non_managed_pip_upgrade_command("lts")
-        assert hint.command is None
-        assert "cli/lts" not in hint.note
-
     @pytest.mark.parametrize("dist", ["docker", "dmg"])
     def test_an_externally_managed_remediation_is_not_channel_dependent(self, dist):
         """Its guidance names another updater, not a cli.sh lane — leave it alone."""

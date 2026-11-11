@@ -26,7 +26,7 @@ import { Btn } from '../../components/ui'
 import { type CreatedCrewmate, type CrewmateDraft } from './NewCrewmateDialog'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow } from '../../api/client'
-import { ApiError } from '../../api/apiError'
+import { ApiError, isPermissionRefusal } from '../../api/apiError'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { hasOtherMates, isAssistantMember } from '../../lib/assistantMember'
 import { useFirstGreeting } from './useFirstGreeting'
@@ -287,6 +287,7 @@ export function useMembersPageThread({
       setThreadOutcome(m.name, (prev) => ({
         slot_key: prev?.slot_key ?? '',
         failed: true,
+        ...(isPermissionRefusal(error) ? { ownerOnly: true } : {}),
         errorReport: findReport(error instanceof Error ? error.message : undefined),
       }))
     },
@@ -1007,7 +1008,20 @@ export function MembersPageThreadColumn({
                     </Btn>
                   </div>
                 )}
-                {activeThreadFailed && (
+                {activeThreadFailed && threadOutcome?.ownerOnly && (
+                  /* An owner-only refusal (a relay teammate on a team Crew): the
+                     chat is not theirs to open, so the line says who may, with no
+                     retry or hand-off, like the Dashboard tab's owner notice. */
+                  <div className="px-4 py-2">
+                    <ErrorNotice
+                      message={t('pages.membersPage.thread_owner_only')}
+                      variant="inline"
+                      askAgent={false}
+                      testId="member-thread-owner-only"
+                    />
+                  </div>
+                )}
+                {activeThreadFailed && !threadOutcome?.ownerOnly && (
                   /* No hand-off while a cached thread is mounted under this line:
                      its DM composer still holds whatever the user typed (ChatPane
                      keeps that draft in local state), and the hand-off navigates

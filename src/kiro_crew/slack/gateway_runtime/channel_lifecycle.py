@@ -252,7 +252,7 @@ async def _connect_slack(self: GatewayOrchestrator) -> bool:
     dashboard, cron, and task runner keep running in dashboard-only mode.
 
     ponytail: no background retry of the initial connect — Slack DM stays
-    disabled until the next gateway restart.
+    disabled until a Reconnect (``slack.reconnect``) or the next gateway restart.
 
     Slack is a GOVERNED transport like every other channel: a ``channels``
     policy that denies ``slack`` must stop it from CONNECTING, not merely drop
@@ -624,14 +624,14 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
 
     new = change.new
     # Slack's tokens live in ``.env`` / the vault, and its socket client is
-    # host-managed (``_connect_slack``), so unlike every other channel there is
-    # no in-process restart path that can re-authenticate it with a rotated
-    # token. The owner id is read once at construction into ``_owner_id`` and
-    # the owner allowlist, so a replaced or removed owner keeps authorizing the
-    # previous one until the next start. A ``.env`` edit to either is surfaced
-    # as the watcher's synthetic ``credentials.<KEY>`` path; apply what can be
-    # applied live below, but tell the operator the new token or owner needs a
-    # gateway restart, the same honest fallback as ``slack.command``.
+    # host-managed (``_connect_slack``), so unlike every other channel the
+    # watcher has no restart path that re-authenticates it with a rotated
+    # token. The owner id is read once into ``_owner_id`` and the owner
+    # allowlist, so a replaced or removed owner keeps authorizing the previous
+    # one until a Reconnect (``slack.reconnect``) or the next start. A ``.env``
+    # edit to either is surfaced as the watcher's synthetic
+    # ``credentials.<KEY>`` path; apply what can be applied live below, and
+    # tell the operator how to apply the new token or owner.
     # Matched by canonical environment-entry name, the same rule as
     # ``registry.changed_credential_keys``: on Windows ``os.environ`` is
     # case-insensitive, so a lowercase ``slack_bot_token`` line rotates the same
@@ -654,9 +654,9 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the format names a token, its argument is the KEY name only (never a credential value)
         logger.warning(
             "Slack credential(s) changed in .env (%s); Slack's socket connection and "
-            "owner authorization are fixed at gateway start and keep the previous "
-            "token and owner until the next start. "
-            "Run `kirocrew restart` to apply the new Slack token or owner.",
+            "owner authorization keep the previous token and owner until a Reconnect "
+            "or the next start. Click Reconnect in Settings → Messaging Channels → Slack, "
+            "or run `kirocrew restart`, to apply the new Slack token or owner.",
             ", ".join(slack_cred_keys),
         )
     slack_paths = change.under("slack")

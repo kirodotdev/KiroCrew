@@ -1060,6 +1060,16 @@ class LLMProvider(ABC):
         """True when the current model accepts a reasoning-effort level. Default False."""
         return False
 
+    def ultracode_enabled(self) -> bool | None:
+        """Whether the session's ultracode switch is on; ``None`` (the default) when
+        the session offers no such switch."""
+        return None
+
+    async def set_ultracode(self, enabled: bool) -> bool | None:
+        """Turn the session's ultracode switch on or off and return the value read
+        back. Default ``None``: no switch, nothing sent."""
+        return None
+
     async def change_effort(self, level: str) -> bool:
         """Change reasoning effort live for the current model. Returns True on success,
         False when effort is unsupported. Default False."""

@@ -162,12 +162,13 @@ export function readPublishOutcome(
   return null
 }
 
-/** The three catalog keys a render site offers for a publish notice: the
- *  existing rolling-out line, the disabled-distribution remedy, and the neutral
- *  fallback that promises no time. */
+/** The four catalog keys a render site offers for a publish notice: the
+ *  existing rolling-out line, the disabled-distribution remedy, the
+ *  origin-mismatch remedy, and the neutral fallback that promises no time. */
 export interface PublishNoticeKeys {
   rolling_out: string
   distribution_disabled: string
+  origin_mismatch: string
   notice_generic: string
 }
 
@@ -189,6 +190,8 @@ export function publishNoticeKey(keys: PublishNoticeKeys, noticeCode: string | u
       return keys.rolling_out
     case 'distribution_disabled':
       return keys.distribution_disabled
+    case 'origin_mismatch':
+      return keys.origin_mismatch
     default:
       // 'unknown', empty, or any value a newer backend introduces.
       return keys.notice_generic
@@ -806,7 +809,7 @@ export function PublishHub({
             {updatingLiveSite
               ? <p className="text-text">{i18nT('components.publishHub.update_replaces_published_page')}</p>
               : typeof preview.message === 'string' && <p>{preview.message}</p>}
-            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
+            {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size_kb', { size: (preview.bytes / 1024).toFixed(1) })}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
             {selected.core && (visibilityOptions.length > 0 || alreadyPublished) && selectedVisibility !== 'SHARED' && (
               <p>
@@ -994,6 +997,7 @@ export function PublishHub({
                   <span>{i18nT(publishNoticeKey({
                     rolling_out: 'components.publishHub.published_still_rolling_out',
                     distribution_disabled: 'components.publishHub.published_distribution_disabled',
+                    origin_mismatch: 'components.publishHub.published_origin_mismatch',
                     notice_generic: 'components.publishHub.published_notice_generic',
                   }, result.notice_code))}</span>
                 </div>

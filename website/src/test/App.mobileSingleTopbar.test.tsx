@@ -378,10 +378,8 @@ describe('phone chat page: one top bar', () => {
     localStorage.setItem('mc-onboarded', '1')
     const { store } = renderWithProviders(<App />, { route: '/settings' })
     await screen.findByTestId('settings-page')
-    // Drive the transport state explicitly: the shell's first `/api/status`
-    // reply flips `connected` on (`sseStatus`), and whether it lands before or
-    // after the page mounts is a race, so "the store starts disconnected" is
-    // not a premise this test may rest on. The strip is the only generic
+    // Drive the transport state explicitly rather than resting on the store's
+    // initial value. The strip is the only generic
     // offline signal below the breakpoint, and it hangs off the bar out of
     // its grid flow.
     act(() => { store.dispatch(sseDisconnected()) })

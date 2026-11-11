@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
+import { clearDictated, isDictated, noteComposerEdit } from '../../../chat-core/composer/dictationProvenance'
 import type { RootState } from '../../../store'
 import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, saveDrafts as persistDrafts, setDraft, appendTypedText, mergeIntoDraft, typedDuringCreate } from '../../../utils/chatDrafts'
 import { registerMainComposer } from '../../../utils/composerRestore'
@@ -179,6 +180,9 @@ export function useComposerDraftLifecycle({
     inputRef.current = text
     const s = composerSlotRef.current
     if (s) { setDraft(drafts.current, s, text); saveDraftsDebounced() }
+    // Keyed exactly like the draft above: an emptied composer holds no dictated
+    // words, so the slot's next message starts unmarked.
+    noteComposerEdit(s, text)
     updateHistoryQuery(text)
     reconcileFileChipsRef.current?.(text)
   }, [saveDraftsDebounced, updateHistoryQuery, inputRef, composerSlotRef, drafts])
@@ -199,7 +203,9 @@ export function useComposerDraftLifecycle({
   // activates, the carry is skipped and the whole draft stays together in the
   // old session, as it did before the carry existed, rather than moving the
   // text without its files.
-  type CreateCarry = { origin: string | null; baseline: string; staged: string }
+  // `dictated` is the origin's dictation record when the create started: the
+  // origin keeps it only for a dictated draft from before the create.
+  type CreateCarry = { origin: string | null; baseline: string; staged: string; dictated: boolean }
   const createCarryRef = useRef<Map<string, CreateCarry>>(new Map())
   // Creates that write their own composer content and must never carry: the
   // Slack-link token flow sets its prompt with setInput and auto-sends it, so
@@ -210,6 +216,7 @@ export function useComposerDraftLifecycle({
     if (foregroundCreateId && !noCarryCreateIdsRef.current.has(foregroundCreateId)) {
       createCarryRef.current.set(foregroundCreateId, {
         origin: composerSlotRef.current, baseline: inputRef.current, staged: stagedIdentity(stagedNowRef.current.files, stagedNowRef.current.sessions),
+        dictated: isDictated(composerSlotRef.current),
       })
     }
   }, [foregroundCreateId, composerSlotRef, inputRef, stagedNowRef])
@@ -266,8 +273,17 @@ export function useComposerDraftLifecycle({
           setDraft(drafts.current, prevSlotVal, carry.baseline)
           setPasteDraft(pasteDrafts.current, prevSlotVal, pruneBlocksUtil(carry.baseline, blocks))
         }
+        // The dictation record never moves to the new chat (see
+        // dictationProvenance): it stays with a dictated draft from before
+        // the create, and the origin is unmarked when its restored draft is
+        // typed or empty.
+        if (!carry.dictated || !carry.baseline.trim()) clearDictated(prevSlotVal)
       }
     }
+    // A composer with no chat yet keeps no draft of its own: whatever it held is
+    // gone once it shows a chat, unless the carry above moved it, so its
+    // dictation record goes too.
+    if (prevSlotVal === null && activeSlot !== null) clearDictated(null)
     const raw = sessionStorage.getItem(PREFILL_STORAGE_KEY)
     const storedDraft = activeSlot ? drafts.current[activeSlot] ?? '' : ''
     const draftFallback = carried !== null ? appendTypedText(storedDraft, carried) : storedDraft
@@ -319,6 +335,7 @@ export function useComposerDraftLifecycle({
         baseline: restoredInput ?? inputRef.current,
         // What this switch is about to stage, not what the outgoing slot had.
         staged: stagedIdentity(activeSlot ? fileDrafts.current[activeSlot] : undefined, activeSlot ? sessionRefDrafts.current[activeSlot] : undefined),
+        dictated: isDictated(activeSlot),
       })
     }
     if (!seeded) setPrefillHint(false)

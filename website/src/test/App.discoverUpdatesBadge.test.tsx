@@ -2,13 +2,14 @@
  * Sidebar Discover updates badge (PR2 App Store split), pinned at the App
  * level — real nav rail, real `countUpdatables` derivation, mocked pages.
  *
- * The badge must show THE SAME count as the Discover Updates sub-tab, so it
+ * The badge counts the ENABLED rows of the Discover Updates list, so it
  * derives from the same two react-query caches the store pages own
  * (`['registry']` + `['apps']`) via the shared `countUpdatables`:
  *
  * - a gateway-lifecycle installed app with a pending registry update counts;
  *   a self-managed (`app`-lifecycle) one does NOT — the store cannot update
  *   it, so the badge must not promise work the Updates page won't list.
+ * - a disabled app does NOT count, though the Updates list still shows it.
  * - zero pending updates → NO badge element at all (BadgeIndicator renders
  *   null), not a "0".
  * - a cold cache (store pages never visited) reads as no known updates.
@@ -165,8 +166,17 @@ describe('Sidebar Discover badge — pending app updates', () => {
     renderApp(qc => seedAppsData(qc, [secretaryRegistry, radarRegistry], [secretaryInstalled, radarInstalled]))
     await waitFor(() => expect(discoverRow()).toBeInTheDocument())
     // 1, not 2: radar's pending update is self-managed and the Updates page
-    // would not list it — the badge and the page must agree. findBy: the
-    // installed rows arrive via App's own listApps fetch.
+    // would not list it — the badge never counts an app the page would not
+    // list. findBy: the installed rows arrive via App's own listApps fetch.
+    expect(await within(discoverRow()).findByText('1')).toBeInTheDocument()
+  })
+
+  it('leaves a disabled app out of the count', async () => {
+    const radarDisabled: InstalledRow = { ...radarInstalled, lifecycle: 'gateway', enabled: false }
+    renderApp(qc => seedAppsData(qc, [secretaryRegistry, radarRegistry], [secretaryInstalled, radarDisabled]))
+    await waitFor(() => expect(discoverRow()).toBeInTheDocument())
+    // 1, not 2: radar is updatable and stays on the Updates list, but it is
+    // disabled, so the badge does not count it.
     expect(await within(discoverRow()).findByText('1')).toBeInTheDocument()
   })
 

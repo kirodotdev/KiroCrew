@@ -7,10 +7,11 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from kiro_crew import identity_stores, platform_compat
@@ -348,6 +349,79 @@ def kas_relay_help(binary: str) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return f"{proc.stdout}\n{proc.stderr}"
+
+
+#: Ceiling on the v3 start probe. With stdin closed a v3 engine that runs here
+#: exits on its own once it reads EOF: about ten seconds measured on kiro-cli 3.1.0,
+#: most of it kiro-cli's own start-up work before the engine runs, which is the
+#: path its refusal comes from too. The cap bounds only a start that never exits.
+_KAS_START_PROBE_TIMEOUT_SECS = 30
+#: What the start probe keeps of the child's stderr; kiro-cli's refusal is one line.
+_KAS_START_PROBE_STDERR_CAP = 64 * 1024
+#: Start-probe answers, keyed by (path, mtime, argv) like the version cache.
+_kas_start_cache: dict[tuple[str, int, tuple[str, ...]], str] = {}
+
+
+def kas_relay_start_output(binary: str, argv_tail: Sequence[str]) -> str | None:
+    """stderr of one ``binary *argv_tail`` start with stdin closed, or ``None`` when it FAILED.
+
+    The KAS engine check behind ``agent_sdk.kas_engine_start_verdict``: kiro-cli's
+    ``acp --help`` lists ``--agent-engine v3`` even on a host where starting that
+    engine is refused, so only a start shows the refusal. The child gets
+    ``/dev/null`` for stdin and stdout, so it reads EOF and serves nothing, and its
+    stderr goes to an unnamed temporary file, which no grandchild holding it open
+    can block. It starts in an empty private directory, removed afterwards, so the
+    unsandboxed engine reads and leaves nothing in the directory Kiro Crew was
+    started from, and leads its own process group, so a start still running at
+    :data:`_KAS_START_PROBE_TIMEOUT_SECS` is killed with the engine it launched.
+    ``None`` means only that nothing is known: the spawn failed, or the start
+    timed out. Cached by path, mtime and argv, so an upgrade in place is re-read.
+
+    Call only on :func:`pin_kiro_cli`'s install, or from ``kirocrew doctor`` on the
+    binary its ``acp --help`` row already ran: the probe runs outside the sandbox.
+    Local binary, argv list, no shell, and Kiro Crew passes and reads no credential.
+    Blocking: one bounded spawn on the first call per binary identity.
+    """
+    argv = tuple(argv_tail)
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns, argv)
+    except OSError:
+        return None
+    cached = _kas_start_cache.get(key)
+    if cached is not None:
+        return cached
+    try:
+        with (
+            tempfile.TemporaryFile() as err,
+            tempfile.TemporaryDirectory(
+                prefix="kirocrew-kas-start-", ignore_cleanup_errors=True
+            ) as cwd,
+        ):
+            proc = subprocess.Popen(  # noqa: S603 - argv list, no shell, local binary
+                [binary, *argv],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=err,
+                cwd=cwd,
+                start_new_session=platform_compat.IS_POSIX,
+                # A console-less Windows gateway would otherwise flash a console
+                # window for this child; both constants are 0 elsewhere.
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP
+                | getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            try:
+                proc.wait(timeout=_KAS_START_PROBE_TIMEOUT_SECS)
+            except subprocess.TimeoutExpired:
+                platform_compat.kill_popen_tree(proc)
+                proc.wait(timeout=_KAS_START_PROBE_TIMEOUT_SECS)
+                # Not cached: a start that never exited says nothing about the host.
+                return None
+            err.seek(0)
+            output = err.read(_KAS_START_PROBE_STDERR_CAP).decode("utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    _kas_start_cache[key] = output
+    return output
 
 
 #: Ceiling on the ``chat --help`` spawn, for the same reason as the ``acp --help`` one.

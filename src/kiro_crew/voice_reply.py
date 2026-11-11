@@ -1404,9 +1404,9 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
     argument) is removed on any unsuccessful exit; a caller-supplied
     ``output`` path is left untouched.
 
-    Windows: ffmpeg is not guaranteed on PATH, so the dashboard-streaming stitch
-    path fails there; making it optional with a warning is a known gap. The
-    Slack thread-upload path is unaffected.
+    Windows: ffmpeg is not guaranteed on PATH, so the stitch can return ``None``
+    there; the dashboard caller then completes the request without a replay
+    clip. The Slack thread-upload path is unaffected.
     """
     if not paths:
         return None
@@ -1430,14 +1430,27 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             except OSError:
                 pass
 
-    concat = "|".join(paths)
+    listing: str | None = None
     succeeded = False
     try:
+        # The chunk paths go in a list file for ffmpeg's concat demuxer, so the
+        # command line keeps one length for any chunk count: Windows refuses
+        # one over 32,767 characters. Single quotes keep each path literal, and
+        # ``'\''`` writes a quote inside them.
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            listing = f.name
+            for path in paths:
+                quoted = path.replace("'", "'\\''")
+                f.write(f"file '{quoted}'\n")
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
             "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
             "-i",
-            f"concat:{concat}",
+            listing,
             "-c",
             "copy",
             output,
@@ -1475,6 +1488,11 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
         logger.exception("ffmpeg stitch failed")
         return None
     finally:
+        if listing is not None:
+            try:
+                os.unlink(listing)
+            except OSError:
+                pass
         # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
         # CancelledError, which ``except Exception`` does not catch — must
         # discard the owned output, or a new exit path re-opens the leak.
@@ -1576,7 +1594,7 @@ def _warn_removed_provider(name: str) -> None:
     )
 
 
-def resolve_configured_provider(section: dict | None) -> str:
+def resolve_configured_provider(section: dict | None, *, warn: bool = True) -> str:
     """Resolve the provider from a raw ``voice_reply`` config section.
 
     One implementation for every reader, so the rules below cannot drift between
@@ -1598,11 +1616,15 @@ def resolve_configured_provider(section: dict | None) -> str:
     ``piper_model`` from before ``system`` became the default resolves like any
     absent one, each with one warning per process so the operator can see why
     their voice changed.
+
+    ``warn=False`` resolves the same way without logging, for a periodic reader
+    (the voice-provider inventory gauge) that would otherwise repeat the invalid
+    value warning on every collection.
     """
     section = section or {}
     provider = section.get("provider")
     if not provider:
-        if validated_config_string(section.get("piper_model")):
+        if warn and validated_config_string(section.get("piper_model")):
             _warn_removed_provider("piper")
         # Only an absent, null or empty provider takes the edition default. A
         # malformed falsy value (``false``, ``0``, ``[]``) keeps the built-in one.
@@ -1610,7 +1632,8 @@ def resolve_configured_provider(section: dict | None) -> str:
             return default_provider()
         return DEFAULT_PROVIDER
     if isinstance(provider, str) and provider in REMOVED_PROVIDERS:
-        _warn_removed_provider(provider)
+        if warn:
+            _warn_removed_provider(provider)
         return DEFAULT_PROVIDER
     # ``in VALID_PROVIDERS`` raises TypeError on an unhashable JSON value
     # (config.json can hold a list or dict where a string belongs), so the type
@@ -1620,12 +1643,13 @@ def resolve_configured_provider(section: dict | None) -> str:
         # Deliberately the built-in DEFAULT_PROVIDER, not the edition default: a
         # mistyped value must not land on a provider (possibly a hosted, billed
         # one) that nobody chose.
-        logger.warning(
-            "voice_reply.provider %r not in %s, defaulting to %r",
-            provider,
-            sorted(selectable),
-            DEFAULT_PROVIDER,
-        )
+        if warn:
+            logger.warning(
+                "voice_reply.provider %r not in %s, defaulting to %r",
+                provider,
+                sorted(selectable),
+                DEFAULT_PROVIDER,
+            )
         return DEFAULT_PROVIDER
     return provider
 

@@ -22,6 +22,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import NEW_SESSION_TITLE, DashboardState, _ChatSlot
+from kiro_crew.dashboard.title_audit import record_manual_rename, record_rename_route_access
 from kiro_crew.execution_context import canonical_memory_mode, stricter_memory_mode
 from kiro_crew.history import HUMAN_TURN_META_KEY, is_incognito_transcript
 from kiro_crew.imessage.plaintext import _grapheme_end
@@ -35,8 +36,8 @@ from kiro_crew.label_guard import (
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.members import DM_SLOT_MODE
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.mrkdwn_title import is_slack_slot, is_slack_text_row, slack_title_text
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
@@ -1025,23 +1026,29 @@ async def _persist_title(
         logger.debug("Explicit title landed during persist for slot %s; re-persisting", slot.key)
 
 
-def _fallback_title_from_messages(messages: list[dict[str, Any]]) -> str:
+def _fallback_title_from_messages(messages: list[dict[str, Any]], *, slack: bool = False) -> str:
     """Fallback title used only when the LLM can't title the chat: the first
     user message, cleaned and truncated to ~60 chars with an ellipsis.
+
+    *slack*: the messages are a Slack conversation's, stored as Slack mrkdwn, so
+    the text is read as plain text (``mrkdwn_title``) before it is cut. A row
+    copied in from a Slack thread (``SLACK_TEXT_META_KEY``) is read the same way.
 
     Trims back to a word boundary so the cut isn't mid-word. Short messages are
     returned whole (no ellipsis). Returns ``NEW_SESSION_TITLE`` if there's no
     usable user text, so the caller always has something to show.
     """
-    first = next(
+    first, first_row = next(
         (
-            text
+            (text, m)
             for m in messages
             if m.get("role") == "user"
             and (text := _title_text(m.get("content", ""), _message_attachment_paths(m)))
         ),
-        "",
+        ("", None),
     )
+    if slack or is_slack_text_row(first_row):
+        first = slack_title_text(first)
     first, _ = redact_exfiltration_urls(first)
     first, _ = redact_credentials(first)
     first = " ".join(first.split())
@@ -1064,7 +1071,9 @@ def _fallback_title_from_messages(messages: list[dict[str, Any]]) -> str:
 _TITLE_OPAQUE_ID_RE = re.compile(r"\d{6,}")
 
 
-def _is_low_signal_title(title: str, messages: list[dict[str, Any]]) -> bool:
+def _is_low_signal_title(
+    title: str, messages: list[dict[str, Any]], *, slack: bool = False
+) -> bool:
     """True when an auto title can only be restating its low-signal source.
 
     Decides (deterministically — no LLM call) whether a freshly locked AUTO
@@ -1088,7 +1097,7 @@ def _is_low_signal_title(title: str, messages: list[dict[str, Any]]) -> bool:
         return True
     if _TITLE_OPAQUE_ID_RE.search(title):
         return True
-    return title == _fallback_title_from_messages(messages)
+    return title == _fallback_title_from_messages(messages, slack=slack)
 
 
 # ``dashboard.title_ticket_prefix``: a ticket key in the session's opening
@@ -1274,13 +1283,15 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # A title may have landed during the config hop; it outranks ours.
             if slot._titled or slot._title_in_flight:
                 return
-            summary = _fallback_title_from_messages(messages)
+            summary = _fallback_title_from_messages(messages, slack=is_slack_slot(slot))
             slot.title = _with_ticket_prefix(summary, key)
             slot._titled = True
             slot._title_origin = _TITLE_ORIGIN_AUTO
             # The fallback is an echo of the first message — flag it so the
             # refresh becomes due immediately rather than at the next milestone.
-            slot._title_low_signal = _is_low_signal_title(summary, messages)
+            slot._title_low_signal = _is_low_signal_title(
+                summary, messages, slack=is_slack_slot(slot)
+            )
             await _persist_title(state, slot)
             state.push_slot_title(slot.key, slot.title)
         return
@@ -1344,7 +1355,9 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # A title generated from a link/ticket-key opener can only restate
             # the link; flag it so the background refresh re-examines it as
             # soon as the first turn's transcript names the real topic.
-            slot._title_low_signal = _is_low_signal_title(summary, messages)
+            slot._title_low_signal = _is_low_signal_title(
+                summary, messages, slack=is_slack_slot(slot)
+            )
             await _persist_title(state, slot, still_current=still_current)
             if not still_current():
                 return
@@ -1355,7 +1368,7 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # answered; an on-send SKIP or a failed call (a throttle is no
             # verdict) stays unlocked for the next attempt.
             current = _titling_messages(slot)
-            summary = _fallback_title_from_messages(current)
+            summary = _fallback_title_from_messages(current, slack=is_slack_slot(slot))
             locked = attempt_has_assistant and not failed
             slot.title = _with_ticket_prefix(summary, key)
             slot._titled = locked
@@ -1363,7 +1376,9 @@ async def _maybe_auto_title(state: DashboardState, slot: _ChatSlot) -> None:
             # without these this echo would come back as a final "user" title
             # the refresh never revisits.
             slot._title_origin = _TITLE_ORIGIN_AUTO
-            slot._title_low_signal = _is_low_signal_title(summary, current)
+            slot._title_low_signal = _is_low_signal_title(
+                summary, current, slack=is_slack_slot(slot)
+            )
             await _persist_title(state, slot, still_current=still_current)
             if not still_current():
                 return
@@ -1541,8 +1556,7 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
         # before the spend.
         if not await _persist_title(state, slot):
             logger.warning(
-                "Title refresh: consumed milestone not durable for slot %s; "
-                "skipping generation",
+                "Title refresh: consumed milestone not durable for slot %s; " "skipping generation",
                 slot.key,
             )
             return
@@ -1774,7 +1788,7 @@ async def generate_manual_title(state: DashboardState, slot: _ChatSlot) -> str:
         return _with_ticket_prefix(title, key)
     except Exception:
         logger.debug("Title generation failed for slot %s", slot.key, exc_info=True)
-        title = _fallback_title_from_messages(slot.messages)
+        title = _fallback_title_from_messages(slot.messages, slack=is_slack_slot(slot))
         return "" if title == NEW_SESSION_TITLE else title
 
 
@@ -1906,13 +1920,18 @@ def name_member_thread(state: DashboardState, slot: Any, name: str) -> bool:
     return True
 
 
-async def apply_manual_title(state: DashboardState, slot: Any, title: str) -> bool:
+async def apply_manual_title(
+    state: DashboardState, slot: Any, title: str, *, route: str, caller: str, source: str = ""
+) -> bool:
     """Set *title* on *slot* as a final, manual name, persist it and broadcast it.
 
     Shared by the sidebar rename route, the ``session_rename`` session-control
     verb and a channel's ``/title`` on a live slot
     (``channel_slots.rename_channel_title_live``), so every rename lands exactly
     like a person's. The caller has already validated *title*.
+
+    Every rename is audited by :func:`~kiro_crew.dashboard.title_audit.record_manual_rename`;
+    *route* and *caller* are required so a new rename path cannot leave one unattributed.
 
     Every field is assigned BEFORE the first await, so a caller that gates the
     target synchronously and then awaits this coroutine has no suspension between
@@ -1927,6 +1946,7 @@ async def apply_manual_title(state: DashboardState, slot: Any, title: str) -> bo
     acts on it (``session_rename``) must say the title is live but not yet saved
     rather than report plain success.
     """
+    old_title = slot.title
     slot.title = title
     slot._titled = True
     # A manual rename is final: origin "user" locks the background refresh out
@@ -1934,6 +1954,7 @@ async def apply_manual_title(state: DashboardState, slot: Any, title: str) -> bo
     # background attempt stand down instead of clobbering this name.
     slot._title_origin = _TITLE_ORIGIN_USER
     slot._title_epoch += 1
+    record_manual_rename(slot, old_title, route=route, caller=caller, source=source)
     saved = await _persist_title(state, slot)
     if not saved:
         logger.warning("Rename of slot %s is live but not yet saved", slot.key)
@@ -1970,13 +1991,9 @@ async def api_chat_slot_rename(request: web.Request) -> web.Response:
         return web.json_response({"error": "title required", "code": "title_required"}, status=400)
     # Best-effort save, as on main: the live slot stays authoritative and its
     # next full save writes the title (see ``apply_manual_title``).
-    await apply_manual_title(state, slot, title)
-    request_app = request.get("app", "")
-    sel().log_api_access(
-        caller=request_app or "dashboard",
-        operation="chat.slot_rename",
-        outcome="allowed",
-        source="dashboard",
-        resources=slot.key,
+    caller = request.get("app", "") or "dashboard"
+    await apply_manual_title(
+        state, slot, title, route="rename_route", caller=caller, source="dashboard"
     )
+    record_rename_route_access(caller, slot.key)
     return web.json_response({"ok": True, "title": title})

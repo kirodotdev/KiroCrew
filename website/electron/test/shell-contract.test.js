@@ -198,6 +198,21 @@ test("the first-run remote-crew preload invokes take no renderer arguments", () 
   }
 });
 
+test("the gateway restart preload invokes take no renderer arguments and are withheld from remote windows", () => {
+  assert.match(
+    PRELOAD_SOURCE,
+    /if \(!REMOTE_GATEWAY\) contextBridge\.exposeInMainWorld\("gatewayRestartAPI", \{\s*available:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("gateway:can-restart"\),\s*restart:\s*\(\)\s*=>\s*ipcRenderer\.invoke\("gateway:restart"\),\s*\}\);/,
+    "window.gatewayRestartAPI must invoke both channels with no arguments, only in local-gateway windows",
+  );
+  for (const channel of ["gateway:can-restart", "gateway:restart"]) {
+    assert.match(
+      IPC_REGISTRAR_SOURCE,
+      new RegExp(`ipcMain\\.handle\\("${channel}",\\s*async\\s*\\(event\\)\\s*=>`),
+      `the ${channel} handler must read nothing but the event`,
+    );
+  }
+});
+
 // The three-gate local-dashboard check guards `wsl:detect`, both
 // `crash-reports:*` channels and `pane:clear-http-cache`. It was briefly written out twice, and two
 // hand-maintained spellings of a security check is one of them being tightened
@@ -220,6 +235,8 @@ test("the local-dashboard gate has exactly one spelling", () => {
     "dashboard:can-pick-folder",
     "first-run:use-remote-crew",
     "first-run:can-use-remote-crew",
+    "gateway:can-restart",
+    "gateway:restart",
     "relay-crew:open",
   ]) {
     assert.match(

@@ -165,6 +165,19 @@ class TestFolderUpdate:
         assert fstore.get(f["id"])["name"] == "New"
 
     @pytest.mark.asyncio
+    async def test_a_null_name_is_not_a_rename(self, stores, patch_restricted) -> None:
+        """``{"name": null}`` must not rename the folder to the text "None"."""
+        _store, fstore = stores
+        f = fstore.create("Old")
+        resp = await api_artifact_folder_update(
+            _request(body={"name": None, "color": "#336699"}, match={"id": f["id"]})
+        )
+        assert resp.status == 200
+        stored = fstore.get(f["id"])
+        assert stored["name"] == "Old"
+        assert stored["color"] == "#336699"
+
+    @pytest.mark.asyncio
     async def test_reparent_cycle_400(self, stores, patch_restricted) -> None:
         _store, fstore = stores
         a = fstore.create("A")

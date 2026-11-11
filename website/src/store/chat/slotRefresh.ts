@@ -7,7 +7,7 @@ import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey, type SlotQueueItem } from './wire'
-import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, raiseChunkSeq, reuseUnchangedRows, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, pageRegressesSupersededSteer, preserveSettledMcpOauth, preserveSettledStopState, preserveSettledUpsertRows, queueAfterSupersededDrain, raiseChunkSeq, reuseUnchangedRows, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
 import {
@@ -450,6 +450,16 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // page carries.
       const endedTurnHistory = reportedRunning && !running
       if (endedTurnHistory) return
+      // A queue hand-off emits no `chat_done` for the turn it ends, so the guard
+      // above cannot see a page captured before a requeued steer's drain. Such a
+      // page still shows the steer's old row un-retired and lacks the drained
+      // turn's own row; it is older than this tab in the same way. Its queue
+      // still counts: an entry whose `queue_push` this tab missed is listed
+      // only there. So the queue merges in, without the drained steer's entry.
+      if (pageRegressesSupersededSteer(state.messages, messages)) {
+        state.messages = hydrateQueuedBubbles(state.messages, queueAfterSupersededDrain(state.messages, messages, queue), true)
+        return
+      }
       if (!reportedRunning) recordEndedTurn(state, key, action.payload)
       // The rows on screen before this refresh, as plain store objects, so the
       // rebuilt transcript can hand back the ones the page repeats unchanged.
@@ -664,6 +674,23 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       if (state.activeSlot === key) return
       // A persisted row carrying a send's id proves that send was delivered.
       pruneDeliveredAttempts(state, key, persistedSendIds(fetchedMessages))
+      // Same stale-page rule as `refreshSlot.fulfilled`, against this pane's
+      // cache: a warm captured before a requeued steer drained is older than it.
+      // Its queue merges in, as for a refresh.
+      const warmCache = state.slotMessages?.[safeKey(key)] ?? []
+      if (pageRegressesSupersededSteer(warmCache, fetchedMessages)) {
+        if (warmCache.length) {
+          const merged = hydrateQueuedBubbles(warmCache, queueAfterSupersededDrain(warmCache, fetchedMessages, queue), true)
+          // The merge moves only queued rows, so the bounded page's last row
+          // keeps its identity; re-index it rather than drop the bound. The
+          // paging markers stay as they are (`hasMore` undefined).
+          const bounded = state.slotPaneBounded?.[safeKey(key)]
+          const lastBounded = bounded !== undefined && bounded > 0 ? warmCache[bounded - 1] : undefined
+          const at = lastBounded ? merged.indexOf(lastBounded) : -1
+          writeSlotPage(state, key, merged, undefined, at >= 0 ? at + 1 : undefined)
+        }
+        return
+      }
       const reportedRunning = action.payload.running
       const running = historyReportsRunning(state, key, reportedRunning, action.payload)
       const endedTurnHistory = reportedRunning && !running

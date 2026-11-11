@@ -376,13 +376,13 @@ class WebexTransport(MessagingTransport):
         person", not "no one is authorized". Matched case-sensitively, because a
         Webex room id is an opaque blob and :meth:`room_permitted` compares it
         exactly. Turning the group switch off, or dropping a room from the list,
-        revokes that space's proactive traffic from the next start: a persisted
-        link outlives the config that authorized it, and this re-decides against
-        the config THIS PROCESS was built with rather than trusting the link. Both
-        sets are frozen in ``__init__`` and the config PATCH reports
-        ``restart_required`` for them, so a narrowing takes effect on restart --
-        which is also why this can never be looser than inbound, since
-        :meth:`room_permitted` reads the very same frozen sets.
+        revokes that space's proactive traffic as soon as the reloaded config is
+        applied: a persisted link outlives the config that authorized it, and
+        this re-decides against the CURRENT settings rather than trusting the
+        link. :meth:`reconfigure` replaces both wholesale on a reload (the config
+        PATCH reports no ``restart_required`` for them), and
+        :meth:`room_permitted` reads the very same attributes, which is why this
+        can never be looser than inbound.
 
         A **direct** route has no such roster: the session binds
         ``inbound.room_id`` (see :meth:`receive`) while the email allow-list holds

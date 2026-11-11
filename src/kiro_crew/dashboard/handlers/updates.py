@@ -55,6 +55,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.updates_apply import policy_applies_in_flight  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_cache  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _changelog_path  # noqa: F401
+    from kiro_crew.dashboard.handlers.updates_channel import _overlay_refusal  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import _read_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_changelog  # noqa: F401
     from kiro_crew.dashboard.handlers.updates_channel import api_releases  # noqa: F401
@@ -163,6 +164,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.loader import config_path  # noqa: F401
     from kiro_crew.config.loader import overlay_pins  # noqa: F401
     from kiro_crew.config.loader import update_config_locked  # noqa: F401
+    from kiro_crew.config.overlay_owners import SOURCE_POLICY  # noqa: F401
+    from kiro_crew.config.overlay_owners import OverlayPin  # noqa: F401
+    from kiro_crew.config.overlay_owners import overlay_pin  # noqa: F401
+    from kiro_crew.cron import stop_cron_before_restart  # noqa: F401
     from kiro_crew.dashboard import restart_resume  # noqa: F401
     from kiro_crew.dashboard.chat_utils import run_config_write  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
@@ -211,7 +216,6 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform.update_governance import update_required  # noqa: F401
     from kiro_crew.platform.update_governance import upstream_remote_and_branch  # noqa: F401
     from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases  # noqa: F401
-    from kiro_crew.platform.update_layout import channel_is_published  # noqa: F401
     from kiro_crew.platform.update_layout import detect_install_layout  # noqa: F401
     from kiro_crew.platform.update_layout import set_release_channel  # noqa: F401
     from kiro_crew.platform.update_layout import wheel_update_command  # noqa: F401
@@ -222,6 +226,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.platform_compat import reexec_launcher  # noqa: F401
     from kiro_crew.platform_compat import reexec_python_module  # noqa: F401
     from kiro_crew.pre_exec_stops import run_pre_exec_stops  # noqa: F401
+    from kiro_crew.restart_session_close import close_sessions_for_restart  # noqa: F401
     from kiro_crew.safety_override import flush_breadcrumb_writes  # noqa: F401
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401

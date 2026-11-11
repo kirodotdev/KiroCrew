@@ -43,6 +43,14 @@ admitted only when its resolved target stays under its entry's anchor, so a
 project steering link to a file outside the project is not read. An entry that
 cannot be globbed skips only itself.
 
+KAS loads both roots itself and honours `inclusion: manual` and `fileMatch`. So
+on a KAS session the shipped `file://.kiro/steering/**/*.md` entry is not sent
+when KAS already loads every file it names; otherwise those files would load on
+every turn, and twice. The entry is still sent when the workspace tree may hold an
+`inclusion: auto` file, a link, or a file Crew cannot read. The tree is checked
+when the session starts, so such a file added during a session loads from the
+next session (`src/kiro_crew/acp/kas_steering.py`).
+
 A workspace file therefore needs a project bound to the chat slot. With no
 resolvable project the Steering files tab offers only the global root, and
 creating a workspace document is refused with `steering_workspace_unavailable`.
@@ -154,6 +162,11 @@ tool call before it runs, or block it outright.
 A spawned sub-agent fires `AgentSpawn` (on a new session) and `UserPromptSubmit`
 (with the task its parent wrote) before its prompt is sent, and their exit-0
 stdout is added to that prompt the same way.
+
+On KAS, a compaction summarizes the session's history, and the `AgentSpawn`
+stdout with it. kiro-cli sends that stdout with every request, so on a dashboard
+chat the first turn after a compaction sends the stdout the session's first turn
+kept, once more. The hook does not run again.
 
 `PreToolUse` is the only event whose exit code can decide anything — and only
 on the path where the gateway is the one approving the call:
@@ -331,7 +344,9 @@ subagent or the task runner) also get the session's ACP id, as
 `KIRO_SESSION_ID` in the environment and as `session_id` on stdin, the same
 names kiro-cli uses. The older stdin key `acp_session_id` carries the same
 value. A subagent's hooks get the subagent's own id. Before the session has an
-id, all of them are left out. Hooks-page hooks never get it.
+id, all of them are left out. Hooks-page hooks never get it. Kiro Crew runs up
+to 64 of one spec's own hooks; any past that are named in one warning and do
+not run.
 
 When a dashboard chat fires them, Hooks-page hooks and the agent spec hooks
 Kiro Crew runs in the harness's place (as on KAS) also get

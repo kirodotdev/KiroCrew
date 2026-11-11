@@ -14,9 +14,9 @@ Instance fields written: ``_dead_reason``, ``_grant_callers``,
 ``_lease_pending_riders``, ``_lease_release_waiters``, ``_metric_tasks``,
 ``_orphaned_leases``, ``_pending_requests``, ``_resource_subscriptions``.
 
-Instance fields read: ``_inbox_lock``, ``_init_state``, ``_stub_inboxes``,
-``attempt_id``, ``backend_generation_id``, ``exclusive_token``, ``pool_key``,
-``process``, ``refcount``, ``stdout``, ``supports_caller_identity``.
+Instance fields read: ``_gateway_ending``, ``_inbox_lock``, ``_init_state``,
+``_stub_inboxes``, ``attempt_id``, ``backend_generation_id``, ``exclusive_token``,
+``pool_key``, ``process``, ``refcount``, ``stdout``, ``supports_caller_identity``.
 """
 
 from __future__ import annotations
@@ -214,12 +214,20 @@ async def run_stdout_pump(self: Backend) -> None:
     except Exception:  # pragma: no cover — defensive
         logger.exception("backend stdout pump crashed pid=%s", self.pid)
     finally:
-        reason = self._dead_reason or (
-            f"exit rc={self.process.returncode}"
-            if self.process.returncode is not None
-            else "stdout EOF"
-        )
-        self._dead_reason = reason
+        reason = self._dead_reason
+        if reason is None:
+            reason = (
+                f"exit rc={self.process.returncode}"
+                if self.process.returncode is not None
+                else "stdout EOF"
+            )
+            if self._gateway_ending:
+                # The gateway is ending the process: its own death.
+                self._dead_reason = reason
+            else:
+                # No reason was recorded first: the server went on its own, so
+                # the death is named with what it said.
+                await self._report_backend_exit(reason)
         await self._broadcast_backend_gone(reason)
 
 

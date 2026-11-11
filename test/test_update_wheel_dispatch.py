@@ -533,34 +533,6 @@ class TestUpdateWheelCli:
         assert "curl" in out  # shows manual command
         assert "cli.sh" in out
 
-    def test_an_unpublished_channel_offers_no_command_cli_sh_would_refuse(
-        self, monkeypatch, tmp_path, capsys
-    ) -> None:
-        """An LTS install follows lts (RFC D11) before it is published.
-
-        No feed is read, and no ``cli.sh --channel lts`` command is printed: cli.sh
-        accepts only nightly, insider and stable, so that command always fails.
-        """
-        monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
-        monkeypatch.setattr("kiro_crew.platform.update_layout.distribution", lambda: "wheel")
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
-        monkeypatch.setattr(
-            "urllib.request.urlopen", MagicMock(side_effect=AssertionError("no feed read"))
-        )
-
-        import kiro_crew.cli_server as cs
-        from kiro_crew.platform.update_layout import InstallLayout
-
-        layout = InstallLayout(
-            kind="wheel", proj="", is_git=False, is_externally_managed=False, guidance=""
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            cs._update_wheel(layout)
-        assert exc_info.value.code == 1
-        out = capsys.readouterr().out
-        assert "lts channel, which has no published builds yet" in out
-        assert "cli.sh" not in out
-
     def test_schema_mismatch_exits(self, monkeypatch, tmp_path, capsys) -> None:
         """Feed with wrong schema prints guidance and exits."""
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)

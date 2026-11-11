@@ -674,6 +674,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, job: 'CronJob', detail: 'str', *, denied: 'bool' = False) -> 'None'",
         ),
         (
+            "_alert_cron_interrupted",
+            "async method",
+            "(self, job: 'CronJob', detail: 'str') -> 'None'",
+        ),
+        (
             "_cron_single_failure",
             "async method",
             "(self, job: 'CronJob', exc: 'Exception', session_key: 'str', _gate_counted: 'bool', _job_owns_failure: 'bool', _hand_over_streak: 'bool', *, _auth_expiry: 'bool' = False) -> 'None'",

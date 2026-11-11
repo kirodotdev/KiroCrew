@@ -1,0 +1,364 @@
+name: Release LTS
+
+on:
+  push:
+    tags: ["lts-v*"]
+
+# The LTS edition's release (RFC crew-lts-edition D11): a tag `lts-vX.Y.Z`
+# builds, signs and publishes version X.Y.Z of the LTS edition (EDITION=lts) on
+# its own `lts` channel, through the same reusable build, sign and publish
+# workflows release.yml calls. It writes only lts paths: feed/lts/, cli/lts/,
+# desktop/lts/ (and the signing bucket's lts/ keys), under the LTS file stems
+# (`KiroCrew-LTS`, `kirocrew_lts`). No Docker image and no GitHub release. # brand-ok
+#
+# The tag does not start with `v`, so release.yml's `v*` trigger never fires
+# for it, and no `v*` tag fires this one: the oss release path is unchanged.
+#
+# Before the first real tag, two repository settings are needed (owner only):
+# the `prod` environment's deployment policy must allow tag `lts-v*`, and the
+# tag ruleset that limits `v*` tags to admins must cover `refs/tags/lts-v*`.
+# docs/build/release.md, "LTS edition releases".
+
+# Shared with release.yml: every channel feed write is last-writer-wins, so
+# one release publishes at a time whichever edition it is.
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Derive LTS Version
+    runs-on:
+      group: kirocrew-runners
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Derive version from tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # lts-vX.Y.Z maps to version X.Y.Z, nothing else: an LTS release is
+          # always a bare release, so the wheel, desktop and feed versions agree.
+          VERSION="${TAG#lts-v}"
+          if [ "lts-v${VERSION}" != "$TAG" ] || ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::an LTS release tag must be exactly lts-vX.Y.Z with numeric components, not ${TAG}"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing LTS $VERSION on channel lts"
+
+  # Same gate as release.yml's prerelease candidates: the exact tagged commit
+  # passes the backend suite before anything is built or published. An LTS
+  # release has no prerelease lane to soak on.
+  release-candidate-tests:
+    name: Test Release Candidate SHA
+    needs: version
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
+    # Match ci.yml's whole-file split so every runner carries a bounded part of
+    # the exact-SHA gate while the matrix still covers the full test population.
+    timeout-minutes: 60
+    strategy:
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      SHARD_COUNT: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact candidate SHA
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [ "$ACTUAL_SHA" != "$GITHUB_SHA" ]; then
+            echo "::error::checked out ${ACTUAL_SHA}, expected release candidate ${GITHUB_SHA}"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # cache disabled: published artifacts must not restore a cache writable from
+      # lower-trust branches (zizmor cache-poisoning)
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+
+      - name: Install pinned test dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Enable unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify namespace sandbox is available
+        run: unshare --mount --map-root-user true
+
+      - name: Run release candidate tests
+        run: |
+          # The sysctl above enables the namespace sandbox on this runner, so the
+          # sandbox-dependent tests run for real here rather than skipping. No fallback
+          # deselect list any more: if the sysctl is reverted, those tests skip
+          # themselves on `skipif(not userns_available())` and the rest of the suite
+          # still runs -- which is what ci.yml's sharded matrix relies on too.
+          # Same as ci.yml's pytest jobs (#7296): the `python` problem matcher
+          # actions/setup-python registers annotates any traceback in the log,
+          # including one printed inside a pytest warning, and never matches a
+          # pytest failure. conftest.py emits the real annotations instead.
+          echo "::remove-matcher owner=python::"
+          python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --no-cov
+
+  dependency-vulnerability-gate:
+    name: Production Dependency Vulnerability Gate
+    uses: ./.github/workflows/dependency-vulnerability.yml
+
+  build-wheel:
+    name: Build Wheel
+    needs: [version, release-candidate-tests, dependency-vulnerability-gate]
+    uses: ./.github/workflows/build-wheel.yml
+    with:
+      wheel_version: ${{ needs.version.outputs.version }}
+      edition: lts
+      ui_index_strict: true
+
+  build-desktop:
+    name: Build Desktop
+    needs: [version, release-candidate-tests, dependency-vulnerability-gate]
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      edition: lts
+      mac_single_arch: true
+      ui_index_strict: true
+
+  build-windows:
+    name: Build Windows Desktop
+    needs: [version, release-candidate-tests, dependency-vulnerability-gate]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      edition: lts
+      soft_fail: true
+      use_prod_environment: true
+      ui_index_strict: true
+    secrets:
+      AWS_WINDOWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_WINDOWS_SIGNING_ROLE_ARN }}
+
+  publish-cli:
+    name: Publish CLI (lts channel)
+    needs: [version, build-wheel]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-cli.yml
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      wheel_artifact: cli-wheel
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-appimage-x64:
+    name: Publish Linux appimage (lts channel · x64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      arch: x64
+      format: appimage
+      publish: true
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-appimage-arm64:
+    name: Publish Linux appimage (lts channel · arm64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      arch: arm64
+      format: appimage
+      publish: true
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-deb-x64:
+    name: Publish Linux deb (lts channel · x64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      arch: x64
+      format: deb
+      publish: true
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-deb-arm64:
+    name: Publish Linux deb (lts channel · arm64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      arch: arm64
+      format: deb
+      publish: true
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-rpm-x64:
+    name: Publish Linux rpm (lts channel · x64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      arch: x64
+      format: rpm
+      publish: true
+      build_artifact: build-linux-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-linux-rpm-arm64:
+    name: Publish Linux rpm (lts channel · arm64)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-linux.yml
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      arch: arm64
+      format: rpm
+      publish: true
+      build_artifact: build-linux-arm64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  publish-windows-x64:
+    name: Publish Windows Desktop (lts channel · x64)
+    needs: [version, build-windows]
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/publish-windows.yml
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      publish: true
+      installer_artifact: build-windows-x64
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+
+  sign-and-notarize:
+    name: Sign + Notarize macOS
+    needs: [version, build-wheel, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+      AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+      AWS_SIGNER_ACCESS_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
+      CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      write_feed: true
+
+  sign-and-notarize-arm64:
+    name: Sign + Notarize macOS (arm64 only)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+      AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+      AWS_SIGNER_ACCESS_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
+      CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      write_feed: true
+      mac_variant: arm64
+      mac_artifact: unsigned-build-darwin-arm64
+
+  sign-and-notarize-x64:
+    name: Sign + Notarize macOS (x64 only)
+    needs: [version, build-desktop]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/sign-and-notarize.yml
+    secrets:
+      AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+      AWS_SIGNING_BUCKET: ${{ secrets.AWS_SIGNING_BUCKET }}
+      AWS_SIGNER_ACCESS_ROLE_ARN: ${{ secrets.AWS_SIGNER_ACCESS_ROLE_ARN }}
+      CDSIGNER_API_ENDPOINT: ${{ secrets.CDSIGNER_API_ENDPOINT }}
+    with:
+      channel: lts
+      version: ${{ needs.version.outputs.version }}
+      write_feed: true
+      mac_variant: x64
+      mac_artifact: unsigned-build-darwin-x64

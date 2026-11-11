@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
 from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
@@ -23,6 +24,7 @@ from kiro_crew.apps.manager_records import (
     AppResult,
     _declared_grant_entries,
     _effective_approved_grants,
+    _import_app_tree_grants,
     _is_sidecar_entry,
     _now_iso,
     _read_installed,
@@ -117,6 +119,22 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
         return None
 
 
+def _owner_enable_unrecorded(name: str) -> AppResult:
+    """The refusal for an enable whose owner-enable marker could not be written.
+
+    The record may already read enabled; enabling again (the "already enabled"
+    path) retries the marker, so that is the recovery the message names.
+    """
+    return AppResult(
+        ok=False,
+        name=name,
+        error=(
+            f"could not record that the owner enabled {name!r}; free up space or fix "
+            "the data folder's permissions, then enable the app again"
+        ),
+    )
+
+
 @holds_app_record_locks
 def enable_app(
     name: str,
@@ -142,6 +160,9 @@ def enable_app(
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     hold_app_record_lock(name)
+    # Finish the one-time import first: it records disables from an older build,
+    # and one that ran after this enable would put the disable back.
+    _import_app_tree_grants()
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
@@ -226,7 +247,8 @@ def enable_app(
         # they re-enable to recover. Mint here too, so re-enabling records the grant
         # instead of dead-ending at a 403. Still owner-authenticated: the owner,
         # governance and execution checks above have already passed.
-        grant_host_exec(name)
+        if not grant_host_exec(name):
+            return _owner_enable_unrecorded(name)
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
 
     still_staged = False
@@ -266,12 +288,17 @@ def enable_app(
         # later is not covered (``_session_approval_consent_unrecorded``).
         meta.memberThreadsConsented = consented_scope
     meta.updatedAt = _now_iso()
+    # The owner's enable is the one write that ends their disable.
+    protected_app_state.set_owner_disabled(name, False)
     _write_installed(name, meta, session_approval_consent=session_approval_consent)
 
     # Mint the owner-enable grant. This path runs only after the owner, governance
     # and execution checks above, so it is owner-authenticated, and it is never
     # derived from installed.json, so a forged record cannot produce a grant.
-    grant_host_exec(name)
+    # The same marker authorizes the app token exchange, so an enable that could not
+    # record it is reported, not passed off as success.
+    if not grant_host_exec(name):
+        return _owner_enable_unrecorded(name)
 
     logger.info("Enabled app %s", name)
     return AppResult(
@@ -384,6 +411,14 @@ def disable_app(name: str) -> AppResult:
     meta = _read_installed(name)
     if not meta:
         return AppResult(ok=False, name=name, error=f"app {name!r} is not installed")
+    # Recorded first and outside the app's tree, so a later rewrite of installed.json
+    # cannot turn the app back on. Fail closed: no success without it.
+    try:
+        protected_app_state.set_owner_disabled(name, True)
+    except (OSError, ValueError) as exc:
+        return AppResult(
+            ok=False, name=name, error=f"could not record the disable of {name!r}: {exc}"
+        )
     if not meta.enabled:
         # Already disabled ON DISK -- which a sandboxed shell can forge by writing
         # enabled:false to the writable installed.json. This early return otherwise

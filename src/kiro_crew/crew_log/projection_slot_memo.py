@@ -1131,6 +1131,9 @@ def _fold_slot_warm_locked(
         resumed = _resume_slot_fold(name, units, marks, slot=slot)
         if resumed is None:
             resumed = _resume_older_slot_fold(name, units, marks, slot=slot)
+        if resumed is None and _admit_backfill(name, units[-1]):
+            # A backfill child's savepoint, moved in under the lease: resumed like any other.
+            resumed = _resume_slot_fold(name, units, marks, slot=slot)
         if resumed is not None:
             _note_slot_fold_origin("savepoint")
             resumed = _persist_slot_fold(name, resumed, slot=slot, sampled=marks[-1])
@@ -1151,6 +1154,13 @@ def _fold_slot_warm_locked(
     finally:
         with _slot_memo_guard:
             _cold_keys.discard(key)
+
+
+def _admit_backfill(name: str, unit_id: str) -> bool:
+    """A backfill child's staged savepoint, moved into *unit_id*'s unit (``slot_backfill_child``)."""
+    from kiro_crew.crew_log import slot_backfill_child
+
+    return slot_backfill_child.admit(name, unit_id)
 
 
 def _fold_slot_cold(

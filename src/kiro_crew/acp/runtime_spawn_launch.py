@@ -57,7 +57,13 @@ from kiro_crew.acp.harness import SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
 from kiro_crew.acp.runtime_process_tree import ChildRecord, _kill_escaped_children
 from kiro_crew.acp.runtime_tree_kill import _prune_dead_descendants
-from kiro_crew.acp.session_handle import AcpRequestTimeout, AcpRuntimeError, AcpRuntimeOverloaded
+from kiro_crew.acp.session_handle import (
+    AcpRequestTimeout,
+    AcpRuntimeDead,
+    AcpRuntimeError,
+    AcpRuntimeOverloaded,
+)
+from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked, is_windows_spawn_blocked
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
@@ -213,6 +219,10 @@ async def _retrying_spawn_factory(
             return await factory(**kwargs)
         except OSError as exc:
             if attempt:
+                # Classified only after the retry: a spawn inside the update window
+                # can also fail with access denied, and the retry is what clears it.
+                if is_windows_spawn_blocked(exc):
+                    raise AcpSpawnBlocked(_spawn_binary(factory, exc)) from exc
                 raise
             logger.warning(
                 "ACP runtime subprocess creation failed (%s), retrying after "
@@ -221,6 +231,14 @@ async def _retrying_spawn_factory(
             )
             await asyncio.sleep(_ACP_RUNTIME_RESPAWN_BACKOFF_S)
     raise AssertionError("unreachable: the second attempt returns or re-raises")
+
+
+def _spawn_binary(factory: Any, exc: OSError) -> str:
+    """The program a failed spawn tried to start: the error's file, else argv[0]."""
+    if exc.filename:
+        return str(exc.filename)
+    args = getattr(factory, "args", ())
+    return str(args[0]) if args else ""
 
 
 def _launch_tools() -> LaunchTools:
@@ -411,6 +429,9 @@ async def _initialize_handshake(
             },
             timeout=timeout,
         )
+    except AcpRuntimeDead as exc:
+        await _name_initialize_death(self, exc)
+        raise
     except AcpRequestTimeout as exc:
         alive = self._process is not None and self._process.returncode is None
         if not alive or not (throttled_at_spawn or agents_slice_throttling()):
@@ -421,6 +442,39 @@ async def _initialize_handshake(
             "Free agent memory (close idle sessions, run fewer concurrent subagents) "
             "and retry."
         ) from exc
+
+
+async def _name_initialize_death(runtime: AcpRuntime, exc: AcpRuntimeDead) -> None:
+    """Add the exit status and the stderr tail to a death that ended ``initialize``.
+
+    The death reaches ``initialize`` through ``_mark_dead``, which fails the
+    pending request at stdout EOF. The stderr drain and the reap can still be
+    running then, so the reason names no code and the tail is often empty.
+    A start that dies here is not retried into anything better, and its
+    error text is all a user sees on the card, so both are waited for here:
+    the drain under ``settle_stderr``'s bound, the exit under
+    ``_KILL_REAP_TIMEOUT``. The tail is published only through
+    ``safe_stderr_tail``, the same gate the death summary uses, and a
+    restricted session retains none. The type is kept so every caller's
+    ``except`` and classifier still sees an ``AcpRuntimeDead``.
+    """
+    await runtime.settle_stderr()
+    process = runtime._process
+    if process is not None and process.returncode is None:
+        try:
+            await asyncio.wait_for(process.wait(), runtime._KILL_REAP_TIMEOUT)
+        except Exception:
+            logger.debug("AcpRuntime: exit status unread after initialize died", exc_info=True)
+    rc = runtime._returncode_label()
+    if runtime.recording_allowed:
+        from kiro_crew.acp.stderr_tail import safe_stderr_tail
+
+        tail = safe_stderr_tail(runtime._stderr_lines[-5:], " | ") or "<none>"
+    else:
+        tail = "<not retained>"
+    exc.args = (f"{exc} during initialize [returncode={rc}] stderr_tail: {tail}",)
+    # No PID: the death line ``_mark_dead`` logged just before names it.
+    logger.warning("AcpRuntime died during initialize: returncode=%s stderr_tail: %s", rc, tail)
 
 
 async def _refuse_over_ceiling_launch(self: AcpRuntime, launch_name: str | None) -> None:

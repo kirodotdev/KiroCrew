@@ -90,6 +90,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -865,7 +866,8 @@ async def _dispatch_events(
                     # fail-closed here instead of yielding — the request
                     # is REJECTED (never dropped), the child gets a tool
                     # error, nothing can hang, and no title-only approve
-                    # can occur on any consumer surface.
+                    # can occur on any consumer surface. The host notice
+                    # goes first, so the turn is not told a user refused.
                     logger.warning(
                         "rejecting low-fidelity child permission request "
                         "id=%s for fidelity-unaware consumer (child=%s)",
@@ -878,7 +880,12 @@ async def _dispatch_events(
                         "child_low_fidelity_unaware_consumer",
                         sub_session_id=_perm_event.sub_session_id or "",
                     )
-                    await self.reject_tool(_perm_event.request_id)
+                    await self._reject_with_host_notice(
+                        _perm_event,
+                        "this surface does not judge a sub-agent request that arrives "
+                        "without verifiable security context",
+                        cause=DENY_CAUSE_SURFACE_POLICY,
+                    )
                     yield AcpEvent(
                         kind=EVENT_SUBAGENT_ACTIVITY,
                         sub_session_id=_perm_event.sub_session_id,

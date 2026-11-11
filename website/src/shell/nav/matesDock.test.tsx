@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { configureStore } from '@reduxjs/toolkit'
@@ -67,6 +67,12 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+/** Applies a cache change and lets it reach the screen: react-query hands
+ *  observers the change on a zero timeout, so a check right after a bare
+ *  `act` would still read the previous render. */
+const settleCache = (change: () => void) =>
+  act(async () => { change(); await new Promise(done => setTimeout(done, 0)) })
+
 /** Prints the router's current address, so a test can read where a click went. */
 function Where() {
   const loc = useLocation()
@@ -77,7 +83,9 @@ function Where() {
 function renderDock(roster: MemberRosterRow[] | undefined, { url = '/schedule', collapsed = false, surface = 'section' }: {
   url?: string; collapsed?: boolean; surface?: 'section' | 'tiles' | 'both'
 } = {}) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
+  // The roster read retries on its own (`retryThroughRestart`); no backoff, so
+  // a read that keeps failing shows its notice at once.
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0, staleTime: Infinity } } })
   clients.push(qc)
   if (roster !== undefined) qc.setQueryData(MEMBERS_ROSTER_QUERY_KEY, roster)
   const liveStore = configureStore({ reducer: {
@@ -290,6 +298,19 @@ describe('DockMatesSection', () => {
     expect(screen.queryAllByTestId(/^rail-mate-/)).toHaveLength(0)
   })
 
+  it('never asks again for the roster a guest is refused', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const members = vi.spyOn(api, 'members').mockRejectedValue(new ApiError(403, 'owner only', '{"code":"owner_only"}'))
+    renderDock(undefined, { surface: 'both' })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(members).toHaveBeenCalledTimes(1)
+    // Two 30s re-read periods pass with no further request.
+    await act(async () => { await vi.advanceTimersByTimeAsync(61_000) })
+    expect(members).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+  })
+
   it('still shows the notice for an expired session, which is not a guest refusal', async () => {
     vi.spyOn(api, 'members').mockRejectedValue(new ApiError(403, 'Session expired', '{"code":"owner_only"}', true))
     renderDock(undefined)
@@ -336,6 +357,66 @@ describe('DockMatesSection', () => {
     fireEvent.click(within(notice).getByRole('button', { name: /ask.*agent/i }))
     expect(handoff.prompts).toHaveLength(1)
     expect(handoff.prompts[0]).toContain('/api/members -> HTTP 503')
+  })
+
+  it('rides out a short network drop: a re-read that fails twice and then lands shows no notice', async () => {
+    const roster = [row('a', { starred: true })]
+    const linkDown = () => new TypeError('Failed to fetch')
+    const members = vi.spyOn(api, 'members')
+      .mockRejectedValueOnce(linkDown())
+      .mockRejectedValueOnce(linkDown())
+      .mockResolvedValue(membersReply([...roster, row('b', { starred: true })]))
+    const { qc } = renderDock(roster)
+    await act(async () => { await qc.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }) })
+    // Wait for the read to settle on screen, whichever way it went.
+    await waitFor(() => expect(screen.queryByTestId('dock-mates-load-error') ?? screen.queryByTestId('dock-mate-b')).not.toBeNull())
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    expect(members).toHaveBeenCalledTimes(3)
+    expect(qc.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.status).toBe('success')
+    expect(dockNames()).toEqual(['a', 'b'])
+  })
+
+  it('re-reads a roster that stays failed every 30s, so its notice clears once a read lands', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const roster = [row('a', { starred: true })]
+    const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
+    const { qc } = renderDock(roster)
+    await act(async () => {
+      void qc.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    // The ladder is spent: the first read and its three retries all failed.
+    expect(members).toHaveBeenCalledTimes(4)
+    expect(screen.getByTestId('dock-mates-load-error')).toBeInTheDocument()
+    // Nothing else re-reads an idle page while the socket stays up.
+    members.mockResolvedValue(membersReply([...roster, row('b', { starred: true })]))
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(members).toHaveBeenCalledTimes(5)
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    expect(dockNames()).toEqual(['a', 'b'])
+  })
+
+  it('keeps a dismissed notice away through a failed 30s re-read', async () => {
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const roster = [row('a', { starred: true })]
+    const members = vi.spyOn(api, 'members').mockRejectedValue(new TypeError('Failed to fetch'))
+    const { qc } = renderDock(roster)
+    await act(async () => {
+      void qc.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(members).toHaveBeenCalledTimes(4)
+    const notice = screen.getByTestId('dock-mates-load-error')
+    fireEvent.click(within(notice).getByRole('button', { name: /dismiss/i }))
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    // The re-read and its retries fail too: a new failure in the same outage.
+    await act(async () => { await vi.advanceTimersByTimeAsync(31_000) })
+    expect(members).toHaveBeenCalledTimes(8)
+    expect(qc.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.status).toBe('error')
+    expect(screen.queryByTestId('dock-mates-load-error')).toBeNull()
+    expect(dockNames()).toEqual(['a'])
   })
 })
 
@@ -433,9 +514,16 @@ describe('DockMatesTiles', () => {
     expect(screen.queryByRole('alert')).toBeNull()
     showSurface(first)
     expect(screen.queryByRole('alert')).toBeNull()
-    // A distinct failure timestamp, without relying on wall-clock timing.
+    // Distinct timestamps, without relying on wall-clock timing. Another
+    // failure in the same outage keeps the dismiss.
     const query = qc.getQueryCache().find({ queryKey: MEMBERS_ROSTER_QUERY_KEY })!
-    act(() => { query.setState({ errorUpdatedAt: query.state.errorUpdatedAt + 1 }) })
+    const failedAt = query.state.errorUpdatedAt
+    await settleCache(() => query.setState({ errorUpdatedAt: failedAt + 1 }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    // A good read ends the outage; a failure after it shows the notice again.
+    await settleCache(() => query.setState({ status: 'success', error: null, data: query.state.data ?? [], dataUpdatedAt: failedAt + 2 }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    await settleCache(() => query.setState({ status: 'error', error: new Error('roster unavailable'), errorUpdatedAt: failedAt + 3 }))
     await screen.findByTestId('dock-mates-load-error')
     expect(screen.getAllByRole('alert')).toHaveLength(1)
   })

@@ -792,6 +792,7 @@ def _reset_home_bound_globals() -> None:
     token_auth._revoked_store_singleton = None
     token_auth._state.clear_all()
     token_auth._app_perms_cache.clear()
+    token_auth._app_perms_denied.clear()
     revocation_gen._gen = None
     crash_guard._CRASH_LOG = None
     config_live.reset_for_tests()

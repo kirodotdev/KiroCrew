@@ -316,7 +316,8 @@ class TestWireProjection:
         allow = {"capability": "subagent", "match": ["reviewer"], "effect": "allow"}
 
         def rules(permits):
-            monkeypatch.setattr(kas_agents, "may_skip_gate_now", permits)
+            # The session's own predicate, which the translated merge asks.
+            monkeypatch.setattr(kas_agents, "may_skip_gate_for_session", lambda *_a: permits)
             return to_client_custom_agent("a1", spec, "p").get("permissions", {}).get("rules", [])
 
         asked: list[str] = []

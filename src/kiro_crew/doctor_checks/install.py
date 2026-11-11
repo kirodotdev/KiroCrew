@@ -680,7 +680,7 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
     build without FTS5 breaks memory init.
     """
     try:
-        from kiro_crew._sqlite_compat import fts5_available
+        from kiro_crew._sqlite_compat import PYSQLITE3_REQUIREMENT, fts5_available
 
         if fts5_available():
             print("  sqlite fts5: ✅ available")
@@ -691,7 +691,7 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
             # exactly the case the gate hides the command.
             if cli_doctor.pip_install_channel_available():
                 print(
-                    f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for('pysqlite3-binary')}"
+                    f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for(PYSQLITE3_REQUIREMENT)}"
                 )
             print("               Or use a Python whose SQLite was built with FTS5.")
             issues.append("sqlite fts5")

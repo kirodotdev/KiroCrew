@@ -23,15 +23,18 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 from test_mate_worker_dispatch import _create, _fresh_create_budget, crewmate  # noqa: F401
 
 from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
 from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard import server as srv
+from kiro_crew.dashboard.chat_handlers import api_chat_mode
 from kiro_crew.dashboard.chat_utils import _history_key_for, slot_history_key
 from kiro_crew.dashboard.crewmate_approval import seed_for_turn
 from kiro_crew.execution_context import read_session_execution
@@ -143,6 +146,9 @@ class TestTheRestartIsReported:
             assert note["approval_mode"] == "trust"
             [row] = _rows_about_mode(after)
             assert row["content"].startswith("Trust mode was turned off")
+            # The dashboard draws its localized card, with the re-pick, off these.
+            assert row["meta"]["kind"] == "trust_reset_notice"
+            assert row["meta"]["approval_mode"] == "trust"
         finally:
             await _settle(after)
 
@@ -322,3 +328,62 @@ class TestACrewmatesProfileGivesTheModeBack:
         )
         assert seed_for_turn(state, chat, config, execution)
         assert chat._trust is (not owed)
+
+
+@web.middleware
+async def _owner(request: web.Request, handler):
+    request["app"] = ""
+    request["user"] = "local-app"
+    return await handler(request)
+
+
+async def _pick(state, slot_key: str, mode: str) -> None:
+    """The notice's Turn Trust back on button: the picker's own ``POST /api/chat/mode``."""
+    app = web.Application(middlewares=[_owner])
+    app["state"] = state
+    app.router.add_post("/api/chat/mode", api_chat_mode)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/chat/mode", json={"mode": mode, "slot": slot_key})
+        assert resp.status == 200, await resp.text()
+
+
+class TestTrustAgainIsThePersonsPick:
+    @pytest.mark.asyncio
+    async def test_the_notice_grants_nothing_and_its_pick_raises_the_verified_worker(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.crew_log import session_tree_projection
+        from kiro_crew.dashboard import chat_trust_restart
+        from kiro_crew.dashboard import session_control as sc
+        from kiro_crew.dashboard.slot_persistence.metadata_codec import _read_created_by
+
+        state = await _boot(home)
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state.owner_id = ""
+        lead = state.get_slot(KEY)
+        # A worker the lead dispatched, restored the way a restart restores it: its
+        # creator claim confirmed by the crew log, following its creator again.
+        worker = state.get_or_create_slot("chat-2-worker")
+        monkeypatch.setattr(sc, "_creation_parent", lambda key: KEY)
+        monkeypatch.setattr(
+            session_tree_projection,
+            "creator_of",
+            lambda key: KEY if key == worker.key else "",
+        )
+        _read_created_by(SimpleNamespace(meta={"created_by": KEY}, slot=worker))
+        assert worker._created_by == KEY and worker._posture_inherited is True
+
+        await chat_trust_restart.report(state, (chat_trust_restart.HeldMode(KEY, "trust"),))
+        await _settle(state)
+        [row] = _rows_about_mode(state)
+        assert row["meta"]["kind"] == "trust_reset_notice"
+        assert row["meta"]["approval_mode"] == "trust"
+        # The notice alone turns nothing on, for the lead or the worker it created.
+        assert lead._trust is False and worker._trust is False
+        assert state.sessions.get_approval_policy(slot_history_key(lead)) != "auto"
+
+        await _pick(state, KEY, row["meta"]["approval_mode"])
+        assert lead._trust is True
+        # The picker's walk re-raised the worker on its recorded creation edge.
+        assert worker._trust is True

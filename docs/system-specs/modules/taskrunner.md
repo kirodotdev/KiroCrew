@@ -463,6 +463,12 @@ class Project:
     derived_from_revision: int = 0
 ```
 
+When a step's stream runs to its end, `Task.result` holds its answer without kiro-cli's
+complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
+acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
+answer (#32476). The snapshot taken while the turn runs stays raw, so a step whose stream
+raises (a dead process, a context overflow) keeps that snapshot as it is.
+
 ## Concurrent Tasks
 
 - `_runs: dict[str, TaskRun]` — keyed by task_id
@@ -679,6 +685,7 @@ A graceful gateway stop or restart ends active runs the same way a crash does. `
 `task_executor.execute_single_task()` evaluates task-level approval before agent execution.
 
 - With an `on_approval` callback, either `requires_approval` or `force_approval` prompts the owning surface; a denial pauses the project for editing.
+- `on_approval` is called as `on_approval(task)`. Before the call the executor sets `task.run_task_id` to its run's `task_id`, so a gate can name which run it holds: up to three runs execute at once and their task indexes overlap.
 - Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate: it fails the run, and `_try_replan` plans nothing for a run that is already `failed`.
 - `cli_server.py` constructs the standalone `kirocrew run TASK.md` runner without an approval callback. Use `force_approval`, not `requires_approval`, for an action that must not execute unattended.
 - The dashboard supplies the callback and renders Approve/Deny controls in the project detail view.
@@ -848,7 +855,11 @@ inline spec is written. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
 `/{task_id}/execute` and `/{task_id}/retry` answer the same before a plan is
 made, a refine session started or a run admitted (`_task_runner_disabled`).
 The `task_run` MCP tool relays the start refusal, and
-the chat command `task run <spec>` replies with that sentence. Only an
+the chat command `task run <spec>` replies with that sentence. A saved
+`task-plan` workflow is refused the same way before it is planned:
+`POST /api/workflows/definitions/{ref}/run` answers 409 `app_disabled`,
+`/workflow <name>` replies with that sentence and the `workflow_run` MCP tool
+relays it. Saved Python workflows do not read the switch. Only an
 explicit `enabled: false` install record counts as disabled
 (`apps.manager.app_disabled`); a host with no record runs tasks.
 
@@ -1338,7 +1349,10 @@ only job is to produce a better-written spec from the user's input.
 **WS events**: `refine` type with `{status, text, error}` fields. A refine whose turn the
 backend never finished (stop reason `timeout` or `stale_recover`) ends with status `error`
 and an error that names the stop reason, with the partial text still sent beside it, so it
-cannot pass for a finished spec.
+cannot pass for a finished spec. However the turn ends, the final `refine` event and the GET
+status carry the text without kiro-cli's complete `[STEERING steer-…]` acks
+(`messaging.driver.strip_steering_markers`): the line acknowledges the deny's steer and is
+not the spec (#32476).
 
 ## Dashboard UI (Projects Page)
 

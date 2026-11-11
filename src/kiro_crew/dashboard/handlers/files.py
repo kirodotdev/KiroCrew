@@ -221,6 +221,7 @@ from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _CheckedFile,
     _classify_request_paths,
     _file_write_blocking,
+    _is_live_memory_store_file,
     _open_checked,
     _open_checked_file,
     _open_rb_nofollow,
@@ -315,7 +316,9 @@ from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     api_upload_file,
 )
 from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
+    _invalid_dir,
     _resolve_ws_dir,
+    _resolved_ws_dirs,
     _WorkspaceConflict,
     api_workspaces,
     api_workspaces_create,
@@ -372,11 +375,13 @@ from kiro_crew.hooks import (  # noqa: F401
     safe_read_prefix,
 )
 from kiro_crew.image_refs import PATH_MARKS  # noqa: F401 - owner: uploads
+from kiro_crew.memory_stores import MEMORY_DB_FILE  # noqa: F401 - owner: pinned_io
 from kiro_crew.messaging.display_safety import redact_for_display  # noqa: F401
 from kiro_crew.messaging.outbound_files import OutboundFile  # noqa: F401
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime  # noqa: F401
-from kiro_crew.owner_only_files import (  # noqa: F401 - owner: uploads
+from kiro_crew.owner_only_files import (  # noqa: F401 - owner: uploads, pinned_io
     OWNER_ONLY_FILE_MODE,
+    SQLITE_SIDECAR_SUFFIXES,
     ensure_directory,
     is_owner_only_target,
 )
@@ -852,6 +857,10 @@ _READ_PATH_EXTRA_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"MM\x00\x2a", "image/tiff"),
     (b"\x00\x00\x01\x00", "image/x-icon"),
 )
+#: The ``error`` every file route answers with its 503 ``file_busy``: another
+#: program holds the file without sharing it for reading (a Windows sharing or
+#: lock violation), and the same request succeeds once that program closes it.
+_FILE_BUSY_ERROR = "the file is open in another program; close it there and retry"
 
 
 #: Canonical upload extension per sniffed raster type: the suffix a mislabelled

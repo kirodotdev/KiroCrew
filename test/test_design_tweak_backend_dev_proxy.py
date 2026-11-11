@@ -355,6 +355,17 @@ def fake_proxy(monkeypatch):
     return calls
 
 
+class TestUpstreamHeaderNamesAreTokens:
+    """A header name from the dev server is forwarded only when it is an HTTP token."""
+
+    def test_a_trailing_newline_is_not_part_of_a_token(self):
+        assert server._HEADER_NAME_RE.match("X-Powered-By")
+        assert not server._HEADER_NAME_RE.match("X-Powered-By\n")
+
+    def test_every_token_character_is_still_a_header_name(self):
+        assert server._HEADER_NAME_RE.match("X-A!#$%&'*+.^_`|~0z")
+
+
 class TestPersistedDevUrlIsFrontedWithProxy:
     """A persisted dev URL must be framed through the INJECTING proxy.
 

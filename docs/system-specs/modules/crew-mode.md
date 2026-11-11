@@ -28,6 +28,7 @@ The person sees the chat; the crew it dispatched is the chat's to show.
 | Rule | Where |
 |---|---|
 | `agent.crew_mode_agent` names THE conductor a chat switches to when Ultra Mode is turned on (default `kirocrew-team-lead`); read live from the config snapshot, so no restart | `config/sections_agent.py`, `crew_mode.crew_mode_agent` |
+| `kirocrew-team-lead` can call every server an edition contributes (`McpToolingProvider.extra_mcp_servers()`) that its spec mounts: each gets an `@<server>` ref in `tools`, which `build_agent_config()` leaves out; `allowedTools` gains nothing, so those tools prompt. A standalone build contributes none, so its lead spec is unchanged | `service_agents._install_team_lead_agent`, `service_agents._register_edition_refs` |
 | Every conductor is Ultra Mode: `conductor_agents` is the shipped conductor templates plus the configured one and the deprecated names that resolve to it; the catalog lists them as `conductor_agents` and names `crew_mode_agent`, and masks both for a non-owner | `crew_mode.conductor_agents`, `handlers/agent_catalog.py` |
 | A chat that turned Ultra Mode on carries the stamp `crew_mode_agent` (the slot field, persisted with the slot's own metadata), so a root on a custom conductor absent from the config stays Ultra Mode | `crew_mode.STAMP_FIELD`, `slot_persistence/metadata_codec.py` |
 | An **Ultra Mode root** is a root session (nothing dispatched it) running a conductor as a template. Every session it dispatched, directly or through another, is its **crew member**: the slot list stamps `crew_mode_root: true` on the root and `crew_root: <root key>` on each member, following the persisted lineage past closed sessions, so a member whose root's tab closed after this gateway saw the root, or one reopened from History while its root is known, keeps its root. The known roots are in memory: a root still closed when the gateway starts is not remembered until it is reopened (the migration part reads closed roots from saved metadata) | `crew_mode.stamp_rows`, `state_parts/slots_frame.py`; the lineage patch frame carries the two stamps when they change (`state_parts/slots_push.py`) |
@@ -76,7 +77,9 @@ which restates what a member's DM session carries in its context.
 | `src/kiro_crew/dashboard/handlers/crew_workers.py` | An Ultra Mode root's or a Bot thread's worker list (`GET /api/chat/slots/{slot}/crew-workers`), its timeline (`GET .../crew-timeline`) and the person's steer into one worker (`POST .../crew-workers/{worker}/steer`), owner only |
 | `src/kiro_crew/crew_timeline.py` | The timeline's lanes, bars, marks, hand-offs and header, derived from recorded transcript rows only, and the named gaps it does not draw |
 | `src/kiro_crew/dashboard/handlers/agent_templates.py` | The Custom agents tab's roster (`/api/agents/templates`), create, delete with reference guard, and the read-only rule the detail PATCH applies to definition edits |
+| `src/kiro_crew/dashboard/handlers/agent_templates_unlisted.py` | The roster's `unlisted` list (the spec files it does not show although each still takes its stem), the delete's lookup of an unreadable file by its exact stem, and the `409 name_taken` sentence that names such a file |
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
+| `website/src/pages/overview/UnlistedSpecFiles.tsx` | The tab's **Files not shown** section: each `unlisted` entry with its reason, and **Delete file** or the rename-by-hand instruction |
 | `src/kiro_crew/dashboard/handlers/members.py` and its `members_<role>.py` owners | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Bot teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Bots page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
 | `website/src/pages/KiroCrewAgentsPage.tsx` | The Bot roster, mounted as the **Bots** tab of `CapabilitiesPage` (Customize), and a host of the one Bot editor. The page holds the roster query, the create door (`NewCrewmateDialog`), the deep links (`?crew=`, `&avatar=1`, `&pane=capabilities`, `?new=1`), the fresh-roster admission latch the editor opens behind, and the editor's guide facts, and composes the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`) and mounts the binding fields every crew form shares (`components/crew/crewFields.tsx`; each consumer imports them from there, and the page re-exports each for its existing importers). Editing a Bot opens `components/crew/CrewEditorModal.tsx` (`CrewEditorNextDialog` driven by `useCrewEditor`), the same editor the Bots page opens in place; that hook re-exports `INHERIT_MODEL` from `crewFields.tsx` |
@@ -185,8 +188,24 @@ no cron contract changes. Unless the config key
 `dashboard.crewmates_in_agent_picker` is on (off by default, read from the shared
 `/api/config/kirocrew` query), `useAgents.ts` withholds from `choices` every member
 row a listed template already COVERS (`withoutCoveredCrewmates`): the member has no
-memory of its own (`memory_store` is `default`) and runs a listed template, which is
-the identical binding (the built-in `default` crew is this case). A shared name alone
+memory of its own (`memory_store` is `default`), runs a listed template, and has
+nothing of its own. Its row shows the first part: its workspace is
+`default_workspace` (read from the same query), it pins no model (`auto` pins
+nothing) and no reasoning effort, and it has no display name, no triggers and no
+description other than the template's own (the one a template enrolled through
+`POST /api/agents/sync` carries). The catalog answers for the rest with the member
+row's `own_setup` bool (`agent_catalog._own_setup`, sent on shared-store member
+rows only): `true` when the member has permanent rules, a goal or a briefing on
+disk, or a harness (`acp_backend`), worker model or effort, `approval_mode` or
+`dynamic_capabilities` of its own, and also when one of those records cannot be
+read. Own skills need no check: adding one forks the member onto a private copy,
+which the catalog never lists as a template. A member with nothing of its own is
+the template under another name (the built-in `default` crew is this case).
+Shared memory on a listed template alone does not cover: a template pick runs on
+`default_workspace` with no member identity or permanent rules, so a member set up
+for its own work on the shared store (its own workspace, description, triggers,
+rules or briefing) is a different crewmate, and withholding one leaves it
+unreachable from any chat. A shared name alone
 does not cover: a template pick binds the shared `default` store, so a member with
 its own memory stays pickable even beside a template of its name, as does one
 running its own private copy, which the catalog never lists as a template.
@@ -263,8 +282,11 @@ The **Abilities** section of the Bot editor (section key `builtFrom`) is the
 **capabilities view**: "What *&lt;Bot&gt;* can do", split into two bands —
 **Comes with** (read-only: what the worker base, `kirocrew-mate-worker`,
 provides) and **Added to** (what the Bot's own file adds beyond that base).
-Both list tools, MCP servers and skills, partitioned by each capability row's
-`state` (`inherited` → Comes with, `local` → Added to). An added row that names
+Both list tools, MCP servers, skills and resources, partitioned by each
+capability row's `state` (`inherited` → Comes with, `local` → Added to). The
+**Resources** group holds every `resources` entry the worker loads that is not
+a skill (a `file://` document or glob, such as the base's steering glob or a
+file an add copied in), named by its path. An added row that names
 a stored row carries **Remove**, which goes through the capabilities `remove`
 op. A name in the file's own `skills` list counts as stored: an add copies that
 list as written, so an entry can outlive the agent that listed it, and a
@@ -422,6 +444,106 @@ a guard whose answer depended on which tabs are open in which window could not
 be reasoned about from the roster — the decision and its consequence are
 stated in the module docstring of `handlers/agent_templates.py`.
 
+Beside `templates` the response carries `unlisted`: every spec file in the
+agents directory that backs no row although its stem stays taken. A create
+checks the stem of EVERY spec file, readable or not, while discovery lists
+only a file that reads and keeps one row per declared name; this list is
+what gives a create refused `409 name_taken` by such a file something on the
+tab to open, rename or delete (`handlers/agent_templates_unlisted.py`). Each entry is
+`{filename, stem, reason, deletable}`. `reason` is `unreadable` (the hardened
+reader refused the file: it does not parse, is not an object, is over the size
+cap, or is a link the reader will not follow; or its read raises, as a document
+nested past the JSON parser's depth raises `RecursionError`, which discovery
+skips too; or it reads but building its row raises, which discovery skips at
+DEBUG too, so it fails neither the roster nor
+a create or delete of another name; such a file still takes the name it
+declares, which the create's taken check counts beside the stem, so its entry
+carries that name as `declared_name`) or `duplicate_name` (it reads
+but declares a name another listed file holds, named by `declared_name` and
+`listed_as`; discovery logs dropping such a plain file at WARNING naming both
+files, as it already did for two different packages). The files the roster
+leaves out on purpose stay out: an app launch copy, an AppleDouble sidecar,
+the runtime's own spec files (a create refuses those names as reserved before
+it checks for a taken one), the same-package twin a locally published package
+ships beside its listed file (`{package}-{name}.json` and
+`local-{package}-{name}.json`, which discovery drops at DEBUG and the package
+manager owns), a file whose filename would be masked, and a duplicate whose
+declared name would be (an unreadable file whose declared name would be masked
+is still listed, without `declared_name`, since its stem stays taken).
+`deletable` says whether `DELETE /api/agents/detail/{stem}` reaches
+that file alone: a `.json` file directly beneath the agents directory that is
+not read-only, which for an unreadable file means no spec that reads answers
+to its stem, and for a duplicate means its stem reaches no other file and the
+file listed for its name still holds that name once it goes (below). The
+delete reaches an unreadable file by its exact stem only, and only when no
+spec that reads answers to the name. It classifies a file that does not parse
+without its contents (its filename for a runtime or markdown file, the fork
+sidecar for a private copy) and keeps the reference guard over that one name.
+A file that reads but yields no row is classified and guarded by the name it
+declares as well: the fork sidecar and every reference to either name are
+checked, and the package discovery's filename rule reads from that name
+(`Pkg-helper.json` declaring `helper`) makes it read-only, so it is listed
+as not deletable and its delete is `409 template_read_only`. When another
+listed file still declares the name a deleted file declares (`atlas_v2.json`
+declaring `atlas` beside `atlas.json`, or an unreadable `odd.json` declaring
+`zeta` beside `zeta.json`), that name stays with the listed file: the
+reference guard counts the deleted file's stem alone, since a crew, folder or
+schedule naming the declared name still resolves, and the delete keeps that
+name's sidecar entry (`model_managed`, `cc_model`), which is the listed
+file's. So are that name's saved capabilities: the
+`409 capabilities_editor_required` refusal asks about the deleted file's stem
+alone then. When the name goes with the deleted file instead, its saved
+capabilities refuse the delete as well, checked under the spec lock where that
+is decided, so a listed file removed after the tab offered the delete cannot
+let them be pruned. Another file counts only when it still holds the name once the
+deleted file goes. A symlink that ends at the deleted file reads it and
+dangles after the rename, so it holds nothing; when the deleted file is itself
+a symlink, the regular file at its target survives and counts, and another
+link to that target is taken to read through the deleted one (a hard link
+never reads as a spec: the reader refuses a hardlinked inode). A markdown spec
+holds the name only while every configured host reads the
+markdown form (`ACP_BACKENDS_MARKDOWN_AGENT_SPECS`, judged over
+`agent.acp_backend`, `agent.member_acp_backend` and each crewmate's harness
+pin, an unstartable pin counting as a host that does not): the other hosts
+load JSON specs alone, so on them the name would reach no spec. Beside a file
+that holds nothing, the guard counts the declared name too, and a delete that
+goes ahead drops that name's sidecar entry. The roster applies the same rule
+(`holds_once_retired`, which the delete's `_declared_elsewhere` calls) to the
+file it lists for a duplicate's name: when that file holds nothing once the
+duplicate goes, the duplicate is listed as not deletable, since its confirm
+says the listed file and the agent of the name stay as they are. The name
+stays with the deleted file as well when `agent.spec_pins` picks it for that
+name, by naming it or a symlink whose chain ends where it ends (when the
+deleted file is itself a link, another link to its target counts too, as
+above; a pin that does not resolve picks nothing): every
+session of the name runs the pinned file whichever one the roster lists, and
+deleting it would leave a pin that names no file, so every session of the name
+refused. Such an entry is listed as not deletable, and its delete guards the
+declared name too (a crew bound to it answers `409 template_referenced`). The delete
+re-checks under the spec lock that the file is still there and still
+unreadable: one that reads by then is `404`, and a spec that reads and
+answers to the name landing meanwhile is `409 ambiguous_template_name`. A
+create refused because such a file holds the name, by its stem or, when no
+row is labelled with the name, by the name a file that reads but yields no
+row declares, answers `409 name_taken` with that entry as `unlisted` and an
+`error` naming `~/.kiro/agents/<file>` and why the list does not show it. A listed file also holds its stem when the row carries the
+other name the file declares (a copy saved as `src-custom.json` that still
+declares `src` is the row `src`, and `src-custom` is taken): a create of that
+stem answers `409 name_taken` with `listed: {filename, name}` and an `error`
+naming the file and the row. A name a row is labelled with keeps the plain
+refusal, even when a hidden file's stem is that name too: freeing the hidden
+file would not free a name the row still declares. The tab renders the list as **Files not shown** beneath
+the template list, outside its listbox and unfiltered (and beneath the empty
+state when no template is listed), each entry with its reason and either
+**Delete file**, after a confirm naming the file (a duplicate's confirm also
+names the listed file and the agent of its declared name, which stay as they
+are, and the stem that becomes free; a `409 template_referenced`
+opens the same reference dialog a row's delete opens, any other refusal is
+reported beside the entries), or the instruction to rename or delete the file
+by hand; the create dialog names the file that holds a refused name, and
+the row it is listed as when that is set (`UnlistedSpecFiles.tsx`,
+`AgentTemplatesTab.tsx`).
+
 The delete guard's reference check and unlink are ONE off-loop critical
 section under every lock the reference stores' writers take — the shape
 `_unlink_copy_unless_referenced` in `dashboard/agent_admin/template_lineage.py` established. The
@@ -482,6 +604,9 @@ delete resolves it only as a plain basename to a regular file directly under
 the agents directory (`_spec_file_beneath`, checked before the locks and
 again under the spec lock) and answers 404 otherwise, so an edition catalog
 row carrying an absolute or traversing `filename` names nothing to unlink.
+A symlink loop names no regular file either (Python 3.12's pathlib reports
+one with `RuntimeError`, which the check treats like `OSError`): it is listed
+as `unreadable` and not deletable, and its delete answers 404.
 The name is resolved the same way a PATCH resolves it — `_find_infos` walks
 the raw spec files (`iter_agent_spec_files`, the walk
 `_agent_detail_candidates` uses), never the deduplicated roster, and returns
@@ -573,7 +698,10 @@ declared name up in the deduplicated roster: `atlas.json` beside
 the package file through as if it were the plain one. Resources and MCP
 servers are shown read-only — as plain rows, not chips, since a chip reads as
 something to click: skills are a computed view over `resources`, and
-an MCP server is a capability grant with its own admission path. Auto-approval
+an MCP server is a capability grant with its own admission path. A detail
+PATCH that carries `mcpServers` or `resources` is refused before any file is
+read (`400 definition_key_read_only`, `keys` naming them), never answered 200
+with the key dropped. Auto-approval
 marks are advisory: the governance sanitizer still withholds an entry the
 ceiling may speak to. A read-only template's banner leads with a short bold reason
 (**From a package** / **Built in** / **Markdown file** / **Bot's own
@@ -746,8 +874,8 @@ twin, `/api/agents/b64/{name_b64}...`, whose segment uses only
 
 **Dashboard surface.** The Bot editor (`CrewEditorNextDialog`) shows a
 two-band **capabilities view** (Comes with / Added to) in its **Abilities**
-section; Comes with is read-only, and an added tool / MCP server / skill can be
-removed (the capabilities `remove` op). Its **Approvals** section
+section; Comes with is read-only, and an added tool / MCP server / skill /
+resource can be removed (the capabilities `remove` op). Its **Approvals** section
 (`CrewApprovalsEditor`) is the writer for auto-run grants. **Add abilities**
 (`WorkerKitPane`), on the same page as the bands, adds abilities from
 another agent — connections, skills, resources and auto-approvals are additive,
@@ -758,6 +886,15 @@ Stop following the parent, per-member MCP or skill rows, or a private copy's
 template: the classic `CrewCapabilitiesPane` and template pane that did are
 retired, and agent config is edited on the **Custom agents** tab. The routes and
 their refusal codes below are unchanged.
+The section shows a spinner until its two reads, `GET .../capabilities` and
+`GET .../worker-kit`, settle, and both read files that can block in the kernel
+as long as a hung mount does. Each GET gives up on its read after 20 s
+(`_GET_TIMEOUT_SECS`) and answers `503 capabilities_unavailable`, leaving the
+blocked read to its thread because a GET mutates nothing. The dashboard bounds
+both reads at 30 s (`ABILITIES_READ_TIMEOUT_MS`, `api/crewCapabilities.ts`, on
+the transport's `getWithSignal`), so a gateway that never answers ends the wait
+too. Either failure reads as the pane's load error (`crewEditorNext.load_error`),
+never as the code or as `deadline exceeded`.
 Where a paragraph below says "the pane", it records the copy that pane showed,
 kept as the contract the refusal codes were designed against; it is not a
 rendered surface.
@@ -1781,7 +1918,16 @@ be stale (another device, an unstar); unstarring on the roster zeroes the
 cached `star_order` too, as the server does. Drags are ignored while a
 reorder is saving, and every reorder refetches the roster when it settles, so
 the dock shows what the server holds; a failed reorder, or a roster that fails
-to load, shows an `ErrorNotice` beside the rail. A docked Bot's row carries
+to load, shows an `ErrorNotice` beside the rail. The roster read
+(`membersRosterQuery` in `website/src/api/membersQuery.ts`, which every reader
+of `GET /api/members` spreads) rides out an unanswered request before it fails
+and re-reads every 30s while failed, the same `retryThroughRestart` and
+`refetchWhileFailed` ladder as the team read below, so a network drop of a
+second or two on a refocus shows no notice, and a notice that does show clears
+on its own once a read lands. Its Dismiss holds for the rest of that outage,
+as the team-read notice's does: the notice stays away while the 30s re-reads
+keep failing, and only a failure after a good read (`dataUpdatedAt` past the
+dismissed failure) shows it again. A docked Bot's row carries
 the rail's one accent dot while the Bot has something for the person, read from
 the Bots page row's own sources: it waits on them (its DM slot, or a session it
 dispatched, waits on an approval or a question, through `mateNeedsYouByKey` in
@@ -1991,7 +2137,10 @@ out an unanswered request before they fail (`retryThroughRestart`: a fetch
 rejection, a proxy 502/504 or the gateway's 503 retries three times, 1s/2s/4s;
 every other failure keeps `retryPolicy`). A failed read then re-reads every 30s
 (`refetchWhileFailed`), so the notice clears on its own: nothing else refetches
-either read on an idle page, and the WebSocket may never have dropped.
+either read on an idle page, and the WebSocket may never have dropped. A
+permission refusal (`isPermissionRefusal`: a guest session refused an
+owner-only read, `403 owner_only`) is never re-read, since it answers the same
+every time and each ask adds a denial row to the security event log.
 
 Because a bare `/members` reopens a Bot, the folded roster is the desktop
 norm, so the switcher also carries the live per-crewmate signals the roster column
@@ -2172,7 +2321,7 @@ open.
 
 The Profile tab holds the Bot's own settings (`CrewProfileSettings`):
 permission (Normal / Reads / Trust), model and effort, the worker pair and the
-dashboard lock. They are changed there, never in the chat. The Profile tab
+preview switches. They are changed there, never in the chat. The Profile tab
 shows ONE **Settings** row, in the Notes row's group, reading the ceiling and
 the model (permission · model; not the worker pick, which beside the Bot's own
 name read as a riddle); nothing else of the settings
@@ -2792,8 +2941,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   builds that page with the dashboard skill (`dashboard_save`, then
   `dashboard_apply`) instead of posting it -- conditioned on having work to
   report, never an order on every turn. Other pictures in a reply (a
-  comparison, a flow, a before/after) are still drawn as widgets. A locked tab gets the lock's refusal
-  instead, and with `agent.crew_panel` off (or unreadable) the block states only
+  comparison, a flow, a before/after) are still drawn as widgets. With `agent.crew_panel` off (or unreadable) the block states only
   where the tab stands (`dashboard_agentic.SUGGESTIONS_STATE`), since there is no
   `dashboard_save` to build with. The member protocol's page item says the same
   (progress on the page; the first report is when the page is built) and names
@@ -2836,9 +2984,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   records the yes and wakes the Bot once (`page_offer.write_prompt`, through
   `goal_setup._schedule`) to write its page, `dashboard_save` it and
   `dashboard_apply` it with no second card, then post the same one ready
-  message. A locked layout refuses that apply as it does any other, and the
-  Bot says so once and stops; one `dashboard_rollback` brings the template
-  back. A no, or the card expiring, writes nothing. Asked-once is
+  message. One `dashboard_rollback` brings the template back. A no, or the card expiring, writes nothing. Asked-once is
   `crew-panels/<slug>.page-offer.json` (`page_offer.record_path`, beyond the
   Bot's own shell), written when the card is raised, so a yes, a no and an
   expiry all count. The one exception is a yes whose wake never started: the yes
@@ -3554,7 +3700,8 @@ because its per-turn note names it (`dashboard/page_offer.py`), and its tool
 description says to call it only when that note does. The worker's principles add one line: facts the
 Bot's Dashboard depends on are recorded as crew-log events, through the
 tools that record them. It also says its project directory is the Bot's
-own worktree on `crew/<crewmate>/<repo>`, to commit there and name further
+own worktree on `<prefix><crewmate>/<repo>` (`crew/` unless another prefix
+is set, shown by `git branch --show-current`), to commit there and name further
 branches under that prefix, to rebase onto the default branch itself when it
 needs that branch's changes, and to check a branch with `git merge-tree` before
 it pushes.
@@ -4083,6 +4230,18 @@ parts:
   engines subtract from the session's tool list. Every other built-in stays,
   `execute_bash`, `fs_write` and `code` included (RFC amendment 2026-10-23): a
   quick command or a small edit it does itself, longer work goes to a worker.
+  Only a session with a member key, the Bot's own thread, can get the session
+  tools for that hand-off (`acp_runtime_start._member_session_key` also needs an
+  `ACP_BACKENDS_MEMBER_DISPATCH` backend). Any other conductor session (the
+  agent picker, a chat folder's `default_agent`, an agent channel, a Slack
+  channel bound to the Bot) has no dispatch mount, so its sub-agent span
+  resolves to the not-own-thread Delegation text
+  (`sections._CONDUCTOR_ELSEWHERE_DELEGATION`, picked by `is_member_session_key`
+  in `_resolve_agent_prompt`): no worker and no session tools, do the work in
+  the chat, added abilities are not available there, and mention the Bot's own
+  thread only as an option. A member key
+  keeps `_CONDUCTOR_DELEGATION`, which points at `[HOW YOU WORK]` and
+  `[CREW MEMBER OPERATING MODE]` (`test/test_context_subagent_block.py`).
   Its tool set is fixed by the
   gateway, whatever servers the user has: `mcpServers` keeps only the platform
   servers Crew launches (`mate_worker.conductor_mcp_servers`, the keys of
@@ -4253,20 +4412,31 @@ parts:
   `allowedTools` list would drop lands as that list's matching `@server` /
   `@server/tool` refs (`mate_spec_policy._carry_mcp_allow`), also for a server the
   base declares, whose own `allowedTools` refs the file does not carry; the
-  ceiling then filters the merged list like any other grant. Only when those refs
-  cannot grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
+  ceiling then filters the merged list like any other grant. An unscoped
+  built-in `allow` (`capability` and `effect` alone) on a capability one Crew
+  tool name stands for (`kas_permissions.CAPABILITY_BY_TOOL`: `use_subagent`
+  for `subagent`, `disclose_context` for `skill`) lands as that name
+  (`mate_spec_policy._carry_builtin_allow`, `kas_tool_view.builtin_allow_tool`);
+  a name-scoped one is never widened to it. Only when those entries cannot
+  grant the rule exactly is it refused. **`toolsSettings` is an allowlist**
   (`mate_spec_policy.CARRIED_TOOLS_SETTINGS`): only `deniedCommands` and
   `allowedCommands` on the shell (`execute_bash` / `shell`), `deniedPaths` on
-  the read and write tools, and `web_fetch.blocked`, each only when KAS's
+  the read and write tools, `web_fetch.blocked`, and `availableAgents` under the
+  `subagent` key (not `use_subagent`), each only when KAS's
   translation keeps every entry (`kas_tool_view.tools_settings_unenforced`).
+  A carried `availableAgents` binds both spawn paths: KAS's own sub-agent tool
+  through its `subagent` deny, and `spawn_run` / `spawn_sub_agents` because the
+  spawn gate reads a worker parent's merged session spec
+  (`agent_policy._bot_worker_allowlist`) and refuses when that spec cannot be read.
   Every other key or tool, in any form (`allowedPaths`, `fallbackAction`,
-  `denyByDefault`, `trusted`, `subagent.availableAgents` even when empty), is
+  `denyByDefault`, `trusted`, `subagent.trustedAgents`), is
   refused by name. One that cannot land as written (anything outside the
   allowlist, an entry for a tool the base sets differently or under another
   spelling of it, a `permissions` block KAS would refuse whole, a built-in
   `allow` rule KAS's projection drops beside the worker's `allowedTools` list
-  (`kas_tool_view.permission_allow_derivable`), a hook past the
-  `spec_hooks._MAX_SPEC_HOOKS` Crew fires) raises `SpecPolicyUncarried`, a
+  (`kas_tool_view.permission_allow_derivable`) that no `allowedTools` entry can
+  grant exactly, a hook past the `spec_hooks._MAX_SPEC_HOOKS` (64) Crew fires)
+  raises `SpecPolicyUncarried`, a
   `WorkerKitUnreadable`, so the
   worker is refused, naming it. A host that applies none of the three
   (`mate_spec_policy.applies_spec_policy`, KAS only) refuses a file
@@ -4383,15 +4553,24 @@ things here and leaves every other git step to the worker's prompt
    makes it at `<crewmate workspace>/worktrees/<crewmate slug>/<repo>-<hash>`
    (`path_for`: the slug keeps two Bots sharing a workspace apart, the
    hash two repositories sharing a name), on the branch
-   `crew/<crewmate slug>/<repo>` (`branch_for`), cut the first time from the
+   `<prefix><crewmate slug>/<repo>` (`branch_for`), cut the first time from the
    repository's default branch (`refs/remotes/origin/HEAD`, else `refs/heads/main`
    or `master`, else `HEAD`; full ref names, so a tag never stands in for the <!-- wokeignore:rule=master -->
    branch). After that a worktree git registers at that place is used as it is,
    on whatever branch the worker has checked out; one whose folder was deleted
    by hand is pruned and made again. A name segment the cleaning changed (or
    one over 40 characters) keeps a digest of the whole and is a legal git ref
-   component. A repository that contains the Bot's own workspace is not
-   one it was handed and gets none. Neither does one the edition works in place
+   component. The prefix is `agent.member_branch_prefix`, `crew/` unless set
+   (`crewmate_worktree.coerce_branch_prefix`, at config load): one trailing
+   `/` is optional, and every `/`-separated part must be one the cleaning keeps
+   as it is, else the default is used with a warning, so the branch is always a
+   legal name and the slug and repository stay its last two parts. It is read
+   from the config each turn: only a worktree made after a change takes the new
+   prefix (one made again after its folder was deleted included; its old branch
+   stays), and one that exists keeps its branch. A first part that names an
+   existing branch (`main/`) makes git refuse the cut, so that repository gets no
+   worktree, as for any refused one. A repository that contains the
+   Bot's own workspace is not one it was handed and gets none. Neither does one the edition works in place
    (`AgentRuntime.works_in_place(repo)` answers exactly `True` for its checkout
    root; platform-context.md): its build needs the checkout where it is, so no
    branch is cut, no folder is made, and the worker's project is left as it is.
@@ -4451,7 +4630,19 @@ stamped by `session_send`), the thread is woken with ONE hidden turn
 `report_prompt`: the `[Worker report]` envelope, the worker's title and key, and
 its reply scrubbed (`member_goals.scrub_text`), capped at 4,000 characters (held
 cut, with its cut flag) and fenced between `<<<worker reply` / `>>>end of worker
-reply` as data. A worker turn that ends through an applied `nothing_to_do` and
+reply` as data. Under it, when the worker slot's stored MCP report
+(`mcp_report_payload`, read at the worker's turn end) names servers of the
+worker's that its session cannot use (only servers the worker spec mounts, read
+off the loop before the wake; one it declares without selecting its tools is one
+it lacks), one line names each with how: sign-in missing or expired (a failed
+server whose reason reads as a missing or rejected credential,
+`agent_sdk.drivers.acp.is_recoverable_auth_failure`), failed to start, waiting
+for authorization, started with no tools (`mate_capability_catalog.unusable_line`,
+`dispatch.worker_unusable`; names
+only, never the failure text, which is the server's own output), and says a gap
+on one of them is not a missing capability, so the conductor tells the user what
+to fix instead of asking to add a server the worker has. A worker turn that ends
+through an applied `nothing_to_do` and
 wrote no reply text (a quiet loop cycle; the turn's `_terminal_directive_applied`
 with an empty `_turn_full_reply_text`, carried as `_TurnOutcome.quiet_end`)
 records no report and wakes nobody, and a report already pending for that worker
@@ -4466,7 +4657,7 @@ with fields the Bot writes
 gets `worker_report.dashboard_fields`, naming those fields and asking for them
 to be written with `dashboard_write` before the turn ends; a tab still on the
 suggestions page gets `dashboard_agentic.SUGGESTIONS_LINE`; no line with
-`agent.crew_panel` off, under the lock while the tab shows suggestions, or for a
+`agent.crew_panel` off, or for a
 page whose every field is folded. A thread closed (`is_closing`), removed or
 replaced while that read runs gets no wake, and its reports stay pending.
 After a restart or a revive, when the in-memory witness is gone, the crew
@@ -4501,13 +4692,15 @@ reading any agent file, so everything it can do at first comes from the worker
 base. A preview writes nothing and lists each `added` and each `skipped` item,
 plus every auto-approval the add writes
 (`allowedTools` rows, from any of three channels: an `allowedTools` entry, a
-server's `autoApprove`, and an `mcp` allow in `permissions`, which the worker
-merge writes into the worker's `allowedTools` as `mate_spec_policy.mcp_allow_refs`
-unless the worker base already grants it) and every tool the template newly
+server's `autoApprove`, and an `mcp` or unscoped built-in allow in `permissions`,
+which the worker merge writes into the worker's `allowedTools` as
+`mate_spec_policy.mcp_allow_refs` or `kas_tool_view.builtin_allow_tool`'s tool
+name unless the worker base already grants it) and every tool the template newly
 excludes. Its `runs_unasked` says whether the add lets a tool run without a
 prompt: a newly selected tool that meets one of those grants, or a new
 `permissions` allow no `allowedTools` ref expresses (a scoped or excluded one KAS
-keeps, an unscoped shell or file one Crew's gate answers itself); a `deny` or
+keeps, an unscoped shell or file one Crew's gate answers itself), or a new
+unscoped built-in allow, whose tool name lands in the worker's list; a `deny` or
 `ask` rule never counts. The apply needs the preview's `revision`
 (`_plan_revision`, binding the file and the result shown) or answers `stale_revision`. Each approval row an apply writes is recorded as granted again (see *A revoked approval stays revoked*); when the worker base cannot be read at that moment, a `permissions` allow re-grants nothing, since the preview leaves out the ones the base already grants. The template's
 `excludedTools` join the file's, and its `hooks`, `permissions` and
@@ -4544,7 +4737,8 @@ reloads the Bot's live workers onto it (`crewmate_worker_reload`, a busy
 one at its turn end), since a live KAS session keeps the batch it registered.
 Other refusals: `not_a_mate_file`,
 `template_unreadable`, `template_required`, `revision_required`,
-`invalid_spec`. Each code reads as a localized sentence
+`invalid_spec`, and `503 capabilities_unavailable` for a GET whose read did
+not finish in time. Each code reads as a localized sentence
 (`components/crew/workerKitErrors.ts`), never as the code. The surface is **Add
 abilities** in the editor's Abilities section (`components/crew/WorkerKitPane.tsx`,
 only for `mode: "mate"`): picking an agent previews at once. A `stale_revision`
@@ -4564,10 +4758,13 @@ abilities it started with (`acp/harness/kas.mate_worker_projection` reads the
 file at session start). Every "Built from" shows a template's name, never an id
 (`components/crew/builtFromName.ts`); a Bot that owns its file shows the
 generic "Mate" label (`builtFromName.mateAbilitiesLabel`). The Abilities
-section and its Tools / MCP Servers / Skills lists read one set, the WORKER's
-merged rows (`mate_capabilities.worker_summary`, the view's `worker.rows`); a
-skill row carries no label, and the pane names a `skill://` row with the
-preview's own `workerKitLabels.skillLabel`. The Customize > Bots roster
+section and its Tools / MCP Servers / Skills / Resources lists read one set,
+the WORKER's merged rows (`mate_capabilities.worker_summary`, the view's
+`worker.rows`); a skill row carries no label, and the pane names a `skill://`
+row with the preview's own `workerKitLabels.skillLabel`. Every other resource
+the worker loads (one that is neither a catalog skill nor `skill://`) is a
+`resources` row, so a `file://` resource an add copied in is listed with a
+Remove of its stored `resources` row. The Customize > Bots roster
 (`pages/kiroCrewAgentsPageRosterLabels.ts`) names bindings the same way and
 shows **Memory store** as "Private to this crewmate", "Shared" or "Open to
 check".
@@ -4744,7 +4941,10 @@ loaded that it lacks and the user has not switched off (one switched off cannot 
 added, so it is not offered; `dashboard/crewmate_dispatch_capabilities.own_worker_note`,
 `mate_capability_catalog.dispatch_summary`: steps 1 and 2 of `find_capabilities`,
 names only, cut to a plain character set and twelve per line; the registry stays
-on demand), which the MCP tool appends to its reply. Every other caller and
+on demand), which the MCP tool appends to its reply. A server of the worker's
+that the target worker slot's MCP report says its session cannot use is left off
+the worker's list and named in a sentence of its own instead
+(`dispatch.worker_unusable`). Every other caller and
 target gets nothing, and nothing is added to the conductor's per-turn context
 (`test/test_crewmate_dispatch_capabilities.py`). Before telling the user a
 source is missing, the conductor checks what the worker and the gateway can
@@ -4775,8 +4975,10 @@ for a `query`, `registry` -- `mcp_discover.search_registry`, the search behind
 `/api/mcp/discover`, with every provider field redacted. It never returns a
 transport. The conductor then calls `request_capabilities` with a draft naming
 `additions`: `{server, source: "gateway"}` copies this gateway's own entry
-(`_find_server_spec_anywhere`, minus `autoApprove`, `disabled` and
-`disabledTools`) of a server the gateway lists as switched on
+(`_find_server_spec_anywhere`, minus `autoApprove`, `disabled`,
+`disabledTools` and the rendered spec's `x-kirocrew-derived` and
+`x-kirocrew-withheld` records, which `request_server`'s record would refuse as
+unknown keys) of a server the gateway lists as switched on
 (`member_capability_catalog._switched_on`), and only when that entry sets no
 `env` or `headers` value and nothing in it is masked by
 `agent_capabilities.safe_view` (a credential argument such as `--api-key <value>`,
@@ -5319,7 +5521,7 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_pruned_crewmate_records.py` | Records bound to a pruned synced Bot decode as their template for every reader (chat resume, subagent continuation and inheritance, prompt builder); owned members still refuse; the first send of a resumed pruned chat is admitted by the session CAS while a real concurrent change is still refused |
 | `test/test_dashboard_agents_composition_contract.py` | The agents handlers keep their surface across the `agent_admin` split: every base name still resolves on `handlers/agents.py`, routes and the handlers package reach the same objects, each owner runs on the facade's globals so a test's patch reaches it, and what repository guards read in `agents.py` stays there or is re-keyed to its owner |
 | `test/test_agent_execution_catalog.py` | Read-only catalog, same-name member/template choices, requesting-project isolation, private-template exclusion and explicit discovery failure |
-| `test/test_agent_templates_endpoint.py` | Templates roster marks editability (a row with no spec file beneath the agents directory — empty, foreign or absent `filename` — is read-only for the runtime's reason) and references (crews, default, schedules by what they dispatch — sequence over dormant `agent_id`, the captured execution's template over a stale or empty `agent_id`, script jobs over neither — chat-folder pins, webhook pins, private copies) and masks package-controlled strings like the sibling rosters (the delete refusal's references too); a row whose filename is absolute, traversing or nested names nothing to delete (404, file intact); create writes a minimal runnable spec or a lineage-free copy (re-read inside the spec lock, where the source name is re-resolved and must reach exactly the probed file — a second claimant or a replacement refuses, nothing written) and refuses taken, bound (in the base or only in the overlay), reserved, ambiguous and malformed names; delete refuses read-only and referenced templates (listing the references), a name two files reach — a crossover or a same-name twin the roster would collapse (neither unlinked), a row whose file does not answer to the requested name, a second claimant that lands after the probe (ambiguity re-checked under the lock) and a row that calls a package file plain (the file re-read and classified under the lock), checks and unlinks inside one folder-store hold rather than from a snapshot, counts a binding that lives only in `config.local.json`, does not count a template that merely shares the default crew's alias, holds the schedule store's own lock from the reference walk through the rename (probed on both sides) and answers 503 `schedule_store_busy` with the file intact when another holder keeps it past the bounded wait, names a schedule written past the lock (warning + SEL row), fails closed on an unreadable cron store before the unlink (503, file intact) and only warns after it, retires the file as a one-deep tombstone (renamed before the older grave goes, so a refused rename keeps both; same-second graves stay distinct; the sweep spares a live template whose name looks like a grave), runs both mutations through the drained seam, and removes an unreferenced one; create re-scans by declared name under the lock; a successful create and delete emit operation-labelled SEL events; a create publishes its name to the dispatch snapshot before scheduling the rescan and a delete awaits the rescan before answering (a refusal touches neither); the detail PATCH writes the definition keys on an owned template, refuses them on a package one, refuses every key on an ambiguous name (neither file touched) and a claimant landing after the scan (re-checked under the write lock), classifies the targeted file rather than its name, and validates their shape |
+| `test/test_agent_templates_endpoint.py` | Templates roster marks editability (a row with no spec file beneath the agents directory — empty, foreign or absent `filename` — is read-only for the runtime's reason) and references (crews, default, schedules by what they dispatch — sequence over dormant `agent_id`, the captured execution's template over a stale or empty `agent_id`, script jobs over neither — chat-folder pins, webhook pins, private copies) and masks package-controlled strings like the sibling rosters (the delete refusal's references too); a row whose filename is absolute, traversing or nested names nothing to delete (404, file intact); create writes a minimal runnable spec or a lineage-free copy (re-read inside the spec lock, where the source name is re-resolved and must reach exactly the probed file — a second claimant or a replacement refuses, nothing written) and refuses taken, bound (in the base or only in the overlay), reserved, ambiguous and malformed names; delete refuses read-only and referenced templates (listing the references), a name two files reach — a crossover or a same-name twin the roster would collapse (neither unlinked), a row whose file does not answer to the requested name, a second claimant that lands after the probe (ambiguity re-checked under the lock) and a row that calls a package file plain (the file re-read and classified under the lock), checks and unlinks inside one folder-store hold rather than from a snapshot, counts a binding that lives only in `config.local.json`, does not count a template that merely shares the default crew's alias, holds the schedule store's own lock from the reference walk through the rename (probed on both sides) and answers 503 `schedule_store_busy` with the file intact when another holder keeps it past the bounded wait, names a schedule written past the lock (warning + SEL row), fails closed on an unreadable cron store before the unlink (503, file intact) and only warns after it, retires the file as a one-deep tombstone (renamed before the older grave goes, so a refused rename keeps both; same-second graves stay distinct; the sweep spares a live template whose name looks like a grave), runs both mutations through the drained seam, and removes an unreferenced one; create re-scans by declared name under the lock; a successful create and delete emit operation-labelled SEL events; a create publishes its name to the dispatch snapshot before scheduling the rescan and a delete awaits the rescan before answering (a refusal touches neither); the detail PATCH writes the definition keys on an owned template, refuses them on a package one, refuses every key on an ambiguous name (neither file touched) and a claimant landing after the scan (re-checked under the write lock), classifies the targeted file rather than its name, and validates their shape; a PATCH carrying `mcpServers` or `resources` is refused by name (`400 definition_key_read_only`) with the file untouched |
 | `website/src/test/AgentTemplatesTab.test.tsx` | Grouping by origin, the two-control action row with its overflow menu (enroll hint, Delete vs Duplicate-to-edit by editability), the definition save through the detail PATCH (changed keys only — a prompt-only save never resends the model), the dirty-draft guard on row switch, on a background refetch, on Discard (asks; declined keeps the draft) and on New custom agent (a create never inherits the previous draft), a saved skill list written into the detail cache before the refetch lands, the saved confirmation in the bar's slot and the visible Add tool label, a delete naming the deleted template over the next row and, on a narrow viewport, returning to the list, every in-app link routed through the shell's leave gate with its target, `beforeunload` armed only while dirty, a rejected detail read rendering its error rather than Loading, a refused save reported inside the save bar beside Save and cleared by Discard, resources as plain rows, string-only MCP fields from a hand-edited spec, one Skills heading, the referenced-delete dialog (opened directly from the row's own holders with no confirm or request, and from the server's refusal when a holder landed later; including a chat-folder row and a private-copy row that links to its crew), a private copy's Open Bot, the usage line naming folder and webhook holders with each holder linked to where it is held, blank vs `from` create with the created row selected after the roster refetch, an enroll refetching the Bot roster, and chat-with in the template namespace (enabled while dirty, behind the discard confirm) |
 | `website/src/components/RestartButton.cov80.test.tsx` | Apply & Restart (mounted in the Connections header) asks first, naming what stays (chats and history) and what stops (a reply in progress); declined does nothing, and the confirmed paths (success, failure, in-flight, MCP reconcile) run with the ask answered yes |
 | `test/test_chat_agent_kind.py` | `agent_kind` on local slot create and switch, and a relay-archive switch refused with `409 relay_archive_read_only`: template picks skip the member store pin, name and kind persist atomically, an unresolvable stated kind is `409 agent_choice_unavailable` refused before any slot is minted, an unknown kind is `400 invalid_agent_kind`, a member thread refuses the same-name template kind, the slot projection carries the committed kind |

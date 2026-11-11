@@ -698,7 +698,6 @@ export function MembersPageRosterColumn({
               // Menu rows keep the menu open (preventDefault) so several can be
               // toggled in one visit, as the sidebar's do.
             <SearchFilterBar
-              className="px-2"
               placeholder={t('pages.membersPage.search_members')}
               clearLabel={t('pages.chatSidebar.clear_search')}
               value={filter}

@@ -2,9 +2,7 @@
 
 The card writes nothing: its yes wakes the crewmate to write, save and apply its page;
 a no or an expiry writes nothing; all three leave the asked-once record. A crewmate
-with nothing on its tab gets no card (``test_dashboard_default_by_slug``). That a
-locked layout refuses the apply the wake makes is ``dashboard_apply``'s own rule,
-pinned by ``test_dashboard_save_tool.test_a_locked_layout_refuses_the_apply_and_keeps_the_page``.
+with nothing on its tab gets no card (``test_dashboard_default_by_slug``).
 """
 
 from __future__ import annotations
@@ -223,7 +221,7 @@ def test_the_yes_wake_writes_saves_and_applies_with_one_message() -> None:
     assert "saved with dashboard_save and then put live with dashboard_apply" in text
     assert "in place of the Goal board template" in text
     assert "one short message" in text and "dashboard_rollback" in text
-    assert "locked the layout" in text and "stop" in text
+    assert "locked the layout" not in text
     # No second card: the wake writes, it does not offer again.
     assert "offer_dashboard_page" not in text
     # The same look and variables the build line names.

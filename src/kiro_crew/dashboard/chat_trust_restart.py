@@ -61,6 +61,13 @@ _MAX_RECORD_BYTES = 256 * 1024
 #: :func:`record` from writing before the previous record was taken.
 _WRITER_ATTR = "_chat_trust_record"
 
+#: The chat row's ``meta["kind"]``, a wire value the dashboard keys its localized
+#: card on (``TrustResetNoticeCard.tsx``). The card's one button sends the row's
+#: ``meta["approval_mode"]`` through the picker's own route, so the person, not
+#: this module, turns the mode back on. The row text stays the fallback for
+#: readers that cannot localize.
+ROW_KIND = "trust_reset_notice"
+
 #: The modes a restart ends, with the name the chat's approval picker shows.
 _MODE_LABELS = {"trust": "Trust", "trust_reads": "Read"}
 
@@ -331,7 +338,12 @@ async def report(state: Any, held: tuple[HeldMode, ...]) -> None:
             # the read happens off the loop first.
             await load_window_off_loop(slot)
             if state.get_slot(entry.key) is slot:
-                slot.append("system", row_text(entry.mode), "msg msg-info")
+                slot.append(
+                    "system",
+                    row_text(entry.mode),
+                    "msg msg-info",
+                    meta={"kind": ROW_KIND, "approval_mode": entry.mode},
+                )
         except Exception:
             logger.warning(
                 "Could not report the restart-ended approval mode of chat %s",

@@ -200,12 +200,15 @@ function SetupDiagnostic({ text }: { text: string }) {
  *  vector memory holds them (`?focus=lessons`, see MemoryTab). */
 export const SEMANTIC_CARD_ID = 'memory-semantic-card'
 
-export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onSettledChange, initialSemanticFilter, diagnosticsOnly = false }: {
+export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onSettledChange, onDirtyChange, initialSemanticFilter, diagnosticsOnly = false }: {
   onActiveChange?: (active: boolean) => void
   onMigratedChange?: (migrated: boolean) => void
   /** True once the status reads that decide `active` have answered, so a caller
    *  can tell "not active" from "not known yet". */
   onSettledChange?: (settled: boolean) => void
+  /** True while a Semantic draft is unsaved: a key or value typed but not Set,
+   *  or an inline edit that differs from the stored value. */
+  onDirtyChange?: (dirty: boolean) => void
   /** The Semantic filter's text on mount: a link that names what to show. */
   initialSemanticFilter?: string
   diagnosticsOnly?: boolean
@@ -423,6 +426,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   useEffect(() => { onActiveChange?.(!!active) }, [active, onActiveChange])
   const settled = !statsRead.isPending && !embeddingRead.isPending
   useEffect(() => { onSettledChange?.(settled) }, [settled, onSettledChange])
+  const editing = editKey === null ? undefined : semantic.find(e => e.key === editKey)
+  const dirty = !!newKey || !!newVal || (editing !== undefined && editVal !== semanticValueText(editing))
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
 
   // queryReadFailed, not `error`: a Retry with nothing cached clears `error`
   // while it reads, which would unmount the Retry the user just pressed.

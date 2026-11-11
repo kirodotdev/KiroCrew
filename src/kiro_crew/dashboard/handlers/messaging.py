@@ -233,6 +233,7 @@ from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
     api_slack_config_get,
     api_slack_config_save,
     api_slack_manifest_status,
+    api_slack_reconnect,
 )
 from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
     _missing_scope_message,
@@ -363,6 +364,7 @@ from kiro_crew.subagent import (  # noqa: F401
     effort_pending_note,
     parent_project_dirs,
     parent_template_allowlists,
+    parent_template_spawn_policy,
 )
 from kiro_crew.subagent_manager.admission.types import (  # noqa: F401
     QueuedReadUnavailable,
@@ -374,6 +376,7 @@ from kiro_crew.subagent_persistence import (  # noqa: F401
     DISMISSAL_NO_FOLDER,
     PanelRecords,
     _agent_dir,
+    agent_dir_for_display,
     classify_persisted_ending,
     read_panel_records,
     read_state,

@@ -611,6 +611,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await _annotate_kas_chat_sign_in(result)
         await asyncio.to_thread(_annotate_agent_drops, result)
 
     # Decide AND arm the re-probe here, at the very end, all synchronously.
@@ -788,6 +789,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
             await asyncio.to_thread(_record_probe_verdicts, result)
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await _annotate_kas_chat_sign_in(result)
         await asyncio.to_thread(_annotate_agent_drops, result)
     _mcp_probe_cache[:] = result
     _mcp_probe_ts = time.time()
@@ -941,6 +943,7 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
         await asyncio.to_thread(_annotate_owner_sign_in, result)
+        await _annotate_kas_chat_sign_in(result)
         await asyncio.to_thread(_annotate_agent_drops, result)
     # Decided and armed after the last await -- same three constraints as the
     # servers endpoint.
@@ -1048,3 +1051,40 @@ def _annotate_owner_sign_in(rows: list[dict]) -> None:
             and is_signable_name(name)
             and is_owner_server(config, name, {"url": url})
         )
+
+
+async def _annotate_kas_chat_sign_in(rows: list[dict]) -> None:
+    """Stamp ``kasChatSignIn`` on each sign-in row whose sign-in a KAS chat does not use.
+
+    Only while ordinary chats run on KAS, and only on a row that asked for OAuth
+    and whose sign-in Crew does not hold. ``"chat"``: a sign-in from the row runs on
+    kiro-cli (:func:`kiro_crew.connections.mint_kas.kas_sign_in_routes`), whose cache
+    no KAS chat reads. ``"again"``: it would run on the KAS engine, but the grant the
+    row reads as Signed in is one the KAS grant vault does not hold. Every other row
+    carries no key, so a row served from a cache never keeps a stale one.
+    """
+    for row in rows:
+        row.pop("kasChatSignIn", None)
+    candidates = [
+        row
+        for row in rows
+        if row.get("authChallenge") is True
+        and not row.get("authCrewHeld")
+        and isinstance(row.get("name"), str)
+        and isinstance(row.get("url"), str)
+    ]
+    if not candidates:
+        return
+    from kiro_crew.connections import mint_kas
+    from kiro_crew.mcp_grant_kas import kas_grant_observed
+
+    routes = await asyncio.to_thread(
+        mint_kas.kas_sign_in_routes, [row["name"] for row in candidates]
+    )
+    if routes is None:
+        return
+    for row in candidates:
+        if not routes.get(row["name"]):
+            row["kasChatSignIn"] = mint_kas.KAS_CHAT_SIGN_IN_CHAT
+        elif row.get("authGrantPresent") is True and await kas_grant_observed(row["url"]) is False:
+            row["kasChatSignIn"] = mint_kas.KAS_CHAT_SIGN_IN_AGAIN

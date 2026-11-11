@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import LogEntry, { type LogEntryData } from './LogEntry'
+import { usePagerFocus } from '../hooks/usePagerFocus'
 
 import { i18nT } from '../i18n/t'
 const PAGE_SIZE = 10
@@ -11,6 +12,7 @@ const PAGE_SIZE = 10
 export default function JobLogsView({ jobId, jobName, isRunning, runningSince, onCancel, cancelError }: { jobId: string; jobName?: string; isRunning?: boolean; runningSince?: number | null; onCancel?: () => void; cancelError?: string | null }) {
   const [page, setPage] = useState(0)
   const [elapsed, setElapsed] = useState(0)
+  const pager = usePagerFocus()
 
   useEffect(() => { setPage(0) }, [jobId])
 
@@ -64,9 +66,9 @@ export default function JobLogsView({ jobId, jobName, isRunning, runningSince, o
           </div>
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-1">
-              <Btn onClick={() => setPage(p => p - 1)} disabled={page === 0}>{i18nT('components.jobLogsView.prev')}</Btn>
+              <Btn ref={pager.prevRef} onClick={() => { setPage(p => p - 1); pager.pressedPrev() }} disabled={page === 0}>{i18nT('components.jobLogsView.prev')}</Btn>
               <span className="text-[12px] text-muted">{page + 1} / {totalPages}</span>
-              <Btn onClick={() => setPage(p => p + 1)} disabled={page >= totalPages - 1}>{i18nT('components.jobLogsView.next')}</Btn>
+              <Btn ref={pager.nextRef} onClick={() => { setPage(p => p + 1); pager.pressedNext() }} disabled={page >= totalPages - 1}>{i18nT('components.jobLogsView.next')}</Btn>
             </div>
           )}
         </>

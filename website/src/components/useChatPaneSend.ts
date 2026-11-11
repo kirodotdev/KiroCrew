@@ -14,6 +14,7 @@ import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../chat-core/composer/outgoingTurn'
 import { storeSentPastes } from '../chat-core/composer/composerPastes'
+import { PANE_DICTATION_SCOPE, clearDictated, markDictated, takeDictated, wantsDictationNote } from '../chat-core/composer/dictationProvenance'
 import { revealComposer } from '../pages/chat/composerFocus'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { agentSwitchTarget, interceptSlashCommand, isInterceptedSlashCommand, isSideCommand } from '../pages/chat/ChatInput'
@@ -51,6 +52,9 @@ export interface PaneSentRestore {
   files: string[]
   pastes: PasteBlock[]
   quote: MessageQuote | null
+  /** The text held dictated words (`dictationProvenance`), so the restore puts
+   *  the mark back and the re-send adds the note once. */
+  dictated?: boolean
 }
 
 /** Two pane sends' payloads as one, so a single restore puts both back. The stage holds one
@@ -63,6 +67,7 @@ export function mergePaneSends(earlier: PaneSentRestore, later: PaneSentRestore)
     files: [...new Set([...earlier.files, ...later.files])],
     pastes: carried.pastes,
     quote: earlier.quote ?? later.quote,
+    ...(earlier.dictated || later.dictated ? { dictated: true } : {}),
   }
 }
 
@@ -188,6 +193,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         if (inputRef.current.trim() === raw && readPastes() === blocks) {
           setInput('')
           setPasteBlocks([])
+          // The command took the composer's words, dictated or not, so the
+          // next message starts unmarked.
+          clearDictated(sentSlot, PANE_DICTATION_SCOPE)
         }
         return
       }
@@ -195,7 +203,10 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       // slot's draft. Drop it there, or coming back would offer to run it
       // again. Parked files are not the command and stay.
       const parked = readPaneDraft(sentSlot)
-      if (parked.text.trim() === raw) writePaneDraft(sentSlot, { text: '', files: parked.files, pastes: [] })
+      if (parked.text.trim() === raw) {
+        writePaneDraft(sentSlot, { text: '', files: parked.files, pastes: [] })
+        clearDictated(sentSlot, PANE_DICTATION_SCOPE)
+      }
     })
     return true
   }, [input, slotKey, openSideChat, agentLocked, paneAgentName, readPastes, setPasteBlocks, dispatch, composerRef, mountedRef, slotKeyRef, inputRef, setInput])
@@ -266,7 +277,10 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // on the wire while the bubble keeps them plus `meta.pastes`, and the side table
     // re-collapses the server's expanded echo to that chip on history load; the
     // quoted message opening both texts.
-    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote, project }, 'send')
+    // Whether the composer text held dictated words; only a composer send takes
+    // it, and a restore below puts it back.
+    const wasDictated = !optionText && takeDictated(slotKey, PANE_DICTATION_SCOPE)
+    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote, project, dictationNote: wantsDictationNote(wasDictated) }, 'send')
     const { wire: llm, bubble: displayTxt, pastes: bubblePastes } = turn
     storeSentPastes(turn.storedPaste)
     // sendId correlation (same contract as ChatPage): the wire text differs
@@ -346,6 +360,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         restore: (status) => {
           if (optionText) return
           if (status === 'response-late' && bubbleMinted) return
+          if (wasDictated) markDictated(slotKey, PANE_DICTATION_SCOPE)
           // The quote: back on the stage when this pane is still live and the
           // stage is free, else in the restored text (a rebound pane parks it).
           restoreIntoComposer(recoverQuoteInto(text, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, bubblePastes, slotKey)
@@ -361,7 +376,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         warnUnconfirmed: () => {
           if (bubbleMinted) {
             dispatch(markSendUnconfirmed({ slot: slotKey, sendId }))
-            if (!crewmate) warnDeliveryUnconfirmed<PaneSentRestore>(slotKey, { sendId, surface: 'pane', epoch: sendEpoch, sent: { text, files, pastes: bubblePastes, quote: sentQuote } })
+            if (!crewmate) warnDeliveryUnconfirmed<PaneSentRestore>(slotKey, { sendId, surface: 'pane', epoch: sendEpoch, sent: { text, files, pastes: bubblePastes, quote: sentQuote, ...(wasDictated ? { dictated: true } : {}) } })
             dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT(crewmate ? 'pages.chatPage.delivery_unconfirmed_resend_manually' : 'pages.chatPage.delivery_unconfirmed_pending'), cls: '', meta: { deliveryNoticeFor: sendId } } }))
           } else if (!optionText) {
             dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
@@ -403,7 +418,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // conservative shape ChatPage's cancel restores through), so the token
         // string alone would be a dead chip that sends literally on retry —
         // the pasted text itself is the lossless form of what the user put in.
-        stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm, ...(sentQuote ? { quote: sentQuote } : {}) }) },
+        stashDemoted: (queueId) => { if (!optionText) queuedSendStash.set(queueId, { raw: bubblePastes.length ? expandPasteTokens(text, bubblePastes) : text, files, sent: llm, ...(sentQuote ? { quote: sentQuote } : {}), ...(wasDictated ? { dictated: true } : {}) }) },
       })
       // -- doSend's send-machinery tail (not steer-receipt policy) --
       // Blocking ask resolution, owned by doSend and run on every accepted
@@ -465,7 +480,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // The text-only steer turn: files inlined, the live paste tokens expanded
     // (ChatPage's steer shows the expanded text in its bubble too, so this one
     // does), the quote opening the text.
-    const turn = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocks, quote: sentQuote }, 'steer')
+    const wasDictated = takeDictated(slotKey, PANE_DICTATION_SCOPE)
+    const turn = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocks, quote: sentQuote, dictationNote: wantsDictationNote(wasDictated) }, 'steer')
     const { wire: txt, pastes: steerPastes } = turn
     const sendId = mintSendId()
     // `meta.files` is the ORDERED non-image list the `[attached_file N]`
@@ -504,7 +520,10 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         sendAccepted: () => !!crewmate && selectSendAccepted(store.getState(), slotKey, sendId),
         // refused / response-late hand the payload back into this pane's
         // composer (raw text + files), addressed to the slot it was typed into.
-        restore: () => restoreIntoComposer(recoverQuoteInto(raw, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, steerPastes, slotKey),
+        restore: () => {
+          if (wasDictated) markDictated(slotKey, PANE_DICTATION_SCOPE)
+          restoreIntoComposer(recoverQuoteInto(raw, sentQuote, mountedRef.current && slotKey === slotKeyRef.current), files, steerPastes, slotKey)
+        },
         reportFailure: (reason, status) => reportSendFailure(reason, status),
         // \u26A0 is NoticeCard's warn-tone selector (parseNotice).
         warnUnconfirmed: () => dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } })),
@@ -519,7 +538,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         // chip gone (#560).
         // Expanded for the same reason as doSend's stash: no blocks travel
         // with the card, so the token alone would restore as a dead chip.
-        stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}) }),
+        stashDemoted: (queueId) => queuedSendStash.set(queueId, { raw: steerPastes.length ? expandPasteTokens(raw, steerPastes) : raw, files, sent: txt, ...(sentQuote ? { quote: sentQuote } : {}), ...(wasDictated ? { dictated: true } : {}) }),
       })
       // Release a blocking card only once the gateway accepted the steer, so the agent is told to read a message that arrived.
       if (askAtSteer && (receipt.status === 'dispatched' || receipt.status === 'queued')) {

@@ -117,3 +117,17 @@ def test_a_link_and_too_many_entries_are_refused_in_every_format(entry: str, fmt
     many = _bundle(entry, fmt) | {f"crons/s{i}.py": "x" for i in range(reader.ENTRY_MAX)}
     assert _refused(_zip(many)) == "too_many_entries"
     assert _refused(b"x" * (reader.FILE_MAX_BYTES + 1)) == "too_large"
+
+
+@pytest.mark.parametrize("part", ["kirobot.json", "agent.json"])
+def test_a_json_part_saved_with_a_byte_order_mark_reads_as_without_it(part: str) -> None:
+    plain = _bundle(*NEW)
+    marked = plain | {part: b"\xef\xbb\xbf" + str(plain[part]).encode("utf-8")}
+    try:
+        parsed = reader.read_crewmate_file(_zip(marked))
+    except catalog.CardCatalogError as exc:
+        pytest.fail(f"a part with a byte-order mark was refused: {exc}")
+    assert parsed.bundle == reader.read_crewmate_file(_zip(plain)).bundle
+    assert _refused(_zip(plain | {part: b"\xff" + str(plain[part]).encode("utf-8")})) == (
+        "invalid_bundle"
+    )

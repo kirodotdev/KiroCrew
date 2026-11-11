@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.hooks import safe_read_file
+from kiro_crew.hooks import safe_read_file, safe_read_file_bytes
 from kiro_crew.mcp_cleanup import (
     invalid_disabled_flag,
     mcp_entry_is_muted,
@@ -39,7 +39,7 @@ from kiro_crew.mcp_discovery_server_info import (
 )
 from kiro_crew.mcp_provenance import WITHHELD_KEY, is_withheld_mute
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
-from kiro_crew.user_json import loads_user_jsonc
+from kiro_crew.user_json import loads_user_jsonc, wide_bom_reason
 
 logger = logging.getLogger("kiro_crew.mcp_discovery")
 
@@ -190,10 +190,25 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
             # JSONC-tolerant: Kiro itself reads these files with comments, so a
             # commented-out server must not drop every other server in the file.
             data = loads_user_jsonc(safe_read_file(str(p)))
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        except UnicodeDecodeError as exc:
+            # Bytes that are not UTF-8 are as unusable as bad JSON: skip the file.
+            # A UTF-16/UTF-32 file (a Windows redirect's default) carries the cause
+            # in its first bytes, so name the actionable repair the kiro-cli path
+            # names rather than the opaque ``'utf-8' codec can't decode`` message.
+            reason: str | None = None
+            try:
+                raw = safe_read_file_bytes(str(p))
+            except OSError:
+                raw = None
+            if raw is not None:
+                reason = wide_bom_reason(raw)
+            logger.warning(
+                "Failed to load MCP config from %s: %s", p, reason if reason is not None else exc
+            )
+            continue
+        except (json.JSONDecodeError, OSError) as exc:
             # PermissionError (subclass of OSError) is raised by
-            # safe_read_file when is_sensitive_path() blocks the read. Bytes
-            # that are not UTF-8 are as unusable as bad JSON: skip the file.
+            # safe_read_file when is_sensitive_path() blocks the read.
             logger.warning("Failed to load MCP config from %s: %s", p, exc)
             continue
         if not isinstance(data, dict):

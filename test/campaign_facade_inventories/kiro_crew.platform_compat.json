@@ -128,7 +128,6 @@
   "open_create_no_reparse",
   "open_file_no_reparse",
   "open_lock_file_for_sweep",
-  "open_log_file_for_tail",
   "open_process_termination_handle",
   "open_with_default_app",
   "own_process_start_time",

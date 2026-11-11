@@ -44,6 +44,8 @@ _TO_DICT_KEYS = (
     "row_identity",
     "artifact",
     "messages",
+    # The greeting the welcome page draws while the chat has no row.
+    "welcome_message",
     "running",
     "admission_queued",
     "wake_starting",

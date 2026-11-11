@@ -265,7 +265,8 @@ export function useComposerVoiceHost({
     // A crew window's key is not a local slot: its text goes to that crew
     // session's own draft, which the window reads, not to a local draft
     // nothing ever shows.
-    if (deliverCrewWindowTranscript(target, append)) return
+    const crewDraftKey = deliverCrewWindowTranscript(target, append)
+    if (crewDraftKey) return crewDraftKey
     const next = append(drafts.current[target] ?? '')
     setDraft(drafts.current, target, next)
     // Mid-switch guard: if the composer still belongs to `target` (activeSlot

@@ -1343,6 +1343,41 @@ class TestUpdateWheelInstaller:
         assert message in out
         assert "re-running the installer" not in out
 
+    @pytest.mark.parametrize(
+        ("stamp", "gateway", "code", "said"),
+        [
+            (4242, 4242, 0, "The running gateway is already installing an update"),
+            (5151, 4242, 1, "possibly the gateway's own"),
+            (4242, None, 1, "possibly the gateway's own"),
+        ],
+    )
+    def test_a_lock_the_running_gateway_holds_is_not_a_failure(
+        self, monkeypatch, capsys, stamp, gateway, code, said
+    ) -> None:
+        """The gateway's own update restarts it onto the new version, so the CLI says so
+        and exits 0; another holder, or a gateway it cannot name, keeps exit 1."""
+        from kiro_crew import gateway_lock
+        from kiro_crew.platform import wheel_engine
+
+        def _gateway(home):
+            if gateway is None:
+                raise gateway_lock.LockProbeError(home, OSError("unreadable"))
+            return gateway_lock.LockHolder(pid=gateway, alive=True, source="flock_owner")
+
+        def _busy(**kw):
+            raise wheel_engine.WheelUpdateBusy("another kirocrew update is already in progress")
+
+        monkeypatch.setattr(wheel_engine, "running_from_managed_venv", lambda: True)
+        monkeypatch.setattr(wheel_engine, "apply_wheel_update", _busy)
+        monkeypatch.setattr(wheel_engine, "update_lock_holder_pid", lambda: stamp, raising=False)
+        monkeypatch.setattr(gateway_lock, "lock_holder", _gateway)
+        try:
+            cli_server._update_wheel(_LAYOUT)
+            exit_code = 0
+        except SystemExit as exc:
+            exit_code = exc.code
+        assert (exit_code, said in capsys.readouterr().out) == (code, True)
+
     def test_an_incompatible_release_names_the_installer_rerun(self, monkeypatch, capsys) -> None:
         """Only the installer moves an install onto a Python the release accepts."""
         from kiro_crew.platform import wheel_engine

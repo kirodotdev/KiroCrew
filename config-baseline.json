@@ -32,6 +32,7 @@
         "acp_failover": {},
         "kas_bundle": false,
         "kas_persist_mcp_sign_in": true,
+        "kas_repair_kiro_cli_extract": true,
         "kas_refuse_plain_http_mcp_headers": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
@@ -107,6 +108,7 @@
         "session_manager_chain": false,
         "peer_steer_loss_recovery": false,
         "member_dispatch": true,
+        "member_branch_prefix": "crew/",
         "conductor_own_child_verbs": true,
         "crew_panel": true,
         "subagent_cost_gb": 0.5,
@@ -433,7 +435,7 @@
       "sensitive": false,
       "tags": [],
       "label": "KAS: run Kiro Crew's own engine bundle",
-      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in).",
+      "help": "When true, the 'kas' backend spawns the @kiro/agent build that 'kirocrew kas install' laid down under the data home (engines/kas/) with its own Node runtime, instead of reaching the engine through kiro-cli's ACP relay. kiro-cli is not needed on this route, and the engine always takes its credential from Kiro Crew's own sign-in (the dashboard's Sign in), never from kiro-cli's store. With nothing installed the gateway installs the pinned engine at the first spawn. With false, KAS still takes this route when kiro-cli's relay cannot run on the host (no kiro-cli, or one that is not signed in). When unset, a Nightly build turns it on and every other build leaves it off (config.loader_document.kas_bundle_build_default(), read from the build's own stamp, not the update channel). A saved value always wins, and save() leaves the key off disk until it is set. This dataclass default stays false so the committed config-schema snapshot is the same for every build.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false,
@@ -453,6 +455,20 @@
       "enumValues": null,
       "defaultValue": true,
       "requiresRestart": true
+    },
+    {
+      "path": "agent.kas_repair_kiro_cli_extract",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: repair kiro-cli's broken engine copy",
+      "help": "When true (the default) and a KAS start through kiro-cli's relay exits with 'failed to canonicalize KAS server path', Kiro Crew moves kiro-cli's incomplete unpacked engine (kas/<version> under kiro-cli's data directory, never anything else) out of kas/ to '<version>.kas-broken-<UTC time>' beside it, and starts once more, so kiro-cli unpacks a fresh copy. Nothing is deleted. When false, or when the second start fails the same way, the start fails with one message naming the directory and the mv command, and the warm pool stops respawning until the directory is moved.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "agent.kas_refuse_plain_http_mcp_headers",
@@ -1704,6 +1720,20 @@
       "defaultValue": true
     },
     {
+      "path": "agent.member_branch_prefix",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Bot branch prefix",
+      "help": "The start of the git branch a bot's new worktree is cut on, before <bot>/<repo>: 'alice/' gives alice/reviewer/myservice. Each part between slashes may use only letters, digits, '.', '_' and '-', may not start or end with '.' or '-', has no '..' and no '.lock' ending, and is at most 40 characters; an empty or rejected value uses crew/. The first part must not be the name of a branch the repository has, such as main. Takes effect live for the next new worktree; one that exists keeps its branch, and one made again after its folder was deleted takes the current prefix.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "crew/"
+    },
+    {
       "path": "agent.conductor_own_child_verbs",
       "kind": "core",
       "type": "boolean",
@@ -2000,6 +2030,7 @@
         "kas_delete_delay_secs": 0,
         "search_scan_window": 2000,
         "watchdog_rss_max_mb": 4096,
+        "watchdog_end_leftovers_mid_turn": false,
         "harness_background_hold_secs": 3600,
         "reconcile_max_kills": 5
       }
@@ -2270,6 +2301,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4096
+    },
+    {
+      "path": "session.watchdog_end_leftovers_mid_turn",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "End Leftover Processes During a Turn",
+      "help": "When a session is over the Watchdog RSS Limit during a turn and the memory is held by processes its commands left running outside the agent's process tree (for example a job a timed-out shell command started), end those processes at once instead of only reporting them. Off by default: such a process can be work the agent started on purpose. Linux only. Read every cleanup tick, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "session.harness_background_hold_secs",
@@ -2611,6 +2656,7 @@
         "writes_enabled": true,
         "lesson_extraction_enabled": true,
         "kind_routing": "off",
+        "lesson_origin_gate": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3185,6 +3231,24 @@
       "tags": [],
       "label": "Consolidation Kind Routing",
       "help": "Whether consolidation tags each project.* fact with a kind (fact, event or state) and what it does with it. 'off' (default) keeps today's prompt and writes. 'shadow' writes every fact as before and only logs, within fixed size caps, what routing would do. 'enforce' skips a state item (a PR, CI or branch status that GitHub, git or the work ledger already holds) and writes facts and events as before. Stored facts are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.lesson_origin_gate",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lesson Origin Gate",
+      "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. Stored lessons are never changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -4203,6 +4267,7 @@
         "max_total_mb": 0,
         "otlp_endpoint": "",
         "otlp_endpoints": [],
+        "traces_enabled": false,
         "beacon_enabled": true,
         "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
       }
@@ -4320,6 +4385,20 @@
       "defaultValue": null
     },
     {
+      "path": "telemetry.traces_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Traces Enabled",
+      "help": "Record OpenTelemetry traces of agent turns: one trace per turn, with the model, credits, tokens where reported, and one span per tool call. Off by default, and off loads nothing. When on, spans go to a local JSONL sink under ~/.kiro/crew/traces only (no network egress), pruned by the Retention and Max Total Size settings above, which the traces directory gets as its own budget. Never records prompt or reply text, tool arguments or output, file paths, or MCP server and tool names. Independent of the metrics 'enabled' switch.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "telemetry.beacon_enabled",
       "kind": "core",
       "type": "boolean",
@@ -4376,6 +4455,7 @@
         "submit_on_release": false,
         "slide_to_send": false,
         "dictation_panel": true,
+        "dictation_note": false,
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
         "transcribe_profile": "",
@@ -4618,6 +4698,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "stt.dictation_note",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tell the agent this was dictated",
+      "help": "Add one line to the end of a message that holds dictated text, telling the agent it may contain transcription errors, odd typos, misplaced words or punctuation. Messages you only typed never get it. The line is part of the message, so it shows in the transcript too. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "stt.timeout_secs",
@@ -6412,6 +6506,7 @@
       "defaultValue": {
         "max_open_files": null,
         "max_processes": null,
+        "max_user_processes": null,
         "max_memory_mb": null,
         "max_address_space_mb": null,
         "max_cpu_seconds": null,
@@ -6448,7 +6543,22 @@
       "sensitive": false,
       "tags": [],
       "label": "Max processes",
-      "help": "READ BY TWO MECHANISMS with different meanings for 0. As RLIMIT_NPROC it caps processes for the child's real UID, and 0 leaves the inherited limit unchanged (the default -- see the per-UID caveat in security._RLIMIT_DEFAULTS). As the cgroup TasksMax it counts TASKS (threads) in the scope, where 0 is rejected by systemd, so 0 or unset means the module default.",
+      "help": "Per-scope TASK budget: the cgroup TasksMax on Linux, which counts TASKS (threads), and the Job object ActiveProcessLimit on Windows. 0 is rejected by systemd, so 0 or unset means the module default. It sets no POSIX rlimit; the per-user process cap is the separate max_user_processes.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "resource_limits.max_user_processes",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max user processes",
+      "help": "RLIMIT_NPROC on the tool and build processes the gateway spawns, opt-in; the ACP session host and what it starts keep the inherited limit. The kernel counts every process and thread of the gateway's user, not one spawn's tree, so a cap below what that user already runs stops those spawns from forking. 0 or unset leaves the inherited limit unchanged (the default). Set it only when the gateway runs as its own dedicated user. Not used by the cgroup path.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -6642,7 +6752,8 @@
           "folder": null,
           "agent": null,
           "model": null,
-          "reasoning_effort": null
+          "reasoning_effort": null,
+          "approval_mode": null
         }
       }
     },
@@ -7025,14 +7136,15 @@
         "slack"
       ],
       "label": "Code Channel Defaults",
-      "help": "Folder, agent, model and reasoning effort a new code-channel session starts with. Takes effect on the next new code channel; no restart.",
+      "help": "Folder, agent, model, reasoning effort and approval mode a new code-channel session starts with. Takes effect on the next new code channel; no restart.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
         "folder": null,
         "agent": null,
         "model": null,
-        "reasoning_effort": null
+        "reasoning_effort": null,
+        "approval_mode": null
       }
     },
     {
@@ -7100,6 +7212,27 @@
       "help": "Reasoning effort new code-channel sessions start with: low, medium, high, xhigh or max. Empty keeps the agent's own effort. Ignored on models that do not support effort.",
       "hasChildren": false,
       "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "slack.code_channel_defaults.approval_mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Default Approval Mode",
+      "help": "Tool approval mode new code-channel sessions start in: ask (the default: look-ups such as file reads, web searches and read-only shell commands run on their own, everything else asks), trust_reads (also searches of memory, past chats, skills and the knowledge library) or trust (every tool runs without asking). Trust lets anyone allowed to talk to the bot in the channel drive an agent whose tools run unprompted, and sessions it spawns inherit that. The mode can still be changed on the session afterwards.",
+      "hasChildren": false,
+      "enumValues": [
+        "ask",
+        "trust_reads",
+        "trust"
+      ],
       "defaultValue": null,
       "nullable": true
     },
@@ -9580,6 +9713,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.bridge_approvals",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: bridge_approvals",
+      "help": "Turn on the 'bridge_approvals' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.crew_mode",
       "kind": "core",
       "type": "boolean",
@@ -11237,6 +11384,7 @@
         "relay_lease_url": "",
         "relay_lease_credential": "",
         "relay_lease_token_type": "",
+        "relay_handle_email_domains": [],
         "relay_viewer_enabled": false,
         "relay_viewer_cps_url": "",
         "relay_viewer_credential": "",
@@ -11350,6 +11498,35 @@
       "enumValues": null,
       "defaultValue": "",
       "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_handle_email_domains",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Handle Email Domains",
+      "help": "Email domains, for example example.com, whose addresses label a relayed person by the part before the @ when the relay sent no name. The whole domain must match, ignoring case, so a subdomain or a longer domain keeps the full address. Empty (the default) labels everyone by their full address. Display only: it never changes who a person is or what they may do.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": [],
+      "requiresRestart": true
+    },
+    {
+      "path": "tunnel.relay_handle_email_domains.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "tunnel.relay_viewer_enabled",
@@ -11847,6 +12024,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "agents.*.dashboard_card_send",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dashboard card send (preview)",
+      "help": "Preview, off by default. When on, a button on this crewmate's Dashboard tab may send its reply straight into the crewmate's own thread with one click. Off (the default), such a button only puts the reply in the chat box and the person presses send, which is what every card did before. A card-sent turn is tagged '[Dashboard card]', is never an approval, and is refused while the thread has an open approval or question.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agents.*.watchdog_tool_stall_suspect_secs",

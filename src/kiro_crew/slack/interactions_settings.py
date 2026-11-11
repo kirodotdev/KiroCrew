@@ -372,12 +372,14 @@ async def _handle_agent_select(
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(
+                resp = await sess.post(
                     response_url,
                     proxy=resolve_proxy(response_url),
                     json={"replace_original": True, "text": label, "blocks": blks},
                 )
-                return
+                # An expired or rate-limited url answers 4xx/5xx without raising.
+                if 200 <= resp.status < 300:
+                    return
         except Exception:
             pass
 
@@ -531,12 +533,14 @@ async def _handle_allowlist_remove(
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(
+                resp = await sess.post(
                     response_url,
                     proxy=resolve_proxy(response_url),
                     json={"replace_original": True, "text": "Allowlist updated", "blocks": blks},
                 )
-                return
+                # An expired or rate-limited url answers 4xx/5xx without raising.
+                if 200 <= resp.status < 300:
+                    return
         except Exception:
             pass
     if _orch.slack and channel and msg_ts:
@@ -571,7 +575,7 @@ async def _handle_channel_remove(
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(
+                resp = await sess.post(
                     response_url,
                     proxy=resolve_proxy(response_url),
                     json={
@@ -580,7 +584,9 @@ async def _handle_channel_remove(
                         "blocks": blks,
                     },
                 )
-                return
+                # An expired or rate-limited url answers 4xx/5xx without raising.
+                if 200 <= resp.status < 300:
+                    return
         except Exception:
             pass
     if _orch.slack and channel and msg_ts:

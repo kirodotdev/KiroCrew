@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from kiro_crew import _facade_mirror
 from kiro_crew.context_blocks import attributable_user_chars
-from kiro_crew.dashboard.chat_utils_display import redact_display_content
+from kiro_crew.dashboard.chat_utils_display import _carry_row_mid, redact_display_content
 from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
@@ -164,6 +164,8 @@ def _build_stream_chunk(msg: dict) -> str:
     except Exception:
         logger.warning("Failed to parse cls meta for permission message", exc_info=True)
         meta = None
+    if meta is not None:
+        meta = _carry_row_mid(meta, msg)
     if meta:
         meta = _redact_deep(meta)
     # One shared guard for content: redact recursively and hold the
@@ -723,11 +725,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CRON_NOTIFICATION_KIND,
         EMPTY_TURN_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        GATEWAY_PROMPT_INJECT_KINDS,
+        HEARTBEAT_PROMPT_KIND,
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
         MCP_APP_MESSAGE_KIND,
         MODEL_UNAVAILABLE_KIND,
         MODEL_UNENTITLED_KIND,
+        REQUEUED_STEER_ROW_MID_META,
         SEED_DECLINED_NOTICE_KIND,
         SESSION_START_FAILED_KIND,
         SPEC_HOOKS_NOTICE_KIND,
@@ -776,11 +781,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         slack_options_slot,
     )
     from kiro_crew.dashboard.chat_utils_slots import (  # noqa: F401
+        _CRON_SLOT_PREFIX,
         _INCOGNITO_PREFIX,
+        _JOB_ID_HEX,
         _PUBLISHED_SLOT_KEYS_LOCK,
         _TEMPORARY_PREFIX,
         ReplacementTightening,
         _apply_incognito_prefix,
+        _cron_job_id,
         _history_key_for,
         _installed_theme_persona,
         _maybe_consolidate,
@@ -791,6 +799,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resettle_restricted_key,
         _sync_dashboard_slots,
         apply_pending_slot_memory_mode,
+        crew_log_slots_for,
         cron_tab_name,
         dashboard_slot_key,
         effective_session_key,
@@ -907,6 +916,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         transcript_lock_stems,
         transcript_sort_key,
         transcript_stems,
+    )
+    from kiro_crew.history_files import (  # noqa: F401
+        transcript_stem,
     )
     from kiro_crew.hooks import (  # noqa: F401
         _HOST_READ_ONLY_BUILTIN_TOOLS,
