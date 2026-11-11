@@ -1,4 +1,5 @@
-"""Content writes of an ``ArtifactStore``: create, image create, update, settle-blank.
+"""Content writes of an ``ArtifactStore``: create (and ``check_create``, its refusals
+without the write), image create, update, settle-blank.
 
 Each write validates its fields, takes the store lock, writes the content (the store's
 copy or the live ``source_path`` file), records versions and lifecycle events, and
@@ -59,6 +60,84 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.artifacts")
 
 
+def _checked_fields(
+    name: str,
+    content: str,
+    kind: str | None,
+    source: str,
+    description: str,
+    tags: list[str] | None,
+    source_path: str,
+    source_root: str,
+) -> tuple[str, str, str, bool, str, str, list[str], str, str]:
+    """:func:`create`'s field checks: the stored form of each field, or the refusal.
+
+    Returns ``(name, content, kind, kind_auto, source, description, tags,
+    source_path, source_root)``.
+    """
+    name = _validate_name(name)
+    content = _validate_content(content)
+    source_path = _validate_source_path(source_path)
+    source_root = _validate_source_path(source_root, "source_root") if source_path else ""
+    # Infer the kind when the caller didn't pin one (explicit kind always
+    # wins). Runs after _validate_content because the sniff reads the content.
+    #
+    # A BLANK document, which the library's "New artifact" action creates, has
+    # nothing to sniff. Default it to markdown and mark the kind auto-assigned, so
+    # the first real content write can settle it into json / svg (see
+    # :func:`detect_editor_kind`).
+    kind_auto = kind is None and not source_path and not content.strip()
+    if kind_auto:
+        kind = "markdown"
+    kind = _validate_kind(_infer_kind(content, source_path, kind))
+    if kind == _dashboard.DASHBOARD_KIND:
+        # A dashboard artifact's content is a LAYOUT PACKAGE, so the write
+        # gate runs here rather than at each caller: every create reaches
+        # this line, and the stored bytes are the canonical form so a later
+        # layout comparison cannot be perturbed by the author's whitespace.
+        #
+        # A live file pointer is refused outright. The store validates what
+        # it writes, but a linked file is read back from disk on every get,
+        # where an edit made outside the store would reach the page as a
+        # package nothing checked.
+        if source_path:
+            raise ArtifactValidationError(
+                "a dashboard package is store-owned: kind='dashboard' takes no "
+                "source_path, because a linked file is read back unvalidated"
+            )
+        content = _dashboard.canonical_package_content(content)
+    source = _validate_source(source)
+    description = _validate_description(description)
+    tags_list = _validate_tags(tags)
+    return name, content, kind, kind_auto, source, description, tags_list, source_path, source_root
+
+
+def check_create(
+    self: ArtifactStore,
+    *,
+    name: str,
+    content: str,
+    slug: str | None = None,
+    kind: str | None = None,
+    source: str = "chat",
+    description: str = "",
+    tags: list[str] | None = None,
+    source_path: str = "",
+    source_root: str = "",
+) -> None:
+    """Raise what :meth:`create` would refuse these fields with, and write nothing.
+
+    For a caller with a step before the create that cannot be undone -- a save's
+    mkdir -p of the folder it names -- so a refused save is refused before that step.
+    The slug is checked, not claimed: a concurrent create can still take it.
+    """
+    name = _checked_fields(
+        name, content, kind, source, description, tags, source_path, source_root
+    )[0]
+    with self._lock:
+        self._claim_slug(slug, name)
+
+
 def create(
     self: ArtifactStore,
     *,
@@ -107,40 +186,9 @@ def create(
     (:attr:`Artifact.goal_report`). Only
     :func:`kiro_crew.dashboard.goal_reminder.save_report` should set it.
     """
-    name = _validate_name(name)
-    content = _validate_content(content)
-    source_path = _validate_source_path(source_path)
-    source_root = _validate_source_path(source_root, "source_root") if source_path else ""
-    # Infer the kind when the caller didn't pin one (explicit kind always
-    # wins). Runs after _validate_content because the sniff reads the content.
-    #
-    # A BLANK document, which the library's "New artifact" action creates, has
-    # nothing to sniff. Default it to markdown and mark the kind auto-assigned, so
-    # the first real content write can settle it into json / svg (see
-    # :func:`detect_editor_kind`).
-    kind_auto = kind is None and not source_path and not content.strip()
-    if kind_auto:
-        kind = "markdown"
-    kind = _validate_kind(_infer_kind(content, source_path, kind))
-    if kind == _dashboard.DASHBOARD_KIND:
-        # A dashboard artifact's content is a LAYOUT PACKAGE, so the write
-        # gate runs here rather than at each caller: every create reaches
-        # this line, and the stored bytes are the canonical form so a later
-        # layout comparison cannot be perturbed by the author's whitespace.
-        #
-        # A live file pointer is refused outright. The store validates what
-        # it writes, but a linked file is read back from disk on every get,
-        # where an edit made outside the store would reach the page as a
-        # package nothing checked.
-        if source_path:
-            raise ArtifactValidationError(
-                "a dashboard package is store-owned: kind='dashboard' takes no "
-                "source_path, because a linked file is read back unvalidated"
-            )
-        content = _dashboard.canonical_package_content(content)
-    source = _validate_source(source)
-    description = _validate_description(description)
-    tags_list = _validate_tags(tags)
+    name, content, kind, kind_auto, source, description, tags_list, source_path, source_root = (
+        _checked_fields(name, content, kind, source, description, tags, source_path, source_root)
+    )
 
     with self._lock:
         slug, collided_with = self._claim_slug(slug, name)
