@@ -100,6 +100,10 @@ class TargetPaths(list):
 
     truncated: bool = False
     unanchored: bool = False
+    #: The ``%NAME%`` an unanchored target spells, when that is the cause: the
+    #: tool keeps it literal (``paths_resolver._tool_expandvars``), so it writes
+    #: under its working directory. Empty when no such variable explains it.
+    literal_variable: str = ""
 
 
 def target_paths(
@@ -393,6 +397,10 @@ def edit_target_candidates(
                 # computed from it would be about the wrong file. The flag is
                 # the verdict-carrier; consumers deny on it.
                 candidates.unanchored = True
+                if not isinstance(raw_params, GuestPathParams):
+                    candidates.literal_variable = candidates.literal_variable or _literal_variable(
+                        path, require_drive=True
+                    )
     if isinstance(raw_params, Mapping) and "patchText" in raw_params:
         patch = raw_params["patchText"]
         if not isinstance(patch, str):
@@ -411,10 +419,47 @@ def edit_target_candidates(
             anchored = _is_anchored(diff_path)
         if not anchored:
             candidates.unanchored = True
+            if not isinstance(raw_params, GuestPathParams):
+                candidates.literal_variable = candidates.literal_variable or _literal_variable(
+                    diff_path
+                )
             return candidates
         if diff_path not in candidates:
             candidates.append(diff_path)
     return candidates
+
+
+_PERCENT_VARIABLE_RE = re.compile(r"%[^%\\/]+%")
+
+
+#: This host's ``%VAR%`` expansion (``ntpath.expandvars`` on Windows). A test
+#: swaps in ``ntpath.expandvars`` to pin the Windows reading on any host.
+_host_expandvars = os.path.expandvars
+
+
+def _literal_variable(path: str, *, require_drive: bool = False) -> str:
+    """The first set ``%NAME%`` in the unanchored *path*, when it is the cause, or ``""``.
+
+    It is the cause only when this host's expansion of *path* is anchored: then
+    the one reading that is not is the tool's, which keeps ``%NAME%`` literal.
+    """
+    if not _is_anchored(_host_expandvars(path), require_drive=require_drive):
+        return ""
+    for match in _PERCENT_VARIABLE_RE.finditer(path):
+        if _host_expandvars(match.group()) != match.group():
+            return match.group()
+    return ""
+
+
+def unanchored_denial(candidates: TargetPaths) -> str:
+    """The refusal for an unanchored target set, naming a literal ``%NAME%`` cause."""
+    reason = "Blocked: file edit names a relative target path that cannot be verified"
+    if candidates.literal_variable:
+        reason += (
+            f": the tool keeps {candidates.literal_variable} literal, so it writes under "
+            "its working directory, not where this host expands it. Spell the path out in full"
+        )
+    return reason + " (deny-by-default)"
 
 
 def _is_anchored(path: str, *, require_drive: bool = False, pathmod: ModuleType = os.path) -> bool:
@@ -428,13 +473,20 @@ def _is_anchored(path: str, *, require_drive: bool = False, pathmod: ModuleType 
     different files, and it is not anchored there. ``pathmod`` is the path module
     the check reads (``os.path`` in production; a test passes ``ntpath`` to pin
     the Windows reading on any host).
+
+    Every reading must be anchored: this host's, and the tool's, which keeps a
+    Windows ``%VAR%`` literal (``paths_resolver._tool_expandvars``). A
+    ``%USERPROFILE%\\..\\x`` the host reads as absolute is relative to the tool,
+    which writes it under the session's cwd, a file no gate here judges.
     """
-    expanded = pathmod.expanduser(pathmod.expandvars(path))
-    if not pathmod.isabs(expanded):
-        return False
-    if require_drive and pathmod is ntpath:
-        drive, _ = ntpath.splitdrive(expanded)
-        return bool(drive)
+    from kiro_crew.security.paths_resolver import _tool_expandvars
+
+    for expand in (pathmod.expandvars, _tool_expandvars):
+        expanded = pathmod.expanduser(expand(path))
+        if not pathmod.isabs(expanded):
+            return False
+        if require_drive and pathmod is ntpath and not ntpath.splitdrive(expanded)[0]:
+            return False
     return True
 
 

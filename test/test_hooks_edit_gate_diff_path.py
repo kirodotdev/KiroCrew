@@ -728,3 +728,83 @@ class TestADeleteIsOnTheWritePlane:
         """Routing ``delete`` onto the write plane must not pull a read along."""
         decision = _call(tool_kind="read", raw_params={"path": _WRITE_ONLY})
         assert decision.action != TOOL_DENY
+
+
+class TestAPercentVariableRefusalNamesItsCause:
+    """A Windows ``%VAR%`` delete target the tool keeps literal is refused as
+    unanchored. The refusal names the variable and why, so the user can
+    re-spell the path, and both tiers give the same words."""
+
+    _WORDS = (
+        "Blocked: file edit names a relative target path that cannot be verified: "
+        "the tool keeps %USERPROFILE% literal, so it writes under its working "
+        "directory, not where this host expands it. Spell the path out in full "
+        "(deny-by-default)"
+    )
+
+    @pytest.fixture
+    def windows_reading(self, monkeypatch):
+        import ntpath
+
+        from kiro_crew.platform import tool_paths
+
+        monkeypatch.setenv("USERPROFILE", r"C:\Users\u")
+        monkeypatch.setenv("TEMP", "scratch")
+        monkeypatch.setattr(tool_paths, "_host_expandvars", ntpath.expandvars)
+        original = tool_paths._is_anchored
+        monkeypatch.setattr(
+            tool_paths,
+            "_is_anchored",
+            lambda path, *, require_drive=False: original(
+                path, require_drive=require_drive, pathmod=ntpath
+            ),
+        )
+
+    def test_the_hook_gate_names_the_variable(self, windows_reading) -> None:
+        decision = _call(raw_params={"targetFile": "%USERPROFILE%\\..\\secret"}, tool_kind="delete")
+        assert decision.action == TOOL_DENY
+        assert decision.reason == self._WORDS
+
+    def test_the_always_enforced_tier_names_the_variable(self, windows_reading) -> None:
+        from kiro_crew.llm_helpers import _edit_target_denial
+
+        hit = _edit_target_denial({"targetFile": "%USERPROFILE%\\..\\secret"}, "", "delete")
+        assert hit is not None and hit[1] == self._WORDS
+
+    def test_a_target_relative_for_another_reason_names_no_variable(self, windows_reading) -> None:
+        # ``%TEMP%`` is set, but expands to a relative ``scratch``: the path is
+        # relative on every reading, so the variable is not the cause.
+        decision = _call(raw_params={"targetFile": "%TEMP%\\x.txt"}, tool_kind="delete")
+        assert decision.action == TOOL_DENY
+        assert decision.reason == (
+            "Blocked: file edit names a relative target path that cannot be verified "
+            "(deny-by-default)"
+        )
+
+    def test_an_unanchored_diff_path_keeps_the_params_variable(self, windows_reading) -> None:
+        from kiro_crew.platform.tool_paths import edit_target_candidates, unanchored_denial
+
+        candidates = edit_target_candidates(
+            {"targetFile": "%USERPROFILE%\\..\\secret"}, "notes\\x.md", tool_kind="delete"
+        )
+        assert candidates.unanchored
+        assert unanchored_denial(candidates) == self._WORDS
+
+    def test_a_guest_target_names_no_variable(self, windows_reading) -> None:
+        from kiro_crew.platform.guest_paths import GuestPathParams
+        from kiro_crew.platform.tool_paths import edit_target_candidates, unanchored_denial
+
+        params = GuestPathParams({"targetFile": "%USERPROFILE%\\..\\x"}, root="/workspace/app")
+        candidates = edit_target_candidates(params, tool_kind="delete")
+        assert candidates.unanchored
+        assert unanchored_denial(candidates) == (
+            "Blocked: file edit names a relative target path that cannot be verified "
+            "(deny-by-default)"
+        )
+
+    def test_a_plain_relative_target_keeps_the_short_refusal(self) -> None:
+        decision = _call(raw_params={"targetFile": "../config.json"}, tool_kind="delete")
+        assert decision.reason == (
+            "Blocked: file edit names a relative target path that cannot be verified "
+            "(deny-by-default)"
+        )

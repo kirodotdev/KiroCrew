@@ -235,3 +235,19 @@ def test_posix_spellings_are_not_folded(
     path = os.path.join(str(tmp_path), name)
     assert not security.is_sensitive_path(path)
     assert not security.path_contains_sensitive(path)
+
+
+@pytest.mark.usefixtures("windows")
+def test_a_percent_variable_is_judged_as_the_literal_the_tool_writes(monkeypatch) -> None:
+    # The tool keeps ``%VAR%`` literal, so from HOME this spelling writes CRED; the
+    # host's ``ntpath.expandvars`` alone would judge ``D:\decoy\.aws\credentials``.
+    monkeypatch.setenv("KC_DECOY", r"D:\decoy\dir")
+    spelling = r"%KC_DECOY%\..\.aws\credentials"
+    assert security.is_sensitive_path(spelling, base_dir=HOME)
+    assert security.sensitive_path_refusal(spelling, base_dir=HOME) is not None
+
+
+@pytest.mark.usefixtures("windows")
+def test_the_expanded_percent_variable_reading_is_still_judged(monkeypatch) -> None:
+    monkeypatch.setenv("KC_DECOY", HOME + r"\x")
+    assert security.is_sensitive_path(r"%KC_DECOY%\..\.aws\credentials", base_dir=r"D:\ws")
