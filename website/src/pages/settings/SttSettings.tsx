@@ -27,6 +27,8 @@ import {
   nextTranscribeLanguages,
   PROVIDER_LOCAL,
   PROVIDER_CODEX,
+  PROVIDER_OPENAI_COMPATIBLE,
+  AUTO_LANGUAGE_PROVIDERS,
   PROVIDER_TRANSCRIBE,
   providerLabel,
   unavailableMessage,
@@ -35,6 +37,7 @@ import { parseErrorCode, parseErrorField, reportForError, sendErrorToChat } from
 import { PttTestStrip } from '../../components/PttTestStrip'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import SttRetentionNote from './SttRetentionNote'
+import SttOpenAiCompatibleSettings from './SttOpenAiCompatibleSettings'
 import SpeechProviderNotice from '../../components/SpeechProviderNotice'
 import { parseSpeechProviders, speechProviderNotice, speechProviderOptions } from '../../lib/speechProviders'
 import {
@@ -84,6 +87,8 @@ interface SttConfig {
   dictation_panel?: boolean
   /** End a message holding dictated words with a note telling the agent so. Off by default. */
   dictation_note?: boolean
+  /** The model id the `openai_compatible` provider requests. */
+  openai_model?: string
   transcribe_region?: string
   transcribe_profile?: string
   /** Amazon Transcribe custom vocabulary name; '' for none. */
@@ -1059,7 +1064,7 @@ export default function SttSettings({ cardIndex }: {
     ? stt.streaming_providers
     : FALLBACK_STREAMING_PROVIDERS
   const canStream = streamingProviders.includes(provider)
-  const defaultLanguage = provider === PROVIDER_LOCAL ? 'auto' : 'en-US'
+  const defaultLanguage = AUTO_LANGUAGE_PROVIDERS.includes(provider) ? 'auto' : 'en-US'
   const languageOptions = stt.language_codes?.length ? stt.language_codes : [defaultLanguage]
   // Gated on the served capability like streaming, so an edition provider that
   // identifies languages gets the picker without core naming it.
@@ -1320,6 +1325,9 @@ export default function SttSettings({ cardIndex }: {
         {providerNotice && <SpeechProviderNotice entry={providerNotice} testId="stt-provider-notice" askAgent={awsDraftsSaved} />}
 
         <SttRetentionNote provider={provider} />
+        {provider === PROVIDER_OPENAI_COMPATIBLE && (
+          <SttOpenAiCompatibleSettings model={stt.openai_model || ''} disabled={saving} onSave={openai_model => set({ openai_model })} />
+        )}
 
         {/* Gated on a NON-EMPTY catalog, not just on the provider: the catalog is
             the status endpoint's to serve, and a picker with no options is worse
