@@ -28,7 +28,6 @@ Resolution principles (from the design + the grounding analysis):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 from dataclasses import dataclass, field, replace
@@ -44,6 +43,7 @@ from kiro_crew.platform.governance import (
     deny_all_profile,
     parse_profile,
 )
+from kiro_crew.user_json import loads_user_json
 
 
 @dataclass(frozen=True)
@@ -762,7 +762,7 @@ class ProfileStore:
                 fallback_stems.add(stem)
                 continue
             try:
-                data = json.loads(raw)
+                data = loads_user_json(raw)
                 if not isinstance(data, dict):
                     raise PlatformCompositionError("profile is not a JSON object")
                 by_name[stem] = parse_profile(data)

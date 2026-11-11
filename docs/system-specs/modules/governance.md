@@ -308,6 +308,8 @@ degrades to ungoverned. One leading UTF-8 byte-order mark (what Windows editors
 and PowerShell 5.1 `Set-Content -Encoding UTF8` write) is not content: the env and
 home readers parse through `user_json.loads_user_json`, so such a file loads at its
 tier. Any other encoding (UTF-16, a second mark) or invalid JSON still refuses.
+`admission.load_admission_policy` and `ProfileStore._reload` parse the same way, so
+a marked admission policy or profile loads as authored instead of failing closed.
 
 ## Update pins (`updates`) — policy-only
 
