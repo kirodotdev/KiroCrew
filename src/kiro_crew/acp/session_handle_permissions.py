@@ -52,7 +52,10 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     rejection_reason_meta,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
+    permission_value_for,
+)
 from kiro_crew.constants import DENY_CAUSE_PROVENANCE_UNRETAINED, DENY_CAUSE_UNREADABLE_IDENTITY
 from kiro_crew.deny_notice import unreadable_identity_clause
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
@@ -629,7 +632,8 @@ async def apply_session_permission_routing(self: AcpSessionHandle) -> None:
         return
     if self.mirror_used and self._runtime._member_projection_needs_confirmation(self.mirror_used):
         await self._runtime._confirm_member_projection(self)
-    option_id, value = acp_tool_gate.permission_config_for(backend)
+    option_id, _required = acp_tool_gate.permission_config_for(backend)
+    value = permission_value_for(backend, self._config_options)
     issue = acp_tool_gate.session_config_issue(backend, self._config_options)
     if issue:
         # Not advertised: INDETERMINATE, never BYPASSED. The adapter may well
