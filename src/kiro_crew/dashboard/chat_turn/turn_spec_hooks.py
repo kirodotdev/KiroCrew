@@ -38,7 +38,10 @@ from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
     remember_slack_options,
 )
-from kiro_crew.dashboard.chat_utils_injected_rows import SPEC_HOOKS_RUN_NOWHERE_NOTICE
+from kiro_crew.dashboard.chat_utils_injected_rows import (
+    MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
+    SPEC_HOOKS_RUN_NOWHERE_NOTICE,
+)
 from kiro_crew.dashboard.engine_fallback import hook_session_model
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
@@ -57,6 +60,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_USER_PROMPT_SUBMIT,
     pre_tool_match_names,
 )
+from kiro_crew.mcp_oauth_projection import oauth_servers_in
 from kiro_crew.slack.outbound import PostedOptions
 
 if TYPE_CHECKING:
@@ -279,6 +283,9 @@ async def _prepare_spec_hooks(
             "notice",
             _redact_display_text(_spec_keys_notice(agent, lost)),
             "msg msg-info",
+            meta=(
+                {"kind": MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND} if oauth_servers_in(lost) else None
+            ),
         )
     if is_new and unconfirmable:
         append_and_surface(

@@ -231,6 +231,12 @@ SPEC_HOOKS_RUN_NOWHERE_NOTICE = "run_nowhere"
 #: for the same reason as :data:`SPEC_HOOKS_NOTICE_KIND`.
 SEED_DECLINED_NOTICE_KIND = "seed_declined"
 
+#: ``meta.kind`` of the session-start notice that names MCP servers whose sign-in
+#: cannot work on this backend. The dashboard keeps it out of the collapsed steps
+#: of the turn (``isAlwaysVisible`` in ``website/src/pages/chat/TurnBlock.tsx``):
+#: it is the only sign that such a server never connects in this session.
+MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND = "mcp_sign_in_unsupported"
+
 
 #: Row-level kind for the terminal `error` row a prompt-time MODEL ENTITLEMENT
 #: rejection produces ("Your account does not have access to model 'X'"), so

@@ -1538,10 +1538,7 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     servers = oauth_servers_in(keys)
     if servers:
         noun = "server" if len(servers) == 1 else "servers"
-        notice += (
-            f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this "
-            "backend. The kiro-cli backend supports it."
-        )
+        notice += f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this backend yet."
     if "permissions" in keys:
         notice += (
             " A permissions block is not sent at all when it names a policies bundle "
