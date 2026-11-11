@@ -612,7 +612,7 @@ removes it, and its name is no sweep candidate. The doctor's census below still
 counts it with the unmarked folders, since counting deletes nothing. The key
 predicate and corresponding directory-name regex come from one shared shape table;
 stable `cron:<job>:<agent>` keys are not one-run directories.
-`AcpProvider.start` writes a `.kirocrew-run-dir` marker before
+`AcpProvider.start` (`providers/acp_lifecycle.py`) writes a `.kirocrew-run-dir` marker before
 any other writer: two ASCII lines, the data-home identity (`data_home_id()`, the
 digest of the resolved `config_dir()`) and the gateway pid. That marker is the
 directory's only provenance: a name under the workspace root is not one (a person

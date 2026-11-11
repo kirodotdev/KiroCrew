@@ -484,7 +484,7 @@ def rearm_first_turn(self: SessionManager, key: str, provider: Any, *, resumed: 
         session.first_turn = FirstTurnState.RESUMED if resumed else FirstTurnState.FRESH
 
 
-def record_effort_override(self: SessionManager, key: str, level: str) -> None:
+def record_effort_override(self: SessionManager, key: str, level: str) -> str:
     """Record *level*, picked on *key*'s live session, as its effort override.
 
     The pick supersedes the level the allocation recorded, so a restart or
@@ -493,10 +493,16 @@ def record_effort_override(self: SessionManager, key: str, level: str) -> None:
     reads a level back from the workspace ``cli.json``, and KAS and the adapter
     harnesses take theirs from the allocation alone. ``""`` (back to the
     default) drops the record. No-op if *key* is unknown.
+
+    Returns the level it replaced (``""`` for none), so a pick refused after
+    this write can record that level again.
     """
     session = self._sessions.get(self._fold_key(key))
-    if session is not None:
-        session.reasoning_effort_override = level or None
+    if session is None:
+        return ""
+    replaced = session.reasoning_effort_override or ""
+    session.reasoning_effort_override = level or None
+    return replaced
 
 
 # ── Circuit breaker ──

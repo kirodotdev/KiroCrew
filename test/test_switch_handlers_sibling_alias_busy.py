@@ -82,6 +82,16 @@ def _mock_state(*slots: _ChatSlot) -> DashboardState:
     state._slots = {s.key: s for s in slots}
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock(return_value=True)
+    state.sessions.aflush = AsyncMock()
+    state.sessions.explicit_effort_default_pending = MagicMock(return_value=False)
+    state.sessions.set_explicit_effort_default = MagicMock(return_value=True)
+    # ``sessions`` is a mock, so the allocation reservation a real sibling cold
+    # start holds is not modelled here: these cases pin the slot-level probe
+    # (``_switch_target_busy``) alone, and the reservation probe answers free.
+    state.sessions.effort_basis_locked = MagicMock(return_value=False)
+    state.sessions.effort_intent_write = MagicMock(
+        side_effect=lambda _key: contextlib.nullcontext()
+    )
     # The window under test: B's provider.start() has not registered yet.
     state.sessions.get_provider = MagicMock(return_value=None)
     # No transcript store: the control cases run the commit path to its 200,

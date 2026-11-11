@@ -31,6 +31,8 @@ from kiro_crew.providers.acp import (
     _write_tool_search_overlay,
 )
 
+pytestmark = pytest.mark.usefixtures("no_zero_tool_check")
+
 
 def _build_provider(backend: str) -> AcpProvider:
     """Build an AcpProvider with a mocked client (mirrors test_acp_provider.py)."""
@@ -160,6 +162,75 @@ class TestWriteToolSearchOverlay:
         second = _cli_json(tmp_path).read_text(encoding="utf-8")
         assert first == second
 
+    @staticmethod
+    def _stamp_clock(monkeypatch):
+        """Drive the stamp clock by hand, so a repeat write would take a different stamp."""
+        from types import SimpleNamespace
+
+        from kiro_crew import workspace_cli_settings
+
+        clock = [1_790_000_000.0]
+        monkeypatch.setattr(workspace_cli_settings, "time", SimpleNamespace(time=lambda: clock[0]))
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        return advance
+
+    def test_repeat_write_over_an_owned_effort_leaves_bytes_and_mtime_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        advance = self._stamp_clock(monkeypatch)
+        _write_cli_overlay(tmp_path, "claude-opus-4.7", "high")
+        _write_tool_search_overlay(tmp_path, True)
+        cli = _cli_json(tmp_path)
+        before = cli.read_bytes()
+        before_stat = cli.stat()
+        advance(10)
+
+        _write_tool_search_overlay(tmp_path, True)
+
+        after_stat = cli.stat()
+        assert cli.read_bytes() == before
+        assert (after_stat.st_ino, after_stat.st_mtime_ns) == (
+            before_stat.st_ino,
+            before_stat.st_mtime_ns,
+        )
+        data = json.loads(before)
+        assert data["kirocrew.effortOwned"] == {"claude-opus-4.7": "high"}
+        assert data["kirocrew.effortOwnedStamp"] == int(after_stat.st_mtime)
+
+    def test_repeat_write_with_no_record_leaves_bytes_unchanged(self, tmp_path, monkeypatch):
+        advance = self._stamp_clock(monkeypatch)
+        _write_tool_search_overlay(tmp_path, True)
+        cli = _cli_json(tmp_path)
+        before = cli.read_bytes()
+        advance(10)
+
+        _write_tool_search_overlay(tmp_path, True)
+
+        assert cli.read_bytes() == before
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            pytest.param(None, id="absent"),
+            pytest.param(b'{"unrelated.key": 42}', id="operator"),
+            pytest.param(b'{"kirocrew.effortOwnedStamp": 1790000000}', id="stray-stamp"),
+        ],
+    )
+    def test_write_with_no_record_stores_no_kirocrew_key(self, tmp_path, contents):
+        cli = _cli_json(tmp_path)
+        if contents is not None:
+            cli.parent.mkdir(parents=True)
+            cli.write_bytes(contents)
+
+        _write_tool_search_overlay(tmp_path, True)
+
+        data = json.loads(cli.read_text(encoding="utf-8"))
+        assert data["toolSearch.enabled"] is True
+        assert not [key for key in data if key.startswith("kirocrew.")]
+
 
 # ── Provider application logic ───────────────────────────────────────────────
 
@@ -221,6 +292,20 @@ class TestApplyToolSearchOverlay:
 
 
 class TestInitWiring:
+    @pytest.mark.parametrize(
+        "backend",
+        [
+            pytest.param("", id="kiro_does_not_apply_on_init"),
+            pytest.param(ACP_BACKEND_CLAUDE, id="claude_backend_does_not_apply_on_init"),
+        ],
+    )
+    def test_overlay_on_init(self, backend, tmp_path):
+        with patch("kiro_crew.providers.acp.AcpClient") as mock_client:
+            mock_client.return_value.backend = backend
+            mock_client.return_value._work_dir = tmp_path
+            AcpProvider(acp_backend=backend, tool_search=True)
+        assert not _cli_json(tmp_path).exists()
+
     def test_construction_writes_nothing_for_any_backend(self):
         # The constructor runs on the gateway event loop; ``start()`` owns the file.
         for backend in ("", ACP_BACKEND_CLAUDE):
@@ -254,9 +339,6 @@ class TestInitWiring:
 def _start_wired(threads: list[int], order: list[str]):
     """Stub everything ``start()`` does around the overlay, recording the overlay steps."""
 
-    async def _recover(self):
-        order.append("recover")
-
     def _effort(self, **_kw):
         order.append("effort")
         threads.append(threading.get_ident())
@@ -267,7 +349,6 @@ def _start_wired(threads: list[int], order: list[str]):
         threads.append(threading.get_ident())
 
     return (
-        patch.object(AcpProvider, "_recover_effort_overlay", _recover),
         patch.object(AcpProvider, "_apply_effort_overlay", _effort),
         patch.object(AcpProvider, "_apply_tool_search_overlay", _tool_search),
         patch.object(AcpProvider, "_start_kiro_runtime", AsyncMock()),
@@ -279,7 +360,7 @@ def _start_wired(threads: list[int], order: list[str]):
 
 class TestStartWiring:
     @pytest.mark.asyncio
-    async def test_kiro_start_recovers_then_writes_off_the_event_loop(self):
+    async def test_kiro_start_writes_off_the_event_loop(self):
         provider = _build_provider(backend="")
         provider._tool_search = True
         threads: list[int] = []
@@ -288,7 +369,7 @@ class TestStartWiring:
             for patcher in _start_wired(threads, order):
                 stack.enter_context(patcher)
             await provider.start()
-        assert order == ["recover", "effort", "tool_search"]
+        assert order == ["effort", "tool_search"]
         assert threads
         assert threading.get_ident() not in threads
 
@@ -305,6 +386,18 @@ class TestStartWiring:
             await provider.start()
         assert order.count("tool_search") == 2
         assert order.count("effort") == 2
+
+    @pytest.mark.asyncio
+    async def test_kiro_applies_tool_search_only_during_start(self, tmp_path, monkeypatch):
+        provider = AcpProvider(acp_backend="", work_dir=tmp_path, tool_search=True)
+
+        assert not _cli_json(tmp_path).exists()
+
+        monkeypatch.setattr(provider, "_start_kiro_runtime", AsyncMock())
+        await provider.start()
+
+        data = json.loads(_cli_json(tmp_path).read_text(encoding="utf-8"))
+        assert data["toolSearch.enabled"] is True
 
 
 # ── Config plumbing ──────────────────────────────────────────────────────────

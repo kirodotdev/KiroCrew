@@ -893,7 +893,9 @@ class TestSpawnIdentityStamp:
                 if "await stamp_spawn_identity(" not in line:
                     continue
                 scanned += 1
-                window_before = "\n".join(lines[max(0, i - 25) : i + 1])
+                # The cold-start site shields the PID before the explicit Default's
+                # clear and its failure path, both ahead of the stamp read.
+                window_before = "\n".join(lines[max(0, i - 35) : i + 1])
                 assert "_starting_pids.add(" in window_before, (
                     f"{rel}:{i + 1}: `await stamp_spawn_identity(` is not preceded by a "
                     "`_starting_pids.add(` shield -- the read suspends after start() "

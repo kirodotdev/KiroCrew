@@ -13,13 +13,16 @@ list; that case is a known limit.
 from __future__ import annotations
 
 import errno
+import json
 import logging
 import os
 import stat
+import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from typing import Any
 
 from kiro_crew import atomic_write as atomic_write_module
 from kiro_crew import pinned_fs, platform_compat
@@ -33,8 +36,9 @@ CLI_SETTINGS_LOCK_NAME = ".kirocrew-cli-settings.lock"
 _INTO_KIRO_HOME = "workspace CLI settings folder is a link into the global kiro settings"
 _EXCLUDE_COMMENT = "# Kiro Crew session settings (local only)"
 _READ_LIMIT = 1 << 20
-#: What the overlay reader says about a ``cli.json`` shape it refuses, after the
-#: file it names.
+#: What every reader of a workspace ``cli.json`` says about a shape it refuses,
+#: after the file it names. One definition, so the effort overlay and skill
+#: projection report the same refusal in the same words.
 CLI_JSON_REFUSED = (
     "is a link, a hardlink, not a regular file inside the settings directory, or cannot be "
     "read; left unchanged"
@@ -43,6 +47,12 @@ _EXCLUDE_LINES = (
     "/.kiro/settings/cli.json",
     f"/.kiro/settings/{CLI_SETTINGS_LOCK_NAME}",
 )
+#: The effort levels Kiro Crew wrote into a workspace ``cli.json``, by model.
+EFFORT_OWNED_KEY = "kirocrew.effortOwned"
+#: The whole-second mtime the publishing writer gave the file. The record under
+#: :data:`EFFORT_OWNED_KEY` counts only while this equals the mtime of the file
+#: the reader used, so any rewrite that does not carry the stamp voids it.
+EFFORT_OWNED_STAMP_KEY = "kirocrew.effortOwnedStamp"
 #: The STARTUP ceiling. A native launch cannot wait long for this file, and a
 #: launch that loses the lock has a safe fallback (authored agents).
 CLI_SETTINGS_LOCK_TIMEOUT_SECS = 2.0
@@ -223,6 +233,27 @@ def _settings_dir_within_work_dir(work_dir: Path) -> Path:
         prefix = candidate
 
     return prefix
+
+
+def admitted_workspace_cli_settings_dir(work_dir: Path) -> Path | None:
+    """Return the admitted settings folder, or ``None`` without probing its target."""
+    try:
+        return _settings_dir_within_work_dir(work_dir)
+    except OSError:
+        return None
+
+
+def workspace_cli_settings_fence_key(work_dir: Path) -> str:
+    """Return the admitted folder, or a named fallback beneath the resolved work dir.
+
+    Admission refusal must not resolve the refused settings link. Failure to
+    resolve the trusted work directory still raises, so starts for one work
+    directory cannot silently use different fence keys.
+    """
+    admitted = admitted_workspace_cli_settings_dir(work_dir)
+    if admitted is not None:
+        return os.fspath(admitted)
+    return os.path.join(os.path.realpath(work_dir), ".kiro", "settings")
 
 
 def _settings_chain(work_dir_real: Path, settings_dir: Path) -> tuple[str, ...]:
@@ -667,22 +698,110 @@ def publish_locked_cli_settings(
     content: str | bytes,
     *,
     write: Callable[..., None],
+    mtime_ns: int | None = None,
+    check_named_before: bool = True,
 ) -> None:
     """Publish cli.json through the directory held by the settings lock where supported.
 
     Where pinned replace is supported the write goes through the held
-    descriptor, and ``OSError`` is raised when the folder reached by name is no
-    longer the one the lock holds after the write; the caller checks it before.
-    Elsewhere it writes by name.
+    descriptor, and ``OSError`` is raised when the folder reached by name is not
+    the one the lock holds: before the write, unless ``check_named_before=False``
+    for a caller that has just made that check, and after it. Elsewhere it
+    writes by name.
     """
     settings_fd = pinned_cli_settings_fd(settings)
+    if settings_fd is not None and check_named_before and not settings.holds_named_settings_dir():
+        raise OSError("workspace CLI settings directory changed before the overlay was written")
     if settings_fd is None:
-        write(settings.cli_json, content)
+        write(settings.cli_json, content, mtime_ns=mtime_ns)
         return
     write(
         settings.cli_json,
         content,
         parent_dir_fd=settings_fd,
+        mtime_ns=mtime_ns,
     )
     if not settings.holds_named_settings_dir():
         raise OSError("workspace CLI settings directory changed while the overlay was written")
+
+
+def effort_ownership_stamp_matches(document: dict[str, Any], file_mtime: int | None) -> bool:
+    """Whether *document*'s ownership stamp names the file version *file_mtime* was read from."""
+    stamp = document.get(EFFORT_OWNED_STAMP_KEY)
+    return type(stamp) is int and file_mtime is not None and stamp == file_mtime
+
+
+def stamp_effort_ownership(document: dict[str, Any]) -> int | None:
+    """Stamp a *document* carrying an ownership record; return the ``mtime_ns`` that publishes it.
+
+    A document without a record under :data:`EFFORT_OWNED_KEY` has nothing for a
+    stamp to validate, so a stamp it carries is dropped and ``None`` leaves the
+    published file's mtime natural.
+
+    A natural rewrite can be dated one clock tick behind ``time.time()``, and FAT
+    rounds mtimes down to an even second. An even second at least three seconds
+    back is stored exactly and remains below any later natural rewrite.
+    """
+    if EFFORT_OWNED_KEY not in document:
+        document.pop(EFFORT_OWNED_STAMP_KEY, None)
+        return None
+    stamp = (int(time.time()) - 3) // 2 * 2
+    document[EFFORT_OWNED_STAMP_KEY] = stamp
+    return stamp * 1_000_000_000
+
+
+def _without_effort_ownership_stamp(document: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in document.items() if key != EFFORT_OWNED_STAMP_KEY}
+
+
+def owned_document_unchanged(
+    document: dict[str, Any], read_document: dict[str, Any], file_mtime: int | None
+) -> bool:
+    """Whether a write of *document* would republish the owned file it was read from.
+
+    *read_document* is the file version *file_mtime* was read from, as read. When
+    its record is valid, its stamp names that version, and *document* equals it
+    apart from the stamp, the write has nothing to change: skipping it keeps the
+    file's bytes and its mtime, so the record stays valid without a restamp. A
+    file with no record, or with a void one, is never kept this way; that write
+    goes through and drops or claims the record under the writer's own rule.
+    """
+    return (
+        EFFORT_OWNED_KEY in read_document
+        and effort_ownership_stamp_matches(read_document, file_mtime)
+        and _without_effort_ownership_stamp(document)
+        == _without_effort_ownership_stamp(read_document)
+    )
+
+
+def carry_effort_ownership(document: dict[str, Any], file_mtime: int | None) -> int | None:
+    """Prepare a rewrite of *document* that keeps a valid ownership record valid and a void one void.
+
+    For a writer that changes other settings and only carries the effort keys through.
+    A record whose stamp matches *file_mtime* is restamped, and the returned ``mtime_ns``
+    must be passed to ``atomic_write`` so the published file still validates it. Any
+    other record is dropped before the write, because no later Kiro Crew write may
+    re-validate an entry Kiro Crew cannot prove it wrote; ``None`` then leaves the
+    file's mtime natural.
+    """
+    if effort_ownership_stamp_matches(document, file_mtime):
+        return stamp_effort_ownership(document)
+    document.pop(EFFORT_OWNED_KEY, None)
+    document.pop(EFFORT_OWNED_STAMP_KEY, None)
+    return None
+
+
+def settings_json_text(document: dict[str, Any]) -> str:
+    """Serialize a workspace ``cli.json`` document for a Kiro Crew rewrite.
+
+    Non-ASCII text stays UTF-8 rather than ``\\uXXXX`` escapes, which can double its
+    size and push the file past the effort overlay's 1 MiB read ceiling. A document
+    whose text cannot be UTF-8 encoded, such as an unpaired surrogate escape that
+    ``json.loads`` accepted, keeps the escaped form, which still round-trips.
+    """
+    text = json.dumps(document, indent=2, ensure_ascii=False)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(document, indent=2)
+    return text

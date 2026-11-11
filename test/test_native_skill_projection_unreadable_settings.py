@@ -27,6 +27,8 @@ native_tree = native_skill_projection_helpers.native_tree
 def _refuse_reads_of(monkeypatch, refused):
     """Make the credential gate refuse every read of *refused*, as on the reporter's host."""
     real = projection.safe_read_file_bytes
+    real_nolink = projection.safe_read_file_bytes_nolink
+    real_pinned = projection.read_pinned_cli_json
     state = {"refused": str(refused)}
 
     def gate(path, *args, **kwargs):
@@ -34,7 +36,21 @@ def _refuse_reads_of(monkeypatch, refused):
             return None
         return real(path, *args, **kwargs)
 
+    def gate_nolink(path, *args, **kwargs):
+        if str(path) == state["refused"]:
+            return None
+        return real_nolink(path, *args, **kwargs)
+
+    def gate_pinned(settings_fd, cli_json, *args, **kwargs):
+        # The settings-lock holder reads through the pinned directory descriptor,
+        # where a refusal surfaces as OSError rather than a None read.
+        if str(cli_json) == state["refused"]:
+            raise OSError(f"read of {cli_json} refused")
+        return real_pinned(settings_fd, cli_json, *args, **kwargs)
+
     monkeypatch.setattr(projection, "safe_read_file_bytes", gate)
+    monkeypatch.setattr(projection, "safe_read_file_bytes_nolink", gate_nolink)
+    monkeypatch.setattr(projection, "read_pinned_cli_json", gate_pinned)
     monkeypatch.setattr(projection, "_settings_read_sleep", lambda _pause: None)
     return state
 

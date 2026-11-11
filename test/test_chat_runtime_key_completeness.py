@@ -165,6 +165,10 @@ _CLI_JSON_WRITERS = {
         "reasoning_effort for the level, and model because the row is named by it."
     ),
     "_write_tool_search_overlay": ("Writes the flat toolSearch keys. Keyed as tool_search."),
+    "_cli_overlay_effort_models": (
+        "Takes the lock only to read the file consistently and writes nothing, so "
+        "it contributes no spawn input of its own."
+    ),
     "_clear_cli_overlay_effort": (
         "Removes an effort entry rather than contributing a spawn input, so it "
         "adds no compatibility property of its own."

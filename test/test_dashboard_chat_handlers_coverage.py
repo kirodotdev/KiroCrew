@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -59,6 +60,13 @@ def _state(slot: _ChatSlot | None = None) -> DashboardState:
     state.broadcast_ws = MagicMock()
     state.broadcast_context_usage = MagicMock()
     state.sessions = MagicMock()
+    state.sessions.aflush = AsyncMock()
+    state.sessions.explicit_effort_default_pending = MagicMock(return_value=False)
+    state.sessions.set_explicit_effort_default = MagicMock(return_value=True)
+    state.sessions.effort_basis_locked = MagicMock(return_value=False)
+    state.sessions.effort_intent_write = MagicMock(
+        side_effect=lambda _key: contextlib.nullcontext()
+    )
     state.sessions.get_provider = MagicMock(return_value=None)
     return state
 

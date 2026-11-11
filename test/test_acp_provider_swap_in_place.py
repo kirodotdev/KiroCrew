@@ -57,7 +57,13 @@ async def test_a_bot_chat_swap_keeps_its_mount_channel_and_effort() -> None:
     provider._member_session_key = lambda: "member:bot-1"  # type: ignore[method-assign]
     provider._owning_channel_id = lambda: "C123"  # type: ignore[method-assign]
     provider.essential_delivery = MagicMock()
-    provider._apply_initial_effort = AsyncMock()  # type: ignore[method-assign]
+    effort_steps = MagicMock()
+    effort_steps.bind = AsyncMock()
+    effort_steps.reassert = AsyncMock()
+    effort_steps.apply = AsyncMock()
+    provider._bind_unbound_effort = effort_steps.bind  # type: ignore[method-assign]
+    provider._reassert_projected_effort = effort_steps.reassert  # type: ignore[method-assign]
+    provider._apply_initial_effort = effort_steps.apply  # type: ignore[method-assign]
 
     await provider.new_conversation()
 
@@ -65,4 +71,10 @@ async def test_a_bot_chat_swap_keeps_its_mount_channel_and_effort() -> None:
         member_session_key="member:bot-1", channel_id="C123"
     )
     provider.essential_delivery.invalidate.assert_called_once_with()
-    provider._apply_initial_effort.assert_awaited_once_with()
+    # The fresh session takes the effort steps ``start()`` takes, in its order: a peer
+    # may have replaced this chat's overlay level since the warm process spawned.
+    assert [name for name, _args, _kwargs in effort_steps.mock_calls] == [
+        "bind",
+        "reassert",
+        "apply",
+    ]

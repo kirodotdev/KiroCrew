@@ -14,14 +14,15 @@ from contextlib import contextmanager
 from pathlib import Path, PureWindowsPath
 
 import pytest
+from effort_helpers import _read_cli_overlay
 
 # O_NOFOLLOW is part of pinned_fs.supports_pinned_walk's required probe.
 from conftest import make_dir_link, requires_o_nofollow, requires_symlinks
 from kiro_crew import platform_compat
+from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.providers import acp as acp_provider
 from kiro_crew.providers.acp import (
     _clear_cli_overlay_effort,
-    _read_cli_overlay,
     _write_cli_overlay,
     _write_tool_search_overlay,
 )
@@ -68,6 +69,13 @@ class TestCliOverlay:
         with pytest.raises(OSError, match="link|hardlink|regular"):
             _write_cli_overlay(tmp_path, "claude-opus-4.7", "max")
         assert _clear_cli_overlay_effort(tmp_path, "claude-opus-4.7") is False
+
+        provider = acp_provider.AcpProvider(
+            acp_backend=ACP_BACKEND_KIRO,
+            work_dir=tmp_path,
+            model="auto",
+        )
+        assert provider._apply_effort_overlay() is False
         assert target.read_bytes() == secret
         assert not any(
             path != cli_json
@@ -376,8 +384,7 @@ class TestCliOverlay:
             _write_cli_overlay(work_dir, "claude-opus-4.7", "max")
         with pytest.raises(OSError, match="sensitive path"):
             _write_tool_search_overlay(work_dir, True)
-        # The clear cannot verify a refused folder, so it does not report one cleared.
-        assert _clear_cli_overlay_effort(work_dir, "claude-opus-4.7") is False
+        assert _clear_cli_overlay_effort(work_dir, "claude-opus-4.7") is True
 
         assert _tree(sensitive_dir) == []
 
