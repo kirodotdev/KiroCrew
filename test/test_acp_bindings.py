@@ -74,6 +74,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_tool_search_settings": ("function", False, "da838953900b", "acp"),
     "accepts_effort_level": ("function", False, "581451d2b011", "acp_model_effort"),
     "accepts_elicitation": ("property", False, "a6632a57e602", "acp"),
+    "advertised_commands": ("function", False, "92d6193dbe19", "acp"),
     "agent_prompt_upgrade_notice": ("property", False, "bb418bb7ece8", "acp"),
     "agent_turn_pending": ("function", False, "a6632a57e602", "acp_turns"),
     "agent_version": ("property", False, "bb418bb7ece8", "acp"),

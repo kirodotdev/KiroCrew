@@ -939,6 +939,10 @@ class AcpProvider(LLMProvider):
         """
         return self._client.get_valid_effort_levels()
 
+    def advertised_commands(self) -> list[dict[str, str]]:
+        """The commands this session's ``available_commands_update`` last listed."""
+        return self._client.advertised_commands()
+
     @property
     def tool_search_settings(self) -> ToolSearchSettings | None:
         """The resolved Tool Search choice this provider spawns runtimes with (H14 capability)."""

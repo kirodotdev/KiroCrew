@@ -1062,6 +1062,13 @@ class LLMProvider(ABC):
         provider with no effort control."""
         return []
 
+    def advertised_commands(self) -> list[dict[str, str]]:
+        """The slash commands the live session advertised, as ``name`` and ``description``.
+
+        Default empty: only a harness that runs its own commands keeps the list.
+        """
+        return []
+
     def supports_effort(self) -> bool:
         """True when the current model accepts a reasoning-effort level. Default False."""
         return False

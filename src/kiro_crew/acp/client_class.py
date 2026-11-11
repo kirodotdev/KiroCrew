@@ -118,6 +118,8 @@ class AcpClient:
     # The scrub this session applies to what a harness reports back, handed to the
     # host adapters that quote such a value (``ProcessSession._scrub_observed``).
     _scrub_observed = staticmethod(_scrub_observed)
+    # The newest ``available_commands_update``: its session id and its rows.
+    _advertised_commands: tuple[str, tuple[dict[str, str], ...]] = ("", ())
 
     # Idle reader state (see _maybe_start_idle_reader). Class-level so a client
     # built without __init__ reads the idle defaults.
@@ -1441,6 +1443,8 @@ class AcpClient:
     _agent_turn_pending = _client_transport._agent_turn_pending
     _maybe_start_idle_reader = _client_transport._maybe_start_idle_reader
     _idle_read_loop = _client_transport._idle_read_loop
+    _note_advertised_commands = _client_transport._note_advertised_commands
+    advertised_commands = _client_transport.advertised_commands
 
     # Prepare an ``AcpClient`` spawn before the process exists: ``kiro_crew.acp.client_spawn_env``.
     _prepare_spawn_workspace = _client_spawn_env._prepare_spawn_workspace
