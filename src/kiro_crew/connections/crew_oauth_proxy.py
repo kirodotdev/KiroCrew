@@ -651,9 +651,12 @@ async def handle(request: Any) -> Any:
                 token = await crew_oauth.access_token(bridge.slug, force=force)
             except crew_oauth.CrewOAuthError as exc:
                 if exc.code == "needs_auth":
-                    return _refuse(
-                        409, "not connected: reconnect it on the Connections page", "needs_auth"
+                    where = (
+                        "the MCP Servers page"
+                        if crew_oauth.is_custom_key(bridge.slug)
+                        else "the Connections page"
                     )
+                    return _refuse(409, f"not connected: reconnect it on {where}", "needs_auth")
                 return _refresh_refusal(exc.code)
             try:
                 upstream = await session.request(

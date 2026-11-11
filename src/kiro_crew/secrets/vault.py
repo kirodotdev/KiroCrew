@@ -178,6 +178,20 @@ class SecretVault:
         """
         self._set_sync(name, value)
 
+    def set_many_sync(self, values: dict[str, str]) -> None:
+        """Store every ``name -> value`` in *values* in ONE store write, synchronously.
+
+        Either all land or none does: entries that must agree with each other
+        (an OAuth client and the token pair it issued) are never left half-replaced.
+        Same locking rationale as ``set_sync``.
+        """
+        self._write_store(
+            lambda entries: {
+                **entries,
+                **{n: self._encrypt_entry(n, v.encode("utf-8")) for n, v in values.items()},
+            }
+        )
+
     def delete_sync(self, name: str) -> None:
         """Remove a secret synchronously. No-op if it does not exist.
 
