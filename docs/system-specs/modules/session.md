@@ -3721,19 +3721,24 @@ state a close compensates is not all scoped the same way.
   downgrade-deliver-reupgrade cycle replays already-delivered notes as
   duplicates — bounded harm, and the chosen at-least-once direction, but the
   invariant silently does not hold across versions. A hold restored into an idle
-  slot, because a restart cut the turn that held it, is flushed by the next
-  directly started turn (`_api_chat_send` and the OpenAI-compatible route call
-  `slot_buffers.flush_restored_hold`) above that turn's user row: neither the
-  queue drain nor the cycle end runs before such a turn.) Regenerate, Edit & Resend,
-  rewind, a linked channel thread and a Spec Builder turn deliver such a hold only
-  at their cycle end (#32240). An immediate note on such an idle slot flushes the
+  slot, because a restart cut the turn that held it, is flushed by the next turn
+  a person starts (`slot_buffers.flush_restored_hold`) above that turn's user
+  row: neither the queue drain nor the cycle end runs before such a turn.) The
+  callers are `_api_chat_send`, the OpenAI-compatible route, a linked channel
+  thread (`route_linked_thread`), a Spec Builder turn that writes its own row
+  (`_dispatch_turn`), Edit & Resend and rewind. The last two flush on the live
+  slot before they build their scratch copy, which shares the hold, and carry the
+  note rows into the copy above the edited row; a refused edit leaves the notes
+  delivered. Regenerate writes no row, so it flushes after it records the reply
+  it replaces, and the notes stay above the new reply when the swap retires the
+  old one. An immediate note on such an idle slot flushes the
   hold first (`deliver_note` calls `_flush_held_notes_if_idle` before its own row,
   and the `/note` route loads a restored sidebar row's window before it
   re-authorizes, so that flush is not skipped), so the older, already-acknowledged
   note keeps its place in the transcript and its context is queued ahead of the
   newer one. `test_held_note_turn_starts.py` scans every turn start
   in the package and fails on one that neither flushes the hold above its own row
-  nor is named with the reason it does not. A close flushes the hold before
+  (above its launch, when it writes none) nor is named with the reason it does not. A close flushes the hold before
   its archive save, so each held note's visible row reaches the transcript a History
   resume reads; before the flush a note the DELETE had answered 200 for left no row
   there, only its hold entry. A note with no context half is
