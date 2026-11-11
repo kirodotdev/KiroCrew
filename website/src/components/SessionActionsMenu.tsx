@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
+import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, Split, BellOff, Volume2, VolumeX } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -456,7 +456,7 @@ export default function SessionActionsMenu({
       ),
       onDuplicate && (
         <Item key="duplicate" {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.duplicate'), onDuplicate)}>
-          <GitFork size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatSidebar.duplicate')}
+          <Split size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatSidebar.duplicate')}
         </Item>
       ),
       // This session's work-item board, when it conducts one. Sits with the
