@@ -1339,6 +1339,12 @@ class KasHarness(MembershipHarness):
                     # Refused, never the bare base: what could not be read may
                     # hold the crewmate's own limits.
                     raise AcpAgentUnavailable(str(exc), agent=agent) from exc
+            else:
+                # A child a Bot started runs under the Bot's identity: its held
+                # limits ask here too (the worker's are applied in its own merge).
+                from kiro_crew.mate_held_rules import held_child_spec
+
+                spec = held_child_spec(spec, session_key)
             # KAS loads workspace steering itself, honouring each file's inclusion, from
             # the session's own folder (a subagent's may differ from the runtime's).
             steering_dir = session_cwd or work_dir

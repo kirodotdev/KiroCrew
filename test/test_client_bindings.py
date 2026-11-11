@@ -436,6 +436,7 @@ _CLAUDE_MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_pin_claude_starting_mode": ("function", True, "4d0ed6879afd", "client_claude_session"),
     "_pin_starting_mode": ("function", True, "4d0ed6879afd", "client_claude_session"),
     "_pins_starting_mode": ("data", False, "", ""),
+    "_prepare_claude_held_asks": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_prepare_claude_side_read_denies": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_reassert_adapter_resolved_model": ("function", True, "b60c5fea256e", "client_claude_session"),
     "_refuse_claude_session_below_floor_before_spawn": (

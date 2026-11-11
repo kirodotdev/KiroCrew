@@ -66,6 +66,11 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         # before its launch (_prepare_claude_side_read_denies). Empty until then,
         # and a side session whose envelope would carry none is not started.
         self._claude_side_read_denies: tuple[str, ...] = ()
+        # A Bot worker session's held-limit asks, read off the loop before each
+        # envelope (_prepare_claude_held_asks).
+        self._claude_held_asks: tuple[str, ...] = ()
+        # Whether those held limits cover MCP, so the session runs strictMcpConfig.
+        self._claude_held_mcp = False
         # True once this session has CREATED <work_dir>/.claude/settings.local.json
         # itself. Only then does reset remove it, and only then does a re-seed
         # overwrite it. The writer refuses a path that already holds a file it did
@@ -314,6 +319,7 @@ class ClaudeAcpClient(AcpClient, serves=ACP_BACKEND_CLAUDE):
         _client_claude_session._refuse_claude_session_below_floor_before_spawn
     )
     _prepare_claude_side_read_denies = _client_claude_session._prepare_claude_side_read_denies
+    _prepare_claude_held_asks = _client_claude_session._prepare_claude_held_asks
     _claude_session_meta = _client_claude_session._claude_session_meta
     _claude_session_excludes_local = _client_claude_session._claude_session_excludes_local
     _claude_set_mode = _client_claude_session._claude_set_mode

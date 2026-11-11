@@ -313,6 +313,9 @@ class ClaudeProcessSession(ProcessSession, Protocol):
     async def _prepare_claude_side_read_denies(self) -> None:
         """Build a Side Chat session's sensitive-path deny rules off the loop, fail closed."""
 
+    async def _prepare_claude_held_asks(self) -> None:
+        """Read a Bot worker session's held-limit asks off the loop."""
+
     def _refuse_claude_session_below_floor_before_spawn(self, installed_version: str) -> None:
         """Refuse an option-bound session the installed claude-agent-acp is too old for."""
 
@@ -358,6 +361,9 @@ async def prepare_claude_session(session: ClaudeProcessSession, argv: list[str])
     # synchronous in-memory read, so the kiro construction path gains no
     # executor hop and no new failure mode (harness-parity H13).
     await session._prepare_session_mcp()
+    # A Bot worker's held-limit asks name its MCP servers, so they are read after
+    # the array, and off the loop: the ledger and the execution record are files.
+    await session._prepare_claude_held_asks()
     # Known before any process starts: an installed adapter below the
     # session-options floor cannot serve a session that needs them, so it is
     # refused here rather than after an adapter and a Claude Code process start.

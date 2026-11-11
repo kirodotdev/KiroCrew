@@ -33,6 +33,53 @@ KEPT_OWED_FILENAME = "worker_kept_owed.json"
 #: Claimed once, right before that notice is delivered.
 KEPT_CLAIMED_FILENAME = "worker_kept_claimed.json"
 
+#: Written by ``mate_policy_repair`` for each moved crewmate whose old agent's
+#: restrictions it put back, with what it did.
+POLICY_OWED_FILENAME = "worker_policy_owed.json"
+#: Claimed once, right before that notice is delivered.
+POLICY_CLAIMED_FILENAME = "worker_policy_claimed.json"
+
+
+def policy_notice_prompt(change: str, *, fresh: bool = False) -> str:
+    """The hidden turn that tells a crewmate's user its old restrictions apply again.
+
+    *fresh*: the crewmate moved at this start, so no earlier work ran without them.
+    """
+    piece = "upgrade_notice_held" if fresh else "upgrade_notice_policy"
+    return WORKER_UPGRADE_PREFIX + crewmate_prompts.fill(piece, change=change)
+
+
+def mark_policy_owed(name: str, change: str, *, held: bool = False, fresh: bool = False) -> None:
+    """Record that crewmate *name* owes its user the restored-restrictions *change*. Never raises.
+
+    *held* says some restriction could not be carried and now asks a person
+    (``mate_held_rules``): the dashboard bell gets a note too, with a link to the Bot.
+    """
+    try:
+        path = _dir(name) / POLICY_OWED_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from kiro_crew.atomic_write import atomic_write
+
+        record: dict[str, object] = {"member": name, "change": change}
+        if held:
+            record["held"] = True
+        if fresh:
+            record["fresh"] = True
+        atomic_write(path, json.dumps(record) + "\n", restrict_to_owner=True)
+    except Exception:  # noqa: BLE001 - no notice is the safe direction
+        logger.warning("could not record the policy notice owed by %r", name, exc_info=True)
+
+
+def claim_policy_notice(slug: str, member: str) -> tuple[str, bool]:
+    """Claim *member*'s restored-restrictions notice once: its prompt (``""`` when none
+    is owed) and whether a limit is held for a person."""
+    record = _claim(slug, member, POLICY_OWED_FILENAME, POLICY_CLAIMED_FILENAME)
+    change = record.get("change") if record else None
+    if not (isinstance(change, str) and change):
+        return "", False
+    fresh = bool(record and record.get("fresh") is True)
+    return policy_notice_prompt(change, fresh=fresh), bool(record and record.get("held") is True)
+
 
 def kept_notice_prompt(reason: str) -> str:
     """The hidden turn that tells a crewmate's user why it was not moved."""

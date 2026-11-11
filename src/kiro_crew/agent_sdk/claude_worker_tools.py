@@ -21,9 +21,18 @@ from kiro_crew.platform.tool_names import canonical_kiro_cli_tool_name
 __all__ = [
     "CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL",
     "CLAUDE_WORKER_KEPT_BUILTINS",
+    "claude_mcp_server_rule",
     "claude_worker_builtin_tools",
     "excluded_builtin_rows",
 ]
+
+
+def claude_mcp_server_rule(server: str) -> str:
+    """The claude permission rule naming every tool of MCP *server* (``mcp__<server>``)."""
+    from kiro_crew.acp.claude_mcp_names import claude_mcp_server_rule as _rule
+
+    return _rule(server)
+
 
 #: kiro-cli built-in -> every claude built-in that does its job. Kept apart from
 #: ``acp.harness_tool_names.CLAUDE_TOOL_IDS_BY_KIRO_TOOL`` (hook naming) because this

@@ -275,3 +275,32 @@ def test_session_move_to_column_is_contained():
 
     assert "session_move_to_column" in CHANNEL_AGENT_BLOCKED_TOOLS
     assert _blocked_tool_named("kirocrew-dashboard___session_move_to_column") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", [True, False])
+async def test_a_held_bot_limit_is_not_approved_by_channel_trust(monkeypatch, held):
+    """``mate_held_rules``: channel trust never approves a call a held Bot limit covers."""
+    from kiro_crew import mate_held_rules
+
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: MagicMock())
+    monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: ["deny shell"] if held else [])
+    monkeypatch.setattr(
+        "kiro_crew.channel.session_mode_permitted", lambda mode: True, raising=False
+    )
+    events = [
+        SimpleNamespace(
+            kind=EVENT_PERMISSION_REQUEST,
+            text="Run: ls",
+            title="Run: ls",
+            request_id=8,
+            tool_input="{}",
+        ),
+        SimpleNamespace(kind=EVENT_COMPLETE),
+    ]
+    client = _make_client(events)
+    await _stream_task(_make_agent(), _make_channel(), client, "hi")
+    if held:
+        client.approve_tool.assert_not_awaited()
+    else:
+        client.approve_tool.assert_awaited_once_with(8)
