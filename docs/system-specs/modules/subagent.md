@@ -1736,9 +1736,14 @@ Spawn flow (`subagent_manager/admission/gate.py`), first matching rung wins:
    (`_BACKGROUND_APPROVAL_TIMEOUT_SECS`). Timeout or rejection frees the
    concurrency slot. The callback returns a `HostSpawnDecision` when the
    gateway answered with nobody asked ([slack-gateway](slack-gateway.md),
-   background approvals item 7), so the crew-log decision says `by: host`;
-   otherwise a bare `bool`, which still reads as a person's answer even for a
-   dashboard-only or channel prompt's expiry.
+   background approvals item 7), so the crew-log decision says `by: host`.
+   That includes a prompt whose window closed unanswered, on the dashboard
+   alone or on a chat channel (`cause: approval_timeout`). A Stop or reap while
+   a dashboard-only prompt is open raises through the callback, so the gate's
+   own host-attributed cancel records it. A bare `bool` is a person's answer.
+   `HostSpawnDecision` is defined in the leaf module
+   `kiro_crew.subagent_host_decision` (re-exported by `kiro_crew.subagent`), so
+   the channel seam returns one without importing `kiro_crew.subagent`.
 6. **Otherwise**: rejected with `spawn rejected: no approval mechanism configured`.
 
 **Channel-side approval delivery (issue #2381 item 1).** The single host-wide
@@ -1748,15 +1753,17 @@ given the spawn's `parent_session_key`. A channel dispatcher registers a deliver
 hook keyed by its channel namespace (`register_channel_delivery("telegram", …)`);
 the seam resolves the hook whose channel owns the parent session
 (`messaging.link.channel_namespace_of`). A hook that returns `True`/`False` is the
-user's in-channel decision; `None` falls through to the pre-existing
+user's in-channel decision; a `HostSpawnDecision` (`cause: approval_timeout`) is
+the host's decline of a wait that elapsed unpressed; `None` falls through to the pre-existing
 Slack-DM/dashboard gate, which still raises `SpawnApprovalUnreachable` when no
 surface is attached. A hook answers `None` when no hook is registered for that
 channel, when it cannot address the parent key (a `unified` dm_scope key) or the
 originating conversation is no longer an authorized destination, when it could not surface the prompt — a send that raised, or a refused send its client
 reports by returning no message id — and when its deny-by-default wait elapsed
 unpressed after the channel's governance ceiling began to deny it: the hook asks
-`spawn_approval_delivery.unpressed_wait_answer`, which answers `False` (a real
-deny-by-default) while the channel is still permitted and `None` once it is not,
+`spawn_approval_delivery.unpressed_wait_answer`, which answers a host decline
+(`HostSpawnDecision(False, "approval_timeout")`, a real deny-by-default) while the
+channel is still permitted and `None` once it is not,
 so an unanswerable prompt never becomes a refusal in the operator's name (see
 [messaging](messaging.md)). Telegram implements the hook over its existing
 Approve/Deny/Trust inline keyboard (`TelegramDispatcher.deliver_spawn_approval`):
@@ -1783,7 +1790,8 @@ is offered to surfaces in this fixed order, and the search stops at the first on
 that answers:
 
 1. **Originating channel hook** — the channel-neutral seam above. A `True`/`False`
-   return is the user's in-channel decision and is used verbatim; `None` (no hook
+   return is the user's in-channel decision and a `HostSpawnDecision` the host's
+   decline of an unpressed wait, each used verbatim; `None` (no hook
    for that channel, or it could not surface the prompt) falls through.
 2. **Slack owner DM / dashboard fallback** — the pre-existing gate in
    `slack/gateway_runtime/turn_approvals.py` (`_interactive_approval`), which races a Slack owner DM

@@ -119,10 +119,10 @@ def _interactive_approval(
 
     ``on_host_decision`` is told ``(request_id, cause)`` on every answer given
     with nobody asked: an auto-approve source, the ``--approval`` mode, the YOLO
-    override, slot trust, no UI at all, or a Slack prompt whose window closed.
-    *cause* is a ``DENY_CAUSE_*`` code when one names the host's reason (an expired
-    window), ``""`` otherwise. A dashboard-only prompt's own expiry still returns a
-    bare ``False``.
+    override, slot trust, no UI at all, or a prompt whose window closed on Slack or
+    on the dashboard alone. *cause* is a ``DENY_CAUSE_*`` code when one names the
+    host's reason (an expired window), ``""`` otherwise. A dashboard-only wait that
+    is cancelled raises to such a caller instead of answering ``False``.
     """
 
     is_background = source in _BACKGROUND_APPROVAL_SOURCES
@@ -604,6 +604,11 @@ def _interactive_approval(
                 tool_purpose=event.tool_purpose,
                 slot=approval_slot,
                 is_background=is_background,
+                on_host_decision=(
+                    None
+                    if on_host_decision is None
+                    else lambda cause: on_host_decision(request_id, cause)
+                ),
             )
         if _child_lf:
             # No human surface answered and none of the (skipped)
