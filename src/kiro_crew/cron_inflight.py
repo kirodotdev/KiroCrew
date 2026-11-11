@@ -241,7 +241,9 @@ def write_marker(
         pid_domain, pid_start = current_process_identity()
         payload = {
             "job_id": job_id,
-            "name": name,
+            # Display text only, cut like the attribution record's: an
+            # uncut 500-emoji name passes the reader's size cap once escaped.
+            "name": name[:_RECORD_NAME_MAX_CHARS],
             "started_at": float(started_at if started_at is not None else time.time()),
             "pid": os.getpid(),
             "pid_domain": pid_domain,
