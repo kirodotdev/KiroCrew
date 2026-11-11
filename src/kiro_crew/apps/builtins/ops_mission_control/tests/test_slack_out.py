@@ -124,8 +124,10 @@ class TestConfiguration(_HomeIsolated):
     def test_channel_id_is_not_written_to_the_secret_store(self) -> None:
         """A channel ID is not a credential; it belongs in plain config."""
         slack_out.set_settings(enabled=True, channel_id="C0123456789")
-        secrets = Path(self._tmp.name) / "ops_mission_control_secrets.json"
-        self.assertFalse(secrets.exists(), "Slack output must add no secret material")
+        from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
+
+        for path in (secrets.secrets_path(), secrets.legacy_secrets_path()):
+            self.assertFalse(path.exists(), "Slack output must add no secret material")
 
 
 class TestNoTokenOfItsOwn(_HomeIsolated):

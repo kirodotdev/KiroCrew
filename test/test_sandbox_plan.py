@@ -26,6 +26,7 @@ import pytest
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import sandbox, sandbox_plan, sandbox_seatbelt
+from kiro_crew.apps import credential_masks
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.sandbox_plan import (
     BACKEND_NAMESPACE,
@@ -721,6 +722,15 @@ def live_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
+def _declared_tier_dirs() -> tuple[str, ...]:
+    """The app-declared credential masks the live adapter appends to every tier list."""
+    return tuple(
+        f"{prefix}/{leaf}"
+        for prefix in sandbox._CREW_HOME_PREFIXES
+        for leaf in credential_masks.declared_crew_leaves()
+    )
+
+
 def test_the_live_adapter_reads_the_host_the_builders_always_read(live_host: Path) -> None:
     crew = live_host / ".kiro" / "crew"
     probe = crew / "run" / "mcp-tmp" / "p"
@@ -729,7 +739,7 @@ def test_the_live_adapter_reads_the_host_the_builders_always_read(live_host: Pat
     host = sandbox._live_plan_host(request)
     assert host.home == str(live_host)
     assert host.uid == os.getuid() and host.gid == os.getgid()
-    assert host.tier_dirs == tuple(sandbox._sandbox_policy().strict_dirs())
+    assert host.tier_dirs == (*sandbox._sandbox_policy().strict_dirs(), *_declared_tier_dirs())
     assert host.voice_runtime_roots == (str(crew / "run" / "voice-runtime"),)
     assert host.kiro_agents_targets == (str(live_host / ".kiro" / "agents"),)
     assert host.carveout_probes == (_probe(str(probe)),)
@@ -780,7 +790,7 @@ def test_the_live_adapter_asks_only_for_what_the_backend_renders(
     host = sandbox._live_plan_host(SandboxRequest(tier="cc", backend=BACKEND_SEATBELT))
     assert host.uid == 0 and host.gid == 0 and host.ssh_accept_new is False
     assert host.voice_runtime_ancestor_guards  # Seatbelt guards the rename-sensitive parents
-    assert host.tier_dirs == tuple(sandbox._sandbox_policy().cc_dirs())
+    assert host.tier_dirs == (*sandbox._sandbox_policy().cc_dirs(), *_declared_tier_dirs())
 
 
 @pytest.mark.parametrize("durable", [True, False], ids=["manager-present", "no-manager"])

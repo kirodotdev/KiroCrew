@@ -12,12 +12,19 @@ ambient credential chain (profile / role / instance role). The app never accepts
 stores, or transmits an AWS access key — "IAM roles over keys" applied directly.
 
 **Third-party tokens live on the keystone floor.** They go in
-``<crew_home>/ops_mission_control_secrets.json``, whose filename is registered in
-``security._CREW_SECRET_LEAVES``. That places it on the shared read+write
-sensitive-path floor, so the AGENT'S OWN file tools and shell cannot read or write
-it — the same mechanism that makes the governance ceiling un-disableable. The
-dashboard PUT handler is the only writer and opens the path directly (it does not
-route through the agent gate), so the operator's Settings UI still works.
+``<crew_home>/apps/ops-mission-control/data/secrets.json``. The app's ``app.json``
+declares that file in ``credentialMasks``, so every sandboxed process sees it masked
+and a second hard link to it refuses the spawn, and ``security._CREW_SECRET_LEAVES``
+names it, so the AGENT'S OWN file tools cannot read or write it either (a declaration
+does not feed the tool gate). The dashboard PUT handler is the only writer and opens
+the path directly (it does not route through the agent gate), so the operator's
+Settings UI still works.
+
+An install from before this layout kept the store at the data-home root,
+``<crew_home>/ops_mission_control_secrets.json``. Gateway startup moves it, and so does
+the first save or revoke, under the store's lock (:meth:`KeystoneFileBackend._migrate_legacy`);
+until then a lookup reads it where it is. The core keeps that root name masked as a
+retired leaf, because a restored backup can bring the file back.
 
 Why not ``config.json``? Because Kiro Crew serves an app's ``data/config.json``
 over ``/api/apps/<name>/config`` **without session auth** — a documented behavior
@@ -44,16 +51,25 @@ from typing import Any, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import CorruptDocumentError
+from kiro_crew.apps.manager import app_data_dir
+from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.config.loader import config_dir
 from kiro_crew.hidden_leaf_staging import publish_through_auth_store_staging
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
 
-#: Filename on the crew home. MUST stay in sync with the entry added to
-#: ``security._CREW_SECRET_LEAVES`` — the test suite asserts the two agree, so a
+#: The app's name, which names its data directory.
+APP_NAME = "ops-mission-control"
+
+#: Filename in the app's data directory. MUST stay in sync with the ``credentialMasks``
+#: entry in ``app.json`` and the ``apps/ops-mission-control/data/secrets.json`` entry in
+#: ``security._CREW_SECRET_LEAVES`` — the test suite asserts all three agree, so a
 #: rename cannot silently drop the keystone protection.
-SECRETS_FILENAME = "ops_mission_control_secrets.json"
+SECRETS_FILENAME = "secrets.json"
+
+#: Where an earlier version kept the store: the data-home root. Read once, to move it.
+LEGACY_SECRETS_FILENAME = "ops_mission_control_secrets.json"
 
 #: Value returned to callers in place of a stored secret. Secrets are write-only
 #: over the API: the UI shows whether a field is set, never what it is.
@@ -110,7 +126,12 @@ _TOKEN_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 def secrets_path() -> Path:
     """Absolute path to the keystone secret file (honors ``KIROCREW_HOME``)."""
-    return config_dir() / SECRETS_FILENAME
+    return app_data_dir(APP_NAME) / SECRETS_FILENAME
+
+
+def legacy_secrets_path() -> Path:
+    """Where an earlier version kept the secret file, at the data-home root."""
+    return config_dir() / LEGACY_SECRETS_FILENAME
 
 
 def redact_tokens(text: str) -> str:
@@ -198,6 +219,63 @@ class KeystoneFileBackend:
     def _path(self) -> Path:
         return self._pinned_path if self._pinned_path is not None else secrets_path()
 
+    @property
+    def _staging_home(self) -> Path:
+        """The data home whose masked staging directory a publish goes through.
+
+        The data-home ROOT for the default store: the store sits in the app's data
+        directory, and a staging directory created beside it would be one no mask covers.
+        """
+        return self._pinned_path.parent if self._pinned_path is not None else config_dir()
+
+    @property
+    def _lookup_path(self) -> Path:
+        """The file a lookup reads: the store, or the old root store until it is moved.
+
+        A lookup never moves the store itself. It runs on the gateway's event loop (the
+        provider catalog reads it synchronously), and the move takes two file locks and
+        two fsyncs; the gateway moves it at startup instead (:func:`migrate_legacy_store`),
+        and every save or revoke moves it first, off the loop.
+        """
+        path = self._path
+        if self._pinned_path is not None or os.path.lexists(path):
+            return path
+        legacy = legacy_secrets_path()
+        return legacy if os.path.lexists(legacy) else path
+
+    def _migrate_legacy(self) -> None:
+        """Move an earlier version's root store to :func:`secrets_path`, once.
+
+        Only for the default location: a pinned path has no earlier layout. Runs under
+        this store's lock and then the old store's own lock, so neither a concurrent save
+        nor a second migrator interleaves. The bytes are copied verbatim, so a store this
+        version cannot parse is moved as it is rather than dropped. The old file is
+        removed only after the new one is written, fsynced and its directory synced, so
+        a crash at any point leaves at least one complete copy. A store already at the
+        new path wins: an old file beside it (a restored backup) is left where it is,
+        masked by its retired name.
+
+        Raises when the old store cannot be read or the new one cannot be published.
+        A save must not go ahead then: it would create a new store holding one token,
+        and the old store, never moved, would hold every other one out of sight.
+        """
+        if self._pinned_path is not None:
+            return
+        path = secrets_path()
+        legacy = legacy_secrets_path()
+        if os.path.lexists(path) or not os.path.lexists(legacy):
+            return
+        with _SecretLock(path), _SecretLock(legacy):
+            if os.path.lexists(path):
+                return
+            try:
+                content = legacy.read_bytes()
+            except FileNotFoundError:
+                return
+            publish_through_auth_store_staging(path, content, home=config_dir(), fsync=True)
+            fsync_dir(path.parent)
+            legacy.unlink(missing_ok=True)
+
     @staticmethod
     def _coerce(raw: Any, *, strict: bool = False) -> dict[str, dict[str, str]]:
         """Normalize a parsed store to ``provider -> {field: value}``, all strings.
@@ -254,7 +332,7 @@ class KeystoneFileBackend:
         stops, and nothing else would prompt an operator to look.
         """
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            raw = json.loads(self._lookup_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
@@ -379,7 +457,7 @@ class KeystoneFileBackend:
         # sibling temp would hold every provider token at a name no sandbox
         # mask covers for the length of the write, and a crash would leave it
         # there.
-        publish_through_auth_store_staging(self._path, payload)
+        publish_through_auth_store_staging(self._path, payload, home=self._staging_home)
 
     # -- SecretBackend -----------------------------------------------------
 
@@ -395,7 +473,10 @@ class KeystoneFileBackend:
         # The base is ``_read_for_update``, not ``_read``: the lock serializes
         # writers but says nothing about a read that FAILED, and this write
         # replaces the whole file. See that method for why one transient EACCES
-        # must abandon the save rather than publish an empty store over it.
+        # must abandon the save rather than publish an empty store over it. The move of an
+        # old root store runs first and unguarded, for the same reason (see
+        # ``_migrate_legacy``).
+        self._migrate_legacy()
         with self._lock():
             data = self._read_for_update()
             data.setdefault(provider_id, {})[field_name] = value
@@ -407,6 +488,7 @@ class KeystoneFileBackend:
         # absent, so this returned False and the audit logged ``not_found`` — telling
         # the operator there was nothing to revoke while the live token was still on
         # disk and still working. A raise is the honest answer.
+        self._migrate_legacy()
         with self._lock():
             data = self._read_for_update()
             if provider_id not in data:
@@ -421,6 +503,16 @@ class KeystoneFileBackend:
 
 
 _backend: SecretBackend = KeystoneFileBackend()
+
+
+def migrate_legacy_store() -> None:
+    """Move an earlier version's root store into the app's data directory, if one is there.
+
+    Called once at gateway startup, before the loop serves anything, so the store is in
+    its masked place before the first agent spawn and no lookup on the loop pays for the
+    move. Raises like :meth:`KeystoneFileBackend._migrate_legacy`.
+    """
+    KeystoneFileBackend()._migrate_legacy()
 
 
 def register_secret_backend(backend: SecretBackend) -> None:

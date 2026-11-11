@@ -4503,7 +4503,7 @@
         "cli": "CLI.",
         "companions_installed_other": "어댑터 패키지 {{count}}개가 설치되었습니다: {{names}}. 허용되면 해당 소스가 위 목록에 나타납니다. 나타나지 않으면 플릿 허용 정책이 거부한 것입니다 — 게이트웨이 로그를 확인하세요.",
         "connect_a_signal_source_first_a_rule_naming_an_u": "먼저 신호 소스를 연결하세요 — 설정되지 않은 공급자를 지정한 규칙은 절대 일치할 수 없습니다.",
-        "credential_retention_note": "앱 폴더 밖에 저장되므로 에이전트가 읽을 수 없습니다. 참고: 이 앱을 제거해도 삭제되지 않습니다. 자격 증명을 없애려면 여기서 먼저 취소하세요.",
+        "credential_retention_note": "에이전트가 읽을 수 없는 곳에 저장됩니다. 참고: 이 앱을 제거해도 삭제되지 않습니다. 자격 증명을 없애려면 여기서 먼저 취소하세요.",
         "desktop_notifications": "데스크톱 알림",
         "detached_head": "detached HEAD",
         "detached_head_left_alone_finish_the_merge_first": "detached HEAD는 의도적으로 그대로 둡니다. 진행 중인 병합이나 리베이스를 먼저 완료하거나 중단하세요. 그 아래에서 refs를 옮기면 해당 작업을 잃을 수 있습니다.",

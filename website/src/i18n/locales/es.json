@@ -4679,7 +4679,7 @@
         "companions_installed_one": "{{count}} paquete de adaptador instalado: {{names}}. Sus fuentes aparecen en la lista de arriba una vez admitidas; si no aparecen, la política de admisión de la flota lo rechazó — revisa el log del gateway.",
         "companions_installed_other": "{{count}} paquetes de adaptador instalados: {{names}}. Sus fuentes aparecen en la lista de arriba una vez admitidas; si no aparecen, la política de admisión de la flota los rechazó — revisa el log del gateway.",
         "connect_a_signal_source_first_a_rule_naming_an_u": "Conecta primero una fuente de señales — una regla que nombra un proveedor no configurado nunca podrá coincidir.",
-        "credential_retention_note": "Se guardan fuera de la carpeta de la app, así que el agente no puede leerlas. Nota: desinstalar esta app no las elimina. Revócalas aquí primero si quieres que la credencial desaparezca.",
+        "credential_retention_note": "Se guardan donde el agente no puede leerlas. Nota: desinstalar esta app no las elimina. Revócalas aquí primero si quieres que la credencial desaparezca.",
         "desktop_notifications": "Desktop notifications",
         "detached_head": "detached HEAD",
         "detached_head_left_alone_finish_the_merge_first": "Un detached HEAD se deja tal cual a propósito: termina o aborta antes el merge o rebase en curso, ya que mover refs durante uno puede perder ese trabajo.",

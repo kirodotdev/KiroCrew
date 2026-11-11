@@ -98,6 +98,13 @@ class TestRouteRegistration(unittest.IsolatedAsyncioTestCase):
             app = web.Application()
             routes.register_routes(app)  # must not raise
 
+    async def test_a_secret_store_move_fault_does_not_break_startup(self):
+        """A lookup reads the root store until the move succeeds, so startup goes on."""
+        from unittest import mock
+
+        with mock.patch.object(routes, "migrate_legacy_store", side_effect=OSError("eio")):
+            routes.register_routes(web.Application())  # must not raise
+
 
 class TestEnabledGate(unittest.IsolatedAsyncioTestCase):
     """Every handler must refuse while the app is disabled."""

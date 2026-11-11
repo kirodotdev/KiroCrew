@@ -58,14 +58,18 @@ KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
         #    core's: a policy names ``ops-mission-control`` to permit the app's signal
         #    webhook, and an app may not choose which id it is governed under.
         ("webhook_sources.py", "ops-mission-control"),
-        # -- The sandbox's leaf tables. The app's credential store and autonomy
-        #    ceiling are HIDDEN / READONLY crew-home leaves, and its rotation schedule
-        #    and incident index are write-protected. These are the core's ceiling
-        #    over the agent, which an app may not write for itself.
+        # -- The sandbox's leaf tables. The app's autonomy ceiling is a HIDDEN /
+        #    READONLY crew-home leaf, and its rotation schedule and incident index are
+        #    write-protected. These are the core's ceiling over the agent, which an
+        #    app may not write for itself. Its credential store is masked by the app's
+        #    own ``credentialMasks``; the core keeps the store's retired root name
+        #    (hidden, hard-link refused, fenced), and the tool-gate row a declaration
+        #    does not feed.
         ("sandbox_aliases.py", "ops_mission_control_secrets.json"),
         ("sandbox_leaves.py", "ops_mission_control_secrets.json"),
         ("sandbox_leaves.py", "ops_mission_control_policy.json"),
         ("security/paths_lists.py", "ops_mission_control_secrets.json"),
+        ("security/paths_lists.py", "apps/ops-mission-control/data/secrets.json"),
         ("security/paths_lists.py", "ops_mission_control_policy.json"),
         ("security/paths_lists.py", "/apps/ops-mission-control/data/rotation.yaml"),
         ("security/paths_lists.py", "/apps/ops-mission-control/data/incidents/index.json"),

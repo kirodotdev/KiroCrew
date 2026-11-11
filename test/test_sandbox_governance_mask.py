@@ -406,6 +406,9 @@ class TestSecretsAreMaskedInEveryMode:
         "playwright-storage-state.json",
         "playwright-extension-token",
         "ops_mission_control_secrets.json",
+        # The same store in the app's data directory, masked by the app's own
+        # ``credentialMasks`` declaration rather than a core row.
+        "apps/ops-mission-control/data/secrets.json",
         "whatsapp",
         "apps/aws-control/data",
         "aws-control-staging",

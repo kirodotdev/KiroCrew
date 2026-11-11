@@ -21,21 +21,46 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kiro_crew import security
+from kiro_crew import sandbox_aliases, security
 from kiro_crew.apps.builtins.ops_mission_control.backend import secrets
 
 
 class TestKeystoneProtection(unittest.TestCase):
-    def test_filename_is_registered_on_the_secret_floor(self):
-        """The two lists must agree — see the module docstring."""
-        self.assertIn(secrets.SECRETS_FILENAME, security._CREW_SECRET_LEAVES)
+    #: The store's place under the data home, as the sandbox and the tool gate spell it.
+    LEAF = f"apps/{secrets.APP_NAME}/data/{secrets.SECRETS_FILENAME}"
 
-    def _secret_path(self) -> str:
-        return os.path.expanduser(f"~/.kiro/crew/{secrets.SECRETS_FILENAME}")
+    def test_filename_is_registered_on_the_secret_floor(self):
+        """The three lists must agree — see the module docstring."""
+        self.assertIn(self.LEAF, security._CREW_SECRET_LEAVES)
+        self.assertIn(secrets.LEGACY_SECRETS_FILENAME, security._CREW_SECRET_LEAVES)
+
+    def test_the_manifest_declares_the_store_a_credential_mask(self):
+        """The sandbox masks the store only because ``app.json`` declares it."""
+        from kiro_crew.apps import credential_masks
+
+        manifest = json.loads((Path(secrets.__file__).parents[1] / "app.json").read_text())
+        self.assertIn(secrets.SECRETS_FILENAME, manifest[credential_masks.MANIFEST_KEY])
+        self.assertIn(self.LEAF, credential_masks.declared_crew_leaves())
+        self.assertIn(self.LEAF, sandbox_aliases._hardlink_refused_leaves())
+
+    def test_the_store_sits_in_the_app_data_directory(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.dict(os.environ, {"KIROCREW_HOME": tmp}),
+        ):
+            home = Path(tmp).resolve()
+            self.assertEqual(secrets.secrets_path().resolve(), home / self.LEAF)
+            self.assertEqual(
+                secrets.legacy_secrets_path().resolve(), home / secrets.LEGACY_SECRETS_FILENAME
+            )
 
     def test_agent_file_tools_cannot_touch_it(self):
         """``is_sensitive_path`` is the shared read+write gate for agent tools."""
-        self.assertTrue(security.is_sensitive_path(self._secret_path()))
+        for leaf in (self.LEAF, f"{self.LEAF}.lock", secrets.LEGACY_SECRETS_FILENAME):
+            with self.subTest(leaf=leaf):
+                self.assertTrue(
+                    security.is_sensitive_path(os.path.expanduser(f"~/.kiro/crew/{leaf}"))
+                )
 
     def test_every_home_prefix_is_covered(self):
         """The floor is built per home prefix — including the legacy home.
@@ -49,8 +74,109 @@ class TestKeystoneProtection(unittest.TestCase):
         """
         for prefix in security._CREW_HOME_PREFIXES:
             with self.subTest(prefix=prefix):
-                path = os.path.join(os.path.expanduser("~"), prefix, secrets.SECRETS_FILENAME)
+                path = os.path.join(os.path.expanduser("~"), prefix, self.LEAF)
                 self.assertTrue(security.is_sensitive_path(path))
+
+
+class TestTheRootStoreMovesToTheDataDirectory(unittest.TestCase):
+    """An install from before the move keeps its tokens: the first access moves the file."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"KIROCREW_HOME": self._tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        self.legacy = secrets.legacy_secrets_path()
+        self.backend = secrets.KeystoneFileBackend()
+
+    def _plant_legacy(self, content: bytes) -> None:
+        self.legacy.write_bytes(content)
+
+    def test_startup_moves_the_store_byte_for_byte(self):
+        content = json.dumps({"pagerduty": {"api_token": "u+legacytokenvalue"}}).encode()
+        self._plant_legacy(content)
+
+        secrets.migrate_legacy_store()
+
+        self.assertEqual(secrets.secrets_path().read_bytes(), content)
+        self.assertFalse(self.legacy.exists(), "the old root copy must go once moved")
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+legacytokenvalue")
+
+    def test_registering_the_routes_moves_the_store(self):
+        """Gateway startup is where the move happens, before the loop serves anything."""
+        from aiohttp import web
+
+        from kiro_crew.apps.builtins.ops_mission_control.backend import routes
+
+        self._plant_legacy(b"{}")
+        routes.register_routes(web.Application())
+
+        self.assertTrue(secrets.secrets_path().exists())
+        self.assertFalse(self.legacy.exists())
+
+    def test_a_lookup_reads_the_old_store_without_moving_it(self):
+        """A lookup runs on the gateway loop, so it must not take the move's locks and fsyncs."""
+        self._plant_legacy(json.dumps({"pagerduty": {"api_token": "u+legacytokenvalue"}}).encode())
+
+        with mock.patch.object(secrets, "fsync_dir", side_effect=AssertionError("moved")):
+            self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+legacytokenvalue")
+            self.assertEqual(self.backend.configured_fields("pagerduty"), {"api_token"})
+        self.assertTrue(self.legacy.exists())
+        self.assertFalse(secrets.secrets_path().exists())
+
+    def test_a_save_keeps_every_token_already_stored(self):
+        self._plant_legacy(json.dumps({"datadog": {"api_key": "a" * 32}}).encode())
+
+        self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
+
+        self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+newtokenvalue")
+        self.assertFalse(self.legacy.exists())
+
+    def test_a_store_this_version_cannot_parse_is_moved_not_dropped(self):
+        self._plant_legacy(b"{ not json")
+
+        secrets.migrate_legacy_store()
+
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "")
+        self.assertEqual(secrets.secrets_path().read_bytes(), b"{ not json")
+
+    def test_a_store_already_moved_wins_and_the_old_copy_is_left(self):
+        self.backend.put("pagerduty", "api_token", "u+currenttokenvalue")
+        self._plant_legacy(json.dumps({"pagerduty": {"api_token": "u+restoredvalue"}}).encode())
+
+        self.assertEqual(self.backend.get("pagerduty", "api_token"), "u+currenttokenvalue")
+        self.assertTrue(self.legacy.exists())
+
+    def test_a_failed_move_keeps_the_old_store_and_refuses_the_save(self):
+        content = json.dumps({"datadog": {"api_key": "a" * 32}}).encode()
+        self._plant_legacy(content)
+
+        with mock.patch.object(
+            secrets, "publish_through_auth_store_staging", side_effect=OSError("disk full")
+        ):
+            with self.assertRaises(OSError):
+                self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
+            with self.assertRaises(OSError):
+                secrets.migrate_legacy_store()
+
+        self.assertEqual(self.legacy.read_bytes(), content)
+        self.assertFalse(secrets.secrets_path().exists())
+        self.assertEqual(self.backend.get("datadog", "api_key"), "a" * 32)
+
+    def test_the_moved_store_is_staged_only_in_the_masked_directory(self):
+        from kiro_crew.sandbox_leaves import _AUTH_STORE_STAGING_LEAF
+
+        self._plant_legacy(b"{}")
+        self.backend.put("pagerduty", "api_token", "u+newtokenvalue")
+
+        data_dir = secrets.secrets_path().parent
+        self.assertEqual(
+            sorted(p.name for p in data_dir.iterdir()),
+            [secrets.SECRETS_FILENAME, f"{secrets.SECRETS_FILENAME}.lock"],
+        )
+        self.assertEqual(list((Path(self._tmp.name) / _AUTH_STORE_STAGING_LEAF).iterdir()), [])
 
 
 class TestRedaction(unittest.IsolatedAsyncioTestCase):

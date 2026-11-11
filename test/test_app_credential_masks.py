@@ -34,8 +34,18 @@ _MODES = ("standard", "cc", "strict")
 _PREFIXES = (".kiro/crew", ".kirocrew")
 
 
+#: The real reader of the shipped built-ins' manifests, for the one test that pins them.
+_SHIPPED_MANIFESTS = credential_masks._builtin_manifests
+
+
 @pytest.fixture(autouse=True)
-def _fresh_cache():
+def _fresh_cache(_floor_monkeypatch):
+    """A clean cache, and no shipped built-in's declarations.
+
+    Each case then sees exactly the apps it installs;
+    ``test_the_shipped_built_in_declarations_are_pinned`` reads the shipped ones.
+    """
+    _floor_monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
     credential_masks.clear_cache()
     yield
     credential_masks.clear_cache()
@@ -156,9 +166,12 @@ class TestManifest:
 
 
 class TestWhereDeclarationsAreRead:
-    def test_no_shipped_built_in_declares_a_mask(self):
-        """Every current user's sandbox is unchanged: the seam starts empty."""
-        assert credential_masks.declared_masks(installed=False) == {}
+    def test_the_shipped_built_in_declarations_are_pinned(self, monkeypatch):
+        """A built-in's declaration widens every sandbox's mask set, so each one is a decision."""
+        monkeypatch.setattr(credential_masks, "_builtin_manifests", _SHIPPED_MANIFESTS)
+        assert credential_masks.declared_masks(installed=False) == {
+            "ops-mission-control": ("secrets.json",)
+        }
 
     def test_an_installed_app_declares_leaves_under_its_own_data_dir(self, home):
         _install(home, "demo", ["secrets.json", "keys/a.pem"])

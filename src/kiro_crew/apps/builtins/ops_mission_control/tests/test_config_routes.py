@@ -541,28 +541,33 @@ class TestManifestCrons(unittest.TestCase):
         names = {c.name for c in self._manifest().crons}
         self.assertEqual(names, {"dispatch", "reconcile", "rotation-check", "ledger-hygiene"})
 
-    def test_secrets_live_outside_the_app_dir_so_uninstall_cannot_reach_them(self):
+    def test_secrets_live_in_the_masked_data_dir_that_uninstall_keeps(self):
         """Pins the credential-retention boundary, which is easy to get wrong twice.
 
-        The keystone secret file MUST sit at the crew-home root: that is what puts it
-        on ``security._CREW_SECRET_LEAVES`` so the agent's own tools cannot read or
-        overwrite it. The consequence is that ``uninstall_app``, which removes
-        ``apps/<name>/``, cannot delete it — a PagerDuty/Datadog token outlives an
-        uninstall.
+        The keystone secret file sits in the app's own data directory. The manifest
+        declares it in ``credentialMasks``, so the sandbox hides it, and
+        ``security._CREW_SECRET_LEAVES`` names it, so the agent's own tools cannot read
+        or overwrite it. ``uninstall_app`` keeps ``data/`` unless the operator purges,
+        so a PagerDuty/Datadog token outlives a default uninstall.
 
-        That is the right trade (moving it under the app dir would hand the agent its
-        own credentials, and silently wiping tokens would break uninstall/reinstall),
-        but it must be DISCLOSED rather than discovered. Settings says so next to the
-        Revoke button, which is the only control that changes it.
-
-        If a future change moves the file under the app dir, this test fails — and the
-        keystone protection would have been quietly lost.
+        That is the right trade (silently wiping tokens would break
+        uninstall/reinstall), but it must be DISCLOSED rather than discovered. Settings
+        says so next to the Revoke button, which is the only control that changes it.
         """
+        import inspect
         import os
         import tempfile
 
-        from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import secrets_path
+        from kiro_crew import security
+        from kiro_crew.apps import credential_masks
+        from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import (
+            SECRETS_FILENAME,
+            secrets_path,
+        )
+        from kiro_crew.apps.manager_uninstall import uninstall_app
 
+        self.assertIn(SECRETS_FILENAME, self._manifest().credentialMasks)
+        self.assertTrue(inspect.signature(uninstall_app).parameters["keep_data"].default)
         prev = os.environ.get("KIROCREW_HOME")
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["KIROCREW_HOME"] = tmp
@@ -572,17 +577,10 @@ class TestManifestCrons(unittest.TestCase):
                 # comparing a resolved path against an unresolved one raises in `relative_to`.
                 home = Path(tmp).resolve()
                 path = secrets_path().resolve()
-                self.assertEqual(
-                    path.parent,
-                    home,
-                    "secrets must sit at the crew-home root for the keystone floor",
-                )
-                self.assertNotIn(
-                    "apps",
-                    path.relative_to(home).parts,
-                    "secrets must NOT live under apps/ — uninstall would delete them "
-                    "and the sensitive-path floor would no longer cover them",
-                )
+                leaf = path.relative_to(home).as_posix()
+                self.assertEqual(leaf, f"apps/ops-mission-control/data/{SECRETS_FILENAME}")
+                self.assertIn(leaf, credential_masks.declared_crew_leaves())
+                self.assertTrue(security.is_sensitive_path(str(path)))
             finally:
                 if prev is None:
                     os.environ.pop("KIROCREW_HOME", None)
