@@ -128,6 +128,9 @@ def _choose_prompt(title: str, options: list[tuple[str, str]], default_index: in
         print(f"    {marker} {BOLD}{label}{RESET}{star}")
         if sub:
             print(f"       {DIM}{sub}{RESET}")
+    # Piped answers cannot be asked again: re-reading would take the line meant
+    # for the next question, so a bad piped answer falls back to the default.
+    piped = not sys.stdin.isatty()
     while True:
         raw = prompt(f"Choose 1-{len(options)}", str(default_index + 1))
         if not raw:
@@ -135,11 +138,18 @@ def _choose_prompt(title: str, options: list[tuple[str, str]], default_index: in
         try:
             idx = int(raw) - 1
         except ValueError:
-            warn("Enter a number.")
-            continue
+            idx = -1
+            hint = "Enter a number."
+        else:
+            hint = f"Enter a number between 1 and {len(options)}."
         if 0 <= idx < len(options):
             return idx
-        warn(f"Enter a number between 1 and {len(options)}.")
+        if piped:
+            warn(
+                f"{raw!r} is not a choice; using {default_index + 1} ({options[default_index][0]})."
+            )
+            return default_index
+        warn(hint)
 
 
 def _supports_cursor_menu() -> bool:

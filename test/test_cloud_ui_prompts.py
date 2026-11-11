@@ -7,7 +7,8 @@ Ctrl-C re-raise. This file pins the rest of :mod:`kiro_crew.cloud.ui`:
   ``prompt`` keeps its default and ``confirm`` answers no, because no answer is
   never consent;
 * ``choose`` uses the numbered fallback off a TTY, and that fallback re-asks on a
-  non-number or an out-of-range number;
+  non-number or an out-of-range number typed at a terminal, while a bad piped
+  answer takes the default so the next piped line stays for the next question;
 * the cursor picker enters cbreak mode, redraws in place, and restores the terminal
   attributes however it exits; past nine items it reads a whole typed number;
 * ``_read_key`` reads a whole arrow-key escape sequence;
@@ -124,6 +125,7 @@ class TestNumberedPicker:
         )
 
     def test_a_bad_answer_is_asked_again(self, monkeypatch, capsys) -> None:
+        monkeypatch.setattr(ui.sys, "stdin", _TtyStdin())
         asked = _answers(monkeypatch, ["two", "4", "0", "3"])
         assert ui.choose("Size", OPTIONS) == 2
         assert len(asked) == 4
@@ -134,6 +136,33 @@ class TestNumberedPicker:
     def test_eof_takes_the_recommended_option(self, monkeypatch) -> None:
         _answers(monkeypatch, [EOFError])
         assert ui.choose("Size", OPTIONS, default_index=2) == 2
+
+    @pytest.mark.parametrize("bad", ["y", "4", "0"])
+    def test_a_bad_piped_answer_takes_the_default_and_leaves_the_next_line(
+        self, monkeypatch, capsys, bad
+    ) -> None:
+        """Piped input is read once: the next line stays for the next question."""
+        monkeypatch.setattr(ui.sys, "stdin", io.StringIO(""))
+        # Three replies so a loop that wrongly re-reads fails on the len(asked)
+        # assertion below rather than erroring on an exhausted script.
+        asked = _answers(monkeypatch, [bad, "kept for the next prompt", "3"])
+        assert ui.choose("Size", OPTIONS, default_index=1) == 1
+        assert len(asked) == 1
+        out = capsys.readouterr().out
+        assert out.endswith(f"⚠ {bad!r} is not a choice; using 2 (Medium).\n")
+        assert "Enter a number" not in out
+
+    def test_a_good_piped_answer_is_taken(self, monkeypatch) -> None:
+        monkeypatch.setattr(ui.sys, "stdin", io.StringIO(""))
+        _answers(monkeypatch, ["3"])
+        assert ui.choose("Size", OPTIONS) == 2
+
+
+class _TtyStdin(io.StringIO):
+    """A stdin that reports a terminal, for the numbered picker's re-ask path."""
+
+    def isatty(self) -> bool:
+        return True
 
 
 class _Stdin:
