@@ -790,6 +790,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TOKEN_HISTORY_DAYS,
     )
     from kiro_crew.dashboard.handlers.usage_sessions import (  # noqa: F401
+        _BACKGROUND_CALL_SURFACE_PREFIX,
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
@@ -803,6 +804,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kas_transcripts,
         _parse_sessions,
         _pin_listing_dir,
+        _row_messages,
+        _shard_sessions,
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
@@ -826,6 +829,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _NON_SESSION_CHANNELS,
         _SESSIONS_DIR,
         _SESSIONS_HISTORY_DAYS,
+        _SHARD_COUNTED_PROVIDERS,
         _TOKEN_USAGE_DIR,
         MAX_WINDOW_DAYS,
         NAVIGABLE_CATEGORY,
@@ -843,6 +847,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import model_registry, platform_compat  # noqa: F401
+    from kiro_crew.agent_sdk.provider_identity import PROVIDER_CLAUDE_CODE  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
     from kiro_crew.context_blocks import USER_LABEL  # noqa: F401
