@@ -87,6 +87,29 @@ class TestCronListOwnership:
         assert "owner: none" in out
         assert "created by: import:slack-reminders" in out
 
+    def test_stored_controls_cannot_split_a_row_or_reach_the_terminal(self, capsys):
+        """Name, message and the detail fields are written as given (an agent can
+        set them through ``cron_add``), so a newline must not print as a row that
+        reads as another job and an escape must not reach the terminal live."""
+        job = _job(session_key="dashboard:chat-1\n  ✅ fake", created_by="app:\x1b]0;x\x07ok")
+        job.name = "night\x1b[31mly"
+        job.message = "Check the build.\n  ✅ abcd1234  other-job  (every 60s)"
+        job.managed_by = "mgr\nrow"
+        job.project_path = "/repo\x1b[2J"
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.list_jobs.return_value = [job]
+            _cron(argparse.Namespace(cron_action="list"))
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        assert len(lines) == 2
+        assert "\x1b" not in out
+        assert "nightly" in lines[0]
+        assert "Check the build.\\x0a" in lines[0]
+        assert "managed by: mgr\\x0arow" in lines[1]
+
 
 class TestCronAdopt:
     def test_adopt_reports_the_delivery_consequence(self, capsys):

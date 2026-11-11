@@ -193,6 +193,11 @@ def _cron_folder_label(folder_id: str, names: dict[str, str]) -> str:
     return safe_terminal_line(names.get(folder_id) or folder_id)
 
 
+def _cron_list_field(value: object) -> str:
+    """A stored job field as ``cron list`` prints it: one line, no live controls."""
+    return safe_terminal_line(str(value))
+
+
 def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     """``kirocrew cron add``: validate every field, then ONE locked ``add_job``.
 
@@ -639,7 +644,15 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule, tz_name=job_zone_name(j))
             folder = _cron_folder_label(j.folder_id or "", folder_names)
-            print(f"  {status} {j.id}  {j.name}  ({sched})  [folder: {folder}]  {j.message[:60]}")
+            # Every stored field is written as given (an agent can write them
+            # through `cron_add`), so each is confined to one line with no live
+            # controls; the message is cut after cleaning so the cap counts
+            # what is printed.
+            message = _cron_list_field(j.message)[:60]
+            print(
+                f"  {status} {_cron_list_field(j.id)}  {_cron_list_field(j.name)}  "
+                f"({sched})  [folder: {folder}]  {message}"
+            )
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
             # session's scope, so `cron_list` from chat does not list it and the
@@ -651,15 +664,15 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             owner = j.session_key or ""
             provenance = j.created_by or ""
             if owner:
-                detail = f"owner: {owner}"
+                detail = f"owner: {_cron_list_field(owner)}"
             else:
                 detail = "owner: none (manage from CLI or the dashboard Schedule page)"
             if provenance:
-                detail += f"  created by: {provenance}"
+                detail += f"  created by: {_cron_list_field(provenance)}"
             if j.managed_by:
-                detail += f"  managed by: {j.managed_by}"
+                detail += f"  managed by: {_cron_list_field(j.managed_by)}"
             if j.project_path:
-                detail += f"  project: {j.project_path}"
+                detail += f"  project: {_cron_list_field(j.project_path)}"
             print(f"      {detail}")
 
     elif action == "adopt":
