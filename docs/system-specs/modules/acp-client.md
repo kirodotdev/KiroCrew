@@ -4205,7 +4205,14 @@ and writes only identities it captured under confirmation: see
 bug rather than a refresh. Each of
 the three call sites runs under a cleanup guard, because the scan is reached
 with a runtime already `_initialized` or a session already live in the shared
-process: a cancellation inside it must tear that down, not abandon it. That in-memory snapshot is the half the
+process: a cancellation inside it must tear that down, not abandon it. No call
+site waits for a tree to appear. The spawn's scan ends the handshake a caller is
+waiting on, so when it sees no descendant it returns at once and leaves one
+more look to a task of its own (`_rescan_descendants_later`,
+`_DESCENDANT_RESCAN_DELAY` later): an ordinary pass, serialized and
+identity-bracketed like the rest, which the kill cancels. Where the walk cannot
+see a descendant (`walk_observes_descendants()` is false: Windows) the scan is
+a no-op: nothing is read, and no retry is scheduled. That in-memory snapshot is the half the
 teardown sweep falls back on when the root cannot be walked: a walk enumerates
 descendants FROM the root, so a root that exits first leaves its subtree
 reparented to init and unreachable. Teardown prunes by descendant liveness and

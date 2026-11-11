@@ -5168,7 +5168,8 @@ time.  `AcpClient` snapshots in `ensure_ready()`.  `AcpRuntime` snapshots in
 `_snapshot_descendants()`, called repeatedly for a reason the one-shot client
 scan does not face: the runtime's registered PID is the sandbox launcher, and
 the tree under it is `launcher -> agent -> agent chat process -> MCP servers`,
-so the scan runs when the initialize handshake proves the agent came up and
+so the scan runs when the initialize handshake proves the agent came up (and
+once more, off the spawn's own path, when that scan saw no descendant) and
 then at the end of every `_finish_create_session()` and `load_session()`,
 because each session start — fresh or resumed — forks another agent process
 and re-initializes MCP servers the earlier scan could not have seen. The same
