@@ -6443,6 +6443,17 @@ wedged owner frame still reads as a gate stall.
 | `hook_types` | The pipeline's value types: `HookResult`, the tool gate's verdict `ToolHookResult` (its constructors emit the approval-decision counter, which `test/metrics/test_business_counters.py` reads in this file), the rule dataclasses, `UserDeniedPattern`, and `HooksConfig` with its defensive parse of the `hooks` section |
 | `script_hooks` | Running script hooks: a hook process's environment (`_hook_subprocess_env`, the one reader of `_HOOK_BASE_ENV_KEYS`), one hook's sandboxed run (`run_script_hook`) and its `ScriptHookResult`, and `ScriptHookStore`, which persists the Hooks page's hooks, validates every edit and fires the hooks an event matches; it parses `hooks.json` from its bytes (as do the strict read in `hook_dispatch` and the import sanitizer), so UTF-8 with or without a byte-order mark, UTF-16 (Windows PowerShell 5.1's default) and UTF-32 all load, and bytes none of those decode are a failed load; a store whose load could not read or represent `hooks.json` reloads from disk at its next edit and, while the file still cannot be loaded, refuses every save with `WebhookStoreUnreadable` (503 at the hooks routes) rather than writing its empty in-memory list over the file; `fire` sits beside `run_script_hook`, and `test_hook_events_kas_triggers` reads its source through the object |
 
+The guarded readers take their bytes through `kiro_crew.bounded_read.bounded_read`,
+bound on this module for the `safe_reads` and `internal_reads` owners. Each still
+reads one byte past its cap and refuses on the length, but the request is sized by
+what the open file holds and then by 64 KB chunks, so the cap decides the refusal
+and never the allocation: a 4 KB skill file under the 50 MB `MAX_FILE_BYTES` is
+asked for 4 KB. `jsonl_util.open_regular_nofollow`, which `safe_read_file` reads
+through, charges its per-read ceiling the same way, and
+`agent_discovery._read_spec_bytes` reads a spec the same way. The rule for every
+other capped read is in
+[code-style](../common/code-style.md#a-capped-read-goes-through-bounded_read).
+
 What stays in `hooks.py`, and why, because a guard or a contract reads it there:
 
 - every module-level value — the constants and event vocabularies, the deny-target

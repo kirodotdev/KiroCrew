@@ -113,6 +113,7 @@ from kiro_crew.apps.manager import (  # noqa: F401
     apps_dir,
 )
 from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
+from kiro_crew.bounded_read import bounded_read  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     ConfigReadError,
     KiroCrewAgentConfig,

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.history_files import _safe_key
 from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE, mkdirs_owner_only
 
@@ -202,7 +203,7 @@ def read_threads(self: ConversationLog, key: str) -> dict[str, list[dict[str, An
                 raise ThreadStoreUnreadable(
                     f"thread sidecar over {THREADS_SIDECAR_MAX_BYTES} bytes: {path}"
                 )
-            data = fh.read(THREADS_SIDECAR_MAX_BYTES + 1)
+            data = bounded_read(fh, THREADS_SIDECAR_MAX_BYTES + 1)
     except OSError as exc:
         raise ThreadStoreUnreadable(f"thread sidecar unreadable: {path}") from exc
     if len(data) > THREADS_SIDECAR_MAX_BYTES:

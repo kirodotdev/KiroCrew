@@ -39,6 +39,7 @@ from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_DEEPSEEK
+from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
@@ -440,7 +441,7 @@ def _read_deepseek_gate_marker(marker_path: str) -> object:
             or metadata.st_size > _DSH_GATE_MARKER_MAX_BYTES
         ):
             return None
-        payload = os.read(fd, metadata.st_size + 1)
+        payload = bounded_read_fd(fd, metadata.st_size + 1)
         if len(payload) != metadata.st_size:
             return None
     except OSError:

@@ -130,6 +130,9 @@ def _read_declared_art(name: str, file_path: str) -> tuple[bytes, str] | None:
     stat and read — because every part is a blocking syscall and the gateway runs on
     one event loop (``no-blocking-call-on-event-loop``).
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     if file_path not in _declared_art_paths(name):
         return None
     root = apps_dir() / name
@@ -232,7 +235,7 @@ def _read_declared_art(name: str, file_path: str) -> tuple[bytes, str] | None:
         if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > _ART_MAX_BYTES:
             return None
         with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(_ART_MAX_BYTES + 1)
+            data = bounded_read(fh, _ART_MAX_BYTES + 1)
     except OSError:
         return None
     finally:

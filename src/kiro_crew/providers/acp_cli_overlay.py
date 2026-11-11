@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.tool_search import (
     clamp_min_tokens,
 )
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.effort import effort_settings_key
 from kiro_crew.workspace_cli_settings import (
     CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
@@ -79,7 +80,7 @@ def _load_cli_json(cli_json: Path) -> object:
     ``json.JSONDecodeError`` when it does not parse.
     """
     with cli_json.open("rb") as handle:
-        raw = handle.read(_CLI_JSON_MAX_BYTES + 1)
+        raw = bounded_read(handle, _CLI_JSON_MAX_BYTES + 1)
     if len(raw) > _CLI_JSON_MAX_BYTES:
         raise _OverlayTooLarge(f"{cli_json} is larger than {_CLI_JSON_MAX_BYTES} bytes")
     return json.loads(raw.decode(_CLI_JSON_ENCODING))

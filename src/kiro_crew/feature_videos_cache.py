@@ -65,6 +65,7 @@ import kiro_crew
 from kiro_crew import asset_downloader
 from kiro_crew import feature_videos_manifest as manifest_mod
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.feature_videos_manifest import ManifestEntry, VideoManifest
 
@@ -175,7 +176,7 @@ def recorded_sha256(folder: Path, name: str) -> str:
         if not stat.S_ISREG(os.lstat(path).st_mode):
             return ""
         with open(path, "rb") as fh:
-            raw = fh.read(_RECEIPT_MAX_BYTES + 1)
+            raw = bounded_read(fh, _RECEIPT_MAX_BYTES + 1)
     except OSError:
         return ""
     text = raw.decode("ascii", "replace").strip().lower()

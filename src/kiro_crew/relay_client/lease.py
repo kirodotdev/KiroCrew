@@ -66,6 +66,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.relay_client.backoff import Backoff
 from kiro_crew.relay_client.connection import env_proxy_for
 from kiro_crew.relay_client.protocol import (
@@ -239,7 +240,7 @@ def read_lease_credential(ref: str, *, home: Optional[Path] = None) -> str:
     else:
         try:
             with open(os.path.expanduser(ref), "rb") as handle:
-                raw = handle.read(CREDENTIAL_MAX_BYTES + 1)
+                raw = bounded_read(handle, CREDENTIAL_MAX_BYTES + 1)
         except OSError as exc:
             raise LeaseCredentialError(
                 f"the credential file could not be read ({type(exc).__name__})"

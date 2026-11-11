@@ -406,10 +406,13 @@ def _read_lease_record(lease_path: Path) -> list[str] | None:
     percent decides it. No lock is ever taken on this file, so the read cannot
     collide with a holder the way the pre-split single-file lease did.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     try:
         record_fd = os.open(lease_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
-            raw = os.read(record_fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+            raw = bounded_read_fd(record_fd, _PROJECTION_LEASE_MAX_BYTES + 1)
         finally:
             os.close(record_fd)
         if len(raw) > _PROJECTION_LEASE_MAX_BYTES:

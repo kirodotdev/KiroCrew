@@ -40,6 +40,7 @@ from typing import Any, Iterator, Optional
 
 from kiro_crew import platform_lock_compat
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.cloud.microvm import states
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import owner_only_opener_for
@@ -217,7 +218,7 @@ class CrewStore:
         """
         try:
             with open(self._path, "rb") as fh:
-                raw = fh.read(_MAX_FILE_BYTES + 1)
+                raw = bounded_read(fh, _MAX_FILE_BYTES + 1)
         except FileNotFoundError:
             return {}
         except OSError as exc:

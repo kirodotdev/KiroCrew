@@ -34,6 +34,8 @@ import os
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from kiro_crew.bounded_read import bounded_read
+
 _FILE_SCHEME = "file://"
 _STEERING_TREE = (".kiro", "steering")
 #: The entry Crew's default agent ships, the only one named file by file.
@@ -85,7 +87,7 @@ def _may_be_auto(path: Path) -> bool:
     """Whether *path* could be ``inclusion: auto`` steering, or cannot be read."""
     try:
         with path.open("rb") as handle:
-            data = handle.read(_MAX_FILE_BYTES + 1)
+            data = bounded_read(handle, _MAX_FILE_BYTES + 1)
     except OSError:
         return True
     text = data.decode("utf-8", errors="replace").casefold()

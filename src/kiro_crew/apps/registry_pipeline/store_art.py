@@ -779,6 +779,9 @@ def _open_pinned_asset_stat(
     by-path ``OSError`` produced before, so callers record the asset unobtainable
     identically. Every descriptor is closed before returning.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     if not rel_parts:
         return None
     name = rel_parts[-1]
@@ -841,12 +844,7 @@ def _open_pinned_asset_stat(
                     return None
                 if fst.st_size > max_bytes:
                     return None
-                data = os.read(fd, max_bytes + 1)
-                while len(data) <= max_bytes:
-                    chunk = os.read(fd, max_bytes + 1 - len(data))
-                    if not chunk:
-                        break
-                    data += chunk
+                data = bounded_read_fd(fd, max_bytes + 1)
                 if len(data) > max_bytes:
                     return None
                 return data, fst

@@ -31,6 +31,7 @@ from typing import BinaryIO, Callable, Iterator, Literal, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.node_modules_txn import NodeModulesBackup
 
@@ -586,7 +587,7 @@ def _build_log_tail(build_log: Optional[BinaryIO]) -> str:
         if os.fstat(build_log.fileno()).st_size > _BUILD_LOG_REDACT_MAX_BYTES:
             return ""
         build_log.seek(0)
-        data = build_log.read(_BUILD_LOG_REDACT_MAX_BYTES + 1)
+        data = bounded_read(build_log, _BUILD_LOG_REDACT_MAX_BYTES + 1)
     except (OSError, ValueError):
         return ""
     if len(data) > _BUILD_LOG_REDACT_MAX_BYTES:
