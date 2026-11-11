@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Lock } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
@@ -238,23 +239,48 @@ export function ComputerUsePanel() {
         className="mb-4 animate-rise"
       />
 
+      {/* One card, like Settings > Browser: the switch, the status in a few
+          words and ONE primary action for the current state. */}
       <SettingsSection title={i18nT('pages.settings.computerUsePanel.computer_use')} badge={platformBadge}>
         <SettingsCard>
-          <SettingsToggle
-            label={i18nT('pages.settings.computerUsePanel.enable_computer_use')}
-            hint={i18nT('pages.settings.computerUsePanel.let_the_agent_read_desktop_app_windows_through_a')}
-            checked={cfg.enabled}
-            onChange={v => save({ enabled: v })}
-            disabled={busy || locked}
-            describedBy={locked ? LOCKED_NOTE_ID : undefined}
-          />
-          {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
-          {locked && (
-            <div id={LOCKED_NOTE_ID} className="flex items-center gap-2 text-[12px] text-muted" data-testid="computer-use-locked-note">
-              <LockedByPolicyBadge />
-              <span>{i18nT('components.lockedByPolicyBadge.tooltip')}</span>
-            </div>
-          )}
+          <div data-testid="cu-main-card">
+            <SettingsToggle
+              label={i18nT('pages.settings.computerUsePanel.enable_computer_use')}
+              hint={i18nT('pages.settings.computerUsePanel.let_the_agent_read_desktop_app_windows_through_a')}
+              checked={cfg.enabled}
+              onChange={v => save({ enabled: v })}
+              disabled={busy || locked}
+              describedBy={locked ? LOCKED_NOTE_ID : undefined}
+            />
+            {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
+            {locked && (
+              <div id={LOCKED_NOTE_ID} className="flex items-center gap-2 text-[12px] text-muted" data-testid="computer-use-locked-note">
+                <LockedByPolicyBadge />
+                <span>{i18nT('components.lockedByPolicyBadge.tooltip')}</span>
+              </div>
+            )}
+            <ComputerUseSetupStatus part="summary" onOpenSetup={() => setSetupOpen(true)} />
+            {/* No hand-off: the limit fields under More hold drafts that commit on blur. */}
+            {specNotRewritten && <AgentSpecNotRewrittenNotice className="pt-1" askAgent={false} />}
+            {restarted && (
+              <div className="pt-1 text-[13px] text-muted animate-rise">
+                {specNotRewritten
+                  ? i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted')
+                  : i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted_so_this_takes')}
+              </div>
+            )}
+          </div>
+        </SettingsCard>
+      </SettingsSection>
+      {setupOpen && (
+        <Suspense fallback={null}>
+          <ComputerUseSetupDialog open={setupOpen} onOpenChange={setSetupOpen} config={cfg} />
+        </Suspense>
+      )}
+
+      {/* The one main control an ordinary user changes. */}
+      <div className="mt-3">
+        <SettingsCard>
           <SettingsToggle
             label={i18nT('pages.settings.computerUsePanel.attach_screenshots')}
             description={i18nT('pages.settings.computerUsePanel.also_capture_the_target_window_and_pass_its_file_summary')} hint={i18nT('pages.settings.computerUsePanel.also_capture_the_target_window_and_pass_its_file')}
@@ -262,76 +288,56 @@ export function ComputerUsePanel() {
             onChange={v => save({ attach_screenshot: v })}
             disabled={busy}
           />
-          {/* Cursor Motion is purely visual, so it is shown only where it can
-              actually draw (macOS). */}
-          {cfg.enabled && cfg.cursor_motion_supported && (
-            <SettingsToggle
-              label={i18nT('pages.settings.computerUsePanel.show_cursor_motion')}
-              hint={i18nT('pages.settings.computerUsePanel.draw_a_cursor_that_glides_to_each_target_and_pul')}
-              checked={cfg.cursor_motion}
-              onChange={v => save({ cursor_motion: v })}
+        </SettingsCard>
+      </div>
+
+      {/* Everything else, collapsed by default. */}
+      <SettingsSection title={i18nT('pages.settings.computerUsePanel.more_title')} collapsible>
+        <SettingsCard>
+          <div data-testid="cu-more">
+            <p className="m-0 pb-2 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.computer_use_lets_the_agent_read_any_app_window')}</p>
+            {cfg.platform === WINDOWS && (
+              <p className="m-0 pb-2 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.on_windows_keystrokes_take_your_keyboard_focus')}</p>
+            )}
+            {/* Purely visual, and only where it can draw (macOS). */}
+            {cfg.cursor_motion_supported && (
+              <SettingsToggle
+                label={i18nT('pages.settings.computerUsePanel.show_cursor_motion')}
+                hint={i18nT('pages.settings.computerUsePanel.draw_a_cursor_that_glides_to_each_target_and_pul')}
+                checked={cfg.cursor_motion}
+                onChange={v => save({ cursor_motion: v })}
+                disabled={busy}
+              />
+            )}
+            <SettingsInput
+              label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
+              aria-label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
+              hint={i18nT('pages.settings.computerUsePanel.how_many_controls_one_window_reading_returns_a_w')}
+              type="number"
+              value={draftNodes ?? String(cfg.max_tree_nodes)}
+              onChange={setDraftNodes}
+              onBlur={() => commit('max_tree_nodes', draftNodes, () => setDraftNodes(null))}
               disabled={busy}
             />
-          )}
-          {/* No hand-off: the hand-off navigates away, and this panel's numeric
-              fields hold drafts that only commit on blur. */}
-          {specNotRewritten && <AgentSpecNotRewrittenNotice className="pt-1" askAgent={false} />}
-          {/* Shown even beside the notice: the sessions really were restarted, and
-              hiding that would leave a torn-down chat unexplained. Beside the notice
-              it drops "so this takes effect", which the notice says is not true. */}
-          {restarted && (
-            <div className="pt-1 text-[13px] text-muted animate-rise">
-              {specNotRewritten
-                ? i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted')
-                : i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted_so_this_takes')}
-            </div>
-          )}
-          {cfg.enabled && (
-            <div className="pt-1 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.computer_use_lets_the_agent_read_any_app_window')}</div>
-          )}
-          {/* The paragraph above is written for the per-process case: "leave your
-              pointer alone" is true on macOS and not on Windows, where there is no
-              per-process input route at all. The badge names the two nouns; this says
-              what actually happens to the operator, which is the fact they need before
-              enabling and the one nothing else on this panel states. */}
-          {cfg.enabled && cfg.platform === WINDOWS && (
-            <div className="pt-1 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.on_windows_keystrokes_take_your_keyboard_focus')}</div>
-          )}
+            <SettingsInput
+              label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
+              aria-label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
+              hint={i18nT('pages.settings.computerUsePanel.longest_edge_of_the_screenshot_in_pixels_smaller')}
+              type="number"
+              value={draftWidth ?? String(cfg.screenshot_max_px)}
+              onChange={setDraftWidth}
+              onBlur={() => commit('screenshot_max_px', draftWidth, () => setDraftWidth(null))}
+              disabled={busy}
+            />
+            <ComputerUseSetupStatus part="details" onOpenSetup={() => setSetupOpen(true)} />
+          </div>
         </SettingsCard>
       </SettingsSection>
 
-      <ComputerUseSetupStatus onOpenSetup={() => setSetupOpen(true)} />
-      {setupOpen && (
-        <Suspense fallback={null}>
-          <ComputerUseSetupDialog open={setupOpen} onOpenChange={setSetupOpen} config={cfg} />
-        </Suspense>
-      )}
-
-      <SettingsSection title={i18nT('pages.settings.computerUsePanel.limits')} hint={i18nT('pages.settings.computerUsePanel.how_much_of_a_window_the_agent_reads_at_once_the')}>
-        <SettingsCard index={2}>
-          <SettingsInput
-            label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
-            aria-label={i18nT('pages.settings.computerUsePanel.max_tree_nodes')}
-            hint={i18nT('pages.settings.computerUsePanel.how_many_controls_one_window_reading_returns_a_w')}
-            type="number"
-            value={draftNodes ?? String(cfg.max_tree_nodes)}
-            onChange={setDraftNodes}
-            onBlur={() => commit('max_tree_nodes', draftNodes, () => setDraftNodes(null))}
-            disabled={busy}
-          />
-          <SettingsInput
-            label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
-            aria-label={i18nT('pages.settings.computerUsePanel.screenshot_width')}
-            hint={i18nT('pages.settings.computerUsePanel.longest_edge_of_the_screenshot_in_pixels_smaller')}
-            type="number"
-            value={draftWidth ?? String(cfg.screenshot_max_px)}
-            onChange={setDraftWidth}
-            onBlur={() => commit('screenshot_max_px', draftWidth, () => setDraftWidth(null))}
-            disabled={busy}
-          />
-        </SettingsCard>
-      </SettingsSection>
-
+      <p className="flex items-center gap-1.5 mt-4 mb-0 text-[12px] text-muted" data-testid="cu-privacy-footer">
+        <Lock size={12} className="shrink-0" aria-hidden />
+        {i18nT('pages.settings.computerUsePanel.privacy_footer')}
+      </p>
     </>
   )
 }

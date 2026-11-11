@@ -230,6 +230,8 @@ async def test_no_action_turns_the_feature_on() -> None:
         "verify",
         "restart_driver",
         "reset",
+        # Sets the keystone's driver choice back to auto; it never turns the feature on.
+        "use_builtin_driver",
     }
 
 
@@ -295,6 +297,8 @@ async def test_missing_setup_module_is_a_shaped_error(monkeypatch) -> None:
         "steps",
         "user_action",
         "progress",
+        "problem",
+        "blocked",
     }
 
 
@@ -378,3 +382,26 @@ async def test_a_non_dict_document_is_shaped() -> None:
     shaped = setup_api.shape_document(None)
     assert shaped["state"] == "error"
     assert shaped["capabilities"] == {key: False for key in setup_api._CAPABILITY_KEYS}
+
+
+async def test_use_builtin_driver_runs_under_the_shared_config_lock(fake: FakeSetup) -> None:
+    """It rewrites the keystone, so it serializes with the other keystone writers and
+    holds the lock until its worker is done (a concurrent disable is never undone)."""
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock
+
+    held: list[bool] = []
+    original = fake.run_setup_action
+
+    def run(action: str) -> object:
+        held.append(_get_config_lock().locked())
+        return original(action)
+
+    fake.run_setup_action = run  # type: ignore[method-assign]
+    sys.modules[setup_api.SETUP_MODULE].run_setup_action = run  # type: ignore[attr-defined]
+    fake.result = _doc("ready")
+    async with TestClient(TestServer(_owner_app())) as client:
+        response = await client.post(
+            "/api/computer-use/setup", json={"action": "use_builtin_driver"}
+        )
+        assert response.status == 200
+    assert held == [True]

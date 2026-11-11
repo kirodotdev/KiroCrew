@@ -41,9 +41,9 @@ import tarfile
 import tempfile
 import threading
 import time
-import urllib.request
 import zipfile
 from collections.abc import Callable
+from contextlib import suppress as contextlib_suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -80,6 +80,9 @@ STAGE_VERSION = "checking_version"
 STAGE_FINISHING = "finishing"
 STAGE_PLACING = "placing_app"
 STAGE_DONE = "done"
+#: The driver was killed or refused by the OS as it started (not a bad install).
+STAGE_BLOCKED = "blocked"
+BLOCKED_FILE = "blocked.json"
 
 _CHUNK = 1 << 16
 _READ_TIMEOUT_SECS = 60.0
@@ -94,6 +97,115 @@ class InstallError(Exception):
         super().__init__(detail)
         self.stage = stage
         self.detail = detail
+
+
+class DriverBlocked(InstallError):
+    """The driver binary was stopped by the operating system the moment it started.
+
+    Seen on managed Macs where endpoint security software SIGKILLs an allowed,
+    signed and notarized binary at exec. Not a version mismatch and not a broken
+    install, so it is reported as itself. Kiro Crew never retries it in a loop and
+    never tries to get around the block.
+    """
+
+    def __init__(self, how: str, os_id: str) -> None:
+        super().__init__(STAGE_BLOCKED, blocked_message(how, os_id))
+        self.how = how
+
+
+#: Windows exit codes and spawn errors that mean "the system refused to run it".
+_WINDOWS_BLOCKED_EXIT = {
+    0xC0000022: "access denied",  # STATUS_ACCESS_DENIED
+    0xC0000428: "invalid image hash",  # STATUS_INVALID_IMAGE_HASH (code integrity)
+    0xC0000361: "blocked by policy",  # STATUS_ACCESS_DISABLED_BY_POLICY_DEFAULT
+    0xC0000362: "blocked by policy",  # STATUS_ACCESS_DISABLED_BY_POLICY_PATH
+    0xC0000363: "blocked by policy",  # STATUS_ACCESS_DISABLED_BY_POLICY_PUBLISHER
+    0xC0000364: "blocked by policy",  # STATUS_ACCESS_DISABLED_BY_POLICY_OTHER
+}
+_WINDOWS_BLOCKED_SPAWN = {
+    5: "access denied",  # ERROR_ACCESS_DENIED
+    225: "flagged by security software",  # ERROR_VIRUS_INFECTED
+    226: "flagged by security software",  # ERROR_VIRUS_DELETED
+    1260: "blocked by policy",  # ERROR_ACCESS_DISABLED_BY_POLICY
+    4551: "blocked by policy",  # ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION
+}
+
+
+def blocked_how(
+    returncode: "int | None" = None, error: "OSError | None" = None, *, os_id: "str | None" = None
+) -> "str | None":
+    """How the OS stopped the driver at launch, or ``None`` when it did not.
+
+    POSIX: a negative return code (killed by a signal) or a spawn refused with
+    EPERM / EACCES. Windows: the access-denied and blocked-by-policy exit codes and
+    spawn errors. Anything else (a non-zero exit, wrong output) is not a block.
+    """
+    host = os_id or current_os()
+    if error is not None:
+        if host == OS_WINDOWS:
+            return _WINDOWS_BLOCKED_SPAWN.get(getattr(error, "winerror", None) or -1)
+        import errno as errno_mod
+
+        if error.errno in (errno_mod.EPERM, errno_mod.EACCES):
+            return "the system refused to start it"
+        return None
+    if returncode is None:
+        return None
+    if host == OS_WINDOWS:
+        return _WINDOWS_BLOCKED_EXIT.get(returncode & 0xFFFFFFFF)
+    if returncode < 0:
+        return f"signal {-returncode}"
+    return None
+
+
+def blocked_message(how: str, os_id: str) -> str:
+    """The plain, model-safe reason shown in setup and in every tool refusal."""
+    text = (
+        f"The driver was stopped as soon as it started ({how}). Security software on "
+        "this computer is probably blocking it. Ask your IT team to allow CuaDriver"
+    )
+    if os_id in (OS_MACOS, OS_WINDOWS):
+        return text + ", or keep using the built-in driver."
+    return text + "."
+
+
+def blocked_path(home: "str | os.PathLike[str]") -> Path:
+    return runtime_root(home) / BLOCKED_FILE
+
+
+def record_blocked(home: "str | os.PathLike[str]", how: str) -> None:
+    """Remember that the installed driver was blocked, for ``auto`` and for setup."""
+    path = blocked_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps({"how": how, "at": int(time.time())}) + "\n"
+    # A private temp file (``mkstemp``: O_EXCL, 0600) renamed into place, so two
+    # writers never race on creating the same name.
+    fd, tmp = tempfile.mkstemp(prefix=".blocked-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib_suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def clear_blocked(home: "str | os.PathLike[str]") -> None:
+    try:
+        blocked_path(home).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_blocked(home: "str | os.PathLike[str]") -> str:
+    """``how`` the installed driver was last blocked, or ``""`` (display read only)."""
+    try:
+        data = json.loads(blocked_path(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    how = data.get("how") if isinstance(data, dict) else None
+    return how if isinstance(how, str) else ""
 
 
 class UnsafeArchiveMember(InstallError):
@@ -293,6 +405,41 @@ def install_state(
     )
 
 
+def exec_ready_binary(
+    home: "str | os.PathLike[str]", *, asset: "PinnedAsset | None" = None
+) -> Path:
+    """The driver binary Kiro Crew may execute directly, re-verified right now.
+
+    The ONE source of a driver executable for a direct exec (``mcp``, ``stop``,
+    ``--version``) on every platform: the copy in the sealed
+    ``<data-home>/computer-use/driver/<version>`` tree (read-only to the agent's
+    sandbox), hashed against the PIN immediately before it is returned. On macOS
+    this is never ``/Applications/CuaDriver.app``: that copy is writable by the
+    user, so a sandboxed agent could replace it between a check and an exec. It is
+    only ever started through LaunchServices, after :func:`check_app_copy`.
+
+    Raises :class:`InstallError` when the copy is missing, a link, or not the pin.
+    """
+    pinned = _pinned_for_host(asset)
+    if pinned is None or not pinned.binary_sha256:
+        raise InstallError(STAGE_VERIFYING, "there is no pinned driver for this computer")
+    binary = version_dir(home) / PurePosixPath(pinned.binary)
+    try:
+        if binary.is_symlink() or not binary.is_file():
+            raise InstallError(STAGE_VERIFYING, "the installed driver binary is missing")
+        digest = sha256_file(binary)
+    except OSError as exc:
+        raise InstallError(
+            STAGE_VERIFYING, f"the installed driver cannot be read ({exc.strerror or exc})"
+        ) from exc
+    if digest != pinned.binary_sha256:
+        raise InstallError(
+            STAGE_VERIFYING,
+            "the installed driver does not match its pinned hash; it was not run (reinstall it)",
+        )
+    return binary
+
+
 def verify_installed(
     home: "str | os.PathLike[str]",
     *,
@@ -316,17 +463,22 @@ def verify_installed(
     expected = pinned.binary_sha256 or str(read_record(home).get("binary_sha256") or "")
     if not expected or actual != expected:
         return None, "the driver binary does not match its pinned hash; reinstall it"
+    try:
+        sealed = exec_ready_binary(home, asset=pinned)
+    except InstallError as exc:
+        return None, exc.detail
     if pinned.os == OS_MACOS:
-        # The copy upstream actually starts: the one in /Applications. Signature,
-        # team, bundle id, pinned hash, version, every time, before anything runs.
-        why = check_app_copy(applications_app(), pinned, home, run=run)
+        # The copy LaunchServices starts: the one in /Applications. Signature, team,
+        # bundle id and pinned hash every time; ``--version`` runs on the sealed copy,
+        # so nothing in /Applications is ever executed directly.
+        why = check_app_copy(applications_app(), pinned, home, run=run, version_binary=sealed)
         if why:
             return None, f"{applications_app()} failed its checks ({why}); it was not started"
-        return state.binary, ""
-    reason = check_version(state.binary, home, run=run)
+        return sealed, ""
+    reason = check_version(sealed, home, run=run)
     if reason:
         return None, reason
-    return state.binary, ""
+    return sealed, ""
 
 
 def check_version(
@@ -335,7 +487,10 @@ def check_version(
     *,
     run: "Callable[..., subprocess.CompletedProcess[str]] | None" = None,
 ) -> str:
-    """``""`` when ``binary --version`` prints the pinned version, else the reason."""
+    """``""`` when ``binary --version`` prints the pinned version, else the reason.
+
+    Raises :class:`DriverBlocked` when the system stops the binary as it starts.
+    """
     runner = run or subprocess.run
     try:
         done = runner(
@@ -349,8 +504,18 @@ def check_version(
             stdin=subprocess.DEVNULL,
             cwd=str(private_home(home)),
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
+        how = blocked_how(error=exc)
+        if how:
+            raise DriverBlocked(how, current_os()) from exc
         return f"the driver did not report its version ({exc})"
+    except subprocess.TimeoutExpired as exc:
+        return f"the driver did not report its version ({exc})"
+    how = blocked_how(done.returncode)
+    if how:
+        # Killed at launch (endpoint security software on a managed computer): say
+        # so, rather than "version '?'". One attempt, no retry, no workaround.
+        raise DriverBlocked(how, current_os())
     words = [word.removeprefix("v") for word in (done.stdout or "").split()]
     if done.returncode != 0 or DRIVER_VERSION not in words:
         printed = (done.stdout or done.stderr or "").strip().splitlines()[:1]
@@ -361,69 +526,41 @@ def check_version(
 # ── download ──
 
 
-class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        if not str(newurl).startswith("https://"):
-            raise InstallError(STAGE_DOWNLOADING, f"refusing a redirect off HTTPS: {newurl}")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def _default_opener(url: str, timeout: float) -> Any:
-    if not url.startswith("https://"):
-        raise InstallError(STAGE_DOWNLOADING, f"refusing a non-HTTPS download: {url}")
-    context = _ssl_compat.system_trust_context()
-    opener = urllib.request.build_opener(
-        _HttpsOnlyRedirects(), urllib.request.HTTPSHandler(context=context)
-    )
-    # The scheme is pinned to https above, and the URL comes from the pin table.
-    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-    return opener.open(url, timeout=timeout)  # noqa: S310 - https pinned above
-
-
 def download_verified(
     asset: PinnedAsset,
     dest: Path,
     *,
-    opener: "Callable[[str, float], Any] | None" = None,
-    stop: "threading.Event | None" = None,
     progress: "InstallProgress | None" = None,
 ) -> None:
-    """Stream *asset* to *dest*, refusing anything but the pinned bytes."""
-    open_url = opener or _default_opener
-    digest = hashlib.sha256()
-    total = 0
-    try:
-        with open_url(asset.url, _READ_TIMEOUT_SECS) as response, dest.open("wb") as out:
-            while True:
-                if stop is not None and stop.is_set():
-                    raise InstallError(STAGE_DOWNLOADING, "install stopped")
-                chunk = response.read(_CHUNK)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > asset.size:
-                    raise InstallError(
-                        STAGE_VERIFYING,
-                        f"the download is larger than the pinned {asset.size} bytes; refused",
-                    )
-                digest.update(chunk)
-                out.write(chunk)
-                if progress is not None:
-                    progress.bytes_done = total
-    except InstallError:
-        raise
-    except Exception as exc:
-        note = _ssl_compat.system_trust_note()
-        extra = f"; {note}" if note else ""
-        raise InstallError(STAGE_DOWNLOADING, f"download failed: {exc}{extra}") from exc
-    if total != asset.size:
-        raise InstallError(
-            STAGE_VERIFYING, f"the download is {total} bytes, not the pinned {asset.size}; refused"
-        )
-    if digest.hexdigest() != asset.sha256:
-        raise InstallError(
-            STAGE_VERIFYING, "the download's sha256 does not match the pinned digest; refused"
-        )
+    """Fetch *asset* to *dest* through :func:`asset_downloader.download_to`.
+
+    The shared downloader enforces HTTPS, the pinned size as a ceiling and the
+    pinned SHA-256, stages through a no-follow file and swaps the verified file
+    in atomically. The pinned GitHub release redirects to its asset host, which
+    is why cross-host redirects (HTTPS only) are allowed for this constant URL.
+    """
+    from kiro_crew import asset_downloader
+
+    def on_progress(done: int, _total: int) -> None:
+        if progress is not None:
+            progress.bytes_done = done
+
+    ok, why = asset_downloader.download_to(
+        dest,
+        asset.url,
+        sha256=asset.sha256,
+        size=asset.size,
+        min_bytes=asset.size,
+        on_progress=on_progress,
+        allow_cross_host_redirects=True,
+        label=f"the desktop driver {asset.name}",
+    )
+    if not ok:
+        stage = STAGE_VERIFYING if ("sha256" in why or "byte" in why) else STAGE_DOWNLOADING
+        note = _ssl_compat.system_trust_note() if stage == STAGE_DOWNLOADING else ""
+        raise InstallError(stage, f"{why}; refused" + (f"; {note}" if note else ""))
+    if progress is not None:
+        progress.bytes_done = asset.size
 
 
 # ── safe extraction ──
@@ -639,12 +776,15 @@ def check_app_copy(
     home: "str | os.PathLike[str]",
     *,
     run: "Runner | None" = None,
+    version_binary: "Path | None" = None,
+    check_running_version: bool = True,
 ) -> str:
     """``""`` when *app* is exactly the pinned, signed driver app, else why not.
 
     Ordered so nothing is executed before it is proven: link and file checks, the
     code signature (team and bundle id), the binary's pinned hash, and only then
-    ``--version``.
+    ``--version``. *version_binary* runs ``--version`` on that (already verified)
+    copy instead of *app*'s own binary; ``check_running_version=False`` skips it.
     """
     if app.is_symlink():
         return "it is a link"
@@ -661,7 +801,9 @@ def check_app_copy(
         return f"its driver binary cannot be read ({exc.strerror or exc})"
     if not pinned.binary_sha256 or digest != pinned.binary_sha256:
         return f"its driver binary is not the pinned {DRIVER_VERSION}"
-    return check_version(binary, home, run=run)
+    if not check_running_version:
+        return ""
+    return check_version(version_binary or binary, home, run=run)
 
 
 def _copy_bundle(src: Path, dst: Path) -> None:
@@ -702,8 +844,11 @@ def place_macos_app(
       the path upstream launches.
     """
     target = applications_app()
+    # ``--version`` runs on the staged copy (in the sealed runtime tree, already
+    # hashed and signature-checked), never on a binary in /Applications.
+    staged_binary = staged_app / MACOS_APP_BINARY
     if target.exists() or target.is_symlink():
-        why = check_app_copy(target, pinned, home, run=run)
+        why = check_app_copy(target, pinned, home, run=run, version_binary=staged_binary)
         if why:
             raise InstallError(
                 STAGE_PLACING,
@@ -723,7 +868,7 @@ def place_macos_app(
     tmp = parent / f".{MACOS_APP_NAME}.kirocrew-{os.getpid()}"
     try:
         (copy or _copy_bundle)(staged_app, tmp)
-        why = check_app_copy(tmp, pinned, home, run=run)
+        why = check_app_copy(tmp, pinned, home, run=run, version_binary=staged_binary)
         if why:
             raise InstallError(STAGE_PLACING, f"the copied driver app failed its checks ({why})")
         if target.exists() or target.is_symlink():
@@ -745,8 +890,12 @@ def place_macos_app(
 
 
 def _remove_owned_app(record: dict[str, Any]) -> str:
-    """Remove ``/Applications/CuaDriver.app`` only if Kiro Crew placed it and it is
-    still byte-for-byte what was placed. Returns what happened, for the log."""
+    """Remove ``/Applications/CuaDriver.app`` only when the install marker says
+    Kiro Crew placed the app at exactly that path (``owned`` true) AND the app's
+    driver binary still has the SHA-256 recorded in that marker. Other files in
+    the bundle are not compared: a copy of ours whose ``Info.plist`` was edited is
+    still ours and is removed; a copy whose binary changed is left in place.
+    Returns what happened, for the log."""
     app_record = record.get("applications_app")
     target = applications_app()
     if not isinstance(app_record, dict) or app_record.get("owned") is not True:
@@ -758,7 +907,7 @@ def _remove_owned_app(record: dict[str, Any]) -> str:
     except OSError:
         return "the driver app we placed cannot be read; left in place"
     if digest != app_record.get("binary_sha256"):
-        return "the driver app was changed after we placed it; left in place"
+        return "the driver binary in the app we placed has changed since; left in place"
     _remove_tree(target)
     if Path(_LSREGISTER).is_file():
         try:
@@ -785,8 +934,9 @@ def _make_read_only(root: Path) -> None:
             if path.is_symlink():
                 continue
             mode = path.stat().st_mode
-            os.chmod(path, mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
-        os.chmod(dirpath, 0o555)
+            # Narrows only: clears every write bit, adds nothing.
+            os.chmod(path, mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
+        os.chmod(dirpath, 0o555)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
 
 
 def _make_writable(root: Path) -> None:
@@ -794,7 +944,8 @@ def _make_writable(root: Path) -> None:
         return
     for dirpath, _dirnames, _filenames in os.walk(root):
         try:
-            os.chmod(dirpath, 0o755)
+            # Owner-only: the tree lives in the private data home.
+            os.chmod(dirpath, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
         except OSError:
             pass
 
@@ -811,9 +962,7 @@ def install(
     *,
     asset: "PinnedAsset | None" = None,
     os_id: "str | None" = None,
-    opener: "Callable[[str, float], Any] | None" = None,
     run: "Runner | None" = None,
-    stop: "threading.Event | None" = None,
     progress: "InstallProgress | None" = None,
     copy_app: "Callable[[Path, Path], None] | None" = None,
 ) -> InstallState:
@@ -828,9 +977,7 @@ def install(
             home,
             asset=asset,
             os_id=os_id,
-            opener=opener,
             run=run,
-            stop=stop,
             prog=prog,
             copy_app=copy_app,
         )
@@ -853,9 +1000,7 @@ def _install_locked(
     *,
     asset: "PinnedAsset | None",
     os_id: "str | None",
-    opener: "Callable[[str, float], Any] | None",
     run: "Runner | None",
-    stop: "threading.Event | None",
     prog: InstallProgress,
     copy_app: "Callable[[Path, Path], None] | None" = None,
 ) -> InstallState:
@@ -872,7 +1017,7 @@ def _install_locked(
     try:
         archive = staging / chosen.name
         prog.stage, prog.bytes_total = STAGE_DOWNLOADING, chosen.size
-        download_verified(chosen, archive, opener=opener, stop=stop, progress=prog)
+        download_verified(chosen, archive, progress=prog)
         prog.stage = STAGE_EXTRACTING
         tree = staging / "tree"
         if chosen.is_zip:
@@ -933,6 +1078,7 @@ def _install_locked(
         tmp = record_path(home).with_suffix(".tmp")
         tmp.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, record_path(home))
+        clear_blocked(home)
     finally:
         _remove_tree(staging)
     return install_state(home, asset=chosen)
@@ -958,7 +1104,14 @@ __all__ = [
     "PROGRESS",
     "UnsafeArchiveMember",
     "applications_app",
+    "DriverBlocked",
+    "blocked_how",
+    "blocked_message",
     "check_app_copy",
+    "clear_blocked",
+    "read_blocked",
+    "record_blocked",
+    "exec_ready_binary",
     "check_tar_members",
     "check_version",
     "current_os",

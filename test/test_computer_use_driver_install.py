@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import tarfile
+import types
 import zipfile
 from pathlib import Path
 
@@ -168,13 +169,36 @@ class _Resp(io.BytesIO):
         self.close()
 
 
-def _opener(data: bytes, seen: "list[str] | None" = None):  # type: ignore[no-untyped-def]
-    def open_url(url: str, timeout: float) -> _Resp:
-        if seen is not None:
-            seen.append(url)
-        return _Resp(data)
+#: What the faked network answers with: (body, list of requested urls or None).
+_SERVED: "list[tuple[bytes, list[str] | None]]" = [(b"", None)]
 
-    return open_url
+
+@pytest.fixture(autouse=True)
+def _fake_network(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer every download through the shared downloader's opener seam."""
+    import types
+
+    from kiro_crew import asset_downloader
+
+    def open_url(req, timeout=None):  # type: ignore[no-untyped-def]
+        data, seen = _SERVED[0]
+        if seen is not None:
+            seen.append(getattr(req, "full_url", req))
+        resp = _Resp(data)
+        resp.status = 200  # type: ignore[attr-defined]
+        resp.headers = {}  # type: ignore[attr-defined]
+        return resp
+
+    _floor_monkeypatch.setattr(
+        asset_downloader, "build_opener", lambda *_a, **_k: types.SimpleNamespace(open=open_url)
+    )
+    _SERVED[0] = (b"", None)
+
+
+def _serve(data: bytes, seen: "list[str] | None" = None) -> "dict[str, object]":
+    """Serve *data* to the next downloads; returns no install kwargs."""
+    _SERVED[0] = (data, seen)
+    return {}
 
 
 def _version_ok(argv, **kwargs):  # type: ignore[no-untyped-def]
@@ -196,7 +220,7 @@ def _install(home: Path, data: bytes, asset: "pin.PinnedAsset | None" = None, ru
         home,
         asset=asset or _asset_for(data),
         os_id=pin.OS_LINUX,
-        opener=_opener(data),
+        **_serve(data),
         run=run,
         progress=inst.InstallProgress(),
     )
@@ -212,7 +236,7 @@ class TestInstall:
             tmp_path,
             asset=_asset_for(data),
             os_id=pin.OS_LINUX,
-            opener=_opener(data, seen),
+            **_serve(data, seen),
             run=_version_ok,
             progress=inst.InstallProgress(),
         )
@@ -292,8 +316,12 @@ class TestInstall:
             _install(tmp_path, data, asset=asset)
 
     def test_non_https_url_refused(self) -> None:
-        with pytest.raises(inst.InstallError, match="non-HTTPS"):
-            inst._default_opener("http://example.invalid/x", 1.0)
+        real = _asset_for(b"x")
+        asset = types.SimpleNamespace(
+            url="http://example.invalid/x", sha256=real.sha256, size=real.size, name=real.name
+        )
+        with pytest.raises(inst.InstallError, match="non-https"):
+            inst.download_verified(asset, Path(__file__).with_name("never-written.bin"))
 
     def test_concurrent_install_refused(self, tmp_path: Path) -> None:
         progress = inst.InstallProgress()
@@ -304,7 +332,7 @@ class TestInstall:
                     tmp_path,
                     asset=_asset_for(b"x"),
                     os_id=pin.OS_LINUX,
-                    opener=_opener(b"x"),
+                    **_serve(b"x"),
                     run=_version_ok,
                     progress=progress,
                 )
@@ -330,8 +358,8 @@ class TestVerifyInstalled:
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_a_rewritten_record_cannot_bless_a_replaced_binary(self, tmp_path: Path) -> None:
         binary = self._installed(tmp_path)
-        os.chmod(binary.parent, 0o755)
-        os.chmod(binary, 0o755)
+        os.chmod(binary.parent, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
+        os.chmod(binary, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
         evil = b"#!/bin/sh\necho cua-driver 0.47.8\n# planted\n"
         binary.write_bytes(evil)
         record = json.loads(inst.record_path(tmp_path).read_text())
@@ -349,8 +377,8 @@ class TestVerifyInstalled:
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
     def test_replaced_binary_never_executes(self, tmp_path: Path) -> None:
         binary = self._installed(tmp_path)
-        os.chmod(binary.parent, 0o755)
-        os.chmod(binary, 0o755)
+        os.chmod(binary.parent, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
+        os.chmod(binary, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
         binary.write_bytes(b"#!/bin/sh\necho pwned\n")
         calls: list[object] = []
 

@@ -24,10 +24,11 @@ runtime, which is what keeps the permission grant on that bundle.
 * **Restart with capped backoff**, re-running ``initialize`` and ``tools/list``
   on every new child. Crash loops stop after :data:`MAX_RESTARTS_IN_WINDOW`
   starts inside :data:`RESTART_WINDOW_SECS` until someone asks for a restart.
-* **Clean shutdown and stray reclaim.** :meth:`stop` closes stdin, then kills
-  the group; a pid file records the live child so the next gateway can reclaim
-  a child its predecessor left behind, after confirming the pid still names that
-  same process.
+* **Clean shutdown, no orphan.** :meth:`stop` closes stdin, then kills the
+  group through the ``Popen`` handle the supervisor owns. A gateway that dies
+  without stopping leaves no driver behind either: the child's stdin is the
+  gateway's pipe, and ``mcp`` exits when that pipe reaches end-of-file. No pid
+  is ever killed by number.
 
 The child's stdout is read on a dedicated thread (pipes cannot be polled on
 Windows) and stderr is drained into a bounded ring for diagnostics. Neither the
@@ -103,12 +104,14 @@ CLIENT_INFO = {"name": "kiro-crew", "version": "1"}
 DEFAULT_CALL_TIMEOUT_SECS = 30.0
 START_TIMEOUT_SECS = 20.0
 STOP_GRACE_SECS = 3.0
+#: How long a child whose pipes just closed may take to finish exiting before a
+#: discard counts as Kiro Crew killing it.
+_EXIT_SETTLE_SECS = 0.3
 BACKOFF_SECS: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 RESTART_WINDOW_SECS = 120.0
 MAX_RESTARTS_IN_WINDOW = 6
 MAX_LINE_BYTES = 32 * 1024 * 1024
 STDERR_RING_LINES = 50
-PID_FILE = "driver.pid"
 
 STATE_STOPPED = "stopped"
 STATE_RUNNING = "running"
@@ -140,6 +143,9 @@ class _Child:
     generation: int
     tools: frozenset[str] = frozenset()
     next_id: int = 0
+    #: True once Kiro Crew itself killed this child (a timeout, a discard), so its
+    #: exit by signal is never mistaken for the system blocking the launch.
+    killed: bool = False
 
 
 Spawner = Callable[[list[str], Mapping[str, str], str], "subprocess.Popen[bytes]"]
@@ -198,9 +204,11 @@ class DriverSupervisor:
         home: "str | os.PathLike[str]",
         *,
         resolve_binary: "Callable[[], tuple[Path | None, str]] | None" = None,
+        recheck_binary: "Callable[[Path], Path] | None" = None,
         spawn: "Spawner | None" = None,
         base_env: "Mapping[str, str] | None" = None,
         mcp_args: "tuple[str, ...]" = ("mcp",),
+        mac_daemon: "Any | None" = None,
         call_timeout: float = DEFAULT_CALL_TIMEOUT_SECS,
         start_timeout: float = START_TIMEOUT_SECS,
         backoff: "tuple[float, ...]" = BACKOFF_SECS,
@@ -209,9 +217,33 @@ class DriverSupervisor:
     ) -> None:
         self._home = Path(home)
         self._resolve_binary = resolve_binary or (lambda: install_mod.verify_installed(self._home))
+        # Re-hash right before the exec (the start of a daemon can take seconds
+        # after ``resolve_binary``). An injected resolver brings its own binary,
+        # so it brings its own re-check too.
+        if recheck_binary is None:
+            recheck_binary = (
+                (lambda _b: install_mod.exec_ready_binary(self._home))
+                if resolve_binary is None
+                else (lambda b: b)
+            )
+        self._recheck_binary = recheck_binary
         self._spawn = spawn or _default_spawn
         self._base_env = base_env
         self._mcp_args = tuple(mcp_args)
+        # On macOS plain ``mcp`` would let upstream start an unfenced daemon, so
+        # Kiro Crew starts a fenced one itself and the proxy only ever attaches
+        # to it (see :mod:`.macos_daemon`). Made for the real installed driver;
+        # a caller that injects its own binary (a test double) injects its own
+        # daemon too.
+        if (
+            mac_daemon is None
+            and resolve_binary is None
+            and install_mod.current_os() == install_mod.OS_MACOS
+        ):
+            from kiro_crew.computer_use.driver_runtime.macos_daemon import MacDaemon
+
+            mac_daemon = MacDaemon(self._home)
+        self._mac = mac_daemon
         self._call_timeout = call_timeout
         self._start_timeout = start_timeout
         self._backoff = backoff
@@ -223,9 +255,11 @@ class DriverSupervisor:
         self._generation = 0
         self._starts: "collections.deque[float]" = collections.deque()
         self._failures = 0
+        #: How the OS stopped the driver at its last start ("" when it did not).
+        #: Latched: no automatic retry until an explicit restart.
+        self._blocked = ""
         self._state = STATE_STOPPED
         self._last_error = ""
-        self._reclaimed = False
 
     # ── status ──
 
@@ -244,6 +278,7 @@ class DriverSupervisor:
                 "generation": self._generation,
                 "restarts": max(0, len(self._starts) - 1),
                 "last_error": self._last_error,
+                "blocked": self._blocked,
                 "stderr_tail": list(child.stderr)[-5:] if child is not None else [],
             }
 
@@ -264,14 +299,20 @@ class DriverSupervisor:
             self._ensure_locked()
 
     def restart(self) -> None:
-        """Stop the child and clear the crash-loop latch; the next call starts a new one."""
+        """Stop the child and clear the crash-loop latch; the next call starts a new one.
+
+        On macOS the fenced daemon is stopped too, so a permission granted since
+        it started applies to the next one.
+        """
         with self._call_lock:
             self._kill_child("restart requested")
+            self._stop_mac_daemon()
             with self._state_lock:
                 self._starts.clear()
                 self._failures = 0
                 self._state = STATE_STOPPED
                 self._last_error = ""
+                self._blocked = ""
 
     def stop(self) -> None:
         """Stop the child (gateway shutdown, before an in-place restart). Idempotent."""
@@ -332,10 +373,10 @@ class DriverSupervisor:
             return child
         if child is not None:
             self._discard(child, "the driver exited")
-        if not self._reclaimed:
-            self._reclaimed = True
-            self._reclaim_stray()
         with self._state_lock:
+            if self._blocked:
+                # Blocked at launch by the system: never retried by itself.
+                raise DriverUnavailable(f"the desktop driver cannot start: {self._last_error}")
             now = self._clock()
             while self._starts and now - self._starts[0] > RESTART_WINDOW_SECS:
                 self._starts.popleft()
@@ -353,7 +394,10 @@ class DriverSupervisor:
             )
         if delay:
             self._sleep(delay)
-        binary, reason = self._resolve_binary()
+        try:
+            binary, reason = self._resolve_binary()
+        except install_mod.DriverBlocked as exc:
+            raise self._blocked_at_launch(exc.how, exc.detail) from exc
         if binary is None:
             with self._state_lock:
                 self._state = STATE_UNAVAILABLE
@@ -372,9 +416,35 @@ class DriverSupervisor:
             self._starts.append(self._clock())
             self._generation += 1
             generation = self._generation
+        argv: list[str]
+        daemon_pid: "int | None" = None
+        if self._mac is not None:
+            from kiro_crew.computer_use.driver_runtime.macos_daemon import DaemonError
+
+            try:
+                daemon_pid = self._mac.ensure()
+            except DaemonError as exc:
+                self._note_failure(str(exc))
+                raise DriverUnavailable(f"the desktop driver cannot start: {exc}") from exc
+            try:
+                # The sealed copy, re-hashed now; /Applications is never executed.
+                argv = self._mac.proxy_argv()
+            except DaemonError as exc:
+                self._note_failure(str(exc))
+                raise DriverUnavailable(f"the desktop driver cannot start: {exc}") from exc
+            env = self._mac.proxy_env(env)
+        else:
+            try:
+                argv = [str(self._recheck_binary(binary)), *self._mcp_args]
+            except install_mod.InstallError as exc:
+                self._note_failure(exc.detail)
+                raise DriverUnavailable(f"the desktop driver cannot start: {exc.detail}") from exc
         try:
-            proc = self._spawn([str(binary), *self._mcp_args], env, str(home))
+            proc = self._spawn(argv, env, str(home))
         except OSError as exc:
+            how = install_mod.blocked_how(error=exc)
+            if how:
+                raise self._blocked_at_launch(how) from exc
             self._note_failure(f"could not start the driver ({exc.strerror or exc})")
             raise DriverUnavailable(
                 f"the desktop driver could not start ({exc.strerror or exc})"
@@ -407,23 +477,49 @@ class DriverSupervisor:
             listed = self._request(child, "tools/list", {}, self._start_timeout)
             tools = (listed.get("result") or {}).get("tools") or []
             child.tools = frozenset(t.get("name", "") for t in tools if isinstance(t, dict))
+            if self._mac is not None and daemon_pid is not None:
+                self._confirm_mac(daemon_pid)
         except DriverError as exc:
             with contextlib.suppress(Exception):
                 child.proc.wait(timeout=1.0)
             exit_code = child.proc.poll()
+            killed_by_us = child.killed
             time.sleep(0.1)  # let the stderr pump read the last line
             tail = [line for line in child.stderr if line.strip()][-1:]
             self._discard(child, str(exc))
+            # Only a child that died by itself can have been blocked by the system:
+            # our own timeout kill also ends in SIGKILL and must never read as one.
+            how = (
+                install_mod.blocked_how(exit_code)
+                if exit_code is not None and not killed_by_us
+                else None
+            )
+            if how:
+                raise self._blocked_at_launch(how) from exc
             if exit_code is not None:
                 # Died before it answered the handshake: no action was in flight.
                 why = f"it exited during startup (exit code {exit_code})"
                 exc = DriverError(f"{why}: {tail[0]}" if tail else why)
             self._note_failure(str(exc))
             raise DriverUnavailable(f"the desktop driver did not start: {exc}") from exc
-        self._write_pid(proc.pid)
         with self._state_lock:
             self._state = STATE_RUNNING
+        with contextlib.suppress(OSError):
+            install_mod.clear_blocked(self._home)
         return child
+
+    def _blocked_at_launch(self, how: str, message: str = "") -> "DriverUnavailable":
+        """Latch a launch the OS stopped (endpoint security software, policy): record
+        it for setup and ``auto``, and return the refusal. Never retried by itself."""
+        message = message or install_mod.blocked_message(how, install_mod.current_os())
+        with self._state_lock:
+            self._state = STATE_UNAVAILABLE
+            self._last_error = message
+            self._blocked = how
+        with contextlib.suppress(OSError):
+            install_mod.record_blocked(self._home, how)
+        logger.warning("computer-use driver was stopped at launch (%s)", how)
+        return DriverUnavailable(f"the desktop driver cannot start: {message}")
 
     def _note_failure(self, reason: str) -> None:
         with self._state_lock:
@@ -448,6 +544,7 @@ class DriverSupervisor:
 
             def _kill() -> None:
                 fired.set()
+                child.killed = True
                 platform_compat.kill_popen_tree(child.proc)
 
             watchdog = threading.Timer(max(timeout, 0.0), _kill)
@@ -522,6 +619,14 @@ class DriverSupervisor:
             # Notifications and replies to calls that already timed out are dropped.
 
     def _discard(self, child: _Child, reason: str) -> None:
+        if child.proc.poll() is None:
+            # A child that just closed its pipes may still be exiting: give it a
+            # moment, so only a child that is really still running counts as killed
+            # by us (and a block by the system is not hidden behind our own kill).
+            try:
+                child.proc.wait(timeout=_EXIT_SETTLE_SECS)
+            except subprocess.TimeoutExpired:
+                child.killed = True
         platform_compat.kill_popen_tree(child.proc)
         with contextlib.suppress(Exception):
             child.proc.wait(timeout=STOP_GRACE_SECS)
@@ -531,7 +636,6 @@ class DriverSupervisor:
                     stream.close()
         if self._child is child:
             self._child = None
-            self._clear_pid()
         logger.info("computer-use driver child %s discarded: %s", child.proc.pid, reason)
 
     def _kill_child(self, reason: str) -> None:
@@ -542,7 +646,7 @@ class DriverSupervisor:
     def _stop_child(self) -> None:
         child = self._child
         if child is None:
-            self._clear_pid()
+            self._stop_mac_daemon()
             return
         with contextlib.suppress(Exception):
             if child.proc.stdin is not None:
@@ -550,40 +654,28 @@ class DriverSupervisor:
         with contextlib.suppress(Exception):
             child.proc.wait(timeout=STOP_GRACE_SECS)
         self._discard(child, "stopped")
+        self._stop_mac_daemon()
 
-    # ── pid file / stray reclaim ──
+    def _confirm_mac(self, pid: int) -> None:
+        """The proxy is connected: the socket must still be served by the proved pid."""
+        from kiro_crew.computer_use.driver_runtime.macos_daemon import DaemonError
 
-    def _pid_path(self) -> Path:
-        return install_mod.runtime_root(self._home) / PID_FILE
-
-    def _write_pid(self, pid: int) -> None:
-        record = {"pid": pid, "start": platform_compat.process_start_time(pid) or ""}
-        path = self._pid_path()
-        with contextlib.suppress(OSError):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(record), encoding="utf-8")
-
-    def _clear_pid(self) -> None:
-        with contextlib.suppress(OSError):
-            self._pid_path().unlink()
-
-    def _reclaim_stray(self) -> None:
-        """Kill a child an earlier gateway left behind, if the pid still names it."""
-        path = self._pid_path()
+        mac = self._mac
+        if mac is None:
+            return
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            mac.confirm(pid)
+        except DaemonError as exc:
+            self._stop_mac_daemon()
+            raise DriverError(str(exc)) from exc
+
+    def _stop_mac_daemon(self) -> None:
+        if self._mac is None:
             return
-        pid = record.get("pid") if isinstance(record, dict) else None
-        start = record.get("start") if isinstance(record, dict) else ""
-        self._clear_pid()
-        if not isinstance(pid, int) or pid <= 0 or pid == os.getpid() or not start:
-            return
-        if platform_compat.process_start_time(pid) != start:
-            return
-        with contextlib.suppress(Exception):
-            platform_compat.kill_pid_pinned(pid, start, platform_compat.SIGKILL)
-            logger.info("reclaimed a stray computer-use driver child (pid %s)", pid)
+        try:
+            self._mac.stop()
+        except Exception:  # noqa: BLE001 - stopping must never raise into shutdown
+            logger.warning("computer-use driver daemon stop failed", exc_info=True)
 
 
 # ── one per gateway ──

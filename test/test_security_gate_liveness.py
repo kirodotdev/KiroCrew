@@ -779,7 +779,10 @@ def _url_payload_command(n: int) -> str:
 #: ``paths_lists`` (the desktop driver runtime the gateway executes, fenced from file
 #: tools beside ``browser-harness``) -- one entry and its reason. No matcher moved.
 #: Re-measured.
-_PACKAGE_LINE_BUDGET = 35_539
+#: Raised by 4, from 35,539, for the ``computer-use-ipc`` entry on the read-gate floor
+#: in ``paths_lists`` (the macOS driver daemon's socket and pid file, fenced like
+#: ``browser-harness-ipc``) -- one entry and its reason. No matcher moved. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_543
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

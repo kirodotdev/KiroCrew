@@ -343,6 +343,144 @@ describe('ComputerUseSetupDialog', () => {
     expect(screen.getByTestId('cu-setup-dialog')).toHaveAttribute('data-view', 'install')
   })
 
+  it('names endpoint security software, not a version, when the driver was stopped at launch', async () => {
+    renderDialog(setupDoc('install_failed', { blocked: 'signal 9', user_action: 'English only' }))
+    expect(await view()).toBe('install_failed')
+    expect(screen.getByText(/stopped as soon as it started \(signal 9\)/i)).toBeInTheDocument()
+    expect(screen.getByText(/keep using the built-in driver/i)).toBeInTheDocument()
+    expect(screen.queryByText('English only')).not.toBeInTheDocument()
+    expect(screen.queryByText(/version/i)).not.toBeInTheDocument()
+  })
+
+  it('says the built-in driver is in use when the upstream one was blocked', async () => {
+    getSetup.mockResolvedValue(setupDoc('ready', { platform: 'windows', blocked: 'access denied', driver: { kind: 'native' } }))
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} part="summary" />)
+    expect(await screen.findByTestId('cu-status-blocked')).toHaveTextContent(/is using the built-in driver/i)
+    expect(screen.queryByTestId('cu-open-setup')).not.toBeInTheDocument()
+  })
+
+  it('explains Restart driver in one line beside it', async () => {
+    getSetup.mockResolvedValue(setupDoc('ready', { driver: { kind: 'upstream', installed: true, healthy: true } }))
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} part="details" />)
+    expect(await screen.findByTestId('cu-restart-hint')).toHaveTextContent(/only if computer use stops responding/i)
+  })
+
+  it('shows the setup problem through an error notice in the card, never as a limitation', async () => {
+    getSetup.mockResolvedValue(
+      setupDoc('error', {
+        platform: 'linux',
+        problem: { code: 'verify_failed', message: 'no on-screen window was found to read', recoverable: true },
+        user_action: 'Fix the reason above, then check again.',
+        limitations: ['Key presses in the background need /dev/uinput.'],
+      }),
+    )
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} />)
+    const notice = await screen.findByTestId('cu-status-problem')
+    expect(within(notice).getByRole('alert')).toHaveTextContent(/no on-screen window was found to read\. Fix the reason above/i)
+    expect(screen.queryByTestId('cu-status-user-action')).not.toBeInTheDocument()
+    // The standing limit is still listed, and the failure is not.
+    const list = screen.getByText(/background need \/dev\/uinput/i).closest('ul') as HTMLElement
+    expect(within(list).queryByText(/no on-screen window/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the problem in the dialog once, as an error notice', async () => {
+    renderDialog(
+      setupDoc('unsupported', {
+        platform: 'linux',
+        session: { kind: 'wayland' },
+        problem: { code: 'unsupported_session', message: 'this Wayland session has no X server', recoverable: false },
+        user_action: 'this Wayland session has no X server',
+      }),
+    )
+    await view()
+    const notice = screen.getByTestId('cu-setup-problem')
+    expect(within(notice).getByRole('alert')).toHaveTextContent('this Wayland session has no X server')
+    expect(screen.getAllByText('this Wayland session has no X server')).toHaveLength(1)
+    expect(screen.queryByTestId('cu-setup-user-action')).not.toBeInTheDocument()
+  })
+
+  it('merges the install failure reason and the hint into one notice', async () => {
+    renderDialog(
+      setupDoc('install_failed', {
+        problem: { code: 'install_failed', message: 'The download was blocked before it finished.', recoverable: true },
+        user_action: 'Try the install again.',
+      }),
+    )
+    expect(await view()).toBe('install_failed')
+    const alerts = screen.getAllByRole('alert')
+    expect(alerts).toHaveLength(1)
+    expect(alerts[0]).toHaveTextContent(/blocked before it finished\. Try the install again\. Nothing was installed/i)
+  })
+
+  it('offers the built-in driver when the upstream one was blocked at launch', async () => {
+    runAction.mockResolvedValue(setupDoc('ready', { driver: { kind: 'native' } }))
+    renderDialog(setupDoc('install_failed', { blocked: 'signal 9', problem: { code: 'install_blocked', message: 'x', recoverable: true } }))
+    expect(await view()).toBe('install_failed')
+    fireEvent.click(screen.getByTestId('cu-use-builtin'))
+    await waitFor(() => expect(runAction).toHaveBeenCalledWith('use_builtin_driver'))
+  })
+
+  it('offers no built-in driver on Linux, where none exists', async () => {
+    renderDialog(setupDoc('install_failed', { platform: 'linux', blocked: 'signal 9', problem: { code: 'install_blocked', message: 'x', recoverable: true } }))
+    expect(await view()).toBe('install_failed')
+    expect(screen.queryByTestId('cu-use-builtin')).not.toBeInTheDocument()
+  })
+
+  it('keeps the blocked-driver view to two actions: retry, and the built-in driver', async () => {
+    renderDialog(setupDoc('temporarily_unavailable', { blocked: 'signal 9', problem: { code: 'launch_blocked', message: 'x', recoverable: true } }))
+    expect(await view()).toBe('unavailable')
+    const footer = screen.getByTestId('cu-use-builtin').parentElement as HTMLElement
+    expect(within(footer).getAllByRole('button')).toHaveLength(2)
+    expect(within(footer).queryByRole('button', { name: /check again/i })).not.toBeInTheDocument()
+  })
+
+  it('reruns the desktop check from Check again after a failed check', async () => {
+    runAction.mockResolvedValue(setupDoc('ready'))
+    renderDialog(setupDoc('error', { problem: { code: 'verify_failed', message: 'no on-screen window', recoverable: true } }))
+    await view()
+    fireEvent.click(screen.getByRole('button', { name: /check again/i }))
+    await waitFor(() => expect(runAction).toHaveBeenCalledWith('verify'))
+  })
+
+  it('offers Run check in the card after a failed desktop check', async () => {
+    getSetup.mockResolvedValue(setupDoc('error', { platform: 'linux', problem: { code: 'verify_failed', message: 'x', recoverable: true } }))
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} part="details" />)
+    expect(await screen.findByRole('button', { name: /run check/i })).toBeInTheDocument()
+  })
+
+  it('tells the user the install keeps going if the dialog is closed', async () => {
+    renderDialog(setupDoc('installing', { driver: { installed: false } }))
+    expect(await view()).toBe('installing')
+    expect(screen.getByTestId('cu-installing-keeps-going')).toHaveTextContent(/close this window; the install keeps going/i)
+  })
+
+  it('shows a failed Restart driver under More, where the button is', async () => {
+    getSetup.mockResolvedValue(setupDoc('ready', { driver: { kind: 'upstream', installed: true, healthy: true } }))
+    runAction.mockRejectedValue(new Error('network'))
+    renderWithProviders(<ComputerUseSetupStatus onOpenSetup={vi.fn()} part="details" />)
+    fireEvent.click(await screen.findByRole('button', { name: /restart driver/i }))
+    expect(await screen.findByText(/did not go through/i)).toBeInTheDocument()
+  })
+
+  it('says so when the background grant recheck fails, instead of waiting silently', async () => {
+    vi.useFakeTimers()
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    try {
+      renderDialog(setupDoc('requesting_accessibility', { permissions: { accessibility: 'missing' } }))
+      runAction.mockRejectedValue(new Error('network'))
+      await tick()
+      expect(screen.queryByText(/could not read the computer use setup status/i)).not.toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('cu-setup-open-accessibility'))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SETUP_POLL_MS * 2 + 50)
+      })
+      expect(runAction).toHaveBeenCalledWith('recheck')
+      expect(screen.getByText(/could not read the computer use setup status/i)).toBeInTheDocument()
+    } finally {
+      open.mockRestore()
+    }
+  })
+
   it('renders a failed status read with Check again, never a spinner', async () => {
     getSetup.mockRejectedValue(new Error('down'))
     renderWithProviders(<ComputerUseSetupDialog open onOpenChange={() => {}} config={config()} />)

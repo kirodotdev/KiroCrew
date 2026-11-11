@@ -10652,6 +10652,8 @@
         "default_session_folder_load_failed": "Your sidebar folders could not be loaded, so they are not listed here."
       },
       "computerUsePanel": {
+        "more_title": "More",
+        "privacy_footer": "Password fields are never read or captured. Screenshots show only the window the agent works in.",
         "advisory_only": "Advisory only",
         "also_capture_the_target_window_and_pass_its_file": "Also capture the target window and pass its file path. The accessibility tree stays the primary channel; windows containing a password field are never captured.",
         "also_capture_the_target_window_and_pass_its_file_summary": "Windows with a password field are never captured.",
@@ -10660,7 +10662,6 @@
         "could_not_load_computer_use_settings": "Could not load computer-use settings.",
         "enable_computer_use": "Enable computer use",
         "let_the_agent_read_desktop_app_windows_through_a": "Let the agent read desktop app windows through accessibility and act on their controls. Off until you turn it on here — an agent cannot enable it.",
-        "limits": "Limits",
         "max_tree_nodes": "Max tree nodes",
         "retry": "Retry",
         "screenshot_width": "Screenshot width",
@@ -10690,7 +10691,7 @@
         "not_now": "Not now",
         "install_title": "Install the driver",
         "install_body": "{{productName}} uses the open-source cua-driver to see and control apps. It downloads one pinned release from the project's official GitHub releases and checks its size, checksum and signature before it runs anything.",
-        "install_body_macos": "On a Mac, the driver app is placed at /Applications/CuaDriver.app, the only place macOS lets it start from and list it in Privacy & Security. A copy already there is used only if it is exactly this version and signature; {{productName}} never replaces or removes a copy it did not install.",
+        "install_body_macos": "On a Mac, the driver app is installed at /Applications/CuaDriver.app.",
         "install_action": "Install driver",
         "installing_title": "Installing the driver",
         "installing_body": "Downloading and checking the driver. This usually takes under a minute.",
@@ -10738,7 +10739,7 @@
         "close": "Close",
         "action_failed": "That step did not go through. Make sure {{productName}} is still running, then try again.",
         "status_load_error": "Could not read the Computer Use setup status.",
-        "session_x11": "X11 desktop",
+        "session_x11": "Linux desktop (X11)",
         "session_wayland": "Wayland desktop",
         "session_windows_interactive": "Signed-in Windows desktop",
         "session_session0": "Background service (Session 0)",
@@ -10747,7 +10748,7 @@
         "wayland_note": "On Wayland your desktop may ask you to approve screen sharing the first time the agent takes a picture. Choose Allow. Some compositors do not let any app move the pointer or read other windows, and those actions are refused rather than faked.",
         "limitations_title": "What works differently here",
         "status_title": "Setup",
-        "row_status": "Computer Use",
+        "row_status": "Setup",
         "row_os": "This computer",
         "row_driver": "Driver",
         "row_accessibility": "Accessibility",
@@ -10783,7 +10784,13 @@
         "cap_window_capture": "Capture single windows",
         "yes": "Yes",
         "no": "No",
-        "desktop_line": "Desktop: {{kind}}"
+        "desktop_line": "Desktop: {{kind}}",
+        "restart_hint": "Restart driver stops and starts the desktop driver. Use it only if Computer Use stops responding.",
+        "driver_blocked": "The driver was stopped as soon as it started ({{how}}). Security software on this computer is probably blocking it. Ask your IT team to allow CuaDriver, or keep using the built-in driver.",
+        "driver_blocked_no_native": "The driver was stopped as soon as it started ({{how}}). Security software on this computer is probably blocking it. Ask your IT team to allow CuaDriver.",
+        "upstream_blocked_native": "The open-source driver was stopped as soon as it started ({{how}}), probably by security software on this computer. Computer Use is using the built-in driver.",
+        "installing_keeps_going": "You can close this window; the install keeps going.",
+        "use_builtin_action": "Use the built-in driver"
       },
       "developerPanel": {
         "developer_tools": "Developer Tools",

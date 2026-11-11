@@ -104,7 +104,9 @@ class TestEveryState:
 
     def test_install_failed(self) -> None:
         doc = _status(install_state=MISSING_INSTALL, install_progress={"error": "sha256 mismatch"})
-        assert doc["state"] == setup.INSTALL_FAILED and "sha256 mismatch" in doc["limitations"]
+        assert (
+            doc["state"] == setup.INSTALL_FAILED and doc["problem"]["message"] == "sha256 mismatch"
+        )
         assert _steps(doc)["install"] == setup.STEP_FAILED
 
     def test_never_checked_is_not_configured_at_verify(self) -> None:
@@ -125,7 +127,7 @@ class TestEveryState:
         doc = _status(
             progress={"verify": {"ok": False, "binary_sha256": SHA, "detail": "no window"}}
         )
-        assert doc["state"] == setup.ERROR and "no window" in doc["limitations"]
+        assert doc["state"] == setup.ERROR and doc["problem"]["message"] == "no window"
 
     def test_error_when_the_driver_fails_its_own_checks(self) -> None:
         doc = _status(supervisor_status={"state": "unavailable", "last_error": "hash mismatch"})
@@ -311,8 +313,11 @@ class FakeSup:
         if tool == "list_windows":
             return {"structuredContent": {"windows": [{"pid": 5, "window_id": 9}]}}
         if tool == "get_window_state":
-            Path(args["screenshot_out_file"]).write_bytes(b"png")
-            return {"structuredContent": {"elements": []}}
+            assert "screenshot_out_file" not in args, "the verify capture must stay off disk"
+            return {
+                "content": [{"type": "image", "mimeType": "image/png", "data": "cG5n"}],
+                "structuredContent": {"elements": []},
+            }
         if tool == "health_report":
             return {"structuredContent": {"overall": "ok"}}
         if tool == "check_permissions":
@@ -346,7 +351,8 @@ class TestActions:
         progress = setup.load_progress(installed_home)
         assert progress["verify"]["ok"] is True and progress["verify"]["binary_sha256"] == SHA
         assert progress["last_step"] == "verify"
-        assert not list((install_mod.runtime_root(installed_home) / "capture").iterdir())
+        # The capture came back inline: no capture file or directory exists.
+        assert not (install_mod.runtime_root(installed_home) / "capture").exists()
         assert doc["state"] in (
             setup.READY,
             setup.DISABLED,
@@ -372,7 +378,7 @@ class TestActions:
         assert setup.load_progress(installed_home) == {}
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-    def test_verify_skips_a_denied_window_and_keeps_its_capture_private(
+    def test_verify_skips_a_denied_window_and_writes_no_capture(
         self, installed
     ) -> None:  # type: ignore[no-untyped-def]
         installed_home, fake = installed
@@ -402,8 +408,7 @@ class TestActions:
         fake.call = call  # type: ignore[method-assign]
         setup.run_setup_action("verify", installed_home)
         assert read == [5]
-        capture = install_mod.runtime_root(installed_home) / "capture"
-        assert capture.stat().st_mode & 0o077 == 0
+        assert not (install_mod.runtime_root(installed_home) / "capture").exists()
 
     def test_actions_before_install_do_not_touch_the_driver(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -429,7 +434,27 @@ class TestActions:
 
     def test_unknown_action_is_reported_not_raised(self, tmp_path: Path) -> None:
         doc = setup.run_setup_action("format_disk", tmp_path)
-        assert any("unknown setup action" in line for line in doc["limitations"])
+        assert "unknown setup action" in doc["problem"]["message"]
+        assert not any("unknown setup action" in line for line in doc["limitations"])
+
+    def test_install_and_reset_rebuild_the_shared_backend(
+        self, installed, monkeypatch: pytest.MonkeyPatch
+    ) -> None:  # type: ignore[no-untyped-def]
+        # Windows ``auto`` switches driver when the upstream one is installed or
+        # removed, so the process-wide backend must be rebuilt both times.
+        installed_home, _fake = installed
+        from kiro_crew.computer_use import backend as backend_mod
+
+        resets: list[int] = []
+        monkeypatch.setattr(backend_mod, "reset_shared_backend", lambda: resets.append(1))
+        monkeypatch.setattr(install_mod, "install", lambda root: None)
+        monkeypatch.setattr(install_mod, "PROGRESS", install_mod.InstallProgress())
+        monkeypatch.setattr(setup, "_install_thread", None)
+        setup._start_install(installed_home)
+        setup._install_thread.join(5)  # type: ignore[union-attr]
+        assert resets == [1]
+        setup.run_setup_action("reset", installed_home)
+        assert resets == [1, 1]
 
     def test_install_runs_in_the_background(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -476,7 +501,7 @@ def test_a_foreign_macos_app_is_install_failed_with_its_reason() -> None:
         install_state=MISSING_INSTALL,
         progress={"install_error": reason},
     )
-    assert doc["state"] == setup.INSTALL_FAILED and reason in doc["limitations"]
+    assert doc["state"] == setup.INSTALL_FAILED and doc["problem"]["message"] == reason
 
 
 def test_the_macos_upstream_driver_is_labelled_a_preview() -> None:
@@ -494,3 +519,222 @@ def test_reset_removes_the_installed_driver(installed) -> None:  # type: ignore[
     setup.run_setup_action("reset", home)
     assert not install_mod.version_dir(home).exists()
     assert not install_mod.record_path(home).exists()
+
+
+class TestProgressReadForUpdate:
+    """A rewrite of the progress file never starts from an unreadable one."""
+
+    def test_an_unreadable_file_abandons_the_update(self, tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+        setup.save_progress(tmp_path, {"last_step": "install"})
+        real_read = Path.read_text
+
+        def denied(self: Path, *args: Any, **kwargs: Any) -> str:
+            if self.name == setup.PROGRESS_FILE:
+                raise PermissionError(13, "denied")
+            return real_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", denied)
+        assert setup.load_progress(tmp_path) == {}
+        with pytest.raises(PermissionError):
+            setup._update_progress(tmp_path, last_step="session")
+        monkeypatch.setattr(Path, "read_text", real_read)
+        assert setup.load_progress(tmp_path) == {"last_step": "install"}
+
+    def test_a_missing_file_reads_as_empty_for_an_update(self, tmp_path: Path) -> None:
+        assert setup._update_progress(tmp_path, last_step="session") == {"last_step": "session"}
+
+
+_WIN_SESSION = session_mod.detect_windows(1)
+_SESSION_FOR = {PLATFORM_LINUX: X11, PLATFORM_MACOS: AQUA, PLATFORM_WINDOWS: _WIN_SESSION}
+_VERIFIED_MAC = {
+    **VERIFIED,
+    "permissions": {"accessibility": "granted", "screen_recording": "granted"},
+}
+
+
+@pytest.mark.parametrize(
+    ("platform", "choice", "kind", "state"),
+    [
+        # Linux has no native driver: choosing it must never read as working.
+        (PLATFORM_LINUX, "native", "native", setup.UNSUPPORTED),
+        (PLATFORM_LINUX, "auto", "upstream", setup.READY),
+        (PLATFORM_LINUX, "upstream", "upstream", setup.READY),
+        (PLATFORM_MACOS, "native", "native", setup.READY),
+        (PLATFORM_MACOS, "auto", "native", setup.READY),
+        (PLATFORM_MACOS, "upstream", "upstream", setup.READY),
+        (PLATFORM_WINDOWS, "native", "native", setup.READY),
+        (PLATFORM_WINDOWS, "auto", "upstream", setup.READY),
+        (PLATFORM_WINDOWS, "upstream", "upstream", setup.READY),
+        ("unknown", "native", "native", setup.UNSUPPORTED),
+        ("unknown", "auto", "native", setup.UNSUPPORTED),
+    ],
+)
+def test_every_platform_and_driver_pair_reports_what_the_backend_can_do(
+    platform: str, choice: str, kind: str, state: str
+) -> None:
+    session = _SESSION_FOR.get(platform, X11)
+    progress = _VERIFIED_MAC if platform == PLATFORM_MACOS else dict(VERIFIED)
+    doc = _status(platform=platform, choice=choice, session=session, progress=progress)
+    assert doc["driver"]["kind"] == kind
+    assert doc["state"] == state
+    if state == setup.UNSUPPORTED:
+        # Nothing claims a usable driver or capability on a refused pair.
+        assert doc["driver"]["installed"] is False
+        assert not any(doc["capabilities"].values())
+        assert doc["user_action"]
+
+
+def test_linux_native_names_the_switch_to_the_upstream_driver() -> None:
+    doc = _status(platform=PLATFORM_LINUX, choice="native")
+    assert doc["state"] == setup.UNSUPPORTED
+    assert "no native Linux driver" in doc["user_action"]
+    assert _steps(doc)["verify"] == "failed"
+
+
+# ── the problem field: failure reasons travel there, never in ``limitations`` ──
+
+_FAILURE_CASES = {
+    "linux_native": (
+        dict(platform=PLATFORM_LINUX, choice="native"),
+        setup.UNSUPPORTED,
+        setup.PROBLEM_NO_NATIVE_DRIVER,
+        False,
+    ),
+    "no_asset": (
+        dict(has_asset=False),
+        setup.UNSUPPORTED,
+        setup.PROBLEM_UNSUPPORTED_PLATFORM,
+        False,
+    ),
+    "session0": (
+        dict(platform=PLATFORM_WINDOWS, session=session_mod.detect_windows(0)),
+        setup.TEMPORARILY_UNAVAILABLE,
+        setup.PROBLEM_NO_DESKTOP_SESSION,
+        True,
+    ),
+    "wayland_no_x": (
+        dict(session=session_mod.detect_linux({"WAYLAND_DISPLAY": "wayland-0"}, uinput=False)),
+        setup.UNSUPPORTED,
+        setup.PROBLEM_UNSUPPORTED_SESSION,
+        False,
+    ),
+    "install_error": (
+        dict(install_state=MISSING_INSTALL, progress={"install_error": "sha256 mismatch"}),
+        setup.INSTALL_FAILED,
+        setup.PROBLEM_INSTALL_FAILED,
+        True,
+    ),
+    "install_blocked": (
+        dict(install_state=MISSING_INSTALL, progress={"install_blocked": "signal 9"}),
+        setup.INSTALL_FAILED,
+        setup.PROBLEM_INSTALL_BLOCKED,
+        True,
+    ),
+    "launch_blocked": (
+        dict(blocked="signal 9"),
+        setup.TEMPORARILY_UNAVAILABLE,
+        setup.PROBLEM_LAUNCH_BLOCKED,
+        True,
+    ),
+    "crash_loop": (
+        dict(supervisor_status={"state": "crash_loop"}),
+        setup.TEMPORARILY_UNAVAILABLE,
+        setup.PROBLEM_CRASH_LOOP,
+        True,
+    ),
+    "driver_check": (
+        dict(supervisor_status={"state": "unavailable", "last_error": "hash mismatch"}),
+        setup.ERROR,
+        setup.PROBLEM_DRIVER_CHECK_FAILED,
+        True,
+    ),
+    "verify_failed": (
+        dict(
+            progress={
+                "verify": {"ok": False, "binary_sha256": SHA, "detail": "no on-screen window"}
+            }
+        ),
+        setup.ERROR,
+        setup.PROBLEM_VERIFY_FAILED,
+        True,
+    ),
+    "revoked": (
+        dict(
+            platform=PLATFORM_MACOS,
+            choice="upstream",
+            session=AQUA,
+            progress={
+                **VERIFIED,
+                "permissions": {"accessibility": "missing", "screen_recording": "granted"},
+                "ever_granted": {"accessibility": True},
+            },
+        ),
+        setup.PERMISSION_REVOKED,
+        setup.PROBLEM_PERMISSION_REVOKED,
+        True,
+    ),
+    "denied": (
+        dict(
+            platform=PLATFORM_MACOS,
+            choice="upstream",
+            session=AQUA,
+            now=NOW,
+            progress={
+                **VERIFIED,
+                "permissions": {"accessibility": "missing", "screen_recording": "granted"},
+                "requested": {"accessibility": NOW - 10_000},
+            },
+        ),
+        setup.ACCESSIBILITY_DENIED,
+        setup.PROBLEM_PERMISSION_DENIED,
+        True,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_FAILURE_CASES))
+def test_every_failure_state_carries_a_problem_and_no_failure_limitation(case: str) -> None:
+    kw, state, code, recoverable = _FAILURE_CASES[case]
+    doc = _status(**kw)
+    assert doc["state"] == state
+    problem = doc["problem"]
+    assert problem["code"] == code and problem["code"] in setup.PROBLEM_CODES
+    assert problem["message"] and problem["recoverable"] is recoverable
+    # The failure reason is never also a "limitation".
+    assert problem["message"] not in doc["limitations"]
+
+
+def test_the_failure_table_covers_every_failure_state() -> None:
+    covered = {state for _kw, state, _code, _r in _FAILURE_CASES.values()}
+    # SCREEN_RECORDING_DENIED takes the same branch as ACCESSIBILITY_DENIED.
+    assert setup.FAILURE_STATES - covered == {setup.SCREEN_RECORDING_DENIED}
+
+
+def test_a_specific_failure_reason_is_the_message_and_user_action_is_the_next_step() -> None:
+    doc = _status(install_state=MISSING_INSTALL, progress={"install_error": "sha256 mismatch"})
+    assert doc["problem"]["message"] == "sha256 mismatch"
+    assert doc["user_action"] == "Try the install again."
+    assert "sha256 mismatch" not in doc["limitations"]
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        dict(),  # ready
+        dict(install_state=MISSING_INSTALL),  # not configured
+        dict(install_progress={"running": True}),  # installing
+        dict(verifying=True),  # validating
+        dict(keystone_enabled=False),  # disabled
+    ],
+)
+def test_non_failure_states_carry_no_problem(kw: dict) -> None:
+    doc = _status(**kw)
+    assert doc["state"] not in setup.FAILURE_STATES
+    assert doc["problem"] is None
+
+
+def test_the_handler_allowlists_exactly_the_setup_problem_codes() -> None:
+    from kiro_crew.dashboard.handlers import computer_use_setup as handler
+
+    assert handler._PROBLEM_CODES == frozenset(setup.PROBLEM_CODES)
+    assert handler._FAILURE_STATES == setup.FAILURE_STATES

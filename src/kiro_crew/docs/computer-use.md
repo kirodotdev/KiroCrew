@@ -98,47 +98,80 @@ lists it. The setup dialog says so before you click **Install driver**.
   copy yourself, then install again. Kiro Crew never replaces or removes a copy
   it did not install.
 - Every time the driver starts, Kiro Crew checks the copy in `/Applications`
-  again (signature, team, bundle id, checksum, version). A copy that fails is
-  never started.
+  again (signature, team, bundle id, checksum). A copy that fails is never
+  started. Kiro Crew never runs the program inside `/Applications` directly: it
+  is only opened by macOS, and every other driver command runs a second, sealed
+  copy in Kiro Crew's data folder that is checked against its checksum each time.
 - If your account cannot write to `/Applications`, the install says so. Kiro
   Crew never asks for an administrator password.
-- **Reset setup** removes the driver Kiro Crew installed, including its copy in
-  `/Applications` if it is unchanged.
-- The driver app runs one shared background process per user. Another tool that
-  uses the same driver shares that process with Kiro Crew; Kiro Crew stops only
-  what it started.
+- **Reset setup** removes the driver Kiro Crew installed. Its copy in
+  `/Applications` is removed only when Kiro Crew placed it at that path and the
+  driver binary inside it is unchanged; other files in the bundle are not
+  compared.
+- Kiro Crew starts the driver's background service itself, with telemetry and
+  update checks off and a private home inside Kiro Crew's data folder, on a
+  private socket that no other tool uses. Before using it, Kiro Crew checks how
+  macOS started that process; if it cannot prove those settings, it stops the
+  service and refuses. It never attaches to the driver's shared per-user
+  service, and it stops only the service it started. This needs a macOS whose
+  `open` command supports `--env` (macOS 26 does); on an older macOS the
+  open-source driver refuses to start.
+- The driver's own startup permission check is turned off
+  (`--no-permissions-gate`), so it never opens System Settings by itself. The
+  only prompts are the ones you trigger in the setup dialog: **Allow** (the
+  driver's guided grant, once per click) and the two **Open … Settings**
+  buttons. A missing permission still shows as a setup step and makes the tools
+  refuse with the reason.
+- Not proven yet on a signed-in Mac: whether the permissions you grant to
+  CuaDriver apply to this privately started service with that check off. Step 6
+  below settles it.
 
 #### How to check it on your Mac
 
-About 15 minutes, signed in at your Mac's desktop, with no
-`/Applications/CuaDriver.app` already present. Use a throwaway data home so your
-real setup is untouched:
+About 15 minutes, signed in at your Mac's desktop, in an admin account, with no
+`/Applications/CuaDriver.app` already present (if one is, note its version and
+stop: install must refuse it unless it is exactly the pinned version). Use a
+throwaway data home so your real setup is untouched:
 
 1. From a source checkout of this version, create a virtual environment and
-   install Kiro Crew into it, then `export KIROCREW_HOME=/tmp/kc-cu-home`.
+   install Kiro Crew into it, then
+   `export KIROCREW_HOME=/tmp/kc-cu-home KIRO_HOME=/tmp/kc-cu-kiro`. Keep your
+   real `HOME` (macOS permissions are per user).
 2. Choose the open-source driver and turn the feature on in that home:
    `python -c "from kiro_crew.computer_use import enable_state as e; s=e.load_state(); s.update(enabled=True, driver='upstream'); e.save_state(s)"`
-3. Install: `python -c "import time; from kiro_crew.computer_use import setup as s; s.run_setup_action('install'); time.sleep(30); print(s.get_setup_status()['state'])"`.
-   Expect `requesting_accessibility`, and `/Applications/CuaDriver.app` present.
-4. Ask for the permissions with `run_setup_action('request_permissions')`. Note
+3. In a second terminal, watch the network:
+   `sudo tcpdump -i pktap,all -k NP -n 'udp port 53 or tcp port 443' | grep -i -E 'cua|posthog'`
+4. Install: `python -c "import time; from kiro_crew.computer_use import setup as s; s.run_setup_action('install'); time.sleep(30); print(s.get_setup_status()['state'])"`.
+   Expect `requesting_accessibility`, `/Applications/CuaDriver.app` present,
+   and `"owned": true` in `/tmp/kc-cu-home/computer-use/install.json`.
+5. Start it with `run_setup_action('recheck')`, then check the service:
+   `pgrep -fl CuaDriver` must show `serve --socket` with a path under
+   `/tmp/kc-cu-home/computer-use-ipc/run/`; `ps -E -p <pid>` must show
+   `CUA_DRIVER_RS_TELEMETRY_ENABLED=0`, `DO_NOT_TRACK=1` and
+   `CUA_DRIVER_RS_HOME=/tmp/kc-cu-home/computer-use/home`; `~/.cua-driver`
+   must not appear; and the tcpdump terminal must stay silent.
+6. Ask for the permissions with `run_setup_action('request_permissions')`. Note
    whether a prompt appears and what name Privacy & Security shows (expect
    **CuaDriver**). Turn on Accessibility and Screen & System Audio Recording.
-5. Run `recheck`, then `restart_driver`, then `verify`, printing the state after
-   each. Expect `ready` at the end.
-6. Open TextEdit with a new document and run
+7. Run `recheck`, then `restart_driver`, then `verify`, printing the state after
+   each. Expect `ready` at the end; this is the step that shows whether the
+   grants apply to the private service.
+8. Open TextEdit with a new document and run
    `kirocrew computer call --calls '[{"tool":"computer_get_state","args":{"app":"TextEdit"}}]'`.
    Take the text area's index N, then type into it with `computer_type_text`
    (`element_index` N, `text` "hello") in the same `--calls` list. Expect "hello"
    in the document and in the refreshed tree. A password field (a login page or
    Users settings) must show as `<secure>`, and typing into it must be refused.
-7. Turn Accessibility off for CuaDriver, run `recheck`, and expect
+9. Turn Accessibility off for CuaDriver, run `recheck`, and expect
    `permission_revoked`.
-8. Clean up: `run_setup_action('reset')` (removes the app from `/Applications`),
-   `tccutil reset Accessibility com.trycua.driver`,
-   `tccutil reset ScreenCapture com.trycua.driver`, and delete `/tmp/kc-cu-home`.
+10. Clean up: `run_setup_action('reset')`. Expect `/Applications/CuaDriver.app`
+    gone and `pgrep -fl CuaDriver` empty. Then
+    `tccutil reset Accessibility com.trycua.driver`,
+    `tccutil reset ScreenCapture com.trycua.driver`, and delete
+    `/tmp/kc-cu-home` and `/tmp/kc-cu-kiro`.
 
-Report the state after each step, the name Privacy & Security showed, and
-whether typing landed.
+Report the state after each step, the name Privacy & Security showed, whether
+typing landed, and the `pgrep`, `ps -E` and tcpdump lines from step 5.
 
 ## Windows
 
@@ -191,6 +224,15 @@ report it.
 **The driver download failed.** Nothing was installed. A network that blocks
 GitHub downloads stops the install: allow `github.com` and
 `objects.githubusercontent.com`, then choose **Try the install again**.
+
+**Setup says the driver was stopped as soon as it started.** The download and
+every check passed, but the system stopped the driver the moment it ran (on a
+Mac this shows as "signal 9"). On a managed computer this is usually endpoint
+security software that has not been told to allow it. Ask your IT team to allow
+CuaDriver. Until then, on macOS and Windows keep the driver on **auto** (or
+**native**): Computer Use keeps working on the built-in driver, and the Settings
+card says so. Kiro Crew tries the open-source driver once per install or
+**Restart driver**, and never tries to get around the block.
 
 **Windows says there is no desktop to control (Session 0).** Kiro Crew is
 running as a background service, which has no desktop. Start Kiro Crew from your

@@ -378,6 +378,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # carries the IPC token), pid file and log (``browser_harness.supervisor``).
     # Whoever can open the socket drives the user's Chrome, so only the gateway may.
     "browser-harness-ipc",
+    # The computer-use driver daemon's socket and pid file (macOS,
+    # ``computer_use.driver_runtime.macos_daemon.IPC_LEAF``). Whoever can connect to
+    # the socket drives the owner's desktop past every floor, so only the gateway may.
+    "computer-use-ipc",
     # Kiro's Chromium profile. Cookies from a takeover login live here, and the
     # agent must never read them as a file; also sandbox-masked.
     "browser-profile",

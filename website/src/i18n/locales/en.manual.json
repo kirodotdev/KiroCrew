@@ -8897,7 +8897,6 @@
         "could_not_save_computer_use_settings": "Could not save computer-use settings.",
         "draw_a_cursor_that_glides_to_each_target_and_pul": "Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer.",
         "how_many_controls_one_window_reading_returns_a_w": "How many controls one window reading returns. A window with more than this gets truncated, and the agent is told so. Raise it for dense apps (a spreadsheet, an IDE); lower it to spend fewer tokens per reading.",
-        "how_much_of_a_window_the_agent_reads_at_once_the": "How much of a window the agent reads at once. These are cost and speed dials, not security settings — every value stays within a built-in ceiling. Leave them alone unless a window is too large to read in one pass, or screenshots feel slow.",
         "longest_edge_of_the_screenshot_in_pixels_smaller": "Longest edge of the screenshot, in pixels. Smaller is cheaper and faster to read; larger keeps small text legible if the agent has to fall back to the image.",
         "macos_only": "macOS only",
         "not_detected_does_not_always_mean_unavailable_ma": "Not detected does not always mean unavailable — macOS attributes a permission grant to the process that launched {{productName}}, not to {{productName}} itself.",

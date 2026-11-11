@@ -33,10 +33,11 @@ confirm"), and ``effect: "none"`` as not done.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import io
 import logging
 import os
-import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -103,7 +104,8 @@ SNAPSHOT_CALL_TIMEOUT_SECS = 20.0
 ACTION_CALL_TIMEOUT_SECS = 20.0
 
 ERR_NOT_INSTALLED = (
-    "the desktop driver is not installed; the owner installs it in Settings -> Computer Use"
+    "The desktop driver is not installed yet. Whoever runs Kiro Crew on this computer "
+    "can install it in Settings -> Computer Use."
 )
 #: A curved drag on the upstream driver, which draws only straight strokes.
 ERR_CURVED_DRAG = (
@@ -145,7 +147,8 @@ _KEY_NAMES: dict[str, str] = {
     "space": "space",
     "spacebar": "space",
     " ": "space",
-    "delete": "backspace",
+    # ``delete`` is per platform (``_DELETE_KEY``): Backspace on macOS, whose
+    # Delete key it is, and forward Delete elsewhere, as the native drivers do.
     "backspace": "backspace",
     "forwarddelete": "delete",
     "insert": "insert",
@@ -173,11 +176,25 @@ _KEY_NAMES: dict[str, str] = {
     **{f"keypad{n}": str(n) for n in range(10)},
 }
 
+_DELETE_KEY: dict[str, str] = {OS_MACOS: "backspace", OS_LINUX: "delete", OS_WINDOWS: "delete"}
+
+#: Canonical modifiers (``keymap.parse_spec``: cmd/super/meta fold into ctrl, the
+#: cross-platform intent) for Linux and Windows.
 _MODIFIERS: dict[str, dict[str, str]] = {
     OS_LINUX: {"ctrl": "ctrl", "shift": "shift", "alt": "alt", "win": "super"},
     OS_WINDOWS: {"ctrl": "ctrl", "shift": "shift", "alt": "alt", "win": "win"},
-    OS_MACOS: {"ctrl": "cmd", "shift": "shift", "alt": "option", "win": "ctrl"},
 }
+
+#: macOS keeps Control and Command apart, as the native driver does: modifiers come
+#: from ``keymap.parse_key``'s mask of the caller's own spelling, so ``ctrl+a``
+#: stays Control+A (line start) and only ``cmd``/``super``/``meta``/``win`` mean
+#: Command.
+_MACOS_FLAGS: tuple[tuple[int, str], ...] = (
+    (keymap.FLAG_COMMAND, "cmd"),
+    (keymap.FLAG_CONTROL, "ctrl"),
+    (keymap.FLAG_ALTERNATE, "option"),
+    (keymap.FLAG_SHIFT, "shift"),
+)
 
 #: Control types whose secure-ness the Windows tree cannot prove (it does not
 #: expose UIA ``IsPassword``). Treated as secure: their value is not shown, they
@@ -241,8 +258,11 @@ def _names_a_password(entry: Mapping[str, Any]) -> bool:
 
 
 def _identity(rec: ElementRec) -> "tuple[str, ...]":
-    """What a token was walked for: the element's role, subrole, depth and label."""
-    return (rec.role, rec.subrole, str(rec.depth), rec.title)
+    """What a token was walked for: the element's role, subrole, depth, label and
+    secure verdict. A field that turned secure since the cached walk (a GTK entry
+    whose text was hidden) does not match, so input is never forwarded to it on
+    the strength of the older, non-secure record."""
+    return (rec.role, rec.subrole, str(rec.depth), rec.title, "secure" if rec.secure else "")
 
 
 def _clip(text: Any, limit: int) -> str:
@@ -268,6 +288,17 @@ def _text_of(result: Mapping[str, Any]) -> str:
         if isinstance(c, Mapping) and c.get("type") == "text"
     ]
     return " ".join(p.strip() for p in parts if p.strip())
+
+
+def image_of(result: Mapping[str, Any]) -> bytes:
+    """The PNG of a tool result's first inline image content, or ``b""``."""
+    for c in result.get("content") or []:
+        if isinstance(c, Mapping) and c.get("type") == "image" and isinstance(c.get("data"), str):
+            try:
+                return base64.b64decode(c["data"], validate=True)
+            except (binascii.Error, ValueError):
+                return b""
+    return b""
 
 
 def _png_to_jpeg(png: bytes, *, max_px: int, quality: int) -> "tuple[bytes, int, int]":
@@ -348,10 +379,13 @@ class CuaBackend(ComputerUseBackend):
             self._supervisor_is_default
             and not install_mod.install_state(self._data_home()).installed
         ):
+            # Not "unsupported": the platform is supported, setup is just not done.
+            # The message leads with what is missing, so it does not read as permanent.
             failed = install_mod.PROGRESS.error
-            reason = f"{failed}; {ERR_NOT_INSTALLED}" if failed else ERR_NOT_INSTALLED
             raise ComputerUseError(
-                REFUSAL_UNSUPPORTED.format(platform=self.platform_id, reason=reason)
+                f"{ERR_NOT_INSTALLED} The last install failed: {failed}"
+                if failed
+                else ERR_NOT_INSTALLED
             )
         info = self._session()
         if not info.supported:
@@ -396,12 +430,33 @@ class CuaBackend(ComputerUseBackend):
         try:
             return run()
         except DriverError as exc:
+            self._after_launch_block()
             return DriverResult(ok=False, text=str(exc))
         except (ComputerUseError, KeyParseError) as exc:
             return DriverResult(ok=False, text=str(exc))
         except Exception as exc:  # noqa: BLE001 - nothing crosses the seam
             logger.debug("computer-use driver %s failed", label, exc_info=True)
             return DriverResult(ok=False, text=f"the desktop driver failed during {label}: {exc}")
+
+    def _after_launch_block(self) -> None:
+        """Windows ``auto`` chose this driver because it was installed; once the
+        system blocked it at launch, the next call must get the native driver. The
+        shared backend is rebuilt off this thread (never inside a driver call)."""
+        if self._os != OS_WINDOWS:
+            return
+        try:
+            if not install_mod.read_blocked(self._data_home()):
+                return
+            from kiro_crew.computer_use import backend as backend_mod
+            from kiro_crew.computer_use.types import DRIVER_AUTO
+
+            if backend_mod._driver_choice() != DRIVER_AUTO:
+                return
+            threading.Thread(
+                target=backend_mod.reset_shared_backend, name="cu-backend-fallback", daemon=True
+            ).start()
+        except Exception:  # noqa: BLE001 - a fallback must never break the refusal
+            logger.debug("computer-use native fallback could not be scheduled", exc_info=True)
 
     # ── status ──
 
@@ -432,28 +487,35 @@ class CuaBackend(ComputerUseBackend):
             return BackendStatus(False, self.platform_id, f"the driver status is unknown ({exc})")
 
     def probe_permissions(self) -> PermissionProbe:
+        """The grants setup last read from the gateway's own driver. ADVISORY.
+
+        Never starts or calls the driver: this runs in short-lived probe
+        processes too, and a driver start there would replace the gateway's
+        live child. Setup's ``recheck`` asks the gateway-side driver and records
+        the answer, which is what this reads.
+        """
         if self._os != OS_MACOS:
             return PermissionProbe(PERMISSION_UNSUPPORTED, PERMISSION_UNSUPPORTED, "")
         try:
-            result = self._call("check_permissions", {}, timeout=10.0, idempotent=True)
-        except Exception:  # noqa: BLE001 - advisory only
-            return PermissionProbe(PERMISSION_UNKNOWN, PERMISSION_UNKNOWN, "CuaDriver")
-        sc = result.get("structuredContent") or {}
+            from kiro_crew.computer_use import setup as setup_mod
 
-        def _state(*keys: str) -> str:
-            for key in keys:
-                value = sc.get(key)
-                if value is True or value == "granted":
-                    return PERMISSION_GRANTED
-                if value is False or value in ("denied", "missing", "not_granted"):
-                    return PERMISSION_MISSING
+            progress = setup_mod.load_progress(self._data_home())
+            perms = progress.get("permissions")
+            perms = perms if isinstance(perms, dict) else {}
+        except Exception:  # noqa: BLE001 - advisory only
+            perms = {}
+
+        def _state(key: str) -> str:
+            value = perms.get(key)
+            if value == "granted":
+                return PERMISSION_GRANTED
+            if value == "missing":
+                return PERMISSION_MISSING
             return PERMISSION_UNKNOWN
 
         return PermissionProbe(
-            accessibility=_state("accessibility", "ax", "accessibility_granted"),
-            screen_recording=_state(
-                "screen_recording", "screen_capture", "screen_recording_granted"
-            ),
+            accessibility=_state("accessibility"),
+            screen_recording=_state("screen_recording"),
             responsible_hint="CuaDriver",
         )
 
@@ -491,9 +553,15 @@ class CuaBackend(ComputerUseBackend):
         return refs
 
     def _per_process(self, windows: "list[AppRef]") -> "list[AppRef]":
-        grouped: dict[int, list[AppRef]] = {}
+        """One target per process on Linux and macOS; one per WINDOW on Windows,
+        where a process (a browser) owns several top-level windows that the native
+        backend lists and addresses by title separately. A name match that hits
+        several still goes through ``floors.representative_window`` in ``_find``,
+        so a denied window of the same process cannot be dodged."""
+        grouped: dict[tuple[int, int], list[AppRef]] = {}
         for ref in windows:
-            grouped.setdefault(ref.pid, []).append(ref)
+            key = (ref.pid, ref.window_id if self._os == OS_WINDOWS else 0)
+            grouped.setdefault(key, []).append(ref)
         out: list[AppRef] = []
         for refs in grouped.values():
             chosen = floors.representative_window(refs)
@@ -526,6 +594,36 @@ class CuaBackend(ComputerUseBackend):
                 return floors.representative_window(hits)
         return None
 
+    def _find_launched(self, who: LaunchIdentity) -> "AppRef | None":
+        """The on-screen window of the app a launch resolved to, by its OS identity.
+
+        Matches ``who.key`` (Linux: the vetted program's basename; Windows: the
+        executable; macOS: the bundle id) against the window's process name or
+        bundle id, and on Linux against the basename of the process's own
+        executable. Never the display name: a window of another app whose title
+        or name merely equals "Calculator" is not the app that was launched.
+        """
+        key = who.key.strip().casefold()
+        if not key:
+            return None
+        hits = [
+            a
+            for a in self._per_process(self._windows())
+            if key in (a.name.casefold(), a.bundle_id.casefold()) or self._exe_name(a.pid) == key
+        ]
+        if not hits:
+            return None
+        return hits[0] if len(hits) == 1 else floors.representative_window(hits)
+
+    def _exe_name(self, pid: int) -> str:
+        """Basename of *pid*'s executable (Linux ``/proc``), casefolded, or ``""``."""
+        if self._os != OS_LINUX or pid <= 0:
+            return ""
+        try:
+            return os.path.basename(os.readlink(f"/proc/{pid}/exe")).casefold()
+        except OSError:
+            return ""
+
     def resolve_app(self, query: str) -> DriverResult:
         def run() -> DriverResult:
             found = self._find(query)
@@ -555,7 +653,10 @@ class CuaBackend(ComputerUseBackend):
                 "resolve": linux_apps.resolve_target,
                 "identity": linux_apps.target_identity,
                 "spawn": lambda target: linux_apps.spawn_detached(
-                    target, env_mod.desktop_env(os.environ)
+                    # A fixed system PATH, never the gateway's: a bare name inside a
+                    # root-owned launcher must not resolve to a file the agent wrote.
+                    target,
+                    {**env_mod.desktop_env(os.environ), "PATH": linux_apps.SYSTEM_PATH},
                 ),
             }
         if self._os == OS_MACOS:
@@ -593,6 +694,7 @@ class CuaBackend(ComputerUseBackend):
                 query,
                 resolve=fns["resolve"],
                 find=lambda name: self._find(name),
+                find_launched=self._find_launched,
                 spawn=fns["spawn"],
                 permit=permit,
                 identity=fns.get("identity"),
@@ -603,14 +705,6 @@ class CuaBackend(ComputerUseBackend):
         return self._guard("launch_app", run)
 
     # ── observation ──
-
-    def _shot_dir(self) -> Path:
-        path = install_mod.runtime_root(self._data_home()) / "capture"
-        path.mkdir(parents=True, exist_ok=True)
-        from kiro_crew import platform_compat
-
-        platform_compat.chmod_safe(path, 0o700)
-        return path
 
     def _read_window(self, app: AppRef, req: SnapshotRequest) -> Snapshot:
         args: dict[str, Any] = {
@@ -623,28 +717,18 @@ class CuaBackend(ComputerUseBackend):
         }
         if app.window_id:
             args["window_id"] = app.window_id
-        shot_path = ""
         if req.want_image:
-            fd, shot_path = tempfile.mkstemp(prefix="state-", suffix=".png", dir=self._shot_dir())
-            os.close(fd)
-            args["screenshot_out_file"] = shot_path
+            # The PNG comes back inline (never ``screenshot_out_file``): a file
+            # would exist, readable by the agent's sandbox, before the
+            # secure-field floor in ``_to_snapshot`` decides it may be shown.
             args["max_image_dimension"] = 0
-        try:
-            result = self._call(
-                "get_window_state", args, timeout=SNAPSHOT_CALL_TIMEOUT_SECS, idempotent=True
-            )
-            if result.get("isError"):
-                raise ComputerUseError(_text_of(result) or "the driver could not read the window")
-            sc = result.get("structuredContent") or {}
-            png = b""
-            if shot_path and os.path.getsize(shot_path) > 0:
-                png = Path(shot_path).read_bytes()
-        finally:
-            if shot_path:
-                try:
-                    os.unlink(shot_path)
-                except OSError:
-                    pass
+        result = self._call(
+            "get_window_state", args, timeout=SNAPSHOT_CALL_TIMEOUT_SECS, idempotent=True
+        )
+        if result.get("isError"):
+            raise ComputerUseError(_text_of(result) or "the driver could not read the window")
+        sc = result.get("structuredContent") or {}
+        png = image_of(result) if req.want_image else b""
         return self._to_snapshot(app, req, sc, png)
 
     def _to_snapshot(
@@ -782,25 +866,18 @@ class CuaBackend(ComputerUseBackend):
         self, app: AppRef, points: "tuple[tuple[float, float], ...]" = ()
     ) -> "tuple[float, float, float, float, float]":
         """Read the window with a screenshot so x/y can be grounded; return bounds + scale."""
-        fd, shot_path = tempfile.mkstemp(prefix="ground-", suffix=".png", dir=self._shot_dir())
-        os.close(fd)
-        try:
-            args = {
-                "pid": app.pid,
-                "window_id": app.window_id,
-                "include_screenshot": True,
-                "include_accessibility_tree": False,
-                "max_image_dimension": 0,
-                "screenshot_out_file": shot_path,
-            }
-            result = self._call(
-                "get_window_state", args, timeout=SNAPSHOT_CALL_TIMEOUT_SECS, idempotent=True
-            )
-        finally:
-            try:
-                os.unlink(shot_path)
-            except OSError:
-                pass
+        # Inline, never a file: only the capture's size is used, and the pixels
+        # are dropped with the result.
+        args = {
+            "pid": app.pid,
+            "window_id": app.window_id,
+            "include_screenshot": True,
+            "include_accessibility_tree": False,
+            "max_image_dimension": 0,
+        }
+        result = self._call(
+            "get_window_state", args, timeout=SNAPSHOT_CALL_TIMEOUT_SECS, idempotent=True
+        )
         if result.get("isError"):
             raise ComputerUseError(_text_of(result) or "the driver could not read the window")
         sc = result.get("structuredContent") or {}
@@ -882,10 +959,8 @@ class CuaBackend(ComputerUseBackend):
 
     def type_text(self, app: AppRef, rec: "ElementRec | None", text: str) -> DriverResult:
         def run() -> DriverResult:
-            if rec is None:
-                return DriverResult(
-                    ok=False, text=floors.ERR_KEYS_NEED_ELEMENT.format(verb="computer_type_text")
-                )
+            # ``tools._ELEMENT_REQUIRED_TOOLS`` refuses an indexless call first.
+            assert rec is not None
             args = {"pid": app.pid, "element_token": self._token(app, rec), "text": text}
             return self._act("typing", "type_text", args, element=True)
 
@@ -893,18 +968,32 @@ class CuaBackend(ComputerUseBackend):
 
     def _key_args(self, key: str) -> dict[str, Any]:
         spec = keymap.parse_spec(key)
-        name = _KEY_NAMES.get(spec.key)
+        if spec.key == "delete":
+            name: "str | None" = _DELETE_KEY.get(self._os, "delete")
+        else:
+            name = _KEY_NAMES.get(spec.key)
         if name is None and len(spec.key) == 1 and spec.key.isascii() and spec.key.isprintable():
             name = spec.key
         if name is None:
             raise ComputerUseError(ERR_UNSUPPORTED_KEY.format(key=key))
-        table = _MODIFIERS.get(self._os, _MODIFIERS[OS_LINUX])
-        mods = []
-        for mod in sorted(spec.modifiers):
-            mapped = table.get(mod)
-            if mapped is None:
+        mods: list[str] = []
+        if self._os == OS_MACOS:
+            _, flags = keymap.parse_key(key)
+            known = 0
+            for flag, mac_name in _MACOS_FLAGS:
+                known |= flag
+                if flags & flag:
+                    mods.append(mac_name)
+            if flags & ~known:
                 raise ComputerUseError(ERR_UNSUPPORTED_KEY.format(key=key))
-            mods.append(mapped)
+            mods.sort()
+        else:
+            table = _MODIFIERS.get(self._os, _MODIFIERS[OS_LINUX])
+            for mod in sorted(spec.modifiers):
+                mapped = table.get(mod)
+                if mapped is None:
+                    raise ComputerUseError(ERR_UNSUPPORTED_KEY.format(key=key))
+                mods.append(mapped)
         args: dict[str, Any] = {"key": name}
         if mods:
             args["modifiers"] = mods
@@ -912,10 +1001,7 @@ class CuaBackend(ComputerUseBackend):
 
     def press_key(self, app: AppRef, rec: "ElementRec | None", key: str) -> DriverResult:
         def run() -> DriverResult:
-            if rec is None:
-                return DriverResult(
-                    ok=False, text=floors.ERR_KEYS_NEED_ELEMENT.format(verb="computer_press_key")
-                )
+            assert rec is not None  # refused in ``tools`` first, as for type_text
             args = {"pid": app.pid, "element_token": self._token(app, rec), **self._key_args(key)}
             return self._act("key press", "press_key", args, element=True)
 

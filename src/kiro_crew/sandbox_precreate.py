@@ -515,6 +515,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # empty at 0700 so the bind has a target from the first spawn.
     "browser-harness-ipc",
     "browser-profile",
+    # The computer-use driver daemon's socket directory (macOS), for the same
+    # reason: created at the first driver start, so it must exist (empty, 0700)
+    # before the first spawn or its socket would appear inside a running sandbox.
+    "computer-use-ipc",
     "appearance-library",
     "quarantined-clones",
     # First created by the first member-born session's vouch, so a sandbox spawned

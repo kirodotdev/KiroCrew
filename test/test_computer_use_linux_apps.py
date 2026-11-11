@@ -108,3 +108,40 @@ def test_a_program_missing_from_the_system_path_is_refused() -> None:
         linux_apps.resolve_target(
             "x", catalog=(_entry("X", ("definitely-not-a-real-program-kc",), desktop_id="x"),)
         )
+
+
+def _desktop(path: Path, name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"[Desktop Entry]\nType=Application\nName={name}\nExec=/usr/bin/flatpak run {name}\n",
+        encoding="utf-8",
+    )
+
+
+def test_flatpak_symlinked_entries_are_read_only_inside_their_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ownership is what the real check verifies; the layout is what this test pins.
+    monkeypatch.setattr(linux_apps, "_secure_owner", lambda _p: True)
+    flatpak = tmp_path / "flatpak"
+    exports = flatpak / "exports" / "share" / "applications"
+    exports.mkdir(parents=True)
+    inside = flatpak / "app" / "org.example.Inside" / "current" / "active" / "export" / "x.desktop"
+    _desktop(inside, "Inside")
+    (exports / "org.example.Inside.desktop").symlink_to(inside)
+    outside = tmp_path / "elsewhere" / "evil.desktop"
+    _desktop(outside, "Evil")
+    (exports / "org.example.Evil.desktop").symlink_to(outside)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "org.example.Plain.desktop").symlink_to(inside)
+
+    found = linux_apps.installed_apps(
+        dirs=(str(exports), str(plain)), link_roots={str(exports): str(flatpak)}
+    )
+    assert [e.desktop_id for e in found] == ["org.example.Inside"]
+
+
+def test_the_flatpak_export_dir_is_a_symlinked_catalog_dir() -> None:
+    for directory in linux_apps.SYMLINKED_DIR_ROOTS:
+        assert directory in linux_apps.SYSTEM_APPLICATION_DIRS

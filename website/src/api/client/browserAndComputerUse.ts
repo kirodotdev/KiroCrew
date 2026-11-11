@@ -93,7 +93,7 @@ export type ComputerUseSetupState =
 
 /** Actions `POST /api/computer-use/setup` accepts. None of them turns the feature
  *  on: that stays the keystone enable behind `PUT /api/computer-use/config`. */
-export type ComputerUseSetupAction = 'install' | 'request_permissions' | 'recheck' | 'verify' | 'restart_driver' | 'reset'
+export type ComputerUseSetupAction = 'install' | 'request_permissions' | 'recheck' | 'verify' | 'restart_driver' | 'reset' | 'use_builtin_driver'
 
 export type ComputerUsePermissionValue = 'granted' | 'missing' | 'unknown' | 'not_applicable'
 
@@ -130,6 +130,11 @@ export interface ComputerUseSetupDoc {
   /** One plain sentence saying what the user should do next, or empty. */
   user_action: string
   progress: { last_step: string }
+  /** What is wrong now (failure states only); null otherwise. Failure reasons
+   *  never travel in `limitations`, which holds standing platform limits. */
+  problem?: { code: string; message: string; recoverable: boolean } | null
+  /** How the system stopped the upstream driver at launch ("" when it did not). */
+  blocked?: string
 }
 
 export function createBrowserAndComputerUseEndpoints({ get, put, post, j }: ClientTransport) {

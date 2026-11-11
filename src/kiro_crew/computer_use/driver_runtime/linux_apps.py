@@ -45,6 +45,13 @@ SYSTEM_APPLICATION_DIRS: tuple[str, ...] = (
     "/var/lib/snapd/desktop/applications",
 )
 
+#: Catalog directories whose entries are symlinks by design, and the root-owned
+#: tree each link must resolve inside. Flatpak exports every app's ``.desktop``
+#: file as a link into ``/var/lib/flatpak/app/<id>/current/active/export/``.
+SYMLINKED_DIR_ROOTS: dict[str, str] = {
+    "/var/lib/flatpak/exports/share/applications": "/var/lib/flatpak",
+}
+
 #: The PATH an Exec program is resolved on. Never the gateway's own PATH.
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:/usr/games"
 
@@ -130,7 +137,35 @@ def parse_entry(path: Path, desktop_id: str) -> "DesktopEntry | None":
     )
 
 
-def installed_apps(dirs: "tuple[str, ...]" = SYSTEM_APPLICATION_DIRS) -> "tuple[DesktopEntry, ...]":
+def _entry_file(path: Path, link_root: "str | None") -> "Path | None":
+    """The file to read for catalog entry *path*, or ``None`` to skip it.
+
+    A plain root-owned file is read as is. A symlink is followed only in a
+    directory listed in :data:`SYMLINKED_DIR_ROOTS`, and only when it resolves
+    to a root-owned file inside that directory's tree whose every parent is
+    root-owned and not group/other-writable.
+    """
+    if not path.is_symlink():
+        return path if path.is_file() and _secure_owner(path) else None
+    if link_root is None:
+        return None
+    try:
+        target = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    base = Path(link_root)
+    if base not in target.parents or not target.is_file():
+        return None
+    if not _secure_owner(target) or not _secure_chain(target.parent):
+        return None
+    return target
+
+
+def installed_apps(
+    dirs: "tuple[str, ...]" = SYSTEM_APPLICATION_DIRS,
+    link_roots: "dict[str, str] | None" = None,
+) -> "tuple[DesktopEntry, ...]":
+    roots = SYMLINKED_DIR_ROOTS if link_roots is None else link_roots
     seen: dict[str, DesktopEntry] = {}
     for directory in dirs:
         root = Path(directory)
@@ -143,8 +178,8 @@ def installed_apps(dirs: "tuple[str, ...]" = SYSTEM_APPLICATION_DIRS) -> "tuple[
         for name in names:
             if not name.endswith(".desktop"):
                 continue
-            path = root / name
-            if path.is_symlink() or not path.is_file() or not _secure_owner(path):
+            path = _entry_file(root / name, roots.get(directory))
+            if path is None:
                 continue
             desktop_id = name[: -len(".desktop")]
             if desktop_id in seen:

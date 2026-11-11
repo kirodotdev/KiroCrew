@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -205,10 +204,7 @@ class TestFailures:
         assert not sup.is_running()
         from kiro_crew import platform_compat
 
-        deadline = time.monotonic() + 5
-        while platform_compat.pid_exists(pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert not platform_compat.pid_exists(pid)
+        wait_until(lambda: not platform_compat.pid_exists(pid), timeout=default_timeout())
 
     def test_a_child_that_stops_reading_cannot_hold_the_call_lock(self, tmp_path: Path, cleanup) -> None:  # type: ignore[no-untyped-def]
         # A payload larger than the pipe buffer blocks the write until the child
@@ -272,48 +268,25 @@ class TestFailures:
 
 
 class TestShutdown:
-    def test_stop_leaves_no_child_and_no_pid_file(self, tmp_path: Path, cleanup) -> None:  # type: ignore[no-untyped-def]
-        sup, _ = _make(tmp_path)
+    def test_stop_leaves_no_child(self, tmp_path: Path, cleanup) -> None:  # type: ignore[no-untyped-def]
+        sup, _log = _make(tmp_path)
         cleanup.append(sup)
         sup.ensure()
-        pid = sup.status()["pid"]
-        pid_file = tmp_path / "home" / "computer-use" / sup_mod.PID_FILE
-        assert pid_file.exists()
+        proc = sup._child.proc  # type: ignore[union-attr]
         sup.stop()
-        from kiro_crew import platform_compat
+        assert proc.poll() is not None and not sup.is_running()
 
-        assert not platform_compat.pid_exists(pid)
-        assert not pid_file.exists()
-        sup.stop()
-
-    def test_stray_child_from_an_earlier_gateway_is_reclaimed(self, tmp_path: Path, cleanup) -> None:  # type: ignore[no-untyped-def]
-        first, _ = _make(tmp_path)
-        cleanup.append(first)
-        first.ensure()
-        stray_pid = first.status()["pid"]
-        stray_proc = first._child.proc  # type: ignore[union-attr]
-        # Forget the child without stopping it: what a crashed gateway leaves.
-        first._child = None
-        second, _ = _make(tmp_path)
-        cleanup.append(second)
-        second.ensure()
-        # Killed by the reclaim (the test process is its parent, so reap it here).
-        assert stray_proc.wait(timeout=5) != 0
-        assert second.status()["pid"] != stray_pid
-
-    def test_pid_file_naming_another_process_is_not_killed(self, tmp_path: Path, cleanup) -> None:  # type: ignore[no-untyped-def]
-        import os
-
-        pid_file = tmp_path / "home" / "computer-use" / sup_mod.PID_FILE
-        pid_file.parent.mkdir(parents=True)
-        pid_file.write_text(json.dumps({"pid": os.getpid(), "start": "not-our-start"}))
-        sup, _ = _make(tmp_path)
+    def test_a_child_whose_gateway_died_exits_by_itself(self, tmp_path: Path, cleanup) -> None:  # type: ignore[no-untyped-def]
+        # No pid is ever killed by number: a gateway that dies without stopping
+        # closes the child's stdin, and the driver exits on end-of-file.
+        sup, _log = _make(tmp_path)
         cleanup.append(sup)
         sup.ensure()
-        assert sup.is_running()
+        proc = sup._child.proc  # type: ignore[union-attr]
+        assert proc.stdin is not None
+        proc.stdin.close()
+        assert proc.wait(timeout=default_timeout()) is not None
 
-
-class TestStartupFailure:
     def test_exit_before_the_handshake_names_the_exit_and_the_reason(self, tmp_path: Path) -> None:
         # What `cua-driver mcp` does on a Mac with no reachable app daemon: it prints
         # why and exits before answering initialize. No action was in flight.

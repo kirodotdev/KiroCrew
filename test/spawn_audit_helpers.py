@@ -779,6 +779,18 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # every field code removed; the caller supplies only the NAME that selects
         # the entry (pinned by test_computer_use_linux_apps.py).
         "computer_use/driver_runtime/linux_apps.py::spawn_detached",
+        # macOS driver app placement and removal: fixed system tools
+        # (``/usr/bin/ditto`` to copy the verified bundle, ``lsregister -u`` on the
+        # exact path Kiro Crew removed). No argv element comes from the agent: the
+        # paths are the private staging copy and ``/Applications/CuaDriver.app``.
+        "computer_use/driver_runtime/install.py::_copy_bundle",
+        "computer_use/driver_runtime/install.py::_remove_owned_app",
+        # The fenced macOS daemon (D-6): ``/usr/bin/open`` with the fixed fence
+        # variables and ``/Applications/CuaDriver.app --args serve --socket
+        # <private>``, ``open -h`` to detect ``--env``, and the verified pinned
+        # binary's ``stop --socket <private> --expected-pid <pid>``. Every element
+        # is a constant, a private path, or a pid read from our own pid file.
+        "computer_use/driver_runtime/macos_daemon.py::_default_run",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run``
         # (attribute ``run`` on base ``asyncio``). Both sites drive an in-process
         # coroutine from the loop-less CLI entry point; the network I/O is

@@ -264,6 +264,13 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # and in ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` because it is created on the
     # first connect, i.e. absent at the first spawn.
     "browser-harness-ipc",
+    # The computer-use driver daemon's runtime directory on macOS
+    # (``computer_use.driver_runtime.macos_daemon.IPC_LEAF``): its Unix socket and pid
+    # file. Whoever can connect to the socket can call every upstream driver tool on
+    # the owner's desktop, outside Kiro Crew's allowlist, floors and audit, so no
+    # sandboxed process may see it; the gateway's proxy is the only client. Masked as
+    # a whole DIRECTORY, for the ``browser-harness-ipc`` reason, and precreated.
+    "computer-use-ipc",
     # Kiro's Chromium profile (``browser_harness.supervisor.PROFILE_LEAF``). A
     # takeover login leaves its cookies here, and the agent must not read them as
     # a file: the only path to a logged-in page is the live browser, where the

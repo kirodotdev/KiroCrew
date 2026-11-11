@@ -20,6 +20,8 @@ import {
   viewFor,
   waitExpired,
   waitingPane,
+  blockedKey,
+  problemText,
   SETUP_INSTALL_POLL_MAX_MS,
   SETUP_POLL_MAX_MS,
   type SetupPane,
@@ -150,6 +152,11 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
   })
 
   const doc = setupQ.data
+  const blockedTextKey = doc ? blockedKey(doc) : null
+  const blockedMessage = blockedTextKey ? i18nT(blockedTextKey, { how: doc?.blocked ?? '' }) : null
+  const problem = doc ? problemText(doc, blockedMessage) : null
+  /** True when the view's own body already shows `problem`, so it is not repeated. */
+  let bodyShowsProblem = false
   const state = doc?.state
   const view: SetupView | undefined = doc ? viewFor(doc) : undefined
 
@@ -220,7 +227,8 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
       void setupQ.refetch()
       return
     }
-    run('recheck')
+    // A failed desktop check is cleared only by checking again for real.
+    run(doc?.problem?.code === 'verify_failed' ? 'verify' : 'recheck')
   }
   const openPane = (pane: SetupPane) => {
     // One window per click; the rechecks that follow never open anything.
@@ -240,6 +248,14 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
 
   const owner = doc ? ownerName(doc) : ''
 
+  // The upstream driver was blocked at launch: where a built-in driver exists,
+  // offer it as the way forward (the error text names it).
+  const builtinBtn =
+    blockedMessage && doc && doc.platform !== 'linux' ? (
+      <Btn type="button" primary onClick={() => run('use_builtin_driver')} disabled={busy} busy={actionMut.isPending && actionMut.variables === 'use_builtin_driver'} data-testid="cu-use-builtin">
+        {i18nT('pages.settings.computerUseSetup.use_builtin_action')}
+      </Btn>
+    ) : null
   const checkAgainBtn = (
     <Btn type="button" onClick={recheck} disabled={busy} busy={actionMut.isPending && actionMut.variables === 'recheck'}>
       {i18nT('pages.settings.computerUseSetup.check_again')}
@@ -305,7 +321,12 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
       break
     case 'installing':
       title = i18nT('pages.settings.computerUseSetup.installing_title')
-      body = expired ? slowLine : waitingLine(i18nT('pages.settings.computerUseSetup.installing_body'))
+      body = expired ? slowLine : (
+        <>
+          {waitingLine(i18nT('pages.settings.computerUseSetup.installing_body'))}
+          <p className="m-0 text-[13px] text-muted" data-testid="cu-installing-keeps-going">{i18nT('pages.settings.computerUseSetup.installing_keeps_going')}</p>
+        </>
+      )
       actions = expired ? (
         <>
           {checkAgainBtn}
@@ -315,11 +336,24 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
       break
     case 'install_failed':
       title = i18nT('pages.settings.computerUseSetup.install_failed_title')
-      body = <ErrorNotice askAgent message={i18nT('pages.settings.computerUseSetup.install_failed_body')} />
+      // One message: the specific reason (or the block), then the general hint.
+      body = (
+        <ErrorNotice
+          askAgent
+          message={
+            blockedMessage ||
+            [problem, i18nT('pages.settings.computerUseSetup.install_failed_body')].filter(Boolean).join(' ')
+          }
+        />
+      )
+      bodyShowsProblem = true
       actions = (
-        <Btn type="button" primary onClick={() => run('install')} disabled={busy} busy={actionMut.isPending}>
-          {i18nT('pages.settings.computerUseSetup.retry_install')}
-        </Btn>
+        <>
+          <Btn type="button" primary={!builtinBtn} onClick={() => run('install')} disabled={busy} busy={actionMut.isPending && actionMut.variables === 'install'}>
+            {i18nT('pages.settings.computerUseSetup.retry_install')}
+          </Btn>
+          {builtinBtn}
+        </>
       )
       break
     case 'accessibility':
@@ -403,13 +437,21 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
       break
     case 'unavailable':
       title = i18nT('pages.settings.computerUseSetup.unavailable_title')
-      body = <p className="m-0">{i18nT('pages.settings.computerUseSetup.unavailable_body')}</p>
+      body = blockedMessage ? (
+        <ErrorNotice askAgent message={blockedMessage} />
+      ) : (
+        <p className="m-0">{i18nT('pages.settings.computerUseSetup.unavailable_body')}</p>
+      )
+      bodyShowsProblem = Boolean(blockedMessage && problem === blockedMessage)
+      // Two actions at most: when the driver was blocked at launch, Restart driver
+      // is the one retry and the built-in driver is the way forward.
       actions = (
         <>
-          {checkAgainBtn}
-          <Btn type="button" primary onClick={() => run('restart_driver')} disabled={busy} busy={actionMut.isPending && actionMut.variables === 'restart_driver'}>
+          {!builtinBtn && checkAgainBtn}
+          <Btn type="button" primary={!builtinBtn} onClick={() => run('restart_driver')} disabled={busy} busy={actionMut.isPending && actionMut.variables === 'restart_driver'}>
             {i18nT('pages.settings.computerUseSetup.restart_action')}
           </Btn>
+          {builtinBtn}
         </>
       )
       break
@@ -455,7 +497,8 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
       break
     case 'error':
       title = i18nT('pages.settings.computerUseSetup.error_title')
-      body = <ErrorNotice askAgent message={i18nT('pages.settings.computerUseSetup.error_body')} />
+      body = <ErrorNotice askAgent message={problem || i18nT('pages.settings.computerUseSetup.error_body')} />
+      bodyShowsProblem = true
       actions = (
         <>
           <Btn type="button" onClick={() => run('reset')} disabled={busy}>
@@ -494,7 +537,12 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
                   {title}
                 </h3>
                 {body}
-                {doc?.user_action && view !== 'intro' && view !== 'ready' && (
+                {problem && !bodyShowsProblem && (
+                  <div data-testid="cu-setup-problem">
+                    <ErrorNotice askAgent message={problem} />
+                  </div>
+                )}
+                {doc?.user_action && !doc.problem && !blockedMessage && view !== 'intro' && view !== 'ready' && (
                   <p className="m-0 text-text" data-testid="cu-setup-user-action">{doc.user_action}</p>
                 )}
                 {sessionsRestarted && <p className="m-0 text-muted">{i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted')}</p>}
@@ -502,7 +550,16 @@ export function ComputerUseSetupDialog({ open, onOpenChange, config }: ComputerU
               </section>
             )}
             {/* The dialog holds no draft, so the hand-off cannot lose anything. */}
-            <ErrorNotice variant="inline" askAgent message={actionError || null} />
+            <ErrorNotice
+              variant="inline"
+              askAgent
+              message={
+                actionError ||
+                // A failed background recheck stops the timer, and a failed refresh
+                // keeps the last document on screen: say so rather than show it as live.
+                (doc && (pollMut.isError || setupQ.isError) ? i18nT('pages.settings.computerUseSetup.status_load_error') : null)
+              }
+            />
           </div>
         </DialogBody>
         {actions && (

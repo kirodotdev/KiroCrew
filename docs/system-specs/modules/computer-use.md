@@ -956,6 +956,15 @@ work from a subsequent keystroke, so launching one and then using
 
 ### A launch is confirmed by finding the WINDOW
 
+On the upstream driver both window lookups in `run_launch` (already running, and
+the post-spawn wait) go through `find_launched`, which matches the RESOLVED
+identity the policy just cleared (`LaunchIdentity.key`: the vetted program's
+basename on Linux, also compared with the process's `/proc/<pid>/exe`; the
+executable on Windows; the bundle id on macOS), never the display name. A
+window of another app whose name or title equals "Calculator" is not taken for
+the launched one; a key-less identity matches nothing. The native drivers keep
+their own lookup.
+
 `backend.await_launched_window` polls the on-screen window list; it does **not** read
 the spawned process's exit status. That is not defensiveness — a launcher exits
 before the application it started has a window. Measured on Windows,
@@ -1950,8 +1959,8 @@ behind the same seam. No upstream code ships in the wheel.
   clipboard, recording and launch tools are unreachable), one call at a time, a
   per-call deadline that kills the process group on a stall, capped-backoff restart
   with `initialize` + `tools/list`, a crash-loop latch, and **no replay** of a call
-  whose outcome is unknown (only pure reads retry once). A pid file pinned to the
-  process start time lets the next gateway reclaim a stray child;
+  whose outcome is unknown (only pure reads retry once). No pid is ever killed by
+  number: a gateway that dies closes the child's stdin and `mcp` exits on EOF;
   `driver_runtime/lifecycle.py` stops the child on cleanup and before an in-place
   restart.
 - **Backend** (`backend.py`): element tokens kept per window for the latest walk and
@@ -1977,10 +1986,49 @@ behind the same seam. No upstream code ships in the wheel.
   fails `install_failed` naming it, and it is never replaced, moved or deleted. A
   non-writable `/Applications` is reported, never escalated. Every start re-runs
   `check_app_copy` on that copy. `reset` removes the copy only when Kiro Crew placed
-  it and its hash is unchanged. Upstream runs one shared daemon per user there,
-  which another tool using the same driver also reaches; the supervisor stops only
-  the `mcp` child it started. The macOS upstream path is a preview: `auto` stays
-  native.
+  it at that path and its driver binary still has the hash in the marker (other bundle files are
+  not compared). **macOS daemon fence (D-6)**: upstream's `mcp` is only a proxy and
+  starts the daemon through `open` with no environment, so the fence would never
+  reach it. `driver_runtime/macos_daemon.py` therefore starts the daemon itself with
+  `/usr/bin/open -n -g --env <fence> /Applications/CuaDriver.app --args serve
+  --socket <private> --pid-file <private> --no-permissions-gate` (the gate is
+  upstream's own startup check, which opens System Settings on every start until
+  both grants exist; Kiro Crew prompts only from the owner's setup actions) (socket
+  and pid file in `<data-home>/computer-use-ipc/run/`, a HIDDEN sandbox leaf like
+  `browser-harness-ipc`, so no sandboxed process can connect to it; a data home too
+  deep for the 103-byte Unix socket limit is refused, with no fallback directory),
+  refuses when `open` has no `--env`,
+  and proves the fence before use from the kernel's `KERN_PROCARGS2` record (the
+  daemon at the pin reports no telemetry state over its socket): executable is the
+  verified `/Applications` binary, argv is `serve` on our socket, every fence
+  variable holds our value exactly once, no other `CUA_*` variable came in from the
+  launch environment, and the socket's peer pid is that process (checked again after
+  the proxy connects). `open` and `stop` themselves run with the fence environment. Anything unproven stops it and refuses; there is no
+  fallback. The supervisor connects only with `mcp --socket <private>`, never plain
+  `mcp`, and runs that proxy with `CUA_DRIVER_EMBEDDED=1`, which makes upstream
+  refuse to auto-launch a replacement daemon. Shutdown, `restart_driver` and
+  `reset` run `cua-driver stop --socket <private> --expected-pid <pid>`, only for a
+  pid whose argv names our socket; a daemon that ignores `stop` is never killed by
+  pid: Kiro Crew refuses with `ERR_STOP_FAILED` and starts no new daemon; a provably
+  stale pid file or socket is reclaimed at start,
+  and a socket some other process serves is left alone with a refusal. **Nothing in
+  `/Applications` is executed directly**: the user (and so a sandboxed agent) can
+  write there, so `stop`, the `mcp` proxy and `--version` run the copy in the sealed
+  `<data-home>/computer-use/driver/<version>` tree, through the one helper
+  `install.exec_ready_binary`, which re-hashes it against the pin immediately before
+  each run; the `/Applications` app is started only through LaunchServices, right
+  after `install.check_app_copy` re-proves its signature, team, bundle id and pinned
+  hash. `test_no_driver_exec_in_driver_runtime_uses_the_applications_binary`
+  enumerates the exec sites. **Blocked at launch**: a driver the system kills or
+  refuses as it starts (a signal on POSIX, the access-denied and blocked-by-policy
+  codes on Windows; seen with endpoint security software on a managed Mac) raises
+  `install.DriverBlocked`, reported as itself (`install_failed`, or
+  `temporarily_unavailable` on a later start), latched with no automatic retry until
+  an explicit restart, and recorded in `<data-home>/computer-use/blocked.json` so
+  Windows `auto` keeps the native driver. Kiro Crew never tries to get around the
+  block. Unproven on a
+  signed-in Mac: whether TCC grants apply to a daemon on a private socket. The
+  macOS upstream path is a preview: `auto` stays native.
 - **Install dir protection**: `<data-home>/computer-use/` is a READONLY crew-home
   leaf and a protected path, like the keystone and the Browser Harness prefix, so a
   sandboxed process cannot replace the driver, rewrite its record or edit setup
@@ -2454,6 +2502,26 @@ things:
   shaped `error` document whose sentence is the handler's own, never the
   exception text.
 
+**Failure reasons travel in `problem`, never in `limitations`.** Every state in `setup.FAILURE_STATES`
+(`install_failed`, both `*_denied`, `temporarily_unavailable`,
+`permission_revoked`, `unsupported`, `error`) carries
+`problem: {code, message, recoverable}`; every other state carries
+`problem: null`. `code` is one of `setup.PROBLEM_CODES` (the handler allowlists
+the same set and pins it with a parity test), `message` is the specific reason
+(the install error, the check's detail, the driver's last error, the session
+limit that blocks it) or, without one, the state's sentence, and `recoverable`
+is false only where no action here can help (no native driver, no desktop
+driver for this OS, a session the driver cannot use). `user_action` stays the
+next step. `limitations` holds standing platform limits only (no uinput, the
+macOS preview limits), and a session limit that is itself the failure is moved
+out of it so it is shown once. The card and the dialog render the problem, with
+the next step appended, through `ErrorNotice`; a plain `user_action` line is
+shown only when there is no problem. A launch the system blocked
+(`install_blocked`, `launch_blocked`) shows the localized blocked reason and, on
+macOS and Windows, a **Use the built-in driver** button: the `use_builtin_driver`
+action sets the keystone's `driver` back to `auto` (the built-in driver there) and
+uninstalls nothing; on Linux, where no built-in driver exists, it does nothing.
+
 None of the actions turns the feature on. The intro's Continue is the existing
 keystone PUT (`{"enabled": true}`), and `ready` is the setup module's verdict,
 which requires both the keystone and a passed verify.
@@ -2905,7 +2973,7 @@ computer use.
 | `computer_use/driver_runtime/pin.py` | The upstream driver pin: version, archive and binary digests per (os, arch) |
 | `computer_use/driver_runtime/install.py` | Download, verify, safe extraction, signature checks, install record, start-time verification |
 | `computer_use/driver_runtime/env.py` | The driver's allowlisted environment with telemetry and update checks forced off |
-| `computer_use/driver_runtime/supervisor.py` | The one stdio driver child: allowlist, serialization, deadlines, restart, no replay, stray reclaim |
+| `computer_use/driver_runtime/supervisor.py` | The one stdio driver child: allowlist, serialization, deadlines, restart, no replay, no orphan (child exits on stdin EOF) |
 | `computer_use/driver_runtime/backend.py` | `CuaBackend`: the `computer_*` verbs on the upstream driver |
 | `computer_use/driver_runtime/session.py` | Desktop session detection (X11, Wayland compositors, Windows Session 0, macOS console) and honest capabilities |
 | `computer_use/driver_runtime/linux_apps.py` | The Linux launch catalog: root-owned system desktop entries only |

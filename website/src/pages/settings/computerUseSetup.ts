@@ -304,3 +304,30 @@ export function ownerName(doc: ComputerUseSetupDoc): string {
 
 /** The query string the chat affordance uses to open the dialog on arrival. */
 export const SETUP_QUERY_PARAM = 'setup'
+
+/** The i18n key for the reason the system (endpoint security software) stopped
+ *  the upstream driver at launch, or null. On the native driver the text says
+ *  Computer Use keeps working on it; elsewhere it replaces the English
+ *  `user_action`. Pass `{ how: doc.blocked }` when translating. */
+export function blockedKey(doc: ComputerUseSetupDoc): string | null {
+  if (!doc.blocked) return null
+  if (doc.driver.kind === 'native') return 'pages.settings.computerUseSetup.upstream_blocked_native'
+  return doc.platform === 'linux'
+    ? 'pages.settings.computerUseSetup.driver_blocked_no_native'
+    : 'pages.settings.computerUseSetup.driver_blocked'
+}
+
+/** The text of the document's current problem, for `ErrorNotice`, or null when
+ *  nothing is wrong. A launch the system blocked uses the localized reason
+ *  (`blockedMessage`); otherwise the problem's own message, followed by the next
+ *  step (`user_action`) when that adds something. */
+export function problemText(doc: ComputerUseSetupDoc, blockedMessage: string | null): string | null {
+  const problem = doc.problem
+  if (!problem) return null
+  if (blockedMessage && (problem.code === 'install_blocked' || problem.code === 'launch_blocked')) return blockedMessage
+  const next = doc.user_action && doc.user_action !== problem.message ? doc.user_action : ''
+  // A sentence break between the reason and the next step, even when the reason
+  // (a driver or OS message) ends without one.
+  const reason = next && problem.message && !/[.!?。！？]$/.test(problem.message) ? `${problem.message}.` : problem.message
+  return [reason, next].filter(Boolean).join(' ') || null
+}

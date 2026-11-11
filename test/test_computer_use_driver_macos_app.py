@@ -94,12 +94,44 @@ def apps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+#: What the faked network answers with: (body, list of requested urls or None).
+_SERVED: "list[tuple[bytes, list[str] | None]]" = [(b"", None)]
+
+
+@pytest.fixture(autouse=True)
+def _fake_network(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer every download through the shared downloader's opener seam."""
+    import types
+
+    from kiro_crew import asset_downloader
+
+    def open_url(req, timeout=None):  # type: ignore[no-untyped-def]
+        data, seen = _SERVED[0]
+        if seen is not None:
+            seen.append(getattr(req, "full_url", req))
+        resp = _Resp(data)
+        resp.status = 200  # type: ignore[attr-defined]
+        resp.headers = {}  # type: ignore[attr-defined]
+        return resp
+
+    _floor_monkeypatch.setattr(
+        asset_downloader, "build_opener", lambda *_a, **_k: types.SimpleNamespace(open=open_url)
+    )
+    _SERVED[0] = (b"", None)
+
+
+def _serve(data: bytes, seen: "list[str] | None" = None) -> "dict[str, object]":
+    """Serve *data* to the next downloads; returns no install kwargs."""
+    _SERVED[0] = (data, seen)
+    return {}
+
+
 def _install(home: Path, runner: Runner) -> inst.InstallState:
     return inst.install(
         home,
         asset=ASSET,
         os_id=pin.OS_MACOS,
-        opener=lambda url, timeout: _Resp(DATA),
+        **_serve(DATA),
         run=runner,
         progress=inst.InstallProgress(),
     )
@@ -132,10 +164,10 @@ def test_every_start_re_verifies_the_applications_copy(apps: Path, tmp_path: Pat
     home = tmp_path / "home"
     _install(home, Runner())
     runner = Runner()
-    assert inst.verify_installed(home, run=runner) == (
-        apps / "CuaDriver.app" / inst.MACOS_APP_BINARY,
-        "",
-    )
+    sealed = inst.version_dir(home) / inst.asset_for(inst.OS_MACOS).binary  # type: ignore[union-attr]
+    # The supervisor gets the SEALED copy: /Applications is checked, never executed.
+    assert inst.verify_installed(home, run=runner) == (sealed, "")
+    assert all(str(apps) not in cmd[0] for cmd in runner.executed())
     target = apps / "CuaDriver.app" / inst.MACOS_APP_BINARY
     target.write_bytes(b"#!/bin/sh\necho planted\n")
     runner = Runner()
@@ -201,7 +233,7 @@ def test_a_read_only_applications_dir_is_reported_never_escalated(
         with pytest.raises(inst.InstallError, match="not writable"):
             _install(tmp_path / "home", runner)
     finally:
-        os.chmod(apps, 0o755)
+        os.chmod(apps, 0o700)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501  # fmt: skip
     assert not any("sudo" in " ".join(c) for c in runner.calls)
     assert not (apps / "CuaDriver.app").exists()
 
