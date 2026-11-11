@@ -239,11 +239,21 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey: st
     })
   }
 
+  // A session this app's page creates names the app (`embed_app`), the way the
+  // embed's own send does: the request carries the person's session, so only
+  // this client knows which app asks. The gateway records it on a conversation
+  // the create begins, so uninstalling the app resets that conversation.
+  const namingApp = (path: string, body: unknown): unknown => {
+    const plain = body == null || (typeof body === 'object' && !Array.isArray(body))
+    const creates = new URL(path, 'http://localhost').pathname === '/api/chat/slots'
+    return plain && creates ? { ...((body ?? {}) as Record<string, unknown>), embed_app: appName } : body
+  }
+
   return {
     raw: rawFetch,
     request: (path, init) => jsonFetch(path, init),
     get: (path, init) => jsonFetch(path, { ...init, method: 'GET' }),
-    post: (path, body, init) => jsonRequest(path, 'POST', body, init),
+    post: (path, body, init) => jsonRequest(path, 'POST', namingApp(path, body), init),
     put: (path, body, init) => jsonRequest(path, 'PUT', body, init),
     patch: (path, body, init) => jsonRequest(path, 'PATCH', body, init),
     del: (path, init) => jsonFetch(path, { ...init, method: 'DELETE' }),

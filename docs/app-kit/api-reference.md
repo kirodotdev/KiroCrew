@@ -69,7 +69,8 @@ response; an empty successful response returns `undefined`.
   `patch<T>(path, body?, init?)` serialize the body argument as JSON. Their method
   and body arguments take precedence over `init.method` and `init.body`. Headers
   are merged with a default `Content-Type: application/json` unless you specify
-  another media type.
+  another media type. `post('/api/chat/slots', ...)` adds `embed_app: <your app id>`
+  to the body (see [Native Chat Panel](#native-chat-panel)).
 
 The host owns `X-Session-Key`: chat surfaces use their bound session and routed
 app pages use the core dashboard-page identity, `dashboard:ui`. A host-provided
@@ -608,7 +609,10 @@ behavior. A session the app has just created with `POST /api/chat/slots` can be 
 away: the panel shows it before the dashboard's session list has caught up. The chat appears only
 once that session is open, so a session that cannot open never puts another conversation in its
 place: a session that no longer exists says so, and any other failure shows the error with
-**Try again**.
+**Try again**. A session your page begins with `api.post('/api/chat/slots', ...)`, or with
+`useChatSession`, is recorded as begun on your app's page, like a conversation `ChatEmbed`
+begins: uninstalling the app gives it a fresh start, and nothing changes in your code. A key
+that already has a conversation is left as it is.
 
 ```tsx
 import { ChatPanel } from '@kirocrew/app-sdk'
