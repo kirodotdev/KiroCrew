@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Iterator, MutableMapping
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -154,7 +155,7 @@ def _read(*, strict: bool = False) -> dict:
             ):
                 raise ValueError("agent_state_file_invalid")
             with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(STATE_MAX_BYTES + 1)
+                raw = bounded_read(stream, STATE_MAX_BYTES + 1)
             if len(raw) > STATE_MAX_BYTES:
                 raise ValueError("agent_state_too_large")
             data = json.loads(raw)

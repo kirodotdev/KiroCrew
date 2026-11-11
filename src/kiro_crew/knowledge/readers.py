@@ -7,6 +7,7 @@ import re
 import time
 from pathlib import Path
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.pdf_extract import PDF_MAX_PAGES, extract_pdf_segments, pdfplumber_available
 from kiro_crew.pinned_fs import open_fenced_for_read
 from kiro_crew.security import is_sensitive_path
@@ -224,7 +225,7 @@ class _AdocIncludes:
             with f:
                 if os.fstat(f.fileno()).st_size > _ADOC_MAX_INCLUDE_BYTES:
                     return None
-                raw = f.read(_ADOC_MAX_INCLUDE_BYTES + 1)
+                raw = bounded_read(f, _ADOC_MAX_INCLUDE_BYTES + 1)
         except OSError:
             return None
         if len(raw) > _ADOC_MAX_INCLUDE_BYTES:

@@ -51,6 +51,7 @@ from kiro_crew.atomic_write import (  # noqa: F401 - read by the pinned_writes o
     read_bytes_with_retry,
     replace_with_retry_checked,
 )
+from kiro_crew.bounded_read import bounded_read  # noqa: F401 - read by the two read owners
 from kiro_crew.config import paths as _config_paths
 
 # ``_coerce_bool`` reads a hand-edited bool without the ``bool("false")`` trap;

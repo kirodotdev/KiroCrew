@@ -103,9 +103,12 @@ def _read_spec_bytes(real: Path, *, fence: Callable[[Path], bool] | None = None)
     cap = hooks.MAX_FILE_BYTES
 
     def read_once() -> bytes:
+        # Local import: a module-level name would be served by this module's facade.
+        from kiro_crew.bounded_read import bounded_read
+
         fd = open_fenced_for_read(real, fence=refused, refusal=_SpecReadRefused)
         with os.fdopen(fd, "rb") as fh:
-            return fh.read(cap + 1)
+            return bounded_read(fh, cap + 1)
 
     # On Windows a read that lands while a writer replaces the spec (the
     # dashboard's MCP enable, disable and remove paths rewrite kirocrew.json)

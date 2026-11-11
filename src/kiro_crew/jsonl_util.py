@@ -80,6 +80,7 @@ from pathlib import Path
 from typing import IO, Any, cast
 
 from kiro_crew import platform_compat
+from kiro_crew.bounded_read import bounded_read
 
 logger = logging.getLogger(__name__)
 
@@ -719,7 +720,9 @@ class _CappedReader:
         return self._remaining + 1 if size is None or size < 0 else min(size, self._remaining + 1)
 
     def read(self, size: int = -1) -> bytes:
-        chunk = self._handle.read(self._budget(size))
+        # The budget is the ceiling's remainder, not what the file holds, so it is never the
+        # size of one request: a small file under a large ceiling costs what the file costs.
+        chunk = bounded_read(self._handle, self._budget(size))
         self._charge(len(chunk))
         return chunk
 

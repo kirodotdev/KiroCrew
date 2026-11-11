@@ -1331,7 +1331,9 @@ class TestLocalSettingsSeed:
 
         with mock.patch.object(client_mod.os, "read", side_effect=counting_read):
             assert client._claude_settings_is_still_ours() is True
-        assert sizes == [len(written.encode("utf-8")) + 1]
+        # One byte past the payload, then the one-byte read that finds the end of the file.
+        payload = len(written.encode("utf-8"))
+        assert sizes == [payload + 1, 1]
 
     def test_reset_reads_the_ownership_flag_defensively(self, tmp_path):
         """``_reset_state`` runs on clients built without ``__init__``.
