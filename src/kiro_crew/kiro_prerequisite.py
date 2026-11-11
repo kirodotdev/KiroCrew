@@ -184,6 +184,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AuditWriter,
         _audited_identity_probe,
         _audited_probe,
+        _binary_stamp,
         _latch_login_only,
         _probe,
         _probe_acp_support,
@@ -225,11 +226,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SETUP_COMPLETE_FILENAME,
         _WARM_UP_DELAY_SECS,
         KiroPrerequisiteService,
+        _configured_backend_is_kas,
         _established_installation,
         _resolve_config_set_hints,
         _turn_auth_service,
         kiro_signed_out_confirmed,
         logger,
+        mark_registered_cli_too_old,
         register_turn_auth_service,
     )
     from kiro_crew.kiro_prerequisite_spawn_identity import (  # noqa: F401

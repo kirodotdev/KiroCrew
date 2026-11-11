@@ -19,7 +19,7 @@ import {
   type AcpBackendProbe,
   type KiroPrerequisiteStatus,
 } from '../api/client'
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, KIRO_HARNESS_BACKENDS, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
 import { clearCachedModels } from '../providers/adapters/acp'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { Btn, Card, SendBtn } from './ui'
@@ -43,12 +43,13 @@ const QUERY_KEY = ['kiro-prerequisite'] as const
 
 export function kiroPrerequisiteRefetchInterval(
   status: KiroPrerequisiteStatus | undefined,
+  kiroGated = false,
 ): number | false {
   // A closed LTS login gate keeps the fast poll even with `ready`: the
   // probe can latch ready a few seconds before the gate itself reopens.
   if (status?.ready && status.lts_login_required !== true) return 30_000
   if (status && status.setup_allowed === false) return 3_000
-  if (kiroPrerequisiteIsBlocking(status)) return 5_000
+  if (kiroPrerequisiteIsBlocking(status, kiroGated)) return 5_000
   return 30_000
 }
 
@@ -62,9 +63,11 @@ export function kiroPrerequisiteRefetchInterval(
 // explicit request, so a latch-reading poll can never observe them and the gate
 // would hold forever behind a Check again button. Bounded deliberately: it costs
 // two short `kiro-cli` spawns per interval, runs ONLY on this blocking screen,
-// and stops the moment `ready` flips. A returning user never reaches it.
+// and stops the moment `ready` flips. A returning user reaches it only through
+// the out-of-date card below.
 export function kiroPrerequisiteIsBlocking(
   status: KiroPrerequisiteStatus | undefined,
+  kiroGated = false,
 ): boolean {
   // An LTS gateway whose login gate is closed serves nothing else, so the
   // sign-in screen blocks and its poll must probe to notice the new sign-in.
@@ -72,6 +75,13 @@ export function kiroPrerequisiteIsBlocking(
   if (!status || status.ready) return false
   // A non-owner cannot probe and is shown the "owner must finish setup" screen.
   if (status.setup_allowed === false) return false
+  // The out-of-date card blocks an established install too, and its copy says
+  // the page continues once the CLI is updated: a terminal update touches no
+  // gateway, so only a probing poll can see it (the server clears a spawn-proven
+  // too-old latch only when the probe finds a different binary). Only when a
+  // loaded config runs a Kiro harness (*kiroGated*): another harness's user sees
+  // the dashboard, not this card, and must not drive host probes behind it.
+  if (status.acp_supported === false && kiroGated) return true
   return !status.initial_setup_complete
 }
 
@@ -1406,6 +1416,9 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // background poll below reads latched state for free. A user-driven Refresh
   // must still hit the host, so it arms this flag for exactly one fetch.
   const forceProbe = useRef(false)
+  // Whether a loaded config runs a Kiro harness, for the poll below; written by
+  // an effect once the config query resolves.
+  const kiroGatedRef = useRef(false)
   // Set once the app has rendered after a status answer. An LTS relock
   // then keeps the app mounted and adds RelockNotice beside it.
   const appShown = useRef(false)
@@ -1422,12 +1435,12 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       forceProbe.current = false
       const refresh = explicit
         ? 'explicit' as const
-        : kiroPrerequisiteIsBlocking(queryClient.getQueryData(QUERY_KEY))
+        : kiroPrerequisiteIsBlocking(queryClient.getQueryData(QUERY_KEY), kiroGatedRef.current)
           ? 'auto' as const
           : false
       return api.kiroPrerequisite(refresh)
     },
-    refetchInterval: (query) => kiroPrerequisiteRefetchInterval(query.state.data),
+    refetchInterval: (query) => kiroPrerequisiteRefetchInterval(query.state.data, kiroGatedRef.current),
   })
   const updateStatus = (status: KiroPrerequisiteStatus) => {
     queryClient.setQueryData(QUERY_KEY, status)
@@ -1467,6 +1480,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     ? configuredAcpBackend(configQuery.data)
     : undefined
   const otherBackendConfigured = configuredBackend !== undefined && configuredBackend !== KIRO_BACKEND
+  const kiroGated = configuredBackend !== undefined && KIRO_HARNESS_BACKENDS.includes(configuredBackend)
+  useEffect(() => {
+    kiroGatedRef.current = kiroGated
+  }, [kiroGated])
   const kiroBlocking = kiroPrerequisiteIsBlocking(statusQuery.data)
   // The harness probe Settings → Agent Harness reads. Needed for two things: to let a
   // configured non-Kiro agent through, and to fill the picker on the first-run
@@ -1772,10 +1789,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // through — so even once signed in it cannot start a single turn (it would
   // fail at session-create). The probe runs whether or not the CLI is signed
   // in, so this branch and its card make no claim about sign-in.
-  // `acp_supported === false` is a FRESH
-  // probe result, not a latch (a `false` default would hide the state on an older
-  // gateway that omits the field, so the strict `=== false` is deliberate), so it
-  // is safe to surface even on an established install — and its remedy is unique:
+  // `acp_supported === false` is either a probe
+  // result or a spawn-proven latch (a session start that rejected
+  // `--auth-method`), which an update, Check again, or a replaced binary clears (a
+  // `false` default would hide the state on an older gateway that omits the
+  // field, so the strict `=== false` is deliberate). Both prove the installed CLI
+  // cannot run a session, so it is safe to surface even on an established
+  // install — and its remedy is unique:
   // update the CLI in place, which Kiro Crew runs for the user here. Ordered
   // BEFORE the established-install bail-out for the same reason as the spec
   // branches: this is a total failure the chat error card cannot pre-empt, and
