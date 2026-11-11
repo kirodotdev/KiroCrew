@@ -26,7 +26,6 @@ if TYPE_CHECKING:
         STOP_REASON_CANCELLED,
         SYNTHETIC_RECOVERY_KIND,
         KiroCrewConfig,
-        _member_capable_backend_names,
         _MemoryUnavailable,
         acp_error_is_transient,
         logger,
@@ -555,21 +554,20 @@ def _harness_unsupported_text(session_key: str) -> str:
     """The ``capability_harness_unsupported`` row's text, its remedy taken from how
     *session_key*'s backend was chosen.
 
-    The bare code names neither the setting nor the saved spec, and changing
-    agent.acp_backend does nothing for a member chat. A crewmate's worker is
+    The bare code names neither the setting nor the saved spec. A crewmate's worker is
     refused for its kit, which only some member backends carry, so it gets the
-    kit's own refusal (``mate_worker.worker_kit_backend_refusal``). A Bot's chat
-    that its own harness pin put on its backend gets the pin, which outranks
-    agent.member_acp_backend; any other member chat gets that setting.
+    kit's own refusal (``mate_worker.worker_kit_backend_refusal``). Any other chat
+    gets the fix for the tier of the selection gate that chose its backend: its
+    own pick, its Bot's pin (which outranks agent.member_acp_backend), the harness
+    a Bot's DM inherits (``mate_worker.inherited_harness_remedy``), or
+    Settings -> Agent Harness for a chat that is not a Bot's DM.
     """
     from kiro_crew.crewmate_harness import crewmate_for_session
     from kiro_crew.members import is_crewmate_worker_session
 
     member_text = (
-        "This Bot has saved capabilities, and the backend its chats run on "
-        "(agent.member_acp_backend, not agent.acp_backend) cannot load them. Set "
-        f"agent.member_acp_backend to {_member_capable_backend_names()}, or reset the "
-        "member's Capabilities page, then start a new chat."
+        "This bot has saved capabilities, and the harness its chats run on cannot load "
+        "them. Reset the member's Capabilities page, then start a new chat."
     )
     if is_crewmate_worker_session(session_key):
         from kiro_crew.mate_worker import crewmate_worker_backend, worker_kit_backend_refusal
@@ -581,28 +579,77 @@ def _harness_unsupported_text(session_key: str) -> str:
         except Exception as exc:  # noqa: BLE001 - the row must still be written
             reason = str(exc)
         return reason or member_text
-    from kiro_crew.acp_backends import ACP_BACKENDS_MEMBER_CAPABILITIES, resolve_selected_backend
-    from kiro_crew.crewmate_harness import crewmate_harnesses, crewmate_pin_for, pin_remedy
+    from kiro_crew.acp_backends import (
+        ACP_BACKENDS_MEMBER_CAPABILITIES,
+        backend_to_stored,
+        resolve_selected_backend,
+        selectable_backends,
+    )
+    from kiro_crew.crewmate_harness import (
+        crewmate_harnesses,
+        crewmate_pin_for,
+        harness_label,
+        pin_remedy,
+    )
+    from kiro_crew.mate_worker import inherited_harness_remedy
+    from kiro_crew.members import is_member_session_key, session_backend_pick
 
     try:
         cfg = KiroCrewConfig.load()
         pin = crewmate_pin_for(cfg, crewmate_for_session(cfg, session_key))
-        if pin is None:
-            return member_text
-        member_route = resolve_selected_backend(cfg.agent.member_acp_backend)
-        remedy = pin_remedy(
-            pin,
-            crewmate_harnesses(cfg),
-            clearing_helps=member_route in ACP_BACKENDS_MEMBER_CAPABILITIES,
-        )
+        if session_backend_pick(session_key) is not None:
+            remedy = "start a new chat on a harness that can"
+        elif pin is not None:
+            member_route = resolve_selected_backend(cfg.agent.member_acp_backend)
+            remedy = pin_remedy(
+                pin,
+                crewmate_harnesses(cfg),
+                clearing_helps=member_route in ACP_BACKENDS_MEMBER_CAPABILITIES,
+            )
+        elif is_member_session_key(session_key):
+            remedy = inherited_harness_remedy(cfg, crewmate_harnesses(cfg))
+        else:
+            able = ", ".join(
+                sorted(
+                    harness_label(backend_to_stored(b))
+                    for b in ACP_BACKENDS_MEMBER_CAPABILITIES & selectable_backends()
+                )
+            )
+            remedy = f"in Settings → Agent Harness pick a harness that can ({able})"
     except Exception:  # noqa: BLE001 - the row must still be written
         logger.debug("Reading %s's harness pin failed", session_key, exc_info=True)
         return member_text
     return (
-        "This Bot has saved capabilities, and the harness its chats run on cannot "
+        "This bot has saved capabilities, and the harness its chats run on cannot "
         f"load them; {remedy}, or reset the member's Capabilities page, then start a "
         "new chat."
     )
+
+
+def _chat_harness_name(session_key: str) -> str:
+    """The name of the harness *session_key* runs on, for the tool-limits row.
+
+    Asked of the one selection gate, as the slash-command reader asks it: the
+    session's own pick, else its Bot's pin, else the member route or the default.
+    """
+    from kiro_crew.acp_backends import backend_to_stored
+    from kiro_crew.crewmate_harness import crewmate_backend_pin, harness_label
+    from kiro_crew.members import select_provider_backend, session_backend_pick
+
+    try:
+        cfg = KiroCrewConfig.load()
+        pick = session_backend_pick(session_key)
+        backend = select_provider_backend(
+            session_key,
+            cfg.agent.member_acp_backend,
+            cfg.agent.acp_backend,
+            backend_override=pick,
+            crew_backend=crewmate_backend_pin(cfg, session_key) if pick is None else None,
+        )
+    except Exception:  # noqa: BLE001 - the row must still be written
+        logger.debug("Reading %s's harness failed", session_key, exc_info=True)
+        return "an unknown harness"
+    return harness_label(backend_to_stored(backend))
 
 
 async def _on_error(turn: _ChatTurn, exc) -> None:
@@ -656,10 +703,11 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
     elif (
         isinstance(exc, CapabilityStartupError) and str(exc) == "capability_tool_limits_unsupported"
     ):
+        harness = _chat_harness_name(session_key)
         _err_text = (
             "capability_tool_limits_unsupported: This Bot's saved "
             "capabilities turn off single tools on an MCP server. The backend "
-            "its chats run on (agent.member_acp_backend) cannot turn off single "
+            f"its chats run on ({harness}) cannot turn off single "
             "tools, so they would be on. On the member's Capabilities page, turn "
             "the whole server off or turn those tools back on, then start a new "
             "chat."
@@ -673,7 +721,7 @@ async def _on_error(turn: _ChatTurn, exc) -> None:
         _err_meta.update(
             gn.gateway_notice_meta(
                 gn.GATEWAY_NOTICE_CAPABILITY_TOOL_LIMITS_UNSUPPORTED,
-                setting="agent.member_acp_backend",
+                setting=harness,
             )
         )
     else:

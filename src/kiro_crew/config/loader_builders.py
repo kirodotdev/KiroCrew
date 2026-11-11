@@ -595,7 +595,7 @@ def _note_member_fallback(inherited: str, used: str) -> None:
     logger.warning(
         "agent.acp_backend is %r, which Crew bots cannot run on (no saved spec, dispatch "
         "tools or worker kit there); Crew bot chats and their workers run on %r instead. "
-        "Pin a harness per Crew bot or set agent.member_acp_backend to choose another.",
+        "Pin a harness in a Crew bot's settings to choose another.",
         inherited,
         used,
     )

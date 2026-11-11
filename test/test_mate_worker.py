@@ -534,3 +534,34 @@ def test_the_worker_spec_is_read_by_the_crewmates_member_id(monkeypatch):
     mate_worker.member_worker_spec("Briar")
     mate_worker.member_worker_spec("not-on-the-roster")
     assert seen == ["briar", "not-on-the-roster"]
+
+
+@pytest.mark.parametrize(
+    ("inherited", "backend", "fix"),
+    [
+        (True, "", "or change Settings → Agent Harness"),
+        (
+            False,
+            "deepseek",
+            "or remove the stored agent.member_acp_backend to follow Settings → Agent Harness",
+        ),
+    ],
+)
+def test_worker_refusal_names_pin_and_settings_not_member_field(inherited, backend, fix):
+    """RFC rfc-crewmate-harness-follows-settings Phase 2: an unpinned Bot's refused
+    worker is told to pick a harness in its own settings, or to change Settings ->
+    Agent Harness; a stored ``agent.member_acp_backend`` wins over Settings, so
+    there the fix is removing it. Never "set agent.member_acp_backend"."""
+    from kiro_crew.config.loader_builders import mark_member_backend_inherited
+
+    section = SimpleNamespace(acp_backend="", member_acp_backend=backend, kas_bundle=False)
+    mark_member_backend_inherited(section, inherited)
+    config = SimpleNamespace(agent=section, agents={"pixel": SimpleNamespace(acp_backend="")})
+
+    refusal = mate_worker.worker_kit_backend_refusal(backend, config, "pixel")
+
+    assert refusal is not None
+    assert "in this bot's settings pick a harness that can (" in refusal
+    assert fix in refusal
+    assert "config.json" not in refusal
+    assert "set agent.member_acp_backend" not in refusal.lower()
