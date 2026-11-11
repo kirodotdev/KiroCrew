@@ -36,7 +36,8 @@ class _Backend:
 
     With ``hold_first_cancel`` the first ``session/cancel`` does not end the open turn:
     its answer is still on the way when the next cancel arrives, which ends it. With
-    ``open_tool_call`` a prompt starts that tool call and stays open.
+    ``open_tool_call`` a prompt starts that tool call and stays open. ``frame_age`` is
+    how long ago the session last received a frame, or ``None`` for never.
     """
 
     def __init__(
@@ -60,6 +61,12 @@ class _Backend:
         self._open: int | None = None
         self._next_id = 0
         self.cancel_seen = asyncio.Event()
+        self.frame_age: float | None = None
+
+    def session_activity_at(self, session_id: str) -> float | None:
+        # Computed when the handle reads it, so the age the cut line prints is
+        # ``frame_age`` whatever the turn took.
+        return None if self.frame_age is None else time.monotonic() - self.frame_age
 
     def mark_turn_active(self, session_id: str, active: bool) -> None:
         pass
@@ -180,11 +187,19 @@ async def test_a_turn_cancelled_while_it_closes_the_abandoned_compact_leaves_the
 
 
 @pytest.mark.asyncio
-async def test_a_turn_cut_mid_tool_names_the_open_call_and_the_session(caplog):
+@pytest.mark.parametrize(
+    ("frame_age", "frame_note"),
+    [(None, "no frame"), (3600.0, "last frame 3600s ago")],
+)
+async def test_a_turn_cut_mid_tool_names_the_open_call_the_session_and_the_last_frame(
+    caplog, frame_age, frame_note
+):
     """The next prompt clears the open-call map, so the cut is the one moment that can
-    tie a later "prompt already in progress" on this session to the call still running."""
+    tie a later "prompt already in progress" on this session to the call still running.
+    The last frame's age tells a backend still streaming at the cut from a silent one."""
     queue: asyncio.Queue = asyncio.Queue()
     backend = _Backend(queue, compact_ends=True, open_tool_call="tc-write-1")
+    backend.frame_age = frame_age
     handle = AcpSessionHandle("sA", queue, backend, session_key="dashboard:slot-a")
     tool_seen = asyncio.Event()
 
@@ -207,3 +222,4 @@ async def test_a_turn_cut_mid_tool_names_the_open_call_and_the_session(caplog):
     assert "cut before its terminal" in caplog.text
     assert "[session=dashboard:slot-a sid=sA]" in caplog.text
     assert "open tool calls: 'tc-write-1' ('write', open " in caplog.text
+    assert f"s); {frame_note}" in caplog.text
