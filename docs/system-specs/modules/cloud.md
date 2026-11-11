@@ -163,6 +163,18 @@ association overrides the main table even when it has no egress: a subnet bound
 to a local-only table is treated as no-egress (excluded from the main-table
 fallback), so it can't be mistaken for having the main table's egress.
 
+With no default VPC, discovery falls back to the Region's only VPC (none, or two
+or more, is the "no default VPC" error). That pick is the launcher's, not the
+user's, so `discover_network(on_fallback=...)` hands one sentence naming the
+region, the VPC, the subnet and its egress (NAT or internet gateway), saying the
+launch goes on and that a subnet ID picks another network next time, to
+`ec2.deploy(on_network_fallback=...)`'s caller, after discovery and before
+`cloudformation deploy` runs. `kirocrew cloud launch` prints it as an info
+line; the dashboard launch job shows it as the provision step's detail
+(`run_launch` passes the callback only to an engine whose `provision` takes the
+keyword, so downstream provisioners are unchanged) until the step finishes. The
+default-VPC path and `--subnet` say nothing new.
+
 `launch --subnet <subnet-id>` (and the optional Subnet ID field in Settings ›
 Remote Crew › Set up a new one, which reaches the same `ec2.deploy(subnet_id=...)`
 through `launch_engine`) bypasses discovery entirely —

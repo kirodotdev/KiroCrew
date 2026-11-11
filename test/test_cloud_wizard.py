@@ -1028,6 +1028,23 @@ class TestSessionManagerPluginPrereq:
         assert refusal.path in text and refusal.reason in text
 
 
+class TestDeployProgressNetworkNote:
+    def test_a_fallback_network_is_printed(self, monkeypatch, capsys):
+        # `kirocrew cloud launch` prints the VPC it picked by itself.
+        def fake_deploy(*, on_network_fallback=None, **kw):
+            assert on_network_fallback is not None
+            on_network_fallback("No default VPC in us-east-2, so ...")
+            return "result"
+
+        monkeypatch.setattr(wizard.ec2, "deploy", fake_deploy)
+        monkeypatch.setattr(wizard, "_stream_progress", lambda worker, *a: worker.join())
+        out = wizard._deploy_with_progress(
+            tag="kc-1", tier=wizard.sizes.default_tier(), profile="dev", region="us-east-2"
+        )
+        assert out == "result"
+        assert "No default VPC in us-east-2, so ..." in capsys.readouterr().out
+
+
 class TestDeployProgressInterrupt:
     def test_ctrl_c_terminates_the_deploy_child(self, monkeypatch):
         # A Ctrl+C on the main (poll) thread must terminate the detached
