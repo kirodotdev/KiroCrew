@@ -49,6 +49,7 @@ SHARED_BINDINGS_CHECKS = (
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "__init__": ("function", False, "51d4cc79ba1f", "client_class"),
     "_add_orphan_steers": ("function", False, "b3c41cdccc27", "client_turn_control"),
+    "_advertised_commands": ("data", False, "", ""),
     "_advertised_model_ids": ("function", False, "6806e867af4e", "client_model_selection"),
     "_agent_env_for_spawn": ("function", False, "8cab7a4db01b", "client_spawn_env"),
     "_agent_turn_gate": ("data", False, "", ""),
@@ -184,6 +185,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_new_session_following_substitution": ("function", True, "44dc9acb7120", "client_start"),
     "_next_req_id": ("function", False, "fa6cfecd5574", "client_transport"),
     "_note_active_run": ("function", False, "87459833bc5c", "client_turn_control"),
+    "_note_advertised_commands": ("function", False, "87459833bc5c", "client_transport"),
     "_note_agent_switched": ("function", False, "d552841f483c", "client_model_selection"),
     "_note_asked_tool_call": ("function", False, "87459833bc5c", "client_tool_events"),
     "_note_background_launch": ("function", False, "87459833bc5c", "client_turn_control"),
@@ -333,6 +335,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_write_response_bounded": ("function", True, "1aa0c9bf750c", "client_transport"),
     "_write_steer_cancel": ("function", True, "b60c5fea256e", "client_turn_control"),
     "acp_config_options": ("property", False, "3b4687b0c546", "client_class"),
+    "advertised_commands": ("function", False, "92d6193dbe19", "client_transport"),
     "agent_version": ("property", False, "bb418bb7ece8", "client_class"),
     "initialize_result": ("property", False, "44dc9acb7120", "client_class"),
     "answer_elicitation": ("function", True, "8ba26aba28fc", "client_elicitation"),

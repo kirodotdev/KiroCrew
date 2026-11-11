@@ -8,6 +8,9 @@ stays in sync with _SLASH_COMMANDS.
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,11 +19,13 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.acp.client import AcpClient
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
     _SLASH_COMMANDS,
     SLASH_COMMAND_DESCRIPTIONS,
 )
+from kiro_crew.providers.acp import AcpProvider
 
 
 @pytest.fixture(autouse=True)
@@ -163,3 +168,121 @@ class TestApiSlashCommands:
         """Only a backend that runs its own commands gets the claude list."""
         names = {item["name"] for item in await _get("acp", backend)}
         assert not names & {"/init", "/review", "/security-review"}
+
+
+# The frame claude-agent-acp 0.94.0 sends right after ``session/new`` (a live capture
+# in a throwaway project holding one command and one skill), cut to five of its rows:
+# the project command and skill, and three built-ins.
+_ADVERTISED = {
+    "jsonrpc": "2.0",
+    "method": "session/update",
+    "params": {
+        "sessionId": "claude-session-1",
+        "update": {
+            "sessionUpdate": "available_commands_update",
+            "availableCommands": [
+                {
+                    "name": "release-notes-draft",
+                    "description": "Draft a two-line release note from a change summary (project)",
+                    "input": None,
+                },
+                {
+                    "name": "greet-team",
+                    "description": "Say hello to the team in one line (project)",
+                    "input": {"hint": "team name"},
+                },
+                {
+                    "name": "compact",
+                    "description": "Free up context by summarizing the conversation so far",
+                    "input": {"hint": "<optional custom summarization instructions>"},
+                },
+                {"name": "goal", "description": "Set a goal", "input": None},
+                {"name": "mcp", "description": "Show the MCP servers", "input": None},
+            ],
+        },
+    },
+}
+
+
+async def _provider_after_frame(backend: str = "claude", frame: dict = _ADVERTISED) -> AcpProvider:
+    """An ``AcpProvider`` whose client read *frame* off its stdout."""
+    client = AcpClient(acp_backend=backend)
+    reader = asyncio.StreamReader()
+    reader.feed_data((json.dumps(frame) + "\n").encode())
+    client._process = SimpleNamespace(stdout=reader, returncode=None)
+    client._session_id = "claude-session-1"
+    assert await client._read_message() is not None
+    provider = AcpProvider.__new__(AcpProvider)
+    provider._client = client
+    return provider
+
+
+async def _get_for_slot(provider: AcpProvider, query: str = "?slot=s1", app: str = ""):
+    """GET the claude menu with one live slot ``s1`` whose session runs *provider*."""
+    asked: list[str] = []
+
+    def get_provider(key: str):
+        asked.append(key)
+        return provider
+
+    @web.middleware
+    async def as_app(request, handler):
+        if app:
+            request["app"] = app
+        return await handler(request)
+
+    application = _make_app()
+    application.middlewares.append(as_app)
+    application["state"] = SimpleNamespace(
+        _slots={"s1": SimpleNamespace(key="s1", linked_session_key="", _app="")},
+        sessions=SimpleNamespace(get_provider=get_provider),
+    )
+    with patch(
+        "kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load",
+        return_value=_fake_config("acp", "claude"),
+    ):
+        async with TestClient(TestServer(application)) as client:
+            resp = await client.get("/api/slash-commands" + query)
+            assert resp.status == 200
+            return await resp.json(), asked
+
+
+class TestSessionAdvertisedCommands:
+    @pytest.mark.asyncio
+    async def test_a_claude_chat_lists_what_its_session_advertised(self):
+        payload, asked = await _get_for_slot(await _provider_after_frame())
+        by_name = {item["name"]: item["description"] for item in payload}
+
+        assert asked == ["dashboard:s1"]
+        assert by_name["/greet-team"] == "Say hello to the team in one line (project)"
+        assert "/release-notes-draft" in by_name
+        # A name the dashboard lists or answers first keeps the dashboard's row.
+        assert by_name["/compact"] == SLASH_COMMAND_DESCRIPTIONS["/compact"]
+        assert by_name["/goal"] == SLASH_COMMAND_DESCRIPTIONS["/goal"]
+        assert "/mcp" not in by_name
+        assert len(payload) == len(by_name)
+
+    @pytest.mark.asyncio
+    async def test_an_advertised_description_reaches_the_menu_scrubbed(self):
+        token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        frame = copy.deepcopy(_ADVERTISED)
+        frame["params"]["update"]["availableCommands"][1]["description"] = f"Post with {token}"
+        payload, _ = await _get_for_slot(await _provider_after_frame(frame=frame))
+        description = {item["name"]: item["description"] for item in payload}["/greet-team"]
+
+        assert token not in description
+        assert description.startswith("Post with ")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["no slot", "replaced session", "foreign app", "kiro"])
+    async def test_the_list_stays_with_its_own_session(self, case):
+        provider = await _provider_after_frame("" if case == "kiro" else "claude")
+        if case == "replaced session":
+            provider._client._session_id = "claude-session-2"
+        payload, _ = await _get_for_slot(
+            provider,
+            query="" if case == "no slot" else "?slot=s1",
+            app="other-app" if case == "foreign app" else "",
+        )
+
+        assert not {item["name"] for item in payload} & {"/greet-team", "/release-notes-draft"}

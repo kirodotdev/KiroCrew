@@ -89,9 +89,11 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the
     // weakest initiator would otherwise decide whether the promise is bounded.
-    slashCommands: (signal?: AbortSignal) =>
+    /** `slot` adds what that chat's own session advertised (claude's project
+     *  and user commands and skills). */
+    slashCommands: (signal?: AbortSignal, slot?: string) =>
       withDeadline(SLASH_COMMANDS_TIMEOUT_MS, signal, s =>
-        fetch('/api/slash-commands', { signal: s }).then(j)),
+        fetch('/api/slash-commands' + (slot ? '?slot=' + encodeURIComponent(slot) : ''), { signal: s }).then(j)),
     /** `kind` names the namespace the user picked from. Omitted, the backend
      *  keeps its legacy name-first resolution; stated, a same-name template and
      *  member are told apart and an unresolvable choice is refused (409) rather

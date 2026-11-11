@@ -945,14 +945,33 @@ auto-link opens a thread for it; only a kiro-cli command name (or a word the
 `test/test_claude_slash_forwarding.py`.
 
 The `/` menu (`GET /api/slash-commands`) follows the same capability, read for
-the configured `agent.acp_backend` because that endpoint has no session key: where
+the configured `agent.acp_backend` even when the request names a chat: where
 `runs_own_slash_commands` holds it lists Claude Code's commands (`/compact`,
 `/clear`, `/context`, `/help`, `/init`, `/review`, `/security-review`, `/todos`,
 `/usage`) and the dashboard's own ones above, minus the blocked set, never kiro-cli's
 `/hooks`, `/code`, `/experiment`, `/logdump`, `/changelog` or `/tools`. The user's
-opted-in saved prompts join either list. Project
-commands and skills are not listed: nothing records the adapter's
-`available_commands_update` yet. Pinned by `test/test_api_slash_commands.py`.
+opted-in saved prompts join either list.
+
+The composer also names its chat (`?slot=`), and the menu then adds what that chat's
+live claude session advertised: the transport keeps the session's last
+`available_commands_update` (`LLMProvider.advertised_commands`, recorded for
+`ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS` only), so the project and user
+`.claude/commands` files and skills appear with the adapter's own description, both
+strings scrubbed like every other one the harness reports back (`_scrub_observed`:
+credentials and exfiltration URLs). Each update replaces the list, and it is tied to
+its session id, so a `new_conversation` on the same process starts empty. A name the list above already carries keeps the
+dashboard's row; one the dashboard answers first (`_DASHBOARD_SERVED_SLASH_COMMANDS`),
+blocks, or expands as a quick or saved prompt is left out. No slot, a slot an app
+caller may not read as its own session, no live session, or no update yet: the list
+above alone. What a typed command runs does not change. A live capture of
+claude-agent-acp 0.94.0 sends the first update right after the `session/new` answer
+and a second, with the terminal-only commands (`/color`, `/doctor`, `/focus`,
+`/reload-plugins` on that release) removed, after the first `session/prompt` goes
+out; a session started before its first message lists those four until then, a known
+gap. The capture is not in the corpus:
+`scripts/check_acp_frame_host_data.py` refuses a command inventory in a fixture, so
+the test builds the frame from five of its rows. Pinned by
+`test/test_api_slash_commands.py`.
 
 ### A tool-less session
 
