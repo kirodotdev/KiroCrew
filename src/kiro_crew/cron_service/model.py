@@ -40,6 +40,25 @@ _NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
 _ALERT_AFTER_DEFAULT = 1
 
 
+def parked_by_its_run(kind: object, user_paused: object, last_run_ts: object) -> bool:
+    """Whether a paused job is a one-shot its own run parked, not a pause the user made.
+
+    A fired ``at`` job that keeps its row is stored as ``enabled`` False and
+    ``user_paused`` True, the same flags a user pause writes
+    (:func:`~kiro_crew.cron_service.execution.run_parks_one_shot`). Every run
+    stamps ``last_run_ts`` before it ends, so a paused one-shot that has one ran
+    and was parked by that run. Health readers count it, so a failed one-shot is
+    not hidden as a user pause.
+
+    shortcut: a one-shot the user resumed after its run and paused again before
+    it fired again also reads as parked, so its earlier result still counts.
+    Upgrade to a persisted park marker if that case matters.
+    """
+    if kind != "at" or user_paused is not True:
+        return False
+    return not isinstance(last_run_ts, bool) and isinstance(last_run_ts, (int, float))
+
+
 def _lifts_default_pause(limit: object) -> bool:
     """Whether *limit* lets a job keep failing past the default limit (0 or above it)."""
     if isinstance(limit, bool) or not isinstance(limit, int):

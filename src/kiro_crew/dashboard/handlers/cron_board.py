@@ -73,6 +73,7 @@ async def api_crons(request: web.Request) -> web.Response:
         get_local_tz,
         job_zone_name,
     )
+    from kiro_crew.cron_service.model import parked_by_its_run
     from kiro_crew.cron_service.schedule import backoff_delaying_next_run
     from kiro_crew.host_timezone import published_host_timezone
 
@@ -174,6 +175,11 @@ async def api_crons(request: web.Request) -> web.Response:
                 # consecutive failures is the WORST one, which `unhealthy_jobs_from_disk`
                 # already treats that way by skipping only user pauses.
                 "user_paused": j.user_paused,
+                # A fired one-shot is parked with the user-pause flags. This says
+                # the park is its run's, so a failed one-shot stays a health signal.
+                "parked_after_run": parked_by_its_run(
+                    j.schedule.kind, j.user_paused, j.last_run_ts
+                ),
                 "agent": _r(j.agent_id or "") or None,
                 "member_id": j.member_id or None,
                 "memory_store": j.memory_store or None,

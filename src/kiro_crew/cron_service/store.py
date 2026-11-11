@@ -33,6 +33,7 @@ from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_THRESHOLD,
     CronJob,
     CronSchedule,
+    parked_by_its_run,
 )
 from kiro_crew.cron_service.zone_default_migration import (
     _LEGACY_DEFAULT_ZONE,
@@ -169,6 +170,13 @@ def _record_user_paused(j: dict[str, Any]) -> bool:
     existed. Every reader routes through here so the derivation has one owner.
     """
     return bool(j.get("user_paused", not j.get("enabled", True)))
+
+
+def _record_parked_by_run(j: dict[str, Any]) -> bool:
+    """:func:`parked_by_its_run` for a serialized job: a fired one-shot's park, not a user pause."""
+    schedule = j.get("schedule")
+    kind = schedule.get("kind") if isinstance(schedule, dict) else None
+    return parked_by_its_run(kind, _record_user_paused(j), j.get("last_run_ts"))
 
 
 def _record_is_enabled(j: dict[str, Any]) -> bool:
