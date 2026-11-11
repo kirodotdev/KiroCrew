@@ -20557,7 +20557,7 @@
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",
-        "unverified_cloud_note": "{{productName}} はこのクルーに AWS リソースがあるかどうかを確認できません",
+        "unverified_cloud_note": "このクルーを {{productName}} が起動したのか、手動で追加したのかは、ここでは判別できません。削除してもこの一覧から外れるだけで、マシンはそのまま残ります。不要になったマシンは、自分で停止または削除してください。",
         "up_to_warm": "同時に最大 {{n}} 台を待機状態に保ちます",
         "use_my_edits_anyway": "現在の状態のクルーに自分の編集を適用する",
         "your_code": "コード: {{code}}",

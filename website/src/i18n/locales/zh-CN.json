@@ -20557,7 +20557,7 @@
         "type_fargate": "Fargate",
         "type_ssh": "SSH",
         "type_ssm": "SSM",
-        "unverified_cloud_note": "{{productName}} 无法验证这个 Crew 是否有 AWS 资源",
+        "unverified_cloud_note": "{{productName}} 无法在这里判断这个 Crew 是它启动的，还是你自己添加的。移除只会将其从此列表中删除，不会改动这台机器；如果不再需要这台机器，请自己停止或删除它。",
         "up_to_warm": "Up to {{n}} stay warm at once",
         "use_my_edits_anyway": "将我的编辑应用到当前的 Crew 上",
         "your_code": "Your code: {{code}}",
