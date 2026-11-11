@@ -11,6 +11,7 @@ import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft }
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../../../utils/chatSessionRefDrafts'
 import { PREFILL_STORAGE_KEY } from '../../../utils/navIntent'
 import { type PasteBlock, carryPastes, pruneBlocks as pruneBlocksUtil } from '../../../utils/pasteTokens'
+import { onSlotUploadFailureHeld, takeSlotUploadFailure } from '../../../utils/slotUploadFailures'
 import type { SessionRef } from '../../../utils/sessionRefs'
 import type { useKnowledgeFetch } from '../useKnowledgeFetch'
 import type { ComposerStaging } from './composerStaging'
@@ -212,6 +213,10 @@ export function useComposerDraftLifecycle({
   // carried text would be overwritten or sent. Typed text stays in the old
   // session's draft for those, as on main.
   const noCarryCreateIdsRef = useRef<Set<string>>(new Set())
+  // The slot-change effect below puts a failure held for a chat that was off
+  // screen into the upload banner. Taking it removes it, so a same-slot replay
+  // of that effect (StrictMode) reuses this record instead of clearing the banner.
+  const heldFailureRef = useRef<{ slot: string | null; message: string }>({ slot: null, message: '' })
   useEffect(() => {
     if (foregroundCreateId && !noCarryCreateIdsRef.current.has(foregroundCreateId)) {
       createCarryRef.current.set(foregroundCreateId, {
@@ -359,7 +364,9 @@ export function useComposerDraftLifecycle({
       ? (sessionRefDrafts.current[activeSlot] ?? []).map(r => ({ ...r }))
       : [])
     knowledgeFetchRef.current.clearResults()
-    setUploadError('')
+    const heldFailure = takeSlotUploadFailure(activeSlot)
+    if (heldFailure || heldFailureRef.current.slot !== activeSlot) heldFailureRef.current = { slot: activeSlot, message: heldFailure }
+    setUploadError(heldFailureRef.current.message)
     setUploadHint('')
     // A pane-level action failure ("Fork failed", "Could not read …") belongs to
     // the slot it happened in; carried over, it reads as the new slot's.
@@ -370,6 +377,15 @@ export function useComposerDraftLifecycle({
     drafts, fileDrafts, pasteDrafts, sessionRefDrafts, pickedFileTokens, prevSlot, stagedNowRef, lastCreatedActivationRef, inputRef,
     consumedPrefillRef, foregroundCreateIdRef, setPendingFiles, setPasteBlocks, setPendingSessions, knowledgeFetchRef,
     setUploadError, setUploadHint, setActionError, setPrefillHint])
+  // A failure held while this page already shows its chat (a request an earlier
+  // page instance started, settling after the person came back) reports at once.
+  useEffect(() => onSlotUploadFailureHeld(slot => {
+    if (slot !== activeSlot) return
+    const message = takeSlotUploadFailure(slot)
+    if (!message) return
+    heldFailureRef.current = { slot, message }
+    setUploadError(message)
+  }), [activeSlot, setUploadError])
   // Persist drafts on unmount (navigating away from chat page)
   useEffect(() => () => {
     if (saveDraftsTimer.current) { clearTimeout(saveDraftsTimer.current); saveDraftsTimer.current = null }
