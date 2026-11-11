@@ -141,6 +141,7 @@ def _work_ledger(
     """A conductor ledger whose single item is closed (or left open)."""
     item_id = _work_item(conductor)
     if closed:
+        wl.apply_conductor_action(conductor, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(conductor, "close", item_id=item_id, state="accepted")
         path = wl.item_path(conductor, item_id)
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -1257,6 +1258,7 @@ def test_the_newest_closed_at_is_chosen_as_an_instant_not_a_string():
         CONDUCTOR, "create", title="second", acceptance={"kind": "human_approval"}
     )["item"].item_id
     for item_id in (first, second):
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     # Lexically "2026-01-10T09:00:00+02:00" > "2026-01-10T08:30:00-05:00", but
     # 07:00Z is EARLIER than 13:30Z.

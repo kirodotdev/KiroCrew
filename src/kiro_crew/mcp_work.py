@@ -635,7 +635,10 @@ def _base_tool_definitions() -> list[dict[str, Any]]:
                     "state": {
                         "type": "string",
                         "enum": ["accepted", "rejected", "abandoned"],
-                        "description": "close: the terminal disposition.",
+                        "description": (
+                            "close: the terminal disposition; accepted needs a pass "
+                            "verdict recorded first."
+                        ),
                     },
                     "goal": {
                         "type": "string",

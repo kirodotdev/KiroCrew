@@ -56,7 +56,7 @@ def _create_and_close_n(count: int, prefix: str = "t") -> None:
             CONDUCTOR, "create", title=f"{prefix}{index}", acceptance={}
         )
         wl.apply_conductor_action(
-            CONDUCTOR, "close", item_id=made["item"].item_id, state="accepted"
+            CONDUCTOR, "close", item_id=made["item"].item_id, state="abandoned"
         )
 
 
@@ -94,6 +94,8 @@ def test_closing_an_item_frees_a_seat_under_the_concurrency_cap(terminal_state: 
     wl.apply_conductor_action(CONDUCTOR, "goal", goal="g")
     ids = _create_n(6)
     assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
+    if terminal_state == "accepted":
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=ids[0], verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[0], state=terminal_state)
     minted = wl.apply_conductor_action(CONDUCTOR, "create", title="next", acceptance={})
     assert minted["item"].state == "open"
@@ -133,10 +135,10 @@ def test_a_lowered_concurrency_cap_refuses_until_enough_items_land():
     wl.apply_conductor_action(CONDUCTOR, "goal", concurrency_cap=2)
     assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
     for item_id in ids[:2]:
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="abandoned")
     # Two open against a cap of two: still full.
     assert _refused_create().code == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[2], state="accepted")
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[2], state="abandoned")
     wl.apply_conductor_action(CONDUCTOR, "create", title="fits", acceptance={})
 
 
@@ -423,6 +425,8 @@ def test_closed_items_do_not_count_toward_the_item_cap(terminal_state: str):
         wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
     assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
 
+    if terminal_state == "accepted":
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=ids[0], verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[0], state=terminal_state)
     minted = wl.apply_conductor_action(CONDUCTOR, "create", title="next ticket", acceptance={})
     assert minted["item"].state == "open"
@@ -445,6 +449,7 @@ def test_closed_items_stay_on_disk_listed_and_readable_past_the_cap():
         for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
     ]
     for item_id in ids:
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     closed_bytes = {item_id: _bytes_on_disk(item_id) for item_id in ids}
 
@@ -486,7 +491,7 @@ def test_a_board_keeps_dispatching_past_256_lifetime_creates():
         item_id = wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
             "item"
         ].item_id
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="abandoned")
     header = wl.read_conductor(CONDUCTOR)
     assert header is not None and header.created_total == total
     assert len(wl.list_work_items(CONDUCTOR)) == total
