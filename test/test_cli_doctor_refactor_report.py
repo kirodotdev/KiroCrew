@@ -455,7 +455,8 @@ Runtime
   deps:        ✅ websockets, slack_sdk, aiohttp available
   <<_doctor_import_path>>
   sqlite fts5: ✅ available
-  tz data:     ✅ current (America/Vancouver stays UTC-7 in winter)
+  tz data:     ✅ current (IANA tzdb 2026b or later)
+               Sample check on America/Vancouver, not your configured zone.
 
 Vector Memory (in-process embeddings)
   runtime:     ✅ vendored llama-cpp-python importable
