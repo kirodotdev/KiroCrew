@@ -716,12 +716,22 @@ class ContinuationCoordinator(ManagerComponent):
         # both), so it resolves again, as it does for a run still in memory. After
         # a gateway restart the run is gone from memory and state.json holds what
         # the spawn recorded.
+        #
+        # The model and effort, delegation, backend, depth and silence below each
+        # take the live record whole when there is one, and the run's recorded
+        # state.json row otherwise. The five share one fetch of that row, made
+        # here (or taken from the caller's off-loop capture when it passed one)
+        # and only when the live record is absent, so none of them costs a sync
+        # state.json read on the loop for a run still in memory.
+        recorded_row: dict[str, Any] = {}
         if original is not None:
             run_model, run_effort = original.model or "", original.reasoning_effort
         else:
-            recorded = (read_state(conv_id) or {}) if _captured_state is ... else _captured_state
-            run_model = str(recorded.get("pinned_model") or "")
-            run_effort = str(recorded.get("reasoning_effort") or "")
+            recorded_row = (
+                (read_state(conv_id) or {}) if _captured_state is ... else _captured_state
+            )
+            run_model = str(recorded_row.get("pinned_model") or "")
+            run_effort = str(recorded_row.get("reasoning_effort") or "")
         # Effort follows the model (rfc-worker-model-inheritance, rule 4): the
         # run's effort was chosen for the run's model, so a caller who names a
         # model gets that model's own effort resolution instead.
@@ -729,33 +739,17 @@ class ContinuationCoordinator(ManagerComponent):
         if not named_model and run_model:
             model = run_model
         delegation = (
-            original.delegation
-            if original is not None
-            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
-                "delegation", {}
-            )
+            original.delegation if original is not None else recorded_row.get("delegation", {})
         )
         # The conversation lives on the harness its first run started on: a
         # follow-up on another backend could not load it, and would start over.
-        backend = (
-            original.backend
-            if original is not None
-            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
-                "backend"
-            )
-        )
+        backend = original.backend if original is not None else recorded_row.get("backend")
         if not isinstance(backend, str):
             backend = None
         # Another turn of the same run sits at the same place in its tree.
         # Admission keeps the deeper of this and what the parent proves now,
         # so a run whose parent's record is gone cannot restart the count.
-        run_depth = (
-            original.depth
-            if original is not None
-            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
-                "depth"
-            )
-        )
+        run_depth = original.depth if original is not None else recorded_row.get("depth")
         if type(run_depth) is not int:
             run_depth = None
         # Another turn of the same run keeps its silence: a silent cron's kept
@@ -763,14 +757,6 @@ class ContinuationCoordinator(ManagerComponent):
         # the row the spawn recorded), so the chain the admission rule built is
         # not broken by a follow-up turn. A caller's own silent=True still ORs
         # in after the prelude; loud never overrides a silent run.
-        # Lazy like the ``backend``/``depth`` reads above: the durable row is
-        # touched only when the live record is absent, so this prelude never
-        # does a sync state.json read on the loop for a run still in memory.
-        recorded_row = (
-            None
-            if original is not None
-            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state)
-        )
         run_silent = _run_silent(original, recorded_row)
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
