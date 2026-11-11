@@ -374,6 +374,7 @@ def _sanitize_cron_text(
         # Rule 3: anything that EXECUTES arrives paused, awaiting a human.
         if (command or script) and not job.get("user_paused", False):
             job["user_paused"] = True
+            job["user_pause_requested"] = True
             job["enabled"] = False
             changed = True
             paused.append(_name_of(job))
