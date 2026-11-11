@@ -220,13 +220,17 @@ and the answer does not vary by backend.
 
 `kirocrew-guide` is emitted into the default spec (every Bot and dashboard
 session on kiro-cli and KAS mounts it from there; the CC projection carries it like
-any spec entry). It is not part of the control plane, so the codex, opencode and
-goose mirrors withhold it on the same rule they withhold every other managed Crew
-server (a mirror mounts only the two re-derived control-plane entries
-credentialed), and pi and the other no-mirror backends never receive it. Those
-sessions answer where-is and how-to questions without it; `kirocrew doctor`'s
-`mcp tool refs` row names the unprojected `@kirocrew-guide` ref per harness, and
-nothing special-cases its absence.
+any spec entry). It is not part of the control plane, so the codex, copilot,
+deepseek, goose, opencode and strands mirrors withhold it on the same rule they
+withhold every other managed Crew server (a mirror mounts only the two re-derived
+control-plane entries credentialed), and pi and the other no-mirror backends never
+receive it. Those sessions answer where-is and how-to questions without it.
+`kirocrew doctor`'s `mcp tool refs` row names it per harness: a no-mirror backend
+lists it as unprojected, and a mirror that withholds it gets a `⏹ withholds by
+design` row instead of the `⚠` a dropped ref gets.
+`agent_sdk.drivers.acp.mirror_withheld_crew_refs` names those refs: the
+identity-bound Crew servers the shared translation mounts unnarrowed, which is what
+such a mirror leaves out.
 
 Every ACP session mints a per-session TOKEN (`mcp_gateway/claim.py`) and the gateway
 publishes a MAC-signed `token -> session_key` mapping (`session_token_sig.py`) at
