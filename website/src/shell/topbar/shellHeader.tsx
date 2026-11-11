@@ -8,6 +8,7 @@ import { motion } from 'framer-motion'
 import { isWinElectron } from '../../lib/electron'
 import { setNativeBadgeCount } from '../platform/electronBridge'
 import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays'
+import { PackLoaderImage } from '../../pages/chat/PackLoaderImage'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useNotificationSheet, NotificationSheet } from '../notifications/notificationSheet'
@@ -65,10 +66,12 @@ const TOPBAR_PILL_RADIUS = 12
  *  hamburger therefore shows by default and the swap happens on the img's
  *  `load` event, never on an assumption: `loadedSrc` records WHICH src loaded,
  *  so a branding/theme change falls back to the hamburger until the new asset
- *  proves itself, and an `error` clears the record. The img stays mounted
- *  (display:none) while hidden so the browser still fetches it. The hamburger
- *  sits in a w-6 box matching the img, keeping the 40px tap target and the
- *  16px page-gutter alignment identical through the swap. */
+ *  proves itself, and an `error` clears the record. The logo stays mounted
+ *  (display:none) while hidden so the browser still fetches it, and renders
+ *  through PackLoaderImage so an animated pack logo holds its first frame
+ *  under reduced motion. The hamburger sits in a w-6 box matching the logo,
+ *  keeping the 40px tap target and the 16px page-gutter alignment identical
+ *  through the swap. */
 export function MobileNavGlyph({ avatar }: { avatar: string }) {
   const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
   const showLogo = !!avatar && loadedSrc === avatar
@@ -80,7 +83,7 @@ export function MobileNavGlyph({ avatar }: { avatar: string }) {
         </span>
       )}
       {!!avatar && (
-        <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
+        <PackLoaderImage src={avatar} onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
       )}
     </>
   )
