@@ -137,6 +137,24 @@ class TestLoginTargetValidation:
         domain it lives on."""
         assert normalize_start_url(raw) == canonical
 
+    @pytest.mark.parametrize(
+        "raw, reason",
+        [
+            ("https://not_a_host/start", "that does not look like a web address"),
+            ("https://example.awsapps.com:abc/start", "does not look like a web address"),
+            ("http://example.awsapps.com/start", "must begin with https://"),
+            ("https://user@example.awsapps.com/start", "must not include a user name or password"),
+            ("https://example.awsapps.com:8443/start", "must not include a port number"),
+            ("https://example.awsapps.com/start x", "contains a space or a symbol"),
+        ],
+    )
+    def test_refusal_says_what_is_wrong_in_plain_words(self, raw, reason):
+        """The company SSO form shows this reason to the user, so it names the
+        problem in everyday words."""
+        with pytest.raises(LoginTargetError) as info:
+            normalize_start_url(raw)
+        assert reason in str(info.value)
+
     def test_round_trip_and_malformed_persisted_target_is_refused_not_defaulted(self):
         """A persisted target that NAMED an identity but fails validation is
         an error for the caller to handle, never a quiet Builder ID; a file with
