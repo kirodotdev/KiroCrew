@@ -291,7 +291,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
                 variant="inline"
                 message={i18nT('components.updateModal.restart_now_failed')}
                 askAgent
-                onHandoff={() => setDismissed('ready')}
+                onHandoff={() => setDismissed(true)}
                 testId="update-modal-restart-error"
               />
             </div>

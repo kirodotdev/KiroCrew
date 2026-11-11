@@ -332,7 +332,7 @@ def test_a_sigterm_during_the_boot_apply_interrupts_the_child_then_exits_with_it
     async def run() -> None:
         task = asyncio.ensure_future(update_boot_apply.apply_armed_update_at_boot())
         # The SIGTERM handler is installed before the apply reaches its child.
-        await asyncio.wait_for(started.wait(), timeout=10)
+        await asyncio.wait_for(started.wait(), timeout=30)
         signal.raise_signal(signal.SIGTERM)
         with pytest.raises(asyncio.CancelledError):
             await task

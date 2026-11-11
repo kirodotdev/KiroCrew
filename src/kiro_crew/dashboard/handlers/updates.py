@@ -143,6 +143,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import __version__ as _local_version  # noqa: F401
+    from kiro_crew import __version__ as _running_version  # noqa: F401
     from kiro_crew import platform_compat  # noqa: F401
     from kiro_crew import shutdown_event  # noqa: F401
     from kiro_crew import update_next_start  # noqa: F401
