@@ -253,9 +253,10 @@ a port, shell characters) is refused with `invalid_start_url` before AWS is call
 A `400 invalid_request` from `StartDeviceAuthorization` for a company start URL is
 `StartUrlRejectedError` (HTTP 400, not the 502 of an auth-service failure): its
 message says to use the access portal URL when AWS names the start URL
-(`invalid_start_url`), and to check the Region field otherwise, since a portal looked
-up in the wrong region answers a bare `Invalid request`; that answer names neither
-field, so it is `start_url_or_region_rejected`. The dashboard's company SSO form
+(`invalid_start_url`), and otherwise to check the start URL first and then the Region
+field, since a portal that does not exist and a portal looked up in the wrong region
+both answer a bare `Invalid request`; that answer names neither field, so it is
+`start_url_or_region_rejected`. The dashboard's company SSO form
 reads the code, not the text: `invalid_region`, `invalid_start_url` and
 `start_url_or_region_rejected` get a headline naming the Region, the start URL or
 both, and those inputs are marked `aria-invalid` and described by the error; every
