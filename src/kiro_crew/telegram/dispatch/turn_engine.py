@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import runtime_death
 from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
-from kiro_crew.context import session_store_for_turn
+from kiro_crew.context import build_cancelled_turn_preamble, session_store_for_turn
 from kiro_crew.executors import (
     TURN_BUILD_ADMISSION_TIMEOUT_SECS,
     EmbedAdmissionTimeout,
@@ -184,6 +184,17 @@ async def _run_turn(
     # turn consumed the one-shot flag, and whether it landed (recorded success).
     _needs_reinjection = False
     _turn_landed = False
+    # The session this turn took the cancelled-turn flag from, to give it back
+    # if the build is refused before the prompt goes out.
+    _cancelled_from: Any = None
+
+    def _give_back_cancelled_turn() -> None:
+        if (
+            _cancelled_from is not None
+            and getattr(self.sessions, "_sessions", {}).get(session_key) is _cancelled_from
+        ):
+            _cancelled_from.prev_turn_cancelled = True
+
     # The settle call for the tab notices THIS turn's build read, settled in the finally.
     _tab_notices: list[Any] = []
     # The turn's driver, for the finally: it records whether the backend
@@ -339,10 +350,30 @@ async def _run_turn(
         # one-shot flag so this turn re-injects that context exactly once;
         # the finally re-arms it if this turn never lands.
         _needs_reinjection = consume_reinjection(self.sessions, session_key)
+        # The turn a Stop cut off goes in front of the model prompt only, as on
+        # Slack; the transcript keeps ``text``, and the range keeps quick prompts,
+        # image paths and skill triggers on what the person typed.
+        _prompt = text
+        _typed_span: dict[str, Any] = {}
+        _session = getattr(self.sessions, "_sessions", {}).get(session_key)
+        if _session is not None and getattr(_session, "prev_turn_cancelled", False) is True:
+            _session.prev_turn_cancelled = False
+            _cancelled_from = _session
+            if self.ctx_builder.conversation_log:
+                _preamble = await asyncio.to_thread(
+                    build_cancelled_turn_preamble,
+                    self.ctx_builder.conversation_log,
+                    session_key,
+                    newest_request=True,
+                )
+                if _preamble:
+                    _start = len(_preamble) + 2
+                    _prompt = f"{_preamble}\n\n{text}"
+                    _typed_span = {"user_text_range": (_start, _start + len(text))}
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             self.ctx_builder.build_message,
-            text,
+            _prompt,
             is_new,
             session_key,
             channel_id=channel_id,
@@ -367,6 +398,7 @@ async def _run_turn(
             user_display_name=getattr(msg, "username", "") or None,
             tab_notices=_tab_notices,
             _admission_timeout=TURN_BUILD_ADMISSION_TIMEOUT_SECS,
+            **_typed_span,
         )
 
         # PreToolUse security gate (channel-neutral, off ctx_builder.hooks):
@@ -626,6 +658,7 @@ async def _run_turn(
         except Exception:
             logger.debug("Telegram: success audit failed", exc_info=True)
     except TurnCeilingExceeded as exc:
+        _give_back_cancelled_turn()  # refused before the prompt went out
         # At the conversation's turn ceiling, so no turn opened. Unlike the
         # shutdown branch below this is NOT spooled -- the spool replays a
         # message our restart dropped, and this one was refused on purpose --
@@ -641,6 +674,7 @@ async def _run_turn(
         logger.warning("Telegram turn ceiling reached for %s -- conversation paused", session_key)
         await turn_ceiling.render_refusal(out_renderer, exc)
     except SessionClosingError:
+        _give_back_cancelled_turn()  # refused before the prompt went out
         # Shutdown began between the claim and the dispatch, so no turn ever
         # opened. Caught ahead of the generic handler so a restart is not
         # charged to the circuit breaker via `record_failure` nor counted as
@@ -699,6 +733,7 @@ async def _run_turn(
             _rearm = getattr(self.sessions, "rearm_first_turn", None)
             if is_new and callable(_rearm):
                 _rearm(session_key, _turn_provider, resumed=resumed)
+            _give_back_cancelled_turn()  # nothing reached the model
         if _acquired:
             # A dying runtime reaches this generic handler as one more
             # exception, so without the attribution question every tenant of

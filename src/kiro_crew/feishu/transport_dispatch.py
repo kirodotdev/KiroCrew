@@ -54,6 +54,7 @@ from kiro_crew.messaging.attachments import (
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_REPLY_ZH,
     COMPACT_TIMED_OUT_REPLY_ZH,
+    arm_cancelled_turn,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     context_recycle_warning_zh,
@@ -542,6 +543,7 @@ class FeishuDispatcher:
                     if outcome in ("acked", "timeout"):
                         # timeout: the cancel WAS written, its ack has not landed.
                         ack = _STOPPING
+                        arm_cancelled_turn(self.sessions, session_key, outcome)
                     elif outcome == "no_turn":
                         # The turn finished between is_busy and the cancel.
                         ack = _NOTHING_RUNNING

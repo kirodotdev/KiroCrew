@@ -40,6 +40,7 @@ from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_REPLY_ZH,
     COMPACT_TIMED_OUT_REPLY_ZH,
+    arm_cancelled_turn,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
     context_recycle_warning_zh,
@@ -806,11 +807,12 @@ class WeComDispatcher:
             await self.client.say(inbound, "⚠️ 当前会话不支持停止，请稍后重试。")
             return
         try:
-            await cancel(wait_ack_timeout=0)
+            outcome = await cancel(wait_ack_timeout=0)
         except Exception:
             logger.warning("WeCom /stop: cancel failed for %s", session_key, exc_info=True)
             await self.client.say(inbound, _STOP_FAILED_TEXT)
             return
+        arm_cancelled_turn(self.sessions, session_key, outcome)
         await self.client.say(inbound, _STOPPED_TEXT)
 
     async def _handle_compact(self, inbound: "WeComInbound") -> None:

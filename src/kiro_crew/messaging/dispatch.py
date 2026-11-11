@@ -131,7 +131,7 @@ from kiro_crew.messaging.turn_bracket import driver_turn_landed  # noqa: F401 (r
 from kiro_crew.messaging.turn_bracket import rearm_reinjection  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import rollback_skill_bodies  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import stop_reason_landed  # noqa: F401 (re-exported)
-from kiro_crew.messaging.turn_bracket import TurnBracket, rearm_first_turn
+from kiro_crew.messaging.turn_bracket import TurnBracket, rearm_first_turn, typed_text_span
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.parent_turns import settle_turn
 from kiro_crew.security import (
@@ -901,6 +901,7 @@ class ChannelTurns:
             # bookkeeping, which would then re-run the new-conversation work --
             # title, dashboard surfacing -- over an existing conversation.
             turn_is_new: bool | None = None
+            cancelled_preamble: str | None = None
             replaying = False
             # One per inbound message, so a replay below does not run
             # UserPromptSubmit again. The operator's hooks run for the operator's
@@ -1058,13 +1059,18 @@ class ChannelTurns:
                 # one-shot flag so this attempt re-injects that context exactly once;
                 # the bracket re-arms it in the finally if the turn never lands.
                 needs_reinjection = bracket.take_reinjection()
+                # The turn a Stop cut off, restored once per message (a replay reuses
+                # it). A wake takes it too, as on the dashboard: the wake's own rows
+                # would otherwise read as the stopped request on the next message.
+                if cancelled_preamble is None:
+                    cancelled_preamble = await bracket.take_cancelled_turn()
                 # This conversation's own silo comes from the session's RECORDED
                 # binding (``memory_store`` above), never from ``agent``: that is a
                 # kiro-cli template id, a namespace disjoint from ``cfg.agents``.
                 # Off-loop: build_message embeds the episodic query (blocking urllib).
                 full_message, _ = await run_in_embed_pool(
                     ctx_builder.build_message,
-                    prompt,
+                    f"{cancelled_preamble}\n\n{prompt}" if cancelled_preamble else prompt,
                     is_new,
                     session_key,
                     channel_id=asker.conversation_id,
@@ -1078,6 +1084,7 @@ class ChannelTurns:
                     user_display_name=asker.display_name,
                     skill_trigger_text=skill_trigger_text,
                     tab_notices=bracket.tab_notices,
+                    **typed_text_span(cancelled_preamble, prompt),
                     # A wake has nobody waiting on it, and a refused one stops its monitor.
                     _admission_timeout=None if monitor else TURN_BUILD_ADMISSION_TIMEOUT_SECS,
                 )
@@ -1251,7 +1258,8 @@ class ChannelTurns:
             turn_new = bool(turn_is_new) and not asker.resumed
             if monitor is not None and not monitor.hook.accepted:
                 # The wake was refused at its own gate: no turn ran, so nothing is
-                # counted, recorded or audited.
+                # counted, recorded or audited, and the stopped turn is still owed.
+                bracket.rearm_cancelled_turn()
                 verdict = Verdict.STALE
                 return self._outcome(verdict, monitor, acquired=True)
             notice = getattr(driver, "empty_turn_notice", "") or ""
@@ -1342,6 +1350,7 @@ class ChannelTurns:
                 stop_reason=stop_reason,
             )
         except _MonitorGenerationChanged:
+            bracket.rearm_cancelled_turn()  # refused before the prompt went out
             logger.info(
                 "%s monitor dispatch refused after generation changed for %s",
                 channel,
@@ -1349,6 +1358,7 @@ class ChannelTurns:
             )
             verdict = Verdict.STALE
         except _SenderNoLongerAdmitted:
+            bracket.rearm_cancelled_turn()  # refused before the prompt went out
             # Admitted on arrival, refused at the pre-stream gate or the provider's
             # prompt gate: nothing was prompted or recorded, and the stand-in is what
             # the ``finally`` closes, because a channel's close sends a placeholder for
@@ -1358,6 +1368,8 @@ class ChannelTurns:
             renderer = SilentRenderer()
             verdict = Verdict.DENIED
         except TurnCeilingExceeded as exc:
+            # Refused before the prompt went out: the stopped turn is still owed.
+            bracket.rearm_cancelled_turn()
             # The conversation is at its turn ceiling, so this turn never opened.
             # Ahead of the shutdown branch below and deliberately unlike it in two
             # ways. It is NOT spooled: the spool exists so a message our own restart
@@ -1378,6 +1390,7 @@ class ChannelTurns:
             await turn_ceiling.render_refusal(renderer, exc)
             verdict = Verdict.CEILING
         except SessionClosingError:
+            bracket.rearm_cancelled_turn()  # refused before the prompt went out
             # The gateway began shutting down between the claim and the dispatch, so
             # this turn never opened. Terminal for the message, but NOT a fault of
             # the session — which is why it is caught ahead of the generic handler
@@ -1436,6 +1449,7 @@ class ChannelTurns:
             verdict = Verdict.MEMORY_REFUSED
             if _acquired and isinstance(exc, EmbedAdmissionTimeout):
                 rearm_first_turn(sessions, session_key, provider, is_new=is_new, resumed=resumed)
+                bracket.rearm_cancelled_turn()
             if monitor is None and not quiet:
                 try:
                     await renderer.on_text_chunk(redact_local_paths(redact(str(exc)))[0][:1000])
