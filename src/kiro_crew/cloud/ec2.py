@@ -374,6 +374,40 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
     )
 
 
+def assert_ami_matches_tier(ami_id: str, tier: sizes.SizeTier, profile: str, region: str) -> None:
+    """Refuse an ``--ami`` built for another architecture than ``tier`` runs.
+
+    The template boots ``CustomAmiId`` on ``tier.instance_type`` as given, so a
+    mismatch fails only at the Instance resource, after the role and instance
+    profile exist. Raises :class:`aws.AWSError` naming both architectures and the
+    sizes that fit the image. A read that fails decides nothing: the launch goes
+    on and CloudFormation judges the image.
+    """
+    try:
+        data = aws.checked_json(
+            ["ec2", "describe-images", "--image-ids", ami_id],
+            profile,
+            region,
+            action="ec2:DescribeImages",
+        )
+    except aws.AWSError as exc:
+        logger.info("could not read the architecture of %s: %s", ami_id, exc)
+        return
+    images = data.get("Images", []) if isinstance(data, dict) else []
+    arch = images[0].get("Architecture", "") if images else ""
+    if arch in ("", tier.arch):
+        return
+    fits = " / ".join(t.key for t in sizes.all_tiers() if t.arch == arch)
+    remedy = f"use an {tier.arch} AMI"
+    if fits:
+        remedy = f"pick an {arch} size (--size {fits}) or an {tier.arch} AMI"
+    raise aws.AWSError(
+        f"AMI {ami_id} is built for {arch}, but the {tier.label} size "
+        f"({tier.instance_type}) runs {tier.arch}: {remedy}, then retry.",
+        action="ec2:DescribeImages",
+    )
+
+
 def discover_network(profile: str, region: str, instance_type: str = "") -> tuple[str, str, str]:
     """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
 

@@ -520,6 +520,14 @@ def launch(
             f"~${tier.approx_usd_per_hr:.2f}/hr · "
             f"~${sizes.monthly_estimate(tier):.0f}/mo if left running (approx)"
         )
+        # An image of the other architecture fails only at the Instance resource,
+        # after the role exists; refuse it before anything is asked or created.
+        if ami_id:
+            try:
+                ec2.assert_ami_matches_tier(ami_id, tier, profile, region)
+            except AWSError as exc:
+                ui.fail(str(exc))
+                return 1
 
         # The stack is created in whatever account the aws CLI resolves, which
         # can be a different account than the user expects (a shell left
