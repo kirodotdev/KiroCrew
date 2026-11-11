@@ -871,8 +871,9 @@ def _search_rg(root: Path, query: str, include: str, exclude: str, executable: s
     # and an explicit search rooted AT one of these folders (root != $HOME, so
     # the set below is empty) is still searched in full. Kept in lockstep with
     # the ``_search_python`` fallback so both engines return the same results.
-    # The set includes ``Library``, so iCloud Drive (``Mobile Documents``) and the
-    # cloud-drive mounts under it are skipped too, as in platform_compat's walk.
+    # (Only the six top-level folders are excluded, not the ~/Library allowlist
+    # that platform_compat applies to os.walk: ripgrep cannot re-include a subdir
+    # of an excluded dir without flipping its whole glob set into allowlist mode.)
     for name in platform_compat.tcc_protected_dirs_for_walk(root):
         cmd += ["--glob", f"!/{name}"]
     # The query goes on stdin, not argv: other accounts on the host can read a
