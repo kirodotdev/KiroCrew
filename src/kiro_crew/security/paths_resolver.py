@@ -22,6 +22,7 @@ import contextlib
 import logging
 import os
 import platform
+import posixpath
 import re
 import threading
 import time
@@ -709,6 +710,20 @@ _WIN_LOCAL_NS_RE = re.compile(r"^(?:[\\/]{2}[?.]|\\\?\?)[\\/](?=[A-Za-z]:(?:[\\/
 _WIN_DEFAULT_STREAM_RE = re.compile(
     r"(?:::\$DATA|::\$INDEX_ALLOCATION|:\$I30:\$INDEX_ALLOCATION)$", re.IGNORECASE
 )
+
+
+# kiro-cli's expansion: ``$VAR``/``${VAR}`` only, whatever OS this host runs.
+_tool_expandvars = posixpath.expandvars
+
+
+def _expanded_spellings(path_str: str) -> list[str]:
+    """*path_str* with ``~`` and variables expanded as the tool does, then as this host does.
+
+    kiro-cli keeps a ``%VAR%`` literal; Windows ``expandvars`` expands it. Gates judge both.
+    """
+    tool = os.path.expanduser(_tool_expandvars(path_str))
+    host = os.path.expanduser(os.path.expandvars(path_str))
+    return [tool] if host == tool else [tool, host]
 
 
 def _fold_windows_alias(path: str) -> str:

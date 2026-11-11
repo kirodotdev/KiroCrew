@@ -1,0 +1,2 @@
++25
+The path gates also judge a Windows %VAR% as the literal kiro-cli writes, not only as expanded (_expanded_spellings), and the facade names the helpers it forwards.
