@@ -701,6 +701,15 @@ test("the policy source reads a provider pin from the policy file, and a file it
   assert.strictEqual(read(), "governed");
   files.set("/h/security_policy.json", JSON.stringify({ updates: { platform_commands: { linux: { check_command: "pkg check" } } } }));
   assert.strictEqual(read(), "governed");
+  files.set("/h/security_policy.json", JSON.stringify({ distribution: { source: "https://policy.example/p.json" } }));
+  assert.strictEqual(read(), "unknown", "a file that declares a distribution source");
+  files.set("/h/security_policy.json", JSON.stringify({ distribution: { source: "  " } }));
+  assert.strictEqual(read(), "ungoverned", "an empty distribution source names nothing");
+  files.delete("/h/security_policy.json");
+  for (const name of ["KIROCREW_POLICY_URL", "KIROCREW_SECURITY_POLICY"]) {
+    assert.strictEqual(readPolicyGovernance({ home: "/h", fs, path: path.posix, env: { [name]: "x" } }), "unknown", name);
+    assert.strictEqual(readPolicyGovernance({ home: "/h", fs, path: path.posix, env: { [name]: "" } }), "ungoverned", `${name} empty`);
+  }
   files.set("/h/security_policy.json", "{ not json");
   assert.strictEqual(read(), "unknown");
   files.set("/h/security_policy.json", Object.assign(new Error("denied"), { code: "EACCES" }));
