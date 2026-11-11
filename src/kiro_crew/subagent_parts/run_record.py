@@ -70,17 +70,18 @@ class _BareStateView(MutableMapping[str, Any]):
 
 
 class _DoneFlag:
-    """``SubagentInfo.done``: a plain bool whose first True wakes :func:`wait_done`.
+    """Write hook for ``SubagentInfo.done``: a write of True wakes :func:`wait_done`.
 
-    Every ending flips this one field (the run loop, a stop, the reaper, a
-    refusal), so the wake-up lives on the field and no flip site can miss it.
+    Every ending writes this one field (the run loop, a stop, the reaper, a
+    refusal), so the wake-up rides the write and no flip site can miss it.
+
+    It defines ``__set__`` and, on purpose, no ``__get__``. A class attribute
+    without ``__get__`` cannot intercept a read: Python serves ``info.done``
+    straight from the instance, as it does for any plain field. Admission reads
+    ``done`` for every registered run on every admission, so a ``__get__`` here
+    would be a Python call tens of millions of times in a wide fan-out, while
+    the write happens once per run.
     """
-
-    def __get__(self, info: SubagentInfo | None, owner: type | None = None) -> bool:
-        if info is None:
-            return False  # the dataclass default
-        value: bool = info.__dict__.get("done", False)
-        return value
 
     def __set__(self, info: SubagentInfo, value: bool) -> None:
         info.__dict__["done"] = value
@@ -97,7 +98,7 @@ class SubagentInfo:
     id: str
     task: str
     started: float = field(default_factory=time.time)
-    done: _DoneFlag = _DoneFlag()
+    done: bool = False
     # True for work accepted behind the stagger/concurrency gate but never
     # started. The record returned by ``spawn`` is normally not registered in
     # ``_agents``; a queued stop registers a synthetic copy temporarily so batch
@@ -752,8 +753,8 @@ class SubagentInfo:
     # None while the run holds its slot.
     _resume_event: Any = None
     _wait_failed: str = ""
-    # One wake-up per caller waiting in ``wait_done``; the flip of ``done`` calls
-    # each. Empty except during such a wait.
+    # One wake-up per caller waiting in ``wait_done``; a write of a true ``done``
+    # calls each (``_DoneFlag``). Empty except during such a wait.
     _done_wakers: list[Callable[[], None]] = field(default_factory=list, repr=False, compare=False)
     # The wake-up for a start released from the spawn-approval prompt and
     # waiting to be metered into startup by the pump (``_admit_released_start``).
@@ -830,6 +831,11 @@ class SubagentInfo:
         return self.ending.coarse
 
 
+# Installed once the dataclass is built, so the field keeps its ``False`` default
+# and its ``bool`` type; the class attribute is the write hook from here on.
+SubagentInfo.done = _DoneFlag()  # type: ignore[assignment]
+
+
 # Callback: (subagent_info) -> None
 AnnounceCallback = Callable[[SubagentInfo], Awaitable[None]]
 
@@ -837,8 +843,8 @@ AnnounceCallback = Callable[[SubagentInfo], Awaitable[None]]
 async def wait_done(info: SubagentInfo, timeout: float) -> bool:
     """Wait up to *timeout* seconds for *info* to end; True once it has.
 
-    Woken by the flip of ``done`` itself, whichever path and thread makes it, so
-    a caller waiting for a run to end needs no poll interval of its own.
+    Woken by the write that flips ``done``, whichever path and thread makes it,
+    so a caller waiting for a run to end needs no poll interval of its own.
     """
     ended = asyncio.Event()
     loop = asyncio.get_running_loop()

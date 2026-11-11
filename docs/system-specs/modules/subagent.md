@@ -2502,7 +2502,7 @@ class SubagentInfo:
     id: str               # 16-char hex run id (see _RUN_ID_HEX_CHARS)
     task: str             # original task text
     started: float        # time.time() at spawn
-    done: bool            # True when finished (success or error); its first True wakes wait_done()
+    done: bool            # True when finished (success or error); a plain field, and writing True wakes wait_done()
     result: str           # LLM response text (trimmed to completion_keep for the event)
     result_path: str      # ~/.kiro/crew/subagents/<id>/result.txt (full transcript)
     result_truncated: bool  # completion copy dropped content → event carries summary+path
@@ -4857,12 +4857,17 @@ or the bound passes, then answers exactly as a plain read does; for such a run
 a value that is not a finite, non-negative number is a `400` coded
 `invalid_wait_secs`. A run with no live record (queued, or read from disk) and
 a finished run are answered at once, whatever `wait_secs` says, as `/resume`
-answers a run it does not hold. The wake-up has ONE owner: `SubagentInfo.done` is a field
-whose first write of True calls the run's waiters (`_DoneFlag`,
+answers a run it does not hold. The wake-up has ONE owner: a write of True to
+`SubagentInfo.done` calls the run's waiters (`_DoneFlag.__set__`,
 `subagent_parts/run_record.py`), and the route waits through `wait_done(info,
 timeout)`. Every ending writes that field (the run loop, a stop, the reaper, a
 refusal, on whichever thread), so no flip site signals anything itself and a new
-one cannot forget to. The hold comes before the handler's `done` read, so that
+one cannot forget to. The wake-up is on the write, which happens once per run,
+and never on the read: admission reads `done` for every registered run on every
+admission (`_live_run_ids`, the fairness scans, `_startup_population`). So
+`_DoneFlag` defines `__set__` and no `__get__`: the value lives on the instance,
+a read is served from there and runs no code, and no other field's write is
+touched. `test/test_subagent_done_flag_read.py` pins all three by counting calls. The hold comes before the handler's `done` read, so that
 read still shares a step with the parent-turn read beside it. A caller that waits
 for a run (`spawn_sub_agents`, a blocking `kirocrew spawn run`) uses this read
 instead of an interval of its own, and keeps its interval only for a read that
