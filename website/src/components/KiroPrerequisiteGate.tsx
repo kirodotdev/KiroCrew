@@ -162,6 +162,12 @@ function rememberedSetupComplete(): boolean {
   return safeGetItem(SETUP_COMPLETE_KEY) === '1'
 }
 
+// The status read was refused for a lapsed dashboard sign-in, not by a proxy.
+// `isAuthExpiredError` inline: the gate's suites mock api/client wholesale.
+function dashboardSignInLapsed(error: unknown): boolean {
+  return error instanceof ApiError && error.authRequired && !error.edgeChallenge
+}
+
 function SetupStatusError({
   message,
   retrying,
@@ -1551,6 +1557,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     return <>{children}{extra}</>
   }
   if (statusQuery.isPending) {
+    // A browser that never finished setup gets the sign-in screen as soon as a
+    // first attempt is refused for its dashboard sign-in, not after the retry:
+    // an app mounted meanwhile paints every read it starts failing the same
+    // way. A retry that passes (a repaired cookie) still replaces this screen.
+    if (!rememberedSetupComplete() && dashboardSignInLapsed(statusQuery.failureReason)) {
+      return <SessionSignInRequired />
+    }
     return app()
   }
   const retrying = statusQuery.isFetching
@@ -1641,9 +1654,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       return app()
     }
     // A check refused for a lapsed dashboard sign-in says nothing about Kiro CLI.
-    // `isAuthExpiredError` inline: the gate's suites mock api/client wholesale.
-    const error = statusQuery.error
-    if (error instanceof ApiError && error.authRequired && !error.edgeChallenge) {
+    if (dashboardSignInLapsed(statusQuery.error)) {
       return <SessionSignInRequired />
     }
     const message = statusQuery.isError
