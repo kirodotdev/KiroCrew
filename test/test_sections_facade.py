@@ -59,11 +59,12 @@ _BASE_IMPORTS = frozenset("""
     _DEFAULT_SPAWN_MIN_MEMORY_GB _DEFAULT_SSH_COMPRESSION _DEFAULT_SUBAGENT_COST_GB
     _DEFAULT_SUBAGENT_MAX_TURNS _DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS _DEFAULT_TUNNEL_BASE_PORT
     _DEFAULT_WARM_SET_CAP _MAX_RECOVERY_CEILING _MINT_TIMEOUT_CEILING _MINT_TIMEOUT_FLOOR
-    _OBSERVED_DEGRADED_SECTIONS _RECOVER_BACKOFF_CEILING _STT_CATALOG _STT_CUSTOM_MODEL
+    _OBSERVED_DEGRADED_SECTIONS _OPENAI_MODEL_UNSET _RECOVER_BACKOFF_CEILING _STT_CATALOG _STT_CUSTOM_MODEL
     _STT_DEFAULT_IDLE_EVICT_SECS _STT_DEFAULT_MODEL _STT_DEFAULT_PARTIAL_INTERVAL_MS
-    _STT_DEFAULT_SILENCE_MS _STT_MAX_THREADS _STT_THREADS_AUTO _SUBAGENT_TIMEOUT_MAX _SUBAGENT_TIMEOUT_MIN _SUBAGENT_TIMEOUT_SECS
+    _STT_DEFAULT_SILENCE_MS _STT_MAX_THREADS _STT_PROVIDER_OPENAI_COMPATIBLE _STT_THREADS_AUTO
+    _SUBAGENT_TIMEOUT_MAX _SUBAGENT_TIMEOUT_MIN _SUBAGENT_TIMEOUT_SECS
     _WARM_SET_CAP_AUTO _coerce_embedding_provider _coerce_int _declared_fields _is_invisible
-    _meta _os _parse_stt_threads _port_or_unset _re _read_auto_add_documents _resolve_stt_model _resolve_stub_base
+    _meta _openai_model_name _os _parse_stt_threads _port_or_unset _re _read_auto_add_documents _resolve_stt_model _resolve_stub_base
     _resolve_stub_overrides _resolve_stub_roster _resolve_stub_servers _safe_bool _safe_color
     _safe_dict _safe_float _safe_int _safe_list _safe_nonnegative_int _safe_pack_id
     _unicodedata _urlsplit _valid_stt_custom_path _valid_stt_custom_sha256 dataclass field
@@ -160,7 +161,11 @@ def test_the_facade_binds_every_owner_name_but_a_rebound_global() -> None:
     would keep the old value after the owner replaced it. Every other owner-defined
     name is bound here, so the namespace reads as it did before the split."""
     rebound = {name for owner in _OWNERS for name in _rebound_by(owner)}
-    assert rebound == {"_LAST_WARNED_TRANSCRIBE_LANGUAGES", "_LAST_WARNED_TRANSCRIBE_VOCABULARY"}
+    assert rebound == {
+        "_LAST_WARNED_OPENAI_MODEL",
+        "_LAST_WARNED_TRANSCRIBE_LANGUAGES",
+        "_LAST_WARNED_TRANSCRIBE_VOCABULARY",
+    }
     assert set(_index().exports) == rebound
     defined = {name for owner in _OWNERS for name in _defined_by(owner)}
     assert sorted(defined - rebound - set(vars(sections))) == []

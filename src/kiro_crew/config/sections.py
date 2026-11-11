@@ -484,11 +484,13 @@ from kiro_crew.config.sections_stt import (  # noqa: F401
     _validated_stt_custom_path,
     _validated_stt_custom_sha256,
     _validated_stt_model,
+    _validated_stt_openai_model,
     _validated_stt_provider,
     _validated_stt_threads,
     _validated_transcribe_languages,
     _validated_transcribe_vocabulary,
     default_stt_provider,
+    stt_provider_detects_language,
     stt_provider_is_coerced,
     stt_provider_resolution,
     transcribe_language_options,
@@ -553,6 +555,9 @@ from kiro_crew.stt.models import DEFAULT_MODEL as _STT_DEFAULT_MODEL
 from kiro_crew.stt.models import resolve as _resolve_stt_model
 from kiro_crew.stt.models import valid_custom_path as _valid_stt_custom_path
 from kiro_crew.stt.models import valid_custom_sha256 as _valid_stt_custom_sha256
+from kiro_crew.stt.openai_compat import OPENAI_MODEL_UNSET as _OPENAI_MODEL_UNSET
+from kiro_crew.stt.openai_compat import PROVIDER as _STT_PROVIDER_OPENAI_COMPATIBLE
+from kiro_crew.stt.openai_compat import openai_model_name as _openai_model_name
 
 # Stdlib-only leaf: the one table of code points that render as nothing, shared
 # with the terminal and scanner paths so the bot-name filter does not keep a copy.
@@ -607,6 +612,7 @@ __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.sta
 
 if TYPE_CHECKING:  # the owner-defined names this module serves, for type checkers
     from kiro_crew.config.sections_stt import (  # noqa: F401
+        _LAST_WARNED_OPENAI_MODEL,
         _LAST_WARNED_TRANSCRIBE_LANGUAGES,
         _LAST_WARNED_TRANSCRIBE_VOCABULARY,
     )
