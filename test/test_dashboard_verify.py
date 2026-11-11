@@ -614,11 +614,28 @@ def test_a_typo_on_a_page_that_loads_a_library_is_still_the_pages_own_error():
         # Words every URL on the two CDNs carries name no library.
         ("ajax", "https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js", False),
         ("npm", "https://cdn.jsdelivr.net/npm/chart.js@4", False),
+        ("libs", "https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js", False),
         ("L", "https://cdn.jsdelivr.net/npm/chart.js@4", False),
     ],
 )
 def test_a_library_url_suggests_the_names_it_defines(name, url, defines):
     assert dashboard_verify._defined_by(name, url) is defines
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("jsyaml", "https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js"),
+        ("jsyaml", "https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js"),
+        ("videojs", "https://cdn.jsdelivr.net/npm/video.js@8/dist/video.min.js"),
+    ],
+)
+def test_a_page_that_stops_at_a_library_named_with_js_is_skipped_not_failed(name, url):
+    """``js`` is filler on its own, but js-yaml defines ``jsyaml`` and video.js ``videojs``."""
+    v = _verdict(_after_a_refused_library(f"ReferenceError: {name} is not defined", urls=(url,)))
+
+    assert (v.status, [e.message for e in v.errors]) == (STATUS_SKIPPED, [])
+    assert f"'{name} is not defined'" in v.reason
 
 
 def test_a_missing_library_that_the_page_caught_and_logged_is_recognised_too():
