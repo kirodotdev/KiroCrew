@@ -244,6 +244,7 @@ from kiro_crew.dashboard.chat_api.session_relaunch import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _STRICT_NATIVE_ACTIONS,
+    _TEAMMATE_DECISIONS,
     _apply_inherited_postures,
     _approval_target_required,
     _deny_approval_mode,
@@ -257,9 +258,11 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _internal_session_approval_refusal,
     _is_deny_override_card,
     _pending_elicitation_ids,
+    _shared_crew_teammate,
     _still_owning,
     _strict_native_owner,
     _sweep_pending_approvals,
+    _teammate_decision_refusal,
     api_chat_mode,
     api_chat_slot_approve,
     apply_approval_mode,

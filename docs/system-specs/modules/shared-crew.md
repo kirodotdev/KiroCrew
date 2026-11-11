@@ -1365,6 +1365,20 @@ or YOLO, the no-request-id path, a channel resolver) or the responder is not a
 verified human (an app token), `person` otherwise, an owner's dashboard click
 included. A record without the field reads as `person`. Approval decision frames ride `broadcast_ws` like approval frames.
 
+A session's own approval card (`POST /api/chat/slots/{slot}/approve`) is decided by
+the owner or by a Shared Crew teammate (`slot_approval._shared_crew_teammate`): a
+team Crew teammate the Kiro relay verified (`routes_identity._relay_teammate`) or a
+collaborator (`collaborators.is_collaborator_request`). Teammates already open and
+run turns in every session, so they decide its tool approvals too, and nobody is a
+teammate while the Shared Crew preview is off. A teammate may approve or reject the
+live card the decide names (`origin: "native"` with its `request_mid`); a decide by
+request id alone answers them 404 `approval_target_required`. The trust verbs, YOLO and a deny-rule override change the
+session's approval mode or are the owner's alone, so they answer a teammate 403
+`owner_only`, and `POST /api/chat/mode` stays owner-only. Each teammate decision,
+admitted or refused, writes an SEL row (source `shared_crew_teammate`) under the
+teammate's subject, and the decision names them as its responder. Any other
+non-owner dashboard session keeps the owner gate's 403.
+
 An agent question belongs to every collaborator. `collaborators.is_collaborator_request`
 admits the owner (`is_owner_dashboard_request`) and a dashboard-user session whose
 verified actor is a person a membership boundary admitted: provenance
