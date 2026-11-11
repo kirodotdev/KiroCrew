@@ -73,6 +73,7 @@ from kiro_crew.config.memory_sections import (
     lesson_origin_gate_mode_from,
     lesson_tier_policy_mode_from,
     member_lesson_dedup_mode_from,
+    relevance_rule_mode_from,
     rule_authority_order_mode_from,
 )
 from kiro_crew.config.sections import (
@@ -357,6 +358,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
         rule_authority_order=rule_authority_order_mode_from(section.get("rule_authority_order")),
         member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
+        relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),

@@ -2734,6 +2734,7 @@
         "lesson_fold": "off",
         "rule_authority_order": "off",
         "member_lesson_dedup": "off",
+        "relevance_rule": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3398,6 +3399,24 @@
       "tags": [],
       "label": "Private Lesson Dedup",
       "help": "Whether a private memory store folds a consolidation lesson into a stored copy of the same rule (same scope and tier, the same text, or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the fold would do. 'enforce' skips a textual copy and retires a new near-copy with a saved revision before a dashboard turn has been given it; turning the flag off restores those rows. Lessons you taught are never folded.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.relevance_rule",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relevance Rule",
+      "help": "Which word matches let past findings, task facts and the activity block (projects, history) into a new session. 'off' (default) keeps today's blocks. 'shadow' keeps today's blocks and only records, in the injection receipt and within fixed size caps, which rows the new rule would add or drop. 'enforce' counts only words of 3 or more letters or digits and two-character pairs of Chinese or Japanese text, and admits a task fact only with the evidence the private store already asks for. The rule block is unchanged and no stored row is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
