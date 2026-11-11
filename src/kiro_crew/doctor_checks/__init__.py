@@ -28,7 +28,8 @@ exit code. The families here hold the rest:
 * :mod:`~kiro_crew.doctor_checks.features` -- vector memory and speech-to-text
 
 The orchestrator imports these when a health report runs (``--bundle`` prints no
-report and imports none of them), so ``import kiro_crew.cli`` never pays for them.
+report and imports ``services``, with the ``render`` helpers it imports, for the gateway
+version its bundle records), so ``import kiro_crew.cli`` never pays for them.
 Because a family loads on that first use, it binds no project module by name but the
 facade and its sibling families: it reads every other one through the facade at call
 time (``cli_doctor.sandbox``), so the moment it loads cannot capture a module a test

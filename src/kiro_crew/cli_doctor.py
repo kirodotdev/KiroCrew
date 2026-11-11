@@ -555,8 +555,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     The order of the sections below IS the report: each section prints as it runs
     and appends to one ``issues`` list, and the closing line and exit status are
     decided from that list alone. The families are imported here, once the
-    ``--bundle`` mode has had its turn, so the ``kiro_crew.cli`` import every command
-    pays never loads them.
+    ``--bundle`` mode has had its turn (it loads ``services``, with the ``render``
+    helpers it imports, for the gateway version its ``versions.txt`` records), so
+    the ``kiro_crew.cli`` import every command pays never loads them.
     """
     print("Kiro Crew Doctor 👻\n")
     issues: list[str] = []
@@ -570,13 +571,16 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # scans printed output.
     if bundle:
         print("Collecting diagnostics bundle (secrets are redacted)...\n")
+        from kiro_crew.doctor_checks import services  # the one family a bundle reads
+
+        alignment = services._bundle_version_alignment()
         # The collector touches the filesystem in several places that can fail for
         # ordinary reasons — an unwritable data home, a plain FILE sitting where
         # `diagnostics/` should be, a full disk. Letting OSError escape prints a
         # traceback at the one moment the user is already trying to report a
         # failure, so fail with a readable message and a nonzero status instead.
         try:
-            result = diagnostics.collect_bundle()
+            result = diagnostics.collect_bundle(version_alignment=alignment)
         except OSError as exc:
             print(f"  ❌ could not write the diagnostics bundle: {exc}")
             print("     Check that ~/.kiro/crew is writable and has free space.")

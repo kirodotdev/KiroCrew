@@ -107,6 +107,24 @@ def test_collect_bundle_redacts_and_zips(tmp_path, monkeypatch):
     assert manifest["note"] == "every message fails"
 
 
+@pytest.mark.parametrize(
+    ("alignment", "line"),
+    [
+        ("aligned (1.2.3)", "version_alignment: aligned (1.2.3)\n"),
+        (None, f"version_alignment: {diagnostics._ALIGNMENT_NOT_CHECKED}\n"),
+    ],
+    ids=["doctor-bundle", "dashboard"],
+)
+def test_versions_txt_records_the_version_alignment(tmp_path, monkeypatch, alignment, line):
+    """The CLI hands its comparison in; the dashboard's in-gateway collector cannot make one."""
+    _isolate(monkeypatch, tmp_path / "home")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out", version_alignment=alignment)
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        assert line in z.read("versions.txt").decode()
+
+
 def test_home_prefixes_collapse_but_system_and_repo_frames_survive(tmp_path, monkeypatch):
     """Only the home/data-home prefix is collapsed to ``~`` in bundle members.
 
