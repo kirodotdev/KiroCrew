@@ -61,7 +61,7 @@
     "send_refused": "La session n’a pas accepté cette réponse.",
     "send_unknown": "La livraison est incertaine. Ta réponse est conservée. Vérifie la session avant de réessayer pour éviter un double envoi.",
     "updated": "Dernière vérification : {{time}}",
-    "panel_load_failed": "Impossible de charger le Tableau de bord. Recharge la page pour réessayer.",
+    "panel_load_failed": "Impossible de charger le Tableau de bord. Vérifie la connexion à la passerelle, puis réessaie.",
     "crewMain": {
       "not_recorded": "non enregistré",
       "unreadable": "n’a pas pu être lu",
@@ -12738,6 +12738,7 @@
         "workflow_runs_load_failed": "Impossible de charger les exécutions de workflow"
       },
       "assistantMessage": {
+        "share_load_failed": "Impossible de charger la fenêtre de partage",
         "applied_to_tasks": "Appliqué aux tâches",
         "copied": "Copié !",
         "copy": "Copier",
@@ -13417,6 +13418,7 @@
         "retry": "Réessayer"
       },
       "toolCallLine": {
+        "answers_load_failed": "Impossible de charger les réponses. Vérifie la connexion à la passerelle, puis réessaie.",
         "diff_truncated": "diff tronqué",
         "edit_count_many": "{{count}} modifications",
         "edit_count_one": "{{count}} modification",
@@ -13836,6 +13838,7 @@
         "export_failed": "Impossible de générer la carte de partage"
       },
       "crewLog": {
+        "tab_load_failed": "Impossible de charger le journal de session. Vérifie la connexion à la passerelle, puis réessaie.",
         "section_status": "État",
         "section_usage": "Utilisation",
         "section_timeline": "Chronologie",
@@ -14120,6 +14123,7 @@
         "outcome_undo": "Pour annuler, demande à {{name}} de remettre le tableau de bord précédent."
       },
       "browserLiveStage": {
+        "stage_load_failed": "Impossible de charger la vue du navigateur de l’agent. Vérifie la connexion à la passerelle, puis réessaie.",
         "bring_back": "Ramener dans le chat",
         "by_you": "Par toi",
         "exit_full_screen": "Quitter le plein écran",
@@ -23232,6 +23236,7 @@
       "startingHeader": "Préparation de {{name}}"
     },
     "remoteFiles": {
+      "panelLoadFailed": "Impossible de charger la vue Fichiers. Vérifie la connexion à la passerelle, puis réessaie.",
       "title": "Fichiers sur {{name}}",
       "refresh": "Actualiser",
       "selectHint": "Sélectionne un fichier pour l’afficher.",
@@ -23281,6 +23286,7 @@
       "stoppedHint": "L’espace de travail démarre avec ton prochain message. Il s’arrête seul après une heure d’inactivité."
     },
     "remoteGit": {
+      "panelLoadFailed": "Impossible de charger la vue Git. Vérifie la connexion à la passerelle, puis réessaie.",
       "title": "Git sur {{name}}",
       "notRepo": "Le répertoire de travail n’est pas un dépôt Git.",
       "changes": "Modifications",

@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, useAppDispatch, type RootState } from '../../store'
 import { clearFocusToolCallId, mcpAppKey } from '../../store/chatSlice'
@@ -11,6 +11,7 @@ import { deriveToolCallTitle, relDisplayPath } from '../../utils/toolCallTitle'
 import { LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight, ChevronDown, AppWindow } from 'lucide-react'
 import { SidePanelGlyph } from '../../components/SidePanelGlyph'
 import ErrorNotice from '../../components/ErrorNotice'
+import { lazyRetry } from '../../components/lazyRetry'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import type { ChatMessage } from '../../types'
 import { ToolDetails } from './ToolDetails'
@@ -50,8 +51,14 @@ import { toolRailColor } from '../../utils/toolRailColor'
 import { useSecondClock } from '../../hooks/useSecondClock'
 import { toolReturned } from '../../utils/toolReturned'
 
-// Lazy so the rarely-shown answers card stays out of the App chunk.
-const AskAnswersResult = lazy(() => import('./AskAnswersCard').then(m => ({ default: m.AskAnswersResult })))
+// Lazy so the rarely-shown answers card stays out of the App chunk. A chunk
+// that fails to load shows one block in the card's place, with Try Again and
+// the hand-off this row's other notices offer.
+const AskAnswersResult = lazyRetry(async () => ({ default: (await import('./AskAnswersCard')).AskAnswersResult }), {
+  layout: 'block',
+  title: () => i18nT('pages.chat.toolCallLine.answers_load_failed'),
+  scope: 'ask-answers-card',
+})
 
 // Stable empties for slots with no per-slot state yet. A fresh `[]` per
 // selector run would change identity every dispatch and defeat the
@@ -1394,7 +1401,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
           ))}
         </div>
       )}
-      {askAnswered && <Suspense fallback={null}><AskAnswersResult output={output} toolCallId={toolCallId} /></Suspense>}
+      {askAnswered && <AskAnswersResult output={output} toolCallId={toolCallId} />}
 
       <StatusRow show={showShellActivity} snap={transcriptHot}>
         {/* ml-5 = the pill's icon (12px) + the pill BUTTON's gap-2 (8px), so

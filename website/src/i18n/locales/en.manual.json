@@ -60,7 +60,7 @@
     "send_refused": "The session did not accept this answer.",
     "send_unknown": "Delivery is uncertain. Your answer is preserved. Check the session before retrying to avoid sending it twice.",
     "updated": "Last checked {{time}}",
-    "panel_load_failed": "Couldn’t load the Dashboard panel. Reload the page to try again.",
+    "panel_load_failed": "The Dashboard panel couldn't load. Check the connection to the gateway, then try again.",
     "crewMain": {
       "not_recorded": "not recorded",
       "unreadable": "could not be read",
@@ -5654,6 +5654,7 @@
         "workflow_runs_load_failed": "Couldn't load the workflow runs"
       },
       "assistantMessage": {
+        "share_load_failed": "Couldn't load the share dialog",
         "speak_message": "Read message aloud",
         "speak": "Read aloud",
         "stop_reading": "Stop reading",
@@ -5920,6 +5921,7 @@
         "expand": "Expand"
       },
       "toolCallLine": {
+        "answers_load_failed": "The answers couldn't load. Check the connection to the gateway, then try again.",
         "diff_truncated": "diff truncated",
         "edit_count_one": "{{count}} edit",
         "edit_count_other": "{{count}} edits",
@@ -6234,6 +6236,7 @@
       "hidden_scratch_folder": "This chat's folder was a temporary folder from an earlier run and can't be opened anymore. The chat now works in the default folder."
       },
       "crewLog": {
+        "tab_load_failed": "The crew log couldn't load. Check the connection to the gateway, then try again.",
         "section_status": "Status",
         "section_usage": "Usage",
         "section_timeline": "Timeline",
@@ -11402,6 +11405,7 @@
       "startingHeader": "Setting up {{name}}"
     },
     "remoteFiles": {
+      "panelLoadFailed": "The Files view couldn't load. Check the connection to the gateway, then try again.",
       "title": "Files on {{name}}",
       "refresh": "Refresh",
       "selectHint": "Select a file to view it.",
@@ -11451,6 +11455,7 @@
       "stoppedHint": "The workspace starts with your next message. It stops on its own after an idle hour."
     },
     "remoteGit": {
+      "panelLoadFailed": "The Git view couldn't load. Check the connection to the gateway, then try again.",
       "title": "Git on {{name}}",
       "notRepo": "The working directory is not a Git repository.",
       "changes": "Changes",

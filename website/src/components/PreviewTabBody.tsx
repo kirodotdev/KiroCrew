@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { Bot, Globe, Undo2 } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
@@ -6,8 +6,18 @@ import { Btn } from './ui'
 import { browserLiveStore, useBrowserLiveSessionTurns } from '../hooks/useBrowserLive'
 import { browserStageStore, useBrowserStage } from '../hooks/useBrowserLive.stage'
 import WebPreviewPanel from './WebPreviewPanel'
+import { lazyRetry } from './lazyRetry'
 
-const BrowserLiveStage = lazy(() => import('../pages/chat/BrowserLiveStage'))
+// A chunk that fails to load shows its notice in the agent view's place, with
+// Try Again, and Local preview stays one click away.
+// No hand-off: the local preview kept mounted beside it can hold an annotation
+// in progress.
+const BrowserLiveStage = lazyRetry(() => import('../pages/chat/BrowserLiveStage'), {
+  layout: 'page',
+  title: () => i18nT('pages.chat.browserLiveStage.stage_load_failed'),
+  scope: 'browser-live-stage',
+  askAgent: false,
+})
 
 /**
  * The side panel's Preview tab, with its two modes.
@@ -81,9 +91,7 @@ export default function PreviewTabBody({ sessionKey, active = true }: { sessionK
         </div>
         {agent && stage && slot && (
           <div className="absolute inset-0">
-            <Suspense fallback={null}>
-              <BrowserLiveStage sessionKey={slot} stage={stage} active={active} />
-            </Suspense>
+            <BrowserLiveStage sessionKey={slot} stage={stage} active={active} />
           </div>
         )}
       </div>

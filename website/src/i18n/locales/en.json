@@ -7609,6 +7609,7 @@
         "outcome_undo": "To undo, ask {{name}} to restore the previous dashboard."
       },
       "browserLiveStage": {
+        "stage_load_failed": "The agent's browser view couldn't load. Check the connection to the gateway, then try again.",
         "bring_back": "Bring back to chat",
         "by_you": "By you",
         "exit_full_screen": "Exit full screen",

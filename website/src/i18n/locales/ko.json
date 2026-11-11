@@ -59,7 +59,7 @@
     "send_refused": "세션이 이 답변을 수락하지 않았습니다.",
     "send_unknown": "전달 여부가 불확실합니다. 답변은 보존됩니다. 중복 전송을 피하려면 재시도 전에 세션을 확인하세요.",
     "updated": "마지막 확인 {{time}}",
-    "panel_load_failed": "대시보드 패널을 불러올 수 없습니다. 페이지를 새로 고쳐 다시 시도하세요.",
+    "panel_load_failed": "대시보드 패널을 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
     "crewMain": {
       "not_recorded": "기록되지 않음",
       "unreadable": "읽을 수 없음",
@@ -12206,6 +12206,7 @@
         "workflow_runs_load_failed": "워크플로 실행을 불러올 수 없습니다"
       },
       "assistantMessage": {
+        "share_load_failed": "공유 대화 상자를 불러오지 못했습니다",
         "applied_to_tasks": "작업에 적용됨",
         "copied": "복사했습니다!",
         "copy": "복사",
@@ -12809,6 +12810,7 @@
         "retry": "다시 시도"
       },
       "toolCallLine": {
+        "answers_load_failed": "답변을 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
         "diff_truncated": "diff가 잘렸습니다",
         "edit_count_other": "편집 {{count}}개",
         "edit_n_of_m": "편집 {{n}}/{{total}}",
@@ -13204,6 +13206,7 @@
         "export_failed": "공유 카드를 만들 수 없습니다"
       },
       "crewLog": {
+        "tab_load_failed": "세션 기록을 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
         "section_status": "상태",
         "section_usage": "사용량",
         "section_timeline": "타임라인",
@@ -13486,6 +13489,7 @@
         "outcome_undo": "되돌리려면 {{name}}에게 이전 대시보드로 되돌려 달라고 해요."
       },
       "browserLiveStage": {
+        "stage_load_failed": "에이전트 브라우저 화면을 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
         "bring_back": "채팅으로 되돌리기",
         "by_you": "내 동작",
         "exit_full_screen": "전체 화면 종료",
@@ -22160,6 +22164,7 @@
       "startingHeader": "{{name}} 준비 중"
     },
     "remoteFiles": {
+      "panelLoadFailed": "파일 보기를 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
       "title": "{{name}}의 파일",
       "refresh": "새로고침",
       "selectHint": "파일을 선택하면 볼 수 있습니다.",
@@ -22209,6 +22214,7 @@
       "stoppedHint": "다음 메시지를 보내면 워크스페이스가 시작됩니다. 한 시간 동안 유휴 상태면 자동으로 중지됩니다."
     },
     "remoteGit": {
+      "panelLoadFailed": "Git 보기를 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
       "title": "{{name}}의 Git",
       "notRepo": "작업 디렉터리가 Git 저장소가 아닙니다.",
       "changes": "변경 사항",

@@ -1,7 +1,8 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import ErrorBoundary from '../../components/ErrorBoundary'
+import { lazyRetry } from '../../components/lazyRetry'
+import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
 import DashboardPreviewLabel from './DashboardPreviewLabel'
 import DashboardPreviewActions, { DashboardPreviewOutcomeNote, usePreviewHandover } from './DashboardPreviewActions'
@@ -9,7 +10,15 @@ import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX } from '.
 import { membersRosterQuery } from '../../api/membersQuery'
 import { dashboardPreviewRef, onDashboardPreviewOpened, type DashboardPreviewTarget } from '../../utils/dashboardPreview'
 
-const CrewDynamicDashboard = lazy(() => import('../members/CrewDynamicDashboard'))
+// A chunk that fails to load shows its notice where the page would be, with
+// Try Again.
+// No hand-off: the side panel's other tabs can hold unsaved file edits.
+const CrewDynamicDashboard = lazyRetry(() => import('../members/CrewDynamicDashboard'), {
+  layout: 'page',
+  title: () => i18nT('pages.membersPage.dashboard_unavailable'),
+  scope: 'dashboard-preview-frame',
+  askAgent: false,
+})
 
 /**
  * A STAGED dashboard, a crewmate's or a root session's, in the chat's side panel.
@@ -70,22 +79,14 @@ export default function DashboardPreviewPanel({ target }: { target: DashboardPre
       )}
       <div className="flex-1 min-h-0 overflow-auto">
         {target.kind === 'session' ? (
-          <ErrorBoundary retryOnly>
-            <Suspense fallback={null}>
-              <CrewDynamicDashboard key={`${target.slot}:${showPreview ? 'preview' : 'live'}`} target={target} displayName={t('commandCenter.title')} {...frameProps} />
-            </Suspense>
-          </ErrorBoundary>
+          <CrewDynamicDashboard key={`${target.slot}:${showPreview ? 'preview' : 'live'}`} target={target} displayName={t('commandCenter.title')} {...frameProps} />
         ) : isError ? (
           // A failed roster read is not "no such crewmate", and a failed refresh is
           // reported even over a cached name. No agent hand-off: it navigates, and the
           // side panel's other tabs can hold unsaved file edits.
           <ErrorNotice className="m-3" message={t('pages.chat.dashboardPreviewPanel.roster_failed')} testId="dashboard-preview-roster-error" />
         ) : row ? (
-          <ErrorBoundary retryOnly>
-            <Suspense fallback={null}>
-              <CrewDynamicDashboard key={`${row.slug}:${showPreview ? 'preview' : 'live'}`} target={{ kind: 'member', slug: row.slug, member: row.name }} displayName={row.name} {...frameProps} />
-            </Suspense>
-          </ErrorBoundary>
+          <CrewDynamicDashboard key={`${row.slug}:${showPreview ? 'preview' : 'live'}`} target={{ kind: 'member', slug: row.slug, member: row.name }} displayName={row.name} {...frameProps} />
         ) : isLoading ? null : (
           <p className="p-4 text-sm text-muted" data-testid="dashboard-preview-no-member">
             {t('pages.chat.dashboardPreviewPanel.no_member')}

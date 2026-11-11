@@ -61,7 +61,7 @@
     "send_refused": "La sessione non ha accettato questa risposta.",
     "send_unknown": "La consegna è incerta. La risposta è conservata. Controlla la sessione prima di riprovare per evitare invii duplicati.",
     "updated": "Ultima verifica: {{time}}",
-    "panel_load_failed": "Impossibile caricare il pannello Dashboard. Ricarica la pagina per riprovare.",
+    "panel_load_failed": "Impossibile caricare il pannello Dashboard. Controlla la connessione al gateway e riprova.",
     "crewMain": {
       "not_recorded": "non registrato",
       "unreadable": "impossibile da leggere",
@@ -12738,6 +12738,7 @@
         "workflow_runs_load_failed": "Impossibile caricare le esecuzioni di workflow"
       },
       "assistantMessage": {
+        "share_load_failed": "Impossibile caricare la finestra di condivisione",
         "applied_to_tasks": "Applicato alle attività",
         "copied": "Copiato!",
         "copy": "Copia",
@@ -13417,6 +13418,7 @@
         "retry": "Riprova"
       },
       "toolCallLine": {
+        "answers_load_failed": "Impossibile caricare le risposte. Controlla la connessione al gateway e riprova.",
         "diff_truncated": "diff troncato",
         "edit_count_many": "{{count}} modifiche",
         "edit_count_one": "{{count}} modifica",
@@ -13836,6 +13838,7 @@
         "export_failed": "Impossibile generare la scheda di condivisione"
       },
       "crewLog": {
+        "tab_load_failed": "Impossibile caricare il registro della sessione. Controlla la connessione al gateway e riprova.",
         "section_status": "Stato",
         "section_usage": "Utilizzo",
         "section_timeline": "Cronologia",
@@ -14120,6 +14123,7 @@
         "outcome_undo": "Per annullare, chiedi a {{name}} di ripristinare la dashboard precedente."
       },
       "browserLiveStage": {
+        "stage_load_failed": "Impossibile caricare la vista del browser dell’agente. Controlla la connessione al gateway e riprova.",
         "bring_back": "Riporta nella chat",
         "by_you": "Da te",
         "exit_full_screen": "Esci da schermo intero",
@@ -23232,6 +23236,7 @@
       "startingHeader": "Preparazione di {{name}}"
     },
     "remoteFiles": {
+      "panelLoadFailed": "Impossibile caricare la vista File. Controlla la connessione al gateway e riprova.",
       "title": "File su {{name}}",
       "refresh": "Aggiorna",
       "selectHint": "Seleziona un file per visualizzarlo.",
@@ -23281,6 +23286,7 @@
       "stoppedHint": "Il workspace si avvia con il tuo prossimo messaggio. Si ferma da solo dopo un’ora di inattività."
     },
     "remoteGit": {
+      "panelLoadFailed": "Impossibile caricare la vista Git. Controlla la connessione al gateway e riprova.",
       "title": "Git su {{name}}",
       "notRepo": "La directory di lavoro non è un repository Git.",
       "changes": "Modifiche",
