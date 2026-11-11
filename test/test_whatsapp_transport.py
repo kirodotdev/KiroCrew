@@ -62,6 +62,12 @@ class FakeClient:
             on_sent(message_id)
         return message_id
 
+    async def edit_text(self, jid: str, message_id: str, text: str, on_sent=None) -> bool:
+        # An edit is a send with its own id, handed over like any other.
+        if on_sent is not None:
+            on_sent(next(self._next_ids))
+        return True
+
     async def phone_for_lid(self, lid_jid: str) -> str:
         self.lid_lookups.append(lid_jid)
         return self.lid_map.get(lid_jid, "")
@@ -171,6 +177,15 @@ class TestGauntlet:
         ids = await harness.transport._send_tracked(OWN_JID, "agent reply")
         await harness.transport.receive(
             event(chat=OWN_JID, sender=OWN_JID, from_me=True, message_id=ids[0])
+        )
+        assert harness.dispatched == []
+
+    async def test_own_edit_echo_is_dropped(self, harness):
+        # A streamed reply is edited in place; each edit echoes back from_me
+        # under its own id, and in the self-chat it must not read as a command.
+        assert await harness.transport.edit_text(OWN_JID, "ORIG1", "agent reply, longer")
+        await harness.transport.receive(
+            event(chat=OWN_JID, sender=OWN_JID, from_me=True, message_id="SENT1")
         )
         assert harness.dispatched == []
 
