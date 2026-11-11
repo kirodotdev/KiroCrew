@@ -286,6 +286,42 @@ def test_a_ceiling_with_an_opinion_on_the_shell_withholds_the_grant() -> None:
     assert verdict.tier != "spec-builtin-grant"
 
 
+def _builtin_pins() -> list[str]:
+    """The built-in self-protection deny patterns, as an edition pins them in ``commands``."""
+    from kiro_crew.security import BUILTIN_DENIED_RULES
+
+    return [r.pattern for r in BUILTIN_DENIED_RULES if r.category == "self-protection"]
+
+
+def test_a_ceiling_that_only_pins_built_in_rules_keeps_the_grant() -> None:
+    """The deny floor already enforces every pinned rule, so the pins say nothing
+    about other commands: ``git status`` is still answered without a prompt."""
+    _install_governance({"commands": {"mode": "deny", "deny": _builtin_pins()}})
+    verdict = _judge(_shell("git status"), ["git status"])
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+
+
+def test_a_pinned_command_is_still_refused_under_a_wide_grant() -> None:
+    _install_governance({"commands": {"mode": "deny", "deny": _builtin_pins()}})
+    pinned = "kirocrew app dev --confirm-" + "out-of-install-root"
+    verdict = _judge(_shell(pinned), [".*"])
+    assert (verdict.action, verdict.tier) == (TOOL_DENY, "deny-rules")
+
+
+def test_a_pin_beside_any_other_command_deny_withholds_the_grant() -> None:
+    _install_governance({"commands": {"mode": "deny", "deny": [*_builtin_pins(), "*backdoor*"]}})
+    verdict = _judge(_shell("git status"), ["git status"])
+    assert verdict.action == TOOL_ALLOW
+    assert verdict.tier != "spec-builtin-grant"
+
+
+def test_the_projection_records_the_patterns_under_built_in_pins() -> None:
+    _install_governance({"commands": {"mode": "deny", "deny": _builtin_pins()}})
+    spec = _spec(toolsSettings={"shell": {"allowedCommands": ["git status"]}})
+    out = kas_agents.to_client_custom_agent("a", spec, "p")
+    assert out[CREW_ANSWERED_COMMANDS_KEY] == ["git status"]
+
+
 def test_confirm_tools_withholds_the_grant() -> None:
     verdict = _judge(_shell("git status"), ["git status"], config={"confirm_tools": ["*"]})
     assert verdict.action == TOOL_ALLOW
