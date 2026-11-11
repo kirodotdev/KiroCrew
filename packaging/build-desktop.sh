@@ -48,6 +48,7 @@ cd "$ROOT"
 
 # The backend bytecode steps (bytecode_coverage_gate, precompile_macos_backend).
 . "$ROOT/packaging/desktop-bytecode.sh"
+. "$ROOT/packaging/desktop-onepassword.sh"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 # Git Bash / MSYS on Windows reports MINGW64_NT-10.0-... / MSYS_NT-...;
@@ -639,6 +640,7 @@ build_backend() {
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check "$ROOT[feishu]"
+  install_onepassword_extra "$out/bin/python3.12" "$ROOT[1password]" "${OS}/${want_arch:-$HOST_ARCH}"
 
   # Stage the dashboard dist into the package's static dir.
   sp="$out/lib/python3.12/site-packages"
@@ -827,6 +829,7 @@ build_backend_windows() {
     "$out/python.exe" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
     "kirocrew[feishu] @ $root_uri"
+  install_onepassword_extra "$out/python.exe" "kirocrew[1password] @ $root_uri" "windows/$HOST_ARCH"
 
   sp="$out/Lib/site-packages"
   install_desktop_decoder "$out/python.exe" "$sp" ""

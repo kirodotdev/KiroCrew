@@ -19,6 +19,8 @@
 # Prerequisites: Python 3.12+, Node.js 22.12+ (24 LTS recommended), npm, git
 # Optional:
 #   --voice    also install voice extras (pip install -e .[voice])
+#   --1password  also add the read-only 1Password backend (pip install -e .[1password]),
+#              from a prebuilt wheel only; a host with no wheel goes on without it
 #   ollama     for local vector memory (see step "Embeddings" below)
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -32,9 +34,11 @@ unset PYTHONPATH PYTHONHOME
 
 # ── Parse arguments ──
 WITH_VOICE=0
+WITH_1PASSWORD=0
 for _arg in "$@"; do
     case "$_arg" in
         --voice) WITH_VOICE=1 ;;
+        --1password) WITH_1PASSWORD=1 ;;
         *) echo "ERROR: unknown argument '$_arg'" >&2; exit 1 ;;
     esac
 done
@@ -144,6 +148,19 @@ fi
 
 "$_venv/bin/python" -c "import aiohttp" 2>/dev/null \
     || die "Install succeeded but aiohttp not importable — dependencies missing"
+
+# The 1Password backend, after the core install and on its own, as the desktop
+# build adds it: its SDK publishes no wheel for musl or glibc older than 2.32,
+# which no environment marker can name, so a host without one keeps the install
+# and goes on without 1Password. --only-binary is scoped to that one name.
+if [ "$WITH_1PASSWORD" -eq 1 ]; then
+    if KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -q --only-binary onepassword-sdk \
+        -e "$REPO_DIR"'[1password]' >/dev/null 2>&1; then
+        echo "  (including 1Password)"
+    else
+        echo "  ⚠ No prebuilt 1Password SDK for this platform; continuing without 1Password."
+    fi
+fi
 echo "✓ Python package installed"
 umask "$_KC_PREV_UMASK"
 echo ""

@@ -530,7 +530,21 @@ prints the exact command, already pointed at the right interpreter.
 | `whatsapp` | `neonize` | QR-linked WhatsApp channel |
 | `feishu` | `lark-oapi` | Feishu/Lark long-connection channel |
 | `bedrock` | `boto3` | Amazon Bedrock Knowledge Base source (`bedrock_kb`) |
+| `1password` | `onepassword-sdk` | Read-only 1Password items in Settings > Secrets (Secrets vault preview) |
 | `dev` | pytest, black, isort, flake8, mypy, ... | Contributor tooling; what `make build` installs |
+
+**The `1password` extra.** Only the desktop app ships it with no install step,
+where its SDK publishes a wheel. From a source checkout, pass `--1password` to
+`install.sh`, `minimal_install.sh` or `cloud-install.sh`; the installer adds it
+from a prebuilt wheel only, and on a host with none (musl Linux, glibc older than
+2.32, Windows arm64, Python 3.14+) it says so and finishes without it. On any
+other install, Settings > Secrets > 1Password shows the command that adds it to
+the gateway's interpreter. An update keeps it on a source checkout
+(`kirocrew update` reinstalls into the same venv) and on the desktop app (the
+new bundle carries it). A `cli.sh` wheel install's update rebuilds the venv, as
+it does for any extra installed by hand, so the extra is gone afterwards: the
+1Password connection is kept and shows as unavailable, references through it fail
+closed, and installing the extra again restores it without a new token.
 
 `make desktop` and `make backend-bin` need no extra: both run
 `packaging/build-desktop.sh`, which provisions a python-build-standalone

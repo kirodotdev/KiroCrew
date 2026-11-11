@@ -18,6 +18,10 @@
 #
 # Options:
 #   --voice   Install optional voice extras (pip install -e .[voice])
+#   --1password
+#             Also add the read-only 1Password backend (pip install -e .[1password]),
+#             from a prebuilt wheel only. A host with no wheel keeps the install
+#             and goes on without it.
 #   --no-kas  Skip downloading the KAS engine this release pins. By default
 #             the installer runs `kirocrew kas install` after installing, so
 #             the built-in engine route can be turned on with no download; a
@@ -48,6 +52,7 @@ unset PYTHONPATH PYTHONHOME
 # ── Parse arguments ──
 USE_MISE=0
 WITH_VOICE=0
+WITH_1PASSWORD=0
 KAS_DOWNLOAD_FAILED=0
 KAS_HOST_UNSUPPORTED=0
 WITH_KAS=1
@@ -55,6 +60,7 @@ for _arg in "$@"; do
     case "$_arg" in
         --mise)  USE_MISE=1 ;;
         --voice) WITH_VOICE=1 ;;
+        --1password) WITH_1PASSWORD=1 ;;
         --kas)   WITH_KAS=1 ;;
         --no-kas) WITH_KAS=0 ;;
         *) echo "Error: unknown argument '$_arg'" >&2; exit 1 ;;
@@ -718,6 +724,20 @@ else
     die "pip install failed. Check: $_venv/bin/pip --version"
 fi
 rm -f "$_pip_log"
+
+# The 1Password backend, after the core install and on its own, as the desktop
+# build adds it: its SDK publishes no wheel for musl or glibc older than 2.32,
+# which no environment marker can name, so a host without one keeps the install
+# and goes on without 1Password. --only-binary is scoped to that one name.
+if [ "$WITH_1PASSWORD" -eq 1 ]; then
+    # shellcheck disable=SC2086
+    if (cd "$KIROCREW_APP_DIR" && KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -q \
+        $_pip_binary_only --only-binary onepassword-sdk -e ".[1password]" >/dev/null 2>&1); then
+        detail "Including 1Password (.[1password])"
+    else
+        warn "No prebuilt 1Password SDK for this platform; continuing without 1Password."
+    fi
+fi
 # Venv fully built and born non-group-writable; restore the caller's umask.
 umask "$_KC_PREV_UMASK"
 
