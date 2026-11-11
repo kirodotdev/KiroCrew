@@ -19,6 +19,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 const listApps = vi.fn()
@@ -59,13 +61,15 @@ function renderPage() {
   // assertion.
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps']}>
-        <Routes>
-          <Route path="/apps" element={<DiscoverPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps']}>
+          <Routes>
+            <Route path="/apps" element={<DiscoverPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 

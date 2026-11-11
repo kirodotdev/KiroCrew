@@ -35,6 +35,7 @@ const noop = () => {}
 function mount(props: Partial<Parameters<typeof FeaturedSpotlight>[0]> = {}) {
   return render(
     <FeaturedSpotlight
+      connected
       type={props.type || 'app'}
       apps={props.apps || [app('hero-app')]}
       onOpenApp={noop}

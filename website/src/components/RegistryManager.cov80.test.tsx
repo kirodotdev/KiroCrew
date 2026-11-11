@@ -1,5 +1,5 @@
 import { screen, fireEvent, waitFor } from '@testing-library/react'
-import { renderWithProviders } from '../test/helpers'
+import { createConnectedTestStore, renderWithProviders } from '../test/helpers'
 import RegistryManager from './RegistryManager'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
@@ -31,7 +31,7 @@ const REG = { name: 'zzq-reg', repo: 'https://github.com/zzq/reg', branch: 'main
 
 function mount(registries = [REG], bare = false) {
   listRegistries.mockResolvedValue({ registries } as never)
-  return renderWithProviders(<RegistryManager bare={bare} />)
+  return renderWithProviders(<RegistryManager bare={bare} />, { store: createConnectedTestStore() })
 }
 
 async function openAddForm(registries = [REG]) {
