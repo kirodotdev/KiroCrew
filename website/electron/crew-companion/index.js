@@ -199,6 +199,8 @@ function probeEnabled(auth) {
     const req = http.get(url, { timeout: 5_000, headers }, (res) => {
       let body = "";
       res.on("data", (c) => (body += c));
+      // A body cut off mid-read emits error, never end.
+      res.on("error", () => resolve("unknown"));
       res.on("end", () => {
         // The credential, not the answer, is what went stale — say so, so the
         // caller re-mints rather than treating it as "cannot tell".
