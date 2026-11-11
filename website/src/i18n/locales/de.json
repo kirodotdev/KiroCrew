@@ -19168,8 +19168,6 @@
         "your_chat_sessions_were_restarted": "Deine Chat-Sitzungen wurden neu gestartet. Deine Nachrichten sind noch da."
       },
       "crewmatesSection": {
-        "title": "Bots",
-        "description": "Server-Einstellungen für Bots, keine Vorschauen. Gespeichert auf dem Server, deshalb gelten sie auf jedem Gerät.",
         "reply_threads": "Antwort-Threads auf Nachrichten im Chat eines Bot",
         "reply_threads_desc": "Jede Nachricht im Chat eines Bot kann einen eigenen Antwort-Thread tragen, der im Seitenbereich aufgeht, während der Chat sichtbar bleibt. Aus: „Im Thread antworten“ wird nicht angeboten, und vorhandene Threads sind ausgeblendet, nicht gelöscht.",
         "failed_to_save": "Die Bot-Einstellung konnte nicht gespeichert werden. Versuch es noch einmal.",
@@ -19203,7 +19201,13 @@
       "developerPanel": {
         "developer_tools": "Entwicklerwerkzeuge",
         "feature_previews": "Funktionsvorschauen",
-        "feature_previews_desc": "Nicht veröffentlichte Funktionen und Seiten. Deine Auswahl wird in dieser {{productName}} gespeichert und gilt überall, wo du das Dashboard öffnest, in jedem Browser und in der Desktop-App. Die Seiten erscheinen weder in der Seitenleiste noch in „Überall suchen“, bis du sie hier aktivierst; die Schalter selbst findet die Einstellungssuche aber. Sie sind absichtlich unfertig.",
+        "feature_previews_intro": "Unfertige Funktionen. Schalte eine ein, um sie auszuprobieren.",
+        "group_crew_and_bots": "Crew und Bots",
+        "group_chats_and_dashboards": "Chats und Dashboards",
+        "group_engines_and_workspaces": "Engines und Arbeitsbereiche",
+        "group_publishing_and_sign_in": "Veröffentlichen und Anmeldung",
+        "group_for_developers": "Für {{productName}}-Entwickler",
+        "restart_badge": "Neustart",
         "gateway": "Gateway",
         "how_to_set_up_an_ssh_tunnel": "So richtest du einen SSH-Tunnel ein",
         "run_a_local_gateway": "Lokales Gateway ausführen",

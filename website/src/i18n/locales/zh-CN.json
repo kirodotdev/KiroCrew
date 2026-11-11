@@ -18674,8 +18674,6 @@
         "your_chat_sessions_were_restarted": "你的聊天会话已重启。你的消息仍然保留。"
       },
       "crewmatesSection": {
-        "title": "Bot",
-        "description": "Bot 的服务器设置，不是预览功能。这些设置保存在服务器上，因此对所有设备生效。",
         "reply_threads": "Bot 对话消息的回复话题",
         "reply_threads_desc": "让 Bot 对话里的任何消息都能带自己的回复话题，在侧栏打开，对话保持可见。关闭时不显示“在话题中回复”，已有话题会隐藏而不是删除。",
         "failed_to_save": "无法保存 Bot 设置。请再试一次。",
@@ -18709,7 +18707,13 @@
       "developerPanel": {
         "developer_tools": "开发者工具",
         "feature_previews": "功能预览",
-        "feature_previews_desc": "尚未发布的功能和页面。你在这里的选择保存在此 {{productName}} 上，无论在哪个浏览器或桌面应用中打开仪表板都会生效。在此开启之前，这些页面不会出现在侧边栏和全局搜索中；下面的开关本身则可以通过设置搜索找到。这些内容有意保留未完善的状态。",
+        "feature_previews_intro": "尚未完成的功能。打开一个即可试用。",
+        "group_crew_and_bots": "Crew 与 Bot",
+        "group_chats_and_dashboards": "对话与 Dashboard",
+        "group_engines_and_workspaces": "引擎与工作区",
+        "group_publishing_and_sign_in": "发布与登录",
+        "group_for_developers": "面向 {{productName}} 开发者",
+        "restart_badge": "需重启",
         "gateway": "网关",
         "how_to_set_up_an_ssh_tunnel": "如何设置 SSH 隧道",
         "run_a_local_gateway": "运行本地网关",

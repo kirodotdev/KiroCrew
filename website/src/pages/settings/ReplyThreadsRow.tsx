@@ -1,11 +1,10 @@
 /**
- * Settings > Developer > **Crewmates**: the server-side switches for crewmate
- * features. One today -- `dashboard.crewmate_threads`, reply threads on crewmate
+ * Settings > Developer > Feature Previews > Crew and bots: the **Reply threads on
+ * bot chat messages** row -- `dashboard.crewmate_threads`, reply threads on Bot
  * chat messages (RFC crewmates launch, screen 07), off by default.
  *
- * Sits under its own heading, right after Feature Previews. The heading is
- * visual only: config has no crewmate parent flag, so this toggle nests under a
- * section title rather than under a parent key.
+ * One row of that group's card (`FeaturePreviewsSection.tsx`), so it renders a
+ * single root element: the switch with its own load and save notices under it.
  *
  * Server-side, like the Power toggle on the Chat tab: the value is PATCHed to
  * `dashboard.crewmate_threads` and read back through the shared
@@ -18,13 +17,13 @@ import { useState } from 'react'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
-import { SettingsCard, SettingsSection, SettingsToggle } from '../../components/settings'
+import { SettingsToggle } from '../../components/settings'
 import { CREWMATE_THREADS_CONFIG_KEY } from '../../hooks/useCrewmateThreadsFlag'
 import { i18nT } from '../../i18n/t'
 
 type KirocrewConfigShape = { dashboard?: { crewmate_threads?: boolean } }
 
-export function CrewmatesSection() {
+export function ReplyThreadsRow() {
   const qc = useQueryClient()
   const cfgQ = useQuery<KirocrewConfigShape>({
     queryKey: ['kirocrewConfig'],
@@ -42,12 +41,15 @@ export function CrewmatesSection() {
   })
 
   return (
-    <SettingsSection title={i18nT('pages.settings.crewmatesSection.title')}>
-      {/* Sits right after Feature Previews, so the line says what kind of group
-          this is: server settings that apply on every device, not previews. */}
-      <p className="text-[13px] text-muted mb-2" data-testid="crewmates-section-description">
-        {i18nT('pages.settings.crewmatesSection.description')}
-      </p>
+    <div>
+      <SettingsToggle
+        label={i18nT('pages.settings.crewmatesSection.reply_threads')}
+        hint={i18nT('pages.settings.crewmatesSection.reply_threads_desc')}
+        checked={threads}
+        onChange={(v) => threadsMut.mutate(v)}
+        disabled={!cfgQ.isSuccess || threadsMut.isPending}
+        configKey={CREWMATE_THREADS_CONFIG_KEY}
+      />
       {/* A config read that failed leaves the switch disabled; say so, with the
           query's own retry, rather than showing a control that cannot move.
           askAgent: a toggle holds no draft, so the hand-off loses nothing. */}
@@ -55,7 +57,7 @@ export function CrewmatesSection() {
         <ErrorNotice
           message={i18nT('pages.settings.crewmatesSection.failed_to_load')}
           askAgent
-          className="mb-2"
+          className="mt-2"
           testId="crewmates-config-error"
           footer={
             <Btn onClick={() => { void cfgQ.refetch() }} disabled={cfgQ.isFetching} data-testid="crewmates-config-retry">
@@ -69,20 +71,10 @@ export function CrewmatesSection() {
           message={saveError}
           onDismiss={() => setSaveError('')}
           askAgent
-          className="mb-2"
+          className="mt-2"
           testId="crewmates-save-error"
         />
       )}
-      <SettingsCard>
-        <SettingsToggle
-          label={i18nT('pages.settings.crewmatesSection.reply_threads')}
-          hint={i18nT('pages.settings.crewmatesSection.reply_threads_desc')}
-          checked={threads}
-          onChange={(v) => threadsMut.mutate(v)}
-          disabled={!cfgQ.isSuccess || threadsMut.isPending}
-          configKey={CREWMATE_THREADS_CONFIG_KEY}
-        />
-      </SettingsCard>
-    </SettingsSection>
+    </div>
   )
 }

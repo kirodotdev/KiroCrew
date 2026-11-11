@@ -19662,8 +19662,6 @@
         "your_chat_sessions_were_restarted": "Suas sessões de chat foram reiniciadas. Suas mensagens continuam lá."
       },
       "crewmatesSection": {
-        "title": "Bots",
-        "description": "Configurações do servidor para os Bots, não prévias. Ficam salvas no servidor, então valem em todos os dispositivos.",
         "reply_threads": "Tópicos de resposta nas mensagens do chat de um Bot",
         "reply_threads_desc": "Deixa qualquer mensagem do chat de um Bot ter seu próprio tópico de resposta, aberto no painel lateral enquanto o chat continua visível. Desligado, Responder no tópico não aparece e os tópicos existentes ficam ocultos, não apagados.",
         "failed_to_save": "Não foi possível salvar a configuração de Bot. Tente de novo.",
@@ -19697,7 +19695,13 @@
       "developerPanel": {
         "developer_tools": "Ferramentas de desenvolvedor",
         "feature_previews": "Prévias de recursos",
-        "feature_previews_desc": "Recursos e páginas não lançados. Suas escolhas ficam salvas neste {{productName}} e valem onde quer que você abra o painel, em qualquer navegador ou no aplicativo para desktop. As páginas ficam ocultas da barra lateral e da Pesquisar em tudo até você ativá-las aqui; os próprios interruptores, porém, aparecem na busca das configurações. Estão inacabados de propósito.",
+        "feature_previews_intro": "Recursos inacabados. Ative um para experimentar.",
+        "group_crew_and_bots": "Crew e Bots",
+        "group_chats_and_dashboards": "Chats e Dashboards",
+        "group_engines_and_workspaces": "Motores e espaços de trabalho",
+        "group_publishing_and_sign_in": "Publicação e login",
+        "group_for_developers": "Para desenvolvedores do {{productName}}",
+        "restart_badge": "Reinício",
         "gateway": "Gateway",
         "how_to_set_up_an_ssh_tunnel": "Como configurar um túnel SSH",
         "run_a_local_gateway": "Executar um gateway local",

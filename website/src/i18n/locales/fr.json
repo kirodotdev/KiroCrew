@@ -19662,8 +19662,6 @@
         "your_chat_sessions_were_restarted": "Tes sessions de chat ont été redémarrées. Tes messages sont toujours là."
       },
       "crewmatesSection": {
-        "title": "Bots",
-        "description": "Réglages serveur des Bots, pas des aperçus. Ils sont enregistrés sur le serveur et s'appliquent donc à tous les appareils.",
         "reply_threads": "Fils de réponse sur les messages du chat d'un Bot",
         "reply_threads_desc": "Permet à tout message du chat d'un Bot d'avoir son propre fil de réponse, ouvert dans le panneau latéral pendant que le chat reste visible. Désactivé, Répondre dans le fil n'est pas proposé et les fils existants sont masqués, pas supprimés.",
         "failed_to_save": "Impossible d'enregistrer le réglage Bot. Réessaie.",
@@ -19697,7 +19695,13 @@
       "developerPanel": {
         "developer_tools": "Outils de développement",
         "feature_previews": "Aperçus de fonctionnalités",
-        "feature_previews_desc": "Fonctionnalités et pages non publiées. Tes choix sont enregistrés sur ce {{productName}} et s’appliquent partout où tu ouvres le tableau de bord, dans n’importe quel navigateur ou dans l’application de bureau. Les pages restent masquées dans la barre latérale et dans Rechercher partout jusqu’à ce que tu les actives ici ; les interrupteurs eux-mêmes apparaissent bien dans la recherche des paramètres. Inachevées à dessein.",
+        "feature_previews_intro": "Fonctionnalités inachevées. Active-en une pour l’essayer.",
+        "group_crew_and_bots": "Crew et Bots",
+        "group_chats_and_dashboards": "Chats et Dashboards",
+        "group_engines_and_workspaces": "Moteurs et espaces de travail",
+        "group_publishing_and_sign_in": "Publication et connexion",
+        "group_for_developers": "Pour les développeurs de {{productName}}",
+        "restart_badge": "Redémarrage",
         "gateway": "Passerelle",
         "how_to_set_up_an_ssh_tunnel": "Configurer un tunnel SSH",
         "run_a_local_gateway": "Exécuter une passerelle locale",

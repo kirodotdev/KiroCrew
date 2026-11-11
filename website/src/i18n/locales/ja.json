@@ -18674,8 +18674,6 @@
         "your_chat_sessions_were_restarted": "チャットセッションを再起動しました。メッセージはそのまま残っています。"
       },
       "crewmatesSection": {
-        "title": "Bot",
-        "description": "Bot のサーバー設定です。プレビューではありません。サーバーに保存されるため、すべてのデバイスに適用されます。",
         "reply_threads": "Bot のチャットメッセージへの返信スレッド",
         "reply_threads_desc": "Bot のチャットのどのメッセージにも独自の返信スレッドを持たせ、チャットを表示したままサイドパネルで開きます。オフにすると「スレッドで返信」は表示されず、既存のスレッドは削除ではなく非表示になります。",
         "failed_to_save": "Bot の設定を保存できませんでした。もう一度お試しください。",
@@ -18709,7 +18707,13 @@
       "developerPanel": {
         "developer_tools": "開発者ツール",
         "feature_previews": "機能プレビュー",
-        "feature_previews_desc": "未リリースの機能とページです。ここでの選択はこの {{productName}} に保存され、どのブラウザーやデスクトップアプリでダッシュボードを開いても同じように適用されます。ここでオンにするまで、ページ自体はサイドバーと「すべてから検索」には表示されませんが、下のスイッチは設定の検索で見つかります。内容は意図的に未完成のままです。",
+        "feature_previews_intro": "未完成の機能です。オンにすると試せます。",
+        "group_crew_and_bots": "Crew と Bot",
+        "group_chats_and_dashboards": "チャットと Dashboard",
+        "group_engines_and_workspaces": "エンジンとワークスペース",
+        "group_publishing_and_sign_in": "公開とサインイン",
+        "group_for_developers": "{{productName}} 開発者向け",
+        "restart_badge": "再起動",
         "gateway": "ゲートウェイ",
         "how_to_set_up_an_ssh_tunnel": "SSH トンネルの設定方法",
         "run_a_local_gateway": "ローカルゲートウェイを実行する",
