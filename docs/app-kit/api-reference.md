@@ -940,7 +940,11 @@ their siblings are response-shape names rather than importable types.
 When `app_name` is set and no explicit auth is provided, the Python client uses
 the app secret the Gateway gave its backend at spawn (`KIROCREW_PROXY_SECRET`, when
 `KIROCREW_APP_NAME` names the same app). Only with a Gateway older than that does it
-fall back to `~/.kiro/crew/apps/{name}/.app_secret`. For a remote Gateway,
+fall back to `~/.kiro/crew/apps/{name}/.app_secret`. Code that runs in the Gateway
+process, an app's `backend.hooks`, has no secret: pass `base_url=ctx.gateway_origin()`,
+`token=await ctx.app_token()` and `on_auth_expired=ctx.app_token`, and build no client
+when `ctx.gateway_origin()` returns `""` (see
+[App token](#app-token-ctxapp_token)). For a remote Gateway,
 call `await client.authenticate()` before the first request; the context manager
 does not exchange the secret automatically. The same exchange refreshes a token
 after a 401/403 response.
@@ -1591,6 +1595,44 @@ disabled, uninstalled or loses trust, and the owner sees the permission at the t
 prompt. An update that adds it keeps running without it until the owner approves it on
 the app's page.
 
+### App token (`ctx.app_token()`)
+
+`await ctx.app_token()` returns an app token for your app, the same token
+`POST /api/apps/<name>/token` issues, so the Gateway confines it to your
+`permissions.api`. Your hooks run in the Gateway process, and the Gateway keeps your
+app secret where no sandbox reads it, so this call is the one way your hooks
+authenticate to the Gateway REST API. The token lasts an hour. Pass the method as the
+Python client's `on_auth_expired`, and the client renews the token after a 401 or 403:
+
+```python
+from kirocrew_client import KiroCrewClient
+
+async def on_startup(ctx):
+    origin = ctx.gateway_origin()
+    if not origin:
+        ctx.health.mark_degraded("the gateway gives no loopback origin to call")
+        return
+    client = KiroCrewClient(
+        base_url=origin,
+        app_name=ctx.name,
+        token=await ctx.app_token(),
+        on_auth_expired=ctx.app_token,
+    )
+```
+
+`ctx.gateway_origin()` returns the origin a spawned backend gets in
+`KIROCREW_GATEWAY_ORIGIN`, read from the port the Gateway holds. It returns `""` when
+the Gateway is bound to one specific interface, because every mutating call from this
+host is then refused. Without `base_url`, or with `base_url=""`, the client uses
+`KIROCREW_PORT` or port 5476, which can be another Gateway. So pass a non-empty origin,
+and build no client when there is none.
+
+`ctx.app_token()` returns `""` once the owner has disabled your app, so a background task that
+outlives a disable gets nothing. Every call is audited as `app_token_exchange` with
+source `app_context`. Do not read an `.app_secret` file in your app's folder: an older
+version left it there, the Gateway never accepts it, and the first load of your hooks
+removes it. Both methods need `ctx.sdk_level >= 5`.
+
 ### App Kit seam level (`ctx.sdk_level`)
 
 An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
@@ -1605,7 +1647,8 @@ adds the manifest's `credentialMasks` (see
 [manifest-reference.md](manifest-reference.md#credential-masks)), and level 4 adds the
 `agentTools` keys `namespace`, `timeoutSeconds` and `result` and an app's own bell
 notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
-[Backend Environment Variables](#backend-environment-variables)); each level
+[Backend Environment Variables](#backend-environment-variables)), and level 5 adds
+[`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token); each level
 includes every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
@@ -1835,6 +1878,11 @@ With `app_name` set and no `token` or `on_auth_expired`, the client takes the
 app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` is that app (a
 backend the Gateway started). An older Gateway kept it at
 `$KIROCREW_HOME/apps/{name}/.app_secret`, which the client reads only as a fallback.
+In an app's hooks, which run in the Gateway process, pass `base_url=ctx.gateway_origin()`,
+`token=await ctx.app_token()` and `on_auth_expired=ctx.app_token`: the client calls the
+last one after a 401 or 403,
+which is how an expired token is renewed. When `ctx.gateway_origin()` returns `""`,
+build no client, because an empty `base_url` falls back to `KIROCREW_PORT` or 5476.
 
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
@@ -2351,6 +2399,13 @@ Security and lifecycle:
   again: the old `.app_secret` file is never accepted, the next backend start stores a NEW
   secret and passes it here, and a self-managed app gets one in the response of its next
   registration. A backend left running across the upgrade has no secret until it restarts.
+- A backend that runs in the gateway process (`backend.hooks`, no `entryPoint`) gets no
+  secret and needs none: [`ctx.app_token()`](#app-token-ctxapp_token) returns its app
+  token and `ctx.gateway_origin()` the origin to call. The first load of its hooks after the upgrade stores a new secret and removes
+  the old file, as a spawn does.
+- An app's agent MCP servers (the stdio `mcpServers` its agents declare, which kiro-cli
+  starts in the agent sandbox) get neither a secret nor an app token, so they cannot
+  call the app's own routes.
 - If the app has no secret, the gateway injects neither the secret nor anything derived from
   it (including the proof); a secret-less backend is otherwise unchanged.
 - `KIROCREW_GATEWAY_ORIGIN` is fail-closed: it is present only when the gateway has real

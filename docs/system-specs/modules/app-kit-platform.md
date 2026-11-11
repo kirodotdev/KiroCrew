@@ -2549,7 +2549,11 @@ owner-enable marker the gateway sealed is present, see dashboard-token-auth), an
 with it is the same scoped stream. `kirocrew_client.KiroCrewClient(app_name=...)`
 does the exchange (`authenticate()`) and `create_ws()` opens that socket. There is no
 second delivery channel, and an origin the gateway could not prove is omitted, so
-such a backend has none.
+such a backend has none. A backend that runs in the gateway process (`backend.hooks`
+and no spawn) gets no secret: `await ctx.app_token()` returns that same app-scoped
+token, passing `ctx.app_token` as the client's `on_auth_expired` renews it, and
+`ctx.gateway_origin()` returns the origin a spawned backend gets
+(`apps/gateway_origin.loopback_gateway_origin`, one rule for both).
 
 **`SlotOrigin` is declared by the layer that knows it, never derived.**
 `get_or_create_slot` cannot distinguish a person typing from a background
@@ -7045,7 +7049,7 @@ for the seams above level 1 it uses (`_seam_level_uses`): `agentTools`,
 `permissions.agentTurns` and `permissions.workerAutoApprove` in `app.json` (level 2),
 `credentialMasks` (level 3), and `ctx.turns`, `ctx.untrusted`, `ctx.lifecycle` or
 `ctx.auto_approve` in any `.py` file outside a `tests/` directory, a `test_*.py` or a
-`conftest.py` (level 2), read as an attribute of a context-named receiver or as a
+`conftest.py` (level 2), and `ctx.app_token` or `ctx.gateway_origin` there (level 5), read as an attribute of a context-named receiver or as a
 `getattr`/`hasattr` of that name on any receiver. A level below the highest one found
 is refused, naming what was found, by `compute` and `verify` alike, so a tree that
 feature-detects a seam and degrades still pins at that seam's level, and a host
@@ -7706,8 +7710,8 @@ data-home root, outside its data directory, so they keep their core rows until t
 store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-control.md`,
 "Repository boundary").
 
-**Seam level.** The masks are level 3 (`APP_SDK_LEVEL` is 4 since §30.1's tool keys):
-an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
+**Seam level.** The masks are level 3 (level 4 adds §30.1's tool keys and level 5
+`ctx.app_token` and `ctx.gateway_origin`): an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
 the file.
 
 Writers: `apps/credential_masks.py`, `apps/manifest.py`, `apps/app_sdk_level.py`,

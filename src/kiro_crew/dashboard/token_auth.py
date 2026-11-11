@@ -1517,6 +1517,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         extract_prompt_from_token,
         generate_app_secret,
         is_consumed,
+        issue_in_process_app_token,
         mark_consumed,
         owner_mint_extra,
         parse_duration,
