@@ -364,7 +364,7 @@ class WhatsAppRenderer(Renderer):
     async def _edit_live(self, text: str) -> None:
         if text == self._live_text:
             return
-        ok = await self._client.edit_text(self._chat, self._live_id, text)
+        ok = await self._transport.edit_text(self._chat, self._live_id, text)
         self._last_edit_at = asyncio.get_running_loop().time()
         if ok:
             self._live_text = text
@@ -529,7 +529,7 @@ class WhatsAppRenderer(Renderer):
         matters more than where it appears.
         """
         notice = display_safe_text(TIMEOUT_NOTICE)
-        if self._prompt_id and await self._client.edit_text(self._chat, self._prompt_id, notice):
+        if self._prompt_id and await self._transport.edit_text(self._chat, self._prompt_id, notice):
             self._prompt_id = ""
             return
         self._prompt_id = ""

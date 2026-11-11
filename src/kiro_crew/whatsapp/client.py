@@ -715,11 +715,21 @@ class WhatsAppClient:
             on_sent(message_id)
         return message_id
 
-    async def edit_text(self, jid_str: str, message_id: str, text: str) -> bool:
+    async def edit_text(
+        self,
+        jid_str: str,
+        message_id: str,
+        text: str,
+        on_sent: "Callable[[str], None] | None" = None,
+    ) -> bool:
         """Replace the body of a message this channel already sent.
 
         The server refuses an edit after :data:`EDIT_WINDOW_S`; the caller, which
         knows when the bubble was sent, decides when to open a new one.
+
+        An edit is itself a send with its OWN id, and it echoes back with
+        ``from_me`` set carrying the new text, so that id goes to *on_sent* like
+        every other send's: an untracked one reads as the operator typing.
 
         Returns False instead of raising: a refused edit is cosmetic (the reader
         keeps the previous text and the final send still lands) and must never
@@ -730,9 +740,12 @@ class WhatsAppClient:
         from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
 
         try:
-            await self._client.edit_message(
+            response = await self._client.edit_message(
                 self._parse_jid(jid_str), message_id, Message(conversation=text)
             )
+            edit_id = str(getattr(response, "ID", "") or "")
+            if edit_id and on_sent is not None:
+                on_sent(edit_id)
             return True
         except Exception:  # noqa: BLE001: progress rendering is best-effort
             logger.debug("whatsapp: edit of %s failed", message_id, exc_info=True)
