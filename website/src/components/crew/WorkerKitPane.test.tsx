@@ -30,6 +30,7 @@ vi.mock('../SimpleSelect', () => ({
 
 import WorkerKitPane from './WorkerKitPane'
 import { ApiError } from '../../api/apiError'
+import { namedCeiling } from '../../test/namedCeiling'
 
 const PREVIEW = {
   member: 'pixel',
@@ -66,6 +67,43 @@ beforeEach(() => {
 })
 
 describe('WorkerKitPane', () => {
+  it('previews an agent the door already picked, and still writes only on Add', async () => {
+    const onApplied = vi.fn()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <WorkerKitPane member="pixel" name="Pixel" templates={['release-bot']} initialTemplate="release-bot" onApplied={onApplied} />
+      </QueryClientProvider>,
+    )
+    // A real chain behind the default second: the kit GET resolves, the
+    // readiness effect picks the agent, and the preview request answers.
+    await screen.findByTestId('worker-kit-changes', undefined, namedCeiling('INITIAL_PREVIEW_READY', 5000))
+    expect(mockKit.preview).toHaveBeenCalledTimes(1)
+    expect(mockKit.preview).toHaveBeenCalledWith('pixel', { template: 'release-bot' })
+    expect(mockKit.apply).not.toHaveBeenCalled()
+    expect(onApplied).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1))
+  })
+
+  it('tells its host while a preview or an add is in flight', async () => {
+    const onBusyChange = vi.fn()
+    let landAdd: (v: unknown) => void = () => {}
+    mockKit.apply.mockReturnValue(new Promise(resolve => { landAdd = resolve }))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <WorkerKitPane member="pixel" name="Pixel" templates={['release-bot']} onBusyChange={onBusyChange} />
+      </QueryClientProvider>,
+    )
+    await previewAdd()
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false))
+    fireEvent.click(screen.getByTestId('worker-kit-apply'))
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(true))
+    landAdd({ member: 'pixel', revision: 'r2' })
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false))
+  })
+
   it('names the crewmate by its display name', async () => {
     renderPane()
     expect(await screen.findByText(/Copy the tools, MCP servers and skills from another agent into Pixel/)).toBeInTheDocument()
