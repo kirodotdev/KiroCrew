@@ -273,6 +273,9 @@ declare global {
     // On the feed lane's `found`: whether the automatic download follows, as the
     // main process decided it. Absent from an older shell and from the managed lane.
     autoDownload?: boolean
+    // On `downloaded`: the user armed this update, so it installs when they quit
+    // (never while the app runs). Absent from an older shell.
+    armed?: boolean
     channel?: string
     message?: string
     phase?: 'check' | 'download' | 'install'
@@ -328,7 +331,14 @@ declare global {
     onState: (cb: (state: UpdateState) => void) => () => void
     check: () => Promise<UpdateResult>
     download?: () => Promise<UpdateResult>
+    /** True when `install` only arms the update. Absent on an older shell, whose
+     *  `install` applies the update at once and stops the gateway. */
+    armsOnQuit?: boolean
+    /** Arms the update: it installs when the user quits, never while the app runs. */
     install: () => Promise<UpdateResult>
+    /** A plain quit and relaunch with no update command of its own; an armed
+     *  update is applied by the quit it triggers. Absent on an older shell. */
+    relaunch?: () => Promise<UpdateResult>
     getInfo?: () => Promise<(UpdateInfo & { lastState?: UpdateState | null }) | undefined>
     setChannel?: (channel: string) => Promise<UpdateResult>
     setAutoDownload?: (enabled: boolean) => Promise<UpdateResult>

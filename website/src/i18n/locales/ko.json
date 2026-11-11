@@ -9499,16 +9499,20 @@
       "dismiss_update_dialog": "업데이트 대화상자 닫기",
       "install_failed": "업데이트를 설치하지 못했습니다",
       "install_failed_body": "업데이트를 적용할 수 없습니다. {{productName}}이(가) 로컬 게이트웨이를 복구하는 중입니다. 이 버전을 계속 사용하고 설정 > 정보에서 다시 시도할 수 있습니다.",
-      "install_restart_timing": "설치에는 몇 분이 걸릴 수 있습니다. 앱이 닫히고 업데이트가 완료되면 자동으로 다시 열립니다.",
       "windows_installer_handoff": "Windows 설치 창에 진행 상황이 표시됩니다.",
       "installing_update": "업데이트 설치 중…",
-      "installing_update_body": "몇 분이 걸릴 수 있으며 완료되면 자동으로 다시 열립니다.",
+      "installing_update_body": "몇 분이 걸릴 수 있습니다. 앱이 종료됩니다. 완료되면 다시 열어 주세요.",
       "is_downloaded_and_ready_to_install": "다운로드가 끝나 설치할 준비가 되었습니다.",
       "kirocrew": "{{productName}}",
       "later": "나중에",
-      "restart_update": "업데이트 설치 후 앱 다시 시작",
       "restarting": "재시작 중…",
-      "update_ready": "업데이트 준비 완료"
+      "update_ready": "업데이트 준비 완료",
+      "install_on_quit": "종료할 때 설치",
+      "install_on_quit_timing": "업데이트는 다음에 앱을 종료할 때 설치됩니다. 그때까지 아무것도 다시 시작되지 않습니다.",
+      "armed_installs_on_quit": "{{productName}} {{version}}은(는) 앱을 종료할 때 설치됩니다.",
+      "restart_now": "지금 다시 시작하고 설치",
+      "restart_now_failed": "앱을 다시 시작하지 못했습니다. 업데이트는 종료할 때 그대로 설치됩니다.",
+      "armed_app_too_old": "이 버전의 데스크톱 앱은 여기에서 업데이트를 예약할 수 없습니다. 앱의 최신 버전을 다운로드하여 업데이트하세요."
     },
     "updatePill": {
       "downloading": "다운로드 중…",
@@ -18015,13 +18019,10 @@
         "download_failed_reason": "다운로드 실패: {{reason}}",
         "download_install": "다운로드 및 설치",
         "download_the_latest_version": "최신 버전 다운로드",
-        "downloaded_and_verified_the_app_restarts_to_fini": "다운로드와 검증을 마쳤습니다. 앱을 재시작하면 설치가 완료되며, 나중에 종료할 때 설치되게 할 수도 있습니다.",
         "downloading": "다운로드 중…",
         "insider": "Insider",
         "lts": "LTS(장기 지원)",
         "install_failed_reason": "업데이트를 설치할 수 없습니다: {{reason}}",
-        "install_update_restart_app": "업데이트 설치 후 앱 다시 시작",
-        "installing_quiet_note": "설치 중 — 몇 분이 걸릴 수 있습니다. 업데이트가 완료되면 {{productName}}이(가) 자동으로 다시 열립니다.",
         "is_available": "사용 가능합니다.",
         "loading_changelog": "변경 기록 불러오는 중…",
         "manual_install_fallback": "업데이트가 잘 되지 않으면 {{link}} 후 이 사본 위에 다시 설치할 수 있습니다. 설정, 채팅, 파일은 그대로 유지됩니다.",
@@ -18128,7 +18129,8 @@
         "gateway_lane_label": "게이트웨이",
         "gateway_lane_title": "에이전트를 실행하고 이 대시보드를 제공하는 백그라운드 서비스입니다. 브랜치와 커밋 칩은 이 서비스의 빌드입니다.",
         "update_refused_dirty_worktree": "로컬 편집 내용을 보호하기 위해 업데이트를 중지했습니다. {{productName}} 폴더에 커밋되지 않은 변경 사항이 있습니다({{changed}}). 커밋하거나 stash한 다음 지금 업데이트를 다시 누르세요. 모두 stash하려면 {{productName}} 폴더에서 연 터미널에서 아래 명령을 실행하세요.",
-        "app_updates_heading": "앱 업데이트"
+        "app_updates_heading": "앱 업데이트",
+        "downloaded_and_verified_installs_on_quit": "다운로드 및 확인이 완료되었습니다. 앱을 종료할 때 설치되며, 그때까지 아무것도 다시 시작되지 않습니다."
       },
       "botChannelPanel": {
         "allowed_user_ids": "허용된 사용자 ID",

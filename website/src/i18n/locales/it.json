@@ -9955,16 +9955,20 @@
       "dismiss_update_dialog": "Chiudi la finestra di aggiornamento",
       "install_failed": "Installazione dell'aggiornamento non riuscita",
       "install_failed_body": "Impossibile applicare l'aggiornamento. {{productName}} sta ripristinando il gateway locale — puoi continuare a usare questa versione e riprovare da Impostazioni > Informazioni.",
-      "install_restart_timing": "L'installazione può richiedere diversi minuti. L'app si chiuderà e si riaprirà automaticamente al termine dell'aggiornamento.",
       "windows_installer_handoff": "Una finestra di installazione di Windows mostrerà l'avanzamento.",
       "installing_update": "Installazione dell'aggiornamento…",
-      "installing_update_body": "Può richiedere diversi minuti. L'app si riaprirà automaticamente.",
+      "installing_update_body": "Può richiedere diversi minuti. L'app verrà chiusa. Riaprila al termine.",
       "is_downloaded_and_ready_to_install": "è stato scaricato ed è pronto per l'installazione.",
       "kirocrew": "{{productName}}",
       "later": "Più tardi",
-      "restart_update": "Installa l'aggiornamento e riavvia l'app",
       "restarting": "Riavvio in corso...",
-      "update_ready": "Aggiornamento pronto"
+      "update_ready": "Aggiornamento pronto",
+      "install_on_quit": "Installa all’uscita",
+      "install_on_quit_timing": "L’aggiornamento viene installato alla prossima chiusura dell’app. Nulla si riavvia fino ad allora.",
+      "armed_installs_on_quit": "{{productName}} {{version}} viene installato quando chiudi l’app.",
+      "restart_now": "Riavvia e installa ora",
+      "restart_now_failed": "Impossibile riavviare l’app. L’aggiornamento verrà comunque installato alla chiusura.",
+      "armed_app_too_old": "Questa versione dell’app desktop non può programmare l’aggiornamento da qui. Scarica l’ultima versione dell’app per aggiornare."
     },
     "updatePill": {
       "downloading": "Download in corso…",
@@ -18985,13 +18989,10 @@
         "download_failed_reason": "Download non riuscito: {{reason}}",
         "download_install": "Scarica e installa",
         "download_the_latest_version": "scarica la versione più recente",
-        "downloaded_and_verified_the_app_restarts_to_fini": "Scaricato e verificato. L'app si riavvia per completare l'installazione; puoi anche chiuderla più tardi e l'installazione avverrà all'uscita.",
         "downloading": "Download in corso...",
         "insider": "Insider",
         "lts": "LTS (supporto a lungo termine)",
         "install_failed_reason": "Non è stato possibile installare l'aggiornamento: {{reason}}",
-        "install_update_restart_app": "Installa l'aggiornamento e riavvia l'app",
-        "installing_quiet_note": "Installazione in corso — può richiedere diversi minuti. {{productName}} si riaprirà automaticamente al termine dell'aggiornamento.",
         "is_available": "è disponibile.",
         "loading_changelog": "Caricamento del changelog…",
         "manual_install_fallback": "Se l'aggiornamento non funziona, puoi {{link}} e reinstallare sopra questa copia. Le tue impostazioni, chat e file vengono mantenuti.",
@@ -19098,7 +19099,8 @@
         "gateway_lane_label": "Gateway",
         "gateway_lane_title": "Il servizio in background che esegue i tuoi agenti e serve questa dashboard. I chip di branch e commit indicano la sua build.",
         "update_refused_dirty_worktree": "L'aggiornamento è stato interrotto per proteggere le tue modifiche locali: la tua cartella di {{productName}} ha modifiche non sottoposte a commit ({{changed}}). Esegui il commit o lo stash, poi premi di nuovo Aggiorna ora. Per mettere tutto in stash, esegui il comando qui sotto in un terminale nella tua cartella di {{productName}}.",
-        "app_updates_heading": "Aggiornamenti app"
+        "app_updates_heading": "Aggiornamenti app",
+        "downloaded_and_verified_installs_on_quit": "Scaricato e verificato. Viene installato quando chiudi l’app; nulla si riavvia fino ad allora."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",

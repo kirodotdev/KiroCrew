@@ -9499,16 +9499,20 @@
       "dismiss_update_dialog": "关闭更新对话框",
       "install_failed": "更新安装失败",
       "install_failed_body": "无法应用此更新。{{productName}} 正在恢复本地网关——你可以继续使用当前版本，并在“设置 > 关于”中重试。",
-      "install_restart_timing": "安装可能需要几分钟。应用会关闭，并在更新完成后自动重新打开。",
       "windows_installer_handoff": "Windows 安装窗口将显示进度。",
       "installing_update": "正在安装更新…",
-      "installing_update_body": "这可能需要几分钟，完成后会自动重新打开。",
+      "installing_update_body": "这可能需要几分钟。应用会关闭，完成后请重新打开。",
       "is_downloaded_and_ready_to_install": "已下载完成，可以安装。",
       "kirocrew": "{{productName}}",
       "later": "稍后",
-      "restart_update": "安装更新并重启应用",
       "restarting": "正在重启…",
-      "update_ready": "更新已就绪"
+      "update_ready": "更新已就绪",
+      "install_on_quit": "退出时安装",
+      "install_on_quit_timing": "更新将在你下次退出应用时安装。在此之前不会重启任何内容。",
+      "armed_installs_on_quit": "{{productName}} {{version}} 将在你退出应用时安装。",
+      "restart_now": "立即重启并安装",
+      "restart_now_failed": "无法重启应用。更新仍会在你退出时安装。",
+      "armed_app_too_old": "此版本的桌面应用无法从这里预约更新。请下载应用的最新版本进行更新。"
     },
     "updatePill": {
       "downloading": "下载中…",
@@ -18015,13 +18019,10 @@
         "download_failed_reason": "下载失败：{{reason}}",
         "download_install": "下载并安装",
         "download_the_latest_version": "下载最新版本",
-        "downloaded_and_verified_the_app_restarts_to_fini": "已下载并校验。应用将重启以完成安装；你也可以稍后退出，退出时会自动安装。",
         "downloading": "正在下载…",
         "insider": "Insider",
         "lts": "LTS（长期支持）",
         "install_failed_reason": "无法安装更新：{{reason}}",
-        "install_update_restart_app": "安装更新并重启应用",
-        "installing_quiet_note": "正在安装——这可能需要几分钟。更新完成后 {{productName}} 会自动重新打开。",
         "is_available": "可用。",
         "loading_changelog": "正在加载更新日志…",
         "manual_install_fallback": "如果更新无法完成，你可以{{link}}并覆盖安装。你的设置、对话和文件都会保留。",
@@ -18128,7 +18129,8 @@
         "gateway_lane_label": "网关",
         "gateway_lane_title": "运行你的智能体并提供此仪表板的后台服务。分支和提交标签显示的是它的构建。",
         "update_refused_dirty_worktree": "为保护本地修改，更新已停止：{{productName}} 文件夹有未提交更改（{{changed}}）。请先提交或 stash 这些更改，然后再次点击“立即更新”。要 stash 全部更改，请在 {{productName}} 文件夹中打开终端，运行下方命令。",
-        "app_updates_heading": "应用更新"
+        "app_updates_heading": "应用更新",
+        "downloaded_and_verified_installs_on_quit": "已下载并验证。它将在你退出应用时安装，在此之前不会重启。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",

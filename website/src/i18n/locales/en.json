@@ -10389,7 +10389,6 @@
         "couldn_t_check_for_updates_reason": "Couldn't check for updates: {{reason}}",
         "couldn_t_check_for_updates_2": "Couldn't check for updates.",
         "download_install": "Download & Install",
-        "downloaded_and_verified_the_app_restarts_to_fini": "Downloaded and verified. The app restarts to finish installing; you can also quit later and it installs on exit.",
         "downloading": "Downloading...",
         "is_available": "is available.",
         "loading_changelog": "Loading changelog…",

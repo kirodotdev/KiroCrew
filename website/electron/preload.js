@@ -439,7 +439,14 @@ contextBridge.exposeInMainWorld("updateAPI", {
   },
   check: () => ipcRenderer.invoke("update:check"),
   download: () => ipcRenderer.invoke("update:download"),
+  // This shell's install ARMS the update. An older shell's install applies it at
+  // once, so the dashboard offers "Install when I quit" only when this is true.
+  armsOnQuit: true,
+  // ARMS the update: it installs when the user quits, never while the app runs.
   install: () => ipcRenderer.invoke("update:install"),
+  // A plain quit and relaunch with no update command of its own. An armed
+  // update is applied by the quit it triggers.
+  relaunch: () => ipcRenderer.invoke("update:relaunch"),
   getInfo: () => ipcRenderer.invoke("update:get-info"),
   // Channel switcher (Settings > About): "" follows the build stamp,
   // "insider"|"stable" opts the production app onto that lane.

@@ -58,10 +58,12 @@ function UpdateReadyDialog({ label, children }: { label: string; children: React
  *
  * Consumes the shared ['update-state'] query cache populated by the
  * useUpdateSubscription hook (mounted once in shell/appShell.tsx). When an update has
- * finished downloading we surface this modal so the user can restart-and-
- * install on their terms. "Install Update & Restart App" calls back into Electron, which
- * stops the bundled gateway gracefully before ShipIt swaps the .app bundle,
- * then relaunches.
+ * finished downloading we surface this modal so the user can choose when it
+ * installs. "Install when I quit" only ARMS the update: nothing stops or
+ * restarts while the app runs, and the install happens on the user's own quit,
+ * after the bundled gateway has stopped. Once armed (the main process re-emits
+ * 'downloaded' with `armed: true`) the dialog says so and offers "Restart now",
+ * a plain quit and relaunch whose quit applies the armed update.
  *
  * Replayed states (payload.replayed — seeded from getInfo() after a renderer
  * reload) never open the modal: the user already saw and possibly dismissed
@@ -102,7 +104,10 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
 
   // Install-and-restart, with its one-way latch and the reset for a refused or
   // aborted handoff (see useInstallDispatch).
-  const { installMutation, dispatched: installing, dispatchInstall } = useInstallDispatch(update)
+  const {
+    installMutation, dispatched: installing, dispatchInstall,
+    armed, canArmOnQuit, canRestartNow, restartNow, restartNowPending, restartNowFailed,
+  } = useInstallDispatch(update)
 
   const open = !!update && update.state === 'downloaded' && !update.replayed && dismissed === null && !held
 
@@ -262,19 +267,40 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
           {/* While the request has failed, the failure notice below is the only
               status claim: "ready to install" beside "failed to install" leaves
               the reader unable to tell which is true, or whether retrying helps. */}
-          {!installMutation.isError && (
+          {!installMutation.isError && !armed && (
             <p>{i18nT('components.updateModal.kirocrew')} {version && <span className="font-semibold">{version}</span>} {i18nT('components.updateModal.is_downloaded_and_ready_to_install')}</p>
+          )}
+          {armed && (
+            <p data-testid="update-modal-armed">{i18nT('components.updateModal.armed_installs_on_quit', { version })}</p>
           )}
           {notes && (
             <p className="mt-2 text-[13px] text-muted whitespace-pre-wrap max-h-40 overflow-auto">{notes}</p>
           )}
           {/* Not beside a failed request: "will close and relaunch automatically"
               would contradict the failure notice below it. */}
-          {!installMutation.isError && (
+          {!canArmOnQuit && !armed && (
+            <p className="mt-2 text-[12px] text-muted" data-testid="update-modal-app-too-old">
+              {i18nT('components.updateModal.armed_app_too_old')}
+            </p>
+          )}
+          {!installMutation.isError && !armed && canArmOnQuit && (
             <p className="mt-2 text-[12px] text-muted">
-              {i18nT('components.updateModal.install_restart_timing')}
+              {i18nT('components.updateModal.install_on_quit_timing')}
               {showsWindowsInstaller && ` ${i18nT('components.updateModal.windows_installer_handoff')}`}
             </p>
+          )}
+          {/* The restart request itself was refused or threw: nothing restarted,
+              and the update is still armed for the next quit. */}
+          {armed && restartNowFailed && (
+            <div className="mt-2">
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('components.updateModal.restart_now_failed')}
+                askAgent
+                onHandoff={() => setDismissed('ready')}
+                testId="update-modal-restart-error"
+              />
+            </div>
           )}
           {/* The install IPC itself rejected (the main process threw before any
               update state was pushed), so nothing else on screen reports it and
@@ -302,18 +328,31 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
           >
             {i18nT('components.updateModal.later')}
           </button>
-          <button
-            type="button"
-            className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"
-            onClick={dispatchInstall}
-            disabled={installing}
-          >
-            {installing
-              ? i18nT('components.updateModal.restarting')
-              : installMutation.isError
+          {armed ? (
+            canRestartNow && (
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"
+                onClick={restartNow}
+                disabled={restartNowPending}
+              >
+                {restartNowPending
+                  ? i18nT('components.updateModal.restarting')
+                  : i18nT('components.updateModal.restart_now')}
+              </button>
+            )
+          ) : canArmOnQuit && (
+            <button
+              type="button"
+              className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"
+              onClick={dispatchInstall}
+              disabled={installing}
+            >
+              {installMutation.isError
                 ? i18nT('pages.settings.aboutPanel.try_again')
-                : i18nT('components.updateModal.restart_update')}
-          </button>
+                : i18nT('components.updateModal.install_on_quit')}
+            </button>
+          )}
         </div>
       </UpdateReadyDialog>
     </div>
