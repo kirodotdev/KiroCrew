@@ -795,6 +795,19 @@ tokens `Infinity`/`NaN` and reads them back, but the dashboard's `JSON.parse`
 rejects the whole snapshot ("Could not load snapshot") while the run itself
 succeeds. `None` matches what a browser's `JSON.stringify` writes.
 
+Event data and the terminal `result` go one step further through
+`kiro_crew.strict_json.json_plain`: a value `json` cannot write at all (a set, a
+date, any object) becomes its `str`, and so does a dict key that is not a string,
+number, bool or `None` (a tuple). Without it a set in the result made every
+`GET /api/workflows/runs/{id}` a 500 while the store's `default=str` wrote the
+text, and a tuple key failed every checkpoint, so a restart read the last
+"running" checkpoint back as `failed: interrupted` and the result was lost. A
+value `json` already writes is returned as the same object, and a mapping whose
+text key would collide with another key, as Python or as the JSON key it is
+written as (the text `"1"` and the number `1`), becomes its `str` whole, so no
+entry is dropped. The built-in Workflows app's `/run` handler returns its result through
+`json_plain` too.
+
 `RunHandle` holds `run_id`, `name`, `status`, the growing `events` list, `result`,
 `error`, `author`, `session_key`, `source`, `args`, `agent_results`,
 `agent_errors`, exact saved-definition provenance, optional `derived_from`

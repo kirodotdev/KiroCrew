@@ -22,7 +22,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
-from kiro_crew.strict_json import json_portable
+from kiro_crew.strict_json import json_plain, json_portable
 
 from . import WorkflowEvent
 
@@ -577,7 +577,7 @@ class RunRegistry:
         if h is None or h.status not in ACTIVE_STATUSES:
             return None  # idempotent: only the first terminal transition counts
         h.status = status
-        h.result = json_portable(result)
+        h.result = json_plain(result)
         h.error = error
         return h
 
