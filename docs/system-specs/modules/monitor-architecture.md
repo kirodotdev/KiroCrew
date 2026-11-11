@@ -231,8 +231,10 @@ gate's terminal recheck cannot spend the loop's own wake), bounded by
 `_MAX_REMEMBERED_TOKENS` and `_MAX_WATCHERS_PER_ITEM`, and dropped when the item
 closes. A newer stall token replaces older ones, since only the newest can recur.
 A token is marked seen when the probe emits it, not when the turn lands. A woken
-turn that fails, or a recovery it queued for itself that fails, is charged to the
-loop (see [learn-cron-dashboard](learn-cron-dashboard.md)), so
+turn that fails, a recovery it queued for itself that fails, or the turn that
+carries a steered wake (the running turn that took it, or the steer's own requeued
+turn) that fails, is charged to the loop (see
+[learn-cron-dashboard](learn-cron-dashboard.md)), so
 `gate._spend_ledger_wake_retry` buys one plain patrol turn on the next tick that
 reads the board, not the wake's text again.
 

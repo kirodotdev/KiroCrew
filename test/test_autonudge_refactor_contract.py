@@ -229,7 +229,7 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_serialized_loops": ("method", "297c6249aa5f"),
     "_set_monitor_deadline": ("method", "a9f111186976"),
     "_settle_delivered_terminal": ("method+async", "fa9fb3019298"),
-    "_settle_fire_cycle": ("method+async", "1146844abf1f"),
+    "_settle_fire_cycle": ("method+async", "c04d230bcaeb"),
     "_sidecar_transaction": ("method", "140eaa502228"),
     "_start_persistence": ("method", "3582b2532748"),
     "_stop_monitor_admitted": ("method+async", "5cc2e2081504"),

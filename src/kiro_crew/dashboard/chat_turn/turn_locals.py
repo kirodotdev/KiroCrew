@@ -89,7 +89,8 @@ class _ChatTurn:
     _directive_loop_id: "str"
     _directive_loop_gen: "int"
     # The loop whose own cycle this turn is, for its fault counts: the delivered
-    # wake's, or the one a recovery entry carried (``_recovered_wake``).
+    # wake's, the one a recovery or requeued wake entry carried
+    # (``_recovered_wake``), or a steered wake's this turn took (``steer_queue``).
     _wake_cycle: "tuple[str, int] | None"
     _skill_trigger_text: "str | None"
     _directive_channel_origin: "bool"

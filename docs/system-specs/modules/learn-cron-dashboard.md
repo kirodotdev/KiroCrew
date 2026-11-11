@@ -6882,6 +6882,26 @@ kind whose cycles keep dying in their recovery reaches these stand-downs, and a
 work-ledger wake whose turn died on a provider throttle earns its one retry on the
 next tick (#31640).
 
+A work-ledger wake steered into a running turn is that loop's cycle in the turn
+that carries it, for the same two streaks and with the same lack of authority.
+The steer records the loop's config generation beside its `{"cycle", "loop_id"}`
+automation meta (`session_deliver.WAKE_GENERATION`, held in
+`slot._steer_automation`, never on a row). A running turn whose
+`steering_consumed` echo settles that steer adopts the wake as its `_wake_cycle`
+(the newest, last-sent one when one echo settles several), replacing a cycle it
+already carries (the steer names the slot's live loop at its current
+generation), so its fault, and the fault of a recovery it then queues for
+itself, is charged to the loop. A steer the turn ended before taking is requeued
+with the generation moved out of `AUTOMATION_STEER_META` onto the entry's
+process-local `_recovered_wake`, and the drain passes it to the requeued wake's own
+turn while the entry still carries its automation origin (a person's edit takes
+that origin off, and their words charge no loop). A person's turn that took the
+wake is charged once, as the loop's cycle would be, so on a loop already one
+failure short of its stand-down a fault of the person's own request can bring that
+stand-down one cycle forward. A landed turn still ends the wake's claim whichever
+turn it was, so a running turn that lands without taking the steer leaves the
+requeued wake's turn a charge but no retry; the quiet floor delivers then (#32250).
+
 A `model_refused` stop is imposed when a loop's own delivered cycle ends on a
 model-side content refusal that nothing retried. `agent.refusal_fallback_model`
 retries only attended turns, so for an unattended cycle the refusal card is

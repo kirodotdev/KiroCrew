@@ -173,9 +173,13 @@ def _failure_streak(loop: NudgeLoop) -> int:
     return loop.consecutive_start_failures + loop.consecutive_failed_cycles
 
 
-def _note_ledger_wake(svc: AutoNudgeService, loop: NudgeLoop) -> None:
-    """A work-ledger wake was delivered: remember the failure streak it went out at."""
-    svc._ledger_wake_streak[loop.id] = _failure_streak(loop)
+def _note_ledger_wake(svc: AutoNudgeService, loop: NudgeLoop, sent_streak: int) -> None:
+    """A work-ledger wake was delivered: remember the failure streak it went out at.
+
+    *sent_streak* is read before the delivery is awaited, because the turn that
+    carries the wake can fail, and grow the streak, before the delivery returns.
+    """
+    svc._ledger_wake_streak[loop.id] = sent_streak
 
 
 def _spend_ledger_wake_retry(svc: AutoNudgeService, loop: NudgeLoop) -> bool:
