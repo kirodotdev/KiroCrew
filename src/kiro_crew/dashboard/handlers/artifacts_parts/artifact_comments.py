@@ -531,6 +531,22 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
     if not target:
         return _err("comment not found", status=404)
 
+    # Resolve is human-only, so an agent must not undo it by moving a resolved
+    # thread back to REVIEW. Same header-based actor inference as
+    # resolve; a person can still reopen or mark review from the dashboard.
+    if target.status == "resolved" and request.headers.get("X-Internal-Secret") is not None:
+        _audit(
+            tool="artifact_mark_review",
+            request=request,
+            outcome="denied",
+            error="thread already resolved",
+            extra={"slug": slug, "comment_id": comment_id},
+        )
+        return _err(
+            "thread already resolved by the person — agents cannot reopen it",
+            status=409,
+        )
+
     # If provider-origin, mark on provider too — gated by the same
     # capabilities.publish chokepoint (a provider-side review mutation is an
     # outbound state change). A denied policy keeps the review LOCAL.

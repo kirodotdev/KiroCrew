@@ -572,6 +572,33 @@ class TestAgentDeleteComment:
         assert resp.status == 403
         assert store.list_comments("doc")[0].status == "open"
 
+    @pytest.mark.asyncio
+    async def test_agent_mark_review_on_resolved_thread_409(self, store):
+        """Resolve is the person's call, so an agent mark_review must
+        not move a thread the person resolved back to REVIEW."""
+        root = await _post("doc", text="root")
+        rresp = await h.api_artifact_resolve_comment(
+            _req(body={}, match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert rresp.status == 200
+        events_before = len(store.get("doc").events)
+        resp = await h.api_artifact_mark_review(
+            _agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 409
+        assert "resolved" in _j(resp)["error"]
+        assert store.list_comments("doc")[0].status == "resolved"
+        assert len(store.get("doc").events) == events_before
+
+    @pytest.mark.asyncio
+    async def test_agent_mark_review_on_open_thread_still_works(self, store):
+        root = await _post("doc", text="root")
+        resp = await h.api_artifact_mark_review(
+            _agent_req(match={"slug": "doc", "comment_id": root["id"]})
+        )
+        assert resp.status == 200
+        assert store.list_comments("doc")[0].status == "review"
+
 
 class TestCommentIdentityFromRequest:
     """Post and reply read who wrote the comment from the request, like delete
