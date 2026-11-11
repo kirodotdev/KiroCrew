@@ -1239,6 +1239,35 @@ _CMD_SEPARATOR_RE = re.compile(r"&&|\|\||[;|\n]")
 _SHELL_SEGMENT_SEPARATORS = ("&&", "||", ";", "|")
 
 
+def _quoted_newlines_are_data(text: str) -> bool:
+    """True when a newline inside quotes in *text* can stay inside its word.
+
+    Bash reads a quoted newline as part of the word, so ``git commit -m
+    "t<nl><nl>b" && git push origin feature`` is two commands. Cutting there left
+    the push with an unterminated quote, an unparseable push, and the ungated
+    sentinel refused an ordinary feature-branch push.
+
+    The per-line split stays where this walk's quote state is not the shell's:
+    a HEREDOC (an active ``<<``, not ``<<<``) -- its body is prose, and an
+    apostrophe in it would hold a quote open past the tag line and swallow a
+    following ``git push origin main`` -- and a walk ending on an open quote or
+    a dangling escape. A word that keeps a newline never equals a protected name.
+    """
+    state = 0
+    for step in _iter_shell_chars(text):
+        if step.trailing_escape:
+            return False
+        if (
+            step.active
+            and text.startswith("<<", step.offset)
+            and not text.startswith("<<<", step.offset)
+            and (step.offset == 0 or text[step.offset - 1] != "<")
+        ):
+            return False
+        state = step.state
+    return state == 0
+
+
 def _split_push_command_segments(text: str) -> list[str]:
     """Split *text* into the shell's TRUE command segments, honouring quoting.
 
@@ -1251,10 +1280,12 @@ def _split_push_command_segments(text: str) -> list[str]:
     boundary, so an ordinary unprotected refname was denied by the protective
     fallback (and by its ungated sentinel, which no catalog row can switch off).
 
-    A NEWLINE always separates, escaped or not, and the backslash is KEPT in the
-    segment it ends. That is not an inconsistency: a backslash-newline VANISHES
-    in bash, fusing the words on either side into one that neither segment can
-    reconstruct (``origin ma\\`` + newline + ``in`` publishes MAIN), and the
+    An unquoted NEWLINE separates, escaped or not, and the backslash is KEPT in
+    the segment it ends (a QUOTED newline stays in its word, see
+    :func:`_quoted_newlines_are_data`). That is not an inconsistency: a
+    backslash-newline VANISHES in bash, fusing the words on either side into one
+    that neither segment can reconstruct (``origin ma\\`` + newline + ``in``
+    publishes MAIN), and the
     retained trailing escape is exactly the signal the cumulative-open-state
     check ungates on. Every other escaped separator survives as a LITERAL
     character in the word, so the fused word necessarily contains it and can
@@ -1272,6 +1303,7 @@ def _split_push_command_segments(text: str) -> list[str]:
     state machine, so this cannot disagree with the word split or the boundary
     walk about where a quote ends.
     """
+    quoted_newlines_are_data = _quoted_newlines_are_data(text)
     segments: list[str] = []
     rest = text
     while True:
@@ -1281,12 +1313,18 @@ def _split_push_command_segments(text: str) -> list[str]:
             if step.trailing_escape:
                 buf.append(step.text)
                 break
+            escaped = step.text.startswith("\\")
+            if step.char == "\n" and quoted_newlines_are_data and not escaped and step.state:
+                # Inside quotes: a character of the word, not a separator.
+                buf.append(step.text)
+                continue
             if step.char == "\n":
-                # A NEWLINE always separates. When it was ESCAPED the backslash
-                # is kept, because that is the splice signal: bash makes the
-                # backslash-newline vanish, fusing the words on either side into
-                # one that neither segment can reconstruct.
-                if step.text.startswith("\\"):
+                # An unquoted NEWLINE separates, and so does an escaped one. When
+                # it was ESCAPED the backslash is kept, because that is the
+                # splice signal: bash makes the backslash-newline vanish, fusing
+                # the words on either side into one that neither segment can
+                # reconstruct.
+                if escaped:
                     buf.append("\\")
                 resume_at = step.offset + len(step.text)
                 break

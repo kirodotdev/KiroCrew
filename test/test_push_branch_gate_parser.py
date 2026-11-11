@@ -233,6 +233,49 @@ class TestTokenizerContractBetweenTheLayers:
         for cmd in ("git push origin ma\\\nin", 'git push origin "ma\\\nin"'):
             assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(cmd), cmd
 
+    def test_a_quoted_newline_stays_inside_its_word(self):
+        # A multi-line commit message is one quoted word. Cutting it at its
+        # newlines left the push segment with an unterminated quote, which read
+        # as an unparseable push and refused an ordinary feature-branch push
+        # through the ungated sentinel.
+        from kiro_crew.security import _split_push_command_segments
+
+        assert _split_push_command_segments('git commit -m "a\n\nb" && git push origin x') == [
+            'git commit -m "a\n\nb" ',
+            " git push origin x",
+        ]
+        for cmd in (
+            'git commit -m "a\n\nb" && git push origin chore/63-x',
+            "git commit -m 'a\n\nb' && git push origin chore/63-x",
+            'git commit -q -m "t\n\nCo-Authored-By: C <n@a.com>" && '
+            "git push -q origin chore/63-x 2>&1 | tail -2; git log --oneline -1",
+        ):
+            assert security._git_publish_floor_tags(cmd.lower()) == frozenset(), cmd
+
+    def test_a_quoted_newline_does_not_hide_a_protected_push(self):
+        floor = security._git_publish_floor_tags
+        protected = "git-publish-push-protected-branch-name"
+        assert protected in floor('git commit -m "a\n\nb" && git push origin main')
+        assert protected in floor('git commit -m "a\nb" && git push origin x\ngit push origin main')
+        assert security._GIT_PUBLISH_UNGATED in floor(
+            'git commit -m "a\nb" && git push origin ma$(echo)in'
+        )
+
+    def test_a_heredoc_or_open_quote_keeps_the_per_line_split(self):
+        # A heredoc body is not shell syntax: an apostrophe in prose would open a
+        # quote that swallows the push after the tag line. An unterminated quote
+        # has no trustworthy word boundary either. Both keep reading line by line.
+        from kiro_crew.security import _split_push_command_segments
+
+        heredoc = "cat <<EOF\nit's\nEOF\ngit push origin main"
+        assert _split_push_command_segments(heredoc)[-1] == "git push origin main"
+        assert "git-publish-push-protected-branch-name" in security._git_publish_floor_tags(heredoc)
+        assert security._GIT_PUBLISH_UNGATED in security._git_publish_floor_tags(
+            "git commit -m 'x\ny\" && git push origin main"
+        )
+        # A here-string is not a heredoc, so its quoted newline stays data.
+        assert security._git_publish_floor_tags("cat <<<'a\nb' && git push origin x") == frozenset()
+
     def test_a_wrapped_payload_is_one_word_not_a_bare_git_token(self):
         # ``str.split`` tore a wrapper's quoted payload into fragments, so the
         # OUTER line — which is not itself a push — parsed as one and its
