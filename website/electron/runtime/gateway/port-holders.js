@@ -199,9 +199,11 @@ function createPortHolders({
         ["-nP", `-iTCP:${probePort}`, "-sTCP:LISTEN", "-t"],
         { timeout: 5000 },
         (error, stdout) => {
-          // lsof exits non-zero with empty output for no match. Only an EXECUTE
-          // failure is unknown; treating it as a free port permits blind kills.
-          if (error && (error.code === "ENOENT" || error.code === "EACCES")) {
+          // lsof exits non-zero with empty output for no match. An EXECUTE
+          // failure, or a run killed at the timeout, is unknown: reading it as
+          // a free port would report a held port free and permit blind kills.
+          if (error && (error.code === "ENOENT" || error.code === "EACCES" ||
+              error.killed || error.signal)) {
             reject(error);
             return;
           }
