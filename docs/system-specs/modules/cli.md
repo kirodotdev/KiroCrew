@@ -814,12 +814,16 @@ exfiltration redactors run.
 
 `kirocrew setup` performs:
 
-1. Saves `KIROCREW_PROJECT_DIR` to `~/.kiro/crew/project_dir`
-2. Installs agent config to `~/.kiro/agents/kirocrew.json`
-3. Prompts for Slack credentials and the slash-command name only when `--slack`
+1. Prints a `Prerequisites` notice for `node` or `kiro-cli` missing from PATH
+   (`_ensure_prerequisites`: no install, never blocks). On the KAS bundle route a
+   missing `node` reads `not needed`, naming the installed bundle's own Node, as
+   doctor's node row does; elsewhere it is the install-Node advice
+2. Saves `KIROCREW_PROJECT_DIR` to `~/.kiro/crew/project_dir`
+3. Installs agent config to `~/.kiro/agents/kirocrew.json`
+4. Prompts for Slack credentials and the slash-command name only when `--slack`
    is passed; the default wizard configures no messaging channels and prints a
    pointer to connect them later
-4. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
+5. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
 
 The saved project dir enables running `kirocrew` from any directory.
 
