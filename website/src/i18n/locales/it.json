@@ -16615,6 +16615,8 @@
         "sign_in_required_help": "Questo server usa OAuth e nessuno ha ancora effettuato l’accesso. <chatLink>Vai alla chat</chatLink>, avvia una nuova sessione e invia un messaggio qualsiasi: ti verrà chiesto di approvare l’accesso nella chat. Poi esegui un sondaggio per aggiornare l’elenco.",
         "sign_in_kas_chat_note": "Le chat su Kiro Agent non usano un accesso fatto qui. Accedi dalla chat, con la sua scheda Autorizza.",
         "sign_in_kas_chat_again_note": "Le chat su Kiro Agent non usano ancora questo accesso. Accedi di nuovo per salvarlo per loro.",
+        "sign_in_unsupported_on_kas": "Questo server non può ancora accedere con il motore Kiro Agent. È configurato con impostazioni di accesso proprie, che Kiro Agent non può usare.",
+        "sign_in_unavailable": "Accesso non disponibile",
         "oauth_not_a_static_token": "Questo server accede tramite OAuth, quindi un header Authorization statico non è sufficiente. Rimuovi e aggiungi di nuovo il server senza l’header, attivalo, poi avvia una nuova sessione di chat per accedere.",
         "sign_in_required_next": "Dopo l’approvazione, usa il pulsante Sonda i server MCP sopra questa tabella; la riga mostrerà quindi Accesso effettuato.",
         "signed_in": "Accesso effettuato",
