@@ -62,7 +62,15 @@ function gwCheckErrorText(code: string): string {
  * `AboutPanel` calls it once per render, ahead of the verdicts it derives from this
  * state for the hero card and the Updates card.
  */
-export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
+/** The background check's answer, from the status frame. */
+export interface BackgroundCheck {
+  /** `update_last_checked_at`: when the last check finished, epoch seconds. */
+  checkedAt: number | null
+  /** `update_check_status`. */
+  status: string | undefined
+}
+
+export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background: BackgroundCheck) {
   const [gwChanges, setGwChanges] = useState('')
   const [gwTarget, setGwTarget] = useState('')
   // Display-only sibling of gwTarget, folded to the clean release version on
@@ -82,6 +90,19 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
   // `checked` is the verdict, and `gwError` names why there is none.
   const [gwChecked, setGwChecked] = useState(false)
   const [gwError, setGwError] = useState('')
+  // The newest answer a check in THIS tab got (the Check button or a channel
+  // switch, which re-runs the check): when it finished, on the backend's own
+  // clock, and whether it failed. Null = this tab has not checked. A later
+  // background check (a newer status-frame stamp) supersedes it.
+  const [local, setLocal] = useState<{ at: number; failed: boolean } | null>(null)
+  // An answer with no stamp of its own (a request that failed outright, an
+  // older gateway, a check superseded by a channel switch) is dated at the
+  // newest stamp seen so far, this tab's previous answer included: newer than
+  // every answer already known, older than any later one.
+  const recordLocal = (failed: boolean, d?: { last_checked_at?: unknown }) => {
+    const stamp = typeof d?.last_checked_at === 'number' ? d.last_checked_at : null
+    setLocal(prev => ({ at: stamp ?? Math.max(prev?.at ?? 0, background.checkedAt ?? 0), failed }))
+  }
   // Why there is no verdict when nothing FAILED: this gateway is not the update
   // surface for the install it runs inside. Separate from `gwError` because
   // rendering a deferral under "Couldn't check for updates" would be its own
@@ -121,6 +142,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       // version" until the flag catches up.
       setGwFound(d?.update_available === true)
       setGwChecked(d?.check_status === 'succeeded')
+      recordLocal(typeof d?.error_code === 'string', d)
       // Adopted unconditionally (0 when absent) so one check's divergence can
       // never survive into the next check's verdict.
       setGwAhead(typeof d?.commits_ahead === 'number' ? d.commits_ahead : 0)
@@ -142,6 +164,17 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       // The check read the saved switch too, which another tab or the CLI may
       // have changed: adopt it, unless a save or a read has moved it since.
       adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
+    },
+    // The request itself failed: that is now the newest answer, so an earlier
+    // check's verdict and reason must not outlive it.
+    onError: () => {
+      setGwChecked(false)
+      setGwFound(false)
+      setGwAhead(0)
+      setGwBehind(0)
+      setGwError('')
+      setGwUnavailableReason('')
+      recordLocal(true)
     },
   })
   const gwApply = useMutation({
@@ -203,6 +236,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       if (typeof d?.channel === 'string') setGwChannel(d.channel)
       setGwFound(d?.update_available === true)
       setGwChecked(d?.check_status === 'succeeded')
+      recordLocal(typeof d?.error_code === 'string', d)
       setGwAhead(typeof d?.commits_ahead === 'number' ? d.commits_ahead : 0)
       setGwBehind(typeof d?.commits_behind === 'number' ? d.commits_behind : 0)
       // Only `error_code` may render as an error; a deferral is not a failure.
@@ -216,7 +250,16 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
     },
   })
+  // Which answer is newest, local or background, decided once here for the hero
+  // and the card alike. Equal stamps are the same check, and the local answer
+  // carries its reason, so a tie goes to it.
+  const newestIsLocal = local !== null
+    && !(background.checkedAt !== null && background.checkedAt > local.at)
+  const newestCheckFailed = newestIsLocal ? local.failed : background.status === 'failed'
+  const newestCheckSucceeded = newestIsLocal ? gwChecked : background.status === 'succeeded'
+
   return {
+    newestIsLocal, newestCheckFailed, newestCheckSucceeded,
     gwChanges, gwTarget, gwTargetDisplay, gwFound, gwAhead, gwBehind, gwChecked, gwError,
     gwUnavailableReason, gwSelfUpdatable, gwChannel, gwChannelError, gwCommand, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, showConfirm, setShowConfirm,
@@ -281,7 +324,7 @@ export function AboutPanelGatewayUpdates({
   const {
     gwChanges, gwTarget, gwTargetDisplay, gwChecked, gwError, gwUnavailableReason, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, setShowConfirm, applyError,
-    setApplyError, restarting, setRestarting, gwCheck, gwRestart,
+    setApplyError, restarting, setRestarting, gwCheck, gwRestart, newestIsLocal, newestCheckFailed,
   } = gwUpdate
   // A git checkout that is only behind its upstream reports the version it
   // already runs as the target, so the text names no version then.
@@ -419,7 +462,7 @@ export function AboutPanelGatewayUpdates({
               "you're on the latest version" while being two releases
               behind. An unrecognised error code still lands here (in the
               error branch), never in the success branch. */}
-          {gwCheck.isSuccess && gwChecked && !gwError && !gwUnavailableReason && !showUpdate && (
+          {gwCheck.isSuccess && newestIsLocal && gwChecked && !gwError && !gwUnavailableReason && !showUpdate && (
             gwDiverged ? (
               /* The third verdict: diverged. "No update available" here is
                  the no-auto-apply safety property doing its job, not
@@ -438,14 +481,17 @@ export function AboutPanelGatewayUpdates({
               <span className="text-ok text-[13px] flex items-center gap-1.5" data-testid="up-to-date"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
             )
           )}
-          {gwCheck.isSuccess && !!gwUnavailableReason && (
+          {gwCheck.isSuccess && newestIsLocal && !!gwUnavailableReason && (
             <span className="text-muted text-[13px] flex items-center gap-1.5" data-testid="check-not-applicable"><Package size={13} className="lucide-inline" /> {gwCheckErrorText(gwUnavailableReason)}</span>
           )}
-          {/* askAgent on: a failed read; the Check button above is the retry. */}
-          {(gwCheck.isError || (gwCheck.isSuccess && !!gwError)) && (
+          {/* askAgent on: a failed read; the Check button above is the retry.
+              Keyed on the NEWEST answer, so a failed background check gets the
+              notice too (no reason: the status frame carries none), and a
+              newer success clears an older failure. */}
+          {newestCheckFailed && (
             <ErrorNotice
               variant="inline"
-              message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}${gwError ? `: ${gwCheckErrorText(gwError)}` : ''}`}
+              message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}${newestIsLocal && gwError ? `: ${gwCheckErrorText(gwError)}` : ''}`}
               askAgent
               testId="check-failed"
             />

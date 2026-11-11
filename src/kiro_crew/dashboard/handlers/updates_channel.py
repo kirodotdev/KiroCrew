@@ -30,7 +30,11 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.overlay_owners import SOURCE_POLICY, OverlayPin, overlay_pin
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.updates_check import _do_update_check, _invalidate_update_check
+from kiro_crew.dashboard.handlers.updates_check import (
+    _do_update_check,
+    _invalidate_update_check,
+    last_checked_at,
+)
 from kiro_crew.dashboard.handlers.updates_step_up import _audit_update_event
 from kiro_crew.dashboard.handlers.updates_verdict import (
     _display_local_version,
@@ -411,6 +415,8 @@ async def api_update_channel(request: web.Request) -> web.Response:
         {
             "ok": True,
             **_update_info,
+            # The re-check's stamp, as on GET /api/update/check.
+            "last_checked_at": last_checked_at(),
             "auto_update": cfg.auto_update,
             **(await asyncio.to_thread(overlay_pin, "auto_update")).fields(),
             # AFTER the spread, deliberately. When a check was already in flight

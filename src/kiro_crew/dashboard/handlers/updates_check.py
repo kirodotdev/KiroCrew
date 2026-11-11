@@ -140,6 +140,15 @@ def _update_policy_file() -> str:
     return str(_policy_home_path())
 
 
+def last_checked_at() -> float | None:
+    """When the last update check finished (epoch seconds), or None if none has.
+
+    The status frame and the check and channel responses all carry this one
+    stamp, so the dashboard can tell which of two answers is newer.
+    """
+    return _last_update_check or None
+
+
 def status_update_fields() -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
@@ -204,7 +213,7 @@ def status_update_fields() -> dict[str, object]:
         # manual check. 0/0 everywhere except a successful git-checkout check.
         "update_commits_ahead": ahead if isinstance(ahead, int) else 0,
         "update_commits_behind": behind if isinstance(behind, int) else 0,
-        "update_last_checked_at": _last_update_check or None,
+        "update_last_checked_at": last_checked_at(),
         "update_check_interval_secs": _UPDATE_CHECK_INTERVAL,
         # Mandatory-update verdict (governance pin OR feed floor) plus the floor
         # that triggered it, on the hot path because the proactive update popup
@@ -271,6 +280,8 @@ async def api_update_check(request: web.Request) -> web.Response:
         {
             **_update_info,
             "current_version": _display_local_version(),
+            # The same stamp the status frame carries as `update_last_checked_at`.
+            "last_checked_at": last_checked_at(),
             "update_auto_effect": _status_auto_update_effect(),
             # DISPLAY-ONLY sibling of the raw `latest_version` above (unpacked
             # via `**_update_info`) — folds a promoted stable candidate's

@@ -131,6 +131,21 @@ class TestChannelEndpoint:
         # lane's verdict as this lane's answer.
         assert len(checked) == 1
 
+    def test_switch_response_carries_the_recheck_stamp(self, _isolated_channel_home, monkeypatch):
+        """The same stamp the status frame carries, so the panel can order the two."""
+        update_layout.set_release_channel("stable")
+
+        async def _fake_check() -> None:
+            monkeypatch.setattr(updates, "_last_update_check", 1_700_000_456.0)
+
+        with (
+            patch.object(updates, "detect_install_layout", return_value=self._feed_layout()),
+            patch.object(updates, "_do_update_check", _fake_check),
+        ):
+            resp = asyncio.run(updates.api_update_channel(_request({"channel": "insider"})))
+
+        assert json.loads(resp.body.decode())["last_checked_at"] == 1_700_000_456.0
+
     def test_switch_response_carries_the_folded_display_sibling(self, _isolated_channel_home):
         """The switch response is the check contract re-run against the new
         lane, and the panel adopts it wholesale — so it must carry the same
