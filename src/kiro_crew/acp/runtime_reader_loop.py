@@ -16,7 +16,7 @@ Instance fields read: ``_acp_backend``, ``_announced_children``, ``_announced_ov
 ``_mcp_secret_server``, ``_native_skill_projection``, ``_process``,
 ``_session_inits_in_flight``, ``_session_queues``, ``_start_collectors``,
 ``_subagent_owner``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
-``_turn_active_sessions``, ``recording_allowed``.
+``_turn_active_sessions``, ``mcp_connect_progress``, ``recording_allowed``.
 """
 
 from __future__ import annotations
@@ -566,6 +566,12 @@ async def _reader_loop(self: AcpRuntime) -> None:
 
             # Route notifications by sessionId
             session_id = (msg.params or {}).get("sessionId")
+            # Read before routing, so a snapshot for a session that is not
+            # registered yet (or any more) still says the shared queue moved.
+            # Read with getattr: a runtime built without __init__ has none.
+            _progress = getattr(self, "mcp_connect_progress", None)
+            if _progress is not None:
+                _progress.observe(msg)
             if not session_id and _subagent_list_update and msg.method == _subagent_list_update:
                 # Snapshot backend-internal subagent session ids before the
                 # broadcast below delivers the frame to the UI consumers.

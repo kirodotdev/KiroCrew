@@ -33,6 +33,7 @@ from kiro_crew.acp import runtime_wire as _rt_wire
 from kiro_crew.acp.client import CLIENT_NAME
 from kiro_crew.acp.harness import HarnessAdapter, harness_for
 from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
+from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.runtime_liveness import _DEFAULT_MAX_AGE_SECS, _DEFAULT_MAX_RSS_MB
 from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.runtime_start import _INIT_NOTIFICATION_BUFFER_LIMIT, StartCollector
@@ -518,6 +519,10 @@ class AcpRuntime:
         # (e.g. session/prompt response signals turn completion and must reach the session)
         self._routed_requests: dict[int, str] = {}
         self._session_queues: dict[str, asyncio.Queue[JsonRpcMessage | None]] = {}
+        # Whether the host's MCP connect queue is moving, across every session
+        # on this process. Fed by the reader loop; read by the managed-readiness
+        # barrier at its deadline (see acp/mcp_connect_progress.py).
+        self.mcp_connect_progress = McpConnectProgress()
         # sessionId -> the ``model`` kiro-cli's last ``_kiro.dev/agent/switched``
         # named for it. ``session/set_mode`` answers ``{}``; this notification,
         # sent before that answer, is the only report of the model the activated
