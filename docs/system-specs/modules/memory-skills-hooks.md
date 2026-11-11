@@ -5380,6 +5380,9 @@ row and a read, split because they cost differently:
   drop `version`, `pinned`, `inject_on_trigger` and `created_at`; a reader keeps the
   empty answer. `update_auto_skill` answers that refusal with `False` and writes
   nothing, so the consolidation refine path audits it as `rejected`/`update_failed`.
+  Its write goes through `update_skill` (an atomic replace through the pinned skill
+  directory, mode and ACL carried as for a dashboard edit), so a refine whose write
+  fails leaves the live SKILL.md as it was; a target it refuses is the same `False`.
   The admitted roots are resolved once per generation and root set
   (`_admitted_roots_memo`), not once per check.
 
