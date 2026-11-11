@@ -124,6 +124,7 @@ def rules_version() -> bytes:
     """
     from kiro_crew.dashboard import display_battery
     from kiro_crew.security import redaction
+    from kiro_crew.security.redaction_structured import compat
 
     source = display_battery.rule_source_digest()
     if display_battery.LOADED_DIGEST is None or source != display_battery.LOADED_DIGEST:
@@ -148,6 +149,8 @@ def rules_version() -> bytes:
         b"py=" + sys.version.encode("utf-8", "surrogatepass"),
         b"ucd=" + unicodedata.unidata_version.encode(),
         b"darwin=" + str(redaction._host_darwin_user_dir_id()).encode("utf-8", "surrogatepass"),
+        # The internal switch for the structured detectors (off; no user setting).
+        b"table=" + str(int(compat.use_rule_table())).encode(),
     ]
     return hashlib.sha256(b"\0".join(parts)).digest()[:_VER]
 
