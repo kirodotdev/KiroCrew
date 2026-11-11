@@ -220,15 +220,57 @@ class TestOwnedApprovalStillRoutesToItsSlot:
         assert _requested_slot(gateway) == "slot-spawner"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("marked", [True, False])
+    async def test_a_held_bot_limit_beats_slot_trust_and_auto_approve_sources(
+        self, monkeypatch, marked
+    ) -> None:
+        """A call under a moved Bot's held limit reaches the card (``mate_held_rules``),
+        whether the unattended gate marked it or the parent session is the Bot's."""
+        from kiro_crew import mate_held_rules
+
+        gateway = _make_gateway()
+        gateway.dashboard_state._slots = {"slot-owner": _slot(running=True, trust=True)}
+        gateway._cfg.hooks.get = MagicMock(return_value=["autonudge"])
+        gateway.dashboard_state.request_approval = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            mate_held_rules, "held_for", lambda *a, **k: [] if marked else ["deny shell"]
+        )
+
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
+            approve_fn = gateway._interactive_approval("autonudge")
+            if marked:
+                with mate_held_rules.held_call(["deny shell"]):
+                    result = await approve_fn(_event("req-held"), "dashboard:slot-owner")
+            else:
+                result = await approve_fn(_event("req-held"), "dashboard:slot-owner")
+
+        assert result is False
+        assert _requested_slot(gateway) == "slot-owner"
+
+    @pytest.mark.asyncio
+    async def test_without_a_held_limit_auto_approve_sources_still_approve(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew import mate_held_rules
+
+        gateway = _make_gateway()
+        gateway._cfg.hooks.get = MagicMock(return_value=["autonudge"])
+        monkeypatch.setattr(mate_held_rules, "held_for", lambda *a, **k: [])
+
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
+            result = await gateway._interactive_approval("autonudge")(_event("r"), "")
+
+        assert result is True
+        gateway.dashboard_state.request_approval.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_failing_resolver_does_not_fall_back_to_a_guess(self) -> None:
         """A resolver that finds nothing yields no slot -- never a bystander."""
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-other": _slot(running=True)}
 
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
-            approve_fn = gateway._interactive_approval(
-                "subagent", slot_resolver=lambda _rid: ""
-            )
+            approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "")
             await approve_fn(_event("req-owned-4"), "")
 
         assert _requested_slot(gateway) == ""
@@ -281,9 +323,7 @@ class TestLowFidelityChildNeverAutoApproved:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -378,9 +418,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_identity_event()) is True
         gateway.dashboard_state.request_approval.assert_not_awaited()
 
@@ -391,9 +429,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=False)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_identity_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -404,9 +440,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 

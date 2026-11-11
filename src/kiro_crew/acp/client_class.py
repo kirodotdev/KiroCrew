@@ -208,6 +208,9 @@ class AcpClient:
         # launch (_prepare_claude_side_read_denies). Empty until then, and a side
         # session whose envelope would carry none is not started.
         self._claude_side_read_denies: tuple[str, ...] = ()
+        # A Bot worker session's held-limit asks, read off the loop before each
+        # envelope (_prepare_claude_held_asks).
+        self._claude_held_asks: tuple[str, ...] = ()
         # The session tree's work directory when this client is a DEDICATED
         # subagent process spawned on a parent's behalf: re-validated at spawn
         # (``agent_scratch.shared_scratch_window``) and mounted as a second
@@ -1206,6 +1209,7 @@ class AcpClient:
     )
     _log_claude_adapter_below_floor = _client_claude_session._log_claude_adapter_below_floor
     _prepare_claude_side_read_denies = _client_claude_session._prepare_claude_side_read_denies
+    _prepare_claude_held_asks = _client_claude_session._prepare_claude_held_asks
     _claude_session_meta = _client_claude_session._claude_session_meta
     _claude_session_excludes_local = _client_claude_session._claude_session_excludes_local
     _verify_claude_project_denies_unchanged = (

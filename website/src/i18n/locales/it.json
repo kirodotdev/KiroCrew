@@ -8699,6 +8699,8 @@
         "yesterday": "Ieri"
       },
       "systemNote": {
+        "bot_limits_held_title": "Un Bot ora chiede prima di alcune azioni",
+        "bot_limits_held_body": "Alcuni limiti impostati per {{name}} non si sono potuti applicare così come sono, quindi ti chiede prima delle azioni che riguardano. Apri il Bot per controllare i suoi permessi.",
         "turn_limit_title": "Conversazione in pausa: limite di turni",
         "turn_limit_body": "Una conversazione {{surface}} ha raggiunto il limite di turni ed è in pausa. Reimpostala dalla dashboard per continuare.",
         "default_model_applied_title": "Modello predefinito applicato",

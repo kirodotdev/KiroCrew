@@ -3246,6 +3246,8 @@
         "kind_webhook": "Webhook"
       },
       "systemNote": {
+        "bot_limits_held_title": "A Bot now asks before some actions",
+        "bot_limits_held_body": "Some limits set for {{name}} could not be applied as written, so it asks you before the actions they cover. Open the Bot to review its permissions.",
         "turn_limit_title": "Conversation paused: turn limit",
         "turn_limit_body": "A {{surface}} conversation reached its turn ceiling and is paused. Reset it from the dashboard to continue.",
         "default_model_applied_title": "Default model applied",

@@ -363,7 +363,11 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
     if not is_crewmate_thread(slot) or slot.key in _notice_checked(state):
         return False
     _notice_checked(state).add(slot.key)
-    from kiro_crew.mate_upgrade_notice import claim_kept_notice, claim_notice_prompt
+    from kiro_crew.mate_upgrade_notice import (
+        claim_kept_notice,
+        claim_notice_prompt,
+        claim_policy_notice,
+    )
 
     binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, slot.key)
     slug = members_mod.slug_from_dm_slot_key(slot.key)
@@ -373,14 +377,37 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
     if prompt:
         _notices(state).add(slot.key)
         _notice_prompts(state)[slot.key] = prompt
-    else:
-        # Not moved: a crewmate the migration left where it was says why, once.
+    # Owed when a start put back the restrictions an earlier upgrade dropped
+    # (``mate_policy_repair``); delivered after a moved notice still owed, which
+    # it corrects. Else a crewmate the migration left where it was says why, once.
+    kept, held = await asyncio.to_thread(claim_policy_notice, slug, slot.agent)
+    if held:
+        _notify_held(state, slot.agent)
+    if not kept and not prompt:
         kept = await asyncio.to_thread(claim_kept_notice, slug, slot.agent)
-        if not kept:
-            return False
+    if kept:
         _kept_notices(state)[slot.key] = kept
+    elif not prompt:
+        return False
     schedule_flush(state, slot.key)
     return True
+
+
+def _notify_held(state: Any, name: str) -> None:
+    """Put one bell note for Bot *name* whose limits now ask a person, linking to its page."""
+    from urllib.parse import quote
+
+    try:
+        state.notify(
+            "agent",
+            "A Bot now asks before some actions",
+            f"Some limits set for {name} could not be applied as written, so it asks "
+            "you before the actions they cover. Open the Bot to review its permissions.",
+            url=f"/members?member={quote(name, safe='')}",
+            i18n={"id": "bot_limits_held", "params": {"name": name}},
+        )
+    except Exception:  # noqa: BLE001 - the chat notice still carries it
+        logger.warning("held-limits bell note failed for %r", name, exc_info=True)
 
 
 async def offer_upgrade_notices(state: Any) -> None:

@@ -8281,6 +8281,8 @@
         "yesterday": "昨天"
       },
       "systemNote": {
+        "bot_limits_held_title": "有个 Bot 现在会先问你再做某些操作",
+        "bot_limits_held_body": "为 {{name}} 设置的部分限制无法按原样生效，所以它在做这些限制涉及的操作前会先问你。打开这个 Bot 查看它的权限。",
         "turn_limit_title": "对话已暂停：达到轮次上限",
         "turn_limit_body": "一个 {{surface}} 对话已达到轮次上限并已暂停。请在仪表板中重置它以继续。",
         "default_model_applied_title": "默认模型已生效",

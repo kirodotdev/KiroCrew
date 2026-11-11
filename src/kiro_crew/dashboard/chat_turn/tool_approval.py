@@ -557,7 +557,9 @@ def _pay_permission_cut(turn: _ChatTurn) -> None:
         turn._turn_flushed_visible_text = _turn_flushed_visible_text
 
 
-def _audit_card_turn_decline(*, session_key: str, slot: Any, event: Any, tier: str) -> None:
+def _audit_card_turn_decline(
+    *, session_key: str, slot: Any, event: Any, tier: str, held: bool = False
+) -> None:
     """Record that an auto-approve was withheld because the turn is a Dashboard card's.
 
     Written only for the tiers that decide without asking anyone (the hook
@@ -572,8 +574,13 @@ def _audit_card_turn_decline(*, session_key: str, slot: Any, event: Any, tier: s
         tool_kind=event.tool_kind,
         outcome="auto_approve_declined",
         request_id=event.request_id,
-        error="the turn was started by a Dashboard card, which never inherits an auto-approval",
-        metadata={"reason": "card_origin_turn", "tier": tier},
+        error=(
+            "the call falls under a Bot limit that could not be applied as written, "
+            "so a person must approve it"
+            if held
+            else "the turn was started by a Dashboard card, which never inherits an auto-approval"
+        ),
+        metadata={"reason": "bot_limit_held" if held else "card_origin_turn", "tier": tier},
     )
 
 
@@ -654,6 +661,15 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # spec pre-allows (``allowedTools``) never raises a permission request, so it never
     # reaches this function and is outside the rule.
     _card_turn = turn._card_origin
+    # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``):
+    # a call it covers is never approved without a person either, so it takes the
+    # same path as a card's turn and reaches the approval card.
+    from kiro_crew import mate_held_rules
+
+    _held = await asyncio.to_thread(
+        mate_held_rules.held_for, event, session_key=session_key, agent=slot.agent or ""
+    )
+    _card_turn = _card_turn or bool(_held)
     # Drain the key as soon as its permission decision begins. The
     # stream handles one decision at a time, so one bounded key is
     # enough for every approval arm below and in _on_permission_prompt;
@@ -912,7 +928,11 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 )
         if _card_turn and tool_result.action == TOOL_AUTO_APPROVE:
             _audit_card_turn_decline(
-                session_key=session_key, slot=slot, event=event, tier="hook_auto_approve"
+                session_key=session_key,
+                slot=slot,
+                event=event,
+                tier="hook_auto_approve",
+                held=bool(_held),
             )
             tool_result = ToolHookResult(action=TOOL_ALLOW)
         if tool_result.action == TOOL_AUTO_APPROVE:
@@ -1398,7 +1418,9 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     if _card_turn and (slot_trusted or yolo_active):
         # A card turn takes neither grant. Cleared HERE, before the trust-reads and
         # trust rungs read them, so the unconditional rung below stays as it is.
-        _audit_card_turn_decline(session_key=session_key, slot=slot, event=event, tier="trust")
+        _audit_card_turn_decline(
+            session_key=session_key, slot=slot, event=event, tier="trust", held=bool(_held)
+        )
         slot_trusted = False
         yolo_active = False
     if (

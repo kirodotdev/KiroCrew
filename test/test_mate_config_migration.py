@@ -340,8 +340,8 @@ def test_a_grant_the_worker_would_gain_is_withheld_for_the_card(layout, persiste
 
 
 def test_an_agent_whose_prompt_does_not_resolve_keeps_its_stated_limits(layout, persisted):
-    """It parses, so the deny it states is read; the default template cannot carry it,
-    so the crewmate moves as is and its notice names the restriction."""
+    """It parses, so the deny it states is read and carried onto the default
+    template's file: the worker keeps it."""
     user, mates = layout
     _write(user, "kirocrew", _template("kirocrew"))
     deny = {"fs_write": {"deniedPaths": ["/etc/**"]}}
@@ -356,10 +356,11 @@ def test_an_agent_whose_prompt_does_not_resolve_keeps_its_stated_limits(layout, 
     report = migrate_existing_crewmates(cfg)
 
     assert report.moved_from_default == ["ijk"] and report.dry_run_failed == {}
-    assert cfg.agents["ijk"].kiro_agent == "ijk"
     assert saved["ijk"]["expected_values"] == {"kiro_agent": "careful"}
-    assert "fs_write" not in _file(mates, "ijk").get("excludedTools", [])
-    assert "toolsSettings for fs_write" in saved_notice("ijk")
+    written = _file(mates, "ijk")
+    merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
+    assert merged["toolsSettings"] == deny
+    assert "no longer apply" not in saved_notice("ijk")
 
 
 def test_a_prompt_that_does_not_resolve_keeps_its_switched_off_server_and_tools_off(
@@ -437,9 +438,11 @@ def test_an_unreadable_agent_moves_onto_the_default_template_and_says_so(layout,
         ("permissions", {"rules": [{"capability": "fs_write", "effect": "deny"}]}),
     ],
 )
-def test_a_crewmate_whose_template_denies_writes_moves_and_is_told(layout, persisted, field, limit):
-    """The worker merge carries neither field, so the deny does not apply on the
-    worker: the crewmate moves as is, nothing is withheld, and the one notice names it."""
+def test_a_crewmate_whose_template_denies_writes_moves_and_its_worker_keeps_the_deny(
+    layout, persisted, field, limit
+):
+    """The worker merge carries both fields, so the move writes the deny into the
+    crewmate's file and its worker runs under it, as the old agent did."""
     user, mates = layout
     _write(user, "careful", _template("careful", **{field: limit}))
     cfg = _cfg(ijk=KiroCrewAgentConfig(member_id="ijk", kiro_agent="careful"))
@@ -449,12 +452,76 @@ def test_a_crewmate_whose_template_denies_writes_moves_and_is_told(layout, persi
 
     assert report.migrated == ["ijk"] and report.dry_run_failed == {}
     written = _file(mates, "ijk")
-    assert field not in written and "excludedTools" not in written
+    assert written[field] == limit
     merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
-    assert "fs_write" not in merged.get("excludedTools", [])
-    assert "fs_write" in report.moved_with_changes["ijk"]
-    notice = saved_notice("ijk")
-    assert "no longer apply" in notice and field in notice and "fs_write" in notice
+    assert merged[field] == limit
+    assert "ijk" not in report.moved_with_changes
+    assert "no longer apply" not in saved_notice("ijk")
+
+
+def test_a_shell_deny_rule_with_an_auto_approved_cron_stays_on_the_worker(layout, persisted):
+    """Raphael's report: deny-only rules (shell, web, an mcp deny except kept tools)
+    were dropped, so every action asked and auto approval took it."""
+    user, mates = layout
+    rules = [
+        {"capability": "shell", "effect": "deny"},
+        {"capability": "web_fetch", "effect": "deny"},
+        {"capability": "mcp", "effect": "deny", "match": ["*"], "exclude": ["kirocrew-core/*"]},
+        {"capability": "web_search", "effect": "allow"},
+    ]
+    _write(user, "crew-boxed", _template("crew-boxed", permissions={"rules": rules}))
+    cfg = _cfg(box=KiroCrewAgentConfig(member_id="box", kiro_agent="crew-boxed"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["box"]
+    written = _file(mates, "box")
+    merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
+    # Every restriction lands; the allow-only rule is a grant and is not written.
+    assert merged["permissions"]["rules"] == rules[:3]
+
+
+def test_a_restriction_the_worker_cannot_carry_moves_held_and_its_worker_starts(layout, persisted):
+    """Never a startup failure: the limit is held for a person and an ``ask`` stands in."""
+    from kiro_crew.mate_held_rules import HELD_KEY
+
+    user, mates = layout
+    unknown = {"execute_bash": {"denyByDefault": True}}
+    _write(user, "odd", _template("odd", toolsSettings=unknown))
+    cfg = _cfg(qwe=KiroCrewAgentConfig(member_id="qwe", kiro_agent="odd"))
+    persisted(cfg)
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["qwe"] and report.dry_run_failed == {}
+    written = _file(mates, "qwe")
+    assert "toolsSettings" not in written
+    merged = mate_worker.merge_worker_spec(BASE, mate_worker.worker_additions(BASE, written))
+    assert {"capability": "shell", "effect": "ask"} in merged["permissions"]["rules"]
+    ledger = json.loads((mates.parent / "migrated.json").read_text(encoding="utf-8"))
+    assert [r["capability"] for r in ledger[HELD_KEY]["qwe"]["rules"]] == ["shell"]
+
+
+def test_a_restriction_on_a_backend_that_cannot_apply_it_is_held_not_written(
+    layout, persisted, monkeypatch
+):
+    """Only KAS applies a Bot file's restrictions; elsewhere nothing is written and all are held."""
+    from kiro_crew.mate_held_rules import HELD_KEY
+
+    user, mates = layout
+    deny = {"rules": [{"capability": "shell", "effect": "deny"}]}
+    _write(user, "careful", _template("careful", permissions=deny))
+    cfg = _cfg(ijk=KiroCrewAgentConfig(member_id="ijk", kiro_agent="careful"))
+    persisted(cfg)
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda c, n=None: "kiro-cli")
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.migrated == ["ijk"]
+    assert "permissions" not in _file(mates, "ijk")
+    ledger = json.loads((mates.parent / "migrated.json").read_text(encoding="utf-8"))
+    assert ledger[HELD_KEY]["ijk"]["rules"][0]["capability"] == "shell"
 
 
 def test_allow_only_permissions_are_grants_not_a_restriction(layout, persisted):
@@ -581,10 +648,11 @@ def test_the_default_template_as_installed_moves_onto_the_worker(layout, persist
     assert "hooks" not in _file(mates, "rty")
 
 
-def test_a_hook_the_worker_base_lacks_moves_and_is_named(layout, persisted):
+def test_a_hook_the_worker_base_lacks_moves_and_runs_on_the_worker(layout, persisted):
     user, mates = layout
     base = _installed_layout(user)
-    hooks = {"postToolUse": [*AUDIT_HOOK["postToolUse"], {"matcher": "fs_write", "command": "x"}]}
+    hook = {"matcher": "fs_write", "command": "x"}
+    hooks = {"postToolUse": [*AUDIT_HOOK["postToolUse"], hook]}
     _write(user, "builder", {**base, "name": "builder", "hooks": hooks, "excludedTools": []})
     cfg = _cfg(uio=KiroCrewAgentConfig(member_id="uio", kiro_agent="builder"))
     persisted(cfg)
@@ -593,8 +661,8 @@ def test_a_hook_the_worker_base_lacks_moves_and_is_named(layout, persisted):
 
     assert report.migrated == ["uio"]
     written = _file(mates, "uio")
-    assert "hooks" not in written and "excludedTools" not in written
-    assert "its postToolUse hook on fs_write" in report.moved_with_changes["uio"]
+    assert written["hooks"] == {"postToolUse": [hook]} and "excludedTools" not in written
+    assert "uio" not in report.moved_with_changes
 
 
 def _ray_kirocrew(base: dict) -> dict:
@@ -1269,6 +1337,29 @@ def test_a_used_synced_row_with_no_identity_gets_one_and_moves(layout, persisted
     # Never chatted (left for the prune), an app's row, a legacy built-in: untouched.
     for name in ("idle", "app", "old"):
         assert cfg.agents[name].member_id == "" and cfg.agents[name].kiro_agent == "pkg-reviewer"
+
+
+def test_a_minted_row_holds_its_limits_under_the_identity_it_was_given(
+    layout, persisted, minting, monkeypatch
+):
+    """A Bot's sessions name it by ``member_id``, so a row given one by this move has
+    its held limits recorded under that id, not the empty one it had before."""
+    from kiro_crew.mate_held_rules import HELD_KEY
+
+    _calls, chatted = minting
+    user, mates = layout
+    deny = {"rules": [{"capability": "fs_read", "effect": "deny"}]}
+    _write(user, "pkg-reviewer", _template("pkg-reviewer", permissions=deny))
+    cfg = _cfg(rvw=KiroCrewAgentConfig(kiro_agent="pkg-reviewer", source="package"))
+    chatted.add("rvw")
+    persisted(cfg)
+    monkeypatch.setattr(mate_worker, "crewmate_worker_backend", lambda c, n=None: "claude")
+
+    report = migrate_existing_crewmates(cfg)
+
+    assert report.identities_minted == ["rvw"]
+    ledger = json.loads((mates.parent / "migrated.json").read_text(encoding="utf-8"))
+    assert ledger[HELD_KEY]["rvw"]["member_id"] == "rvw"
 
 
 def test_a_row_on_a_spec_crew_owns_is_not_given_an_identity(layout, persisted, minting):

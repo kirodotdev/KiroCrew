@@ -700,10 +700,17 @@ def resolve_worker_spec(
         if carried:
             raise uncarried(sorted(carried), "this backend does not apply them; run the Bot on kas")
     additions = worker_additions(base, mate_spec)
-    # An approval the owner took away in Approvals stays away, base-granted or not.
-    return revocations.strip(
-        merge_worker_spec(base, _with_global_tool_offs(base, additions)),
-        _revoked_or_refuse(member_id, name),
+    from kiro_crew.mate_held_rules import strip_held_approvals
+
+    # An approval the owner took away in Approvals stays away, base-granted or not,
+    # and a capability a held limit covers keeps no pre-approval, so its calls ask.
+    return strip_held_approvals(
+        revocations.strip(
+            merge_worker_spec(base, _with_global_tool_offs(base, additions)),
+            _revoked_or_refuse(member_id, name),
+        ),
+        member_id,
+        name,
     )
 
 

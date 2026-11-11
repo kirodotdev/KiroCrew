@@ -8699,6 +8699,8 @@
         "yesterday": "Ayer"
       },
       "systemNote": {
+        "bot_limits_held_title": "Un Bot ahora pregunta antes de algunas acciones",
+        "bot_limits_held_body": "Algunos límites de {{name}} no se pudieron aplicar tal como estaban, así que te pregunta antes de las acciones que cubren. Abre el Bot para revisar sus permisos.",
         "turn_limit_title": "Conversación en pausa: límite de turnos",
         "turn_limit_body": "Una conversación de {{surface}} alcanzó su límite de turnos y está en pausa. Restablécela desde el panel para continuar.",
         "default_model_applied_title": "Modelo predeterminado aplicado",

@@ -701,6 +701,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
         refuse_claude_zero_tool_mounts(
             getattr(self, "_spec_zero_tools", False), new_params["mcpServers"]
         )
+        await self._prepare_claude_held_asks()
         new_params["_meta"] = self._claude_session_meta()
 
     # The roster this session put ON THE WIRE. Distinct from the agent spec
@@ -786,6 +787,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
         refuse_claude_zero_tool_mounts(
             getattr(self, "_spec_zero_tools", False), new_params["mcpServers"]
         )
+        await self._prepare_claude_held_asks()
         new_params["_meta"] = self._claude_session_meta()
         self._begin_session_report(_roster_of(self, new_params.get("mcpServers")))
         self._guard_unresolved_mcp_refs(_roster_of(self, new_params.get("mcpServers")))
@@ -1017,6 +1019,7 @@ async def _initialize_session(self: AcpClient) -> None:
                     refuse_claude_zero_tool_mounts(
                         getattr(self, "_spec_zero_tools", False), load_params["mcpServers"]
                     )
+                    await self._prepare_claude_held_asks()
                     load_params["_meta"] = self._claude_session_meta()
                 elif self.backend not in ACP_BACKENDS_HARNESS_OWNED_SESSIONS:
                     # The kiro family reads its transcript path from _meta. A

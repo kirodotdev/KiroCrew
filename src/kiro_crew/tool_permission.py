@@ -61,6 +61,7 @@ notice is built and scrubbed by ``llm_helpers._steer_host_deny``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -207,10 +208,13 @@ class Ask:
     The fidelity facts are read from the event once, on first use.
     """
 
-    def __init__(self, event: Any, wire: Wire, session_key: str) -> None:
+    def __init__(self, event: Any, wire: Wire, session_key: str, agent: str = "") -> None:
         self.event = event
         self.wire = wire
         self.session_key = session_key
+        #: The agent the session runs, when the caller knows it: a session key
+        #: with no execution record (a task-runner step) names its Bot this way.
+        self.agent = agent
 
     @property
     def request_id(self) -> Any:
@@ -424,7 +428,14 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
         return await _refuse(ask, policy, verdict)
     low = _low_fidelity(ask, policy)
     held: Hit | None = None
-    for grant in policy.child.grants if low else policy.grants:
+    # A moved Bot's limit its worker could not carry exactly (``mate_held_rules``):
+    # no grant answers a call it covers; only a person can.
+    from kiro_crew import mate_held_rules
+
+    bot_held = mate_held_rules.current_held() or await asyncio.to_thread(
+        mate_held_rules.held_for, ask.event, session_key=ask.session_key, agent=ask.agent
+    )
+    for grant in () if bot_held else (policy.child.grants if low else policy.grants):
         hit = verdict if grant is GATE_GRANT else await grant.offer(ask)
         if hit is not None and await _admitted(ask, policy, hit, low):
             held = hit
@@ -441,7 +452,13 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
             return await bail(ask, policy, "stopped")
         if low and policy.child.annotate is not None:
             ask.event.title = policy.child.annotate(ask.event.title)
-        answer = await responder.ask(ask)
+        if bot_held:
+            # The responder is asked as a person's: an approver that would answer
+            # on its own (``turn_approvals._interactive_approval``) reads this.
+            with mate_held_rules.held_call(bot_held):
+                answer = await responder.ask(ask)
+        else:
+            answer = await responder.ask(ask)
         if answer.approved:
             return await _allow(ask, policy, responder.name, "approved", "person")
         return await _refuse(ask, policy, Refusal.person(responder.name))

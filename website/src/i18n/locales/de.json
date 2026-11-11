@@ -8490,6 +8490,8 @@
         "yesterday": "Gestern"
       },
       "systemNote": {
+        "bot_limits_held_title": "Ein Bot fragt jetzt vor manchen Aktionen nach",
+        "bot_limits_held_body": "Einige Grenzen für {{name}} ließen sich nicht wie festgelegt anwenden. Deshalb fragt er dich vor den Aktionen, die sie betreffen. Öffne den Bot, um seine Berechtigungen zu prüfen.",
         "turn_limit_title": "Gespräch pausiert: Rundenlimit",
         "turn_limit_body": "Ein Gespräch in {{surface}} hat sein Rundenlimit erreicht und ist pausiert. Setze es im Dashboard zurück, um fortzufahren.",
         "default_model_applied_title": "Standardmodell übernommen",
