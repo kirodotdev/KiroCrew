@@ -4650,27 +4650,35 @@ round trip on every session, so each shipped agent declares its job tools, once,
 the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
 `tool_search`. Everything else the spec mounts stays deferred.
 
-| Agents | Job tools | Budget (schema tokens per request) |
+| Agents | Job tools | Budget (schema tokens per request, as the engine counts them) |
 |---|---|---:|
-| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status` | 4,000 |
-| `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report` | 1,500 |
-| `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start` | 9,000 |
-| `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the nine above and `work_brief` | 9,200 |
+| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status` | 3,300 |
+| `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report` | 1,200 |
+| `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start`, `wait` | 7,600 |
+| `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the ten above and `work_brief` | 7,800 |
 
 The rules the table is held to (`test/test_job_tools.py`):
 
 - **A row is the tools the agent's own prompt makes its procedure**, not the tools
   it might use. Anything else is one `tool_search` away.
-- **A row fits its budget.** Its tools ride in every request of that agent, counted
-  as the bytes of each tool's `{name, description, inputSchema}` over 3.25, the
-  ratio KAS's own context breakdown reports for these schemas. A tool
-  joins a row, or a job tool's description grows, only while the row still fits;
-  the budget is what keeps the table from becoming "defer nothing".
+- **A row fits its budget.** Its tools ride in every request of that agent. The
+  budgets live in `test/test_job_tools.py` (`JOB_TOOL_BUDGETS`), beside the test
+  that enforces them, because nothing at run time reads one. They are counted the
+  way KAS's own context breakdown counts a listed tool,
+  `ceil(len(id + description + schema) / 4)` with the id `mcp_<server>_<tool>` and
+  the schema as compact JSON, which reproduces the `tools.mcp.tokens` a live
+  session reports to within six tokens on every row. Each budget is that reported
+  figure plus 5%, rounded up to the next 50. A tool joins a row, or a job tool's
+  description grows, only while the row still fits; the budget is what keeps the
+  table from becoming "defer nothing".
 - **The set is fixed per agent**, never per session, so the tool definitions an
   agent's requests open with are the same in every session of it and the cached
   prefix stays valid.
 - **An agent with no row is untouched**: an operator's own agent, an app's agent
-  and a crew member's template put on the wire what they did before.
+  and a crew member's template put on the wire what they did before. The table is
+  keyed by agent name, so this is about the name: a spec an operator saved under a
+  shipped name (their own `kirocrew-worker.json`, say) takes that name's row, for
+  the row's tools the spec itself mounts and for nothing else it mounts.
 - **An operator's `ASBX_KIRO_MANDATORY_MCPS` is the whole decision.** When it is
   set, even empty, Crew adds no job tool beside it.
 - **Deferral is a prompt-size mechanism, not a permission.** The list changes one

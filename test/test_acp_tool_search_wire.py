@@ -275,8 +275,17 @@ class TestHandshakeNeverDefer:
         spec = {"tools": ["tool_search", "@kirocrew-core", "@kirocrew-dashboard", "@kirocrew-work"]}
         wire = self._caps(monkeypatch, spec, agent=agent, backend=backend)
         assert wire["enabled"] is True
-        assert wire["neverDefer"] == sorted(JOB_TOOLS[agent].ids)
+        assert wire["neverDefer"] == sorted(JOB_TOOLS[agent])
         assert "kirocrew-core::memory_recall" not in wire["neverDefer"]
+
+    def test_an_operators_spec_under_a_shipped_name_takes_that_agents_row(self, monkeypatch):
+        """The declaration is keyed by agent name. A spec an operator saved under
+        a shipped name is that agent as far as the list goes: it keeps direct the
+        row's tools its own ``tools`` mounts, and none of its other tools."""
+        own_spec = {"tools": ["tool_search", "@kirocrew-core/spawn_run", "@srv/one"]}
+        wire = self._caps(monkeypatch, own_spec, agent="kirocrew")
+        assert wire["enabled"] is True
+        assert wire["neverDefer"] == ["kirocrew-core::spawn_run"]
 
     def test_tool_search_off_still_keeps_the_job_tools_direct(self, monkeypatch):
         """KAS defers on ``neverDefer`` alone, so the toggle changes what
@@ -284,7 +293,7 @@ class TestHandshakeNeverDefer:
         spec = {"tools": ["tool_search", "@kirocrew-core"]}
         wire = self._caps(monkeypatch, spec, agent="kirocrew", enabled=False)
         assert wire["enabled"] is False
-        assert wire["neverDefer"] == sorted(JOB_TOOLS["kirocrew"].ids)
+        assert wire["neverDefer"] == sorted(JOB_TOOLS["kirocrew"])
 
     @pytest.mark.parametrize("value", ["", "kirocrew-core", "my-server"])
     def test_an_operators_own_never_defer_list_is_the_whole_list(self, monkeypatch, value):
@@ -317,7 +326,7 @@ class TestHandshakeNeverDefer:
         undeclared = self._caps(monkeypatch, spec, agent="my-own-agent", whole=True)
         assert json.dumps(spec, sort_keys=True) == before
         listed = declared["_meta"]["kiro"]["settings"]["toolSearch"].pop("neverDefer")
-        assert listed == sorted(JOB_TOOLS["kirocrew"].ids)
+        assert listed == sorted(JOB_TOOLS["kirocrew"])
         assert declared == undeclared
 
     def test_an_unreadable_spec_lists_nothing(self, monkeypatch):
