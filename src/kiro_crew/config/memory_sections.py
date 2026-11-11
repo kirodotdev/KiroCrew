@@ -36,6 +36,9 @@ LESSON_TIER_POLICY_MODES = ("off", "shadow", "enforce")
 #: ``memory.rule_authority_order`` values; :mod:`kiro_crew.memory_rule_authority` says what each does.
 RULE_AUTHORITY_ORDER_MODES = ("off", "shadow", "enforce")
 
+#: ``memory.member_lesson_dedup`` values; :mod:`kiro_crew.memory_lesson_dedup` says what each does.
+MEMBER_LESSON_DEDUP_MODES = ("off", "shadow", "enforce")
+
 #: ``memory.embedding_provider`` values. ``ollama_http`` selects the Ollama server
 #: backend in :mod:`kiro_crew.embeddings_ollama`.
 OLLAMA_HTTP_PROVIDER = "ollama_http"
@@ -457,6 +460,21 @@ class MemoryConfig:
             enum=list(RULE_AUTHORITY_ORDER_MODES),
         ),
     )
+    member_lesson_dedup: str = field(
+        default="off",
+        metadata=_meta(
+            "Private Lesson Dedup",
+            "Whether a private memory store folds a consolidation lesson into a "
+            "stored copy of the same rule (same scope and tier, the same text, or "
+            "stored vectors at cosine 0.95 or more). 'off' (default) keeps today's "
+            "writes. 'shadow' writes every lesson as before and only counts, within "
+            "fixed size caps, what the fold would do. 'enforce' skips a textual copy "
+            "and retires a new near-copy with a saved revision before a dashboard "
+            "turn has been given it; turning the flag off restores those rows. "
+            "Lessons you taught are never folded.",
+            enum=list(MEMBER_LESSON_DEDUP_MODES),
+        ),
+    )
     inject_memory: bool = field(
         default=True,
         metadata=_meta(
@@ -566,6 +584,13 @@ def rule_authority_order_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in RULE_AUTHORITY_ORDER_MODES:
         return raw
     return str(field_default(MemoryConfig, "rule_authority_order"))
+
+
+def member_lesson_dedup_mode_from(raw: object) -> str:
+    """A stored ``memory.member_lesson_dedup``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in MEMBER_LESSON_DEDUP_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "member_lesson_dedup"))
 
 
 def lesson_extraction_enabled(memory: object) -> bool:

@@ -63,6 +63,7 @@ class _RecordingStore:
             messages,
             facets,
             kind_routing=None,
+            lesson_dedup_mode="off",
         ):  # noqa: ANN001
             receipts[source_id] = {
                 "source_total": source_total,

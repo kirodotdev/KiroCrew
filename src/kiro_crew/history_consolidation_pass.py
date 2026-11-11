@@ -1084,6 +1084,9 @@ async def _consolidate(
             # display-only rows carried with the head). An ordinary
             # message-aligned span keeps its receipt over ``chunk`` unchanged.
             receipt_messages = _prompt_rows(chunk) if is_sub_slice else chunk
+            from kiro_crew.memory_lesson_dedup import configured_mode as _dedup_mode
+
+            lesson_dedup_mode = _dedup_mode()
 
             def _apply_member_consolidation() -> dict:
                 with self._publication_hold_checked(key, commit_state) as publication:
@@ -1099,6 +1102,7 @@ async def _consolidate(
                         messages=receipt_messages,
                         facets=facets,
                         kind_routing=kind_routing,
+                        lesson_dedup_mode=lesson_dedup_mode,
                     )
                     publication.mark_committed()
                     return applied

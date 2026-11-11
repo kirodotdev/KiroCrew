@@ -336,11 +336,7 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
     from kiro_crew.context import cached_vector_store_entries
     from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, require_memory_store
 
-    if (
-        self._memory_repair_stop.is_set()
-        or reembed_progress().is_active()
-        or peek_ready_shared_embedder() is None
-    ):
+    if self._memory_repair_stop.is_set() or reembed_progress().is_active():
         return
     entries_by_name = dict(cached_vector_store_entries())
     global_store = getattr(self, "vector_memory", None)
@@ -367,6 +363,12 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
             # standing repair here would otherwise mutate the same store.
             return
     if self._memory_repair_stop.is_set():
+        return
+    if peek_ready_shared_embedder() is None:
+        # No model yet: only the model-free lesson-dedup rollback can run.
+        from kiro_crew.memory_lesson_dedup import rollback_if_off
+
+        rollback_if_off(store)
         return
     reconcile_store_embedding_space(store)
     if not store.has_pending_embeddings() and not store_embedding_space_is_stale(store):

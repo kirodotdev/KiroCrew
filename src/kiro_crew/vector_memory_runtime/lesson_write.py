@@ -163,6 +163,7 @@ def write_lesson(
     task-runner, and direct callers share the boundary.
     """
 
+    from kiro_crew import memory_lesson_dedup as _lesson_dedup
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
 
     _MAX_BACKFILLS_PER_CALL = vm._MAX_BACKFILLS_PER_CALL
@@ -380,6 +381,9 @@ def write_lesson(
     # emptied part of the store. Draining after ``set_semantic`` extends the
     # same guarantee to a value the store itself rejects.
     deferred_supersedes: list[tuple[str, str, str, str]] = []
+    # Cosine of each queued similarity supersede, by row key, so the merges that
+    # land can be counted for memory.member_lesson_dedup (kiro_crew.memory_lesson_dedup).
+    queued_cosines: dict[str, float] = {}
 
     # AUTHORITY PRE-PASS -- non-mutating, decided before the scan's first
     # deletion. The invariant: every refusal the authority rule can make
@@ -463,7 +467,8 @@ def write_lesson(
                 backfills_done += 1
             if row_blob is None:
                 continue
-            if similarity({"embedding": row_blob}) > 0.85:
+            pre_sim = similarity({"embedding": row_blob})
+            if pre_sim > 0.85:
                 # Outranking means a ``user_explicit`` row over this
                 # lower-authority write, or a strictly higher stored
                 # confidence -- the confidence half on its own merit: the
@@ -485,6 +490,7 @@ def write_lesson(
                     # mutating scan entirely, so a declined write costs no
                     # stored row and ``superseded`` is always empty here.
                     _flush_backfills()
+                    _lesson_dedup.record_default_merges(self, [pre_sim])
                     return LessonWriteResult(
                         LessonWriteOutcome.DEDUPED,
                         "semantic_similarity",
@@ -644,6 +650,7 @@ def write_lesson(
                                 "%.2f cosine" % sim,
                             )
                         )
+                        queued_cosines[existing["key"]] = sim
                     continue
 
     # No pending backfill is dropped for a queued row. The queue is a list of
@@ -711,6 +718,7 @@ def write_lesson(
     # durable trace; the line below logs at WARNING so the same deletion is
     # visible to a human tailing gateway.log (a default install records WARNING+
     # to disk), not only to a query against the audit table.
+    landed_cosines: list[float] = []
     for d_key, d_report, d_body, d_reason in deferred_supersedes:
         if not self.delete_semantic(
             d_key,
@@ -734,6 +742,9 @@ def write_lesson(
             len(superseded) + 1,
         )
         superseded.append(d_report)
+        if d_key in queued_cosines:
+            landed_cosines.append(queued_cosines[d_key])
+    _lesson_dedup.record_default_merges(self, landed_cosines)
 
     if rule_emb:
         emb_blob = struct.pack(f"{len(rule_emb)}f", *rule_emb)
