@@ -180,7 +180,7 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
     } else if (kiroUsageState === 'signin-required') {
       // No live Kiro credential could be read (or it was rejected), so
       // the free API never got an answer about this account. Terminal,
-      // and the label must name the remedy: signing in again.
+      // and the label must name the remedy: signing in.
       node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_signin_required')} aria-label={i18nT('app.kiro_credit_usage_signin_required')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
     } else if (!kiroUsageState) {
       node = (<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)

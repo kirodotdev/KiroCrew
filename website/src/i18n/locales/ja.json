@@ -230,7 +230,7 @@
     "k_search_for_anything": "⌘K — 何かを検索…",
     "kiro_credit_usage_checking": "Kiro アカウントとクレジット — 確認中…",
     "kiro_credit_usage_checking_2": "Kiro アカウントとクレジット — 確認中",
-    "kiro_credit_usage_signin_required": "Kiro アカウントとクレジット — 有効な Kiro のサインインを読み取れませんでした。もう一度サインインしてください",
+    "kiro_credit_usage_signin_required": "Kiro アカウントとクレジット — 有効な Kiro のサインインがありません。サインインするとクレジットを確認できます",
     "kiro_credit_usage_unavailable": "Kiro アカウントとクレジット — 利用不可",
     "kiro_discord_community": "Kiro Discord コミュニティ",
     "main_navigation": "メインナビゲーション",
@@ -6354,6 +6354,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "アカウント詳細を取得できません",
+      "credit_usage_sign_in_to_see": "有効な Kiro のサインインがありません。サインインすると、アカウントとクレジットを確認できます。",
+      "credit_usage_sign_in_lapsed": "Kiro のサインインが無効になったため、アカウントとクレジットを表示できません。もう一度サインインすると確認できます。",
+      "sign_in_in_settings": "設定で Kiro にサインイン",
       "balance_checked_at": "{{time}} に確認",
       "forecast_lasts": "今サイクルのペースなら、クレジットはリセットまで持つ見込みです。",
       "forecast_runs_out": "今サイクルのペースだと、リセット前の {{date}} ごろにクレジットを使い切る見込みです。",

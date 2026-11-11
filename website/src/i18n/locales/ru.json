@@ -260,7 +260,7 @@
     "k_search_for_anything": "⌘K — Поиск по всему…",
     "kiro_credit_usage_checking": "Аккаунт и кредиты Kiro — проверка…",
     "kiro_credit_usage_checking_2": "Аккаунт и кредиты Kiro — проверка",
-    "kiro_credit_usage_signin_required": "Аккаунт и кредиты Kiro — не удалось прочитать активный вход в Kiro; войди снова",
+    "kiro_credit_usage_signin_required": "Аккаунт и кредиты Kiro — активного входа в Kiro нет; войди, чтобы увидеть кредиты",
     "kiro_credit_usage_unavailable": "Аккаунт и кредиты Kiro — недоступен",
     "kiro_discord_community": "Сообщество Kiro в Discord",
     "main_navigation": "Основная навигация",
@@ -6530,6 +6530,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Сведения об аккаунте недоступны",
+      "credit_usage_sign_in_to_see": "Активного входа в Kiro нет. Войди, чтобы увидеть аккаунт и кредиты.",
+      "credit_usage_sign_in_lapsed": "Твой вход в Kiro больше не действует, поэтому аккаунт и кредиты нельзя показать. Войди снова, чтобы их увидеть.",
+      "sign_in_in_settings": "Войти в Kiro в настройках",
       "balance_checked_at": "Проверено в {{time}}",
       "forecast_lasts": "При темпе этого цикла кредитов должно хватить до сброса.",
       "forecast_runs_out": "При темпе этого цикла кредиты закончатся примерно {{date}}, до сброса.",

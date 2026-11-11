@@ -230,7 +230,7 @@
     "k_search_for_anything": "⌘K — 무엇이든 검색…",
     "kiro_credit_usage_checking": "Kiro 계정 및 크레딧 — 확인 중…",
     "kiro_credit_usage_checking_2": "Kiro 계정 및 크레딧 — 확인 중",
-    "kiro_credit_usage_signin_required": "Kiro 계정 및 크레딧 — 유효한 Kiro 로그인을 읽을 수 없습니다. 다시 로그인하세요",
+    "kiro_credit_usage_signin_required": "Kiro 계정 및 크레딧 — 유효한 Kiro 로그인이 없습니다. 로그인하면 크레딧을 볼 수 있습니다",
     "kiro_credit_usage_unavailable": "Kiro 계정 및 크레딧 — 사용 불가",
     "kiro_discord_community": "Kiro Discord 커뮤니티",
     "main_navigation": "기본 내비게이션",
@@ -6354,6 +6354,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "계정 세부 정보를 불러올 수 없음",
+      "credit_usage_sign_in_to_see": "유효한 Kiro 로그인이 없습니다. 로그인하면 계정과 크레딧을 볼 수 있습니다.",
+      "credit_usage_sign_in_lapsed": "Kiro 로그인이 더 이상 유효하지 않아 계정과 크레딧을 표시할 수 없습니다. 다시 로그인하면 확인할 수 있습니다.",
+      "sign_in_in_settings": "설정에서 Kiro에 로그인",
       "balance_checked_at": "{{time}}에 확인함",
       "forecast_lasts": "이번 주기의 속도라면 크레딧이 초기화될 때까지 유지될 것으로 보입니다.",
       "forecast_runs_out": "이번 주기의 속도라면 초기화 전인 {{date}}쯤 크레딧이 소진될 것으로 보입니다.",

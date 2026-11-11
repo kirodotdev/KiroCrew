@@ -240,7 +240,7 @@
     "k_search_for_anything": "⌘K — Nach allem suchen…",
     "kiro_credit_usage_checking": "Kiro-Konto & Credits — wird geprüft…",
     "kiro_credit_usage_checking_2": "Kiro-Konto & Credits — wird geprüft",
-    "kiro_credit_usage_signin_required": "Kiro-Konto & Credits — es konnte keine aktive Kiro-Anmeldung gelesen werden; melde dich erneut an",
+    "kiro_credit_usage_signin_required": "Kiro-Konto & Credits — keine aktive Kiro-Anmeldung; melde dich an, um deine Credits zu sehen",
     "kiro_credit_usage_unavailable": "Kiro-Konto & Credits — nicht verfügbar",
     "kiro_discord_community": "Kiro-Discord-Community",
     "main_navigation": "Hauptnavigation",
@@ -6194,6 +6194,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Kontodetails sind nicht verfügbar",
+      "credit_usage_sign_in_to_see": "Keine aktive Kiro-Anmeldung. Melde dich an, um dein Konto und deine Credits zu sehen.",
+      "credit_usage_sign_in_lapsed": "Deine Kiro-Anmeldung ist nicht mehr gültig, daher können Konto und Credits nicht angezeigt werden. Melde dich erneut an, um sie zu sehen.",
+      "sign_in_in_settings": "In den Einstellungen bei Kiro anmelden",
       "balance_checked_at": "Geprüft um {{time}}",
       "forecast_lasts": "Beim Tempo dieses Zyklus sollten deine Credits bis zum Zurücksetzen reichen.",
       "forecast_runs_out": "Beim Tempo dieses Zyklus sind deine Credits etwa am {{date}} aufgebraucht, vor dem Zurücksetzen.",
