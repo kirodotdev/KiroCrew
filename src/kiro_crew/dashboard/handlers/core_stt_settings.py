@@ -27,6 +27,7 @@ from kiro_crew.config.sections import (
     TRANSCRIBE_LANGUAGES_MAX,
     TRANSCRIBE_LANGUAGES_MIN,
     SttConfig,
+    stt_provider_detects_language,
     transcribe_language_options,
     transcribe_vocabulary_name,
     valid_stt_providers,
@@ -58,6 +59,7 @@ from kiro_crew.stt.limits import THREADS_AUTO as STT_THREADS_AUTO
 from kiro_crew.stt.limits import THREADS_ENV as STT_THREADS_ENV
 from kiro_crew.stt.limits import parse_threads as parse_stt_threads
 from kiro_crew.stt.limits import resolve_thread_count as resolve_stt_thread_count
+from kiro_crew.stt.openai_compat import openai_model_name
 from kiro_crew.transcribe import _find_ffmpeg, availability_detail, ensure_ffmpeg_in_path
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
@@ -161,7 +163,7 @@ def _stt_language_codes(stt_cfg: SttConfig) -> list[str]:
     build. Offering it keeps it on screen as a choice, so changing the language and
     changing back cannot lose it.
     """
-    codes = [STT_LANGUAGE_AUTO] if stt_cfg.provider == PROVIDER_LOCAL else []
+    codes = [STT_LANGUAGE_AUTO] if stt_provider_detects_language(stt_cfg.provider) else []
     codes += list(_STT_LANGUAGE_CODES)
     for stored in (stt_cfg.effective_language_code, *stt_cfg.transcribe_languages):
         if stored not in codes:
@@ -308,6 +310,12 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section["custom_model_sha256"] = stt_models.valid_custom_sha256(
                     body["custom_model_sha256"]
                 )
+            # Through the loader's own rule, so a model id accepted here is never one
+            # the next load replaces with the default. An unusable id is skipped.
+            if "openai_model" in body:
+                openai_model = openai_model_name(body["openai_model"])
+                if openai_model is not None:
+                    stt_section["openai_model"] = openai_model
             if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
                 stt_section["transcribe_region"] = body["transcribe_region"]
             if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
@@ -483,6 +491,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "dictation_panel": cfg.stt.dictation_panel,
             "dictation_note": cfg.stt.dictation_note,
             "polish": cfg.stt.polish,
+            "openai_model": cfg.stt.openai_model,
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,
             "transcribe_vocabulary": cfg.stt.transcribe_vocabulary,

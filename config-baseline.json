@@ -4838,6 +4838,7 @@
         "dictation_panel": true,
         "dictation_note": false,
         "timeout_secs": 300,
+        "openai_model": "gpt-4o-transcribe",
         "transcribe_region": "us-east-1",
         "transcribe_profile": "",
         "transcribe_vocabulary": "",
@@ -4867,13 +4868,14 @@
       "sensitive": false,
       "tags": [],
       "label": "Provider",
-      "help": "Where speech is recognised. `local` runs on this machine and needs no account (it downloads one model the first time you dictate), `apple` uses the on-device recogniser built into macOS 26 and later, and `transcribe` sends your audio to AWS Transcribe, which bills your AWS account. `codex` sends audio to OpenAI through an existing Codex ChatGPT login (experimental; requires voice access and voice-codex). `off` runs no recogniser at all, the same as turning speech input off.",
+      "help": "Where speech is recognised. `local` runs on this machine and needs no account (it downloads one model the first time you dictate), `apple` uses the on-device recogniser built into macOS 26 and later, and `transcribe` sends your audio to AWS Transcribe, which bills your AWS account. `codex` sends audio to OpenAI through an existing Codex ChatGPT login (experimental; requires voice access and voice-codex). `openai_compatible` sends audio to an OpenAI-compatible speech server whose address and API key you store under Settings > Secrets as OPENAI_STT_BASE_URL and OPENAI_STT_API_KEY. `off` runs no recogniser at all, the same as turning speech input off.",
       "hasChildren": false,
       "enumValues": [
         "local",
         "apple",
         "transcribe",
         "codex",
+        "openai_compatible",
         "off"
       ],
       "defaultValue": "local"
@@ -5107,6 +5109,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 300
+    },
+    {
+      "path": "stt.openai_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "OpenAI-compatible Model",
+      "help": "The speech model the `openai_compatible` provider asks for, both for live audio and for files, such as `gpt-4o-transcribe`, `whisper-1`, or the id your own server serves. The server address and API key are not settings: store them under Settings > Secrets as OPENAI_STT_BASE_URL (empty for OpenAI itself) and OPENAI_STT_API_KEY.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "gpt-4o-transcribe"
     },
     {
       "path": "stt.transcribe_region",

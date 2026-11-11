@@ -254,7 +254,7 @@ class TestCapabilityResponses:
         names = [row["name"] for row in rows]
         assert names[-2:] == ["acme", "off"]
         assert [n for n in names if n not in ("acme", "off")] == [
-            n for n in ("local", "apple", "transcribe", "codex") if n in names
+            n for n in ("local", "apple", "transcribe", "codex", "openai_compatible") if n in names
         ]
         assert all(row["builtin"] for row in rows if row["name"] != "acme")
         assert next(row for row in rows if row["name"] == "acme") == {
@@ -527,7 +527,10 @@ class TestPcmWavProvider:
 
 @pytest.mark.parametrize(
     "lookup, builtin",
-    [("stt", name) for name in ("local", "apple", "transcribe", "codex", "off")]
+    [
+        ("stt", name)
+        for name in ("local", "apple", "transcribe", "codex", "openai_compatible", "off")
+    ]
     + [("tts", name) for name in ("system", "piper", "polly")],
 )
 def test_a_builtin_name_never_reaches_the_registry(lookup, builtin) -> None:

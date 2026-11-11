@@ -4,7 +4,7 @@
 
 Live speech-to-text for the dashboard composer. The browser streams 16 kHz mono Int16 PCM over a WebSocket and the server relays partial hypotheses, one or more final transcripts, and (when enabled) an auto-submit signal.
 
-All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, `transcribe` sends it to AWS Transcribe Streaming, and `codex` adapts Codex's experimental voice transport. The selectable value `off` is not a recogniser: it runs nothing.
+All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, `transcribe` sends it to AWS Transcribe Streaming, `codex` adapts Codex's experimental voice transport, and `openai_compatible` streams to any OpenAI-compatible server over its Realtime transcription socket. The selectable value `off` is not a recogniser: it runs nothing.
 
 | `stt.provider` | Where recognition runs | Cost | Precondition |
 |---|---|---|---|
@@ -12,6 +12,7 @@ All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS
 | `apple` | the OS, on-device SpeechAnalyzer | free | macOS 26 or later, and a Swift toolchain to build the helper |
 | `transcribe` | AWS Transcribe Streaming | billed per audio-second | the `voice` extra, and a recorded AWS consent |
 | `codex` | OpenAI through Codex's ChatGPT-authenticated WebRTC transport | account-dependent usage and limits | Codex adapter (`@agentclientprotocol/codex-acp`, or `CODEX_PATH`) with voice access, ChatGPT login, and `pip install "kirocrew[voice-codex]"` |
+| `openai_compatible` | the server whose address the owner stored in the vault | that server's pricing | the vault secrets `OPENAI_STT_API_KEY` and, for any server but OpenAI, `OPENAI_STT_BASE_URL` ([OpenAI-compatible provider](#openai-compatible-provider)) |
 | `off` | nowhere | free | none. Every speech path answers `stt_disabled`, exactly as `stt.enabled = false` does; the live socket returns a `stt_streaming_disabled` error frame because `off` is not in `_STREAMING_PROVIDERS`. Also the value an unknown stored provider degrades to ([Legacy provider values](#legacy-provider-values)) |
 
 The batch path at `POST /api/stt/transcribe` (`transcribe.transcribe_audio`)
@@ -1676,6 +1677,103 @@ A composed edition can add STT providers through the `speech` slot on `PlatformC
 | `error` | bool | True only when the provider's `check()` timed out or raised (`speech_providers.check_status`). False for a missing prerequisite such as a login or an install. |
 
 The Settings picker (`SttSettings`, through `lib/speechProviders.ts`) renders its options from this list. An unavailable registered provider stays selectable; while it is selected, `SpeechProviderNotice` shows its `reason` under the picker. An `error` row is a failure, so it renders through `ErrorNotice`, with the agent hand-off only while no AWS profile or region draft is unsaved. Any other row is status text, with a sign-in hint naming `action.label` for a `login` action. Built-ins keep the availability badge and messages above, so a standalone install shows no new text. An older gateway that serves bare names, or no list, still renders: bare names read as available built-ins, and no list falls back to `FALLBACK_PROVIDERS`.
+
+## OpenAI-compatible provider
+
+`stt.provider = "openai_compatible"` reaches OpenAI, or a self-hosted server that
+implements the same speech wire (vLLM, LocalAI, Speaches and similar). All of it lives
+in `stt/openai_compat.py`, which imports no numpy and no network library at import time
+so the config loader can read the model-id rule on the boot path. It exists so the
+Meetings app and dictation can transcribe live against such a server: Meetings opens
+`/api/ws/stt` and cannot tell this provider from the others.
+
+**Two wires, one endpoint.**
+
+| Path | Wire | Used by |
+|---|---|---|
+| Live | `wss://<base>/realtime?intent=transcription`, PCM16 at 24 kHz as `input_audio_buffer.append`; `conversation.item.input_audio_transcription.delta` / `.completed` come back | `/api/ws/stt` (dictation, Meetings) |
+| Files | `POST <base>/audio/transcriptions`, multipart `model`, `response_format=json`, optional `language`, `file` | `transcribe_audio` (voice memos, uploads, channel voice notes, the Meetings audio import) |
+
+**The endpoint is the owner's, not the agent's.** `config.json` is agent-writable, so a
+base URL or key in it would let a prompt-injected agent point every meeting at a host
+it controls and collect the bearer token with the first request. Both are read from
+two fixed dashboard-vault entries instead, `OPENAI_STT_BASE_URL` and
+`OPENAI_STT_API_KEY` (`openai_compat.VAULT_BASE_URL` / `VAULT_API_KEY`). The names are
+constants, never taken from config, so the provider cannot be made to read any other
+vault entry. Only `stt.openai_model` is ordinary config. `test_config_json_cannot_redirect_the_audio`
+pins that no `SttConfig` field names a URL or a key. Rules for the stored values:
+
+- No base URL and a key: OpenAI itself (`https://api.openai.com/v1`). Neither: `stt_openai_not_configured`.
+- `https` anywhere. `http` only for a LITERAL private-network address (`openai_compat._is_private_literal`: loopback, RFC 1918, link-local), because that is a server on a network the owner runs. A name such as `localhost` does not qualify (a hosts file or resolver decides where it goes), and neither does any public literal, so the key and the audio are never sent in cleartext across the internet. No user info, query or fragment.
+- A key containing a line break is refused, so it cannot inject a header.
+- A base URL without a key is allowed, for a self-hosted server with no auth.
+- Refusals never echo the stored text: it comes from the vault and may be a credential pasted into the wrong field.
+
+**A server with no Realtime socket.** Many self-hosted servers expose only `/audio/transcriptions`.
+When the Realtime handshake is answered with an HTTP status (400, 401, 403, 404, 405, 426, 501),
+`StreamingSession` falls back to `_ChunkedSession` instead of failing: the same `_TurnGate` cuts the
+speech into turns, each turn is wrapped as a 16 kHz mono WAV and uploaded to `/audio/transcriptions`
+by one worker in order, and the result is a `final` per turn. There are no partials, so text appears one
+turn after it was spoken. The key is checked first with `GET <base>/models` (401/403 is
+`stt_openai_auth_failed` at start; a server with no such route is let through), because the handshake
+status alone cannot tell a missing route from a refused key. A refused connection, a TLS failure or a
+timeout is not a status and is reported as `stt_openai_failed` without falling back. At most
+`_CHUNK_QUEUE_MAX` (8) turns wait for upload; past that the session ends with `stt_openai_failed`
+rather than dropping speech. Verified by hand against a self-hosted server that exposes only
+`/v1/audio/transcriptions`: one WAV gave the exact sentence, and two spoken points separated by
+a pause gave two finals in order.
+
+**Turn handling.** On the Realtime socket the session sends `session.update` with `type: "transcription"` and
+`turn_detection: null`, because the newest Realtime transcription models refuse
+server-side turn detection. Turn boundaries are this module's: `_TurnGate` is an energy
+gate (no numpy) that commits after `stt.silence_ms` of quiet that followed speech, or at
+`MAX_TURN_MS` (15 s) of continuous speech. Audio that never held speech is `clear`ed
+after `IDLE_DISCARD_MS` (5 s), not transcribed, because models invent words from room
+tone. The gate is a heuristic: speech quieter than `SPEECH_MIN_RMS` (120 of 32768) is
+treated as silence. The server's deltas become `partial` frames (the text of the turn
+so far); each `completed` becomes a `final`. Finals leave in commit order even when the
+server completes turns out of order. `finish()` commits the open turn, then waits at most
+20 s for outstanding completions. Three consecutive failed turns end the session with
+`stt_openai_failed`; one failed turn is logged and skipped, so a long meeting survives a
+bad moment.
+
+The dashboard sends 16 kHz and the wire needs 24 kHz, so `_Resampler` converts 3:2 by linear
+interpolation. Its position is kept in thirds and its input tail carries across chunks, so the
+output is identical however the stream was chunked (`test_resampler_is_chunk_invariant_and_scales_the_rate`).
+
+**Language.** `stt.language_code = "auto"` sends no language, so the server detects it
+(`stt_provider_detects_language` is true for `local` and this provider, and
+`SttConfig.effective_language_code` keeps `auto` for both). A code such as `vi-VN` is sent as
+`vi`. The `gpt-live-*` models take a `languages` list; every other model takes `language`.
+
+**Errors.** Codes: `stt_openai_not_configured`, `stt_openai_auth_failed` (HTTP 401/403 from
+`/models` or an upload), `stt_openai_failed` (everything else). The server's own error text is never
+relayed to the client: it is third-party text bound for the DOM. It is logged as a code only.
+Exception text is never logged either, since a connect error can carry the URL.
+
+**What core still does.** The provider is driven by `_drive_helper_session` through
+`stt_adapted_stream.run_openai_compatible_session`, so the origin check, concurrency and duration
+caps (`max_duration_ms` is advertised and Meetings rotates its socket before it), transcript
+redaction, the semantic endpointer and the SEL start/end audit pair all apply unchanged.
+`stt_stream._STREAMING_PROVIDERS` names it, so `streaming_providers()` serves it to Settings.
+
+**Files have no duration ceiling and are never split.** `batch_duration_cap_secs` is `None` and
+`provider_splits_oversized` is `False`: the bound is the 25 MB upload limit
+(`MAX_FILE_BYTES`), and a larger file fails loudly (`transcribe_file` returns `None`) instead of
+being truncated. The upload is named from the container's magic bytes (`.wav`, `.ogg`, `.webm`,
+`.flac`, `.mp3`, `.m4a`), because the path can be a `/dev/fd/N` descriptor with no extension and
+the server picks its decoder from the name. No ffmpeg and no numpy are needed on this path.
+
+**Retention.** The gateway keeps no audio. What the server keeps is that server's policy;
+Settings > Voice says so under the provider picker (`retention_openai`).
+
+**Not covered.** Older or non-OpenAI servers that expect the previous Realtime shape
+(`transcription_session.update`) are not adapted. The session waits for `session.created`,
+`session.updated` or `transcription_session.created` for 15 s and reports `stt_openai_failed` if
+none arrives. A Realtime transcription session can only run to the server's own session limit;
+core's cap rotates it first. The Realtime path has not been run against a live OpenAI endpoint: its tests use a loopback server that
+speaks the same events (`test/test_openai_compat_stt.py`). The turn-by-turn fallback was run by hand against the
+server described above.
 
 ## Legacy provider values
 

@@ -31,7 +31,11 @@ except ImportError:  # pragma: no cover — exercised by test_import_error_*
 from kiro_crew import aws_consent, stt
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
-from kiro_crew.dashboard.stt_adapted_stream import _run_registered_session, run_codex_session
+from kiro_crew.dashboard.stt_adapted_stream import (
+    _run_registered_session,
+    run_codex_session,
+    run_openai_compatible_session,
+)
 from kiro_crew.dashboard.stt_stream_transcribe_args import (
     _client_identifies_languages,
     _transcribe_language_kwargs,
@@ -59,7 +63,7 @@ PROVIDER_LOCAL = "local"
 # re-decodes a rolling window on a resident whisper.cpp model in this process,
 # `apple` streams on-device via SpeechAnalyzer (macOS 26+), and `transcribe`
 # streams from AWS. The default is first.
-_STREAMING_PROVIDERS = (PROVIDER_LOCAL, "apple", "transcribe", "codex")
+_STREAMING_PROVIDERS = (PROVIDER_LOCAL, "apple", "transcribe", "codex", "openai_compatible")
 
 
 def streaming_providers() -> tuple[str, ...]:
@@ -1673,6 +1677,10 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
 
         if cfg.stt.provider == "codex":
             await run_codex_session(ws, cfg, request, caller)
+            return ws
+
+        if cfg.stt.provider == "openai_compatible":
+            await run_openai_compatible_session(ws, cfg, request, caller)
             return ws
 
         if cfg.stt.provider not in _STREAMING_PROVIDERS:
