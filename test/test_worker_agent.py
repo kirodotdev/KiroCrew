@@ -855,12 +855,18 @@ def test_the_research_agent_does_not_mirror_the_default_spec_on_disk(tmp_path, m
 def test_the_worker_never_gains_cron_add_from_a_whole_server_grant(
     worker_from_installed_default,
 ):
-    """The default carries ``@kirocrew-cron`` whole once a rebuild has widened it, and
-    a whole-server grant covers ``cron_add`` too. Mirroring it verbatim would grant
-    scheduling by the back door while the exclusion list read as honoured."""
+    """A default written before ``background_run`` was withheld from every grant, or
+    hand-edited since, carries ``@kirocrew-cron`` whole, and a whole-server grant covers
+    ``cron_add`` too. Mirroring it verbatim would grant scheduling by the back door
+    while the exclusion list read as honoured. A default Crew builds today never
+    carries it whole: the ceiling narrows it so it cannot cover ``background_run``."""
+    from kiro_crew.agent_sdk.mcp_refs import entry_reaches
+
     worker = worker_from_installed_default()
     assert "@kirocrew-cron" in _DEFAULT_SPEC_ON_DISK["allowedTools"]  # noqa: E501 - fixture pin
     assert "@kirocrew-cron" not in worker["allowedTools"]
+    built = agent.build_agent_config()["allowedTools"]
+    assert not [e for e in built if entry_reaches(e, "@kirocrew-cron/background_run")]
     for ref in agent._WORKER_EXCLUDED_GRANTS:
         assert ref not in worker["allowedTools"], ref
 
@@ -930,6 +936,7 @@ def test_the_exclusion_set_is_pinned_and_disjoint_from_the_template_grants():
             "@kirocrew-cron/cron_add",
             "@kirocrew-cron/cron_update",
             "@kirocrew-cron/cron_secret_request",
+            "@kirocrew-cron/background_run",
         }
     )
     template = set(agent.build_agent_config().get("allowedTools") or [])
@@ -1597,6 +1604,7 @@ def test_the_predicate_answers_which_excluded_refs_a_pattern_reaches():
     """Asserted directly, because it is the one place the subtraction's completeness
     lives and every caller trusts it."""
     assert agent._pattern_reaches_excluded("@kirocrew-cron/*") == [
+        "@kirocrew-cron/background_run",
         "@kirocrew-cron/cron_add",
         "@kirocrew-cron/cron_secret_request",
         "@kirocrew-cron/cron_update",

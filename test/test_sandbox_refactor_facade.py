@@ -180,6 +180,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         effective_sandbox_mode _governance_sandbox_floor _clamp_sandbox_mode _floor_mandates_sandbox
         _clamp_sandbox_mode_to_floor configured_readonly_layer warn_readonly_layer_unenforced
         _READONLY_LAYER_CACHE _READONLY_LAYER_WARNED _readonly_layer_from
+        _tier_mask_dirs path_within_tier_mask
         """.split()),
     "kiro_crew.sandbox_precreate": tuple("""
         _CREW_PRECREATE_READONLY_DIR_LEAVES _CREW_NOFOLLOW_READONLY_DIR_LEAVES

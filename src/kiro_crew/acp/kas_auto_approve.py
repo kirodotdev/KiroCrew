@@ -90,6 +90,36 @@ def _literal_refs(servers: dict[str, Any]) -> list[str]:
     return refs
 
 
+def narrow_skill_view(agent: str, view: dict[str, Any]) -> list[str]:
+    """Replace, in place, each *view* ``allowedTools`` entry that covers a never-auto-approved ref.
+
+    Every view, crew-bound or not: kiro-cli approves an ``allowedTools`` entry
+    locally, so ``@kirocrew-cron`` or ``*`` there would run ``background_run``
+    unprompted. Such an entry becomes the server's other verbs the shared predicate
+    permits (``agent_sdk.drivers.acp.narrowed_grant``, as ``auto_approve._ceiling_split``
+    does); every other entry stays as the spec wrote it. Returns the entries replaced.
+    """
+    # circular import: the driver imports the ACP layer.
+    from kiro_crew.agent_sdk.drivers.acp import narrowed_grant
+
+    allowed = view.get("allowedTools")
+    if not isinstance(allowed, list):
+        return []
+    out: list[Any] = []
+    replaced: list[str] = []
+    for entry in allowed:
+        narrowed = narrowed_grant(entry) if isinstance(entry, str) else None
+        if narrowed is None:
+            out.append(entry)
+            continue
+        replaced.append(entry)
+        out.extend(sub for sub in narrowed if sub not in out and may_skip_gate_now(sub))
+    if replaced:
+        view["allowedTools"] = out
+        _record(agent, [], replaced)
+    return replaced
+
+
 def grant_in_skill_view(agent: str, view: dict[str, Any]) -> list[str]:
     """Add *view*'s governed ``autoApprove`` refs to its ``allowedTools``, in place.
 
@@ -145,7 +175,8 @@ def _record(agent: str, granted: list[str], withheld: list[str]) -> None:
             (
                 "mcp_auto_approve_withheld",
                 f"{', '.join(withheld)} not auto-approved in the Kiro Crew skill view of "
-                f"agent {agent!r} (governance ceiling or the undeclared-grant floor); "
+                f"agent {agent!r} (governance ceiling, the undeclared-grant floor, or a "
+                "never-auto-approved tool); "
                 "calls go through the approval gate",
             )
         )

@@ -1182,8 +1182,11 @@ class TestBuiltinAutoApprovalsGoThroughTheFinalPass:
         )
         src = inspect.getsource(auto_approve.final_ceiling_pass)
         # The final pass partitions the list through the predicate (kept vs
-        # withheld) and writes the kept set back.
-        assert "_may_auto_approve(ref)" in src, "the final list pass must consult the ceiling"
+        # withheld), in the split every list filter shares, and writes the kept
+        # set back.
+        assert "kept, withheld = _ceiling_split(allowed)" in src
+        split = inspect.getsource(auto_approve._ceiling_split)
+        assert "_may_auto_approve(ref)" in split, "the final list pass must consult the ceiling"
         assert 'config["allowedTools"] = kept' in src
 
     def test_the_final_pass_audits_what_it_withholds(self) -> None:

@@ -627,7 +627,7 @@ def prepare_native_skill_projection(
     # Call-time: a module-level name here would be served by the facade as well.
     from kiro_crew import agent as agent_mod
     from kiro_crew.acp.default_crew_servers import with_default_crew_servers
-    from kiro_crew.acp.kas_auto_approve import grant_in_skill_view
+    from kiro_crew.acp.kas_auto_approve import grant_in_skill_view, narrow_skill_view
 
     # A crew-bound spec's view carries only the grants the governance ceiling
     # permits: kiro-cli runs the view, not the authored file, which is never written.
@@ -737,6 +737,8 @@ def prepare_native_skill_projection(
             continue
         if governed_names is None or agent.name in governed_names:
             agent_mod.govern_shared_template_view(agent.name, view)
+        # Every view, governed or not: no allowedTools entry may cover background_run.
+        narrow_skill_view(agent.name, view)
         # kiro-cli has no `autoApprove` field, so a verb governance keeps runs without
         # a prompt only as an `allowedTools` entry. Every agent's view gets that grant,
         # the one the KAS projection derives, after the pass above.

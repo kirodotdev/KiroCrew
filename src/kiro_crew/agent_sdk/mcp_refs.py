@@ -297,6 +297,20 @@ def entry_reaches(entry: str, ref: str) -> bool:
     return _glob_hits(ref, entry) or (verb != "" and _glob_hits(verb, entry))
 
 
+#: Refs no grant may ever cover, for any agent, on any route, with or without a
+#: ceiling. ``background_run`` starts an arbitrary command, so like ``execute_bash``
+#: each call has to reach the approval gate: an auto-approve would hand a
+#: prompt-injected agent unprompted command execution. Enforced by the shared
+#: gate-skip predicate (``platform.governance.may_skip_gate``), which every grant
+#: writer and projection consults.
+NEVER_AUTO_APPROVED: tuple[str, ...] = ("@kirocrew-cron/background_run",)
+
+
+def reaches_never_auto_approved(entry: str) -> bool:
+    """Whether an approval entry could grant a :data:`NEVER_AUTO_APPROVED` ref."""
+    return isinstance(entry, str) and any(entry_reaches(entry, ref) for ref in NEVER_AUTO_APPROVED)
+
+
 #: Glob syntax kiro-cli documents in the tool part of an ``allowedTools`` entry.
 #: Anything else (brackets, braces, negation) is not pinned down for kiro-cli, so
 #: :func:`entry_grants` reads it as no grant.

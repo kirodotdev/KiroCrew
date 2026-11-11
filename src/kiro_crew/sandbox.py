@@ -729,6 +729,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _resolved_kiro_agents_targets,
         _resolves_to,
         _sandbox_policy,
+        _tier_mask_dirs,
         app_backend_visible_targets,
         app_declared_mask_targets,
         carveout_chain_has_planted_link,
@@ -739,6 +740,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         effective_sandbox_mode,
         enterprise_policy_cache_view,
         install_root_targets_for,
+        path_within_tier_mask,
         warn_readonly_layer_unenforced,
     )
     from kiro_crew.sandbox_unavailable import (  # noqa: F401

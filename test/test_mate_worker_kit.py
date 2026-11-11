@@ -916,7 +916,9 @@ def test_selector_collapse_keeps_order_and_uncovered_selectors(refs, expected):
         (["@notes/writ?"], [], "write", True),
         (["@notes/read_*"], [], "write_note", False),
         (["@other/write_*"], [], "write_note", False),
-        (["*"], [], "write_note", True),
+        # ``*`` covers ``background_run``, which no grant may cover, so the written
+        # file holds no such grant and the re-added tool prompts.
+        (["*"], [], "write_note", False),
         ([], ["write_*"], "write_note", True),
         ([], ["write_not?"], "write_note", True),
         (["@notes/write_note"], [], "write_*", True),
