@@ -33,8 +33,8 @@ The app will:
    (see [the desktop app guide](../../docs/build/desktop-app.md#how-the-app-finds-and-launches-the-backend))
 3. Launch `kirocrew gateway` when needed
 4. Show a loading screen while the backend boots. A live bundled backend gets an
-   extended Windows cold-start window; a child that actually exits still fails
-   immediately with its launch-log cause.
+   extended cold-start window on every platform; a child that actually exits
+   still fails immediately with its launch-log cause.
 5. Load the dashboard
 6. Point the user at Kiro CLI installation and sign-in on the gateway host when
    either prerequisite is missing

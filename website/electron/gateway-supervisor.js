@@ -1087,7 +1087,6 @@ function createGatewaySupervisor({
         catch { /* window gone */ }
       },
       maxWaitMs: gatewayWaitTimeoutMs({
-        platform: processObj.platform,
         watchSpawn: watchSpawn && gatewayOwnership === "spawned",
         edition: BAKED_EDITION,
       }),
