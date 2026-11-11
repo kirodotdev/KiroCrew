@@ -1,9 +1,10 @@
 """How a native Slack turn answers a tool call and a permission request.
 
 ``_screen_tool_call`` warns and audits a call the provider is already running.
-``_answer_permission_request`` is the enforcing ladder: the hook verdict, the
-``auto_approve_subagent_spawn`` rung (``_should_auto_approve_spawn``), the approval
-mode, per-session Trust and owner YOLO, then the interactive prompt
+``_answer_permission_request`` is the enforcing ladder: the hook verdict's deny, the
+agent spec's own PreToolUse hooks (``channel_spec_hooks``), the hook verdict's
+auto-approve, the ``auto_approve_subagent_spawn`` rung (``_should_auto_approve_spawn``),
+the approval mode, per-session Trust and owner YOLO, then the interactive prompt
 (``_request_approval``) whose click ``handle_interaction`` answers. Every
 ``approve_tool`` and ``reject_tool`` call of the native path is in this module, with
 the steer that tells the model a host refusal was not the person's
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
         _safe_update,
         _SlackTurn,
         add_trusted_session,
+        capabilities_of,
         event_is_spawn_run,
         hook_gate_busy,
         hook_gate_kwargs,
@@ -66,6 +68,8 @@ if TYPE_CHECKING:
         redact_exfiltration_urls,
         run_in_tool_gate_pool,
         sel,
+        spec_pre_tool_refusal,
+        spec_turn,
         steer_refusal_notice,
         tool_approval_timeout_secs,
         trust_permitted,
@@ -175,9 +179,10 @@ async def _answer_permission_request(
     """Answer one permission request: True when the person rejected it.
 
     ``_run_turn``'s ``EVENT_PERMISSION_REQUEST`` branch, the enforcing gate, in its
-    order: the hook verdict (an auto-approve by name, or a deny steered and rejected),
-    the ``auto_approve_subagent_spawn`` rung, the approval mode, Trust and YOLO, then
-    the interactive prompt. A rejected prompt ends the stream (``True``).
+    order: a refusal steered and rejected (the hook verdict's deny, then the agent
+    spec's own PreToolUse hooks where Crew runs them), the hook verdict's auto-approve
+    by name, the ``auto_approve_subagent_spawn`` rung, the approval mode, Trust and
+    YOLO, then the interactive prompt. A rejected prompt ends the stream (``True``).
     """
     slack = turn.slack
     channel = turn.channel
@@ -188,7 +193,10 @@ async def _answer_permission_request(
     _agent = turn._agent
     answer = turn.answer
     task = turn.task
-    # Check tool hooks for auto-approve
+    # The security gate's verdict first, then the agent spec's own PreToolUse hooks
+    # where Crew runs them (``channel_spec_hooks``): a refusal from either outranks
+    # every approval below, the gate's own auto-approve included.
+    tool_result = None
     if context_builder:
         tool_result = await run_in_tool_gate_pool(
             context_builder.hooks.on_tool_call,
@@ -198,90 +206,98 @@ async def _answer_permission_request(
             agent=_agent or "",
             **hook_gate_kwargs(event),
         )
-        if tool_result.action == TOOL_AUTO_APPROVE:
-            # The hook granted this by NAME (its `auto_approve_tools`
-            # globs, or the read-only allowlist). Honour it only
-            # while each program name in the command still resolves
-            # to the program it appears to name; a shadowed,
-            # agent-tree or unidentified resolution DOWNGRADES to
-            # the remaining rungs below (spawn hook, approval mode,
-            # trust/YOLO, the interactive buttons) — never a hard
-            # block.
-            _ng_refusal = await name_grant.refusal_for_event(event)
-            if _ng_refusal is None:
-                approval_sent = await client.approve_tool(event.request_id)
-                if approval_sent is False:
-                    _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        source="slack",
-                        tool_name=event.title,
-                        tool_kind=event.tool_kind,
-                        outcome=_outcome,
-                        request_id=event.request_id,
-                        **({"metadata": _meta} if _meta else {}),
-                    )
-                    return False
-                Stats().inc_tool_auto_approved()
+    _deny_reason: str | None = None
+    _deny_error = "hook_deny"
+    if tool_result is not None and tool_result.action == TOOL_DENY:
+        _deny_reason = tool_result.reason
+    elif capabilities_of(client).crew_fires_spec_hooks:
+        _spec = await spec_turn(client, turn.spec_agent or "")
+        _deny_reason = await spec_pre_tool_refusal(_spec, client, event, session_key)
+        _deny_error = "spec_hook"
+    if _deny_reason is not None:
+        # Audit FIRST, then steer, then reject: the steer and
+        # the reject both await the ACP pipe, and a backend that
+        # stops reading stdin cancels this coroutine at the
+        # turn deadline -- an SEL row sequenced after them
+        # never runs (the chat runner's audit-first rule).
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name=event.title,
+            tool_kind=event.tool_kind,
+            outcome="denied",
+            request_id=event.request_id,
+            error=_deny_error,
+        )
+        # A hook deny is a HOST verdict on the call, not the
+        # person's: tell the model so in-band before the reject
+        # hands it kiro-cli's "User denied tool execution".
+        await _steer_host_deny(
+            client,
+            event,
+            _deny_reason,
+            cause=DENY_CAUSE_POLICY,
+            audited=True,
+        )
+        await client.reject_tool(event.request_id)
+        Stats().inc_tool_denial()
+        # event.title is LLM-authored — redact before posting.
+        _blocked_title, _ = redact_exfiltration_urls(event.title)
+        _blocked_title, _ = redact_credentials(_blocked_title)
+        answer.accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
+        return False
+    if tool_result is not None and tool_result.action == TOOL_AUTO_APPROVE:
+        # The hook granted this by NAME (its `auto_approve_tools`
+        # globs, or the read-only allowlist). Honour it only
+        # while each program name in the command still resolves
+        # to the program it appears to name; a shadowed,
+        # agent-tree or unidentified resolution DOWNGRADES to
+        # the remaining rungs below (spawn hook, approval mode,
+        # trust/YOLO, the interactive buttons) — never a hard
+        # block.
+        _ng_refusal = await name_grant.refusal_for_event(event)
+        if _ng_refusal is None:
+            approval_sent = await client.approve_tool(event.request_id)
+            if approval_sent is False:
+                _outcome, _meta = _batch_refusal_outcome(client, event.request_id)
                 sel().log_tool_invocation(
                     session_key=session_key,
                     source="slack",
                     tool_name=event.title,
                     tool_kind=event.tool_kind,
-                    outcome="auto_approved",
+                    outcome=_outcome,
                     request_id=event.request_id,
-                    metadata={"reason": "hook_auto_approve"},
+                    **({"metadata": _meta} if _meta else {}),
                 )
                 return False
-            # Once per session for a platform-scope refusal; the audit row
-            # below is still written for every call.
-            if name_grant.should_log_decline(session_key, _ng_refusal):
-                logger.warning(
-                    "declining a hook auto-approve: %s; the request "
-                    "falls through to the Slack handler's normal "
-                    "approval ladder",
-                    _ng_refusal.log_text,
-                )
-            name_grant.log_decline(
-                source="slack",
-                session_key=session_key,
-                event=event,
-                refusal=_ng_refusal,
-                tier="hook_auto_approve",
-                sel_factory=sel,
-            )
-        if tool_result.action == TOOL_DENY:
-            # Audit FIRST, then steer, then reject: the steer and
-            # the reject both await the ACP pipe, and a backend that
-            # stops reading stdin cancels this coroutine at the
-            # turn deadline -- an SEL row sequenced after them
-            # never runs (the chat runner's audit-first rule).
+            Stats().inc_tool_auto_approved()
             sel().log_tool_invocation(
                 session_key=session_key,
                 source="slack",
                 tool_name=event.title,
                 tool_kind=event.tool_kind,
-                outcome="denied",
+                outcome="auto_approved",
                 request_id=event.request_id,
-                error="hook_deny",
+                metadata={"reason": "hook_auto_approve"},
             )
-            # A hook deny is a HOST verdict on the call, not the
-            # person's: tell the model so in-band before the reject
-            # hands it kiro-cli's "User denied tool execution".
-            await _steer_host_deny(
-                client,
-                event,
-                tool_result.reason,
-                cause=DENY_CAUSE_POLICY,
-                audited=True,
-            )
-            await client.reject_tool(event.request_id)
-            Stats().inc_tool_denial()
-            # event.title is LLM-authored — redact before posting.
-            _blocked_title, _ = redact_exfiltration_urls(event.title)
-            _blocked_title, _ = redact_credentials(_blocked_title)
-            answer.accumulated += f"\n🚫 _Tool `{_blocked_title}` blocked by hooks._"
             return False
+        # Once per session for a platform-scope refusal; the audit row
+        # below is still written for every call.
+        if name_grant.should_log_decline(session_key, _ng_refusal):
+            logger.warning(
+                "declining a hook auto-approve: %s; the request "
+                "falls through to the Slack handler's normal "
+                "approval ladder",
+                _ng_refusal.log_text,
+            )
+        name_grant.log_decline(
+            source="slack",
+            session_key=session_key,
+            event=event,
+            refusal=_ng_refusal,
+            tier="hook_auto_approve",
+            sel_factory=sel,
+        )
 
     # auto_approve_subagent_spawn → auto-approve spawn_run tool calls
     if _should_auto_approve_spawn(context_builder, event):
