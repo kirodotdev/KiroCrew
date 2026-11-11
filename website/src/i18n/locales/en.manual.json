@@ -5931,8 +5931,8 @@
         "show_result": "Show result"
       },
       "collapsibleToolGroup": {
-        "collapse": "Collapse",
-        "expand": "Expand"
+        "collapse": "Collapse {{name}}",
+        "expand": "Expand {{name}}"
       },
       "toolCallLine": {
         "answers_load_failed": "The answers couldn't load. Check the connection to the gateway, then try again.",
@@ -6669,6 +6669,7 @@
       "could_not_rename_session": "Couldn't rename the session to “{{title}}”",
       "could_not_rename_session_to": "Couldn't rename the session to “{{title}}” — the previous title stays",
       "could_not_generate_title": "Couldn't generate a title",
+      "undo_auto_title_named": "Undo: {{title}}",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "could_not_fork_session": "Couldn't fork this session",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",

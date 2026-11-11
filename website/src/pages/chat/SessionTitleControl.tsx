@@ -541,7 +541,7 @@ export default function SessionTitleControl({
             // Named by the label the header showed, "Untitled session" when the
             // previous name was empty or the key (#20871); the commit below still
             // restores the raw previous value.
-            aria-label={`${i18nT('pages.chatPage.undo_auto_title')}: ${sessionDisplayTitle({ key: slotKey, title: undo.previous })}`}
+            aria-label={i18nT('pages.chatPage.undo_auto_title_named', { title: sessionDisplayTitle({ key: slotKey, title: undo.previous }) })}
             title={sessionDisplayTitle({ key: slotKey, title: undo.previous })}
             className={`shrink-0 flex items-center gap-1 text-accent hover:underline cursor-pointer bg-transparent border-none p-0 ${compact ? 'text-[11px]' : 'text-xs'} leading-none whitespace-nowrap`}
             onClick={(e) => { e.stopPropagation(); commit(undo.previous) }}
