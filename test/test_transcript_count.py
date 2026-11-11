@@ -210,3 +210,67 @@ def test_real_corpus_matches_full_read() -> None:
         except (UnicodeDecodeError, ValueError):
             continue
         assert transcript_count.count_messages(path) == len(expected), path.name
+
+
+def _lines_parsed(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count every transcript line a count parses (the work a startup scan does)."""
+    parsed = [0]
+    real = transcript_count.message_row
+
+    def counting(line: str) -> dict | None:
+        parsed[0] += 1
+        return real(line)
+
+    monkeypatch.setattr(transcript_count, "message_row", counting)
+    return parsed
+
+
+def _unconsolidated_after_restart(base: Path, key: str) -> int:
+    # A new instance has no message cache, as at gateway start.
+    log = ConversationLog(base_dir=base)
+    log.init()
+    return log.unconsolidated_count(key)
+
+
+@pytest.mark.parametrize("appends", [10, 100, 400, 1600])
+def test_startup_after_appends_reads_no_transcript_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, appends: int
+) -> None:
+    base = tmp_path / "sessions"
+    log = ConversationLog(base_dir=base)
+    log.init()
+    log.append("k", "user", "first")
+    assert _unconsolidated_after_restart(base, "k") == 1  # counts once, stores
+    for i in range(appends):
+        log.append("k", "assistant", f"m{i}")
+    parsed = _lines_parsed(monkeypatch)
+    assert _unconsolidated_after_restart(base, "k") == appends + 1
+    assert parsed[0] == 0
+
+
+def test_a_transcript_without_a_stored_count_is_counted_once_then_stored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "sessions"
+    log = ConversationLog(base_dir=base)
+    log.init()
+    for i in range(5):
+        log.append("k", "user", f"m{i}")
+    for sidecar in (base / transcript_count.COUNT_DIR).glob("*"):
+        sidecar.unlink()  # a transcript written before the count was stored
+    parsed = _lines_parsed(monkeypatch)
+    assert _unconsolidated_after_restart(base, "k") == 5
+    assert parsed[0] == 6  # metadata line + 5 rows, once
+    assert _unconsolidated_after_restart(base, "k") == 5
+    assert parsed[0] == 6
+
+
+def test_a_rewritten_transcript_is_recounted(tmp_path: Path) -> None:
+    base = tmp_path / "sessions"
+    log = ConversationLog(base_dir=base)
+    log.init()
+    for i in range(4):
+        log.append("k", "user", f"m{i}")
+    assert _unconsolidated_after_restart(base, "k") == 4
+    log.rewrite_session("k", [{"role": "user", "content": "only"}])
+    assert _unconsolidated_after_restart(base, "k") == 1
