@@ -2236,10 +2236,18 @@ sends no signal, starts nothing and takes no lock.
 
 | stdout | exit | meaning | desktop verdict |
 |---|---|---|---|
-| `{"holder": "process", "pid": N, "alive": true, "source": "flock_owner"\|"recorded_pid"\|"home_anchor"}` | 0 | a live process holds the lock | `captured`: wait for pid N to exit |
+| `{"holder": "process", "pid": N, "alive": true, "source": "flock_owner"\|"recorded_pid"\|"home_anchor"\|"run_record"}` | 0 | a live process holds the lock | `captured`: wait for pid N to exit |
 | `{"holder": "nobody"}` | 0 | the lock is free, or its recorded holder is dead | `released`: spawn |
 | `{"holder": "held", "reason": "..."}` | 0 | the lock is positively held and its stamped pid is unreadable (a gateway under a Windows mandatory lock) | `held`: poll until the lock is released |
 | `{"holder": "indeterminate", "reason": "..."}` | 2 | the lock state could not be established, or a forked inheritor holds it | `refused`: show the probe-failed error |
+
+`gateway-pid --port N` names that `held` shape (the Windows mandatory lock
+hiding the stamp) from the gateway's own run record for port N instead:
+`run/gateway-<N>.pid` whose `.start` token still matches the live process,
+the same fallback `stop` takes, as `source: "run_record"`. No record, or a
+stale one, still prints `held`; without `--port` no record is read. The
+desktop passes `--port` only when it proves a Windows holder for its port
+(`provenWindowsHomeGateway`); the drain path keeps the lock-only question.
 
 `held` is reported only for the `LockProbeError.held` shape. Every other
 `LockProbeError` (an unopenable lock file, an unmeasurable filesystem, a dead
