@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import pathlib
 import shlex
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,6 +36,7 @@ from terminal_handler_helpers import (  # noqa: F401 -- the autouse fixture regi
 )
 
 from kiro_crew.dashboard.handlers import terminal
+from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.ws_heartbeat import LagTolerantWebSocketResponse
 from kiro_crew.testing.wait import async_wait_until, default_timeout, finished
 
@@ -489,6 +492,24 @@ class TestTerminalWsIntegration:
                     loop.run_in_executor(None, lambda: "ran"), "a no-op on the default executor"
                 )
                 assert ran == "ran"
+                # The heartbeat's own probe of that executor runs too, so it never outwaits
+                # EXECUTOR_STALL_SECS and withholds a beat.
+                watchdog = LoopStallWatchdog(
+                    stall_after=30.0,
+                    exit_after=None,
+                    dump=lambda: None,
+                    arm_later=lambda _t: None,
+                    cancel_later=lambda: None,
+                    log=logging.getLogger(__name__),
+                )
+                probes: list[asyncio.Future[None]] = []
+
+                def _submit(executor, fn):
+                    probes.append(loop.run_in_executor(executor, fn))
+                    return probes[-1]
+
+                assert watchdog.default_executor_live(SimpleNamespace(run_in_executor=_submit))
+                await finished(probes[0], "the heartbeat's probe of the default executor")
         finally:
             for sess in list(registry.values()):
                 if sess is not None:
