@@ -432,6 +432,15 @@ class WhatsAppDispatcher:
         # sender, which is what the context decision below has to key on.
         group = is_group_jid(scope)
         session_key = self._session_key(scope, is_operator=is_operator)
+        unprompted = bool(verdict is not None and verdict.unprompted)
+        busy = self.sessions.is_busy(session_key) or (
+            group and self.sessions.is_busy(self._session_key(scope, is_operator=not is_operator))
+        )
+        if busy and unprompted and not is_operator:
+            # Nobody addressed the bot, so a busy receipt answers a question nobody
+            # asked: an unprompted turn is invisible until it speaks. The operator
+            # keeps the steer, which folds a follow-up into the running reply.
+            return
         if self.sessions.is_busy(session_key):
             await self._handle_busy(inbound, session_key)
             return
@@ -451,7 +460,6 @@ class WhatsAppDispatcher:
         )
         session_key = self._session_key(scope, is_operator=is_operator)
         agent = self._resolve_agent(scope)
-        unprompted = bool(verdict is not None and verdict.unprompted)
         # Interactive approval by typed reply, only for a sender allowed to
         # approve and only for a turn someone is actually watching. An
         # unprompted group turn nobody asked for must not stop to request
