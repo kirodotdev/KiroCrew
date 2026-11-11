@@ -7,7 +7,7 @@
     "@agentclientprotocol/claude-agent-acp": "0.94.0",
     "@agentclientprotocol/codex-acp": "2.3.0",
     "@deepseek-ai/dsh": "0.2.0-rc.2",
-    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "@strands-agents/cli": "0.2.4",
     "opencode-ai": "1.19.1",
     "pi-acp": "0.0.34"
