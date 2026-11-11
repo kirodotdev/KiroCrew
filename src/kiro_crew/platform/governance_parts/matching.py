@@ -15,7 +15,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Sequence, Tuple
 
 from kiro_crew.platform.guest_paths import GuestPath, guest_norm
 
@@ -121,7 +121,9 @@ def _match_path(item: str, pattern: str, *, any_case: bool = False) -> bool:
     if isinstance(item, GuestPath):
         norm = guest_norm(item)
         return norm is not None and fnmatch.fnmatchcase(norm, _expand(pattern))
-    return _match_local_path(_norm_item(item), _expand(pattern), any_case=any_case)
+    forms = _norm_items(item)
+    expanded = _expand(pattern)
+    return any(_match_local_path(f, expanded, any_case=any_case) for f in forms)
 
 
 def _match_denied_path(item: str, pattern: str) -> bool:
@@ -134,6 +136,19 @@ def _match_denied_path(item: str, pattern: str) -> bool:
     a directory the operator did not name, which fails closed.
     """
     return _match_path(item, pattern, any_case=True)
+
+
+def _path_allowed(item: str, patterns: Sequence[str]) -> bool:
+    """Whether an ALLOW list covers *item*: each spelling (``_norm_items``) meets an entry.
+
+    Elsewhere a path meets a pattern when any spelling does, since a match there
+    refuses or narrows. An allow admits, so it must cover the file the write lands
+    on whichever reading is right; separate entries may cover separate readings.
+    """
+    if isinstance(item, GuestPath):
+        return any(_match_path(item, p) for p in patterns)
+    expanded = [_expand(p) for p in patterns]
+    return all(any(_match_local_path(f, p) for p in expanded) for f in _norm_items(item))
 
 
 def _match_host(item: str, pattern: str) -> bool:
@@ -289,10 +304,31 @@ _DENY_MATCHERS: Dict[str, Callable[[str, str], bool]] = {
     "path": _match_denied_path,
 }
 
+# How ``ScopedRuleset.permits`` reads a whole ALLOW list, where it differs from any-entry.
+_ALLOW_MATCHERS: Dict[str, Callable[[str, Sequence[str]], bool]] = {
+    "path": _path_allowed,
+}
+
 
 def _expand(path_str: str) -> str:
     """Expand ``~`` and ``$VAR`` without touching the filesystem (no resolve())."""
     return os.path.expanduser(os.path.expandvars(path_str))
+
+
+def _norm_items(path_str: str) -> list[str]:
+    """:func:`_norm_item` of *path_str*, plus the spelling the tool writes if it differs.
+
+    On Windows this host expands ``%VAR%`` and the tool does not
+    (``paths_resolver._expanded_spellings``), so a ``%VAR%\\..\\x`` item names two files. A deny
+    that meets either refuses and an allow must meet both
+    (``_path_allowed``), so the rule judges the
+    file the write lands on whichever reading is right.
+    """
+    from kiro_crew.security.paths_resolver import _expanded_spellings
+
+    forms = [_norm_item(path_str)]
+    forms += [_norm_expanded(s) for s in _expanded_spellings(path_str) if s != _expand(path_str)]
+    return forms
 
 
 def _norm_item(path_str: str) -> str:
@@ -325,9 +361,14 @@ def _norm_item(path_str: str) -> str:
     best-effort anchor; the resolved ``is_sensitive_path`` keystone remains the
     authoritative block for the trust-root / credential dirs.
     """
+    return _norm_expanded(_expand(path_str))
+
+
+def _norm_expanded(path_str: str) -> str:
+    """Steps 2-4 of :func:`_norm_item`, for a spelling already expanded."""
     from kiro_crew.security.paths_resolver import _fold_windows_alias
 
-    p = os.path.abspath(_fold_windows_alias(_expand(path_str)))
+    p = os.path.abspath(_fold_windows_alias(path_str))
     if p.startswith("//") and not p.startswith("///"):
         p = p[1:]
     return p

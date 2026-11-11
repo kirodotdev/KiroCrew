@@ -19,6 +19,7 @@ from typing import Dict, Mapping, Optional, Protocol, Tuple, runtime_checkable
 
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_parts.matching import (
+    _ALLOW_MATCHERS,
     _DEFAULT_MATCHER,
     _DENY_MATCHERS,
     _MATCHERS,
@@ -214,7 +215,11 @@ class ScopedRuleset:
         """Rule 1 — within a single level."""
         match = _MATCHERS[self.matcher]
         if self.mode == MODE_ALLOW:
-            ok = any(match(item, pat) for pat in self.allow)
+            allowed = _ALLOW_MATCHERS.get(self.matcher)
+            if allowed is not None:
+                ok = allowed(item, self.allow)
+            else:
+                ok = any(match(item, pat) for pat in self.allow)
             return Decision(
                 ok,
                 f"{item!r} {'in' if ok else 'not in'} allow-set",

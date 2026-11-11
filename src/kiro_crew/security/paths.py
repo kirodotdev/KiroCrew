@@ -796,6 +796,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _child_fault_streak,
         _child_fault_warned,
         _child_request,
+        _expanded_spellings,
         _extend_cooldown,
         _inline_bounded,
         _is_unc_path,
@@ -817,6 +818,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _run_resolution_bounded,
         _running_event_loop,
         _stall_prefix,
+        _tool_expandvars,
         bounded_judgment,
     )
     from kiro_crew.security.paths_targets import (  # noqa: F401
@@ -858,6 +860,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolved_env_root,
         _resolved_root_key,
         _ResolvedRoots,
+        _spelling_forms,
     )
 if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.agent_sdk import (  # noqa: F401

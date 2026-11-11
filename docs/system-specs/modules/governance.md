@@ -134,6 +134,17 @@ can reorder strictness or redefine matching):
   spellings stay as written, as they do in the keystone; off Windows nothing is
   folded.
 
+  **Path matcher — Windows `%VAR%` readings.** kiro-cli expands `~`, `$VAR`
+  and `${VAR}` only, so it writes a `%VAR%` segment as literal text, while this
+  host's `ntpath.expandvars` expands it. On Windows `_norm_items` therefore
+  gives two normalized items for such a path: the host's reading and the tool's
+  (`paths_resolver._expanded_spellings`). A deny refuses when it meets either.
+  An allow list (`_path_allowed`, used by `ScopedRuleset.permits` and by
+  enterprise-policy translation's `_admits`) admits only when every reading is
+  met by some entry, so separate entries may cover separate readings. The
+  sensitive-path keystone's `_candidate_forms` takes both readings' candidates.
+  Off Windows the two readings are the same string and nothing changes.
+
   **Path matcher — remote-workspace targets.** A remote workspace's file tools
   act on a Linux guest, so their targets are matched as the guest's POSIX paths
   on every gateway OS, a Windows one included. The flavour is chosen per call,

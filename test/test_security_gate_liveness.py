@@ -811,7 +811,10 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 25, from 36,018, for ``_expanded_spellings``: the path gates also judge
+#: a Windows ``%VAR%`` as the literal kiro-cli writes, not only as expanded, and the
+#: facade names the three helpers it forwards. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_043
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

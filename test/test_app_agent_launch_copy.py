@@ -8,6 +8,7 @@ created under the app's launch copy instead (``apps.agent_launch``).
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 from types import SimpleNamespace
 
@@ -280,6 +281,20 @@ class TestReportedPathsPointAtTheSession:
             }
         )
         assert update["content"][0]["path"] == os.path.join(os.sep, "w", "a", "cwd", "x")
+
+    def test_a_percent_variable_read_two_ways_is_unanchored(self, monkeypatch):
+        # A Windows host's ``expandvars`` expands ``%VAR%``; the tool does not, so it
+        # writes <session>/k while this host reads /srv/k: neither file is judged.
+        monkeypatch.setattr(os.path, "expandvars", ntpath.expandvars)
+        monkeypatch.setenv("KC_PROBE_DIR", os.path.join(os.sep, "srv", "x"))
+        update = self._map(
+            {
+                "content": [{"type": "diff", "path": os.path.join(self.L, "k")}],
+                "locations": [{"path": "%KC_PROBE_DIR%/../k"}],
+            }
+        )
+        assert update["content"][0]["path"] == os.path.join("unanchored", "k")
+        assert update["locations"][0]["path"] == os.path.join("unanchored", "k")
 
     def test_a_variable_spelling_is_expanded(self, monkeypatch):
         monkeypatch.setenv("KC_PROBE_DIR", os.path.join(os.sep, "srv", "x"))
