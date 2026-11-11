@@ -617,6 +617,15 @@ hyphens. A name some surface already uses as a command (`/help`, `/new`,
 `/review`, a channel's own commands) is not turned into one, so the command
 means the same thing everywhere.
 
+Built-in names win, including ones added after you saved the prompt. When an
+update makes a built-in command of a name you already use, such as `/fork`, the
+file stays where it is but stops answering to that name: its row leaves the `/`
+menu, and typing the name runs the built-in command. `kirocrew doctor` names
+each such file under **Saved prompts**. Rename the file to get the command
+back; `@<name>` still finds it under its old name. The reserved names
+are listed in `_RESERVED_TOKENS` in `src/kiro_crew/quick_prompts.py`, and each
+channel's own commands are on its integration page.
+
 The difference from a steering file is when it applies. A steering document is
 loaded without you asking for it, as far as its mode and backend allow; a
 prompt is something you reach for. A long request you make weekly is a prompt. A rule that

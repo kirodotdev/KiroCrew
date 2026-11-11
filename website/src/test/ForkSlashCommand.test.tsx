@@ -21,7 +21,7 @@ vi.mock('../api/client', async () => {
   }
 })
 
-import { interceptSlashCommand } from '../pages/chat/ChatInput'
+import { interceptSlashCommand, isInterceptedSlashCommand } from '../pages/chat/ChatInput'
 import { ApiError } from '../api/apiError'
 import { sseSlots } from '../store/dashboardSlice'
 import { setActiveSlot, switchSlot } from '../store/chatSlice'
@@ -117,5 +117,19 @@ describe('/fork slash command', () => {
       failed: true, stage: 'fork',
       error: i18nT('pages.chatPage.fork_too_large_offsite_unknown', { title: 'Quarterly report', control: i18nT('pages.chat.assistantMessage.fork_conversation_from_here') }),
     })
+  })
+
+  // `/fork` is a whole word: a message that only starts with those letters is
+  // ordinary text for the agent, not a fork.
+  it.each(['/forkify', '/fork-x', '/forkify the plan', '/forks'])('sends %j to the agent instead of forking', async raw => {
+    expect(isInterceptedSlashCommand(raw)).toBe(false)
+    const sendToFork = vi.fn().mockReturnValue(true)
+    expect(await interceptSlashCommand(raw, ORIGIN, store.dispatch, { sendToFork })).toEqual({ intercepted: false })
+    expect(mocks.forkChatSlot).not.toHaveBeenCalled()
+    expect(sendToFork).not.toHaveBeenCalled()
+  })
+
+  it.each(['/fork', '/fork hello', '/fork\nhello'])('still treats %j as a fork', raw => {
+    expect(isInterceptedSlashCommand(raw)).toBe(true)
   })
 })
