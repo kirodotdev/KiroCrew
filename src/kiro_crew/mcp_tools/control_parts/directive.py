@@ -26,7 +26,7 @@ from kiro_crew.validation import (
 )
 
 
-def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
+def _emit_directive(kind: str, args: dict[str, Any], human: str, *, after_text: str = "") -> str:
     """Encode a validated directive AND publish it out of band; return the text.
 
     Two delivery paths, one each way round:
@@ -58,6 +58,12 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
     process's own streams are the protocol channel — and because the failure that
     matters is reported at the CONSUMER, which is the side that knows whether a
     directive actually landed.
+
+    *after_text* is added to the confirmation when the gateway answers that the
+    caller's running turn has already streamed reply text (``turn_wrote_text``).
+    It goes before the marker line, so the marker the consumer decodes is the one
+    ``encode`` produced. No answer, or an older gateway that sends no such field,
+    leaves the result as it was.
     """
     out = session_directive.encode(kind, args, human)
     # STRUCTURAL test, not a content test: encode either produced a marker or it
@@ -84,7 +90,7 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
         # validation). The gateway re-derives the payload by re-running the tool
         # and computes the claim digest itself, so a caller who can reach the
         # route controls only what the victim's own call would produce.
-        mcp_core._post(
+        reply = mcp_core._post(
             "/api/session-directive",
             {
                 "tool": _tool,
@@ -92,12 +98,23 @@ def _emit_directive(kind: str, args: dict[str, Any], human: str) -> str:
             },
         )
     except Exception:
-        pass
+        reply = None
+    if after_text and isinstance(reply, dict) and reply.get("turn_wrote_text") is True:
+        out = f"{human} {after_text}{out[len(human):]}"
     # POSITIVE PROVENANCE: this is the one place a real marker is produced, so it
     # is the one place that can say so. Without it the outermost gate has to infer
     # authenticity from the bytes, which a rejection echoing a model-chosen
     # argument name can imitate.
     return session_directive.vouch(out)
+
+
+#: Added to the ``nothing_to_do`` result when the turn already wrote reply text,
+#: so the model reads it in its history on the next turn.
+QUIET_END_AFTER_TEXT_REMINDER = (
+    "The text you wrote this turn was shown to the user. A quiet end writes "
+    "nothing before this call; to report something, reply in text instead of "
+    "calling nothing_to_do."
+)
 
 
 def nothing_to_do(name: str, args: dict[str, Any]) -> str:
@@ -123,6 +140,7 @@ def nothing_to_do(name: str, args: dict[str, Any]) -> str:
         "Quiet end requested for this turn. Write nothing and call nothing "
         "after this: the turn is over. The consumer records the quiet step; "
         "if it refuses, the normal empty-reply handling applies instead.",
+        after_text=QUIET_END_AFTER_TEXT_REMINDER,
     )
 
 

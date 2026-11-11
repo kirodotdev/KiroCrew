@@ -257,6 +257,7 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         # The assistant rows this turn writes say the agent started it
         # (`_segment_row_meta`); every outermost turn sets it, so no turn inherits it.
         slot._turn_agent_started = turn._agent_started
+        slot._turn_wrote_text = False
         # A new turn means the slot has moved past any approval that timed out
         # in an earlier one: no prompt is open now. End a loop's approval hold
         # here, whoever sent the turn (a person, a conductor's session_send, a

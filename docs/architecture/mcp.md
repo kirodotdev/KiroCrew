@@ -5569,6 +5569,19 @@ only. Records are in memory, expire after `MAX_AGE_SECS` (300 s), and are capped
 per session (`MAX_PER_SESSION`) and in total (`MAX_SESSIONS`). The messaging
 `TurnDriver` applies directives from the verified marker alone.
 
+The route's reply also carries `turn_wrote_text`: whether the caller's running
+turn has already streamed reply text, read from the session's dashboard tab
+(`_ChatSlot._turn_wrote_text`, set by a non-blank text chunk and reset at each
+outermost turn's open and exit; a session with no tab reports False). It is the
+one way the stateless tool learns what the turn wrote. `nothing_to_do` passes
+`QUIET_END_AFTER_TEXT_REMINDER` as `_emit_directive`'s `after_text`, so a quiet
+end called after text tells the model, in its own tool result, that the text was
+shown and that a quiet end writes nothing before the call; a turn with no text,
+an older gateway or a failed POST leaves the result unchanged. The reminder goes
+before the marker line, so the marker is the one `encode` produced. The answer
+is read when the tool runs, before the consumer applies the directive, so a call
+the applier later refuses (a person's turn) carries it too.
+
 **Terminal directives carry a structured turn-end signal.** One directive is
 the turn's intended LAST act — a recorded `nothing_to_do` quiet end
 (`session_directive_apply.TERMINAL_DIRECTIVES`); `ask_question` is not a
