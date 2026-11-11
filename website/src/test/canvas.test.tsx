@@ -2,18 +2,19 @@
  * The canvas artifact's editor: its data (parse, connector geometry, edits) and
  * the editor driven through real pointer and key events.
  */
-import { describe, it, expect } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { useState } from 'react'
-import CanvasEditor from '../components/canvas/CanvasEditor'
+import CanvasEditor, { noteTilt } from '../components/canvas/CanvasEditor'
 import {
-  emptyCanvas, labelScale, parseCanvas, sectionMembers, serializeCanvas, shapeAt, wheelPanStep, wheelZoomFactor,
+  boundsOf, emptyCanvas, labelScale, newId, parseCanvas, pointBounds, sectionMembers, serializeCanvas, shapeAt, wheelPanStep, wheelZoomFactor,
   type Canvas, type Shape,
 } from '../components/canvas/canvasModel'
 import { fitDash, ovalDash } from '../components/canvas/dashFit'
 import { darker, hexToHsv, hsvToHex, inkOn, luminance, toHex } from '../components/canvas/colorMath'
 import { shapeLook } from '../components/canvas/shapeLook'
-import { restack } from '../components/canvas/canvasEditing'
+import { copyShapes, pasteClip, restack } from '../components/canvas/canvasEditing'
+import { STICKER_EDGE, STICKER_EDGE_W } from '../components/canvas/canvasPaint'
 import { connectorRoute, connectorSides, movedSegment, segmentDrag } from '../components/canvas/connectorGeometry'
 
 const sticky = (id: string, x: number, y: number, text = ''): Shape => ({ id, kind: 'sticky', x, y, w: 200, h: 200, text, color: 'yellow' })
@@ -24,7 +25,31 @@ const reread = (raw: string): Canvas => {
   return p.canvas
 }
 
+/** One step from the zoom menu: open it from its trigger, then pick the item. */
+function zoomStep(label: string) {
+  act(() => { fireEvent.pointerDown(screen.getByTestId('canvas-zoom-menu'), { button: 0, ctrlKey: false, pointerType: 'mouse' }) })
+  act(() => { fireEvent.click(screen.getByRole('menuitem', { name: label })) })
+}
+
 describe('canvas model', () => {
+  it('ids never repeat, even made by the thousand in one go as a paste does', () => {
+    const ids = new Set(Array.from({ length: 200_000 }, () => newId()))
+    expect(ids.size).toBe(200_000)
+    // A paste of thousands of shapes, in one synchronous loop.
+    const many: Canvas = { ...emptyCanvas(), shapes: Array.from({ length: 5_000 }, (_, i) => sticky(`p${i}`, i, 0)) }
+    const { canvas: pasted, ids: fresh } = pasteClip(emptyCanvas(), copyShapes(many, new Set(many.shapes.map(s => s.id)))!)
+    expect(new Set(fresh).size).toBe(5_000)
+    expect(new Set(pasted.shapes.map(s => s.id)).size).toBe(5_000)
+  })
+
+  it('a file that repeats an id keeps both shapes, under different ids', () => {
+    const raw = JSON.stringify({ ...emptyCanvas(), shapes: [sticky('a', 0, 0), sticky('a', 300, 0)], connectors: [{ id: 'c', from: 'a', to: 'a' }, { id: 'c', from: 'a', to: 'a' }] })
+    const back = reread(raw)
+    expect(back.shapes).toHaveLength(2)
+    expect(new Set(back.shapes.map(s => s.id)).size).toBe(2)
+    expect(new Set(back.connectors.map(c => c.id)).size).toBe(2)
+  })
+
   it('round-trips through its file, and drops what it cannot read', () => {
     const b: Canvas = { ...emptyCanvas(), shapes: [sticky('a', 0, 0, 'Idea')], connectors: [{ id: 'c', from: 'a', to: 'gone' }] }
     const back = reread(serializeCanvas(b))
@@ -44,15 +69,24 @@ describe('canvas model', () => {
     expect(connectorSides(sticky('a', 0, 0), sticky('b', 0, 400))).toEqual(['bottom', 'top'])
   })
 
-  it('the drawn line stops short of an arrowhead\'s shape, while the route\'s ends stay on the sides', () => {
+  it('the drawn line starts and stops clear of its shapes, further for an arrowhead, while the route\'s ends stay on the sides', () => {
     const a = sticky('a', 0, 0)
     const b = sticky('b', 400, 0)
     const arrow = connectorRoute(a, b, { line: 'straight' })
-    expect(arrow.d).toBe('M200,100 L391,100')
+    // 12 clear of each sticker's edge, and 9 more where an arrowhead sits.
+    expect(arrow.d).toBe('M212,100 L379,100')
     expect(arrow.b).toEqual({ x: 400, y: 100 })
-    expect(connectorRoute(a, b, { line: 'straight', arrows: 'none' }).d).toBe('M200,100 L400,100')
-    expect(connectorRoute(a, b, { line: 'straight', arrows: 'both' }).d).toBe('M209,100 L391,100')
-    expect(connectorRoute(a, b, { line: 'curve' }).d).toMatch(/ 391,100$/)
+    expect(connectorRoute(a, b, { line: 'straight', arrows: 'none' }).d).toBe('M212,100 L388,100')
+    expect(connectorRoute(a, b, { line: 'straight', arrows: 'both' }).d).toBe('M221,100 L379,100')
+    expect(connectorRoute(a, b, { line: 'curve' }).d).toMatch(/ 379,100$/)
+  })
+
+  it('a connector whose stored route collapses to one point still draws, rather than crashing the canvas', () => {
+    // Touching shapes joined right-to-left, with the corner a file brought in.
+    const a: Shape = { ...sticky('a', 0, 0), kind: 'rect' }
+    const b: Shape = { ...sticky('b', 200, 0), kind: 'rect' }
+    const r = connectorRoute(a, b, { fromSide: 'right', toSide: 'left', route: [{ x: 200, y: 100 }] })
+    expect(r.d).toMatch(/^M/)
   })
 
   it('an elbow from a side to a side turns once, with a rounded corner', () => {
@@ -136,6 +170,32 @@ describe('the canvas', () => {
   const moveTo = (x: number, y: number, extra = {}) => act(() => { fireEvent.pointerMove(window, { ...at(x, y), ...extra }) })
   const release = (x: number, y: number) => act(() => { fireEvent.pointerUp(window, at(x, y)) })
 
+  it('Space released outside the canvas does not leave the next drawing gesture in pan mode', () => {
+    render(<Harness initial={emptyCanvas()} />)
+    fireEvent.click(screen.getByTestId('tool-rect'))
+    fireEvent.keyDown(canvas(), { key: ' ' })
+    expect(canvas().style.cursor).toBe('grab')
+    fireEvent.blur(canvas(), { relatedTarget: document.body })
+    fireEvent.keyUp(document.body, { key: ' ' })
+    press(100, 100)
+    moveTo(190, 150)
+    release(190, 150)
+    expect(latest().shapes).toEqual([expect.objectContaining({ kind: 'rect', x: 96, y: 96, w: 96, h: 60 })])
+  })
+
+  it('a desktop split canvas keeps the dock capped and scrollable, with zoom off its row', () => {
+    render(<Harness initial={emptyCanvas()} />)
+    const dock = screen.getByTestId('canvas-dock').className.split(' ')
+    expect(dock).toContain('max-w-[calc(100%-1.5rem)]')
+    expect(dock).toContain('overflow-x-auto')
+    expect(dock).not.toContain('md:max-w-none')
+    expect(dock).not.toContain('md:overflow-visible')
+    const zoom = screen.getByTestId('canvas-zoom').className.split(' ')
+    expect(zoom).toContain('top-3')
+    expect(zoom).not.toContain('md:bottom-5')
+    expect(zoom).not.toContain('md:top-auto')
+  })
+
   it('the dock\'s sticky tool drops a sticky where you click, ready to type into', () => {
     render(<Harness initial={emptyCanvas()} />)
     expect(screen.getByText('A blank canvas')).toBeTruthy()
@@ -215,6 +275,72 @@ describe('the canvas', () => {
     release(290, 260)
     // The dragged corner snaps to (288, 264); a sticky takes the larger side.
     expect(latest().shapes[0]).toMatchObject({ w: 288, h: 288 })
+  })
+
+  it('a text box left empty leaves no undo step behind, so Undo never brings back an empty box', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
+    fireEvent.click(screen.getByTestId('tool-text'))
+    press(600, 300)
+    release(600, 300)
+    act(() => { (screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).blur() })
+    expect(latest().shapes.map(s => s.kind)).toEqual(['sticky'])
+    // Nothing to undo: the abandoned box left the canvas as it was.
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes.map(s => s.kind)).toEqual(['sticky'])
+  })
+
+  it('a drag that ends an empty text box\'s edit undoes to a canvas without that box', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
+    fireEvent.click(screen.getByTestId('tool-text'))
+    press(600, 300)
+    release(600, 300)
+    expect(latest().shapes.map(s => s.kind)).toEqual(['sticky', 'text'])
+    // The press on the sticky ends the edit, which removes the empty box.
+    press(100, 100)
+    moveTo(140, 100)
+    release(140, 100)
+    expect(latest().shapes).toEqual([expect.objectContaining({ id: 'a', x: 36, y: 0 })])
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', ctrlKey: true }) })
+    expect(latest().shapes).toEqual([expect.objectContaining({ id: 'a', x: 0, y: 0 })])
+  })
+
+  it('a shape drawn while an emptied text box is still in edit undoes in one step to a canvas without that box', () => {
+    const text: Shape = { id: 't', kind: 'text', x: 0, y: 0, w: 220, h: 40, text: 'Hello', color: 'smoke' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [text] }} />)
+    press(10, 10)
+    release(10, 10)
+    // The sticky tool from its key, then Enter edits the selected box: the edit
+    // is still open when the next press lands, since nothing took focus.
+    act(() => { fireEvent.keyDown(canvas(), { key: 's' }) })
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
+    fireEvent.change(screen.getByTestId('canvas-shape-editor'), { target: { value: '' } })
+    press(300, 300)
+    moveTo(450, 450)
+    release(450, 450)
+    expect(latest().shapes.map(s => s.kind)).toEqual(['sticky'])
+    act(() => { (screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).blur() })
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', ctrlKey: true }) })
+    expect(latest().shapes).toEqual([])
+    // The step before that is the emptying of the box: undo brings its text back.
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', ctrlKey: true }) })
+    expect(latest().shapes).toEqual([expect.objectContaining({ id: 't', text: 'Hello' })])
+  })
+
+  it('pressing a resize handle and letting go without moving records no undo step, so redo survives', () => {
+    const rect: Shape = { ...sticky('r', 0, 0), kind: 'rect', w: 240, h: 120 }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect] }} />)
+    press(100, 60)
+    release(100, 60)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'd', metaKey: true }) })
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes).toHaveLength(1)
+    press(100, 60)
+    release(100, 60)
+    act(() => { fireEvent.pointerDown(screen.getByTestId('handle-e'), at(240, 60)) })
+    release(240, 60)
+    // The duplicate undone above can still be redone: the still press changed nothing.
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true, shiftKey: true }) })
+    expect(latest().shapes).toHaveLength(2)
   })
 
   it('dragging a side of the selected shape moves only that side; a sticky stays square', () => {
@@ -367,6 +493,171 @@ describe('the canvas', () => {
     expect(latest().shapes[0].locked).toBeUndefined()
   })
 
+  it('a right-click on a locked shape offers only Lock/Unlock, so its menu cannot delete or restack it', () => {
+    const onChange = vi.fn()
+    const initial: Canvas = { ...emptyCanvas(), shapes: [sticky('a', 0, 0), { ...sticky('b', 100, 100), locked: true }] }
+    render(<Harness initial={initial} onChange={onChange} />)
+    act(() => { fireEvent.contextMenu(canvas(), at(250, 250)) })
+    const item = (name: RegExp) => screen.getByRole('menuitem', { name }) as HTMLButtonElement
+    for (const name of [/^Copy/, /^Delete/, /Bring to front/, /Bring forward/, /Send backward/, /Send to back/]) expect(item(name).disabled).toBe(true)
+    expect(item(/Lock\/Unlock/).disabled).toBe(false)
+    expect(item(/Unlock all objects/).disabled).toBe(false)
+    fireEvent.click(item(/^Delete/))
+    fireEvent.click(item(/Send to back/))
+    expect(onChange).not.toHaveBeenCalled()
+    expect(latest()).toBe(initial)
+  })
+
+  it('an undo that locks a selected shape again lets go of it, so it cannot be resized, edited or deleted', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
+    press(100, 100)
+    release(100, 100)
+    act(() => { fireEvent.keyDown(canvas(), { key: 'L', code: 'KeyL', metaKey: true, shiftKey: true }) })
+    act(() => { fireEvent.contextMenu(canvas(), at(100, 100)) })
+    fireEvent.click(screen.getByRole('menuitem', { name: /Lock\/Unlock/ }))
+    expect(screen.getByTestId('canvas-toolbar')).toBeTruthy()
+    // Undoing the unlock locks it again while it is still picked.
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes[0].locked).toBe(true)
+    expect(screen.queryByTestId('canvas-toolbar')).toBeNull()
+    expect(document.querySelector('[data-handle]')).toBeNull()
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Backspace' }) })
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
+    expect(latest().shapes).toHaveLength(1)
+    expect(screen.queryByTestId('canvas-shape-editor')).toBeNull()
+  })
+
+  it('opening a second toolbar panel closes the first, so panels never pile up', () => {
+    const rect: Shape = { ...sticky('r', 0, 0), kind: 'rect', color: 'blue', w: 240, h: 120 }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect] }} />)
+    press(100, 60)
+    release(100, 60)
+    fireEvent.click(screen.getByLabelText('Colour'))
+    expect(screen.getAllByTestId('swatch-panel')).toHaveLength(1)
+    // The press lands inside the toolbar, whose wrapper stops it reaching the canvas.
+    const border = screen.getByLabelText('Border')
+    fireEvent.pointerDown(border)
+    fireEvent.click(border)
+    expect(screen.getAllByTestId('swatch-panel')).toHaveLength(1)
+    expect(screen.getByLabelText('Colour').getAttribute('aria-expanded')).toBe('false')
+    expect(border.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('zoom is one menu, its trigger reading the zoom, with steps, 100% and fit inside', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
+    expect(within(screen.getByTestId('canvas-zoom')).getAllByRole('button')).toHaveLength(1)
+    const trigger = screen.getByTestId('canvas-zoom-menu')
+    expect(trigger.textContent).toContain('100%')
+    zoomStep('Zoom in')
+    expect(trigger.textContent).toContain('120%')
+    zoomStep('Reset zoom to 100%')
+    expect(trigger.textContent).toContain('100%')
+    zoomStep('Fit to canvas')
+    expect(screen.getByTestId('canvas-zoom-menu').textContent).toMatch(/%/)
+  })
+
+  it('on a phone the selection toolbar sits across the top of the canvas, and colour rows wrap to fit', () => {
+    const real = window.matchMedia
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes('max-width'), media: q, onchange: null,
+      addEventListener: () => undefined, removeEventListener: () => undefined, addListener: () => undefined, removeListener: () => undefined, dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+    try {
+      const rect: Shape = { ...sticky('r', 0, 0), kind: 'rect', color: 'blue', w: 240, h: 120 }
+      render(<Harness initial={{ ...emptyCanvas(), shapes: [rect] }} />)
+      press(100, 60)
+      release(100, 60)
+      const place = screen.getByTestId('canvas-toolbar-place')
+      expect(place.style.left).toBe('12px')
+      expect(place.style.right).toBe('12px')
+      expect(place.style.transform).toBe('')
+      fireEvent.click(screen.getByLabelText('Colour'))
+      const rows = [...screen.getByTestId('swatch-panel').children].filter(c => c.className.includes('gap-2'))
+      expect(rows.every(r => r.className.includes('flex-wrap'))).toBe(true)
+    } finally {
+      window.matchMedia = real
+    }
+  })
+
+  it('a canvas far too big to spread into Math.min still has bounds', () => {
+    const many = Array.from({ length: 200_000 }, (_, i) => ({ ...sticky(`s${i}`, i, -i), w: 10, h: 10 }))
+    expect(boundsOf(many)).toEqual({ x: 0, y: -199_999, w: 200_009, h: 200_009 })
+    expect(pointBounds(many.map(s => ({ x: s.x, y: s.y })))).toEqual({ x: 0, y: -199_999, w: 199_999, h: 199_999 })
+    expect(boundsOf([])).toBeNull()
+    expect(pointBounds([])).toBeNull()
+  })
+
+  it('Space and Enter on a toolbar button press the button, not the canvas shortcuts', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0)] }} />)
+    press(100, 100)
+    release(100, 100)
+    const button = within(screen.getByTestId('canvas-toolbar')).getAllByRole('button')[0]
+    act(() => { button.focus() })
+    // Not prevented: the browser's own activation of the button still happens.
+    expect(fireEvent.keyDown(button, { key: ' ' })).toBe(true)
+    expect(fireEvent.keyDown(button, { key: 'Enter' })).toBe(true)
+    expect(screen.queryByTestId('canvas-shape-editor')).toBeNull()
+    // A chord still reaches the canvas from a toolbar button.
+    act(() => { fireEvent.keyDown(button, { key: 'd', metaKey: true }) })
+    expect(latest().shapes).toHaveLength(2)
+  })
+
+  it.each(['same shape', 'another shape'])('a dismissed colour drag stays separate from the next drag on %s', target => {
+    const a: Shape = { ...sticky('a', 0, 0), kind: 'rect', hex: '#FF0000', w: 240, h: 120 }
+    const b: Shape = { ...a, id: 'b', x: 400 }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [a, b] }} />)
+    press(100, 60)
+    release(100, 60)
+    const openSquare = () => {
+      fireEvent.click(screen.getByLabelText('Colour'))
+      const custom = screen.getByLabelText('Colour: custom colour')
+      if (custom.getAttribute('aria-expanded') === 'false') fireEvent.click(custom)
+      const square = screen.getByTestId('custom-square')
+      square.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON: () => ({}) })
+      return square
+    }
+    const first = openSquare()
+    fireEvent.pointerDown(first, { clientX: 50, clientY: 50, pointerId: 1 })
+    expect(latest().shapes.map(s => s.hex)).toEqual(['#804040', '#FF0000'])
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByTestId('custom-square')).toBeNull()
+    fireEvent.pointerUp(window, { clientX: 50, clientY: 50, pointerId: 1 })
+
+    if (target === 'another shape') { press(500, 60); release(500, 60) }
+    const second = openSquare()
+    fireEvent.pointerDown(second, { clientX: 100, clientY: 75, pointerId: 2 })
+    fireEvent.pointerUp(second, { clientX: 100, clientY: 75, pointerId: 2 })
+    expect(latest().shapes.map(s => s.hex)).toEqual(target === 'same shape' ? ['#400000', '#FF0000'] : ['#804040', '#400000'])
+
+    fireEvent.keyDown(canvas(), { key: 'z', metaKey: true })
+    expect(latest().shapes.map(s => s.hex)).toEqual(['#804040', '#FF0000'])
+    fireEvent.keyDown(canvas(), { key: 'z', metaKey: true })
+    expect(latest().shapes.map(s => s.hex)).toEqual(['#FF0000', '#FF0000'])
+  })
+
+  it('a colour typed and then dismissed with Escape is its own undo step, so later undos never jump past newer edits', () => {
+    const rect: Shape = { ...sticky('r', 0, 0), kind: 'rect', color: 'blue', w: 240, h: 120 }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect] }} />)
+    press(100, 60)
+    release(100, 60)
+    fireEvent.click(screen.getByLabelText('Colour'))
+    fireEvent.click(screen.getByLabelText('Colour: custom colour'))
+    const hexField = screen.getByLabelText('Hex colour') as HTMLInputElement
+    fireEvent.focus(hexField)
+    fireEvent.change(hexField, { target: { value: '#112233' } })
+    // Dismissed mid-gesture: the colour shows, but no final value was ever sent.
+    act(() => { fireEvent.keyDown(document, { key: 'Escape' }) })
+    expect(latest().shapes[0].hex).toBe('#112233')
+    act(() => { fireEvent.keyDown(canvas(), { key: 'd', metaKey: true }) })
+    expect(latest().shapes).toHaveLength(2)
+    // Undo takes back the duplicate, then the colour; nothing is skipped or lost.
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes).toHaveLength(1)
+    expect(latest().shapes[0].hex).toBe('#112233')
+    act(() => { fireEvent.keyDown(canvas(), { key: 'z', metaKey: true }) })
+    expect(latest().shapes[0].hex).toBeUndefined()
+  })
+
   it('the menu\'s shortcuts work on the selection: brackets restack, Cmd+C then Cmd+V pastes a copy with its links', () => {
     render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('a', 0, 0), sticky('b', 100, 100), sticky('c', 400, 0)], connectors: [{ id: 'k', from: 'a', to: 'c' }] }} />)
     press(50, 50)
@@ -398,9 +689,9 @@ describe('the canvas', () => {
     render(<Harness initial={{ ...emptyCanvas(), shapes: [section] }} />)
     const label = () => screen.getByText('To do') as HTMLElement
     expect(label().style.transform).toBe('')
-    fireEvent.click(screen.getByLabelText('Zoom out'))
-    fireEvent.click(screen.getByLabelText('Zoom out'))
-    fireEvent.click(screen.getByLabelText('Zoom out'))
+    zoomStep('Zoom out')
+    zoomStep('Zoom out')
+    zoomStep('Zoom out')
     // 1 / 1.2^3 = 0.579 of the board's size: the label is drawn 1.728 times larger from its bottom-left corner.
     expect(label().style.transform).toBe('scale(1.728)')
     expect(label().style.transformOrigin).toBe('left bottom')
@@ -412,7 +703,7 @@ describe('the canvas', () => {
     expect(gap()).toBe(24)
     const seen: number[] = []
     for (let i = 0; i < 14; i++) {
-      fireEvent.click(screen.getByLabelText('Zoom out'))
+      zoomStep('Zoom out')
       seen.push(gap())
     }
     // Never tighter than 16px, and never looser than twice that.
@@ -427,6 +718,103 @@ describe('the canvas', () => {
     for (const shape of screen.getAllByTestId('canvas-shape')) {
       // Later in the document is higher, as shapes and the line share a stacking context.
       expect(shape.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+  })
+
+  it('shapes are stickers: a white edge by default, a picked colour paints the edge, and only dashes make an outline', () => {
+    const rect: Shape = { id: 'r', kind: 'rect', x: 0, y: 0, w: 200, h: 120, text: '', color: 'blue' }
+    const red: Shape = { ...rect, id: 'o', x: 400, borderColor: 'red' }
+    const dashed: Shape = { ...rect, id: 'd', x: 800, border: 'dashed' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [rect, red, dashed], connectors: [{ id: 'c1', from: 'r', to: 'o' }] }} />)
+    const [plain, edged, outlined] = screen.getAllByTestId('canvas-shape')
+    expect(plain.style.boxShadow).toContain(`${STICKER_EDGE_W}px ${STICKER_EDGE}`)
+    expect(plain.style.border).toBe('')
+    expect(edged.style.boxShadow).toContain(`${STICKER_EDGE_W}px #F2573C`)
+    expect(outlined.style.boxShadow).toBe('')
+    expect(outlined.style.border).toContain('solid')
+    // A line carries no halo: it stops short of the shapes instead.
+    const paths = screen.getByTestId('canvas-connector').querySelectorAll('path')
+    expect([...paths].some(p => p.getAttribute('stroke') === STICKER_EDGE)).toBe(false)
+  })
+
+  it('a text box gets its own toolbar: colour, size, bold, strikethrough and alignment, each kept in the file', () => {
+    const text: Shape = { id: 't', kind: 'text', x: 0, y: 0, w: 220, h: 40, text: 'Hello', color: 'smoke' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [text] }} />)
+    press(20, 20)
+    release(20, 20)
+    expect(screen.getByTestId('canvas-text-toolbar')).toBeTruthy()
+    expect(screen.queryByTestId('canvas-toolbar')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Text size'))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Huge' }))
+    // The box grows to hold a line at the new size.
+    expect(latest().shapes[0]).toMatchObject({ fontSize: 64 })
+    expect(latest().shapes[0].h).toBeGreaterThanOrEqual(64)
+    fireEvent.click(screen.getByLabelText('Bold'))
+    fireEvent.click(screen.getByLabelText('Strikethrough'))
+    fireEvent.click(screen.getByLabelText('Alignment'))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Align right' }))
+    expect(latest().shapes[0]).toMatchObject({ bold: true, strike: true, align: 'right' })
+    const shown = screen.getByText('Hello') as HTMLElement
+    expect(shown.style.textAlign).toBe('right')
+    expect(shown.style.fontWeight).toBe('700')
+    expect(reread(serializeCanvas(latest())).shapes[0]).toMatchObject({ fontSize: 64, bold: true, strike: true, align: 'right' })
+  })
+
+  it('a shape shows text alignment and size only once it has text, and centres its text by default', () => {
+    const empty: Shape = { id: 'r', kind: 'rect', x: 0, y: 0, w: 240, h: 120, text: '', color: 'blue' }
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [empty] }} />)
+    press(100, 60)
+    release(100, 60)
+    expect(screen.queryByLabelText('Alignment')).toBeNull()
+    expect(screen.queryByLabelText('Text size')).toBeNull()
+    act(() => { fireEvent.keyDown(canvas(), { key: 'Enter' }) })
+    fireEvent.change(screen.getByTestId('canvas-shape-editor'), { target: { value: 'Ship it' } })
+    act(() => { (screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).blur() })
+    expect((screen.getByText('Ship it') as HTMLElement).style.textAlign).toBe('center')
+    fireEvent.click(screen.getByLabelText('Alignment'))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Align left' }))
+    expect(latest().shapes[0].align).toBe('left')
+    // Back to the kind's default drops the field.
+    fireEvent.click(screen.getByLabelText('Alignment'))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Align centre' }))
+    expect(latest().shapes[0].align).toBeUndefined()
+    fireEvent.click(screen.getByLabelText('Text size'))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Large' }))
+    // A shape keeps its size; only its text changes.
+    expect(latest().shapes[0]).toMatchObject({ fontSize: 28, w: 240, h: 120 })
+  })
+
+  it('a sticky is taped, dog-eared paper with a steady lean that straightens while it is typed in', () => {
+    render(<Harness initial={{ ...emptyCanvas(), shapes: [sticky('n1', 0, 0, 'Idea')] }} />)
+    const note = screen.getByTestId('canvas-shape')
+    expect(screen.getByTestId('sticky-tape')).toBeTruthy()
+    expect(note.style.boxShadow).toBe('')
+    expect(note.style.transform).toBe(`rotate(${noteTilt('n1')}deg)`)
+    expect(Math.abs(noteTilt('n1'))).toBeLessThanOrEqual(3)
+    expect(noteTilt('n1')).toBe(noteTilt('n1'))
+    act(() => { fireEvent.doubleClick(canvas(), at(50, 50)) })
+    expect(screen.getByTestId('canvas-shape').style.transform).toBe('')
+    // Only the drawing leans: no border picker for paper notes.
+    act(() => { (screen.getByTestId('canvas-shape-editor') as HTMLTextAreaElement).blur() })
+    expect(screen.queryByLabelText('Border')).toBeNull()
+  })
+
+  it('a dock tool shows its name and key in a tooltip after the pointer rests on it, and only that one', () => {
+    vi.useFakeTimers()
+    try {
+      render(<Harness initial={emptyCanvas()} />)
+      fireEvent.mouseEnter(screen.getByTestId('tool-text'))
+      expect(screen.queryByTestId('canvas-tool-tip')).toBeNull()
+      act(() => { vi.advanceTimersByTime(600) })
+      const tips = screen.getAllByTestId('canvas-tool-tip')
+      expect(tips).toHaveLength(1)
+      expect(tips[0].textContent).toContain('Text')
+      expect(tips[0].textContent).toContain('T')
+      expect(canvas().contains(tips[0])).toBe(false)
+      fireEvent.mouseLeave(screen.getByTestId('tool-text'))
+      expect(screen.queryByTestId('canvas-tool-tip')).toBeNull()
+    } finally {
+      vi.useRealTimers()
     }
   })
 
@@ -537,7 +925,8 @@ describe('the canvas', () => {
     expect(screen.getByRole('radio', { name: 'Solid' }).getAttribute('aria-checked')).toBe('true')
     fireEvent.click(screen.getByRole('radio', { name: 'Thick' }))
     expect(latest().shapes[0].weight).toBe('thick')
-    expect(screen.getByTestId('canvas-shape').style.borderWidth).toBe('6px')
+    // On a sticker the weight is the edge's: thick is 8 wide.
+    expect(screen.getByTestId('canvas-shape').style.boxShadow).toContain('8px')
     fireEvent.click(screen.getByRole('radio', { name: 'Dashed' }))
     expect(latest().shapes[0].border).toBe('dashed')
     // Drawn as SVG strokes: each side fitted with whole dashes, the corners solid.
@@ -550,9 +939,9 @@ describe('the canvas', () => {
     // The fill keeps its own colour.
     expect(latest().shapes[0].color).toBe('blue')
     fireEvent.click(screen.getByLabelText('Border'))
-    fireEvent.click(screen.getByRole('radio', { name: /Match fill/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'White (default)' }))
     expect(latest().shapes[0].borderColor).toBeUndefined()
-    // The panel stays open after a mode or "Match fill", like FigJam's.
+    // The panel stays open after a mode or the default, like FigJam's.
     fireEvent.click(screen.getByRole('radio', { name: 'None' }))
     expect(latest().shapes[0].border).toBe('none')
     fireEvent.click(screen.getByRole('radio', { name: 'Solid' }))
@@ -568,14 +957,21 @@ describe('the canvas', () => {
     expect(latest().shapes[0].kind).toBe('ellipse')
   })
 
-  it('a shape\'s outline follows its fill unless it has a colour of its own, and can be dashed or gone', () => {
+  it('a solid shape is a sticker whose edge takes the border colour and weight; only dashes bring an outline back', () => {
     const base = { color: 'blue' as const }
-    expect(shapeLook(base)).toMatchObject({ fill: '#3FAAFF', border: '#0B78D6', dashed: false, width: 3.5, solid: true })
+    expect(shapeLook(base)).toMatchObject({ fill: '#3FAAFF', border: 'transparent', width: 0, dashed: false, solid: true, sticker: true, edge: '#FFFFFF', edgeWidth: 5 })
+    // The border colour and weight paint the edge, black as black; none drops the edge but keeps the lift.
+    expect(shapeLook({ ...base, weight: 'thick', borderColor: 'black' })).toMatchObject({ sticker: true, edge: '#1E1E1E', edgeWidth: 8 })
+    expect(shapeLook({ ...base, border: 'none' })).toMatchObject({ sticker: true, edgeWidth: 0 })
+    // Dashes are an outline, in a deeper shade of the fill.
+    expect(shapeLook({ ...base, border: 'dashed', weight: 'thick' })).toMatchObject({ border: '#0B78D6', width: 6, sticker: false })
+    // An unfilled or see-through shape keeps its outline: an edge around nothing reads as a hole.
+    expect(shapeLook({ ...base, fill: 'transparent' }).sticker).toBe(false)
     expect(shapeLook({ ...base, fill: 'none' })).toMatchObject({ fill: 'transparent', border: '#3FAAFF' })
     expect(shapeLook({ color: 'black', fill: 'none' }).border).toBe('var(--text)')
-    expect(shapeLook({ ...base, borderColor: 'red' }).border).toBe('#F2573C')
+    expect(shapeLook({ ...base, border: 'dashed', borderColor: 'red' }).border).toBe('#F2573C')
     expect(shapeLook({ ...base, border: 'dashed', weight: 'thin' })).toMatchObject({ dashed: true, width: 2 })
-    expect(shapeLook({ ...base, border: 'none', borderColor: 'red' }).border).toBe('transparent')
+    expect(shapeLook({ ...base, fill: 'none', border: 'none', borderColor: 'red' }).border).toBe('transparent')
   })
 
   it('dashed outlines are drawn for every kind of shape that has a border, and not for a solid one', () => {
@@ -636,12 +1032,13 @@ describe('the canvas', () => {
   })
 
   it('a custom fill colour picks its own darker border and a readable ink', () => {
-    expect(shapeLook({ color: 'blue', hex: '#FFC83D' })).toMatchObject({ fill: '#FFC83D', border: darker('#FFC83D'), ink: '#1F2328' })
+    expect(shapeLook({ color: 'blue', hex: '#FFC83D' })).toMatchObject({ fill: '#FFC83D', sticker: true, ink: '#1F2328' })
+    expect(shapeLook({ color: 'blue', hex: '#FFC83D', border: 'dashed' }).border).toBe(darker('#FFC83D'))
     expect(shapeLook({ color: 'blue', hex: '#1E2A5E' }).ink).toBe('#FFFFFF')
     // With no fill, the custom colour is the outline itself; a border colour of its own wins over both.
     expect(shapeLook({ color: 'blue', hex: '#FFC83D', fill: 'none' }).border).toBe('#FFC83D')
-    expect(shapeLook({ color: 'blue', hex: '#FFC83D', borderHex: '#112233' }).border).toBe('#112233')
-    expect(shapeLook({ color: 'blue', hex: '#FFC83D', borderColor: 'red' }).border).toBe('#F2573C')
+    expect(shapeLook({ color: 'blue', hex: '#FFC83D', borderHex: '#112233' }).edge).toBe('#112233')
+    expect(shapeLook({ color: 'blue', hex: '#FFC83D', borderColor: 'red' }).edge).toBe('#F2573C')
   })
 
   it('the free colour picker sets a fill colour live, as one undo step, and a swatch swaps it out', () => {
@@ -685,8 +1082,8 @@ describe('the canvas', () => {
     fireEvent.change(screen.getByLabelText('Hex colour'), { target: { value: '#00AA55' } })
     fireEvent.blur(screen.getByLabelText('Hex colour'))
     expect(latest().shapes[0]).toMatchObject({ hex: '#FF0000', borderHex: '#00AA55' })
-    // Picking "Match fill" gives the outline back to the fill's darker shade.
-    fireEvent.click(screen.getByRole('radio', { name: /Match fill/ }))
+    // Picking the default gives the sticker its white edge back.
+    fireEvent.click(screen.getByRole('radio', { name: 'White (default)' }))
     expect(latest().shapes[0].borderHex).toBeUndefined()
     expect(screen.getByTestId('custom-hue').getAttribute('aria-valuenow')).toBeTruthy()
     expect(screen.getByTestId('custom-square')).toBeTruthy()
@@ -722,13 +1119,13 @@ describe('the canvas', () => {
     fireEvent.click(screen.getByTestId('tool-select'))
     press(700, 200)
     release(700, 200)
-    fireEvent.click(screen.getByLabelText('Zoom out'))
-    fireEvent.click(screen.getByLabelText('Zoom out'))
-    fireEvent.click(screen.getByLabelText('Zoom out'))
+    zoomStep('Zoom out')
+    zoomStep('Zoom out')
+    zoomStep('Zoom out')
     expect(screen.getAllByTestId('connect-dot')).toHaveLength(4)
-    fireEvent.click(screen.getByLabelText('Zoom out'))
+    zoomStep('Zoom out')
     expect(screen.queryAllByTestId('connect-dot')).toHaveLength(0)
-    fireEvent.click(screen.getByLabelText('Zoom in'))
+    zoomStep('Zoom in')
     expect(screen.getAllByTestId('connect-dot')).toHaveLength(4)
   })
 

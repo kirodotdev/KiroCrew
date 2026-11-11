@@ -188,7 +188,12 @@ export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, 
     onSuccess: ({ art, filed }) => {
       qc.invalidateQueries({ queryKey: ['artifacts'] })
       invalidateFolders()
-      if (!filed) setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
+      if (!filed) {
+        // Stay put so the note is read, as an import does: opening the canvas
+        // would unmount the only place it is shown. The canvas is at the root.
+        setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
+        return
+      }
       navigate(`/artifacts/${art.slug}`)
     },
   })

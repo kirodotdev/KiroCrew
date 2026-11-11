@@ -27,7 +27,8 @@ interface Props {
 export default function DashedOutline({ w, h, width, color, radius = 0, ellipse, diamond, offset = width }: Props) {
   const stroke = { fill: 'none', stroke: color, strokeWidth: width } as const
   const svg = (children: React.ReactNode) => (
-    <svg aria-hidden data-testid="dashed-outline" width={w} height={h} viewBox={`0 0 ${w} ${h}`}
+    // Sized to the shape, so its units are already canvas units: no viewBox needed.
+    <svg aria-hidden data-testid="dashed-outline" width={w} height={h}
       style={{ position: 'absolute', left: -offset, top: -offset, overflow: 'visible', pointerEvents: 'none' }}>
       {children}
     </svg>

@@ -7,7 +7,7 @@
  * place among the other sections.
  */
 
-import { newId, type Canvas, type Connector, type Pt, type Shape } from './canvasModel'
+import { boundsOf, newId, type Canvas, type Connector, type Pt, type Shape } from './canvasModel'
 
 export type Restack = 'front' | 'forward' | 'backward' | 'back'
 
@@ -67,8 +67,9 @@ export function copyShapes(b: Canvas, ids: Set<string>): CanvasClip | null {
  * pasted copy is never locked, so it can be moved at once.
  */
 export function pasteClip(b: Canvas, clip: CanvasClip, at?: Pt): { canvas: Canvas; ids: string[] } {
-  const left = Math.min(...clip.shapes.map(s => s.x))
-  const top = Math.min(...clip.shapes.map(s => s.y))
+  const box = boundsOf(clip.shapes)
+  const left = box?.x ?? 0
+  const top = box?.y ?? 0
   const dx = at ? at.x - left : 24
   const dy = at ? at.y - top : 24
   const idMap = new Map(clip.shapes.map(s => [s.id, newId()]))

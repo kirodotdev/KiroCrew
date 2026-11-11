@@ -3,27 +3,50 @@
  * tile, in their own colours on the canvas's dotted ground. No text: at this
  * size it would be noise, and the card already carries the name.
  */
-import { useMemo } from 'react'
+import { useMemo, type CSSProperties } from 'react'
 import { useTranslation } from 'react-i18next'
 import { boundsOf, parseCanvas, zOrdered, type Shape } from './canvasModel'
 import { THUMB_GROUND } from './canvasPaint'
 import { shapeLook } from './shapeLook'
 
+/** Space around the shapes, in canvas units, so the outermost ones do not touch the tile's edge. */
 const PAD = 24
 
-function ThumbShape({ s }: { s: Shape }) {
+/**
+ * One shape, placed in percent of the frame so the whole drawing scales with the
+ * tile. Plain boxes, not SVG: an ellipse is a rounded box, a diamond a clipped one.
+ */
+function ThumbShape({ s, box }: { s: Shape; box: { x: number; y: number; w: number; h: number } }) {
   const look = shapeLook(s)
-  const stroke = look.dashed || s.border === 'none' ? 'none' : look.border
-  const common = { fill: s.kind === 'section' ? 'none' : look.fill, stroke, strokeWidth: look.width }
-  if (s.kind === 'text') return <rect x={s.x} y={s.y + s.h / 2 - 3} width={s.w * 0.8} height={6} rx={3} fill="var(--muted)" opacity={0.5} />
-  if (s.kind === 'ellipse') return <ellipse cx={s.x + s.w / 2} cy={s.y + s.h / 2} rx={s.w / 2} ry={s.h / 2} {...common} />
-  if (s.kind === 'diamond') {
-    return <polygon points={`${s.x + s.w / 2},${s.y} ${s.x + s.w},${s.y + s.h / 2} ${s.x + s.w / 2},${s.y + s.h} ${s.x},${s.y + s.h / 2}`} {...common} />
+  const pct = (v: number, of: number) => (v / of) * 100
+  const place: CSSProperties = {
+    position: 'absolute',
+    left: `${pct(s.x - box.x, box.w)}%`,
+    top: `${pct(s.y - box.y, box.h)}%`,
+    width: `${pct(s.w, box.w)}%`,
+    height: `${pct(s.h, box.h)}%`,
+  }
+  if (s.kind === 'text') {
+    return <span data-testid="canvas-thumb-shape" style={{
+      ...place,
+      top: `${pct(s.y - box.y + s.h / 2 - 3, box.h)}%`,
+      height: `${pct(6, box.h)}%`,
+      width: `${pct(s.w * 0.8, box.w)}%`,
+      borderRadius: 3, background: 'var(--muted)', opacity: 0.5,
+    }} />
   }
   if (s.kind === 'section') {
-    return <rect x={s.x} y={s.y} width={s.w} height={s.h} rx={14} fill={look.fill} fillOpacity={0.5} stroke="var(--border)" strokeWidth={2} />
+    return <span data-testid="canvas-thumb-shape" style={{ ...place, borderRadius: 6, background: look.fill, opacity: 0.5, border: '1px solid var(--border)' }} />
   }
-  return <rect x={s.x} y={s.y} width={s.w} height={s.h} rx={s.kind === 'sticky' ? 4 : 8} {...common} />
+  const outlined = !look.sticker && !look.dashed && s.border !== 'none'
+  return (
+    <span data-testid="canvas-thumb-shape" style={{
+      ...place, background: look.fill,
+      borderRadius: s.kind === 'ellipse' ? '50%' : s.kind === 'sticky' ? 2 : 4,
+      clipPath: s.kind === 'diamond' ? 'polygon(50% 0, 100% 50%, 50% 100%, 0 50%)' : undefined,
+      border: outlined ? `1px solid ${look.border}` : undefined,
+    }} />
+  )
 }
 
 export default function CanvasThumb({ content, mini = false }: { content: string; mini?: boolean }) {
@@ -44,12 +67,14 @@ export default function CanvasThumb({ content, mini = false }: { content: string
       </div>
     )
   }
-  const view = `${box.x - PAD} ${box.y - PAD} ${box.w + PAD * 2} ${box.h + PAD * 2}`
+  const frame = { x: box.x - PAD, y: box.y - PAD, w: box.w + PAD * 2, h: box.h + PAD * 2 }
   return (
-    <div data-testid="canvas-thumb" style={{ height, ...ground }}>
-      <svg viewBox={view} width="100%" height="100%" preserveAspectRatio="xMidYMid meet" aria-hidden>
-        {zOrdered(shapes).map(s => <ThumbShape key={s.id} s={s} />)}
-      </svg>
+    // The frame keeps the drawing's own proportions and fits inside the tile,
+    // centred, as a contained image would.
+    <div data-testid="canvas-thumb" className="flex items-center justify-center overflow-hidden" style={{ height, ...ground }}>
+      <div aria-hidden className="relative" style={{ width: '100%', maxHeight: '100%', aspectRatio: `${frame.w} / ${frame.h}` }}>
+        {zOrdered(shapes).map(s => <ThumbShape key={s.id} s={s} box={frame} />)}
+      </div>
     </div>
   )
 }

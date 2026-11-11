@@ -25,6 +25,7 @@ import { sendTurn } from '../chat-core/transport/sendTurn'
 import { slotBusySteer } from '../components/chat-input/busySend'
 import { useJevAutoSend } from './chat/useJevAutoSend'
 import { useSentCommentIds } from '../hooks/useSentCommentIds'
+import { useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
 import { formatArtifactCommentsMessage } from '../components/CommentOverlay'
 import { pendingSubmitComments } from '../lib/commentFilter'
 import { forwardToMain, type NavIntent } from '../utils/artifactPopout'
@@ -88,12 +89,14 @@ export function useArtifactDetailPageCompanion({
    * the popout — so the intent is forwarded to a main dashboard window (or a
    * new tab when none is alive) and this window stays pinned to its artifact.
    */
+  const mayLeave = useMayLeaveForNavigation()
   const sendNav = useCallback((intent: NavIntent) => {
     if (popout) { forwardToMain(intent); return }
+    if (!mayLeave()) return
     if (intent.prefill) writePrefill(intent.prefill.slotKey, intent.prefill.prompt)
     if (intent.slotKey) dispatch(switchSlot(intent.slotKey))
     navigate(intent.path)
-  }, [popout, dispatch, navigate])
+  }, [popout, mayLeave, dispatch, navigate])
 
   // ── Companion chat ─────────────────────────────────────────────────────────
   // The active bound session is resolved from the Redux slots snapshot (the WS

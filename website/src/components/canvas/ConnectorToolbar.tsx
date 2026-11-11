@@ -8,6 +8,7 @@ import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CONN_INK, type Connector, type ConnectorArrows, type ConnectorLine } from './canvasModel'
+import { FLOAT_SHADOW } from './canvasPaint'
 import SwatchPicker from './SwatchPicker'
 
 interface Props {
@@ -42,7 +43,7 @@ export default function ConnectorToolbar({ conn, onChange, onDelete }: Props) {
     { arrows: 'none', label: t('components.canvas.arrows_none'), icon: <Minus size={15} /> },
   ]
   return (
-    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-elevated px-1.5 py-1 shadow-lg" data-testid="canvas-connector-toolbar">
+    <div className="flex flex-wrap items-center justify-center gap-1 rounded-2xl bg-bg-elevated px-1.5 py-1 text-text md:flex-nowrap md:justify-start" data-testid="canvas-connector-toolbar" style={{ boxShadow: FLOAT_SHADOW }}>
       <SwatchPicker label={t('components.canvas.line_colour')} value={conn.color} fallback={CONN_INK} show="stroke"
         onPick={color => onChange({ color })} onReset={() => onChange({ color: undefined })} />
       {sep}

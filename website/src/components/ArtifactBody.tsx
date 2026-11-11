@@ -88,6 +88,9 @@ export function fileTypeForKind(kind: Artifact['kind']): FileType {
     // the package was flowed through the prose renderer, which collapsed its
     // newlines and interpreted markup inside a label instead of showing it.
     case 'dashboard': return 'json'
+    // A canvas is a JSON document too. Its renderer is the canvas view; this
+    // keeps any caller without one off the prose path, which collapses JSON.
+    case 'canvas': return 'json'
     // widget / html shouldn't reach here, but fall back to markdown rather
     // than throwing — keeps the page survivable for unexpected enum values.
     default:         return 'markdown'

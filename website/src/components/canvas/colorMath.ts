@@ -3,6 +3,7 @@
  * darker shade a border takes from its fill, and the ink that reads on a colour.
  * Pure.
  */
+import { relativeLuminance } from '../../lib/iconContrast'
 
 export interface Rgb { r: number; g: number; b: number }
 /** Hue 0-360, saturation and value 0-1. */
@@ -65,8 +66,7 @@ export function darker(hex: string): string {
 /** Relative luminance 0-1 (sRGB, as WCAG defines it). */
 export function luminance(hex: string): number {
   const { r, g, b } = hexToRgb(hex)
-  const lin = (c: number) => { const x = c / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4 }
-  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+  return relativeLuminance(r, g, b)
 }
 
 /** Text colour that reads on *hex*: whichever of the canvas's dark ink and white has the better contrast (they cross at luminance 0.215). */

@@ -344,7 +344,7 @@ _EXT_KIND_MAP = {
     ".svg": "svg",
     ".json": "json",
     ".txt": "text",
-    ".kcanvas": "canvas",
+    ".kirocanvas": "canvas",
 }
 
 #: Substrings whose presence marks inline content as renderable HTML (→

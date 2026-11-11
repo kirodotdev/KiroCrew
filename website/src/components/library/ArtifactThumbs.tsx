@@ -244,10 +244,12 @@ export function ContentThumb({ content, kind, mini = false }: {
   kind: Artifact['kind']
   mini?: boolean
 }) {
+  // No content yet (the full read is loading or failed) shows the neutral tile for
+  // every kind. A saved canvas, even an empty one, is non-empty JSON.
+  if (!content.trim()) return <div className="h-[64px] bg-bg-elevated" />
+
   // A canvas draws its shapes, empty or not: its JSON is never something to read.
   if (kind === 'canvas') return <CanvasThumb content={content} mini={mini} />
-
-  if (!content.trim()) return <div className="h-[64px] bg-bg-elevated" />
 
   if (mini && kind === 'markdown') {
     // stripMd drops heading / emphasis / list markers but keeps table pipes, and
