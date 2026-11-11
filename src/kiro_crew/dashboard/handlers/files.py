@@ -53,7 +53,6 @@ from pathlib import Path, PurePath  # noqa: F401
 from typing import BinaryIO, Callable, NamedTuple, TypeVar  # noqa: F401
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
 from kiro_crew import executors, pinned_fs, platform_compat, sandbox_plan  # noqa: F401

@@ -15,7 +15,6 @@ import json
 import logging
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import shutdown_event
 from kiro_crew.config.live import ConfigChange
@@ -263,7 +262,7 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
     resp.headers["X-Accel-Buffering"] = "no"
     try:
         await resp.prepare(request)
-    except (ConnectionResetError, ClientConnectionResetError):
+    except ConnectionResetError:
         return resp
 
     # Replay buffered history first (capped by ?lines=N)
@@ -271,7 +270,7 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
     for data in ring_snapshot[-lines_cap:]:
         try:
             await resp.write(f"data: {data}\n\n".encode())
-        except (ConnectionResetError, ClientConnectionResetError):
+        except ConnectionResetError:
             return resp
 
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=500)
@@ -295,7 +294,7 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
                 await resp.write(f"data: {data}\n\n".encode())
             except asyncio.TimeoutError:
                 await resp.write(b": keepalive\n\n")
-    except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
+    except (ConnectionResetError, asyncio.CancelledError):
         pass
     finally:
         root.removeHandler(handler)
@@ -357,7 +356,7 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     resp.headers["X-Accel-Buffering"] = "no"
     try:
         await resp.prepare(request)
-    except (ConnectionResetError, ClientConnectionResetError):
+    except ConnectionResetError:
         return resp
 
     # Register a per-client notification queue
@@ -428,7 +427,7 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                 if shutdown_event.is_set() or not client_q.empty():
                     break
                 await asyncio.sleep(0.25)
-    except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
+    except (ConnectionResetError, asyncio.CancelledError):
         pass
     finally:
         state.unregister_sse(client_q)

@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError
 
 import kiro_crew
 import kiro_crew._facade_mirror as _facade_mirror
@@ -1029,7 +1028,7 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
                 await resp.write(b"event: done\ndata: {}\n\n")
                 break
             await asyncio.sleep(1)
-    except (ConnectionResetError, ClientConnectionResetError):
+    except ConnectionResetError:
         pass
     return resp
 

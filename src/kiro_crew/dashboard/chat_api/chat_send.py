@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import turn_timing
 
@@ -1992,7 +1991,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)
                 except asyncio.TimeoutError:
                     await write_sse_or_abort(request, resp, b": keepalive\n\n")
-        except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
+        except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
             slot.drain()
