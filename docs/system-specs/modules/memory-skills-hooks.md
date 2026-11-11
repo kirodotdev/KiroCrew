@@ -7303,9 +7303,11 @@ day, so the entry's first line takes the slot, while a titled heading such as
 empty, one of the reading host's own
 `time.tzname` names (what `%Z` prints there, which covers localized Windows
 names), or a zone shape: an abbreviation (`UTC`, `ChST`), an offset (`+14`,
-`UTC-11`) or an English Windows name ending in `Time`. A localized zone name
-written by a different host matches none of these, so such a stamp is still
-listed. Each
+`UTC-11`) or an English Windows name ending in `Time`; a one-digit hour is a
+stamp too. A localized zone name written by a different host matches none of
+these, so such a stamp is still listed. The dashboard memory graph
+(`dashboard/handlers/memory_graph.py`) uses the same two checks, so it draws no
+history node for either line. Each
 source has a share, so project overflow cannot hide recent task names. The
 existing bounded `Recent Session Context` source snippets remain injected:
 those snippets need not exist in vector memory. With `memory.inject_activity`
