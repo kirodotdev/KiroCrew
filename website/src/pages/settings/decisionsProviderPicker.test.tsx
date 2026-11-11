@@ -508,6 +508,7 @@ describe('refused hosted default (round-14 repro)', () => {
         configured_endpoint: 'sagemaker://research/us-west-2/ep',
         hosted_permitted: true,
         sagemaker_permitted: false,
+        configured_refused: true,
       },
     })
     expect(await screen.findByText(/Turned off by your organization's policy/i)).toBeTruthy()

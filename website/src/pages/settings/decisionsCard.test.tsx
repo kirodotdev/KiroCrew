@@ -291,7 +291,28 @@ describe('Decisions (Jev) preview card', () => {
     vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
       presets: [], active: 'none', loopback: false,
       configured_endpoint: 'sagemaker://decision-model-a?region=us-west-2',
-      hosted_permitted: true, sagemaker_permitted: false, sagemaker_available: true,
+      hosted_permitted: true, sagemaker_permitted: false, configured_refused: true,
+      sagemaker_available: true,
+    } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/Turned off by your organization's policy/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(screen.queryByText(/policy blocks Jev/)).toBeNull()
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText('sagemaker://decision-model-a?region=us-west-2')).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('reads a SageMaker address as no model when its own region is refused though another region is permitted', async () => {
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'sagemaker://decision-model-a?region=us-west-2',
+      hosted_permitted: true, sagemaker_permitted: true, configured_refused: true,
+      sagemaker_available: true,
     } as never)
     renderSection()
     await waitFor(() => {

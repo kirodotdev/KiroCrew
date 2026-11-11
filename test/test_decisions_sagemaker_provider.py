@@ -520,7 +520,10 @@ class TestRefusedOptionIsNotOffered:
         payload = await _get()
         assert payload["sagemaker"]["region"] == "us-west-2"
         assert "us-west-2" in asked[-1]
-        assert len([u for u in asked if "sagemaker" in u]) == 1
+        # One probe (the configured region answers, so no other region is asked) and
+        # one check of the configured address's own host.
+        assert len([u for u in asked if "sagemaker" in u]) == 2
+        assert all("us-west-2" in u for u in asked if "sagemaker" in u)
 
     @pytest.mark.asyncio
     async def test_put_refuses_a_regional_host_the_ceiling_refuses(
@@ -757,6 +760,19 @@ class TestRefusedDefaultReadsAsNoModel:
         _ceiling(monkeypatch, *SAGEMAKER_ONLY)
         _seed_endpoint(GOOD_ADDRESS)
         assert (await _get())["active"] == "sagemaker"
+
+    @pytest.mark.asyncio
+    async def test_a_sagemaker_address_in_a_refused_region_reads_none_though_another_is_permitted(
+        self, audit, provider_config, monkeypatch
+    ):
+        _ceiling(monkeypatch, "runtime.sagemaker.eu-west-1.amazonaws.com")
+        _seed_endpoint(GOOD_ADDRESS)
+        before = provider_config()
+        payload = await _get()
+        assert payload["sagemaker_permitted"] is True
+        assert payload["configured_refused"] is True
+        assert payload["active"] == "none"
+        assert provider_config() == before
 
     @pytest.mark.asyncio
     async def test_a_refused_sagemaker_address_reads_none_and_leaves_the_config_alone(

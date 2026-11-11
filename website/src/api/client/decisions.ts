@@ -153,6 +153,8 @@ export interface DecisionsProviderData {
   sagemaker_available?: boolean
   /** Policy permits a SageMaker runtime host in some region. When false the picker hides the option. Absent on an older gateway. */
   sagemaker_permitted?: boolean
+  /** The configured SageMaker address's own regional host is refused by the ceiling. */
+  configured_refused?: boolean
 }
 
 /** A SageMaker endpoint as the picker names it; the gateway builds the address. */
