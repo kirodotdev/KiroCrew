@@ -23,6 +23,7 @@ import { Trans } from 'react-i18next'
 import type { Element as HastElement, Root as HastRoot, RootContent, Text as HastText } from 'hast'
 import { copyToClipboard } from '../utils/clipboard'
 import { api } from '../api/client'
+import { queryClient } from '../api/queryClient'
 import { falsePositiveIssueUrl } from '../prompts/redactionReport'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -1497,6 +1498,8 @@ function BlockedLinkEntry({ record, cardId, entry, allowed }: { record: BlockedL
       // The reply reloads with this host's links shown as links again; the
       // hold keeps this card open over them with its Undo.
       setHold(record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed', cardId, entry })
+      // Settings → Security → Redaction caches this list; mark it stale (#34384).
+      void queryClient.invalidateQueries({ queryKey: ['redaction-allowed-hosts'] })
       window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
     } catch {
       setError(i18nT('components.redaction.link_allow_failed'))
@@ -1509,6 +1512,7 @@ function BlockedLinkEntry({ record, cardId, entry, allowed }: { record: BlockedL
       setError(null)
       setFeedback({ kind: 'undone' })
       if (hold) setHold(record.domain, { ...hold, outcome: 'undone' })
+      void queryClient.invalidateQueries({ queryKey: ['redaction-allowed-hosts'] })
       if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
       // Clears "Undone" only: a re-Allow meanwhile keeps its "Allowed · Undo".
       setTimeout(() => setFeedback(f => (f?.kind === 'undone' ? null : f)), 1600)

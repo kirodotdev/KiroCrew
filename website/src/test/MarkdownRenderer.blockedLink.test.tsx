@@ -5,6 +5,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 import { BlockedLinkChip, RedactionCardSlot, RedactionCoach, RedactionProvider, REVEAL_MS, setAllowHold, useRedactionUi } from '../components/RedactionCards'
 import { LocalOverlayRoot } from '../components/overlayRoot'
 import { api } from '../api/client'
+import { queryClient } from '../api/queryClient'
 import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
 
 const copied: string[] = []
@@ -56,6 +57,7 @@ afterEach(() => {
   copied.length = 0
   copyResult = true
   vi.restoreAllMocks()
+  queryClient.removeQueries({ queryKey: ['redaction-allowed-hosts'] })
 })
 
 describe('Blocked link chip', () => {
@@ -122,6 +124,22 @@ describe('Blocked link chip', () => {
     expect(allow).toHaveBeenCalledWith('s1', 'reviews.corp.example')
     fireEvent.click(getByTestId('blocked-link-undo'))
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('default', 'reviews.corp.example'))
+  })
+
+  it('marks the Settings allowed-hosts list stale after Allow and after Undo (#34384)', async () => {
+    vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+    vi.spyOn(api, 'redactionRevokeHost').mockResolvedValue({ ok: true, removed: true })
+    queryClient.setQueryData(['redaction-allowed-hosts'], { workspaces: {} })
+    const stale = () => queryClient.getQueryState(['redaction-allowed-hosts'])?.isInvalidated
+    const { getByTestId } = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" />)
+    fireEvent.click(getByTestId('blocked-link-inspect'))
+    fireEvent.click(getByTestId('blocked-link-allow'))
+    fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
+    await waitFor(() => expect(stale()).toBe(true))
+    queryClient.setQueryData(['redaction-allowed-hosts'], { workspaces: { default: ['reviews.corp.example'] } })
+    expect(stale()).toBe(false)
+    fireEvent.click(getByTestId('blocked-link-undo'))
+    await waitFor(() => expect(stale()).toBe(true))
   })
 
   it('offers no Allow for a host the server refuses and says why in its place', () => {
