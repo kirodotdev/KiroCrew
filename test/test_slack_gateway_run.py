@@ -11,8 +11,8 @@ import asyncio
 import contextlib
 import gc
 import io
-import sys
 import logging
+import sys
 import threading
 import time
 import weakref
@@ -1493,9 +1493,7 @@ class TestBgSessionDashboardBranch:
             stack.enter_context(
                 patch("kiro_crew.dashboard.urls.machine_hostname", return_value="localhost")
             )
-            stack.enter_context(
-                patch("kiro_crew.dashboard.urls.is_ssm_session", return_value=ssm)
-            )
+            stack.enter_context(patch("kiro_crew.dashboard.urls.is_ssm_session", return_value=ssm))
             stack.enter_context(
                 patch("kiro_crew.dashboard.urls.devspaces_proxy_url", return_value=None)
             )
