@@ -200,11 +200,11 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'FeaturePreviewsSection.tsx': DEVELOPER_PREVIEWS,
   // The URL is offered only while its preview is enabled (settingsSearchCore).
   'SessionEnvironmentsCard.tsx': 'session-environments',
-  // The Crewmates section DeveloperPanel mounts under Feature Previews: the
-  // server-side crewmate switches (reply threads today). Same tab, so a
-  // SettingRef to `dashboard.crewmate_threads` deep-links to the row.
-  'CrewmatesSection.tsx': DEVELOPER_PREVIEWS,
-  // The default agent's opt-in MCP sets, mounted beside the Crewmates section.
+  // The Reply threads row FeaturePreviewsSection mounts in its Crew and bots
+  // group (`dashboard.crewmate_threads`). Same tab, so a SettingRef to that
+  // key deep-links to the row.
+  'ReplyThreadsRow.tsx': DEVELOPER_PREVIEWS,
+  // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
   // The Decisions (Jev) card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the

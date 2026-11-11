@@ -493,7 +493,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 14 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 15 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
@@ -521,14 +521,12 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
   })
 
-  it('renders the section header and the section-wide caveat once, above the cards', () => {
-    // The caveat used to be the Developer-page tab's description, rendered by
-    // SidePanelLayout as the page header. Inside Settings the section has to
-    // carry it itself — once, not per card — or the toggles read as released
-    // features that merely happen to be off.
+  it('renders the section-wide caveat once, above the grouped cards', () => {
+    // The section carries the caveat itself — once, not per card — or the
+    // toggles read as released features that merely happen to be off.
     renderTab()
-    expect(screen.getByRole('heading', { name: /feature previews/i })).toBeTruthy()
-    expect(screen.getAllByText(/unpolished on purpose/i)).toHaveLength(1)
+    expect(screen.getAllByText('Unfinished features. Turn one on to try it.')).toHaveLength(1)
+    expect(screen.getByRole('heading', { name: 'Crew and bots' })).toBeTruthy()
   })
 
   it('carries the redirect anchor on ONE element that wraps the whole section', async () => {
@@ -540,12 +538,13 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(15)
+      expect(screen.getAllByRole('switch')).toHaveLength(16)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
     const anchor = anchors[0]
-    expect(anchor.contains(screen.getByRole('heading', { name: /feature previews/i }))).toBe(true)
+    expect(anchor.contains(screen.getByText('Unfinished features. Turn one on to try it.'))).toBe(true)
+    for (const h of screen.getAllByRole('heading')) expect(anchor.contains(h)).toBe(true)
     // The count is here so a card added outside the anchor fails rather than
     // silently escaping the ring. The last is Decisions, whose switch is
     // backend config — a different write path, the same ring.
@@ -556,7 +555,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(15) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(16) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })

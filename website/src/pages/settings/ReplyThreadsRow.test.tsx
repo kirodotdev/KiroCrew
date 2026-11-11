@@ -1,6 +1,7 @@
 /**
- * Settings > Developer > Crewmates -- the `dashboard.crewmate_threads` toggle and
- * the hook the Members page reads the same flag through.
+ * Settings > Developer > Feature Previews > Crew and bots -- the
+ * `dashboard.crewmate_threads` row and the hook the Members page reads the same
+ * flag through.
  *
  * Off by default; the switch PATCHes the config key and the shared config query
  * is refetched so the flag's readers move with it; a refused save says so.
@@ -18,7 +19,7 @@ vi.mock('../../api/client', () => ({
 }))
 
 import { api } from '../../api/client'
-import { CrewmatesSection } from './CrewmatesSection'
+import { ReplyThreadsRow } from './ReplyThreadsRow'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 
 let qc: QueryClient
@@ -77,16 +78,9 @@ describe('useCrewmateThreadsFlag', () => {
   })
 })
 
-describe('CrewmatesSection', () => {
-  it('says under the heading that these are server settings, not previews', async () => {
-    wrap(<CrewmatesSection />)
-    expect(await screen.findByTestId('crewmates-section-description')).toHaveTextContent(
-      "Server settings for bots, not previews. They're saved on the server, so they apply on every device.",
-    )
-  })
-
+describe('ReplyThreadsRow', () => {
   it('renders the reply-threads switch off by default and saves the flag on toggle', async () => {
-    wrap(<CrewmatesSection />)
+    wrap(<ReplyThreadsRow />)
     const toggle = await screen.findByRole('switch', { name: /Reply threads on bot chat messages/ })
     await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled'))
     expect(toggle).toHaveAttribute('aria-checked', 'false')
@@ -98,7 +92,7 @@ describe('CrewmatesSection', () => {
 
   it('a failed config read is said, with a retry that re-reads and enables the switch', async () => {
     vi.mocked(api.kirocrewConfig).mockRejectedValueOnce(new Error('boom'))
-    wrap(<CrewmatesSection />)
+    wrap(<ReplyThreadsRow />)
     await screen.findByTestId('crewmates-config-error')
     expect(screen.getByText("Couldn't load the bot settings.")).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: /Reply threads on bot chat messages/ })).toHaveAttribute('aria-disabled', 'true')
@@ -109,7 +103,7 @@ describe('CrewmatesSection', () => {
 
   it('a refused save is said in plain words and the switch stays where the server has it', async () => {
     vi.mocked(api.patchConfig).mockRejectedValue(new Error('boom'))
-    wrap(<CrewmatesSection />)
+    wrap(<ReplyThreadsRow />)
     const toggle = await screen.findByRole('switch', { name: /Reply threads on bot chat messages/ })
     await waitFor(() => expect(toggle).not.toHaveAttribute('aria-disabled'))
     fireEvent.click(toggle)

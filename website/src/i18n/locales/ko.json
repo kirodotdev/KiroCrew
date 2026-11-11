@@ -18673,8 +18673,6 @@
         "your_chat_sessions_were_restarted": "채팅 세션을 다시 시작했습니다. 메시지는 그대로 남아 있습니다."
       },
       "crewmatesSection": {
-        "title": "Bot",
-        "description": "Bot의 서버 설정이며 미리 보기가 아닙니다. 서버에 저장되므로 모든 기기에 적용됩니다.",
         "reply_threads": "Bot 채팅 메시지의 답글 스레드",
         "reply_threads_desc": "Bot 채팅의 어떤 메시지에도 답글 스레드를 달 수 있게 하고, 채팅을 보면서 사이드 패널에서 열 수 있습니다. 끄면 스레드에서 답글 달기가 나타나지 않고 기존 스레드는 삭제되지 않고 숨겨집니다.",
         "failed_to_save": "Bot 설정을 저장할 수 없습니다. 다시 시도하세요.",
@@ -18708,7 +18706,13 @@
       "developerPanel": {
         "developer_tools": "개발자 도구",
         "feature_previews": "기능 미리 보기",
-        "feature_previews_desc": "아직 출시되지 않은 기능과 페이지입니다. 여기서 고른 설정은 이 {{productName}}에 저장되며, 어떤 브라우저나 데스크톱 앱에서 대시보드를 열어도 똑같이 적용됩니다. 여기서 켜기 전에는 페이지가 사이드바와 전체 검색에 표시되지 않지만, 아래 스위치 자체는 설정 검색에서 찾을 수 있습니다. 의도적으로 미완성 상태입니다.",
+        "feature_previews_intro": "아직 완성되지 않은 기능입니다. 하나를 켜서 사용해 보세요.",
+        "group_crew_and_bots": "Crew 및 Bot",
+        "group_chats_and_dashboards": "채팅 및 Dashboard",
+        "group_engines_and_workspaces": "엔진 및 작업 공간",
+        "group_publishing_and_sign_in": "게시 및 로그인",
+        "group_for_developers": "{{productName}} 개발자용",
+        "restart_badge": "재시작",
         "gateway": "게이트웨이",
         "how_to_set_up_an_ssh_tunnel": "SSH 터널 설정 방법",
         "run_a_local_gateway": "로컬 게이트웨이 실행",

@@ -8846,8 +8846,6 @@
         "app_updates_heading": "App updates"
       },
       "crewmatesSection": {
-        "title": "Bots",
-        "description": "Server settings for bots, not previews. They're saved on the server, so they apply on every device.",
         "reply_threads": "Reply threads on bot chat messages",
         "reply_threads_desc": "Let any message in a bot's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
         "failed_to_save": "Couldn't save the bot setting. Try again.",
@@ -8880,7 +8878,13 @@
       },
       "developerPanel": {
         "feature_previews": "Feature Previews",
-        "feature_previews_desc": "Unreleased features and pages. Your choices here are saved on this {{productName}}, so they apply wherever you open the dashboard, in any browser or in the desktop app. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose.",
+        "feature_previews_intro": "Unfinished features. Turn one on to try it.",
+        "group_crew_and_bots": "Crew and bots",
+        "group_chats_and_dashboards": "Chats and Dashboards",
+        "group_engines_and_workspaces": "Engines and Workspaces",
+        "group_publishing_and_sign_in": "Publishing and Sign-in",
+        "group_for_developers": "For {{productName}} developers",
+        "restart_badge": "Restart",
         "feature_previews_save_denied": "Only the owner of this {{productName}} can change feature previews, so “{{name}}” was switched back.",
         "feature_previews_save_failed": "Couldn’t save “{{name}}”, so it was switched back. Try again."
       },
