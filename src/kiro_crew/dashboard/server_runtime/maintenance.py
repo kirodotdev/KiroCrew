@@ -372,6 +372,11 @@ def _kick_knowledge_orphan_reclaim(state: DashboardState) -> None:
                 # KnowledgeStore.reclaim_agent_source_residue). Running it here
                 # means it only ever sees fully-settled ingests.
                 store.reclaim_agent_source_residue()
+                # Entity pairs a later ingest's alias now bridges, merged with
+                # ingestion held off so no mention lands on the merged row.
+                from kiro_crew.knowledge.entity_resolution import merge_split_entities
+
+                merge_split_entities(store)
         if not quiescent:
             # The store never drained. A window that did not drain yields while
             # still holding the gate's condition lock, and ingestion releases

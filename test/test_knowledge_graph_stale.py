@@ -58,6 +58,14 @@ def test_deleting_a_source_never_materialises_an_unloaded_graph(store, monkeypat
     assert rebuilds == [] and store._graph_loaded is False
 
 
+def test_a_merge_never_materialises_an_unloaded_graph(store, monkeypatch):
+    _, keep = _item_with_entity(store, "widget")
+    _, gone = _item_with_entity(store, "gadget")
+    rebuilds = _count_rebuilds(monkeypatch)
+    store.merge_entities(keep, gone)
+    assert rebuilds == [] and store._graph_loaded is False
+
+
 def test_a_loaded_graph_is_dropped_and_its_next_reader_sees_the_tables(store, monkeypatch):
     item, eid = _item_with_entity(store, "widget")
     _, kept = _item_with_entity(store, "gadget")

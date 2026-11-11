@@ -1106,7 +1106,7 @@ them:
 
 **The deferral is only safe because the loop-thread readers offload it.** `get_entity_graph` and `get_full_graph` are `async def` and read `store.graph` on the event loop, so each calls `await asyncio.to_thread(store.ensure_graph_loaded)` before its first `.graph` touch. Without that the deferred scan would run *on the loop* after the bind — where the loop-stall watchdog is armed (`LoopStallWatchdog` is constructed and started after `_start_site`), unlike the pre-bind window, where nothing is armed and nothing is served. `allow_on_loop()` is not available for this: its contract restricts it to constructor-shaped setup paths. The `graph` property still materialises lazily as a backstop, so a reader nobody found is served a correct graph — and flagged by the on-loop guard if it is on the loop — rather than a silently empty one, which is indistinguishable from "this entity has no neighbours". `ensure_graph_loaded` is lock-guarded like `ensure_fts_index_current` so concurrent first-touch readers wait rather than each scanning. The lock is **re-entrant, and `_load_graph` acquires it too, so EVERY rebuild serializes** — not only the first. Guarding the first-touch call site alone was not enough: the mutation sites hold no lock of their own, so a first graph GET racing a source DELETE put two threads through the rebuild at once and the loser's rows survived into a graph whose `_graph_loaded` was then set True — a flag asserting "loaded" over stale data, which is worse than an unloaded graph because the flag stops it ever being rescanned. Serializing the whole rebuild also settles *which* snapshot wins, since the `SELECT`s run after acquisition, so the rebuild that acquires last reads the freshest committed state. There is no ordering to invert against SQLite's writer lock: `_load_graph` is read-only and every remaining caller runs it after its own `COMMIT`, unlike the FTS rebuild, which takes its lock and then `BEGIN IMMEDIATE`.
 
-**A delete marks the graph stale instead of rebuilding it.** `delete_item`, `delete_items_batch`, `delete_source_cascade`, `reclaim_orphans` and `reload_graph` call `mark_graph_stale()` after their `COMMIT`: under `_graph_lock` it publishes an empty `SimpleDiGraph` and clears `_graph_loaded`, so the next reader rebuilds through `ensure_graph_loaded`. A rebuild at every delete held the whole graph (~110 MiB at 59k entities, measured with tracemalloc on a real library) from the boot-time orphan sweep and every artifact sync, whether or not anyone opened the graph. Taking the lock means a rebuild in progress finishes before the flag drops, and a reader already holding the old object keeps it. Because a delete can now unload the graph at any moment, a reader must use the graph `ensure_graph_loaded` returns rather than read `store.graph` again later: `get_full_graph` takes that return value from its worker thread, and `get_entity_graph` runs `get_entity_subgraph` on a worker, so neither reads the property on the event loop. `mark_graph_stale` clears the flag before it publishes the empty graph, and the lock-free fast path returns the graph it read only if the flag is up and that graph is still the published one, so no reader is handed the empty placeholder. `bundle_transfer` import and `add_entity_relation` still rebuild, because they add rows a reader expects to see at once. `test_knowledge_graph_stale.py` pins it.
+**A delete marks the graph stale instead of rebuilding it.** `delete_item`, `delete_items_batch`, `delete_source_cascade`, `reclaim_orphans`, `merge_entities` and `reload_graph` call `mark_graph_stale()` after their `COMMIT`: under `_graph_lock` it publishes an empty `SimpleDiGraph` and clears `_graph_loaded`, so the next reader rebuilds through `ensure_graph_loaded`. A rebuild at every delete held the whole graph (~110 MiB at 59k entities, measured with tracemalloc on a real library) from the boot-time orphan sweep and every artifact sync, whether or not anyone opened the graph. Taking the lock means a rebuild in progress finishes before the flag drops, and a reader already holding the old object keeps it. Because a delete can now unload the graph at any moment, a reader must use the graph `ensure_graph_loaded` returns rather than read `store.graph` again later: `get_full_graph` takes that return value from its worker thread, and `get_entity_graph` runs `get_entity_subgraph` on a worker, so neither reads the property on the event loop. `mark_graph_stale` clears the flag before it publishes the empty graph, and the lock-free fast path returns the graph it read only if the flag is up and that graph is still the published one, so no reader is handed the empty placeholder. `bundle_transfer` import and `add_entity_relation` still rebuild, because they add rows a reader expects to see at once. `test_knowledge_graph_stale.py` pins it.
 
 **The rebuild publishes a fresh object by reference swap, and multi-step readers pin one reference.** `_load_graph` builds a new `SimpleDiGraph` from the tables and assigns it to `self._graph` in one step, rather than clearing the live object and re-adding row by row. Serialization alone fixed *which* rebuild wins, but an in-place clear-then-repopulate still left the object a reader was holding momentarily empty: a reader iterating `store.graph`, or one that re-read `store.graph` across its own steps (degree ranking, then per-node attribute reads, then edges), could observe the window between the clear and the last insert and return an empty or truncated graph. Building fresh and swapping means the old object is never mutated — a reader holding it sees a complete, consistent old graph until it drops the reference, and the next read sees the complete new one. **The reader contract is therefore: capture `store.graph` once and read through that local for the whole multi-step read** — `get_full_graph`, `get_neighbors` and `get_entity_subgraph` do this, so a swap mid-read cannot mix old and new nodes. Readers hold a plain object reference, not `_graph_lock`, so a rebuild never blocks a reader or vice versa. The two incremental writers (`add_entity`, `add_entity_relation`) commit their row and then apply a single `add_node`/`add_edge` under `_graph_lock`, so a committed add always lands on the currently published graph and is never orphaned onto an object a concurrent swap is about to discard.
 
@@ -1431,8 +1431,45 @@ they do not prove semantic identity or fully prevent poisoning by a fabricated
 cross-script translation. Results are deterministic for the current candidate
 set, not globally independent of ingestion order: a future competing entity
 cannot be anticipated by an online resolver. Canonical enrichment and retained
-aliases can also expose future bridges. Historical splitting, provenance-based
-identity and a backfill sweep are separate work.
+aliases can also expose future bridges. Provenance-based identity is separate
+work.
+
+**Split pairs are merged after the fact.** A library ingested before aliases were
+stored holds one entity as two nodes (`뮤직뱅크`, `Music Bank`), and the pair only
+becomes visible once a later ingest's canonical reuse attaches the alias to one of
+them, so a pass at the first launch after an upgrade would find nothing. The gateway
+therefore runs `entity_resolution.merge_split_entities` on every launch, last in the
+orphan reclaim's drained `maintenance_window` (`_kick_knowledge_orphan_reclaim`),
+off the event loop and with ingestion and bundle imports held off.
+`split_entity_candidates` joins each
+canonical name, through a `casefold` function registered on the connection, to the
+`entity_aliases` key index, and yields nothing until the alias fill has completed:
+a partial table could hide a second entity claiming the same name. A pair then needs
+the ingestion rule: matching types and `alias_merge_allowed` on both canonical names
+and the alias. Alias-to-alias overlap never pairs anything, and each entity of the
+pair must have no other qualifying partner in either direction, so a name two
+entities claim, an entity whose aliases name two canonicals, or a chain stays split.
+No third entity of any type may answer to the bridge either, as an alias or a
+canonical name, since `find_entity` would hand it the merged name's lookup.
+An entity storing `MAX_ENTITY_ALIASES` aliases still counts as a partner but never
+merges: as with ingestion's overflow rule, the cap may have dropped an alias naming
+a third entity.
+The entity carrying the alias is kept, and `merge_entities` moves the mentions,
+the relations and the other row's description (after the kept one's own) and
+deletes the other row in one `BEGIN IMMEDIATE` transaction. A pair merges only when
+every alias of the other row is the kept entity's canonical name as `find_entity`
+matches it (exactly, or under SQLite's ASCII-only `LOWER()`) and holds no cased
+letter beyond ASCII, so each stored name of the other row that found either row,
+in upper or lower case, still finds the kept one. The delete drops alias rows: the alias leg had answered
+every case of such an alias (`москва` for `Москва`), and `LOWER()` answers only
+ASCII ones, while an alias the kept entity merely shares would resolve to its
+oldest holder, possibly a third entity. A spelling that matched only through a
+casefold expansion (`Gauß` for `Gauss`) is then answered as `find_entity` answers
+it for any canonical name. An alias is never carried over, since one the rule
+refused (same script) would become a bridge on the next launch.
+A mutual pair keeps the older row unless only the newer one's merge qualifies. A
+pair that fails is logged and skipped; the rest still merge, and the next launch
+pairs it again. With nothing to merge the pass is one indexed join.
 
 `KnowledgeStore.add_entity_aliases` is the only write path for alias enrichment.
 It runs in `BEGIN IMMEDIATE` and enforces the structural invariants the store
@@ -1521,8 +1558,9 @@ Every entity-in-chunk creates a `mention` record linking the item (chunk) to the
 
 Known gaps in the construction above, stated as current behaviour rather than as
 a plan: entities connect only through shared names, so `auth layer` and
-`AuthService` produce two nodes; `merge_entities` exists but no ingestion path
-calls it; and nothing computes entity communities, so a cluster of related
+`AuthService` produce two nodes; `merge_entities` runs only for cross-language
+pairs an alias bridges (`merge_split_entities`), never on a fuzzy match; and nothing
+computes entity communities, so a cluster of related
 entities has no representation a query can select on.
 
 Writers: `knowledge/store_parts/entity_graph.py` (the `entities`, `entity_relations`
