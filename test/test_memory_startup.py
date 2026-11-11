@@ -211,7 +211,7 @@ async def test_pre_ready_schedule_publishes_task_before_worker_can_run(monkeypat
     started = threading.Event()
     release = threading.Event()
 
-    def prepare():
+    def prepare(dashboard_state=None):
         started.set()
         assert release.wait(5)
         return True
@@ -380,6 +380,35 @@ async def test_one_worker_finishes_restore_before_open_and_starts_migration(monk
         gateway._auto_migrate_memory.assert_awaited_once()
         gateway._repair_member_memory.assert_awaited_once()
         require_memory_ready()
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_a_worker_scheduled_before_the_gateway_holds_the_dashboard_still_prefetches_knowledge(
+    monkeypatch,
+):
+    """The dashboard starts preparation before it hands its state to the gateway.
+
+    The worker can reach the page prefetch while ``gateway.dashboard_state`` is
+    still unset, so it reads the knowledge store from the state it was given.
+    """
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    gateway.dashboard_state = None
+    state = SimpleNamespace(
+        memory_startup_task=None, _knowledge_store=SimpleNamespace(_db_path="knowledge.db")
+    )
+    prefetched = []
+    monkeypatch.setattr(
+        "kiro_crew.page_cache.prefetch", lambda paths, name: prefetched.extend(paths)
+    )
+    task = gateway._schedule_memory_preparation(state)
+    try:
+        assert state.memory_startup_task is task
+        await task
+        require_memory_ready()
+        assert "knowledge.db" in prefetched
     finally:
         await asyncio.to_thread(gateway._stop_memory_startup)
 

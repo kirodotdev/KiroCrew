@@ -297,10 +297,14 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_wire_mcp_gateway_dashboard", "method", "(self) -> 'None'"),
     ),
     "memory_lifecycle": (
-        ("_initialize_memory_worker", "method", "(self) -> 'bool'"),
+        ("_initialize_memory_worker", "method", "(self, dashboard_state: 'Any' = None) -> 'bool'"),
         ("_stop_memory_startup", "method", "(self) -> 'None'"),
         ("_start_memory_after_ready", "method", "(self) -> 'None'"),
-        ("_schedule_memory_preparation", "method", "(self) -> \"'asyncio.Task[None] | None'\""),
+        (
+            "_schedule_memory_preparation",
+            "method",
+            "(self, dashboard_state: 'Any' = None) -> \"'asyncio.Task[None] | None'\"",
+        ),
         ("_wait_for_memory_preparation", "async method", "(self) -> 'bool'"),
         ("_repair_member_memory_once", "method", "(self) -> 'None'"),
         ("_repair_member_memory", "async method", "(self) -> 'None'"),
