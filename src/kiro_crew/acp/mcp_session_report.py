@@ -818,6 +818,9 @@ class McpSessionReport:
     #: :meth:`restart_to_load` until the next session, which loads them. Set
     #: through :meth:`mark_restart_to_load`.
     _reload_pending: tuple[str, ...] = ()
+    #: Servers a tokenless probe found asking for a sign-in, not connected since: a
+    #: ``failed`` entry for one reads as awaiting authorization (:meth:`set_unauthorized`).
+    _unauthorized: frozenset[str] = frozenset()
     #: True once ``begin_session`` has run. Distinguishes "no session" from "a
     #: session that has reported nothing yet" — see ``payload``. Without it, the
     #: kiro-cli path (whose wire roster is empty by design) reads as no session.
@@ -865,6 +868,7 @@ class McpSessionReport:
         self._failures.clear()
         self._reattempting = frozenset()
         self._reload_pending = ()
+        self._unauthorized = frozenset()
 
     @property
     def left_out(self) -> int:
@@ -894,6 +898,19 @@ class McpSessionReport:
     def set_reattempting(self, names: set[str] | frozenset[str]) -> None:
         """Record which failed servers the session still re-attempts itself."""
         self._reattempting = frozenset(names)
+
+    def set_unauthorized(self, names: set[str] | frozenset[str]) -> None:
+        """Record which servers a probe found asking for a sign-in; a failed one now awaits it.
+
+        The answer lands outside any frame, so its move is announced through :attr:`on_change` here.
+        """
+        self._unauthorized = frozenset(sanitize_sink_text(name, _NAME_CAP) for name in names)
+        moved = [
+            self._record(_ACTION_OAUTH, name)
+            for name in [name for name in self._failed if name in self._unauthorized]
+        ]
+        if any(moved):
+            self._announce()
 
     def include_configured(self, names: tuple[str, ...]) -> None:
         """Add active-agent declarations without restarting this session's report."""
@@ -1269,7 +1286,7 @@ class McpSessionReport:
             if snapshot.omitted > self._cut.get("snapshot", 0):
                 self._cut["snapshot"] = snapshot.omitted
             for name, status, needs_sign_in, error in snapshot.servers:
-                if needs_sign_in:
+                if needs_sign_in or (status == "failed" and name in self._unauthorized):
                     action = _ACTION_OAUTH
                 elif status in ("failed", "disabled"):
                     action = _ACTION_INIT_FAILURE
