@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildSrcdoc, THEME_VAR_NAMES } from '../lib/widgetSrcdoc'
+import { buildSrcdoc, FRAME_MODE_ATTRIBUTE, THEME_VAR_NAMES } from '../lib/widgetSrcdoc'
 
 describe('widgetSrcdoc', () => {
   it('embeds the html body', () => {
@@ -11,14 +11,25 @@ describe('widgetSrcdoc', () => {
     expect(out).toContain('<p>hello world</p>')
   })
 
-  it('applies the dark mode class', () => {
+  it('marks dark mode on the body as a data attribute', () => {
     const out = buildSrcdoc({ html: '', themeVars: {}, mode: 'dark' })
-    expect(out).toContain('<body class="dark">')
+    expect(out).toContain(`<body ${FRAME_MODE_ATTRIBUTE}="dark">`)
   })
 
-  it('applies the light mode class', () => {
+  it('marks light mode on the body as a data attribute', () => {
     const out = buildSrcdoc({ html: '', themeVars: {}, mode: 'light' })
-    expect(out).toContain('<body class="light">')
+    expect(out).toContain(`<body ${FRAME_MODE_ATTRIBUTE}="light">`)
+  })
+
+  it("gives the body no class, so a page's own .light or .dark rule cannot style it", () => {
+    // A page styling its own status dot as `.light` once laid the whole page out
+    // inside that rule: the body carried the mode as a class of the same name.
+    const page = '<style>.light{width:14px;opacity:.45}</style><span class="light"></span>'
+    for (const mode of ['light', 'dark'] as const) {
+      const out = buildSrcdoc({ html: page, themeVars: {}, mode })
+      expect(out).not.toMatch(/<body[^>]*\sclass=/)
+      expect(out).toContain(`<body ${FRAME_MODE_ATTRIBUTE}="${mode}">`)
+    }
   })
 
   it('serializes theme vars into a :root style block', () => {
@@ -78,8 +89,11 @@ describe('widgetSrcdoc', () => {
     const out = buildSrcdoc({ html: '', themeVars: {}, mode: 'dark' })
     // Must NOT fetch Tailwind from the public CDN so it works on locked-down networks.
     expect(out).not.toContain('cdn.tailwindcss.com')
-    // v4 drives dark: off a .dark class via a custom variant, not tailwind.config.
-    expect(out).toContain('@custom-variant dark')
+    // v4 drives dark: off the body's data-mode attribute via a custom variant, not
+    // tailwind.config -- the same attribute the body above is marked with.
+    expect(out).toContain(
+      `@custom-variant dark (&:where([${FRAME_MODE_ATTRIBUTE}=dark], [${FRAME_MODE_ATTRIBUTE}=dark] *));`,
+    )
     expect(out).toContain('text/tailwindcss')
     // The directives block must precede the runtime <script> so the custom dark
     // variant registers before first paint (ordering regression guard).
