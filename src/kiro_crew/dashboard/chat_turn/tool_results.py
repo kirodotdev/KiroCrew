@@ -755,6 +755,17 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
     # tool entries (🔧 pre-approval + ✅ post-approval) with the same
     # tool_call_id, and both pills should reflect the same output.
     if _tcid:
+        # The call's terminal status, as the crew log records it: a refusal this
+        # process decided wins over the frame. The card reads it to tell a write
+        # that ran from one that was refused, denied, failed or cancelled. Only a
+        # known status is stored, so a backend-authored string stays bounded.
+        _row_status = (
+            "refused"
+            if event.refusal
+            else (event.tool_status or ("completed" if event.tool_final else ""))
+        )
+        if _row_status and _row_status not in TERMINAL_TOOL_STATUSES:
+            _row_status = "other"
         for m in slot.messages:
             if m.get("role") == "tool" and m.get("meta", {}).get("tool_call_id") == _tcid:
                 _meta = m.setdefault("meta", {})
@@ -762,6 +773,14 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
                 # shell's streamed stdout must leave its row running.
                 if _tool_terminal:
                     _meta["done"] = True
+                    if _row_status and _meta.get("tool_status") != _row_status:
+                        _meta["tool_status"] = _row_status
+                        from kiro_crew.dashboard.source_providers.ownership import (
+                            gh_write_command,
+                        )
+
+                        if gh_write_command(_meta) is not None:
+                            slot.invalidate_source_links()
                 if (
                     _tcid in _terminal_directive_tcids
                     and _tcid_identifies

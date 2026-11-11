@@ -377,6 +377,20 @@ def _prefix_words(extra_write_commands: tuple[str, ...]) -> list[list[str]]:
 _AWS_CREATOR_OP_PREFIXES: tuple[str, ...] = ("start-", "create-")
 
 
+def _command_program(text: str, cmd: Any) -> tuple[list[str], str, list[str]] | None:
+    """``(tokens, program, args)`` of one command *cmd* the shared reader read from
+    *text*: its argv words' raw text through the shared tokenizer, stepped past
+    wrappers and ``NAME=value`` (:func:`security.argv_rules._program_args`), and the
+    program as Windows runs it. ``None`` when it runs no program."""
+    if not cmd.argv:
+        return None
+    tokens = _shell._shell_tokens(" ".join(text[w.start : w.end] for w in cmd.argv))
+    program = _argv_rules._program_args(tokens)
+    if program is None:
+        return None
+    return tokens, windows_program_name(program[0]), program[1]
+
+
 def _program_commands(command: str) -> list[list[str]]:
     """Each command *command* runs, as its program's basename and its arguments.
 
@@ -389,12 +403,9 @@ def _program_commands(command: str) -> list[list[str]]:
     text = _shell._fold_line_continuations(command) if "\\\n" in command else command
     out: list[list[str]] = []
     for cmd in _shell_commands.read_commands(text):
-        if not cmd.argv:
-            continue
-        tokens = _shell._shell_tokens(" ".join(text[w.start : w.end] for w in cmd.argv))
-        program = _argv_rules._program_args(tokens)
-        if program is not None:
-            out.append([windows_program_name(program[0]), *program[1]])
+        read = _command_program(text, cmd)
+        if read is not None:
+            out.append([read[1], *read[2]])
     return out
 
 

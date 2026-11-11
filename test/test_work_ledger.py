@@ -1619,6 +1619,12 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # taken from the loop, not from a supplied key) and is read-only. This is
         # the single new store seam this PR adds.
         "probes/work_ledger.py",
+        # A session card's owned GitHub chips: the PR its own item reports, the PRs
+        # the items on the board it conducts report, and the workers bound to them.
+        # Read-only, and it takes no supplied identity: the key is the slot's own
+        # session (``effective_session_key``), resolved by the gateway, and what it
+        # reads is shown only on that slot's own card.
+        "dashboard/source_providers/ownership.py",
         # The undelivered-call watch. A dispatched worker whose ``work_report`` the
         # harness never delivered (KAS answers a bare tool name with "not available"
         # and never calls the server) has no route to the store at all: the call it

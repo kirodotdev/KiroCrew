@@ -30,10 +30,10 @@ import json
 import logging
 import time
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.slot_projection import SlotProjection
-from kiro_crew.dashboard.source_providers.ownership import MAX_LEDGER_LINKS
+from kiro_crew.dashboard.source_providers.ownership import MAX_LEDGER_LINKS, memoized_owned_refs
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -340,24 +340,6 @@ def dismiss_source_link(self: _ChatSlot, identity_key: str) -> bool:
     return True
 
 
-def _owned_refs_of(slot: _ChatSlot, msg: dict, parse: Any, candidates: Any) -> list:
-    """*msg*'s owned refs, from the derivation's row memo when it holds this row."""
-    from kiro_crew.dashboard.source_providers.ownership import owned_refs_in_tool_row
-
-    memo = getattr(slot, "_owned_row_memo", None)
-    meta = msg.get("meta")
-    held = memo[1].get(id(msg)) if memo else None
-    if (
-        held is not None
-        and isinstance(meta, dict)
-        and held[0] is msg
-        and held[1] is meta.get("input")
-        and held[2] is meta.get("output")
-    ):
-        return list(held[3])
-    return owned_refs_in_tool_row(msg, parse, candidates)
-
-
 def mentions_source_identity(self: _ChatSlot, identity_key: str) -> bool:
     """Does this transcript RAW-mention the given source-link identity?
 
@@ -395,7 +377,7 @@ def mentions_source_identity(self: _ChatSlot, identity_key: str) -> bool:
         # row memo answers for a row it already read.
         if msg.get("role") == "tool" and any(
             source_ref_identity_key(owned.ref.identity) == identity_key
-            for owned in _owned_refs_of(self, msg, parse_source_url, candidates)
+            for owned in memoized_owned_refs(self, msg, parse_source_url, candidates)
         ):
             return True
         content = msg.get("content")
@@ -458,11 +440,12 @@ def _pr_source_links(self: _ChatSlot) -> list[dict]:
         source_link_dict,
     )
 
-    def own_links(slot: _ChatSlot) -> list[dict]:
+    def own_links(slot: _ChatSlot, *, keep_dismissed: bool = False) -> list[dict]:
         return slot._projection.source_links(
             slot,
             max_links=_MAX_SOURCE_LINKS_PER_SLOT,
             non_durable_roles=_NON_DURABLE_SOURCE_LINK_ROLES,
+            keep_dismissed=keep_dismissed,
         )
 
     path_markers = source_link_path_markers()
@@ -478,7 +461,9 @@ def _pr_source_links(self: _ChatSlot) -> list[dict]:
         for key in ledger.workers:
             worker = peer(key)
             if worker is not None and worker is not self:
-                workers.append(own_links(worker))
+                # Only this card's own unlinks apply below; one the user made on
+                # the worker's card is that card's.
+                workers.append(own_links(worker, keep_dismissed=True))
     dismissed = SlotProjection.dismissed_identity_keys(self)
     cached = getattr(self, "_owned_links_cache", None)
     if (
