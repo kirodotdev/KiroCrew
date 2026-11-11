@@ -78,8 +78,12 @@ export interface CronJob {
    *  Schedule page — the two are never read off each other. */
   chat_folder_id?: string
   /** False for a job that runs on a fresh session every fire. The form does not
-   *  edit it; it only reads it to disable the chat-folder picker. */
+   *  edit it; it reads it to disable the chat-folder picker and to offer
+   *  `new_chat_per_run`. */
   persistent_session?: boolean
+  /** True when each run of this stateless agent job opens its own chat tab on
+   *  its own session. Absent on an older gateway. */
+  new_chat_per_run?: boolean
   /** Consecutive failed runs that auto-pause this job (0..10000). 0 never
    *  pauses; a job at 0 or above 5 backs off from its 5th failure instead.
    *  Absent on an older gateway. */
