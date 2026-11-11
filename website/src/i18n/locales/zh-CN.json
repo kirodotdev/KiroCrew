@@ -13798,7 +13798,7 @@
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
       "screenshot_failed_reason": "截图失败：{{reason}}",
       "snip_refused_in_embedded_pane": "此标签页中无法使用屏幕截取。自行截图并附加即可。",
-      "source_hosts_failed_reason": "加载 GitLab 和 Jira 链接设置失败：{{reason}}",
+      "source_hosts_failed_reason": "自托管 GitLab 和 Jira 链接暂时无法在变更中打开：{{reason}}",
       "artifact_reference_failed_reason": "将工件关联到此聊天失败：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "无法将会话重命名为“{{title}}”",

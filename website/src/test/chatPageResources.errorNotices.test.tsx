@@ -1,7 +1,8 @@
 /**
  * #9186: two resource-region failures that used to be silent now reach the
  * user through `showActionError`, each exactly once.
- *  - a failed source-host config read notifies once per failure, not per render;
+ *  - a failed source-host config read notifies once per failure, not per render,
+ *    and a re-read the gateway never answered stays silent while config is cached;
  *  - a non-403 artifact-reference failure notifies; the incognito 403 does not.
  */
 import { createElement, type ReactNode } from 'react'
@@ -20,8 +21,8 @@ afterEach(() => { vi.restoreAllMocks() })
 const ref = <T,>(current: T) => ({ current })
 
 describe('source-host config read failure', () => {
-  it('notifies once and does not re-notify on re-render', async () => {
-    vi.spyOn(api, 'dashboardConfig').mockRejectedValue(new Error('boom'))
+  function renderWithRejection(rejection: unknown, mock = true) {
+    if (mock) vi.spyOn(api, 'dashboardConfig').mockRejectedValue(rejection)
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client: queryClient }, createElement(ThemeProvider, null, children))
@@ -40,11 +41,44 @@ describe('source-host config read failure', () => {
       },
     } as unknown as Parameters<typeof useChatPageResourcesController>[0]
     const { rerender } = renderHook(() => useChatPageResourcesController(props), { wrapper })
+    return { showActionError, rerender, queryClient }
+  }
+
+  it('notifies once and does not re-notify on re-render', async () => {
+    const { showActionError, rerender } = renderWithRejection(new Error('boom'))
     await waitFor(() => expect(showActionError).toHaveBeenCalledTimes(1))
     expect(showActionError.mock.calls[0][0]).toContain('boom')
     rerender()
     rerender()
     expect(showActionError).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the inert links when the gateway answers with an HTTP error', async () => {
+    const { showActionError } = renderWithRejection(new ApiError(500, 'config unreadable'))
+    await waitFor(() => expect(showActionError).toHaveBeenCalledTimes(1))
+    expect(showActionError.mock.calls[0][0]).toBe(
+      i18nT('pages.chatPage.source_hosts_failed_reason', { reason: 'config unreadable' }),
+    )
+  })
+
+  it.each([
+    ['a fetch rejection', new TypeError('Failed to fetch')],
+    ['a fronting proxy 502', new ApiError(502, 'Bad Gateway')],
+  ])('stays silent on %s the gateway never answered while config is cached', async (_label, rejection) => {
+    vi.spyOn(api, 'dashboardConfig')
+      .mockResolvedValueOnce({ gitlab_hosts: ['gitlab.example.com'] } as never)
+      .mockRejectedValue(rejection)
+    const { showActionError, queryClient } = renderWithRejection(undefined, false)
+    await waitFor(() => expect(queryClient.getQueryState(['dashboardConfig'])?.status).toBe('success'))
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['dashboardConfig'] }) })
+    await waitFor(() => expect(queryClient.getQueryState(['dashboardConfig'])?.errorUpdatedAt).toBeGreaterThan(0))
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(showActionError).not.toHaveBeenCalled()
+  })
+
+  it('still notifies when a first read the gateway never answered leaves nothing cached', async () => {
+    const { showActionError } = renderWithRejection(new TypeError('Failed to fetch'))
+    await waitFor(() => expect(showActionError).toHaveBeenCalledTimes(1))
   })
 })
 

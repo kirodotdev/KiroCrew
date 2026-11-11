@@ -14123,7 +14123,7 @@
       "could_not_read_file_reason": "{{path}} konnte nicht gelesen werden ({{reason}})",
       "screenshot_failed_reason": "Screenshot fehlgeschlagen: {{reason}}",
       "snip_refused_in_embedded_pane": "Bildschirmausschnitte sind in diesem Tab nicht verfügbar. Erstelle selbst einen Screenshot und hänge ihn an.",
-      "source_hosts_failed_reason": "Laden der GitLab- und Jira-Link-Einstellungen fehlgeschlagen: {{reason}}",
+      "source_hosts_failed_reason": "Selbst gehostete GitLab- und Jira-Links lassen sich vorerst nicht in Änderungen öffnen: {{reason}}",
       "artifact_reference_failed_reason": "Verknüpfen des Artefakts mit diesem Chat fehlgeschlagen: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Die Sitzung konnte nicht in „{{title}}“ umbenannt werden",

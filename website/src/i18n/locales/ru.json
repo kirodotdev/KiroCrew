@@ -14773,7 +14773,7 @@
       "could_not_read_file_reason": "Не удалось прочитать {{path}} ({{reason}})",
       "screenshot_failed_reason": "Не удалось сделать снимок экрана: {{reason}}",
       "snip_refused_in_embedded_pane": "Снимок области экрана недоступен в этой вкладке. Сделай снимок экрана и прикрепи его.",
-      "source_hosts_failed_reason": "Не удалось загрузить настройки ссылок GitLab и Jira: {{reason}}",
+      "source_hosts_failed_reason": "Ссылки на собственные GitLab и Jira пока нельзя открыть в разделе «Изменения»: {{reason}}",
       "artifact_reference_failed_reason": "Не удалось связать артефакт с этим чатом: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Не удалось переименовать сессию в «{{title}}»",

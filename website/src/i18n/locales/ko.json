@@ -13798,7 +13798,7 @@
       "could_not_read_file_reason": "{{path}}을(를) 읽을 수 없습니다 ({{reason}})",
       "screenshot_failed_reason": "스크린샷 실패: {{reason}}",
       "snip_refused_in_embedded_pane": "이 탭에서는 화면 캡처를 사용할 수 없습니다. 직접 스크린샷을 찍어 첨부하세요.",
-      "source_hosts_failed_reason": "GitLab 및 Jira 링크 설정 불러오기 실패: {{reason}}",
+      "source_hosts_failed_reason": "자체 호스팅 GitLab 및 Jira 링크를 지금은 변경 사항에서 열 수 없습니다: {{reason}}",
       "artifact_reference_failed_reason": "이 채팅에 아티팩트 연결 실패: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "세션 이름을 ‘{{title}}’(으)로 바꿀 수 없습니다",

@@ -6638,7 +6638,7 @@
       "could_not_read_file_reason": "Could not read {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot failed: {{reason}}",
       "snip_refused_in_embedded_pane": "Screen snip isn't available in this tab. Take a screenshot yourself and attach it.",
-      "source_hosts_failed_reason": "Loading the GitLab and Jira link settings failed: {{reason}}",
+      "source_hosts_failed_reason": "Self-hosted GitLab and Jira links can't be opened in Changes for now: {{reason}}",
       "artifact_reference_failed_reason": "Linking the artifact to this chat failed: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Couldn't rename the session to “{{title}}”",

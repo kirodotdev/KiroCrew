@@ -14448,7 +14448,7 @@
       "could_not_read_file_reason": "Impossibile leggere {{path}} ({{reason}})",
       "screenshot_failed_reason": "Screenshot non riuscito: {{reason}}",
       "snip_refused_in_embedded_pane": "Il ritaglio dello schermo non è disponibile in questa scheda. Fai tu uno screenshot e allegalo.",
-      "source_hosts_failed_reason": "Caricamento delle impostazioni dei link GitLab e Jira non riuscito: {{reason}}",
+      "source_hosts_failed_reason": "Per ora i link GitLab e Jira self-hosted non si possono aprire in Modifiche: {{reason}}",
       "artifact_reference_failed_reason": "Collegamento dell’artefatto a questa chat non riuscito: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "Impossibile rinominare la sessione in «{{title}}»",
