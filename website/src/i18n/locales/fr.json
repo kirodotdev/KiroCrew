@@ -9934,7 +9934,7 @@
       "install_failed_body": "La mise à jour n’a pas pu être appliquée. {{productName}} restaure la passerelle locale — vous pouvez continuer avec cette version et réessayer depuis Paramètres > À propos.",
       "windows_installer_handoff": "Une fenêtre d’installation Windows affichera la progression.",
       "installing_update": "Installation de la mise à jour...",
-      "installing_update_body": "Cela peut prendre plusieurs minutes. L’application va se fermer. Rouvrez-la une fois l’opération terminée.",
+      "installing_update_body": "Cela peut prendre plusieurs minutes. L’application va se fermer. Rouvre-la une fois l’opération terminée.",
       "is_downloaded_and_ready_to_install": "a été téléchargé et est prêt à être installé.",
       "kirocrew": "{{productName}}",
       "later": "Plus tard",

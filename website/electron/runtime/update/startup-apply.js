@@ -27,6 +27,11 @@ async function runStartupApply({ app, store, managed, managedPath, log, probeGat
     try { current = readGovernance(); } catch { current = "unknown"; }
     if (arm.wasGoverned() || current !== "ungoverned") {
       log.info("[update] a policy provider governs this install (or the policy cannot be read) - the armed update is left to it, not applied at start");
+      // The quit handler runs before the dashboard reports a live verdict and
+      // falls back to the stored one, so a stale "ungoverned" would let the
+      // marker's command run over the provider. Store what this start found; the
+      // first live verdict replaces it.
+      try { arm.recordGoverned(true); } catch { /* an unwritable store keeps the last verdict */ }
       return { outcome: "governed" };
     }
     const result = await applyArmedAtStart({

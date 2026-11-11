@@ -225,7 +225,7 @@ describe('AboutPanel download states', () => {
     await waitFor(() => expect(btn.hasAttribute('disabled')).toBe(true))
   })
 
-  it('shows an armed update as finished: installs when you quit, with a Restart now that relaunches', async () => {
+  it('shows an armed update as finished: installs when you quit, with a Restart and install now that relaunches', async () => {
     const { setState, relaunch, install } = mountWithStates()
     setState({ state: 'downloaded', version: '0.1.3' })
     fireEvent.click(await screen.findByRole('button', { name: /install when i quit/i }))
@@ -235,7 +235,7 @@ describe('AboutPanel download states', () => {
 
     const restartNow = await screen.findByTestId('update-restart-now')
     expect(restartNow.hasAttribute('disabled')).toBe(false)
-    expect(restartNow.textContent).toMatch(/restart now/i)
+    expect(restartNow.textContent).toMatch(/restart and install now/i)
     expect(screen.queryByRole('button', { name: /install when i quit/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^restarting/i })).toBeNull()
     expect((await screen.findByTestId('update-ready-note')).textContent).toMatch(/installs when you quit/i)

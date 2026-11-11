@@ -253,6 +253,7 @@ async function modalInstallErrorScene(theme) {
       check: async () => ({ ok: true }),
       download: async () => ({ ok: true }),
       install: async () => { throw new Error('install request failed') },
+      armsOnQuit: true,
       getInfo: async () => ({ version: '0.4.7', channel: 'stable', packaged: true, lastState: null }),
     }
   }, theme)

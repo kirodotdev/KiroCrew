@@ -679,6 +679,7 @@ test("D-c: a stored ungoverned verdict does not bypass a policy provider install
     assert.strictEqual(r.outcome, "governed", current);
     assert.deepStrictEqual(f.sp.commands, [], "the marker's update command did not run");
     assert.strictEqual(f.arm.read().version, "2.0.0", "the arm stays");
+    assert.strictEqual(f.arm.wasGoverned(), true, `${current}: the quit before a live verdict must read governed`);
   }
 });
 
