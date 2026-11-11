@@ -306,7 +306,12 @@ the lock above orders them: the engine's `_kiro/auth/getAccessToken` callback
 (`dashboard/sign_in_refresher.run_sign_in_refresher`, started beside the
 stale-asset watchdog) that sleeps until the highest-priority stored identity
 enters the margin and renews it then, so the stored expiry the sign-in card and
-`kirocrew doctor` read does not freeze while no agent turn runs. The
+`kirocrew doctor` read does not freeze while no agent turn runs. A caller-specific
+executor may run `KasAuthProvider`'s initial `store.resolve`, but `ensure_fresh`,
+its lock-held store work and a temporary refresh HTTP session stay on the event
+loop's default executor. A pool whose identity-marker reads can wait on the
+store-wide sign-out lock is therefore never needed to finish the refresh that
+unblocks that sign-out. The
 tick never renews a token outside the margin, does not retry while the
 refresh-rejected marker stands (a new sign-in clears it), backs off from 30s to
 5min on a transient failure, and does not import `kiro_crew.auth` until the vault

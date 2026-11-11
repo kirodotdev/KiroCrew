@@ -47,7 +47,7 @@ export const retryPolicy = (failureCount: number, error: unknown): boolean =>
 /** A failure the gateway's own handler did not answer: a fetch rejection
  *  (`TypeError: Failed to fetch` -- a restart, a dropped forwarded link) or a
  *  fronting proxy's 502/504, plus the gateway's own "retry shortly" 503. */
-const isUnansweredRead = (error: unknown): boolean => {
+export const isUnansweredRead = (error: unknown): boolean => {
   if (error instanceof TypeError) return true
   const status = typeof error === 'object' && error !== null ? (error as { status?: unknown }).status : undefined
   return status === 502 || status === 503 || status === 504

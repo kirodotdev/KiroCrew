@@ -7,7 +7,8 @@ call (:mod:`kiro_crew.relay_client.lease`), and both carry the person's sign-in.
 
 So each call is made the way the lease call is: no credential is read from the
 environment (``trust_env=False``), a redirect is never followed, a call takes at
-most 15 seconds and an answer is read to 64 KiB at most. Nothing logged here
+most 15 seconds and an answer is read to 64 KiB at most. Host names resolve on
+:func:`~kiro_crew.executors.relay_viewer_executor`, not the default executor. Nothing logged here
 carries the sign-in, the access token, a body, or the service's message text.
 
 Every failure is a :class:`CpsRefused` with one of the typed codes below, so
@@ -29,6 +30,8 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from kiro_crew.auth.login.control_plane import cps_headers
+from kiro_crew.executor_resolver import executor_connector
+from kiro_crew.executors import relay_viewer_executor
 from kiro_crew.relay_client.connection import env_proxy_for
 from kiro_crew.relay_client.lease import (
     ANSWER_MAX_BYTES,
@@ -334,7 +337,8 @@ async def _post(url: str, bearer: str, target: str, body: dict, token_type: str)
     try:
         # trust_env=False: no netrc or other credential from the environment. A
         # proxy the environment names is still used, as for the lease call.
-        async with aiohttp.ClientSession(trust_env=False) as session:
+        connector = executor_connector(relay_viewer_executor())
+        async with aiohttp.ClientSession(trust_env=False, connector=connector) as session:
             async with session.post(
                 url,
                 data=json.dumps(body).encode("utf-8"),

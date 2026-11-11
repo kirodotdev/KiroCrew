@@ -14450,7 +14450,7 @@
       "could_not_read_file_reason": "No se pudo leer {{path}} ({{reason}})",
       "screenshot_failed_reason": "Error en la captura de pantalla: {{reason}}",
       "snip_refused_in_embedded_pane": "El recorte de pantalla no está disponible en esta pestaña. Haz tú mismo una captura de pantalla y adjúntala.",
-      "source_hosts_failed_reason": "Error al cargar la configuración de enlaces de GitLab y Jira: {{reason}}",
+      "source_hosts_failed_reason": "Por ahora no se pueden abrir en Cambios los enlaces de GitLab y Jira autoalojados: {{reason}}",
       "artifact_reference_failed_reason": "Error al vincular el artefacto a este chat: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "No se pudo renombrar la sesión a “{{title}}”",

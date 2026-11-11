@@ -31,9 +31,11 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.dashboard.source_providers.adf import _md_inline_code
 from kiro_crew.security.denied_rules import _rule_id_for_pattern
 from kiro_crew.security.deny_waiver import (
     deny_key_is_overlay,
@@ -136,6 +138,50 @@ def deny_key_family(key: str) -> str:
         if rule_id.startswith(prefix):
             return family
     return ""
+
+
+#: The longest rule name a transcript notice spells out. A built-in key is a rule
+#: id and fits easily; an operator key is the rule's whole PATTERN, and a
+#: shell-wrapper-aware pattern runs past 400 characters of regex. Past this much
+#: the sentence holding it stops reading as a sentence, and the rest names nothing
+#: a person reading the notice can act on -- the security settings page is where
+#: the full body belongs.
+_NOTE_LABEL_MAX = 72
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+
+def deny_key_note_label(key: str) -> str:
+    """How a transcript notice names the rule *key*, safe to render as markdown.
+
+    A built-in rule is named by its ID -- short, stable, and the spelling the
+    security settings page shows -- so a pattern that resolves to one is replaced
+    by it. An operator rule has no ID, no family and no description, so its
+    pattern is the only name there is: it is collapsed to one line, trimmed to
+    :data:`_NOTE_LABEL_MAX` and wrapped in an inline code span.
+
+    The trim keeps BOTH ends. A deny pattern opens with the boundary and wrapper
+    boilerplate every such rule carries (``(?:\\A|[;&|\\n ])``, the
+    ``sudo|env|nohup`` alternation), so a head-only elision spends the whole
+    budget on the part that is identical across rules, while the program and the
+    argument that say which rule this is sit at the END.
+
+    The wrapping is the correctness half, not decoration. The transcript renders
+    markdown, and a deny pattern is regex: a backtick inside it (the ones matching
+    ``` `which toolbox` ``` command substitution carry two) opens a code span over
+    the rest of the sentence, and a ``*`` pair italicises whatever sits between.
+    Both delimiters are then CONSUMED, so the pattern a person reads off the
+    notice is not the pattern that fired -- ``[^;&|\\n]*\\s`` arrives as
+    ``[^;&|\\n]s``, a different rule. Every character the notice shows is the
+    rule's own; the one place it shortens a pattern is marked with ``…``.
+    """
+    label = _WHITESPACE_RUN_RE.sub(" ", _rule_id_for_pattern(key) or key).strip()
+    if not label:
+        return "(unnamed)"
+    if len(label) > _NOTE_LABEL_MAX:
+        head = (_NOTE_LABEL_MAX - 1) * 3 // 5
+        tail = _NOTE_LABEL_MAX - 1 - head
+        label = f"{label[:head]}…{label[-tail:]}"
+    return _md_inline_code(label)
 
 
 def is_deny_override_card(messages: Any, request_id: str) -> bool:

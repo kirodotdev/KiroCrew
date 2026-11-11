@@ -6,7 +6,7 @@ const path = require("path");
 const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("./token-retry");
 const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
-const { createHangRecovery } = require("./hang-recovery");
+const { createHangRecovery, endHungRenderer } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
 const { armScrollTouch } = require("./scroll-touch");
@@ -924,7 +924,10 @@ function createWindowLifecycle(options) {
       log: glog,
       forceCrash: () => {
         if (mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
-        mainWindow.webContents.forcefullyCrashRenderer();
+        const outcome = endHungRenderer(mainWindow.webContents, {
+          underTranslation: process.platform === "darwin" && app.runningUnderARM64Translation === true,
+        });
+        if (outcome !== "force-crashed") glog(`hung renderer under Rosetta: ${outcome} by pid`);
       },
     });
     mainWindow.webContents.on("unresponsive", () => hangRecovery.handleUnresponsive());

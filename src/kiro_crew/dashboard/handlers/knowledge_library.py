@@ -59,13 +59,21 @@ async def list_namespaces(request: web.Request) -> web.Response:
 # ---------- Items ----------
 
 
-def _attach_file_paths(store, items: list[dict]) -> None:
+def _attach_file_paths(store, items: list[dict], scope_source: str | None = None) -> None:
     """Attach _file_path to items for sub-grouping in the Sources UI.
 
     Folder/vault sources group by file path (from folder_file_state); the
     aggregate ``artifact`` source groups per-artifact, labelled with the
-    artifact name (from artifact_item_state, falling back to the slug)."""
-    source_ids = {i["source_id"] for i in items if i.get("source_id")}
+    artifact name (from artifact_item_state, falling back to the slug).
+
+    Under a source scope the labels come from THAT source's state only: an item
+    it holds by location is owned elsewhere, and the owner's file name is not
+    this source's. Such an item gets this source's label when its state lists
+    it, and none otherwise."""
+    if scope_source and scope_source != _NO_SOURCE:
+        source_ids = {scope_source}
+    else:
+        source_ids = {i["source_id"] for i in items if i.get("source_id")}
     if not source_ids:
         return
     ph = ",".join("?" * len(source_ids))
@@ -150,14 +158,32 @@ async def _search_until_exhausted(retriever, q: str, limit: int, status: str | N
         want = min(want * 2, _SCOPED_SEARCH_MAX)
 
 
-def _matches_source(item: dict, source_id: str) -> bool:
-    """True when `item` belongs to `source_id`. The `__none__` sentinel matches
+#: An item a source holds: it owns it, or it is a location of it after a
+#: duplicate collapse (`source_locations`). Binds the source id twice. The
+#: same union `source_counts` counts, so a source's list matches its badge.
+_HELD_BY_SOURCE = (
+    "(i.source_id = ? OR EXISTS (SELECT 1 FROM source_locations sl "
+    "WHERE sl.item_id = i.id AND sl.source_id = ?))"
+)
+
+
+def _located_item_ids(store, source_id: str) -> frozenset[str]:
+    """Ids of the items `source_id` holds by location rather than ownership."""
+    rows = store.db.execute(
+        "SELECT item_id FROM source_locations WHERE source_id = ?", (source_id,)
+    ).fetchall()
+    return frozenset(r["item_id"] for r in rows)
+
+
+def _matches_source(item: dict, source_id: str, located: frozenset[str] = frozenset()) -> bool:
+    """True when `source_id` holds `item`: it owns it, or `item` is in `located`
+    (the items the source is a location of). The `__none__` sentinel matches
     items with no source (NULL or empty string), mirroring how the list view
     groups sourceless items into a single 'No source' bucket."""
     own = item.get("source_id")
     if source_id == _NO_SOURCE:
         return not own
-    return own == source_id
+    return own == source_id or item.get("id") in located
 
 
 def _load_items_by_id(store, item_ids: list[str]) -> dict[str, dict]:
@@ -207,7 +233,13 @@ def _added_within(item: dict, added_from: str, added_to: str) -> bool:
 
 
 def _items_page(
-    store, where_clause: str, params: list, limit: int, offset: int, order_by: str
+    store,
+    where_clause: str,
+    params: list,
+    limit: int,
+    offset: int,
+    order_by: str,
+    scope_source: str | None = None,
 ) -> tuple[int, list[dict]]:
     """One page of the item listing, with its total, in one off-loop take.
 
@@ -227,7 +259,7 @@ def _items_page(
         [*params, limit, offset],
     ).fetchall()
     items = [store._serialize_item(r) for r in rows]
-    _attach_file_paths(store, items)
+    _attach_file_paths(store, items, scope_source)
     return total, items
 
 
@@ -278,6 +310,9 @@ async def list_items(request: web.Request) -> web.Response:
         # escalate the candidate pool until retrieval is exhausted (it returns
         # fewer rows than asked for), which makes the scoped total exact.
         offset = (page - 1) * limit
+        located: frozenset[str] = frozenset()
+        if source_id and source_id != _NO_SOURCE:
+            located = await asyncio.to_thread(_located_item_ids, store, source_id)
 
         async def _ranked_matches(results: list[dict]) -> list[dict]:
             # Batch fetch all candidate items (avoid N+1). The candidate pool
@@ -298,7 +333,7 @@ async def list_items(request: web.Request) -> web.Response:
                     continue
                 if namespace and item.get("namespace") != namespace:
                     continue
-                if source_id and not _matches_source(item, source_id):
+                if source_id and not _matches_source(item, source_id, located):
                     continue
                 if not _added_within(item, added_from, added_to):
                     continue
@@ -346,7 +381,7 @@ async def list_items(request: web.Request) -> web.Response:
             filtered.sort(key=lambda i: i.get("created_at") or "", reverse=sort == "newest")
         total = len(filtered)
         items = filtered[offset : offset + limit]
-        await asyncio.to_thread(_attach_file_paths, store, items)
+        await asyncio.to_thread(_attach_file_paths, store, items, source_id)
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})
     else:
         where, params = ["1=1"], []  # type: list[str], list[object]
@@ -362,8 +397,10 @@ async def list_items(request: web.Request) -> web.Response:
         if source_id == _NO_SOURCE:
             where.append("(i.source_id IS NULL OR i.source_id = '')")
         elif source_id:
-            where.append("i.source_id = ?")
-            params.append(source_id)
+            # What the source HOLDS, as `source_counts` counts it: owned items
+            # plus items it is a location of after a duplicate collapse.
+            where.append(_HELD_BY_SOURCE)
+            params.extend((source_id, source_id))
         if added_from:
             where.append("substr(i.created_at, 1, 10) >= ?")
             params.append(added_from)
@@ -383,6 +420,7 @@ async def list_items(request: web.Request) -> web.Response:
             limit,
             offset,
             _DATE_ORDER.get(sort, _SOURCE_ORDER),
+            source_id,
         )
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})
 
