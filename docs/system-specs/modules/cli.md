@@ -3084,8 +3084,10 @@ pins the contract.
     other bootstrap refusal fails the install.
     Reinstall first boots out an agent an older `load -w` left in
     `gui/<uid>` or `user/<uid>` and waits for it to leave (`bootout` is
-    asynchronous); `enable` clears the persistent disabled override an older
-    `uninstall`'s `unload -w` wrote.
+    asynchronous); it does so whether or not the plist is still on disk, so a
+    job left loaded by a refused uninstall or a hand-deleted plist does not
+    make the bootstrap fail with `5: Input/output error`. `enable` clears the
+    persistent disabled override an older `uninstall`'s `unload -w` wrote.
   - Restart, stop and uninstall: `launchctl kickstart -k` / `bootout` on
     `<domain>/<label>`, trying `gui/<uid>` then `user/<uid>`; a domain that
     answers "not found" or `125` holds no job and the next one is tried.

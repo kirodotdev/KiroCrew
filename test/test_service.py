@@ -1176,6 +1176,8 @@ class TestMacOSPlistRendering:
         monkeypatch.setattr(svc_macos, "LOG_DIR", log_dir)
         monkeypatch.setattr(svc_macos, "STDOUT_LOG", log_dir / "gateway.log")
         monkeypatch.setattr(svc_macos, "STDERR_LOG", log_dir / "gateway.err")
+        # The stub answers every verb rc 0, so a bootout never reads as settled.
+        monkeypatch.setattr(svc_macos, "_BOOTOUT_SETTLE_SECS", 0.0)
 
         run = MagicMock(returncode=0, stdout="", stderr="")
         with patch(

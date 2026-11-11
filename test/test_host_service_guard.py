@@ -510,7 +510,8 @@ class TestLaunchdRedirect:
 
         with mock.patch.object(macos, "_launchctl", return_value=SimpleNamespace(
             returncode=0, stdout="", stderr=""
-        )), mock.patch.object(macos, "kirocrew_bin", return_value="/usr/bin/true"):
+        )), mock.patch.object(macos, "kirocrew_bin", return_value="/usr/bin/true"), \
+                mock.patch.object(macos, "_BOOTOUT_SETTLE_SECS", 0.0):
             macos.install()
 
         self._assert_under(macos.LIVE_PROGRAM, _xdg_config_root)
