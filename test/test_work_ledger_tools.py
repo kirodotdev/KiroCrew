@@ -668,6 +668,26 @@ async def test_invalid_action_is_400():
 
 
 @pytest.mark.asyncio
+async def test_an_unbound_session_is_told_what_not_bound_means():
+    """A bound worker reads its item; any other session gets ``not_bound`` with what
+    to do next in the refusal itself, so the caller has nothing to work out."""
+    ids = await two_by_two()
+    status, body = await _brief(WORKER_A)
+    assert status == 200, body
+    assert body["brief"]["item_id"] == ids["item_a"]
+
+    status, body = await _brief("chat-nobody-bound")
+    assert (status, body["code"]) == (403, "not_bound")
+    assert "the message you were given is your whole task" in body["error"]
+
+    # A refused report may come from a worker whose item moved on: it gets the
+    # code and no task.
+    status, body = await _report("chat-nobody-bound", {"status": "progress", "summary": "s"})
+    assert (status, body["code"]) == (403, "not_bound")
+    assert "whole task" not in body["error"]
+
+
+@pytest.mark.asyncio
 async def test_an_unrecognized_session_is_refused_before_the_store(monkeypatch):
     async def _refused(*a: Any, **k: Any) -> web.Response:
         return web.json_response(

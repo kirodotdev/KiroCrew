@@ -249,7 +249,8 @@ reasoning, for one independent attempt to break it.
 protects against a ledger row with no session behind it. This one protects
 against a running worker with no binding, and that is the failure the worker can
 actually see — its first `work_brief`
-answers `not_bound`, and it cannot tell an early call from a broken one. A bound
+answers `not_bound`, which it takes as having no item: it does what the seed
+says and reports nothing. A bound
 item with no seed is visible in your own `work_ledger_read` and you seed it next
 cycle; an unbound running worker is neither visible nor recoverable.
 
