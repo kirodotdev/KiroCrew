@@ -420,3 +420,36 @@ class TestGovernancePolicyReader:
         path.write_bytes(raw)
         with pytest.raises(ValueError):
             _read_json_file(path)
+
+
+# ── App admission policy (``app_admission.json``) ──
+
+
+class TestAppAdmissionPolicyReader:
+    _DOC = b'{"mode": "enforce", "banned": ["bad-app"], "approved": ["good-app"], "require_signature": false}'
+
+    @pytest.mark.parametrize("raw", [_BOM + _DOC, _DOC], ids=["utf8_bom", "plain_utf8_control"])
+    def test_the_policy_loads_as_authored(self, tmp_path: Path, monkeypatch, raw: bytes) -> None:
+        from kiro_crew.apps import admission
+
+        monkeypatch.setattr(admission, "config_dir", lambda: tmp_path)
+        (tmp_path / "app_admission.json").write_bytes(raw)
+        assert admission.load_app_admission_policy() == admission.AppAdmissionPolicy(
+            mode="enforce", banned=["bad-app"], approved=["good-app"], require_signature=False
+        )
+        assert admission.app_admission_denied("good-app", check_version=False) is None
+        assert admission.app_admission_denied("other-app", check_version=False) is not None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [_DOC.decode().encode("utf-16"), _BOM + b"{not json", _BOM + _BOM + _DOC],
+        ids=["utf16", "bom_corrupt_json", "two_marks"],
+    )
+    def test_anything_else_still_fails_closed(
+        self, tmp_path: Path, monkeypatch, raw: bytes
+    ) -> None:
+        from kiro_crew.apps import admission
+
+        monkeypatch.setattr(admission, "config_dir", lambda: tmp_path)
+        (tmp_path / "app_admission.json").write_bytes(raw)
+        assert admission.load_app_admission_policy() == admission._fail_closed_policy()
