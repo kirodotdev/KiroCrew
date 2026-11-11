@@ -129,6 +129,7 @@ def _record_mutation(
     *,
     metadata: dict | None = None,
     operation: str = "update",
+    new_value: bool = False,
 ) -> dict:
     """Caller holds the lock and transaction; preserve canonical view shape."""
     with self._db_lock:
@@ -152,6 +153,7 @@ def _record_mutation(
             metadata=metadata,
             operation=operation,
             limit_v1_history=self.algorithm_version == "v1",
+            new_value=new_value,
         )
 
 
