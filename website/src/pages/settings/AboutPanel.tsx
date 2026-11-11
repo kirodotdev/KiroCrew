@@ -331,9 +331,8 @@ export function AboutPanel() {
   // The background check's own verdict + command, so the 12-hourly check that
   // lights the nav badge lands the user on something actionable instead of an
   // Update button that 409s.
-  const statusChecked = useAppSelector(
-    s => s.dashboard.status?.update_check_status
-  ) === 'succeeded'
+  const statusCheckStatus = useAppSelector(s => s.dashboard.status?.update_check_status)
+  const statusChecked = statusCheckStatus === 'succeeded'
   const statusCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
   // The background check's commit distance, from the status push. What lets
   // the hero badge tell a diverged checkout from a current one on first
@@ -855,11 +854,11 @@ export function AboutPanel() {
   // inside the Electron shell. "Check for updates" flips to "Update to vX" when
   // status.update_available is set; the update itself is gated behind a
   // changelog confirm because applying restarts the gateway.
-  const gwUpdate = useAboutPanelGatewayUpdate(queryClient)
+  const gwUpdate = useAboutPanelGatewayUpdate(queryClient, { checkedAt: lastCheckedAt, status: statusCheckStatus })
   const {
-    gwTargetDisplay, gwFound, gwAhead, gwBehind, gwChecked, gwSelfUpdatable, gwChannel,
+    gwTargetDisplay, gwFound, gwAhead, gwBehind, gwSelfUpdatable, gwChannel,
     gwChannelError, gwCommand, showConfirm, setShowConfirm, restarting, gwCheck, gwApply,
-    gwChannelMutation,
+    gwChannelMutation, newestIsLocal, newestCheckSucceeded,
   } = gwUpdate
   // Diverged: local commits on top of a moved upstream. `update_available` is
   // false there BY DESIGN (the apply path is a destructive reset), so this is
@@ -867,12 +866,11 @@ export function AboutPanel() {
   // third verdict between "update available" and "up to date". Both counts come
   // from the SAME check response, so this can never mix two checks' answers.
   const gwDiverged = gwAhead > 0 && gwBehind > 0
-  // The badge's diverged verdict: a manual check's counts win once one has
-  // run (they are the newer read of the same backend cache); before that, the
-  // background check's counts from the status push carry the same fact, so a
-  // fresh visit to a diverged install is told the truth without clicking
-  // anything.
-  const heroDiverged = gwChecked ? gwDiverged : statusAhead > 0 && statusBehind > 0
+  // The badge's diverged verdict comes from the newest answer: this tab's own
+  // check while it is the newest, else the background check's counts from the
+  // status push, so a fresh visit to a diverged install is told the truth
+  // without clicking anything, and a later background check is not hidden.
+  const heroDiverged = newestIsLocal ? gwDiverged : statusAhead > 0 && statusBehind > 0
   // Running prerelease bytes? The question is about the BYTES, so it keys on the
   // build's own stamp (`stampedChannel` on desktop, the gateway's
   // version-derived `release_channel`) — a user who just opted INTO insider is
@@ -912,17 +910,15 @@ export function AboutPanel() {
   const isPrerelease = stampedLane === undefined
     ? !!info?.packaged && versionLooksPrerelease(info?.version)
     : !!stampedLane && stampedLane !== 'stable' && !bytesAreTheStableRelease
-  // Update is available if either the redux status flag or the latest check
-  // response says so — EXCEPT when the latest check said diverged. The redux
-  // flag refreshes on the slower WS status push, so for up to one push interval
-  // it can still carry `true` from a check that ran before the checkout gained
-  // local commits; letting it win would offer an Update button whose backend
-  // path is a bare `git pull` — a silent merge into the user's branch. A fresh
-  // diverged verdict therefore outranks the stale flag (fail-safe: withholding
-  // the button is recoverable, a surprise merge is not). `gwFound` needs no
-  // such guard: it is set from the same response as the counts, and a diverged
-  // check reports `update_available: false`.
-  const showUpdate = (updateAvailable && !gwDiverged) || gwFound
+  // Update is available when the NEWEST answer says so: this tab's own check
+  // while it is the newest, else the redux status flag. Never when that answer
+  // is diverged: an Update button there POSTs a bare `git pull` — a silent
+  // merge into the user's branch (fail-safe: withholding the button is
+  // recoverable, a surprise merge is not). `gwFound` is set from the same
+  // response as the counts, and a diverged check reports `update_available:
+  // false`, so the guard only ever bites on the status side.
+  const newestUpdateAvailable = newestIsLocal ? gwFound : updateAvailable
+  const showUpdate = newestUpdateAvailable && !heroDiverged
   // Shared by the check-result line and the confirm modal, so the two surfaces
   // cannot drift while describing the same verdict.
   const gwDivergedText = gwDiverged
@@ -1052,13 +1048,13 @@ export function AboutPanel() {
                 // stale `true` from a check that predates the local commits
                 // must not paint "Update available" beside the divergence
                 // warning below — the exact half-truth the neutral branch's
-                // comment forbids. A manual check's counts win once one has
-                // run; the status push's counts cover the first visit.
+                // comment forbids. The counts come from the newest answer,
+                // this tab's check or the status push.
                 ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
                     style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}
                     data-testid="hero-diverged">
                     <GitBranch size={11} className="lucide-inline" aria-hidden /> {i18nT('pages.settings.aboutPanel.diverged')}</span>
-                : updateAvailable
+                : newestUpdateAvailable
                 ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
                     style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}>
                     <ArrowUp size={11} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.update_available')}</span>
@@ -1078,7 +1074,7 @@ export function AboutPanel() {
                     style={{ color: 'var(--warn)', background: 'color-mix(in oklab, var(--warn) 14%, transparent)' }}
                     data-testid="hero-channel-move-pending">
                     <AlertCircle size={11} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.not_on_channel_yet', { channel: effectiveGwChannel })}</span>
-                : (gwChecked || statusChecked)
+                : newestCheckSucceeded
                   ? <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5"
                       style={{ color: 'var(--ok)', background: 'color-mix(in oklab, var(--ok) 14%, transparent)' }}
                       data-testid="hero-up-to-date">

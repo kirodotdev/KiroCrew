@@ -219,6 +219,8 @@ export interface StatusData {
  * type-checks; consumers treat absence as "unknown", never as a verdict.
  */
 export interface UpdateCheckResult {
+  /** When this check finished, epoch seconds: the stamp the status frame carries as `update_last_checked_at`. */
+  last_checked_at?: number | null
   supported?: boolean
   managed_by?: string
   mode?: string

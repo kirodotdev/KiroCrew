@@ -619,8 +619,8 @@ describe('AboutPanel gateway update check', () => {
     await screen.findByText(/Last checked/)
     expect(screen.queryByTestId('hero-not-checked')).toBeNull()
     expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
-    // Deferred: #34868 -- a failed background check has no notice yet.
-    expect(screen.queryByTestId('check-failed')).toBeNull()
+    // The failure itself is shown once, in the card's notice.
+    expect(screen.getByTestId('check-failed')).toBeTruthy()
   })
 
   it('the hero pill goes green once a check reports current', async () => {
@@ -638,6 +638,95 @@ describe('AboutPanel gateway update check', () => {
     await screen.findByTestId('check-failed')
     expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
     expect(screen.getByTestId('hero-not-checked')).toBeTruthy()
+  })
+
+  // The panel has two answers to "did the update check work": the background
+  // check on the status frame and this tab's own check. The newest one, by the
+  // backend's check stamp, drives the hero and the card together (#34868).
+  it('a failed background check gets the failure notice with its hand-off', async () => {
+    stubFetch({})
+    pushStatus({ update_check_status: 'failed', update_last_checked_at: 100 })
+    mountWeb()
+    const failed = await screen.findByTestId('check-failed')
+    expect(within(failed).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
+  })
+
+  it('a newer background failure supersedes an older manual success', async () => {
+    stubFetch({ check_status: 'succeeded', update_available: false, error_code: null, last_checked_at: 100 })
+    pushStatus({ update_check_status: 'succeeded', update_last_checked_at: 100 })
+    mountWeb()
+    await pressCheck()
+    await screen.findByTestId('up-to-date')
+    act(() => { pushStatus({ update_check_status: 'failed', update_last_checked_at: 200 }) })
+    expect(await screen.findByTestId('check-failed')).toBeTruthy()
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
+    expect(screen.queryByTestId('up-to-date')).toBeNull()
+  })
+
+  it('a newer background success supersedes an older manual failure', async () => {
+    stubFetch({ check_status: 'failed', update_available: null, error_code: 'feed_unreachable', last_checked_at: 100 })
+    pushStatus({ update_check_status: 'failed', update_last_checked_at: 100 })
+    mountWeb()
+    await pressCheck()
+    expect((await screen.findByTestId('check-failed')).textContent).toContain('release feed')
+    act(() => { pushStatus({ update_check_status: 'succeeded', update_available: false, update_last_checked_at: 200 }) })
+    await waitFor(() => expect(screen.getByTestId('hero-up-to-date')).toBeTruthy())
+    expect(screen.queryByTestId('check-failed')).toBeNull()
+  })
+
+  it('a newer background "no update" withdraws an update an older manual check found', async () => {
+    stubFetch({ check_status: 'succeeded', update_available: true, latest_version: '9.9.9', error_code: null, last_checked_at: 100 })
+    pushStatus({ update_check_status: 'succeeded', update_last_checked_at: 100 })
+    mountWeb()
+    await pressCheck()
+    await screen.findByText('Update available')
+    act(() => { pushStatus({ update_check_status: 'succeeded', update_available: false, update_last_checked_at: 200 }) })
+    await waitFor(() => expect(screen.getByTestId('hero-up-to-date')).toBeTruthy())
+    expect(screen.queryByText('Update available')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update(?! the gateway)/ })).toBeNull()
+  })
+
+  it('a request that fails outright after a found update shows the failure, not the update', async () => {
+    stubFetch({ check_status: 'succeeded', update_available: true, latest_version: '9.9.9', error_code: null, last_checked_at: 100 })
+    pushStatus({ update_check_status: 'succeeded', update_last_checked_at: 100 })
+    mountWeb()
+    await pressCheck()
+    await screen.findByText('Update available')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    // With an update on offer, the Update button is what re-runs the check.
+    fireEvent.click(screen.getByRole('button', { name: /^Update to v9\.9\.9/ }))
+    expect(await screen.findByTestId('check-failed')).toBeTruthy()
+    expect(screen.queryByText('Update available')).toBeNull()
+  })
+
+  it('a late status push of the earlier success does not hide a newer outright failure', async () => {
+    // Check succeeds at 200 while the status frame still says 100, then the
+    // next request fails outright; the push carrying the 200 success arrives
+    // after that failure and must not outrank it.
+    stubFetch({ check_status: 'succeeded', update_available: false, error_code: null, last_checked_at: 200 })
+    pushStatus({ update_check_status: 'succeeded', update_last_checked_at: 100 })
+    mountWeb()
+    await pressCheck()
+    await screen.findByTestId('up-to-date')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    await pressCheck()
+    await screen.findByTestId('check-failed')
+    act(() => { pushStatus({ update_check_status: 'succeeded', update_available: false, update_last_checked_at: 200 }) })
+    expect(screen.getByTestId('check-failed')).toBeTruthy()
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
+  })
+
+  it('a check request that fails outright replaces an earlier success', async () => {
+    stubFetch({ check_status: 'succeeded', update_available: false, error_code: null, last_checked_at: 100 })
+    pushStatus({ update_check_status: 'succeeded', update_last_checked_at: 100 })
+    mountWeb()
+    await pressCheck()
+    await screen.findByTestId('up-to-date')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    await pressCheck()
+    expect(await screen.findByTestId('check-failed')).toBeTruthy()
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
   })
 
   // The gateway's `auto_update` row is one SettingsToggle in every state. The
