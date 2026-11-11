@@ -201,6 +201,16 @@ class PlanHost:
     readonly_ancestor_guards: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
+    #: The operator's ``agent.sandbox_readonly_paths``, one probe per configured entry
+    #: (``~`` already expanded). Empty when the key is unset, which plans exactly what
+    #: it planned before the key existed.
+    operator_readonly_probes: tuple[CarveoutProbe, ...] = ()
+    #: The operator's ``agent.sandbox_readonly_exceptions``, probed the same way.
+    operator_exception_probes: tuple[CarveoutProbe, ...] = ()
+    #: Namespace only: for each operator read-only entry, by its canonical spelling, the
+    #: parents this uid could rename. The plan pins those of the entries it ACCEPTS, so
+    #: an entry it refuses pins nothing.
+    operator_parent_pins: tuple[tuple[str, tuple[str, ...]], ...] = ()
     #: The real uid and gid the namespace launcher maps.
     uid: int = 0
     gid: int = 0
@@ -373,6 +383,17 @@ class ConfinementPlan:
     #: :attr:`PlanHost.sealed_socket_patterns`, which Seatbelt renders as
     #: ``file-write*`` and ``file-link`` denies. Always empty on the namespace plan.
     sealed_socket_patterns: tuple[str, ...] = ()
+    #: The operator's read-only directories (:func:`operator_readonly_layer`). Both
+    #: renderers apply this layer BEFORE every crew rule, so a crew mask, seal or
+    #: carve-out placed later always wins over it.
+    operator_readonly: tuple[str, ...] = ()
+    #: The operator's write exceptions, each inside one of :attr:`operator_readonly`.
+    operator_writable: tuple[str, ...] = ()
+    #: Seatbelt only: each operator read-only directory and its ancestors, denied as
+    #: literal writes so a rename of a parent cannot move the tree out from under its
+    #: path-based rule. On Linux a bind mount moves with its directory, and the parents
+    #: the agent could rename are pinned through ``runtime_ancestor_guards`` instead.
+    operator_ancestor_guards: tuple[str, ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -653,6 +674,24 @@ CARVEOUT_NOT_A_DIRECTORY = (
 )
 CARVEOUT_REFUSED = "SECURITY: refusing sandbox write carve-out %r: %s"
 
+#: The log records a refused ``agent.sandbox_readonly_paths`` entry becomes.
+OPERATOR_READONLY_NOT_ABSOLUTE = (
+    "SECURITY: ignoring agent.sandbox_readonly_paths entry %r: not an absolute path"
+)
+OPERATOR_READONLY_NOT_A_DIRECTORY = (
+    "SECURITY: ignoring agent.sandbox_readonly_paths entry %r: not an existing directory"
+)
+OPERATOR_READONLY_REFUSED = "SECURITY: ignoring agent.sandbox_readonly_paths entry %r: %s"
+#: The log records a refused ``agent.sandbox_readonly_exceptions`` entry becomes.
+OPERATOR_EXCEPTION_NOT_ABSOLUTE = (
+    "SECURITY: ignoring agent.sandbox_readonly_exceptions entry %r: not an absolute path"
+)
+OPERATOR_EXCEPTION_NOT_A_DIRECTORY = (
+    "SECURITY: ignoring agent.sandbox_readonly_exceptions entry %r: not an existing "
+    "real directory"
+)
+OPERATOR_EXCEPTION_REFUSED = "SECURITY: ignoring agent.sandbox_readonly_exceptions entry %r: %s"
+
 
 def writable_carveouts(
     extra_writable_dirs: tuple[str, ...],
@@ -661,6 +700,13 @@ def writable_carveouts(
     subtree_guards: list[str],
     literal_guards: list[str],
     carveable_parents: list[str],
+    parent_label: str = "carveable runtime parent",
+    strictly_inside: bool = False,
+    messages: tuple[str, str, str] = (
+        CARVEOUT_NOT_ABSOLUTE,
+        CARVEOUT_NOT_A_DIRECTORY,
+        CARVEOUT_REFUSED,
+    ),
 ) -> tuple[list[str], list[Refusal]]:
     """Validate write carve-outs against the sandbox's own seals.
 
@@ -697,7 +743,14 @@ def writable_carveouts(
     LEXICAL and case-sensitive, so this is a backstop for self-derived paths, not a
     boundary for hostile input. *probes* hold the host's ``realpath`` / ``isdir`` answer
     for each absolute candidate. Returns the deduplicated approved spellings.
+
+    :func:`operator_readonly_layer` reuses these checks for the operator's write
+    exceptions: its ``carveable_parents`` are the operator's own read-only directories,
+    *parent_label* and *messages* name the config keys in the refusals, and
+    *strictly_inside* refuses an exception that equals its parent, which would only
+    cancel that read-only entry.
     """
+    not_absolute, not_a_directory, refused = messages
     carveable = [os.path.normpath(path) for path in carveable_parents]
     subtree = [os.path.normpath(path) for path in subtree_guards]
     literals = [os.path.normpath(path) for path in literal_guards]
@@ -706,17 +759,20 @@ def writable_carveouts(
     refusals: list[Refusal] = []
     for raw in extra_writable_dirs:
         if not raw or not os.path.isabs(raw):
-            refusals.append(Refusal("carve-out", CARVEOUT_NOT_ABSOLUTE, (raw,)))
+            refusals.append(Refusal("carve-out", not_absolute, (raw,)))
             continue
         probe = probes[raw]
         spellings = list(dict.fromkeys((probe.lexical, probe.canonical)))
         if not probe.is_dir:
-            refusals.append(Refusal("carve-out", CARVEOUT_NOT_A_DIRECTORY, (raw,)))
+            refusals.append(Refusal("carve-out", not_a_directory, (raw,)))
             continue
         refusal: str | None = None
         for spelling in spellings:
             if not any(path_within(spelling, parent) for parent in carveable):
-                refusal = f"{spelling!r} is outside every carveable runtime parent"
+                refusal = f"{spelling!r} is outside every {parent_label}"
+                break
+            if strictly_inside and spelling in carveable_set:
+                refusal = f"{spelling!r} is itself a read-only entry, not a directory inside one"
                 break
             for guard in subtree + literals:
                 if path_within(guard, spelling):
@@ -731,10 +787,144 @@ def writable_carveouts(
             if refusal:
                 break
         if refusal:
-            refusals.append(Refusal("carve-out", CARVEOUT_REFUSED, (raw, refusal)))
+            refusals.append(Refusal("carve-out", refused, (raw, refusal)))
             continue
         approved.extend(spellings)
     return list(dict.fromkeys(approved)), refusals
+
+
+def stand_in_roots(uid: int) -> list[str]:
+    """The tmpfs roots the namespace launcher may create its mask stand-ins under."""
+    return [user_runtime_root(uid), "/dev/shm"]
+
+
+def path_ancestor_guards(paths: Iterable[str]) -> list[str]:
+    """Each of *paths* and every ancestor of it below the filesystem root, once each."""
+    guards: list[str] = []
+    for item in paths:
+        current = os.path.normpath(item)
+        while os.path.dirname(current) != current:
+            guards.append(current)
+            current = os.path.dirname(current)
+    return list(dict.fromkeys(guards))
+
+
+def operator_readonly_layer(
+    readonly_probes: tuple[CarveoutProbe, ...],
+    exception_probes: tuple[CarveoutProbe, ...],
+    *,
+    crew_subtree_guards: list[str],
+    crew_literal_guards: list[str],
+    protected_roots: list[str],
+    canonical_only: bool,
+) -> tuple[list[str], list[str], list[Refusal]]:
+    """The operator's read-only directories and the write exceptions inside them.
+
+    ``agent.sandbox_readonly_paths`` names directories the agent may read but never
+    write, and ``agent.sandbox_readonly_exceptions`` names directories inside those
+    that stay writable -- e.g. ``/mnt/c`` read-only with ``/mnt/c/Users/<me>/Documents``
+    writable. Both keys live in the operator's ``config.json``, which is itself a
+    READONLY crew leaf, so the agent cannot edit its own boundary. The layer only ever
+    REMOVES write access the agent had before: an exception re-opens nothing but a
+    part of the operator's own read-only directory.
+
+    Crew rules always win. Both renderers apply this layer before every crew mask,
+    seal and carve-out, so a crew rule placed later covers whatever the layer did; the
+    checks here refuse, with a log line, the entries that would conflict anyway:
+
+    * a read-only entry that is not an absolute existing directory, that is ``/``
+      (a whole-filesystem allowlist is a different feature), or that contains a
+      *protected_roots* entry (the namespace launcher's stand-in roots, which every
+      mask is created under);
+    * an exception outside every accepted read-only entry, equal to one, or holding
+      or lying inside a crew guard (:func:`writable_carveouts`). A read-only entry that
+      IS a crew guard opens no exception, because an exception inside it would re-open
+      that guard.
+
+    *canonical_only* is the namespace launcher's view: a bind mount follows the name,
+    so the canonical spelling is the one directory either name reaches. Seatbelt
+    matches paths, so it keeps both spellings. Returns ``(readonly, writable,
+    refusals)``.
+    """
+    readonly: list[str] = []
+    validated: list[str] = []
+    accepted: list[CarveoutProbe] = []
+    refusals: list[Refusal] = []
+    roots = [os.path.normpath(root) for root in protected_roots]
+    for probe in readonly_probes:
+        if not probe.raw or not os.path.isabs(probe.lexical):
+            refusals.append(Refusal("operator", OPERATOR_READONLY_NOT_ABSOLUTE, (probe.raw,)))
+            continue
+        if not probe.is_dir:
+            refusals.append(Refusal("operator", OPERATOR_READONLY_NOT_A_DIRECTORY, (probe.raw,)))
+            continue
+        spellings = list(dict.fromkeys((probe.lexical, probe.canonical)))
+        refusal: str | None = None
+        for spelling in spellings:
+            if spelling == os.sep:
+                refusal = "the whole filesystem cannot be made read-only; name a narrower directory"
+                break
+            held = next((root for root in roots if path_within(root, spelling)), None)
+            if held is not None:
+                refusal = f"it holds {held!r}, where the sandbox places its masks"
+                break
+        if refusal:
+            refusals.append(Refusal("operator", OPERATOR_READONLY_REFUSED, (probe.raw, refusal)))
+            continue
+        readonly.extend([probe.canonical] if canonical_only else spellings)
+        validated.extend(spellings)
+        accepted.append(probe)
+    readonly = list(dict.fromkeys(readonly))
+    guards = {os.path.normpath(path) for path in crew_subtree_guards}
+    carveable = [path for path in dict.fromkeys(validated) if path not in guards]
+    probes = {probe.raw: probe for probe in exception_probes}
+    # An exception reached through a symlink below its read-only entry is refused: the
+    # agent can write the exception's own name, so it can swap the directory for a link
+    # to a read-only sibling, and the next plan would then re-open that sibling. Only
+    # the part BELOW the entry is judged, so an entry under a symlinked root (``/tmp``
+    # on macOS) still accepts the exceptions inside it.
+    linked: list[Refusal] = []
+    for raw, probe in list(probes.items()):
+        holder = next(
+            (
+                entry
+                for entry in accepted
+                if path_within(probe.lexical, entry.lexical) and entry.lexical != probe.lexical
+            ),
+            None,
+        )
+        if holder is None:
+            continue
+        below = os.path.relpath(probe.lexical, holder.lexical)
+        if os.path.normpath(os.path.join(holder.canonical, below)) != probe.canonical:
+            del probes[raw]
+            linked.append(
+                Refusal(
+                    "operator",
+                    OPERATOR_EXCEPTION_REFUSED,
+                    (raw, f"it passes through a symbolic link below {holder.raw!r}"),
+                )
+            )
+    # Validated in both spellings even where only the canonical one is applied, so a
+    # crew guard named through either spelling is caught.
+    approved, exception_refusals = writable_carveouts(
+        tuple(probes),
+        probes,
+        subtree_guards=crew_subtree_guards,
+        literal_guards=crew_literal_guards,
+        carveable_parents=carveable,
+        parent_label="agent.sandbox_readonly_paths entry the sandbox applies",
+        strictly_inside=True,
+        messages=(
+            OPERATOR_EXCEPTION_NOT_ABSOLUTE,
+            OPERATOR_EXCEPTION_NOT_A_DIRECTORY,
+            OPERATOR_EXCEPTION_REFUSED,
+        ),
+    )
+    if canonical_only:
+        kept = set(approved)
+        approved = list(dict.fromkeys(p.canonical for p in probes.values() if p.canonical in kept))
+    return readonly, approved, refusals + linked + exception_refusals
 
 
 def scrub_prefixes(base: list[str], forward_ssh_auth_sock: bool) -> list[str]:
@@ -975,6 +1165,19 @@ def _namespace_plan(
         literal_guards=[fold(os.path.join(home, f)) for f in files],
         carveable_parents=runtime_parents,
     )
+    # The operator's layer, checked against every crew rule this plan emits. The
+    # launcher applies it before them all, so each crew rule lands on top of it.
+    operator_readonly, operator_writable, operator_refusals = operator_readonly_layer(
+        host.operator_readonly_probes,
+        host.operator_exception_probes,
+        crew_subtree_guards=kept
+        + unhidden
+        + list(readonly)
+        + ([os.path.join(home, ".ssh")] if hide_ssh else []),
+        crew_literal_guards=[fold(os.path.join(home, f)) for f in files],
+        protected_roots=stand_in_roots(host.uid),
+        canonical_only=True,
+    )
     expose = [(fold(os.path.join(home, f)), f.split("/")[-1]) for f in expose_files]
     # Caller re-exposures are a COPY, never the inode: strictly weaker than lifting the
     # tree with ``extra_visible_dirs``.
@@ -1025,7 +1228,19 @@ def _namespace_plan(
         masks=masks,
         readonly=tuple(dict.fromkeys(readonly)),
         runtime_parents=tuple(runtime_parents),
-        runtime_ancestor_guards=host.readonly_ancestor_guards,
+        runtime_ancestor_guards=tuple(
+            dict.fromkeys(
+                (
+                    *host.readonly_ancestor_guards,
+                    *(
+                        pin
+                        for entry, pins in host.operator_parent_pins
+                        if entry in operator_readonly
+                        for pin in pins
+                    ),
+                )
+            )
+        ),
         files=tuple(fold(os.path.join(home, f)) for f in files),
         expose=tuple(expose),
         windows=tuple(windows),
@@ -1041,8 +1256,10 @@ def _namespace_plan(
         gid=host.gid,
         identities=identities,
         cancellations=cancellations,
-        refusals=tuple(window_refusals + carveout_refusals),
+        refusals=tuple(window_refusals + carveout_refusals + operator_refusals),
         exec_cwd=request.exec_cwd,
+        operator_readonly=tuple(operator_readonly),
+        operator_writable=tuple(operator_writable),
     )
 
 
@@ -1178,6 +1395,21 @@ def _seatbelt_plan(
         literal_guards=ancestor_guards + home_files,
         carveable_parents=runtime_parents,
     )
+    # The operator's layer is rendered FIRST and the crew rules after it, so on every
+    # path both match, the later crew rule decides. Its exceptions are still checked
+    # against every crew rule, including the runtime parent's write seal.
+    operator_readonly, operator_writable, operator_refusals = operator_readonly_layer(
+        host.operator_readonly_probes,
+        host.operator_exception_probes,
+        crew_subtree_guards=masked_targets
+        + readonly
+        + caller_targets
+        + runtime_parents
+        + ([ssh_dir] if hide_ssh else []),
+        crew_literal_guards=ancestor_guards + home_files,
+        protected_roots=[],
+        canonical_only=False,
+    )
     return ConfinementPlan(
         backend=request.backend,
         tier=tier,
@@ -1201,9 +1433,14 @@ def _seatbelt_plan(
         gid=host.gid,
         identities=NamespaceIdentities(),
         cancellations=tuple(cancellations),
-        refusals=tuple(window_refusals + caller_window_refusals + carveout_refusals),
+        refusals=tuple(
+            window_refusals + caller_window_refusals + carveout_refusals + operator_refusals
+        ),
         denied_socket_patterns=host.denied_socket_patterns,
         sealed_socket_patterns=host.sealed_socket_patterns,
+        operator_readonly=tuple(operator_readonly),
+        operator_writable=tuple(operator_writable),
+        operator_ancestor_guards=tuple(path_ancestor_guards(operator_readonly)),
     )
 
 
@@ -1236,7 +1473,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
     path appears in the program exactly as ``json.dumps`` writes it.
     """
     ids = plan.identities
-    return {
+    payload: dict[str, Any] = {
         "real_uid": plan.uid,
         "real_gid": plan.gid,
         "sensitive_dirs": list(plan.sensitive_dirs),
@@ -1302,3 +1539,10 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
             else ["/dev/shm", user_runtime_root(plan.uid)]
         ),
     }
+    # Only when the operator configured the layer, so an unset key renders the launcher
+    # it rendered before the layer existed, byte for byte.
+    if plan.operator_readonly:
+        payload["operator_readonly_dirs"] = list(plan.operator_readonly)
+    if plan.operator_writable:
+        payload["operator_writable_dirs"] = list(plan.operator_writable)
+    return payload
