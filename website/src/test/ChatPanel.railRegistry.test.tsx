@@ -25,6 +25,10 @@ vi.mock('../api/client', () => ({
     dashboardConfig: () => Promise.resolve({
       restore_sessions: true,
       restore_window_minutes: 30,
+      // resume_interrupted_turns on: the limit stepper and window select render only under it.
+      resume_interrupted_turns: true,
+      resume_retry_limit: 5,
+      resume_retry_window_minutes: 60,
       merge_queued_messages: false,
       default_memory_mode: 'persistent',
       widget_density: 'more',

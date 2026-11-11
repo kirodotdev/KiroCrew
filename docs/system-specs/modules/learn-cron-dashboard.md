@@ -240,14 +240,27 @@ Each planned restart (`_restart_gateway`, the gateway's update restart
 slots carrying a turn-in-flight marker to `<data home>/resume-after-restart.json`
 (off-loop, 5 s bound, a failure logged); with no running chat it removes an
 earlier file instead, so a record never outlives the restart that wrote it.
-The next dashboard boot, once ready, reads and deletes that file before acting,
-so it tries once and never loops. A file older than 30 minutes belongs to a
-restart that never ran and resumes nothing. Otherwise the boot resumes only those chats through
-`chat_resume_all.start_resume_all(only=...)` with `crew_mode=True`: the same
-`RESUME_ALL_MAX_RUNNING` bound, memory-preparation wait and per-slot refusals
-(pending approval, queued message, running sub-agents) as the Resume-all button,
-and one `resume_all_done` frame. A crash writes no file, so its chats keep the
-interruption row and the manual Resume, as before. Errors are logged, never raised.
+The next boot's restart-resume boot pass (`session_restore`, after both restores;
+[history](history.md) "Pressing Resume on the person's behalf") reads and deletes
+that file before anything else it does (`take_intent`), so it tries once and
+never loops. A file older than 30 minutes belongs to a restart that never ran and
+resumes nothing. Otherwise the chats it names resume through the pass whether or
+not `dashboard.resume_interrupted_turns` is on — narrowed first to the chats a
+Resume-all press would act on (`collect_interrupted_idle(crew_mode=True)`, the
+very set the `start_resume_all(only=...)` run resumed before the pass took the
+step over: the chat page's own sessions, no Crew Mode worker whose root is listed,
+nothing under construction; a mate's DM thread or a worker the record names is
+the switch's to resume, as before): the same candidate test (the
+turn-in-flight marker and a transcript that reads as interrupted), the same
+`continue_slot_turn` dispatch with its refusals (pending approval, queued message,
+running sub-agents, a person who got there first), the same per-chat budget --
+so a gateway cycling through planned restarts cannot re-fire its chats without
+bound -- and at most `chat_resume_all.RESUME_ALL_MAX_RUNNING` resumed turns at
+once, each dispatch waiting for the memory preparation to settle first, as a
+Resume-all press does. Each resumed chat carries its own `[Continue — automatic
+after a restart]` row; there is no `resume_all_done` frame. A crash writes no
+file, so with the switch off its chats keep the interruption row and the manual
+Resume. Errors are logged, never raised.
 
 **A planned restart stops the cron service first** (`cron.stop_cron_before_restart`).
 The three planned restarts end in an exec or a hard exit, so the gateway's
@@ -3216,7 +3229,7 @@ record and the slot, not from where the turn stopped:
   stopped, holds the queue and synthesis.
 - An exception above the `try` appends an error row, since the dispatcher
   only logs it, and propagates. The row carries `meta.turn_failed`
-  (`chat_turn.queue_cycle.TURN_FAILED_META`), so the OpenAI-compatible endpoint, which
+  (`chat_utils.TURN_FAILED_META`), so the OpenAI-compatible endpoint, which
   waits for the cycle's `done` row, answers `turn_failed` instead of an empty
   reply, even when an entry queued behind it answers. Raised by a local command's own handler
   (`/goal`, `/workflow`, `/prompts`, recorded as `_TurnExit.local_command`)

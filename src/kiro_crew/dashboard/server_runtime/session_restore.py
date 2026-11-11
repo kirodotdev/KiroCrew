@@ -62,11 +62,19 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
         # Session restores spawn a kiro-cli process per restored tab — the last
         # large group of the startup battery, so it too gets a cautious-boot window.
         await cautious_boot.pause_before("session restore")
+        # Imported on every boot: a planned restart's chats resume with the switch
+        # off (``restart_resume.take_intent``), and the update path already loads
+        # the module at startup (``handlers.updates_apply``).
+        from kiro_crew.dashboard import restart_resume
         from kiro_crew.shared_crew.host_hooks import mark_sessions_restored
 
         try:
             with state.suspend_slots_push():
                 await chat.restore_open_slots_async(state)
+                # The chats the restart cut exist from here on, and the restore still
+                # awaits below: arm their keys now, so a channel Stop landing before
+                # the boot pass runs is recorded against them (rfc-restart-resume).
+                restart_resume.arm_cut_chats(state)
                 restored = await chat.restore_recent_sessions_async(
                     state,
                     cfg.dashboard.restore_window_minutes if cfg.dashboard.restore_sessions else 0,
@@ -94,6 +102,20 @@ async def _restore_dashboard_sessions(state: DashboardState, cfg: KiroCrewConfig
         # A crewmate thread the restore deferred is built once more after boot.
         schedule_member_slot_retry(state)
         await drain_restored_parked_sends(state)
+
+        # Two passes over the slots the restores built, in one background task so
+        # the server's listen waits on neither (each loads transcripts the restore
+        # deferred, one per chat concerned). First: a chat that comes back holding a
+        # different approval mode than the person last saw it hold is told so
+        # (rfc-restart-resume) -- Trust is in memory by construction and this
+        # restores none of it; the notice is the honest half. Then: Resume is pressed
+        # on the person's behalf for every chat the restart cut off, so the notice
+        # lands before a turn could run under the mode the person does not yet know
+        # about. With ``dashboard.resume_interrupted_turns`` off (the default) the
+        # notice pass returns at once and the resume pass takes only the chats a
+        # PLANNED restart recorded before it cut them: one file read on a
+        # boot that follows a crash, which is all a default-off launch pays here.
+        restart_resume.start_boot_pass(state, cfg)
 
         if state._dynamic_cards is not None:
             state._dynamic_cards.seed_open_sessions()

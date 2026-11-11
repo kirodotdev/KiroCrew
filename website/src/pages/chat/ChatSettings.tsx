@@ -393,6 +393,9 @@ export function saveChatConfig(cfg: ChatConfig): boolean {
 export interface DashboardConfig {
   restore_sessions: boolean
   restore_window_minutes: number
+  resume_interrupted_turns: boolean
+  resume_retry_limit: number
+  resume_retry_window_minutes: number
   merge_queued_messages: boolean
   default_memory_mode: MemoryMode
   /** New chats start in Ultra Mode where it is offered (`dashboard.new_chat_crew_mode`). */

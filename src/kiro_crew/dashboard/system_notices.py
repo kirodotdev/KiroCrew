@@ -39,6 +39,10 @@ MEMORY_CHANGE_KIND = "memory_change"
 #: (``dashboard.task_run_notices``).
 TASKRUNNER_NOTICE_KIND = "taskrunner_notice"
 
+#: The chat spent its automatic-resume budget and waits for a person
+#: (``restart_resume._notice_budget_exhausted``).
+AUTO_RESUME_PAUSED_KIND = "auto_resume_paused"
+
 SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
     {
         "compaction",
@@ -46,6 +50,7 @@ SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
         SESSION_SWITCH_KIND,
         MEMORY_CHANGE_KIND,
         TASKRUNNER_NOTICE_KIND,
+        AUTO_RESUME_PAUSED_KIND,
     }
 )
 

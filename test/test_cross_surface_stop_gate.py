@@ -371,6 +371,35 @@ class TestStopTurnRecordsASessionScopedStop:
         await await_until(newer, what="newer message task finished")
 
     @pytest.mark.asyncio
+    async def test_a_stop_while_an_automatic_resume_is_armed_is_recorded_without_a_session(
+        self, cfg
+    ):
+        """``restart_resume`` arms a resume for a chat with no live session -- a
+        restored one before its first turn, or one whose failed turn tore its
+        session down -- and reads this count before and after its wait. A Stop
+        landing in that window must be recorded, or the pass resumes work the
+        person refused (GPT review, rev 49). Same canonical bucket as the gap:
+        Slack's bare thread ts and the pass's ``slack:<ts>`` meet."""
+        mgr = SessionManager(cfg, provider_factory=_provider_factory())
+        assert not mgr.has_session(LINKED_KEY)
+        bare = LINKED_KEY.split(":", 1)[1]
+
+        mgr.arm_resume(LINKED_KEY)
+        assert mgr.note_stop(bare) is True
+        assert await mgr.stop_turn(bare) == "idle"
+
+        assert mgr.stop_generation(LINKED_KEY) == 2
+        # Armed twice (two chats on one session), disarmed once: still armed.
+        mgr.arm_resume(bare)
+        mgr.disarm_resume(LINKED_KEY)
+        assert mgr.note_stop(LINKED_KEY) is True
+        mgr.disarm_resume(bare)
+        mgr.disarm_resume(bare)  # idempotent
+        assert mgr.note_stop(LINKED_KEY) is False
+        assert mgr.stop_generation(LINKED_KEY) == 3
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_a_closed_replay_gap_records_nothing_again(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_provider_factory())
         mgr.open_replay_gap(LINKED_KEY)

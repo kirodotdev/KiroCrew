@@ -16,6 +16,10 @@ const SYSTEM_NOTICE_KINDS: ReadonlySet<string> = new Set([
   'session_switch',
   'memory_change',
   'taskrunner_notice',
+  // Automatic resume paused for this chat: its per-chat budget is spent (restart_resume).
+  // No apostrophes in these comments: test_dashboard_chat.py reads the kinds
+  // out of this literal with a single-quote regex.
+  'auto_resume_paused',
 ])
 
 export function isSystemNoticeKind(kind: string | undefined): boolean {

@@ -41,6 +41,7 @@ import { replyShowsFooter } from '../pages/chat/replyFooter'
 import { toolRailColor } from '../utils/toolRailColor'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
+import { automaticResumeFollows } from '../pages/chat/RecoveryCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
 import { resolveGatewayNotice } from '../pages/chat/gatewayNotice'
 import StopEventCard from '../pages/chat/StopEventCard'
@@ -783,7 +784,13 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
       if (transient?.card === 'notice') {
         return ctx.row(<NoticeCard content={transient.text} tone={transient.tone} />)
       }
-      return ctx.row(<ErrorCard content={transient ? transient.text : m.content} meta={m.meta} />)
+      return ctx.row(
+        <ErrorCard
+          content={transient ? transient.text : m.content}
+          meta={m.meta}
+          resumed={automaticResumeFollows(ctx.messages, ctx.index)}
+        />,
+      )
     },
   },
   {
