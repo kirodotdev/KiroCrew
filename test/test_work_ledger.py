@@ -367,6 +367,7 @@ def test_a_worker_may_be_rebound_once_its_prior_item_is_terminal():
     first = _new_item(title="first")
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=first, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=first, state="accepted")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=second, worker_session_key=WORKER)
     assert wl.read_binding(WORKER) == (CONDUCTOR, second)
@@ -402,6 +403,7 @@ def test_a_failed_item_write_during_bind_restores_the_prior_binding(monkeypatch)
     first = _new_item(title="first")
     second = _new_item(title="second")
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=first, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=first, state="accepted")
     binding_before = wl.binding_path(WORKER).read_bytes()
     item_before = wl.item_path(CONDUCTOR, second).read_bytes()
@@ -456,6 +458,7 @@ def test_decide_verdict_and_close_each_move_one_field_and_log_one_event():
     mid = wl.read_work_item(CONDUCTOR, item_id)
     assert mid is not None
     assert (mid.decision, mid.verdict, mid.fails, mid.state) == ("retry once", "fail", 1, "open")
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(
         CONDUCTOR, "close", item_id=item_id, state="accepted", decision="landed"
     )
@@ -466,6 +469,7 @@ def test_decide_verdict_and_close_each_move_one_field_and_log_one_event():
     assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)] == [
         "create",
         "decision",
+        "verdict",
         "verdict",
         "close",
     ]
@@ -488,6 +492,24 @@ def test_close_refuses_open_as_a_terminal_state():
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="open")
     assert caught.value.field == "state"
+
+
+@pytest.mark.parametrize(
+    "verdicts", [(), ("fail",), ("pending",), ("refused",), ("error",), ("pass", "fail")]
+)
+def test_close_accepted_needs_a_pass_verdict(verdicts):
+    """Acceptance is the evaluator's answer, so only a latest ``pass`` lets an item close accepted."""
+    item_id = _new_item()
+    for verdict in verdicts:
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict=verdict)
+    before = _bytes_on_disk(item_id)
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
+    assert (caught.value.code, caught.value.field) == (wl.CODE_INVALID_VALUE, "state")
+    assert _bytes_on_disk(item_id) == before
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="rejected")
+    closed = wl.read_work_item(CONDUCTOR, item_id)
+    assert closed is not None and closed.state == "rejected"
 
 
 def test_an_unknown_item_and_an_unknown_action_are_named_distinctly():
@@ -1048,6 +1070,7 @@ def test_accept_batch_drops_terminal_items_and_items_with_no_bar():
     kept = _new_item(acceptance={"kind": "human_approval"})
     bare = _new_item(acceptance={})
     closed = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=closed, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=closed, state="accepted")
     ids = [entry["id"] for entry in wl.accept_batch(wl.list_work_items(CONDUCTOR))["items"]]
     assert ids == [kept]
@@ -1191,6 +1214,7 @@ def test_a_failed_item_write_rolls_the_event_log_back(monkeypatch):
     """State and its event must never disagree. Event goes first;
     if the item write fails the log is restored byte-for-byte, and a retry works."""
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     item_before, log_before = _bytes_on_disk(item_id)
     real_write = wl._write_record
 
@@ -1209,7 +1233,7 @@ def test_a_failed_item_write_rolls_the_event_log_back(monkeypatch):
     assert item is not None and item.state == "open" and item.status is None
     monkeypatch.setattr(wl, "_write_record", real_write)
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)] == ["create", "close"]
+    assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)] == ["create", "verdict", "close"]
 
 
 def test_a_failed_event_write_leaves_the_item_untouched(monkeypatch):
@@ -1370,6 +1394,7 @@ def test_orphaned_is_derived_and_is_never_a_stored_field():
 
 def test_a_terminal_item_is_neither_orphaned_nor_stale():
     item_id = _new_item()
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     item = wl.read_work_item(CONDUCTOR, item_id)
     assert item is not None

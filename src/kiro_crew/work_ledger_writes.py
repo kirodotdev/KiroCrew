@@ -255,7 +255,8 @@ def apply_conductor_action(
     ``bind``    ``item_id``, ``worker_session_key`` — writes the binding file.
     ``decide``  ``item_id``, ``decision``, optional ``round_number``.
     ``verdict`` ``item_id``, ``verdict``, optional ``fails``.
-    ``close``   ``item_id``, ``state``, optional ``decision`` — stamps ``closed_at``.
+    ``close``   ``item_id``, ``state``, optional ``decision`` — stamps ``closed_at``;
+                ``accepted`` only on an item whose ``verdict`` is ``pass``.
     ``goal``    ``goal``, optional ``round_number``, ``concurrency_cap`` and
                 ``new_goal`` — the conductor record only.
 
@@ -678,6 +679,15 @@ def _write_item_action(
             event = _commit_item_locked(slot_key, item, "verdict", checked_verdict)
         else:
             assert checked_state is not None
+            if checked_state == "accepted" and item.verdict != "pass":
+                raise WorkLedgerError(
+                    f"item {checked_id!r} cannot close accepted: its verdict is "
+                    f"{item.verdict or 'not recorded'}, and only a pass verdict closes it "
+                    "accepted. Record accept_eval's verdict (for a human_approval bar, the "
+                    "person's answer) with action=verdict, or close it rejected or abandoned",
+                    code=CODE_INVALID_VALUE,
+                    field="state",
+                )
             item.state = checked_state
             if checked_decision is not None:
                 item.decision = checked_decision

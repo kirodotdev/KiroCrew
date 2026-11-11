@@ -281,6 +281,11 @@ shell for an older spec. The verdicts are:
   check says a person must decide.
 - `error` — a broken condition or environment, including a bar still set to `TBD`.
 
+Only a `pass` lets an item close `accepted`. A `close` with `state: accepted` on
+an item with no verdict, or whose latest verdict is anything else, is refused
+(`invalid_value` on `state`) and the item stays open; close it `rejected` or
+`abandoned` instead. A `human_approval` item gets its `pass` from your answer.
+
 So the strongest true thing a worker can say is that it believes the bar is met.
 The conductor's own read is also filtered: only items currently reporting `done`
 are evaluated, because a world-state check can return a genuine `pass` on
