@@ -472,3 +472,49 @@ describe('TeamCrewsGroup', () => {
     expect(relayRefusalText('crew_offline')).toBe('This Crew is offline.')
   })
 })
+
+describe('TeamCrewsGroup account line', () => {
+  const PORTAL = 'https://example-portal.awsapps.example.test/start'
+
+  async function accountLine(account: unknown) {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [crew({})], account } as never)
+    mount()
+    const group = await openGroup(userEvent.setup())
+    await within(group).findByRole('menuitem', { name: 'Open Build box' })
+    return within(group).queryByTestId('team-crews-account')?.textContent ?? null
+  }
+
+  it.each([
+    [{ accountType: 'BuilderId' }, 'Signed in with Builder ID'],
+    [{ accountType: 'IamIdentityCenter', startUrl: PORTAL }, 'Signed in with IAM Identity Center · example-portal.awsapps.example.test'],
+    [{ accountType: 'SocialGoogle' }, 'Signed in with Google'],
+    [{ accountType: 'ExternalIdP' }, 'Signed in with Company SSO'],
+  ])('names the account %j the list was read for', async (account, text) => {
+    expect(await accountLine(account)).toBe(text)
+  })
+
+  it('leaves the line out when the gateway names no account', async () => {
+    expect(await accountLine(undefined)).toBeNull()
+  })
+
+  it('leaves the line out for an account with no kind', async () => {
+    expect(await accountLine({ accountType: '' })).toBeNull()
+  })
+
+  it('leaves the line out on a list refusal', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockRejectedValue(
+      new ApiError(409, 'signed out', JSON.stringify({ error: 'signed out', code: 'SIGNED_OUT' })),
+    )
+    mount()
+    const group = await openGroup(userEvent.setup())
+    await within(group).findByTestId('relay-crews-list-refusal')
+    expect(within(group).queryByTestId('team-crews-account')).toBeNull()
+  })
+
+  it('shows no e-mail even if one were sent', async () => {
+    const text = await accountLine({ accountType: 'BuilderId', email: 'someone@example.test' })
+    expect(text).toBe('Signed in with Builder ID')
+  })
+})

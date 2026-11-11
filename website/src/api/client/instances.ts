@@ -158,6 +158,13 @@ export interface RelayCrewEntry {
   lastSeenAt?: number | null
 }
 
+/** The kind of Kiro account the crews list was read for, only when the gateway proved it
+ *  unchanged across the read. `startUrl` is the Identity Center portal. No e-mail. */
+export interface RelayViewerAccount {
+  accountType: string
+  startUrl?: string
+}
+
 export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fetch, jInstancesDisabled, jRelayViewer, sessionKeyHeader: _sk }: ClientTransport) {
   const registryAndTransfer = {
     // Instances (multi-instance management) — owner-only, gated by instances.enabled.
@@ -176,7 +183,7 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
     listInstances: () => get('/api/instances').then(jInstancesDisabled) as Promise<{ active: boolean; instances: InstanceView[]; warm_set_cap: number; default_destination?: string; sso: SsoStatus }>,
     // Remote Crews reachable through the Kiro relay. 404 `RELAY_VIEWER_OFF` while
     // `tunnel.relay_viewer_enabled` is off; it throws but is not journaled.
-    relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[] }>,
+    relayViewerCrews: () => get('/api/relay-viewer/crews').then(jRelayViewer) as Promise<{ crews: RelayCrewEntry[]; account?: RelayViewerAccount }>,
     addInstance: (body: AddInstanceBody) => post('/api/instances', body).then(j) as Promise<InstanceView>,
     updateInstance: (id: string, body: Partial<AddInstanceBody>, opts?: { signal?: AbortSignal }) =>
       patch('/api/instances/' + encodeURIComponent(id), body, undefined, opts?.signal).then(j) as Promise<InstanceView>,
