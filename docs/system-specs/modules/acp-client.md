@@ -4203,11 +4203,15 @@ count or the bare fact.
 - **A turn its consumer cut.** When a consumer leaves before the terminal (the
   abandonment that records `_abandoned_prompt_id`), the handle logs one WARNING
   naming the prompt's request id, its age since it was sent, the session key and
-  ACP session id, and each tool call still open in the liveness map by
-  `toolCallId`, trusted tool name (both through `_loggable_request_id`) and age,
-  or `none`. The next prompt clears that map, so this line is the only record that
-  ties a later `prompt already in progress` on the session to the call it was
-  still running. The map's bound (`MAX_ACTIVE_TOOL_CALLS`) bounds the line.
+  ACP session id, each tool call still open in the liveness map by `toolCallId`,
+  trusted tool name (both through `_loggable_request_id`) and age, or `none`, and
+  how long before the cut the backend last sent a frame for the session
+  (`session_activity_at`, which counts a backend child's frames to its owner even
+  when they are dropped), or `no frame`. That age tells a backend still streaming
+  at the cut from one silent for most of the turn. The next prompt clears the
+  open-call map, so this line is the only record that ties a later
+  `prompt already in progress` on the session to the call it was still running.
+  The map's bound (`MAX_ACTIVE_TOOL_CALLS`) bounds the line.
 
 **Deliberately not bridged to the runner.** The drain count stays inside this
 layer. Reaching `chat_runner` would mean a new field on the `AcpEvent` /
