@@ -1,17 +1,21 @@
-"""Issue list and search for ``POST /api/source/issues``: GitHub and GitLab.
+"""Issue list and search for ``POST /api/source/issues``: GitHub, GitLab and Jira.
 
 The browser sends a structured filter (or a provider-native query string) for
-ONE scope: a GitHub ``owner/repo`` or a GitLab project path. Every field is
-validated here before any provider call, and the scope is fixed by the gateway,
-never by the query text: GitHub results are searched under a ``repo:`` qualifier
-this module writes and are dropped unless they belong to that repository, and a
-GitLab read is always the one project's issues endpoint.
+ONE scope: a GitHub ``owner/repo``, a GitLab project path or a Jira project key.
+Every field is validated here before any provider call, and the scope is fixed by
+the gateway, never by the query text: GitHub results are searched under a
+``repo:`` qualifier this module writes and are dropped unless they belong to that
+repository, a GitLab read is always the one project's issues endpoint, and Jira
+JQL starts with the gateway's own ``project =`` clause, ANDed with every filter
+(user JQL only inside parentheses it cannot close), and keeps only that
+project's keys.
 
 Reads go through the same audited provider runner as the single-issue read, so
 credentials stay inside ``gh``/``glab`` and the host is pinned from the
-operator's allowlist. ``cache.search_issues`` applies the redaction, payload cap
-and cache the single-issue read gets, so this module never returns provider
-data itself.
+operator's allowlist. Jira has no CLI: its search goes through the single-issue
+reader's own REST client and per-host token (``jira``). ``cache.search_issues``
+applies the redaction, payload cap and cache the single-issue read gets, so this
+module never returns provider data itself.
 
 Issue Radar lists issues through its own app-side client; its query rules
 (``scope=all`` on GitLab, login shapes, the search paging bound) are mirrored
@@ -19,20 +23,21 @@ here rather than imported, because the gateway core must not depend on a
 built-in app's backend.
 
 Providers are entries in :data:`_PROVIDERS`: one ``validate`` and one ``search``
-function each. Jira and Linear are named in :data:`_PLANNED_PROVIDERS` so a
-request for them gets ``provider_not_supported`` instead of ``invalid_request``.
+function each. Linear is named in :data:`_PLANNED_PROVIDERS` so a request for it
+gets ``provider_not_supported`` instead of ``invalid_request``.
 """
 
 from __future__ import annotations
 
 import json
 import string
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode
 
-from kiro_crew.dashboard.source_providers import cache, hosts, projection, runner
+from kiro_crew.dashboard.source_providers import adf, cache, hosts, jira, projection, runner
 from kiro_crew.dashboard.source_providers.contract import SourceProviderError
 
 # ── Request bounds ──────────────────────────────────────────────────────────
@@ -128,8 +133,9 @@ class IssueQuery:
 class IssueProvider:
     """``validate`` normalizes and checks the provider-specific fields (scope, host,
     logins, raw) and raises :class:`IssueQueryError`; ``fetch`` runs the read and
-    returns the provider's rows unredacted, with no text cut or joined (it may
-    pick whole rows or add paging headers); ``project`` reshapes those rows, after
+    returns the provider's rows unredacted, with no text cut or stripped (it may
+    pick whole rows, add paging headers, or render a structured body as one plain
+    string, which only joins its text); ``project`` reshapes those rows, after
     ``cache.search_issues`` has redacted them, into the response."""
 
     validate: Callable[[IssueQuery], IssueQuery]
@@ -1013,6 +1019,356 @@ def _project_gitlab_issues(query: IssueQuery, data: dict[str, Any]) -> dict[str,
     return _result(query, issues, next_page, total)
 
 
+# ── Jira ────────────────────────────────────────────────────────────────────
+
+# A project key as ``links`` reads one from an issue key: a letter, then
+# letters and digits, ten characters at most.
+_JIRA_KEY_FIRST = frozenset(string.ascii_uppercase)
+_JIRA_KEY_REST = frozenset(string.ascii_uppercase + string.digits)
+_JIRA_KEY_MAX_CHARS = 10
+_JIRA_ISSUE_NUMBER_MAX_DIGITS = 15
+_JIRA_CLOUD_SUFFIX = ".atlassian.net"
+_JIRA_CLOUD_LABEL_CHARS = frozenset(string.ascii_lowercase + string.digits + "-")
+_JIRA_CLOUD_LABEL_MAX_CHARS = 63
+# Characters Jira's text search reads as operators; free text keeps its words only.
+_JIRA_TEXT_OPERATORS = '+-&|!(){}[]^~*?\\:"/'
+_JIRA_SEARCH_FIELDS = "summary,status,assignee,reporter,labels,priority,created,updated,description"
+_JIRA_QUOTES = ("'", '"')
+
+
+def _is_jira_cloud_host(host: str) -> bool:
+    """``<site>.atlassian.net``: one DNS label of lower-case letters, digits and ``-``."""
+    label = host.removesuffix(_JIRA_CLOUD_SUFFIX)
+    return (
+        label != host
+        and 0 < len(label) <= _JIRA_CLOUD_LABEL_MAX_CHARS
+        and set(label) <= _JIRA_CLOUD_LABEL_CHARS
+        and not label.startswith("-")
+        and not label.endswith("-")
+    )
+
+
+def _validate_jira(query: IssueQuery) -> IssueQuery:
+    scope = query.scope.upper()
+    if not _charset_match(scope, _JIRA_KEY_FIRST, _JIRA_KEY_REST, _JIRA_KEY_MAX_CHARS):
+        raise IssueQueryError("scope must be a Jira project key like PROJ.")
+    host = query.host.removesuffix(":443")
+    if not host:
+        raise IssueQueryError("host is required for Jira.")
+    cloud = _is_jira_cloud_host(host)
+    if not cloud and host not in hosts._allowed_jira_hosts():
+        raise IssueQueryError("host is not a Jira host this gateway allows.")
+    if query.raw:
+        _jira_raw_clause(query.raw)
+    return replace(query, scope=scope, host=host)
+
+
+def _jql_string(value: str) -> str:
+    """*value* as one JQL string literal: nothing in it can end the string."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _jira_raw_clause(raw: str) -> str:
+    """User JQL that is safe to AND, in parentheses, with the gateway's project clause.
+
+    Outside quoted values every parenthesis must balance and never close one it did
+    not open, so the text cannot end the gateway's group and OR past the project.
+    A backslash is allowed only inside a quoted value, where it escapes one
+    character, as JQL reads it. ``ORDER BY`` is refused: ``sort`` and ``order``
+    set the ordering, after the group.
+    """
+    depth = 0
+    quote_char = ""
+    escaped = False
+    outside: list[str] = []
+    for char in raw:
+        if quote_char:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote_char:
+                quote_char = ""
+            continue
+        if char in _JIRA_QUOTES:
+            quote_char = char
+            outside.append(" ")
+        elif char == "\\":
+            raise IssueQueryError("raw can use a backslash only inside a quoted value.")
+        elif char in "()":
+            depth += 1 if char == "(" else -1
+            if depth < 0:
+                raise IssueQueryError("raw has unbalanced parentheses.")
+            outside.append(" ")
+        else:
+            outside.append(char)
+    if quote_char:
+        raise IssueQueryError("raw has an unbalanced quote.")
+    if depth:
+        raise IssueQueryError("raw has unbalanced parentheses.")
+    words = "".join(outside).lower().split()
+    if any(word == "order" and after == "by" for word, after in zip(words, words[1:])):
+        raise IssueQueryError("raw cannot use ORDER BY; sort and order set it.")
+    return raw
+
+
+def _jira_person_clause(field: str, value: str) -> str:
+    return f"{field} = currentUser()" if value == "me" else f"{field} = {_jql_string(value)}"
+
+
+def _jira_text(text: str) -> str:
+    """Free text as plain words: each operator character becomes a space."""
+    for char in _JIRA_TEXT_OPERATORS:
+        text = text.replace(char, " ")
+    return " ".join(text.split())
+
+
+def jira_jql(query: IssueQuery) -> str:
+    """The JQL the gateway sends: its own project clause first, its ordering last."""
+    clauses = [f"project = {_jql_string(query.scope)}"]
+    if query.raw:
+        clauses.append(f"({_jira_raw_clause(query.raw)})")
+    else:
+        if query.state == "open":
+            clauses.append("statusCategory != Done")
+        elif query.state == "closed":
+            clauses.append("statusCategory = Done")
+        if query.assignee:
+            clauses.append(_jira_person_clause("assignee", query.assignee))
+        if query.author:
+            clauses.append(_jira_person_clause("reporter", query.author))
+        clauses.extend(f"labels = {_jql_string(label)}" for label in query.labels)
+        words = _jira_text(query.text)
+        if words:
+            clauses.append(f"text ~ {_jql_string(words)}")
+    return f"{' AND '.join(clauses)} ORDER BY {query.sort} {query.order.upper()}"
+
+
+def jira_params(
+    query: IssueQuery, page_token: str = "", start: int | None = None, count: int | None = None
+) -> list[tuple[str, str]]:
+    """The search query string: Cloud pages by token, Server/DC by ``startAt``.
+
+    *start* and *count* default to the query's page and limit.
+    """
+    params = [
+        ("jql", jira_jql(query)),
+        ("fields", _JIRA_SEARCH_FIELDS),
+        ("maxResults", str(count or query.limit)),
+    ]
+    if jira._jira_is_cloud(query.host):
+        if page_token:
+            params.append(("nextPageToken", page_token))
+    else:
+        offset = (query.page - 1) * query.limit if start is None else start
+        params.append(("startAt", str(offset)))
+    return params
+
+
+async def _jira_search(
+    query: IssueQuery, page_token: str = "", start: int | None = None, count: int | None = None
+) -> dict[str, Any]:
+    """One search request; each Cloud description comes back as one plain string."""
+    try:
+        data = await jira.search_jira_issues(
+            query.host, jira_params(query, page_token, start, count)
+        )
+    except ValueError as exc:
+        # The reader's own refusals carry a machine-readable prefix; they name
+        # the host, so this answer says the same without echoing it.
+        if str(exc).startswith("jira_no_credentials"):
+            raise IssueQueryError(
+                "No Jira credentials are configured for this host. Add a "
+                "dashboard.jira_auth entry for it and store its API token."
+            ) from None
+        if str(exc).startswith("jira_config_error"):
+            raise IssueQueryError(
+                "The Jira configuration for this host cannot be used: check its "
+                "dashboard.jira_auth entry (Jira Cloud also needs the account email)."
+            ) from None
+        raise SourceProviderError("Jira issue search failed") from None
+    if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
+        raise SourceProviderError("Jira returned an invalid issue search payload")
+    for row in data["issues"]:
+        fields = row.get("fields") if isinstance(row, dict) else None
+        if isinstance(fields, dict) and isinstance(fields.get("description"), dict):
+            # ADF splits text across nodes, so the raw-row redaction would see a
+            # PEM key's header alone, redact it, and leave its body lines. As one
+            # string the key is whole, as it is in a GitHub or GitLab body.
+            fields["description"] = adf._adf_plain_lines(fields["description"])
+    return data
+
+
+# Jira Cloud pages by an opaque ``nextPageToken``. The gateway keeps each token it
+# was given, keyed by the exact query and the page it opens, and answers page
+# numbers like the other providers: the browser never holds a token. A page whose
+# token has expired is reached again by walking from the nearest page it knows.
+_JIRA_PAGE_TOKENS: dict[str, tuple[float, str]] = {}
+_JIRA_PAGE_TOKEN_TTL_SECS = 30 * 60
+_JIRA_PAGE_TOKENS_MAX = 512
+_JIRA_MAX_PAGE_WALK = 20
+_JIRA_MAX_TOKEN_CHARS = 4096
+
+
+def _jira_known_page(query: IssueQuery) -> tuple[int, str]:
+    """The nearest page at or before the query's whose token is held (page 1 needs none)."""
+    now = time.monotonic()
+    for page in range(query.page, max(0, query.page - _JIRA_MAX_PAGE_WALK - 1), -1):
+        held = _JIRA_PAGE_TOKENS.get(replace(query, page=page).cache_key())
+        if held and now - held[0] < _JIRA_PAGE_TOKEN_TTL_SECS:
+            return page, held[1]
+    if query.page - 1 > _JIRA_MAX_PAGE_WALK:
+        raise IssueQueryError("This page is no longer available; start from the first page.")
+    return 1, ""
+
+
+def _remember_jira_page(query: IssueQuery, page: int, token: str) -> None:
+    now = time.monotonic()
+    tokens = _JIRA_PAGE_TOKENS
+    for key in [k for k, (at, _) in tokens.items() if now - at >= _JIRA_PAGE_TOKEN_TTL_SECS]:
+        del tokens[key]
+    tokens[replace(query, page=page).cache_key()] = (now, token)
+    while len(tokens) > _JIRA_PAGE_TOKENS_MAX:
+        del tokens[min(tokens, key=lambda k: tokens[k][0])]
+
+
+def _jira_next_token(data: dict[str, Any]) -> str:
+    token = data.get("nextPageToken")
+    if data.get("isLast") is True or not isinstance(token, str):
+        return ""
+    return token if 0 < len(token) <= _JIRA_MAX_TOKEN_CHARS and token.isprintable() else ""
+
+
+async def _fetch_jira_server_issues(query: IssueQuery) -> dict[str, Any]:
+    """One full page from ``startAt`` paging.
+
+    An instance may cap ``maxResults`` below the limit and answer a short page.
+    The page is then filled from where the answer stopped, so every page but the
+    last holds ``limit`` rows and the next page's ``startAt`` skips nothing. Each
+    extra request must return a row, so the loop ends within ``limit`` requests.
+    """
+    start = (query.page - 1) * query.limit
+    data = await _jira_search(query, start=start)
+    rows = list(data["issues"])
+    total = _total(data.get("total"))
+    while rows and len(rows) < query.limit and total is not None and start + len(rows) < total:
+        more = await _jira_search(query, start=start + len(rows), count=query.limit - len(rows))
+        if not more["issues"]:
+            break
+        rows.extend(more["issues"])
+    return {"issues": rows[: query.limit], "total": data.get("total")}
+
+
+async def _fetch_jira_issues(query: IssueQuery) -> dict[str, Any]:
+    if not jira._jira_is_cloud(query.host):
+        return await _fetch_jira_server_issues(query)
+    page, token = _jira_known_page(query)
+    while True:
+        data = await _jira_search(query, token)
+        token = _jira_next_token(data)
+        if token:
+            _remember_jira_page(query, page + 1, token)
+        if page == query.page:
+            return {"issues": data["issues"], "isLast": not token}
+        if not token:
+            return {"issues": [], "isLast": True}
+        page += 1
+
+
+def _jira_number(query: IssueQuery, key: str) -> int | None:
+    """The number of an issue key in the query's project, else ``None``."""
+    prefix = f"{query.scope}-"
+    digits = key.removeprefix(prefix)
+    if digits == key or not _charset_match(
+        digits, _NONZERO_DIGITS, _DIGITS, _JIRA_ISSUE_NUMBER_MAX_DIGITS
+    ):
+        return None
+    return int(digits)
+
+
+def _jira_person(value: Any) -> dict[str, str] | None:
+    """Cloud names a person by ``accountId``; Server/DC by ``name``."""
+    if not isinstance(value, dict):
+        return None
+    login = str(value.get("accountId") or value.get("name") or "")
+    if not login:
+        return None
+    avatars = projection._as_dict(value.get("avatarUrls"))
+    return {
+        "login": login,
+        "name": str(value.get("displayName") or login),
+        "avatarUrl": projection._safe_https_url(avatars.get("48x48")),
+    }
+
+
+def _jira_time(value: Any) -> str:
+    """Jira's ``...+0000`` offset as ISO 8601's ``+00:00``."""
+    text = str(value or "")
+    offset = text[-5:]
+    if len(text) > 5 and offset[0] in "+-" and _charset_match(offset[1:], _DIGITS, _DIGITS, 4):
+        return f"{text[:-2]}:{text[-2:]}"
+    return text
+
+
+def _jira_summary(query: IssueQuery, item: dict[str, Any]) -> dict[str, Any] | None:
+    key = str(item.get("key") or "")
+    number = _jira_number(query, key)
+    if number is None:
+        return None
+    fields = projection._as_dict(item.get("fields"))
+    status = projection._as_dict(fields.get("status"))
+    category = projection._as_dict(status.get("statusCategory"))
+    state = "closed" if str(category.get("key") or "").lower() == "done" else "open"
+    priority = projection._as_dict(fields.get("priority"))
+    assignee = _jira_person(fields.get("assignee"))
+    return {
+        "provider": "jira",
+        # Built from the validated host and key, never from the row's self link.
+        "url": f"https://{query.host}/browse/{key}",
+        "key": key,
+        "number": number,
+        "title": str(fields.get("summary") or ""),
+        "state": state,
+        "statusLabel": str(status.get("name") or ("Closed" if state == "closed" else "Open")),
+        "labels": projection._issue_labels(fields.get("labels")),
+        "assignees": [assignee] if assignee else [],
+        "author": _jira_person(fields.get("reporter")),
+        "priority": str(priority.get("name") or "") or None,
+        # shortcut: the search API has no comment count, and requesting the
+        # comment field returns every comment; read it if cards need the count.
+        "commentCount": 0,
+        "createdAt": _jira_time(fields.get("created")),
+        "updatedAt": _jira_time(fields.get("updated")),
+        # Cloud's is the plain text _jira_search made; Server/DC's is wiki text.
+        # shortcut: wiki markup (``h1.``, ``{code}``) is stripped as if it were
+        # markdown; add a wiki strip if Server excerpts show markup. Stripped
+        # only; finish_issue_list cuts it after cache.search_issues redacts.
+        "excerpt": strip_markdown(fields.get("description")),
+        "project": query.scope,
+        "linkedChanges": [],
+    }
+
+
+def _project_jira_issues(query: IssueQuery, data: dict[str, Any]) -> dict[str, Any]:
+    rows = data.get("issues")
+    if not isinstance(rows, list):
+        raise SourceProviderError("Jira returned an invalid issue search payload")
+    # Only the project's own keys are kept, like GitHub's repo check: the JQL is
+    # scoped, and this holds even if a page token Jira honours says otherwise.
+    issues = [
+        summary
+        for summary in (_jira_summary(query, row) for row in projection._as_list(rows))
+        if summary
+    ]
+    if jira._jira_is_cloud(query.host):
+        has_next = data.get("isLast") is False
+        return _result(query, issues, query.page + 1 if has_next else None, None)
+    total = _total(data.get("total"))
+    start = (query.page - 1) * query.limit
+    has_next = bool(rows) and total is not None and start + len(rows) < total
+    return _result(query, issues, query.page + 1 if has_next else None, total)
+
+
 _PROVIDERS: dict[str, IssueProvider] = {
     "github": IssueProvider(
         validate=_validate_github, fetch=_fetch_github_issues, project=_project_github_issues
@@ -1020,9 +1376,12 @@ _PROVIDERS: dict[str, IssueProvider] = {
     "gitlab": IssueProvider(
         validate=_validate_gitlab, fetch=_fetch_gitlab_issues, project=_project_gitlab_issues
     ),
+    "jira": IssueProvider(
+        validate=_validate_jira, fetch=_fetch_jira_issues, project=_project_jira_issues
+    ),
 }
 # In the request contract, not implemented yet: each lands as one more entry above.
-_PLANNED_PROVIDERS = frozenset({"jira", "linear"})
+_PLANNED_PROVIDERS = frozenset({"linear"})
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────

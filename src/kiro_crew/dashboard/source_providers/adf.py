@@ -779,6 +779,46 @@ def _adf_plain_text(node: Any, *, _depth: int) -> str:
     )
 
 
+# Nodes that end a line in a plain-text rendition: every block, and the items
+# and cells blocks hold, so two list items never read as one word.
+_ADF_LINE_TYPES = _ADF_BLOCK_TYPES | {
+    "listItem",
+    "taskItem",
+    "decisionItem",
+    "tableRow",
+    "tableCell",
+    "tableHeader",
+}
+
+
+def _adf_plain_lines(node: Any, *, _depth: int = 0) -> str:
+    """A whole ADF tree as plain text, one line per block, with no markup.
+
+    Inline runs inside a block are joined as :func:`_adf_plain_text` joins them,
+    and blocks are separated by a line break, so text split across nodes reads as
+    one string, as a markdown body does. Nothing is redacted here: the caller
+    redacts the result whole, which sees a secret split across nodes (a PEM key
+    pasted one paragraph per line) that a per-node pass would miss.
+    """
+    if _depth > _ADF_MAX_DEPTH or not isinstance(node, dict):
+        return ""
+    if str(node.get("type") or "") not in _ADF_LINE_TYPES:
+        return _adf_plain_text(node, _depth=_depth)
+    lines: list[str] = []
+    inline: list[str] = []
+    for child in projection._as_list(node.get("content")):
+        if isinstance(child, dict) and str(child.get("type") or "") in _ADF_LINE_TYPES:
+            if inline:
+                lines.append("".join(inline))
+                inline = []
+            lines.append(_adf_plain_lines(child, _depth=_depth + 1))
+        else:
+            inline.append(_adf_plain_text(child, _depth=_depth + 1))
+    if inline:
+        lines.append("".join(inline))
+    return "\n".join(lines)
+
+
 def _adf_url_link(url: str, label: str = "") -> str:
     """Render a provider URL as a link, or as its label alone if the URL fails.
 
