@@ -751,6 +751,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _keep_saved_profiles,
         _profile_ids,
         _session_environment_key_validators,
+        _str_list_problem,
         _tailnet_governance_pinned_off,
         _UnknownDefaultProfile,
         api_kirocrew_config_patch,

@@ -3238,7 +3238,14 @@ also withheld for a version the user put off: the update prompt's "Remind me
 tomorrow" (or any dismissal) and "Skip this version" write `dashboard.update_nudge`,
 and `update_deferral.user_deferred_update` reads it for the version the check
 found, so that version notifies instead of being installed and restarted
-unattended. When the snooze runs out the prompt opens again, and the deferral
+unattended. A snooze names one version; every skip also stays in the record's
+`skipped_versions` list, which never drops a skip and refuses a new skip past
+`MAX_SKIPPED_VERSIONS` with a 409 the popup shows. The gateway owns the list: the popup's verdict
+sends no list, and the config PATCH keeps the saved skips in order and adds a
+new skip last, under the config lock (`update_deferral.merge_update_nudge_record`),
+so snoozing one release, even from a dashboard holding a stale record, never
+undoes the skip of another. A write that sends the list, which a change card
+and its Undo always do, is stored as sent, so an Undo really removes a skip. When the snooze runs out the prompt opens again, and the deferral
 holds for one more window (`REPROMPT_WINDOW_SECS`, the snooze's own 24 h) so
 "Later" never becomes a silent install; only a prompt left unanswered for that
 window lets it install. The browser writes `snoozed_until` on its own clock, so
