@@ -25,7 +25,9 @@ export function useChatPaneStop({ slotKey, busy, paneSlot, dispatch }: {
   // optimistic `soft_pending` over the WS lag, a lost press keeps the pending
   // state so the retry is a deliberate force, a reply for a slot the pane no
   // longer shows is dropped. The pane sends through the Redux `requestStop`
-  // thunk and uses neither of the embed's turn or decline extensions.
+  // thunk. Like the embed it scopes the press to the turn, so a slow reply to
+  // a press in turn N is dropped once turn N is over (#34416); it does not
+  // read the embed's compaction decline.
   const sendStop = useCallback(async (force: boolean): Promise<StopOutcome> => {
     const res = await dispatch(requestStop({ slotId: slotKey, force }))
     const failure = requestStop.fulfilled.match(res) ? res.payload : null
@@ -36,8 +38,9 @@ export function useChatPaneStop({ slotKey, busy, paneSlot, dispatch }: {
       ? { kind: 'lost' }
       : { kind: 'refused', ...failure }
   }, [dispatch, slotKey])
+  const turnKey = typeof paneSlot?.turn === 'number' ? `${paneSlot.turn_gen ?? ''}:${paneSlot.turn}` : undefined
   const { stopState: paneStopState, onStop, stopError, stopErrorDetail, dismissStopError } =
-    useStopPress({ slotKey, busy, serverStopState: paneSlot?.stop_state, sendStop })
+    useStopPress({ slotKey, busy, serverStopState: paneSlot?.stop_state, sendStop, turnScoped: true, turnKey })
   return { stopError, stopErrorDetail, dismissStopError, paneStopState, onStop }
 }
 
