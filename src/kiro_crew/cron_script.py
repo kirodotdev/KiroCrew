@@ -1129,6 +1129,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         _account_resource_apart,
         _changed_by_scan,
         _changed_path,
+        _delivered_text,
         _reads_as_credential,
         _redact_deep,
         _redact_pair,
