@@ -15328,6 +15328,7 @@
       "filter_hooks": "筛选钩子…",
       "hook_name": "钩子名称",
       "hooks": "钩子",
+      "matcher_lane_pill_gloss": "状态标签列",
       "hooks_run_shell_commands_on_chat_events_agentspa": "挂钩在聊天事件上运行 shell 命令：AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop。工具挂钩支持按工具名称过滤的模式。标记为 尚未触发 的行由代理支持，但这里目前还没有任何事件触发它；标记为 从不触发 的行完全不受支持。测试现在就能运行两者。",
       "last_run": "上次运行",
       "loading": "正在加载…",

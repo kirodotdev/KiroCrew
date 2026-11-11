@@ -15723,6 +15723,7 @@
       "filter_hooks": "हुक फ़िल्टर करें…",
       "hook_name": "हुक का नाम",
       "hooks": "हुक",
+      "matcher_lane_pill_gloss": "स्टेटस टैग कॉलम",
       "hooks_run_shell_commands_on_chat_events_agentspa": "हुक चैट ईवेंट पर शेल कमांड चलाते हैं: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop। टूल हुक टूल नाम से छाँटने वाले पैटर्न लेते हैं। अभी नहीं चलता वाली पंक्ति को एजेंट सहारा देता है पर यहाँ उसे अभी कुछ भी नहीं चलाता; कभी नहीं चलता वाली पंक्ति को कोई सहारा नहीं है। परीक्षण दोनों को अभी चलाता है।",
       "last_run": "आख़िरी रन",
       "loading": "लोड हो रहा है…",

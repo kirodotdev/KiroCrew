@@ -15328,6 +15328,7 @@
       "filter_hooks": "훅 필터…",
       "hook_name": "훅 이름",
       "hooks": "훅",
+      "matcher_lane_pill_gloss": "상태 태그 열",
       "hooks_run_shell_commands_on_chat_events_agentspa": "훅은 채팅 이벤트에서 셸 명령을 실행합니다: AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. 도구 훅은 도구 이름으로 걸러내는 패턴을 지원합니다. 아직 실행 안 됨 으로 표시된 행은 에이전트가 지원하지만 여기서는 아직 아무것도 실행하지 않습니다. 스스로 실행 안 됨 으로 표시된 행은 전혀 지원되지 않습니다. 테스트는 둘 다 지금 실행합니다.",
       "last_run": "마지막 실행",
       "loading": "불러오는 중…",

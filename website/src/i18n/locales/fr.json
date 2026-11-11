@@ -16118,6 +16118,7 @@
       "filter_hooks": "Filtrer les hooks…",
       "hook_name": "Nom du hook",
       "hooks": "Hooks",
+      "matcher_lane_pill_gloss": "colonne d'étiquette de statut",
       "hooks_run_shell_commands_on_chat_events_agentspa": "Les hooks exécutent des commandes shell sur les événements du chat : AgentSpawn, UserPromptSubmit, PreToolUse, PostToolUse, Stop. Les hooks d'outil acceptent des motifs pour filtrer par nom d'outil. Une ligne marquée pas encore déclenché est prise en charge par l'agent mais rien ici ne la déclenche encore ; une marquée ne se déclenche jamais n'est pas prise en charge du tout. Tester exécute l'une ou l'autre maintenant.",
       "last_run": "Dernière exécution",
       "loading": "Chargement…",

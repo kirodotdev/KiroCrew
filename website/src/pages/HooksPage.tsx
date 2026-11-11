@@ -144,6 +144,17 @@ const unsentReason = (code: string): string => {
 const rowCell = (enabled: boolean, extra = ''): string =>
   `${BASE_CELL}${extra ? ' ' + extra : ''}${enabled ? '' : ' opacity-50'}`
 
+/** The gloss for an event whose wire name reads as its own opposite, PARENTHESISED.
+ *
+ *  Bare, the two words read as a second label rather than an explanation -- `board
+ *  column` beside `SessionLaneChanged` could be part of the name. The brackets are
+ *  what make it an aside, and they are the same shape on all three surfaces (the
+ *  open list, the native label, the saved row) so the reader learns it once. */
+const eventGloss = (event: string): string | undefined =>
+  event === 'SessionLaneChanged'
+    ? `(${i18nT('pages.hooksPage.matcher_lane_pill_gloss')})`
+    : undefined
+
 const normalizeEvent = (e: string) => e.charAt(0).toUpperCase() + e.slice(1)
 
 function timeAgo(ts: number): string {
@@ -193,8 +204,23 @@ function HookForm({ hook, onSave, onCancel }: {
             options={EVENTS}
             // The panel is the trigger's width by default, and the trigger hugs a
             // short value like `Stop` — so `PostTaskExecution` plus its mark clipped
-            // to "waiti". Wide enough for the longest option and badge together.
-            contentClassName="min-w-[19rem]"
+            // to "waiti". Wide enough for the longest option with its badge, and for
+            // `SessionLaneChanged` with its gloss in the longest locale.
+            //
+            // The floor itself is CLAMPED, inside `min()`. A floor alone is a pinned
+            // width: `SelectContent` sets no max-width of its own, and the touch
+            // diversion is `(pointer: coarse)`, not a width query — so a 320px desktop
+            // window or 400% zoom takes this same panel and a bare 26rem floor hangs
+            // 96px off-screen, clipping the badge and the check indicator.
+            //
+            // It has to be `min-w-[min(...)]` and NOT a sibling `max-w-*`: where the two
+            // conflict CSS resolves min-width LAST, so a 26rem floor beats any cap and
+            // the panel still overflows. Captured at 320px to confirm — the `max-w`
+            // spelling left the mark reading "not fired ye". The other floating panels
+            // here pair a floor with a cap safely only because their floors already fit
+            // (`RejectDropdown` 240px, `AgentTemplateDetail` 300px); this is the first
+            // floor above 320px, so it is the first that has to clamp itself.
+            contentClassName="min-w-[min(26rem,calc(100vw-2rem))]"
             // The mark rides the OPTION, which is where the choice is made; the
             // option's value and accessible name stay the bare wire value, and the
             // touch path spells the same fact as `name -- mark`.
@@ -203,9 +229,13 @@ function HookForm({ hook, onSave, onCancel }: {
               // The hint rides the badge, not just the table's copy of it:
               // the moment of choice is here, and a reader who has never
               // seen the table cannot tell `waiting` from `stored`.
-              return mark
-                ? { label: mark, source: 'kirocrew', hint: dormantHint(e) }
-                : undefined
+              //
+              // `note` carries the gloss for the same reason: this row renders the
+              // bare wire value, so a label-borne gloss reached the native list and
+              // the typeahead only, never the open list.
+              const note = eventGloss(e)
+              if (mark) return { label: mark, source: 'kirocrew', hint: dormantHint(e), note }
+              return note ? { note } : undefined
             })}
             // Choosing a dormant trigger does NOT clear `matcher`, it only hides
             // the field and drops the value AT SAVE. Clearing it on selection let
@@ -214,6 +244,12 @@ function HookForm({ hook, onSave, onCancel }: {
             // restore path and nothing on screen saying so. Nothing is discarded
             // invisibly either, which was the original objection: while the field is
             // gone the line in its place says the trigger takes no matcher.
+            // The native list and the typeahead take TEXT and nothing else, so one
+            // label carries both facts there. Parenthesised gloss, dashed mark: two
+            // kinds of suffix in one list need two shapes, or a reader cannot tell
+            // which they are reading. The label carries the gloss only: `SimpleSelect`
+            // appends the badge's mark after it.
+            optionLabels={EVENTS.map(e => (eventGloss(e) ? `${e} ${eventGloss(e)}` : e))}
             onChange={setEvent}
             value={event}
             // A hook stored with an event this picker no longer offers (legacy
@@ -606,7 +642,15 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                         </button>
                       </td>
                       <td className={rowCell(h.enabled, 'text-sm font-medium text-text')}>{esc(h.name)}</td>
-                      <td className={rowCell(h.enabled, 'text-sm')}><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span></td>
+                      {/* The gloss STACKS under the pill rather than sitting beside it.
+                          This table is auto-layout inside an overflow-x scroller whose
+                          ACTIONS column is `sticky right-0`, so a cell's min-content is
+                          width the sticky column can take from a neighbour: side by side,
+                          pill + gloss on one unbreakable line makes this column's
+                          min-content their SUM and the sticky cell lands on LAST RUN.
+                          Stacked, it is max(pill, gloss) instead. Same idiom the Status
+                          cell already uses for its mark and result. */}
+                      <td className={rowCell(h.enabled, 'text-sm')}><span className="inline-flex flex-col items-start gap-0.5"><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span>{eventGloss(h.event) && <span className="text-[11px] text-text/80 whitespace-nowrap" data-testid="lane-pill-gloss">{eventGloss(h.event)}</span>}</span></td>
                       <td className={rowCell(h.enabled, 'text-sm font-mono text-text/80 truncate max-w-[300px]')} title={h.command}>{esc(h.command)}</td>
                       <td className={rowCell(h.enabled, 'text-sm text-muted')}>{h.matcher ? esc(h.matcher) : <span className="italic">—</span>}</td>
                       <td className={rowCell(h.enabled, 'text-sm font-mono')}>{h.run_count}</td>
