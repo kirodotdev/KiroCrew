@@ -30,7 +30,7 @@ from kiro_crew.apps import credential_masks, protected_app_state
 from kiro_crew.apps.execution import APP_NAME_RE
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manifest import AppManifest, Permissions
-from kiro_crew.apps.point_grants import point_grant_families
+from kiro_crew.apps.point_grants import explicit_only_grant_families, point_grant_families
 from kiro_crew.apps.worker_auto_approve import WORKER_AUTO_APPROVE_GRANT_FAMILIES
 from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.atomic_write import atomic_write
@@ -605,6 +605,8 @@ def _write_installed(
 STAGED_GRANT_FAMILIES = ("api", "events", *point_grant_families())
 #: Families every stored set carries; the others are absent from an older file.
 _ALWAYS_STORED_FAMILIES = ("api", "events")
+#: Families an older file that lacks them approves nothing in (``point_grants``).
+_EXPLICIT_ONLY_FAMILIES = explicit_only_grant_families()
 
 
 def _parse_approved_grants(raw: Any) -> dict[str, list[str]]:
@@ -612,11 +614,19 @@ def _parse_approved_grants(raw: Any) -> dict[str, list[str]]:
 
     Anything but a mapping approves nothing, so a damaged file holds the app to
     none of its declared api/events entries rather than to all of them.
+
+    An explicit-only family the file lacks reads as empty, so every reader and
+    writer (an approval, an update, a re-registration) starts it from nothing.
     """
     record = raw if isinstance(raw, dict) else {}
     parsed: dict[str, list[str]] = {}
     for family in STAGED_GRANT_FAMILIES:
-        if family not in _ALWAYS_STORED_FAMILIES and isinstance(raw, dict) and family not in record:
+        if (
+            family not in _ALWAYS_STORED_FAMILIES
+            and family not in _EXPLICIT_ONLY_FAMILIES
+            and isinstance(raw, dict)
+            and family not in record
+        ):
             # Written before this family existed: no decision recorded for it.
             continue
         entries = record.get(family)
@@ -852,6 +862,7 @@ def _approved_grants_after_manifest_change(
     old_declared = _declared_grant_entries(old_permissions) if old_permissions is not None else {}
     if existing_approved is not None:
         # A family the stored set predates approves what the replaced manifest declared.
+        # An explicit-only family is never absent here (``_parse_approved_grants``).
         baseline = {
             family: (
                 existing_approved[family]
