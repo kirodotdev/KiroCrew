@@ -59,7 +59,9 @@ def _kas_runtime(monkeypatch, *, sink: bool = True):
             return {"modes": {"currentModeId": "kirocrew"}, "models": []}
         return {}
 
-    async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+    async def _fake_agents(
+        agent, *, member_dispatch=False, crew_panel=False, session_key="", session_cwd=None
+    ):
         return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
 
     monkeypatch.setattr(rt, "_send_and_await", _fake_send)

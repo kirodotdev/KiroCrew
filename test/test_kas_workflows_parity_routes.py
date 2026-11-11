@@ -26,7 +26,7 @@ import kiro_crew.dashboard.handlers.kas_workflows as kas_handlers
 from kiro_crew.dashboard import server
 from kiro_crew.kas_workflows import router as router_mod
 from kiro_crew.kas_workflows import wire
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -129,7 +129,7 @@ async def test_questions_are_in_state_and_answered_by_key(kas):
     kas.router.sink_for(rt).on_step_request(
         5, "sa", "session/request_permission", question_request()
     )
-    await async_wait_until(lambda: kas.router.questions(), timeout=2.0)
+    await async_wait_until(lambda: kas.router.questions(), timeout=FALLBACK_TIMEOUT_SECS)
     async with TestClient(TestServer(_app())) as client:
         state = await (await client.get("/api/workflows/kas/state")).json()
         (held,) = state["questions"]
@@ -156,7 +156,7 @@ async def test_a_question_can_be_dismissed(kas):
     kas.router.sink_for(rt).on_step_request(
         6, "sa", "session/request_permission", question_request()
     )
-    await async_wait_until(lambda: kas.router.questions(), timeout=2.0)
+    await async_wait_until(lambda: kas.router.questions(), timeout=FALLBACK_TIMEOUT_SECS)
     key = kas.router.questions()[0]["key"]
     async with TestClient(TestServer(_app())) as client:
         resp = await client.post(f"/api/workflows/kas/questions/{key}", json={"dismiss": True})

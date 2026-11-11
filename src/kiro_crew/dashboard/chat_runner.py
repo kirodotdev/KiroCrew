@@ -411,7 +411,6 @@ from kiro_crew.hooks import (  # noqa: F401
     validate_file_path,
 )
 from kiro_crew.image_artifacts import register_images_off_loop
-from kiro_crew.kas_workflows import chat as kas_chat  # noqa: F401
 from kiro_crew.llm_helpers import (  # noqa: F401
     TRANSIENT_RETRIES,
     PromptBusyExhaustedError,

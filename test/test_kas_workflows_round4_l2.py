@@ -252,7 +252,11 @@ def _isolate_turn_deadline():
 
 class TestThePersonOnlyWait:
     def test_the_window_is_the_turn_ceiling_less_the_margin(self, monkeypatch) -> None:
-        monkeypatch.setattr(td, "current_turn_limit_secs", lambda: _CEILING)
+        monkeypatch.setattr(
+            td,
+            "current_turn_limit_secs",
+            lambda: _CEILING,  # flake-ok: arithmetic on a stubbed ceiling, nothing waits on it
+        )
         assert td.person_wait_window_secs() == _CEILING - APPROVAL_TURN_MARGIN_SECS
 
     @pytest.mark.asyncio
