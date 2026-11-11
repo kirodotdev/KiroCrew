@@ -248,6 +248,16 @@ export const PREVIEW_SESSION_HARNESS = `${PREVIEW_FLAG_PREFIX}session-harness`
 export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-stale-wake`
 
 /**
+ * Chat runtime sharing: dashboard chats on kiro-cli or KAS share one agent
+ * process (up to `agent.chat_runtime_sharing_max_sessions` each) instead of
+ * one process per chat. Server-only: the gateway reads
+ * `dashboard.feature_previews.chat_runtime_sharing` at each session start, so
+ * nothing in the dashboard reads this key. Default OFF, and OFF is one process
+ * per chat as before; a change applies to chats started after it.
+ */
+export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-sharing`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -270,6 +280,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_SESSION_HARNESS,
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
+  PREVIEW_CHAT_RUNTIME_SHARING,
 ]
 
 /**

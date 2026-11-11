@@ -67,6 +67,7 @@
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
         "session_sharing": true,
+        "chat_runtime_sharing_max_sessions": 10,
         "agent_started_turns": true,
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
@@ -1113,6 +1114,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "agent.chat_runtime_sharing_max_sessions",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Chat Runtime Sharing: max sessions per process",
+      "help": "How many dashboard chat sessions one shared agent process may serve before the next session starts another, while the chat_runtime_sharing feature preview is on. This is the blast radius of one process dying: a larger value pools more sessions onto one process and loses more of them at once. Has no effect while the preview is off, which keeps one process per session. Clamped to 1..64.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 10
     },
     {
       "path": "agent.agent_started_turns",
@@ -9800,6 +9815,20 @@
       "tags": [],
       "label": "Feature preview: bridge_approvals",
       "help": "Turn on the 'bridge_approvals' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.chat_runtime_sharing",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: chat_runtime_sharing",
+      "help": "Turn on the 'chat_runtime_sharing' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

@@ -54,7 +54,11 @@ from kiro_crew.metrics.sessions import (
     record_session_ended,
     record_session_started,
 )
-from kiro_crew.runtime_ownership import acquire_session_lease, release_session_lease
+from kiro_crew.runtime_ownership import (
+    acquire_session_lease,
+    is_shared_chat_runtime,
+    release_session_lease,
+)
 from kiro_crew.session_allocation_parts.errors import (
     SessionBusyError,
     SessionClosingError,
@@ -71,6 +75,32 @@ from kiro_crew.start_priority import (
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
+
+
+async def _end_started_provider(owner: Any, provider: Any) -> None:
+    """End a provider whose start returned but which will not be registered.
+
+    An unshared provider is hard-killed, as before. A provider on a SHARED chat
+    runtime (``chat_runtime_sharing`` preview) is ended through its own shutdown:
+    co-tenants may be mid-turn on that process, so it evicts this session and
+    kills only when it held the last lease. The shutdown runs as one task this
+    frame waits on through any cancellation, so the lease is always returned; a
+    shutdown that fails falls back to the hard kill.
+    """
+    if not is_shared_chat_runtime(provider):
+        owner._dispatch_hard_kill(provider)
+        return
+    ending = asyncio.ensure_future(provider.shutdown())
+    while not ending.done():
+        try:
+            # ``wait`` never raises the task's own exception; that is read below.
+            await asyncio.wait({ending})
+        except asyncio.CancelledError:
+            continue
+    try:
+        ending.result()
+    except Exception:
+        owner._dispatch_hard_kill(provider)
 
 
 def _model_is_a_launch_argument(provider: Any) -> bool:
@@ -1250,11 +1280,26 @@ async def _get_or_create_impl(
                 if _reservation is not None:
                     self.state.spawning_reservations.add(_reservation)
                 pre_spawn = await pre_spawn_identity(getattr(owner, "spawn_identity_reader", None))
+                # The account era this start read, and the reader it came from,
+                # for the chat-sharing placement (``providers.chat_share``):
+                # it keys a shared process on the era, and re-reads it after the
+                # acquisition. Inert while the preview is off.
+                with contextlib.suppress(Exception):
+                    setattr(provider, "pre_spawn_identity", pre_spawn)
+                    setattr(
+                        provider,
+                        "spawn_identity_reader",
+                        getattr(owner, "spawn_identity_reader", None),
+                    )
                 await provider.start()
             except (asyncio.CancelledError, Exception) as exc:
                 if preparation.revision and not isinstance(exc, SpeculativeResumeRefused):
                     self._remember_capability_failure(key, preparation)
-                owner._dispatch_hard_kill(provider)
+                # A start cancelled or failed after it took a shared-runtime lease
+                # (e.g. in the post-handoff zero-tool check) must return that lease
+                # and evict its session; a bare hard kill is refused while the lease
+                # is held, leaking the process. Unshared providers are hard-killed.
+                await _end_started_provider(owner, provider)
                 raise
             # start() has published the PID, and the stamp read below is a
             # real suspension point before registry ownership becomes
@@ -1281,7 +1326,7 @@ async def _get_or_create_impl(
                     pre_spawn=pre_spawn,
                 )
             except BaseException:
-                owner._dispatch_hard_kill(provider)
+                await _end_started_provider(owner, provider)
                 if starting_pid is not None:
                     self._starting_pids.discard(starting_pid)
                 raise
@@ -1492,8 +1537,15 @@ async def _get_or_create_impl(
         # kill or the gate refuses it and the process leaks -- the cleanup
         # would be refusing its own teardown. Every earlier hard-kill site in
         # this file is pre-registration and holds no lease.
-        await release_session_lease(provider)
-        owner._dispatch_hard_kill(provider)
+        #
+        # A SHARED chat runtime is the exception to "release, then kill": its
+        # co-tenants may be mid-turn on it, so the provider's own shutdown evicts
+        # this session and kills only when it held the last lease.
+        if is_shared_chat_runtime(provider):
+            await _end_started_provider(owner, provider)
+        else:
+            await release_session_lease(provider)
+            owner._dispatch_hard_kill(provider)
         raise
     finally:
         if starting_pid is not None:

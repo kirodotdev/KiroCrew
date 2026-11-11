@@ -15,6 +15,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.platform import redact_log_via_context
+from kiro_crew.runtime_ownership import is_shared_chat_runtime
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -147,8 +148,24 @@ async def _on_compaction_status(turn: _ChatTurn, event) -> None:
             turn.assistant_text = _cleared_segment_text(slot)
 
 
+def _foreign_shared_clear(turn: _ChatTurn, event) -> bool:
+    """A co-tenant's /clear fanned out by a shared chat runtime, so not ours.
+
+    ``chat_runtime_sharing`` preview: kiro-cli's clear frame names no session,
+    so a shared runtime fans it to every co-tenant marked ``runtime_global``.
+    Unless THIS turn typed /clear, the frame came from a peer.
+    """
+    return (
+        getattr(event, "runtime_global", False)
+        and not turn._this_turn_is_clear
+        and is_shared_chat_runtime(turn.client)
+    )
+
+
 async def _on_clear_status(turn: _ChatTurn, event) -> None:
     """A native clear the session confirms."""
+    if _foreign_shared_clear(turn, event):
+        return
     _replay_accepted_this_turn = turn._replay_accepted_this_turn
     _replay_pending = turn._replay_pending
     _this_turn_is_clear = turn._this_turn_is_clear
@@ -356,7 +373,14 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
         turn.needs_session_reset = needs_session_reset
         turn._produced_visible_output = True
         return _Flow.BREAK
-    elif new_agent:
+    elif new_agent and (
+        not getattr(event, "runtime_global", False) or not is_shared_chat_runtime(client)
+    ):
+        # The vetoes above stay unconditional: a frame fanned out by a shared
+        # chat runtime (``chat_runtime_sharing`` preview) may still be this
+        # session's own switch, and a pinned thread must never run on as a
+        # foreign agent. Recording the switch is gated: a co-tenant's switch
+        # names no session and must not move this slot's agent.
         # A live provider event can change a template selection.
         # Restore cannot infer that authority from a different
         # transcript name, including a partially persisted switch.

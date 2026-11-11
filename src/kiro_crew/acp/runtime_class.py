@@ -163,6 +163,7 @@ class AcpRuntime:
     release_session = _rt_registry.release_session
     delete_session_record = _rt_registry.delete_session_record
     keep_record_on_teardown = _rt_registry.keep_record_on_teardown
+    chat_turn_gate = _rt_registry.chat_turn_gate
     _session_teardown_method = _rt_registry._session_teardown_method
     _mcp_init_progress = _rt_registry._mcp_init_progress
     _session_start_stalled = _rt_registry._session_start_stalled
@@ -296,6 +297,9 @@ class AcpRuntime:
         native_skill_projection: bool = True,
         harness_pin: str = "",
         governance_scope: tuple[str, str] | None = None,
+        forward_ssh_auth_sock: bool | None = None,
+        agent_env: dict[str, str] | None = None,
+        kas_telemetry: bool | None = None,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -394,6 +398,20 @@ class AcpRuntime:
                 )
         self._model = model
         self._sandbox_mode = sandbox_mode
+        # A FROZEN SSH_AUTH_SOCK-forwarding decision, or None to resolve it at
+        # spawn. The chat-sharing placement reads the operator's consent once,
+        # keys on it, and hands the same value here, so the process it founds
+        # forwards exactly what its key promised and a joiner never inherits a
+        # forwarding state its own key did not account for. Every other caller
+        # passes None and keeps the spawn-time resolution.
+        self._forward_ssh_auth_sock_override = forward_ssh_auth_sock
+        # A FROZEN ``agent.env`` snapshot, or None to read it at spawn. Same reason
+        # as the forwarding decision above: the chat-sharing placement keys on the
+        # values it read, so the process it founds launches with those values.
+        self._agent_env_override = None if agent_env is None else dict(agent_env)
+        # The FROZEN telemetry opt-out a chat-sharing placement keyed on, sent in the
+        # KAS ``initialize``; None judges it at spawn, as every other caller does.
+        self._kas_telemetry_override = kas_telemetry
         self._member_context = member_context
         if memory_mode not in {"persistent", "incognito", "temporary"}:
             raise ValueError("Invalid session memory mode")
@@ -769,6 +787,11 @@ class AcpRuntime:
         # Sessions whose teardown must keep the stored record while a re-injection
         # load runs (``keep_record_on_teardown``).
         self._record_keeping_sessions: set[str] = set()
+        # Serializes CHAT co-tenant turns on a shared kiro-cli process
+        # (``chat_turn_gate``). Held only by shared chat sessions; a subagent turn
+        # is exempt, because it runs while its principal's turn is still open and
+        # would deadlock on the lock the principal holds.
+        self._chat_turn_lock = asyncio.Lock()
         self._dropped_frames_flushed_at: float = 0.0
         # Monotonic time of the last attributable backend frame observed.
         # The idle sweep reads it (``session_activity_at``) because a session's

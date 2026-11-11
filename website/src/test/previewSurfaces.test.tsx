@@ -493,7 +493,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 13 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 14 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
@@ -540,7 +540,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(13)
+      expect(screen.getAllByRole('switch')).toHaveLength(15)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
@@ -556,7 +556,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(13) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(15) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })

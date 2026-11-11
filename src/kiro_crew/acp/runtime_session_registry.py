@@ -14,6 +14,9 @@ Instance fields written: ``_announced_children``, ``_announced_overflow``,
 
 Instance fields read: ``_agent_capabilities``, ``_dead``, ``_process``,
 ``_record_keeping_sessions``, ``_start_collectors``.
+
+The chat turn gate scope also reads the runtime's backend and its chat turn lock,
+through the runtime it holds rather than through a self parameter.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.acp.runtime_start import _split_init_frames
 from kiro_crew.acp.session_handle import AcpRequestTimeout
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     MCP_ROSTER_COMPLETE_NOTE,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_MCP_SERVER_INIT_FAILURE,
@@ -294,6 +298,54 @@ def keep_record_on_teardown(self: AcpRuntime, session_id: str) -> _RecordKeeping
     where the next attempt -- or a plain resume -- can load it.
     """
     return _RecordKeepingScope(self, session_id)
+
+
+class _ChatTurnGate:
+    """The scope :func:`chat_turn_gate` opens; see it for the why.
+
+    A class rather than a generator context manager for the reason
+    :class:`_RecordKeepingScope` gives.
+    """
+
+    def __init__(self, runtime: AcpRuntime) -> None:
+        self._runtime = runtime
+        self._lock: Any = None
+
+    async def __aenter__(self) -> None:
+        if getattr(self._runtime, "_acp_backend", None) == ACP_BACKEND_KAS:
+            return
+        lock = getattr(self._runtime, "_chat_turn_lock", None)
+        if lock is None:
+            return
+        await lock.acquire()
+        self._lock = lock
+
+    async def __aexit__(self, *exc: Any) -> None:
+        lock, self._lock = self._lock, None
+        if lock is not None:
+            lock.release()
+
+
+def chat_turn_gate(self: AcpRuntime) -> _ChatTurnGate:
+    """Serialize CHAT co-tenant turns on this shared process, one at a time.
+
+    Held for the whole turn, from before the prompt is written through the last
+    event the consumer pulls. kiro-cli emits some session-control frames
+    (compaction, ``/clear``, an agent switch) without a ``sessionId``; the reader
+    loop fans such a frame to every session queue marked ``fanout_no_owner``.
+    While the gate is held at most one chat turn is in flight, so that turn is
+    the frame's only possible producer and an idle co-tenant discards it at its
+    next pre-turn drain. Only shared chat sessions enter
+    (``AcpSessionProvider`` with ``shared_runtime=True``); a subagent turn stays
+    out, because it runs while its principal's turn is open and would deadlock.
+
+    A no-op on KAS. Its engine names the session on every ``session/update`` and
+    keeps its own turn order: one turn per session, and a Crew custom-agent turn
+    waits in the engine's model queue while another session's turn runs
+    (``acp.chat_runtime_sharing.KAS_CHAT_SHARING_MIN_KIRO_CLI``). The frame
+    ownership this gate establishes is already on the wire there.
+    """
+    return _ChatTurnGate(self)
 
 
 async def evict_session(self: AcpRuntime, session_id: str) -> None:

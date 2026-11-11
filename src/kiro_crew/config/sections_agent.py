@@ -806,6 +806,18 @@ class AgentConfig:
             "opt an eligible backend back onto per-subagent processes.",
         ),
     )
+    chat_runtime_sharing_max_sessions: int = field(
+        default=10,
+        metadata=_meta(
+            "Chat Runtime Sharing: max sessions per process",
+            "How many dashboard chat sessions one shared agent process may serve "
+            "before the next session starts another, while the chat_runtime_sharing "
+            "feature preview is on. This is the blast radius of one process dying: a "
+            "larger value pools more sessions onto one process and loses more of them "
+            "at once. Has no effect while the preview is off, which keeps one process "
+            "per session. Clamped to 1..64.",
+        ),
+    )
     agent_started_turns: bool = field(
         default=True,
         metadata=_meta(

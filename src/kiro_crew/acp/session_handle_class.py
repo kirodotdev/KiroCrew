@@ -325,6 +325,10 @@ class AcpSessionHandle:
         self.member_dispatch_mounted: bool = False
         self._queue = queue
         self._runtime = runtime
+        # Set by the provider that serves this handle on a SHARED chat runtime
+        # (``AcpSessionProvider``); gates the ownerless agent-switch drop in the
+        # dispatch so every other session runs as it did before chat sharing.
+        self.chat_shared: bool = False
         # The directory THIS session was opened against, which on a shared runtime is
         # not the runtime's own: sessions for different projects live on one process.
         self._bound_cwd = bound_cwd
