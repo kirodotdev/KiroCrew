@@ -65,7 +65,8 @@ async def api_channel_folder_backfill(request: web.Request) -> web.Response:
         # tells a remote reader what kind of computer to look for, not which
         # one: a blind read of that sentence recorded "I have no idea how I'd
         # find out which computer that is". The host's first DNS label is the
-        # same stand-in `session_transfer.local_instance_label` uses for the
+        # same stand-in `session_transfer.local_instance_label` uses, when no
+        # `dashboard.instance_label` is set, for the
         # same reader, and the same fallback shape: a host with no name keeps
         # the description alone, never a blank or an exception on a refusal path.
         # The `code` is unchanged, so nothing machine-readable moves with this.

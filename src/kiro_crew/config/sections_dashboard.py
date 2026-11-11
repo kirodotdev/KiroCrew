@@ -968,6 +968,16 @@ class DashboardConfig:
             "Empty = unset (frontend falls back to localStorage or 'kiro').",
         ),
     )
+    instance_label: str = field(
+        default="",
+        metadata=_meta(
+            "Instance Label",
+            "A short name for this gateway (e.g. 'pod-a', 'Lab box'), shown in the "
+            "browser tab title and favicon and sent as the origin of a session "
+            "transferred to another instance. Empty = unset (the tab title and "
+            "icon stay as they are and a transfer names the host).",
+        ),
+    )
     language: str = field(
         default="",
         metadata=_meta(

@@ -869,6 +869,17 @@ def test_local_instance_label_is_a_short_single_token():
     assert "." not in label
 
 
+def test_local_instance_label_is_the_configured_instance_label(monkeypatch):
+    # Two gateways on one host share a hostname; the label is what tells their
+    # transfers apart.
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import DashboardConfig, KiroCrewConfig
+
+    cfg = KiroCrewConfig(dashboard=DashboardConfig(instance_label="pod-a"))
+    monkeypatch.setattr(live, "snapshot", lambda: cfg)
+    assert local_instance_label() == "pod-a"
+
+
 # ── bundle validation ────────────────────────────────────────────────────
 
 

@@ -1421,6 +1421,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         theme_mode=section.get("theme_mode"),
         sso_login_flags=str(section.get("sso_login_flags")),
         theme_color=section.get("theme_color"),
+        instance_label=_sanitize_bot_name(section.get("instance_label")),
         language=str(section.get("language")),
         recent_tint_count=section.read(
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX

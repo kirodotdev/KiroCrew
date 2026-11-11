@@ -11,6 +11,8 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
   const branding = {
     branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{
       bot_name: string
+      /** `dashboard.instance_label`; empty when unset. */
+      instance_label?: string
       avatar: string
       direct_local?: boolean
       /** Whether the gateway host can open a file manager right now: the launcher
