@@ -805,7 +805,11 @@ def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
     # under a credential home, and a reloaded config is an untrusted document,
     # so the string itself never reaches the log.
     for index, p in enumerate(cfg.skills.extra_paths):
-        resolved = Path(p).expanduser().resolve()
+        try:
+            resolved = Path(p).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            logger.warning("skills.extra_paths[%d] cannot be resolved; skipped on reload", index)
+            continue
         if is_sensitive_path(str(resolved)):
             logger.warning("Skipping sensitive skills.extra_paths[%d] on reload", index)
         elif resolved.is_dir():

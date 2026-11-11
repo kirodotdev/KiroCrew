@@ -5609,7 +5609,9 @@ exclude). To keep it off the per-message filesystem/config hot path:
   the SAME screening as construction — expanduser, resolve, `is_sensitive_path`
   reject, existence check — and failing closed per entry, so a root added by hand
   to `config.json` can no more reach a credential directory than one present at
-  boot. Edition-contributed roots are preserved and stay LAST (lowest
+  boot. An entry that cannot be resolved at all (an unknown `~user`, an embedded
+  NUL) is skipped with a warning at construction and on reload, never raised, so
+  one bad entry cannot stop the loader. Edition-contributed roots are preserved and stay LAST (lowest
   precedence): they come from the platform context, not config, so a config write
   must not drop them. The discovery cache is cleared, so the next listing walks
   the new roots instead of serving the old set for the rest of the TTL;

@@ -61,9 +61,16 @@ def _canonical_skill_roots() -> list[Path]:
         # ``skill://`` URI would then resolve against whatever cwd the next
         # kiro-cli session starts in — silently loading a different skill, or
         # none. A skill root must be a stable absolute location.
-        out.extend(Path(p).expanduser().resolve() for p in KiroCrewConfig.load().skills.extra_paths)
+        extra_paths = KiroCrewConfig.load().skills.extra_paths
     except Exception:
         logger.debug("failed to load extra skill paths from config", exc_info=True)
+        return out
+    for p in extra_paths:
+        # Per entry: one unresolvable entry is skipped, not every root after it.
+        try:
+            out.append(Path(p).expanduser().resolve())
+        except (OSError, RuntimeError, ValueError):
+            logger.debug("skipping an unresolvable extra skill path", exc_info=True)
     return out
 
 
@@ -379,9 +386,16 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
         # endpoint could display a different directory than load_skill() reads.
         roots = [skills_dir()]
         try:
-            roots.extend(Path(p).expanduser() for p in KiroCrewConfig.load().skills.extra_paths)
+            extra_paths = KiroCrewConfig.load().skills.extra_paths
         except Exception:
             logger.debug("failed to load extra skill paths from config", exc_info=True)
+            extra_paths = []
+        for p in extra_paths:
+            # Per entry: one unexpandable ``~user`` must not drop every extra root.
+            try:
+                roots.append(Path(p).expanduser())
+            except (OSError, RuntimeError, ValueError):
+                logger.debug("skipping an unresolvable extra skill path", exc_info=True)
         roots.extend(_edition_skill_roots())
 
         def _probe(r: Path) -> bool:
