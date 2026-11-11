@@ -302,23 +302,31 @@ function createWindowLifecycle(options) {
   function setupWindowContents(win, windowBackendUrl) {
     const windowPort = defaultedPort(windowBackendUrl);
     let customName = null;
-    // isGatewayLocalForWindow reads this, and the preload argument below needs
-    // it. The argument is fixed for the view's life.
+    // isGatewayLocalForWindow reads this.
     win._mcBackendUrl = windowBackendUrl;
-    const remoteGateway = !isGatewayLocalForWindow(win);
 
     const view = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        // Launch-time decisions the preload reads: frameless Linux reserves
-        // caption-control space; a remote gateway withholds local-only bridges.
-        additionalArguments: [
-          ...(LINUX_FRAMELESS ? ["--kc-linux-frameless"] : []),
-          ...(remoteGateway ? ["--kc-remote-gateway"] : []),
-        ],
+        // Frameless Linux is a launch-time decision, not a platform constant.
+        // The preload reads this argument to reserve caption-control space.
+        additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
       },
+    });
+    // The preload asks this on every load, so a crew configured or cleared for
+    // the port applies from the next load. The ask is synchronous: the listener
+    // is on this view's own WebContents before anything loads, and every path
+    // answers, so the renderer never waits on a reply that does not come.
+    view.webContents.ipc.on("dashboard:is-remote-gateway", (event) => {
+      let remote = true;
+      try {
+        remote = !isGatewayLocalForWindow(win);
+      } catch (err) {
+        glog(`dashboard:is-remote-gateway: ${err && err.message}`);
+      }
+      event.returnValue = remote;
     });
     view.setBackgroundColor("#00000000");
     win.contentView.addChildView(view);

@@ -938,30 +938,31 @@ a refused gate are each told beside the button.
 
 A window whose gateway the shell already knows is not on this machine (a
 configured Remote Crew on its port, as in the client-only launch with the local
-gateway off, or a non-loopback URL) does not ask in the first place.
-`setupWindowContents` passes the preload `--kc-remote-gateway`, decided by the
-same `isGatewayLocalForWindow` the gate reads, and the preload then withholds
-every bridge whose channels that gate refuses: `remoteCrewSetupAPI`,
+gateway off, or a non-loopback URL) does not ask in the first place. On every
+load the preload asks the shell `dashboard:is-remote-gateway`, answered by the
+same `isGatewayLocalForWindow` the gate reads, and then withholds every bridge
+whose channels that gate refuses: `remoteCrewSetupAPI`,
 `gatewayRestartAPI`, `crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
 `externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
 `updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
 a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
 the native folder and terminal controls and first-run's link to a crew on
 another machine are absent there, a failed pane reloads without a cache purge,
-and that window's gateway never governs this install's updates. The argument is
-fixed when the view is created: a crew configured for the port afterwards leaves
-the bridges in place and the gate keeps refusing them, and a crew cleared
-afterwards leaves them withheld until the window is next created. The gate stays
-the authority; the preload only stops the asking. `remoteCrewPaneAPI` goes the
-other way: a remote gateway's window is the one that needs it (the managed tunnel
-forwards its Remote Crew pane ports, see the
-[instances spec](../system-specs/modules/instances.md) §4), so every window gets
-it, and `remote-crew:forward-pane-ports` admits only a top frame on the launch
-port's dashboard origin. That page names the ports: the shell checks only that each
-is a whole port in 1..65535 other than the launch port, takes at most 32 per window,
-and forwards each from this machine's `127.0.0.1` to the same port on the crew
-host's loopback, the forward the pane's own `ssh -L` hint asks the user to run by
-hand.
+and that window's gateway never governs this install's updates. A crew
+configured or cleared for the port after the window opened applies from that
+window's next load. The ask is synchronous, so its listener sits on the
+dashboard view's own WebContents before anything loads there and answers on
+every path, remote when the store cannot be read; only an explicit local answer
+exposes the bridges. The gate stays the authority; the preload only stops the
+asking. `remoteCrewPaneAPI` goes the other way: a remote gateway's window is the
+one that needs it (the managed tunnel forwards its Remote Crew pane ports, see
+the [instances spec](../system-specs/modules/instances.md) §4), so every window
+gets it, and `remote-crew:forward-pane-ports` admits only a top frame on the
+launch port's dashboard origin. That page names the ports: the shell checks only
+that each is a whole port in 1..65535 other than the launch port, takes at most
+32 per window, and forwards each from this machine's `127.0.0.1` to the same
+port on the crew host's loopback, the forward the pane's own `ssh -L` hint asks
+the user to run by hand.
 
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
