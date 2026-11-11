@@ -95,6 +95,7 @@ def create_agent_folder(
     execution_context=None,
     backend=None,
     depth=None,
+    silent=False,
 ) -> Path:
     from kiro_crew.execution_context import ExecutionContext, execution_for_store
 
@@ -135,6 +136,10 @@ def create_agent_folder(
         # The lineage depth, so a continuation after a restart carries it back
         # into admission instead of restarting the count. Absent = unknown.
         **({"depth": depth} if type(depth) is int else {}),
+        # The resolved completion-notification opt-out, so a continuation after
+        # a restart — and a child naming this run's conversation key after the
+        # live record is gone — stays off the bell. Absent = loud.
+        **({"silent": True} if silent is True else {}),
         "execution_context": execution.to_record(),
         "memory_store": execution.store.legacy_name,
         "memory_mode": execution.memory_mode,

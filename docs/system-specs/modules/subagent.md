@@ -2938,6 +2938,34 @@ Subagent results are routed back to the **originating session** via
 `_subagent_done` in `slack/gateway_runtime/subagent_wiring.py`. The `parent_session_key` on `SubagentInfo`
 tracks which session spawned the subagent.
 
+**A silent run rings no completion bell on any route.** `SubagentInfo.silent`
+gates the dashboard notification on every route that rings one — the tab-gone
+route, the channel-parent fallback after exhausted injection attempts, and the
+cron/no-parent route — and, under a cron, the channel post of the cron's reply
+(`_deliver_cron_response`, which also reads the cron job's own flag). It
+changes nothing else: delivery and injection are unchanged, the
+injection-failure notice is an alert rather than a completion and stays, and an
+undelivered report is still announced at the next gateway start. The flag is
+set three ways, resolved once at admission (`messaging_api/spawn.py::
+_parent_run_is_silent`): the SDK's transport-level `silent`, the call-level
+`silent` on `spawn_run`/`spawn_sub_agents`, or inheritance — a spawn whose
+parent is a silent cron job or a silent sub-agent is silent itself, so a
+silent cron's whole spawn chain is quiet without each caller restating it, and
+an explicit `silent=false` cannot opt back in under one. Admission-time
+resolution means a cron flipped loud mid-run quiets only its NEWLY admitted
+spawns; already-admitted children keep their resolved flag (the cron route's
+live `or _cron_job_is_silent` read can silence in flight, never un-silence),
+which errs toward quiet — the direction the decision chose. The resolved flag
+is durable: the run's `state.json` row records `silent`, a continuation
+inherits the original run's flag through the same `original`-else-row read as
+`backend` and `depth` (`_continue_prelude_impl`), and the inheritance hop
+falls back to that row when the live record is gone (a kept conversation's
+first run after eviction, or any run after a gateway restart). Decision:
+[2026-11-10-silent-subagent-completion-notifications](../../decisions/2026-11-10-silent-subagent-completion-notifications.md).
+A guard-ratchet in `test/test_spawn_silent_flag.py` fails any new
+`dashboard_state.notify` site in the injection routes that does not decide
+`info.silent`.
+
 The parent's tab is looked up first (`_parent_tab`); a tab restored as a
 sidebar row loads its window off the loop before the completion lands. When
 that lookup or load raises (an unreadable stored window), `_subagent_done`

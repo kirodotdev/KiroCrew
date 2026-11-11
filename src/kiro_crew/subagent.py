@@ -222,6 +222,9 @@ from kiro_crew.subagent_manager import (
     bind_component_globals,
     copy_component_docs,
 )
+from kiro_crew.subagent_manager.continuation import (  # noqa: F401 - resolved by continuation.py via bind_component_globals
+    _run_silent,
+)
 from kiro_crew.subagent_manager.monitoring import (  # noqa: F401 - resolved by monitoring.py via bind_component_globals
     orphan_carried_fields,
     orphan_resume_hint,

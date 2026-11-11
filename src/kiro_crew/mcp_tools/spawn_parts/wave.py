@@ -231,6 +231,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     if not agents_input or not isinstance(agents_input, list):
         return "Error: 'agents' array is required"
     cwd = args.get("cwd") or ""
+    silent = args.get("silent") is True
     # Context scope: batch-wide, absent ⇒ true (same rule as spawn_run).
     sa_groups = {
         k: False
@@ -316,6 +317,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
         sa_groups=sa_groups,
         cwd=cwd,
         call_id=uuid.uuid4().hex[:12],
+        silent=silent,
     )
 
 
@@ -346,10 +348,12 @@ class _SubAgentsStep(DeferredTool):
         sa_groups: dict[str, bool] | None = None,
         cwd: str = "",
         call_id: str = "",
+        silent: bool = False,
     ) -> None:
         self.agents_input = agents_input or []
         self.sa_groups = sa_groups or {}
         self.cwd = cwd
+        self.silent = silent
         # One id for this call, sent with every member POST: the gateway anchors
         # the call to the turn attempt its first member named, so a member posted
         # after that turn was cut never records the attempt that holds the
@@ -470,6 +474,8 @@ class _SubAgentsStep(DeferredTool):
                 body["cwd"] = self.cwd
             if self.call_id:
                 body["call_id"] = self.call_id
+            if self.silent:
+                body["silent"] = True
             data = mcp_core._post("/api/spawn", body)
             self._submit_index += 1
             if data.get("transport_error"):
