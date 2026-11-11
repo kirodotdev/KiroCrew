@@ -711,7 +711,9 @@ dashboard notice and not retried by the loop (a config change or restart tries
 again). A pass that sees the configured name change stops there, leaving the rest
 for the task that owns the new name, so no false notice is posted. A name found
 unusable is re-checked on every idle-loop tick, so a
-template installed later is picked up without a config edit. The recorded name
+template installed later is picked up without a config edit; each check refreshes
+the agent snapshot once before refusing, so a template written by hand or by
+kiro-cli counts too. The recorded name
 advances only when every live root is on the target. A configured name that is not an agent template that resolves in the
 `template` namespace (a typo, or a name that is only a Bot's; a Bot sharing an
 installed template's name does not make the template unusable) moves nothing: it is logged as an error, named in one notice, and
