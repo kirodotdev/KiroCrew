@@ -756,7 +756,11 @@ def _url_payload_command(n: int) -> str:
 #: ``deny_gate`` forwards it behind a length-preserving guard. No matcher, rule,
 #: threshold or verdict moved -- the decision is byte-identical and the change is
 #: diagnostics-only. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_311
+#: Raised by 62, from 35,311, for ``_quoted_assignment_scripts`` and ``_self_frames``:
+#: the self-protection floor, its ssh self-target floor included, walks a carrier's
+#: quoted script that opens with an assignment whole, so the assignment resolves
+#: inside it. Deny-only. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_373
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
