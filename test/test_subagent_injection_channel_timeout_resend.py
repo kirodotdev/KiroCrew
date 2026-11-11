@@ -8,12 +8,15 @@ first never wrote its prompt; otherwise it asks the parent to continue.
 
 Drives the real ``SessionManager`` lease. The first attempt hangs on an event that is
 never set, so the patched injection timeout is what ends it. The route's own pause
-between attempts runs as written.
+between attempts runs as written. The tests whose attempt also reloads a lost session
+fire that timeout on a signal (``_AttemptDeadline``), because a reload's worker-thread
+hops can outlast any fixed deadline on a loaded runner.
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +30,41 @@ from kiro_crew.subagent import SubagentInfo
 #: Ceiling for a wait that only fails on a hang, so a regression fails by name.
 _HANG_CEILING_S = 30
 _ANNOUNCE = "child-1 finished: the answer is 42"
+#: The patched ``INJECTION_TIMEOUT`` an ``_AttemptDeadline`` recognises. Long enough
+#: never to fire by itself within the hang ceiling.
+_SIGNALLED_TIMEOUT_S = 3 * _HANG_CEILING_S
+
+
+class _AttemptDeadline:
+    """The injection attempt's deadline, fired when the test says so.
+
+    Each ``asyncio.wait_for`` given ``timeout=_SIGNALLED_TIMEOUT_S`` runs under an
+    ``asyncio.timeout`` that never fires by itself; :meth:`expire` makes the newest
+    one fire on the next loop pass. That is a real deadline (the attempt is cancelled
+    and the route sees ``TimeoutError``), placed at the moment the test names rather
+    than raced against the host's speed. Every other ``wait_for`` runs unchanged.
+    """
+
+    def __init__(self) -> None:
+        self._real_wait_for = asyncio.wait_for
+        self._active: list[asyncio.Timeout] = []
+        self.expired = 0
+
+    async def wait_for(self, aw: Any, timeout: float | None = None) -> Any:
+        if timeout != _SIGNALLED_TIMEOUT_S:
+            return await self._real_wait_for(aw, timeout)
+        async with asyncio.timeout(None) as deadline:
+            self._active.append(deadline)
+            try:
+                return await aw
+            finally:
+                self._active.remove(deadline)
+
+    def expire(self) -> None:
+        """Fire the newest attempt's deadline; must run on the loop."""
+        assert self._active, "no injection attempt is waiting on its deadline"
+        self._active[-1].reschedule(asyncio.get_running_loop().time())
+        self.expired += 1
 
 
 def _provider_factory(session_ids: list[str]) -> Any:
@@ -186,11 +224,13 @@ async def test_a_reload_inside_the_retry_onto_a_new_session_sends_the_full_compl
     gateway = _gateway(sessions)
     sent: list[tuple[str, str]] = []
     never = asyncio.Event()
+    deadline = _AttemptDeadline()
 
     async def stream(client: Any, message: str, **kw: Any) -> str:
         sent.append((client.session_id, message))
         if len(sent) == 1:
             client.prompts_written += 1
+            deadline.expire()
             await never.wait()
         if len(sent) == 2:
             raise AcpError("Session not found")
@@ -205,7 +245,8 @@ async def test_a_reload_inside_the_retry_onto_a_new_session_sends_the_full_compl
     try:
         with (
             patch("kiro_crew.slack.gateway._MAX_INJECT_ATTEMPTS", 2),
-            patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", 1.0),
+            patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", _SIGNALLED_TIMEOUT_S),
+            patch.object(asyncio, "wait_for", deadline.wait_for),
             patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=stream),
         ):
             await asyncio.wait_for(
@@ -246,6 +287,7 @@ async def test_a_timeout_after_a_reload_reads_the_session_that_received_the_comp
     gateway = _gateway(sessions)
     sent: list[tuple[str, str]] = []
     never = asyncio.Event()
+    deadline = _AttemptDeadline()
 
     async def stream(client: Any, message: str, **kw: Any) -> str:
         sent.append((client.session_id, message))
@@ -253,6 +295,7 @@ async def test_a_timeout_after_a_reload_reads_the_session_that_received_the_comp
             raise AcpError("Session not found")
         if len(sent) == 2:
             client.prompts_written += 1
+            deadline.expire()
             await never.wait()
         on_complete = kw.get("on_complete")
         if on_complete is not None:
@@ -265,7 +308,8 @@ async def test_a_timeout_after_a_reload_reads_the_session_that_received_the_comp
     try:
         with (
             patch("kiro_crew.slack.gateway._MAX_INJECT_ATTEMPTS", 2),
-            patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", 1.0),
+            patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", _SIGNALLED_TIMEOUT_S),
+            patch.object(asyncio, "wait_for", deadline.wait_for),
             patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=stream),
         ):
             await asyncio.wait_for(
@@ -287,3 +331,83 @@ async def test_a_timeout_after_a_reload_reads_the_session_that_received_the_comp
     assert _ANNOUNCE not in sent[2][1], "session B already holds the completion"
     assert "child-1" in sent[2][1]
     gateway._deliver_channel_reply.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_that_lands_inside_the_reload_still_ends_the_attempt() -> None:
+    """Attempt 1's prompt finds the session lost, and its deadline fires while the
+    reload is ending that session, inside the end's metrics crumb hand-off. The
+    session teardown absorbs that cancellation so its own cleanup finishes; the
+    attempt must still end on it rather than send the reloaded prompt with no
+    deadline left. So attempt 1 times out, and attempt 2 delivers the completion
+    on the session the timeout's reset left."""
+    from kiro_crew.acp.client import AcpError
+    from kiro_crew.metrics import sessions as session_metrics
+
+    key = "discord:dm:42"
+    sessions = SessionManager(
+        KiroCrewConfig(),
+        provider_factory=_provider_factory(["sess-a", "sess-b", "sess-c"]),
+    )
+    gateway = _gateway(sessions)
+    sent: list[tuple[str, str]] = []
+    deadline = _AttemptDeadline()
+    loop = asyncio.get_running_loop()
+    reload_started = threading.Event()
+    hop_held = threading.Event()
+    released = threading.Event()
+    real_unlink_all = session_metrics._unlink_all
+
+    def held_unlink_all(paths: Any) -> None:
+        # The reload's first crumb hop stays in flight until the deadline has
+        # fired inside it; every other hop runs as written.
+        if reload_started.is_set() and not hop_held.is_set():
+            hop_held.set()
+            loop.call_soon_threadsafe(deadline.expire)
+            assert released.wait(_HANG_CEILING_S), "the test never released the crumb hop"
+        real_unlink_all(paths)
+
+    async def stream(client: Any, message: str, **kw: Any) -> str:
+        sent.append((client.session_id, message))
+        if len(sent) == 1:
+            reload_started.set()
+            raise AcpError("Session not found")
+        released.set()
+        on_complete = kw.get("on_complete")
+        if on_complete is not None:
+            on_complete(SimpleNamespace(stop_reason="end_turn"))
+        return "synthesized reply"
+
+    info = SubagentInfo(id="child-1", task="work", parent_session_key=key)
+    info.result = "done"
+    info.done = True
+    try:
+        with (
+            patch("kiro_crew.slack.gateway._MAX_INJECT_ATTEMPTS", 2),
+            patch("kiro_crew.slack.gateway.INJECTION_TIMEOUT", _SIGNALLED_TIMEOUT_S),
+            patch.object(asyncio, "wait_for", deadline.wait_for),
+            patch.object(session_metrics, "_unlink_all", held_unlink_all),
+            patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=stream),
+        ):
+            await asyncio.wait_for(
+                gateway._inject_subagent_into_channel_parent(
+                    info,
+                    announce=_ANNOUNCE,
+                    body="b",
+                    title="t",
+                    parent_key=key,
+                    carried=(info.id,),
+                ),
+                _HANG_CEILING_S,
+            )
+    finally:
+        released.set()
+        await sessions.close_all()
+
+    assert hop_held.is_set(), "the reload never reached its crumb hand-off"
+    assert deadline.expired == 1
+    late = "the reloaded prompt ran in attempt 1 after its deadline had fired"
+    assert [sid for sid, _ in sent] == ["sess-a", "sess-c"], late
+    assert sent[1][1] == _ANNOUNCE, "the reloaded session never received the prompt"
+    gateway._deliver_channel_reply.assert_awaited_once()
+    gateway.subagent_mgr.notify_injection_failed.assert_not_called()

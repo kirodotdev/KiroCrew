@@ -279,6 +279,8 @@ async def _inject_with_retry(
     refusals: list[str] = []
     _refuse_person_only = person_only_directive_refuser(parent_key, refusals)
     _snf_reloaded = False
+    _task = asyncio.current_task()
+    _cancels_on_entry = _task.cancelling() if _task is not None else 0
     attempt = 0
     while True:
         # This attempt's stop reason, as the cron engine records it: None until a
@@ -408,6 +410,15 @@ async def _inject_with_retry(
                     delivery["client"] = client
                     count = getattr(client, "prompts_written", None)
                     delivery["written_before"] = count if isinstance(count, int) else None
+                # Ending the lost session absorbs a cancellation that lands while
+                # it hands off its metrics crumb, so the session teardown finishes
+                # (``record_session_ended``). The caller's attempt deadline is such
+                # a cancellation, and the reloaded prompt would run with no deadline
+                # at all, so it is raised here. Compared with the count on entry,
+                # as ``asyncio.timeout`` does, so a cancel absorbed before this
+                # call is not misread as one of its own.
+                if _task is not None and _task.cancelling() > _cancels_on_entry:
+                    raise asyncio.CancelledError
                 continue
             if attempt == 2:
                 raise
