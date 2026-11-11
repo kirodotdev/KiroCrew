@@ -103,6 +103,7 @@ from kiro_crew.agent_parts.shared_home import (
     _existing_specs_are_mine,
     _rebuild_spec_install_admitted,
     _warn_declined_home_once,
+    _worktree_declined_spec_hint,
 )
 from kiro_crew.agent_parts.spec_build import (
     _BACKGROUND_CC_MODEL,
