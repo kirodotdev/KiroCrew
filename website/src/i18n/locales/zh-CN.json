@@ -6051,7 +6051,8 @@
       "used_credits": "已使用：{{used}} / {{total}}",
       "sign_out_or_switch": "在设置中登出或切换账号",
       "sign_out_link_config_unreadable": "无法加载设置，因此无法显示登出链接。",
-      "switch_in_settings": "在设置中切换账号"
+      "switch_in_settings": "在设置中切换账号",
+      "bots_sign_in_in_settings": "在设置中为 Bot 登录 Kiro"
     },
     "agentDropdownList": {
       "active_in_this_session": "在此会话中使用",
@@ -10836,6 +10837,9 @@
       "refused_title": "Kiro 拒绝续期你的登录",
       "refused_detail": "此登录失效后，agent 将停止运行。请重新登录，让它们继续运行。",
       "refused_expired_detail": "重新登录之前，agent 无法运行。此登录已失效。",
+      "expired_detail_bots": "重新登录之前，Bot 无法运行。已保存的登录已失效，且无法续期。",
+      "refused_detail_bots": "此登录失效后，Bot 将停止运行。请重新登录，让它们继续运行。",
+      "refused_expired_detail_bots": "重新登录之前，Bot 无法运行。此登录已失效。",
       "status_unavailable_detail": "打开登录设置检查你的 Kiro 登录，或让 agent 帮你排查。",
       "config_unavailable": "无法读取仪表板设置",
       "config_unavailable_detail": "请重新加载页面后重试，或请代理排查。",
@@ -12921,7 +12925,7 @@
         "code_channel_worktree_not_ready": "此代码频道的 worktree 尚未就绪，因此未运行该消息。请稍后重新发送。",
         "remote_crew_read_only": "此聊天在远程团队上运行，现在为只读。要继续，请打开该团队自己的会话。",
         "archive_failed_turn_cancelled": "取消正在运行的一轮后，归档此标签页失败。标签页已保留，但该轮没有完成 — 请重新发送消息以继续。",
-        "kas_signed_out": "尚未登录 Kiro。请在“设置 → 代理运行框架 → Kiro 登录”中登录，然后重新发送你的消息。",
+        "kas_signed_out": "尚未登录 Kiro。请在“设置 → 代理运行框架 → Kiro Agent → Kiro 登录”中登录，然后重新发送你的消息。",
         "kas_signed_out_sign_in_below": "尚未登录 Kiro。请在下方登录，然后重新发送你的消息。",
         "windows_spawn_blocked": "Windows 未能启动代理程序（{{binary}}）。很可能是这台电脑上的 AppLocker、EDR 产品或组策略拦截了它。请联系 IT 管理员放行该文件，然后开始新的对话。",
         "kas_route_relay": "你的代理通过 kiro-cli 运行。",

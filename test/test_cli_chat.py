@@ -401,7 +401,8 @@ async def test_send_and_print_names_kas_login_first_when_kiro_is_signed_out(caps
     assert excinfo.value.code == 1
     assert (
         "Not signed in to Kiro. Sign in with `kirocrew kas login` (or in the dashboard: "
-        "Settings → Agent Harness → Kiro sign-in), then send your message again." in err
+        "Settings → Agent Harness → Kiro Agent → Kiro sign-in), then send your message again."
+        in err
     )
 
 

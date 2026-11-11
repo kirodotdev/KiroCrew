@@ -6387,7 +6387,8 @@
       "used_credits": "Usados: {{used}} / {{total}}",
       "sign_out_or_switch": "Cerrar sesión o cambiar de cuenta en Configuración",
       "sign_out_link_config_unreadable": "No se pudo cargar la configuración, así que no se puede mostrar el enlace para cerrar sesión.",
-      "switch_in_settings": "Cambiar de cuenta en Configuración"
+      "switch_in_settings": "Cambiar de cuenta en Configuración",
+      "bots_sign_in_in_settings": "Inicio de sesión en Kiro para los Bots en Configuración"
     },
     "agentDropdownList": {
       "active_in_this_session": "Activo en esta sesión",
@@ -11334,6 +11335,9 @@
       "refused_title": "Kiro rechazó renovar tu inicio de sesión",
       "refused_detail": "Los agentes dejarán de ejecutarse cuando caduque este inicio de sesión. Vuelve a iniciar sesión para que sigan ejecutándose.",
       "refused_expired_detail": "Los agentes no pueden ejecutarse hasta que vuelvas a iniciar sesión. Este inicio de sesión ya caducó.",
+      "expired_detail_bots": "Los Bots no pueden ejecutarse hasta que vuelvas a iniciar sesión. El inicio de sesión guardado caducó y no se puede renovar.",
+      "refused_detail_bots": "Los Bots dejarán de ejecutarse cuando caduque este inicio de sesión. Vuelve a iniciar sesión para que sigan ejecutándose.",
+      "refused_expired_detail_bots": "Los Bots no pueden ejecutarse hasta que vuelvas a iniciar sesión. Este inicio de sesión ya caducó.",
       "status_unavailable_detail": "Abre la configuración de inicio de sesión para revisar tu inicio de sesión en Kiro, o pide al agente que lo investigue.",
       "config_unavailable": "No se pudo leer la configuración del panel",
       "config_unavailable_detail": "Recarga la página para volver a intentarlo o pide al agente que lo revise.",
@@ -13541,7 +13545,7 @@
         "code_channel_worktree_not_ready": "El worktree de este canal de código aún no está listo, así que el mensaje no se ejecutó. Vuelve a enviarlo en un momento.",
         "remote_crew_read_only": "Este chat se ejecutó en una crew remota y ahora es de solo lectura. Abre la sesión propia de la crew para continuar.",
         "archive_failed_turn_cancelled": "No se pudo archivar esta pestaña después de cancelar su turno en curso. La pestaña se conservó, pero ese turno no terminó — envía tu mensaje de nuevo para continuar.",
-        "kas_signed_out": "No has iniciado sesión en Kiro. Inicia sesión en Ajustes → Harness del agente → Inicio de sesión en Kiro y luego envía tu mensaje de nuevo.",
+        "kas_signed_out": "No has iniciado sesión en Kiro. Inicia sesión en Ajustes → Harness del agente → Kiro Agent → Inicio de sesión en Kiro y luego envía tu mensaje de nuevo.",
         "kas_signed_out_sign_in_below": "No has iniciado sesión en Kiro. Inicia sesión abajo y luego envía tu mensaje de nuevo.",
         "windows_spawn_blocked": "Windows no pudo iniciar el programa del agente ({{binary}}). Probablemente lo bloqueó AppLocker, un producto EDR o una directiva de grupo en este equipo. Pide a tu administrador de TI que permita ese archivo y luego inicia un chat nuevo.",
         "kas_route_relay": "Tu agente funciona a través de kiro-cli.",

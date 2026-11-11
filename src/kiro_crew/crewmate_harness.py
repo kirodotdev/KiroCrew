@@ -245,6 +245,44 @@ def bots_may_run_on_kas(config: Any) -> bool:
     return False
 
 
+def kas_runs_here(config: Any) -> bool:
+    """Whether a session here runs on KAS, and so signs in with the Kiro sign-in. In memory.
+
+    The main harness, the Bot harness as loaded once some Bot has no pin and so
+    inherits it (an inherited Kiro CLI and a stored ``kiro`` both load as KAS), a
+    Bot pin that runs on KAS (a KAS pin, or one to a
+    harness Bots cannot run on), or a Bot with no pin whose worker spec moves it
+    onto KAS (:func:`worker_spec_forces_kas`, the held answer on the event loop).
+    Unlike :func:`bots_may_run_on_kas`, an inherited Bot harness alone is not
+    enough: the dashboard shows the Kiro sign-in on this answer, and a gateway
+    where nothing runs on KAS has no use for it. A ``spawn_run(backend=...)``
+    override is a per-spawn choice, not config, so it is not read here.
+    """
+    kas = _backends.ACP_BACKEND_KAS
+    if kas not in _backends.selectable_backends():
+        # A Bot pinned to a harness Bots cannot run on lands on the floor instead.
+        return False
+    agent = getattr(config, "agent", None)
+    if getattr(agent, "acp_backend", "") == kas:
+        return True
+    # The Bot harness is only a harness something runs on once a Bot inherits it:
+    # it loads as KAS on a Kiro CLI gateway with no Bots at all.
+    bots_inherit_kas = getattr(agent, "member_acp_backend", "") == kas
+    for crew in list(getattr(config, "agents", {}) or {}):
+        pin = crewmate_pin_for(config, str(crew))
+        if pin is None:
+            if bots_inherit_kas or worker_spec_forces_kas(config, str(crew)):
+                return True
+            continue
+        try:
+            runtime = pin.resolve()
+        except CrewmateHarnessUnavailable:
+            continue
+        if runtime == kas or bots_cannot_run_on(runtime):
+            return True
+    return False
+
+
 def _note_pin_fallback(crew: str, pinned: str, landed: str) -> None:
     """Say once per process per Bot and harness where its pin runs instead (H3, H17)."""
     with _VERDICT_LOCK:

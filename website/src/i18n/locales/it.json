@@ -6387,7 +6387,8 @@
       "used_credits": "Utilizzati: {{used}} / {{total}}",
       "sign_out_or_switch": "Esci o cambia account nelle Impostazioni",
       "sign_out_link_config_unreadable": "Impossibile caricare le impostazioni, quindi il link per uscire non può essere mostrato.",
-      "switch_in_settings": "Cambia account nelle Impostazioni"
+      "switch_in_settings": "Cambia account nelle Impostazioni",
+      "bots_sign_in_in_settings": "Accesso a Kiro per i Bot nelle Impostazioni"
     },
     "agentDropdownList": {
       "active_in_this_session": "Attivo in questa sessione",
@@ -11334,6 +11335,9 @@
       "refused_title": "Kiro ha rifiutato di rinnovare il tuo accesso",
       "refused_detail": "Gli agenti si fermeranno alla scadenza di questo accesso. Accedi di nuovo perché continuino a funzionare.",
       "refused_expired_detail": "Gli agenti non possono essere eseguiti finché non accedi di nuovo. Questo accesso è già scaduto.",
+      "expired_detail_bots": "I Bot non possono essere eseguiti finché non accedi di nuovo. L’accesso salvato è scaduto e non può essere rinnovato.",
+      "refused_detail_bots": "I Bot si fermeranno alla scadenza di questo accesso. Accedi di nuovo perché continuino a funzionare.",
+      "refused_expired_detail_bots": "I Bot non possono essere eseguiti finché non accedi di nuovo. Questo accesso è già scaduto.",
       "status_unavailable_detail": "Apri le impostazioni di accesso per controllare il tuo accesso a Kiro, oppure chiedi all’agente di verificare.",
       "config_unavailable": "Impossibile leggere le impostazioni della dashboard",
       "config_unavailable_detail": "Ricarica la pagina per riprovare, oppure chiedi all’agente di verificare.",
@@ -13541,7 +13545,7 @@
         "code_channel_worktree_not_ready": "Il worktree di questo canale di codice non è ancora pronto, quindi il messaggio non è stato eseguito. Invialo di nuovo tra un momento.",
         "remote_crew_read_only": "Questa chat è stata eseguita su una crew remota ed è ora in sola lettura. Apri la sessione della crew per continuare.",
         "archive_failed_turn_cancelled": "L’archiviazione di questa scheda non è riuscita dopo l’annullamento del turno in corso. La scheda è stata mantenuta, ma quel turno non è terminato — invia di nuovo il messaggio per continuare.",
-        "kas_signed_out": "Non hai effettuato l’accesso a Kiro. Accedi da Impostazioni → Harness dell’agente → Accesso a Kiro, poi invia di nuovo il messaggio.",
+        "kas_signed_out": "Non hai effettuato l’accesso a Kiro. Accedi da Impostazioni → Harness dell’agente → Kiro Agent → Accesso a Kiro, poi invia di nuovo il messaggio.",
         "kas_signed_out_sign_in_below": "Non hai effettuato l’accesso a Kiro. Accedi qui sotto, poi invia di nuovo il messaggio.",
         "windows_spawn_blocked": "Windows non è riuscito ad avviare il programma dell’agente ({{binary}}). Probabilmente l’ha bloccato AppLocker, un prodotto EDR o un criterio di gruppo su questo computer. Chiedi all’amministratore IT di consentire quel file, poi avvia una nuova chat.",
         "kas_route_relay": "Il tuo agente passa da kiro-cli.",
