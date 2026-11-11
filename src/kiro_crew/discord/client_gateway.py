@@ -409,6 +409,13 @@ def _on_dispatch(self: DiscordClient, event: str, d: dict) -> None:
         self._notify_state(True, "")
         return
     if event == "MESSAGE_CREATE":
+        # Only a person's own message (DEFAULT 0, REPLY 19) is a prompt. A system
+        # notice also arrives as MESSAGE_CREATE and some carry text in
+        # ``content`` -- a thread rename (4) its new name, a thread start (18)
+        # its title -- authored by the person who acted, so no author check
+        # would stop it from running as a turn.
+        if d.get("type", 0) not in (0, 19):
+            return
         author = d.get("author") or {}
         inbound = DiscordInbound(
             channel_id=str(d.get("channel_id", "")),
