@@ -3042,6 +3042,25 @@ Any other key beside the deny (`denyByDefault`, `fallbackAction`, an authored
 `ask`) still withholds the grant; a boolean shell `autoAllowReadonly` does not. The KAS deny rules the translation carries
 are unchanged.
 
+A `deniedCommands` entry KAS receives no rule for (no glob spelling, a redirect
+character, a merge dropped it: `kas_permissions.shell_denies_carried` is false)
+is refused by the same row with no grant beside it
+(`kas_spec_denies.uncarried_denied_commands`) when the row can judge it
+(`kas_spec_denies._refusable_deny`: `parse_deny` reads it and it holds none of
+`allowed_commands.UNGRANTABLE_COMMAND_CHARS` once an optional `^`/`\A` and
+`$`/`\z` anchor is taken off, so not a redirect, separator or substitution): the record then holds those entries and no grant, so on KAS an
+auto-approved call (a cron job with `approval_mode: auto`, a workflow, a spawned
+run) cannot run a plain command, or a plain chain, that such an entry names. Any other entry,
+a redirect deny such as `echo .* > /etc/hosts` included, refuses nothing, as
+before, and the session-start notice names it as not refused
+(`kas_spec_denies.unread_denied_commands`). A refused uncarried entry is named too,
+marked `GATE_JUDGED_MARK` ("refused by Kiro Crew's gate"), and the notice says what
+the row does not judge: any command `allowed_commands.chain_commands` cannot split
+into plain commands (`$(...)`, a backtick, a redirect, a newline, a lone `&`, a tab,
+a `( )` group, a quote, `#` or `[[` in a chain, past the length or part bounds),
+which runs without a refusal (`spec_denied_gate.spec_denies_refusal`). An
+entry KAS carries is not named.
+
 **KAS spec `web_fetch.trusted` on a plain URL** (`spec-builtin-grant` row, `kas_spec_denies.web_fetch_gate`, `spec_denied_gate.url_literal`) — kiro-cli matches each `web_fetch.blocked` / `trusted` entry against the whole URL, anchored and case-sensitive: a blocked match refuses, then a trusted match runs without a prompt (`evaluate_url_permission` in kiro-cli's `crates/agent/src/agent/permissions.rs`). KAS matches a `web_fetch` rule on the host only, so the translation carries a blocked entry that maps to a host as a KAS host deny and names the rest, and carries no trusted entry; Crew's gate adds no refusal. It grants a KAS `web_fetch` whose `rawInput.url` a trusted entry names, read with string work only, never as a regex: a plain URL (equal) or a plain URL followed by `.*` (`startswith`), with an optional `^`/`\A` and `$`/`\z`, and a backslash before ASCII punctuation read as that character (`\<`, `\>` and a trailing `\$` refused). The grant holds only when every blocked entry has the same shape and none matches the URL, the URL has no control character, and the spec's own `permissions` has no `ask` or `deny` reaching `web_fetch` and is not refused by the merge. Any other entry keeps main's prompt and is named in the session notice. shortcut: a blocked entry KAS cannot express still applies only as main applies it; whole-URL blocked refusal is follow-up work (#33068).
 
 **KAS spec shell allowlist (`denyByDefault`)** — a spec that sets

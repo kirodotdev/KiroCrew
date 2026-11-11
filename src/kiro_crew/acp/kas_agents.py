@@ -159,8 +159,14 @@ from kiro_crew.acp.kas_settings_mcp import include_mcp_json
 from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases, with_use_aws_denies
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
-from kiro_crew.acp.kas_spec_denies import spec_denies_record, web_fetch_carried, web_fetch_gate
-from kiro_crew.acp.kas_spec_grants import shell_auto_allows_readonly
+from kiro_crew.acp.kas_spec_denies import (
+    spec_denies_record,
+    uncarried_denied_commands,
+    unread_denied_commands,
+    web_fetch_carried,
+    web_fetch_gate,
+)
+from kiro_crew.acp.kas_spec_grants import SHELL_SETTINGS_KEYS, shell_auto_allows_readonly
 from kiro_crew.acp.kas_tool_limits import (
     _KAS_CARRIED_ELSEWHERE,
     _KAS_DISCARDED_ENTRY_KEYS,
@@ -329,6 +335,18 @@ def spec_keys_without_carrier(
     named = name_unreadable_entries(
         tools_settings, [path for path in not_carried if path not in gate_carried]
     )
+    # A `deniedCommands` KAS did not carry is enforced at Crew's gate
+    # (`uncarried_denied_commands`): only the entries neither enforces are lost.
+    unread_denies = unread_denied_commands(tools_settings, translated)
+    named = [
+        entry
+        for path in named
+        for entry in (
+            [e for e in unread_denies if e.partition(":")[0] == path]
+            if path in {f"{key}.deniedCommands" for key in SHELL_SETTINGS_KEYS}
+            else [path]
+        )
+    ]
     lost.extend(f"toolsSettings.{as_authored(raw, path)}" for path in named)
     if authored is not None and not projection_accepts(authored):
         lost.append("permissions")
@@ -1291,6 +1309,13 @@ def to_client_custom_agent(
     if web_fetch:
         base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
         denies = {**base, **web_fetch}
+    # A `deniedCommands` entry KAS received no rule for: the gate refuses what it
+    # names on every approval policy, so an auto-approved call cannot run it. It
+    # grants nothing (a record with no lifted grant only refuses).
+    uncarried = uncarried_denied_commands(tools_settings, permissions)
+    if uncarried and not (denies and denies["deniedCommands"]):
+        base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
+        denies = {**base, "deniedCommands": uncarried}
     if denies:
         out[CREW_SPEC_DENIES_KEY] = denies
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.

@@ -406,6 +406,36 @@ def allowed_tools_grant_shell(allowed_tools: Any) -> bool:
     return False
 
 
+def shell_deny_globs(policy: Any) -> set[str]:
+    """The globs of *policy*'s plain whole shell ``deny`` rules.
+
+    Only a plain whole deny counts: a rule with any other key (an ``exclude``
+    carving commands out of it) does not prove the deny holds.
+    """
+    carried: set[str] = set()
+    rules = policy.get("rules") if isinstance(policy, dict) else None
+    for rule in rules if isinstance(rules, list) else ():
+        if (
+            isinstance(rule, dict)
+            and set(rule) == {"capability", "match", "effect"}
+            and rule["capability"] == "shell"
+            and rule["effect"] == "deny"
+            and isinstance(rule["match"], list)
+        ):
+            carried.update(m for m in rule["match"] if isinstance(m, str))
+    return carried
+
+
+def shell_deny_carried(raw: str, globs: set[str]) -> bool:
+    """Whether the ``deniedCommands`` entry *raw* reaches KAS as one of *globs*
+    (:func:`shell_deny_globs`) and holds no redirect character KAS never sees. A
+    blank entry needs no rule."""
+    if not raw.strip():
+        return True
+    glob = _regex_to_glob(raw.strip())
+    return glob is not None and not set(glob) & _REDIRECT_CHARACTERS and glob in globs
+
+
 def shell_denies_carried(tools_settings: Any, policy: Any) -> bool:
     """Whether every ``deniedCommands`` entry of both shell keys reaches *policy*
     as a KAS shell ``deny`` rule.
@@ -418,19 +448,7 @@ def shell_denies_carried(tools_settings: Any, policy: Any) -> bool:
     """
     if not isinstance(tools_settings, dict):
         return tools_settings is None
-    carried: set[str] = set()
-    rules = policy.get("rules") if isinstance(policy, dict) else None
-    for rule in rules if isinstance(rules, list) else ():
-        # Only a plain whole deny counts: a rule with any other key (an
-        # `exclude` carving commands out of it) does not prove the deny holds.
-        if (
-            isinstance(rule, dict)
-            and set(rule) == {"capability", "match", "effect"}
-            and rule["capability"] == "shell"
-            and rule["effect"] == "deny"
-            and isinstance(rule["match"], list)
-        ):
-            carried.update(m for m in rule["match"] if isinstance(m, str))
+    carried = shell_deny_globs(policy)
     for key in _SHELL_SETTINGS_KEYS:
         settings = tools_settings.get(key)
         denied = settings.get("deniedCommands") if isinstance(settings, dict) else None
@@ -439,12 +457,7 @@ def shell_denies_carried(tools_settings: Any, policy: Any) -> bool:
         if not isinstance(denied, list):
             return False
         for raw in denied:
-            if not isinstance(raw, str):
-                return False
-            if not raw.strip():
-                continue
-            glob = _regex_to_glob(raw.strip())
-            if glob is None or set(glob) & _REDIRECT_CHARACTERS or glob not in carried:
+            if not isinstance(raw, str) or not shell_deny_carried(raw, carried):
                 return False
     return True
 
