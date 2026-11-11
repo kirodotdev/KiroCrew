@@ -253,11 +253,15 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, jfetch: fet
       providerName: string,
       visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC' = 'PUBLIC',
       sharedWith: string[] = [],
+      // Days, `null` for no expiry, or `undefined` to leave the key out so the
+      // destination applies its own default.
+      expiresInDays?: number | null,
     ) => {
       const r = await post(`/api/artifacts/${encodeURIComponent(slug)}/publish`, {
         visibility,
         shared_with: sharedWith,
         provider: providerName,
+        ...(expiresInDays === undefined ? {} : { expires_in_days: expiresInDays }),
       })
       checkSessionExpired(r)
       if (r.ok) { removeAuthBanner(); return r.json() }
