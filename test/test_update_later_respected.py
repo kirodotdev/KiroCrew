@@ -80,6 +80,30 @@ def test_an_unknown_version_is_never_deferred() -> None:
     assert user_deferred_update(_cfg(_snoozed("", _NOW + _DAY)), "", now=_NOW) is False
 
 
+@pytest.mark.parametrize(
+    ("browser_skew", "now", "deferred"),
+    [
+        # Two days behind: the snooze is already over by this host's clock, yet the
+        # stamp still holds for the snooze plus one prompt window.
+        (-2 * _DAY, _NOW, True),
+        (-2 * _DAY, _NOW + 2 * _DAY - 1, True),
+        (-2 * _DAY, _NOW + 2 * _DAY, False),
+        # Ahead: the later browser reading still holds, so a browser with a right clock,
+        # which stays quiet until then, is not installed over before it asks again.
+        (5 * _DAY, _NOW + 6 * _DAY, True),
+    ],
+)
+def test_the_hold_counts_from_when_the_gateway_stored_the_snooze(
+    browser_skew, now, deferred
+) -> None:
+    from kiro_crew.update_deferral import user_deferred_update
+
+    # What "Remind me tomorrow" writes from a browser clock off by browser_skew,
+    # stamped by the gateway's PATCH at _NOW.
+    record = {**_snoozed("9.9.9", _NOW + browser_skew + _DAY), "stored_at": _NOW}
+    assert user_deferred_update(_cfg(record), "9.9.9", now=now) is deferred
+
+
 # ── the coordinator ─────────────────────────────────────────────────────────
 
 

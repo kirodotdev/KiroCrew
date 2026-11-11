@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1840,10 +1841,33 @@ class TestUpdateNudgeKeys:
 
     @pytest.mark.asyncio
     async def test_full_record_round_trips_atomically(self, tmp_config) -> None:
+        # Stored with the gateway's own clock beside it, which the unattended-apply
+        # hold counts from (update_deferral.user_deferred_update).
+        before = time.time()
         async with TestClient(TestServer(_make_app())) as c:
             assert (await _patch(c, "dashboard.update_nudge", self._REC)).status == 200
-        data = json.loads(tmp_config.read_text(encoding="utf-8"))
-        assert data["dashboard"]["update_nudge"] == self._REC
+        after = time.time()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))["dashboard"]["update_nudge"]
+        assert stored == {**self._REC, "stored_at": stored["stored_at"]}
+        assert before <= stored["stored_at"] <= after
+
+    @pytest.mark.asyncio
+    async def test_the_stamp_is_neither_refused_nor_read_back(self, tmp_config) -> None:
+        # A client that writes back the record it read sends the stamp too; the
+        # route keeps its own. A change card reads the three keys it writes, so
+        # its post-apply check holds and its Undo writes back a valid record.
+        from kiro_crew.change_card_catalog import KIND_SETTING_CHANGE
+        from kiro_crew.dashboard import change_cards as cards
+
+        async with TestClient(TestServer(_make_app())) as c:
+            rec = {**self._REC, "stored_at": 1.0}
+            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 200
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))["dashboard"]["update_nudge"]
+        assert stored["stored_at"] > 1.0
+        params = {"path": "dashboard.update_nudge", "value": self._REC}
+        after = cards._sync_read_state(KIND_SETTING_CHANGE, params, [])
+        assert after["value"] == self._REC
+        assert cards.after_shows_the_write(KIND_SETTING_CHANGE, params, after)
 
     @pytest.mark.asyncio
     async def test_non_object_rejected(self, tmp_config) -> None:

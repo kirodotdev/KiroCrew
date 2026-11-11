@@ -11,6 +11,11 @@ and the record names one version only, so a newer release is offered again.
 opens again at that moment, and the deferral holds for one more prompt window
 (``REPROMPT_WINDOW_SECS``) so the user can answer it. Only a prompt left
 unanswered for that whole window lets the update install unattended.
+
+The snooze's end is written on the browser's clock, so the dashboard's config
+write also stamps the record with this host's own time (``stored_at``), and the
+hold lasts until the later of the two: a browser clock behind this host cannot
+cut it short.
 """
 
 from __future__ import annotations
@@ -18,9 +23,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
+# How long "Remind me tomorrow" stays quiet (``SNOOZE_SECS`` in updateNudge.ts).
+SNOOZE_SECS = 24 * 60 * 60
 # How long the prompt that reopens after a snooze waits for an answer; the
-# same length as the snooze itself (``SNOOZE_SECS`` in updateNudge.ts).
-REPROMPT_WINDOW_SECS = 24 * 60 * 60
+# same length as the snooze itself.
+REPROMPT_WINDOW_SECS = SNOOZE_SECS
 
 
 def user_deferred_update(config: Any, version: str, *, now: float | None = None) -> bool:
@@ -40,4 +47,8 @@ def user_deferred_update(config: Any, version: str, *, now: float | None = None)
     until = record.get("snoozed_until")
     if isinstance(until, bool) or not isinstance(until, (int, float)):
         return False
-    return float(until) + REPROMPT_WINDOW_SECS > (time.time() if now is None else now)
+    held_until = float(until) + REPROMPT_WINDOW_SECS
+    stored_at = record.get("stored_at")
+    if isinstance(stored_at, (int, float)):
+        held_until = max(held_until, float(stored_at) + SNOOZE_SECS + REPROMPT_WINDOW_SECS)
+    return held_until > (time.time() if now is None else now)

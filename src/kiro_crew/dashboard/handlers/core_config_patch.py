@@ -14,6 +14,7 @@ import logging
 import math
 import re
 import shutil
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -438,6 +439,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         # become a generic JSON passthrough.
         if not isinstance(value, dict):
             return _deny("must be an object", f"{path_key}={value}")
+        if path_key == "dashboard.update_nudge":
+            # Stamped below from this host's clock; a read-back record's own is dropped.
+            value = {k: v for k, v in value.items() if k != "stored_at"}
         keys_spec = spec["keys"]
         unknown = set(value) - set(keys_spec)
         if unknown:
@@ -690,6 +694,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             if path_key == "agent.strands_env":
                 # A keyed change, merged under the lock with the map saved now.
                 stored = merge_strands_env_patch(section.get(parts[-1]), value)
+            if path_key == "dashboard.update_nudge":
+                # This host's clock beside the browser's ``snoozed_until``: the
+                # unattended-apply hold counts from it (update_deferral.py).
+                stored = {**value, "stored_at": time.time()}
             if path_key == "session_environments" and isinstance(value, dict):
                 # Under the lock, so it merges with what is saved at this write.
                 stored = _keep_omitted_session_environment_keys(section.get(parts[-1]), value)
