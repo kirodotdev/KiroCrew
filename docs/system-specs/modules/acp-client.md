@@ -904,8 +904,14 @@ entry would pick the agent a resumed conversation runs as) and the file-tool
 write floor refuses. Only the views themselves go into the agents directory, because
 kiro-cli resolves `--agent <name>` there by name and knows no other directory;
 everything else there is a row in the IDE's drop-down. Builds before `v0.10.0` kept
-these side files in the agents directory; nothing reads, moves or removes them there,
-so such a build sharing the directory is unsupported. Each sidecar records the alias's
+these side files in the agents directory; nothing reads or moves them there, so such a
+build sharing the directory is unsupported. kiro-cli 3.1.0 loads every `.json` under
+the agents directory as an agent, dot-prefixed subdirectories included, so the boot
+drain removes the ledger and sidecars such a build left in
+`.kirocrew-skill-projection-metadata/` (`_remove_legacy_metadata_dir`): only regular
+files whose name and content prove Crew wrote them (a ledger of view names only, or a
+view-named sidecar carrying the managed marker), never through a link, and the
+directory once it is empty. Any other file there stays, and with it the directory. Each sidecar records the alias's
 exact byte digest AND the digest of its identity (the view the alias is named by,
 env values out), so a stale or replaced sidecar cannot authorize deletion of a
 different spec, while an alias another program merely re-serialized or
