@@ -1369,6 +1369,7 @@ def token_auth_middleware(
                         require_peer=_refresh_require_peer,
                         peer_key=_refresh_peer_key,
                         owner_mint=_owner_minted,
+                        embed_parent_port=_embed_parent_port,
                     )
                     refresh_remaining = int(refresh_exp - time.time())
                     if refresh_remaining > 0:

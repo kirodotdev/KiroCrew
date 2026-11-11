@@ -889,6 +889,7 @@ def generate_refresh_token(
     require_peer: bool = False,
     peer_key: str = "",
     owner_mint: bool = False,
+    embed_parent_port: str = "",
 ) -> tuple[str, str, str, float]:
     """Generate a refresh token.
 
@@ -948,6 +949,12 @@ def generate_refresh_token(
         # Carried across rotation like ``boot`` so the access token a refresh
         # mints keeps the owner-mint claim (see token_auth_tokens.OWNER_MINT_CLAIM).
         payload_dict["owner_mint"] = "1"
+    if embed_parent_port:
+        # The embedding parent dashboard's port (``token_embed_parent_port``).
+        # Carried across rotation so the access token a refresh mints keeps the
+        # CSP ``frame-ancestors`` parent; without it the framed pane goes blank
+        # on its next load after the first refresh.
+        payload_dict["embed_parent_port"] = embed_parent_port
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
@@ -1066,6 +1073,25 @@ def refresh_token_owner_minted(token: str) -> bool:
     except Exception:
         return False
     return isinstance(payload, dict) and str(payload.get("owner_mint", "")) == "1"
+
+
+def refresh_token_embed_parent_port(token: str) -> str:
+    """A refresh chain's ``embed_parent_port`` claim, or ``""`` when it has none.
+
+    Same read-only, validate-first contract as :func:`refresh_token_boot`. Only a
+    decimal port in range is returned, the shape ``token_embed_parent_port``
+    accepts, so a rotation never carries a claim the CSP reader would refuse.
+    """
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("embed_parent_port", "")
+    if isinstance(value, str) and value.isdigit() and 1 <= int(value) <= 65535:
+        return value
+    return ""
 
 
 def refresh_token_requires_peer(token: str) -> bool:

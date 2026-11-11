@@ -611,6 +611,25 @@ async def test_exchange_carries_owner_mint_claim_to_both_cookies(owner_minted) -
 
 
 @pytest.mark.asyncio
+async def test_exchange_carries_embed_parent_port_onto_the_refresh_cookie() -> None:
+    """The refresh chain a framed pane's link opens remembers the embedding
+    parent, so the access token its first refresh mints still allows it."""
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_embed_parent_port
+
+    mw = token_auth_middleware()
+    url_token = generate_token(
+        "local-app",
+        ttl_seconds=MAX_SESSION_TTL_SECS,  # flake-ok: a token lifetime claim, not a wait
+        extra={"embed_parent_port": "5476"},
+    )
+    resp = await mw(_make_request(query={"token": url_token}, remote="10.0.0.4"), _ok_handler)
+    assert resp.status == 200
+    refresh = resp.cookies.get(refresh_cookie_name(5476))
+    assert refresh is not None
+    assert refresh_token_embed_parent_port(refresh.value) == "5476"
+
+
+@pytest.mark.asyncio
 async def test_exchanged_cookie_preserves_app_claim() -> None:
     """If an app token ever arrives via the URL flow, the exchanged cookie must
     keep the ``app`` claim so app-scope enforcement continues to apply."""
