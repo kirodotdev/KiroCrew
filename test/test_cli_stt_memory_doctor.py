@@ -6,6 +6,7 @@ The full report (``TestDoctor``) is in ``test_cli.py``; the MCP section is in
 
 import contextlib
 import json
+import os
 import sys
 import urllib.error
 from unittest.mock import MagicMock, patch
@@ -191,9 +192,16 @@ class TestDoctorStt:
         _healthy_agent_file(tmp_path / "kirocrew.json")
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
 
-        def _which(binary, **_kw):
-            if binary == "ffmpeg" and not ffmpeg:
+        def _which(binary, **kw):
+            if os.path.basename(binary) == "ffmpeg" and not ffmpeg:
                 return None
+            # A probe of one directory answers from that directory: the trusted
+            # ffmpeg lookup refuses a hit outside the directory it asked about.
+            if os.path.dirname(binary):
+                return binary
+            search = kw.get("path")
+            if search:
+                return os.path.join(search.split(os.pathsep)[0], binary)
             return f"/usr/local/bin/{binary}"
 
         # `ffmpeg` has to answer BOTH routes into `transcribe._find_ffmpeg`. The
