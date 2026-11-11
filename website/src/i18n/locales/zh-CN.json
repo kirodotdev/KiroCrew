@@ -18049,6 +18049,7 @@
         "applying_update": "正在应用更新…",
         "applying_restart_note": "新版本就绪后网关会自动重启，本页面将自动重新连接。",
         "approval_window_expired": "批准窗口已过期且未获批准。准备好后可重新发起更新。",
+        "arm_ended_without_update": "更新请求在更新开始前已结束。请求已被撤销或网关已重启，并非你的操作导致。请按“{{label}}”重试。",
         "try_again": "重试",
         "not_on_channel_yet": "不在 {{channel}} 通道",
         "channel_explainer_gateway_switch_note_version": "切换仅改变检查更新的渠道。{{channel}} 通道当前发布的是 v{{version}}，比你正在运行的版本更旧——请运行下方命令，才会真正将此安装切换过去。",

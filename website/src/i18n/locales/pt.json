@@ -19013,6 +19013,7 @@
         "applying_update": "Aplicando a atualização…",
         "applying_restart_note": "O gateway reinicia sozinho quando a nova versão está pronta; esta página reconecta automaticamente.",
         "approval_window_expired": "A janela de aprovação expirou sem aprovação. Rearme a atualização quando quiser.",
+        "arm_ended_without_update": "A solicitação de atualização terminou antes de a atualização começar. Ela foi descartada ou o gateway reiniciou, não foi algo que você fez. Pressione “{{label}}” para tentar novamente.",
         "try_again": "Tentar de novo",
         "not_on_channel_yet": "Não em {{channel}}",
         "channel_explainer_gateway_switch_note_version": "Trocar apenas muda qual canal é consultado para atualizações. O canal {{channel}} publica atualmente a v{{version}}, MAIS ANTIGA que a build que você está executando: execute o comando abaixo para realmente mover esta instalação.",

@@ -133,6 +133,9 @@ describe('AboutPanel in-app update (arm + approve)', () => {
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    // A faked test that times out never reaches its own `finally`; restore
+    // here so its fake clock cannot leak into the next test in the fork.
+    vi.useRealTimers()
     store.dispatch(sseStatus({ ...BLANK_STATUS } as never))
   })
 
@@ -512,6 +515,41 @@ describe('AboutPanel in-app update (arm + approve)', () => {
       const failed = await screen.findByTestId('in-app-update-failed')
       expect(failed.textContent).toContain('wheel SHA-256 mismatch')
       expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves applying when the arm went away early and no update started', async () => {
+    // A dismissed request, or a gateway that restarted and forgot the arm, also
+    // answers armed:false before the deadline. Only an approval starts an apply,
+    // so with no progress push in the grace window the panel must not sit on a
+    // disabled "Applying" button forever.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const spy = stubFetch()
+      spy.mockImplementation(async (input: unknown, init?: { method?: string }) => {
+        const url = String(input)
+        const body = url.includes('/api/update/arm') && init?.method === 'POST'
+          ? { ok: true, armed: true, request_id: 'r1', version: '9.9.9', expires_in: 600, approve_command: 'kirocrew update approve' }
+          : url.includes('/api/update/arm') ? { armed: false } : {}
+        return {
+          ok: true, status: 200, json: async () => body, text: async () => '',
+          headers: new Headers({ 'content-type': 'application/json' }),
+        }
+      })
+      const { APPLY_START_GRACE_MS } = await import('../pages/settings/AboutPanelUpdateFlow')
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-armed')
+      await vi.advanceTimersByTimeAsync(5100)
+      await waitFor(() => expect(screen.getByTestId('in-app-update-applying')).toBeTruthy())
+      expect(screen.getByTestId('in-app-update-action')).toBeDisabled()
+      await vi.advanceTimersByTimeAsync(APPLY_START_GRACE_MS + 100)
+      await waitFor(() => expect(screen.getByTestId('in-app-update')).toBeTruthy())
+      expect(screen.getByTestId('arm-ended-note')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /update to v9\.9\.9/i })).not.toBeDisabled()
     } finally {
       vi.useRealTimers()
     }

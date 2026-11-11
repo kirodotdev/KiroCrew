@@ -18049,6 +18049,7 @@
         "applying_update": "업데이트 적용 중…",
         "applying_restart_note": "새 버전이 준비되면 게이트웨이가 자동으로 다시 시작되고 이 페이지도 자동으로 다시 연결됩니다.",
         "approval_window_expired": "승인 없이 승인 창이 만료되었습니다. 준비되면 업데이트를 다시 시작하세요.",
+        "arm_ended_without_update": "업데이트가 시작되기 전에 업데이트 요청이 종료되었습니다. 요청이 취소되었거나 게이트웨이가 다시 시작된 것으로, 사용자의 잘못이 아닙니다. 다시 시도하려면 ‘{{label}}’을(를) 누르세요.",
         "try_again": "다시 시도",
         "not_on_channel_yet": "{{channel}} 채널 아님",
         "channel_explainer_gateway_switch_note_version": "전환은 업데이트를 확인할 채널만 바꿉니다. {{channel}} 채널이 현재 배포하는 버전은 v{{version}}(으)로, 실행 중인 빌드보다 오래된 버전입니다. 이 설치를 실제로 이전하려면 아래 명령을 실행하세요.",

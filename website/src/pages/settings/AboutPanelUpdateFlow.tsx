@@ -38,6 +38,14 @@ const ARM_TIMEOUT_MS = 5000
  */
 export const ARM_POLL_FAILURE_THRESHOLD = 3
 /**
+ * How long `applying` waits for the apply's first progress push. An approval
+ * starts the apply at once and it pushes within seconds, so an arm that went
+ * away early with no push in this window was not approved (the request was
+ * dismissed, or a restarted gateway forgot it), and the panel returns to its
+ * start state instead of narrating an update that is not running.
+ */
+export const APPLY_START_GRACE_MS = 30_000
+/**
  * How often the About panel asks the gateway whether an agent has requested an
  * update. Exported for tests, which shrink it to land several consecutive
  * failures inside a test budget without touching the failure threshold.
@@ -141,7 +149,8 @@ export function RestartGatewayButton({
  * request (the poll answering `armed: false`) is the APPROVAL landing, so the
  * panel narrates `applying` from the shared update-progress push instead of
  * silently reverting to the Update button; a `failed` push pins the failure
- * with a retry. Expiry is decided only by the local countdown reaching zero,
+ * with a retry, and no push at all within APPLY_START_GRACE_MS ends the
+ * attempt, since an arm that vanished without approval starts nothing. Expiry is decided only by the local countdown reaching zero,
  * so a poll racing the consume can never misread an approval as an expiry.
  */
 /**
@@ -236,7 +245,7 @@ export function InAppUpdateFlow({
   /** Disable hand-off where an enforcement overlay must remain visible. */
   askAgent?: boolean
 }) {
-  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'failed' | 'expired'>('idle')
+  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'failed' | 'expired' | 'ended'>('idle')
   const [armed, setArmed] = useState<{
     approveCommand: string
     /**
@@ -432,6 +441,16 @@ export function InAppUpdateFlow({
     if (phase !== 'applying' && phase !== 'armed') return
     if (progressStep === 'failed' || progressStep === 'error') setPhase('failed')
   }, [progressStep, phase])
+  // `armed: false` before the deadline is read as the approval, but a dismissed
+  // request or a gateway that restarted and forgot the arm answers the same. Only
+  // an approval starts an apply, and arming cleared the progress, so `applying`
+  // with no push inside the grace window means nothing is being installed.
+  const applyStarted = progress != null
+  useEffect(() => {
+    if (phase !== 'applying' || applyStarted) return
+    const timer = window.setTimeout(() => setPhase('ended'), APPLY_START_GRACE_MS)
+    return () => window.clearTimeout(timer)
+  }, [phase, applyStarted])
   const resetFailure = () => {
     setPhase('idle')
     setArmed(null)
@@ -456,7 +475,7 @@ export function InAppUpdateFlow({
       : phase === 'failed'
         ? 'in-app-update-failed'
         : 'in-app-update'
-  const canStart = phase === 'idle' || phase === 'expired'
+  const canStart = phase === 'idle' || phase === 'expired' || phase === 'ended'
 
   return (
     <div className="flex flex-col gap-2" data-testid={rootTestId}>
@@ -486,6 +505,11 @@ export function InAppUpdateFlow({
           {phase === 'expired' && (
             <p className="text-[12px] text-muted" data-testid="arm-expired-note">
               {i18nT('pages.settings.aboutPanel.approval_window_expired')}
+            </p>
+          )}
+          {phase === 'ended' && (
+            <p className="text-[12px] text-muted" data-testid="arm-ended-note">
+              {i18nT('pages.settings.aboutPanel.arm_ended_without_update', { label: startLabel })}
             </p>
           )}
           {/* Once the gateway has said this offer no longer exists, the intro and the
