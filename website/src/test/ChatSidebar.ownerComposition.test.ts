@@ -164,7 +164,7 @@ describe('browser-storage keys', () => {
     // chips, folders-shelved) read their own keys; everything else goes through
     // a ./persistence reader. The facade reads none.
     const readers = [...ownerSource, ['ChatSidebar', facadeSource] as const]
-      .filter(([, text]) => text.includes('localStorage.getItem('))
+      .filter(([, text]) => text.includes('localStorage.getItem(') || text.includes('safeGetItem('))
       .map(([name]) => name)
       .sort()
     expect(readers).toEqual(['filters', 'history', 'persistence', 'resize'])
