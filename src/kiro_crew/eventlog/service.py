@@ -1220,7 +1220,11 @@ class MemberEventLogService:
                 (ev for ev in log.iter_events() if below is None or ev["seq"] < below),
             )
             return
-        for earlier in log.iter_events():
+        # The append path (``below`` given) has just loaded or extended the log through
+        # its own event, so the events held answer it without a walk of the whole file.
+        # A read keeps the walk, which is what sees another process's newest entries.
+        gap = log.iter_events() if below is None else log.iter_held_events_after(floor)
+        for earlier in gap:
             if earlier["seq"] <= floor:
                 continue
             if below is not None and earlier["seq"] >= below:

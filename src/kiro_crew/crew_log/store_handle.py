@@ -1231,6 +1231,43 @@ class CrewLog:
         read_budget.count_read(self._id, "get", walked, 1 if found is not None else 0)
         return found
 
+    def tail_records(self, count: int) -> "tuple[tuple[Entry, int], ...]":
+        """Up to *count* newest entries of the newest segment, oldest first, each
+        with the byte offset its record begins at.
+
+        One bounded read of the file's end, so it costs the tail and not the log. It
+        is for a caller that wrote a record and needs to know what sits around it on
+        disk: the offset says where a record is, which a seq alone does not.
+
+        Read under the append lock, like :meth:`open`, so only durable records are
+        seen. The answer is ``()`` whenever the tail is not settled (torn trailing
+        bytes, a record with no newline) and stops at the first line that is not an
+        entry, so a caller comparing it with what it expects reads a short answer as
+        "not proven".
+        """
+        from kiro_crew.crew_log import read_budget
+
+        with _open_lock(_lock_path(self._kind, self._id)):
+            tail = _scan_tail(self._path)
+            if tail.empty or tail.torn_offset is not None or tail.needs_newline:
+                return ()
+            size = self._path.stat().st_size
+        lines = tail.window.split(b"\n")[:-1]
+        if not tail.at_start:
+            lines = lines[1:]  # the window may begin mid-record
+        found: list[tuple[Entry, int]] = []
+        end = size
+        for raw in reversed(lines):
+            begin = end - len(raw) - 1
+            parsed = _parses_to_object(raw.strip()) if raw.strip() else None
+            entry = None if parsed is None else Entry.from_dict(parsed)
+            if entry is None or len(found) >= count:
+                break
+            found.append((entry, begin))
+            end = begin
+        read_budget.count_read(self._id, "tail", len(found), len(found))
+        return tuple(reversed(found))
+
     def page(self, before: int | None = None, limit: int = DEFAULT_PAGE_LIMIT) -> Page:
         """Up to *limit* entries older than *before*, NEWEST first.
 
