@@ -156,6 +156,7 @@ from kiro_crew.cron_service.fields import (  # noqa: F401
 )
 from kiro_crew.cron_service.grant_resurface import resurface_stale_grant
 from kiro_crew.dashboard import cautious_boot, start_dashboard, token_secret
+from kiro_crew.dashboard.bind_refresh import bind_refused_exit_code
 from kiro_crew.dashboard.chat_persistence import (
     rehydrate_slot_from_history_async,
     wait_for_unwinding_turns,
