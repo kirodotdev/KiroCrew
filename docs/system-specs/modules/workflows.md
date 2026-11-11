@@ -239,7 +239,13 @@ all, and returns results in input order. A task may be a zero-arg thunk
 both are accepted deliberately, because Python authors reach for the latter out of
 `gather(*coros)` habit and a coroutine is not callable, which would otherwise turn
 every task into `None`. A task that raises resolves to `None` and the call itself
-never raises, so callers filter falsy entries. The one exception is
+never raises, so callers filter falsy entries. The runner records why in a `log`
+event, `parallel task <i> failed: <reason>` (`pipeline item <i> failed: <reason>`
+for a pipeline stage), with the reason bounded and redacted by
+`describe_agent_error`; without it a run of all-`None` results read `finished`
+with no trace of the error. At most 20 such events are written per run, the last
+saying further failed tasks are not logged, so a pipeline over thousands of bad
+items cannot flood the event stream and its checkpoints. The one exception is
 `BudgetExceeded`: it is held until every task has settled, so no sibling outlives
 the run, then raised, so a run ceiling hit inside a fan-out still ends the run. An
 empty list returns `[]`.
