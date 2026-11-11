@@ -72,11 +72,12 @@ def trace_id(ns: str, kind: str, *parts: object) -> str:
 
 
 def turn_trace_id(ns: str, turn_id: str) -> str:
-    """A turn's trace id: the turn id itself when it is 32 lowercase hex.
+    """A turn's trace id: the turn id itself, lowercased, when it is 32 hex digits
+    and not all zero.
 
     The dashboard mints ``uuid4().hex``, which is already a valid, random trace
-    id, and hook records carry the same value raw. Any other spelling
-    is hashed into one.
+    id, and hook records carry the same value raw. Any other value is hashed
+    into one.
     """
     value = str(turn_id).lower()
     if is_hex32(value) and value != _ZERO32:
