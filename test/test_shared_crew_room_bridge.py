@@ -65,7 +65,9 @@ class FakeRoom:
                 if self.refuse_join:
                     await ws.close(code=CLOSE_REVOKED)
                     break
-                await ws.send_json({"type": "joined", "userId": self.user_id, "displayName": self.display})
+                await ws.send_json(
+                    {"type": "joined", "userId": self.user_id, "displayName": self.display}
+                )
         return ws
 
     async def start(self) -> str:
@@ -142,7 +144,13 @@ async def test_a_join_the_room_refuses_raises_and_leaves_nothing_connected(room)
 @pytest.mark.asyncio
 async def test_a_turn_announcement_reaches_the_host_unchanged(started):
     state, _bridge, room = started
-    frame = {"type": "session.turn", "artifactId": ART, "seq": 7, "author": "usr_eve", "authorName": "Eve"}
+    frame = {
+        "type": "session.turn",
+        "artifactId": ART,
+        "seq": 7,
+        "author": "usr_eve",
+        "authorName": "Eve",
+    }
     await room.push(frame)
     await _until(lambda: state.frames)
     assert state.frames[-1] == ("session.turn", frame)
@@ -151,7 +159,13 @@ async def test_a_turn_announcement_reaches_the_host_unchanged(started):
 @pytest.mark.asyncio
 async def test_a_host_frame_reaches_the_room_unchanged(started):
     _state, bridge, room = started
-    frame = {"type": FRAME_PRESENCE, "session_key": "s1", "entries": [], "schema_version": 1, "x_future": 3}
+    frame = {
+        "type": FRAME_PRESENCE,
+        "session_key": "s1",
+        "entries": [],
+        "schema_version": 1,
+        "x_future": 3,
+    }
     await bridge.send(frame)
     await _until(lambda: frame in room.received)
 
@@ -238,7 +252,15 @@ async def test_the_bridge_never_listens_or_binds(room, monkeypatch):
 
 def test_the_module_source_has_no_listening_server():
     src = inspect.getsource(room_bridge)
-    for forbidden in ("TCPSite", "UnixSite", "create_server", "start_server", ".listen(", ".bind(", "web.run_app"):
+    for forbidden in (
+        "TCPSite",
+        "UnixSite",
+        "create_server",
+        "start_server",
+        ".listen(",
+        ".bind(",
+        "web.run_app",
+    ):
         assert forbidden not in src
 
 
@@ -264,7 +286,9 @@ def test_the_room_needs_both_the_feature_preview_and_the_room_switch(monkeypatch
 @pytest.mark.asyncio
 async def test_maybe_start_does_nothing_while_gated_off(room, monkeypatch):
     monkeypatch.delenv(PREVIEW_ENV, raising=False)
-    assert await maybe_start(_State(), shared_crew_config_from({"room": True}), room.url, ART) is None
+    assert (
+        await maybe_start(_State(), shared_crew_config_from({"room": True}), room.url, ART) is None
+    )
     assert room.received == []
     monkeypatch.setenv(PREVIEW_ENV, "1")
     assert await maybe_start(_State(), shared_crew_config_from({}), room.url, ART) is None
