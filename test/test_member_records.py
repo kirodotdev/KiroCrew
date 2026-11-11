@@ -108,6 +108,8 @@ def test_the_leaf_is_masked_precreated_and_never_aliased() -> None:
 
 
 def test_the_spelled_names_match_their_owners() -> None:
+    from kiro_crew.apps import protected_app_ui
+
     assert member_records.RECORD_KINDS == (
         members.RULES_DIR_NAME,
         member_goals.GOALS_DIR_NAME,
@@ -115,6 +117,7 @@ def test_the_spelled_names_match_their_owners() -> None:
         protected_app_state.APP_GRANTS_KIND,
         protected_app_state.APP_DISABLED_KIND,
         protected_app_state.APP_SECRETS_KIND,
+        protected_app_ui.APP_UI_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,

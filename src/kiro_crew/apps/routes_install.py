@@ -455,6 +455,7 @@ async def handle_register_external(request: web.Request) -> web.Response:
     # sourceUrl/provenance snapshot over a concurrent registry transition.
     # The manager call performs blocking filesystem and secret-store I/O, so it
     # belongs in the subprocess executor while the loop owns the lock.
+    ui_copy_error = ""
     async with app_lifecycle_lock(name):
         result = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
@@ -477,6 +478,28 @@ async def handle_register_external(request: web.Request) -> web.Response:
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), refresh_app_config_keys
             )
+            # The scripts the dashboard runs for this app are the ones in its folder
+            # now, at the owner's registration (``protected_app_ui``). Imported here
+            # so the routes facade, which serves this module's names, gains none.
+            from kiro_crew.apps import protected_app_ui
+            from kiro_crew.apps.manager import apps_dir
+
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(),
+                    partial(protected_app_ui.record_folder, apps_dir(), name),
+                )
+            except (OSError, ValueError) as exc:
+                # The registration itself is committed, so it still answers as one;
+                # only the scripts are not served until the copy succeeds.
+                logger.warning("could not copy app %s's UI scripts", name, exc_info=True)
+                ui_copy_error = (
+                    f"registered {name}, but could not keep a copy of its UI scripts "
+                    f"({exc}); its UI does not load until it is registered again"
+                )
+            else:
+                # Its scripts were just replaced: an open dashboard reloads them.
+                _announce_app_ui_changed(request, name)
     if not result.ok:
         sel().log_api_access(
             caller="dashboard",
@@ -493,6 +516,9 @@ async def handle_register_external(request: web.Request) -> web.Response:
     # Include the generated app secret so the caller can use it for auth
     if result.secret:
         resp["secret"] = result.secret
+    if ui_copy_error:
+        resp["code"] = "app_ui_copy_failed"
+        resp["warning"] = ui_copy_error
     return web.json_response(resp, status=201)
 
 

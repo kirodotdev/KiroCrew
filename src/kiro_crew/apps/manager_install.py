@@ -20,7 +20,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 
-from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
+from kiro_crew.apps import (
+    agent_readonly_dirs,
+    credential_masks,
+    protected_app_state,
+    protected_app_ui,
+)
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
@@ -365,6 +370,11 @@ def install_app(
                 logger.info("Reinstalling %s into the folder its uninstall kept", name)
             shutil.rmtree(dest)
         _copy_app_tree(source, dest)
+        # The scripts the dashboard will run: copied from the source this install
+        # copies, never from the sandbox-writable tree (``protected_app_ui``).
+        protected_app_ui.discard(
+            protected_app_ui.record(name, source / "ui", source, allow_hardlinks=True)
+        )
         # The gateway's own root entries -- ``.app_secret`` and, when a preserved
         # directory is put back below, ``data`` -- are never the source's: a
         # source entry so named reaches the app directory verbatim only when the
@@ -399,6 +409,7 @@ def install_app(
         # Nothing preserved is inside `dest`: a restored `data/` IS a directory,
         # so the refusal only fires where none was put back.
         shutil.rmtree(dest, ignore_errors=True)
+        protected_app_ui.forget(name)
         sel().log_api_access(
             caller="app_install",
             operation="install",
@@ -411,6 +422,7 @@ def install_app(
         # Clean up partial install first
         if dest.exists():
             shutil.rmtree(dest, ignore_errors=True)
+        protected_app_ui.forget(name)
         # Restore preserved data to the clean dest
         try:
             if _owned_data_dir(tmp_data):
@@ -794,6 +806,8 @@ def update_app(
     except OSError as exc:
         return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
     with _tree_swap(name), update_marker:
+        previous_ui: Path | None = None
+        ui_recorded = False
         try:
             if existing.enabled and not meta.enabled:
                 # Turned off for consent. Decided here, from the record read
@@ -835,6 +849,10 @@ def update_app(
             refusal = gateway_data_dir_obstruction(dest)
             if refusal:
                 raise InstalledTreeRefused(refusal)
+            # The scripts the dashboard will run: copied from the source this update
+            # installs, never from the sandbox-writable tree (``protected_app_ui``).
+            previous_ui = protected_app_ui.record(name, source / "ui", source, allow_hardlinks=True)
+            ui_recorded = True
             _write_approved_grants(name, approved_grants)
             _write_installed(name, meta)
         except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
@@ -863,6 +881,14 @@ def update_app(
             except (OSError, shutil.Error, ValueError) as rollback_exc:
                 rollback_error = f"; rollback failed: {rollback_exc}"
                 logger.error("Failed to restore app %s after update error", name, exc_info=True)
+            if ui_recorded:
+                # Its own step, after the tree: a failure here never stops the tree
+                # and the record going back.
+                try:
+                    protected_app_ui.restore(name, previous_ui)
+                except (OSError, ValueError) as ui_exc:
+                    rollback_error += f"; UI script copy not restored: {ui_exc}"
+                    logger.error("Failed to restore app %s's UI script copy", name, exc_info=True)
             return AppResult(
                 ok=False,
                 name=name,
@@ -873,6 +899,7 @@ def update_app(
             _remove_any_shape(retired)
         except OSError:
             logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
+        protected_app_ui.discard(previous_ui)
 
     # Ensure data directory exists
     app_data_dir(name)

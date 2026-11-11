@@ -4848,6 +4848,25 @@ manifest and dynamic-`import()`s `/apps/<app>/ui/<entry>`, served from the app's
 static UI directory. An app whose manifest declares no `ui.entry` renders the
 no-UI placeholder: the entry is optional, never defaulted.
 
+Because the module runs in the dashboard's own origin, with the owner's session,
+an operator can choose to stop reading its scripts (`.js`, `.mjs`) from the app's
+tree, which a sandboxed process can write: with `agent.apps_ui_protected_copy`
+on (off by default, which keeps reading the tree) the route serves them from the
+gateway's copy. The gateway takes that copy either way, so turning the setting on
+works at once. It copies them to `member-records/app-ui/<app>/`
+(masked in every sandbox mode) inside its own transactions: an install or update
+copies them from the source it installs, and rolls the copy back with the tree; an
+owner's `POST /api/apps/register` copies them from the app's folder. The route
+serves scripts from that copy (`apps/protected_app_ui.py`). Other UI files are read
+from the tree. A dev-mode root under the operator's grant is served live. Apps
+installed by an older build get their copy once, right after the listener binds
+(after the interrupted-update sweep); a tree changed before that pass is copied as
+it stands, since there is no earlier copy to compare. Nothing is taken from an app
+tree after that pass: an app whose copy failed has its scripts answer 404 until it
+is updated, reinstalled or registered again. An app the gateway never installed has
+no copy and its scripts answer 404, and a self-managed app ships a UI change by
+registering again.
+
 Cache-busting applies to the entry module alone. Busting the whole graph would
 re-fetch every chunk the entry statically imports, so a reload is driven by the
 `mc:app-reload` event instead: a module specifier already resolved in the page

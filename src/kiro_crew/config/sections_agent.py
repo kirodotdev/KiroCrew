@@ -706,6 +706,19 @@ class AgentConfig:
             "this host needs longer than the default allows.",
         ),
     )
+    apps_ui_protected_copy: bool = field(
+        default=False,
+        metadata=_meta(
+            "Serve App UI Scripts From the Protected Copy",
+            "When on, the /apps/{name}/ui/ route serves an app's .js and .mjs "
+            "files from the copy the gateway took when it installed, updated or "
+            "registered the app, kept where no sandboxed process can write, "
+            "instead of from the app's own folder. A script edited in the app's "
+            "folder then keeps serving as installed, and an app the gateway never "
+            "installed has its scripts not found. Off by default: scripts are "
+            "read from the app's folder.",
+        ),
+    )
     jail: str = field(
         default=JAIL_MODE_AUTO,
         metadata=_meta(
