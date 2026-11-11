@@ -19695,6 +19695,8 @@
         "retry": "Повторить",
         "ssh_host_alias": "SSH-хост / алиас",
         "ssh_tunnel": "SSH-туннель",
+        "ssh_tunnel_not_supported_windows": "Не поддерживается в Windows",
+        "ssh_tunnel_not_supported_windows_hint": "SSH-туннели пока не поддерживаются, когда {{productName}} работает в Windows: нужен клиент OpenSSH в PATH, и подключение может не установиться. Используй вместо этого AWS SSM Session Manager.",
         "ssm_target_instance_id": "Цель SSM (id инстанса)",
         "state_connected": "Подключено",
         "state_connecting": "Подключение",

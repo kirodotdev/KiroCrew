@@ -18291,6 +18291,8 @@
         "retry": "再試行",
         "ssh_host_alias": "SSH ホスト / エイリアス",
         "ssh_tunnel": "SSH トンネル",
+        "ssh_tunnel_not_supported_windows": "Windows では未対応",
+        "ssh_tunnel_not_supported_windows_hint": "{{productName}} を Windows で実行している場合、SSH トンネルはまだサポートされていません。PATH 上の OpenSSH クライアントが必要で、接続に失敗することがあります。代わりに AWS SSM Session Manager を使用してください。",
         "ssm_target_instance_id": "SSM ターゲット（インスタンス ID）",
         "state_connected": "接続済み",
         "state_connecting": "接続中",
