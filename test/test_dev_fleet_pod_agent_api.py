@@ -266,7 +266,7 @@ async def test_provisioning_is_not_reachable_from_the_agent_surface(granted: Non
     same work under a run id, which is the shape that survives a restart.
     """
     props = _declared()["pod_up"]["inputSchema"]["properties"]
-    assert list(props) == ["worktree", "memory", "cpu"]
+    assert list(props) == ["worktree", "memory", "cpu", "env"]
     assert "provision" not in props
 
 
@@ -1085,3 +1085,66 @@ async def test_a_pod_tool_call_is_served_by_the_gateway_route_not_the_backend(
         assert _payload(resp) == {"text": "No pods are active on this host."}
     finally:
         registry.deregister_app_routes("dev-fleet")
+
+
+# `env`: allowlisted test-double overrides, checked before argv
+
+
+@pytest.mark.asyncio
+async def test_pod_up_forwards_a_checked_env_override(
+    monkeypatch: pytest.MonkeyPatch, granted: None, tmp_path
+) -> None:
+    fake = tmp_path / "fake-kiro-cli.py"
+    fake.write_text("#!/bin/sh\nexit 2\n")
+    fake.chmod(0o755)
+    seen: dict[str, Any] = {}
+
+    async def _fake_up(name: str, **kw: Any) -> dict[str, Any]:
+        seen.update(kw, name=name)
+        return {"ok": True, "name": name, "port": 7913, "token": "t"}
+
+    monkeypatch.setattr(
+        agent_pod_api, "_ops", lambda: type("Ops", (), {"_pod_up": staticmethod(_fake_up)})
+    )
+    resp = await agent_pod_api.handle_pod_up(
+        _Req(body={"worktree": "w", "env": [f"KIROCREW_KIRO_BIN={fake}"]})  # type: ignore[arg-type]
+    )
+    assert resp.status == 200
+    assert seen == {"name": "w", "env": {"KIROCREW_KIRO_BIN": str(fake)}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "env",
+    [["AWS_SECRET_ACCESS_KEY=abc"], ["KIROCREW_KIRO_BIN=relative/kiro"], "KIROCREW_KIRO_BIN=/x"],
+)
+async def test_pod_up_refuses_an_env_override_before_any_pod_work(
+    monkeypatch: pytest.MonkeyPatch, granted: None, env: Any
+) -> None:
+    async def _never(*_a: Any, **_kw: Any) -> dict[str, Any]:
+        raise AssertionError("a refused env override must not reach the pod start")
+
+    monkeypatch.setattr(
+        agent_pod_api, "_ops", lambda: type("Ops", (), {"_pod_up": staticmethod(_never)})
+    )
+    resp = await agent_pod_api.handle_pod_up(
+        _Req(body={"worktree": "w", "env": env})  # type: ignore[arg-type]
+    )
+    assert resp.status == 400
+    assert _payload(resp)["code"] == "invalid_env"
+
+
+@pytest.mark.asyncio
+async def test_each_env_override_is_one_argv_element(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--env=K=V`` in one element, so a value can never be read as another flag."""
+    from kiro_crew.apps.builtins.dev_fleet import worktree_ops_pods
+
+    seen: list[list[str]] = []
+
+    async def _start(name: str, verb: str, extra: list[str]) -> dict[str, Any]:
+        seen.append(extra)
+        return {"ok": True}
+
+    monkeypatch.setattr(worktree_ops_pods, "_pod_start", _start)
+    await worktree_ops_pods._pod_up("w", "16G", "", env={"KIROCREW_KIRO_BIN": "/abs/--seed x"})
+    assert seen == [["--memory", "16G", "--env=KIROCREW_KIRO_BIN=/abs/--seed x"]]

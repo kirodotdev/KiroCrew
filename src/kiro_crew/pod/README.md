@@ -395,6 +395,16 @@ unit gets an `Environment=` line, the launchd plist an `EnvironmentVariables`
 entry, from the one `environment_vars` selection. Unset, nothing is emitted and a
 pod resolves the host's real `kiro-cli` exactly as before.
 
+`KIROCREW_POD_KIRO_BIN` covers every pod on the plane and is fixed at
+`pod install`. For ONE pod, use `kirocrew pod up <wt> --env
+KIROCREW_KIRO_BIN=/abs/path/fake-kiro-cli` (or the `pod_up` tool's `env` field).
+Only the keys in `env_overrides.ALLOWED_KEYS` are accepted, and each names a test
+seam, never a secret. The value lands in the pod's env file and is applied after
+the env scrub at boot. Each `pod up` replaces the overrides, so an `up` without
+`--env` clears them; `pod restart` keeps them. A pod booted this way skips the
+child-viability refusal: a fake that fails to start is the state under test, so
+the boot prints its error and serves anyway.
+
 ## Safety
 
 - A pod runs its own `KIROCREW_HOME` and binds `127.0.0.1` only; it never touches

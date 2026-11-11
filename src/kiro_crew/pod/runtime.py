@@ -52,7 +52,7 @@ from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.platform_compat import IS_LINUX, IS_MACOS, IS_WINDOWS, file_lock, open_lock_file
-from kiro_crew.pod import launchd
+from kiro_crew.pod import env_overrides, launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
@@ -333,9 +333,9 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
 def write_env_file(cfg: PodConfig, name: str, updates: dict[str, str]) -> None:
     """Merge *updates* into the pod's env file, preserving existing keys.
 
-    Values MUST be single-line: the ``KEY='value'`` format does not escape
-    newlines, so a multi-line value would not round-trip. ``--seed`` is
-    user-supplied, so reject a newline-bearing value loudly (fail-closed) rather
+    Values MUST be NUL-free and single-line under ``str.splitlines()``: the
+    ``KEY='value'`` format does not escape line boundaries. ``--seed`` is
+    user-supplied, so reject an invalid value loudly (fail-closed) rather
     than silently writing an un-parseable file.
 
     **Written atomically**, because readers are deliberately lock-free: ``boot``
@@ -355,13 +355,13 @@ def write_env_file(cfg: PodConfig, name: str, updates: dict[str, str]) -> None:
     re-acquiring it inside an outer transaction safe.
     """
     for key, val in updates.items():
-        if "\n" in val or "\r" in val:
+        if not env_overrides.is_single_line_env_value(val):
             raise PodError(f"pod env value for {key!r} must be single-line")
     with pod_name_mutex(cfg, name):
         data = read_env_file(cfg, name)
         data.update(updates)
         for key, val in data.items():
-            if "\n" in val or "\r" in val:
+            if not env_overrides.is_single_line_env_value(val):
                 raise PodError(f"pod env value for {key!r} must be single-line")
         cfg.pods_dir.mkdir(parents=True, exist_ok=True)
         # Keep a UTF-8 byte-order mark the file was saved with: it is what makes
