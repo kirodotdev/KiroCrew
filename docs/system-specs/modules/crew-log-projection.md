@@ -1249,7 +1249,11 @@ board it last saw and pulls the conductor's armed work-ledger loop forward for a
 that moved AND whose status is in `work_vocab.wake_statuses` (`done`, `blocked`,
 `question`, and `reply` while `work_ledger.remote_dispatch` is on) -- the event's `key` is the conductor's board, so it reads no binding, and a
 `progress` report advances the board without buying a tick the conductor's own gate
-would answer quiet. It is the only wake: a worker's slot closing and a worker's turn
+would answer quiet. The first waking report arms the tick one batch window ahead
+(`conductor_wake.DEFAULT_WAKE_BATCH_SECS`) so reports that land together share one
+turn; a report from the only open item bound to a worker arms it at once, since no
+second report can join it. Which items those are is read off the same rendered board
+(`state`, `worker_session_key`), so the subscriber still reads no store. It is the only wake: a worker's slot closing and a worker's turn
 ending reach none, and a crashed worker is surfaced by the item's `stale` / `orphaned`
 flags on the loop's scheduled tick.
 Further consumers -- a summary fold over a session's events, the automatic-card sentence
@@ -1304,7 +1308,7 @@ splits the work. A `work` `FoldAdvanced` carries `kind` (`delta` or `snapshot_ne
 event. A receiver rebuilds it with `fold_delta.value_after` on the value it holds, with
 `eager.published_value` / `eager.try_published_value` (the render recorded for that
 exact revision, inside or right after the publish), or with a snapshot read
-(`conductor_wake._read_board_items`, `DashboardFeed._resync_soon`). The delta
+(`conductor_wake._read_board`, `DashboardFeed._resync_soon`). The delta
 base is a RENDER DIFF: eager holds the last published render per board (at most 64,
 narrowed to the boards delta-capable tabs watch while the dashboard exporter runs) and `fold_delta.diff_work` compares the new
 render with it item by item. The fold step and the memo cell are untouched. With no
