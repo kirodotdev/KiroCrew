@@ -4238,7 +4238,7 @@ model from a stale advertisement.
 
 `DiscordDispatcher` is one class composed from owners beside its facade.
 `discord/transport_dispatch.py` keeps the dispatcher's state and live config, the inbound
-front door (`handle_message`: governance, admission, resume routing, the command ladder,
+front door (`handle_message`: admission, governance, resume routing, the command ladder,
 the busy check, rotation, option-press provenance and the hand-off to `ChannelTurns`),
 the shared-pipeline wiring (`_channel_turns`), the queue drain (`_drain_queue`,
 `_pump_queue`), the receipt wrappers (`_receipt_surface`, `_enqueue_with_receipt`,
@@ -4437,7 +4437,7 @@ Bot API surface.
 
 `TelegramDispatcher` is one class composed from owners. `telegram/transport_dispatch.py`
 keeps the dispatcher's state and live config, the inbound front door (`handle_message`:
-governance, admission, activation, resume routing, the command ladder, the busy check,
+admission, governance, activation, resume routing, the command ladder, the busy check,
 rotation and the turn-path privacy apply), `/stop`, `/title`, the restriction predicates,
 the conversation-identity helpers (route, session key, `_rotated_session_key`, agent,
 origin mirror) and `_user_safe_failure_reason`. Repository guards read those constructs

@@ -141,7 +141,7 @@ export interface DecisionsProviderData {
   configured_endpoint: string
   /** The configured address is a literal loopback one, so no Jev key is sent to it. */
   loopback?: boolean
-  /** Fleet policy allows hosted Jev (`capabilities.decisions`). Absent on an older gateway. */
+  /** Fleet policy allows hosted Jev: `capabilities.decisions` and the ceiling's endpoints list. When false the picker hides it. Absent on an older gateway. */
   hosted_permitted?: boolean
   /** Fleet policy allows a local preset (`capabilities.decisions_local`). Absent on an older gateway. */
   local_permitted?: boolean
@@ -151,6 +151,10 @@ export interface DecisionsProviderData {
   sagemaker?: DecisionsSageMakerTarget | null
   /** `boto3` is installed, so a SageMaker endpoint can be used. Absent on an older gateway. */
   sagemaker_available?: boolean
+  /** Policy permits a SageMaker runtime host in some region. When false the picker hides the option. Absent on an older gateway. */
+  sagemaker_permitted?: boolean
+  /** The configured SageMaker address's own regional host is refused by the ceiling. */
+  configured_refused?: boolean
 }
 
 /** A SageMaker endpoint as the picker names it; the gateway builds the address. */

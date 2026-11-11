@@ -51,13 +51,16 @@
     "update_available_2": "update available",
     "update_error": "Update error",
     "update_failed": "Update Failed",
-    "update_now": "Update Now",
+    "update_when_i_restart": "Update when I restart",
     "updating_kirocrew": "Updating {{productName}}…",
     "v": "v",
     "what_s_new": "What's new",
     "you_re_on_the_latest_version": "You're on the latest version"
   },
   "appSdk": {
+    "chatSession": {
+      "create_returned_no_session": "The session was created, but the server didn't send it back. Try again."
+    },
     "pullRequestPanel": {
       "not_declared": "This app can't show pull requests: its permissions don't declare {{path}}."
     },
@@ -4160,7 +4163,7 @@
         "backup_others_on_drive": "Other installs backing up to this drive: {{count}}",
         "backup_show_others": "Include archives from other installs",
         "backup_others_truncated": "Only the first {{max}} other installs are shown.",
-"backup_archives_truncated": "Some {{kind}} archives could not be listed. The newest may be missing.",
+        "backup_archives_truncated": "Some {{kind}} archives could not be listed. The newest may be missing.",
         "backup_shared_note": "One drive shared by two installs is not shared memory and not shared sessions. Each backup is a separate archive of one point in time, and a restore only downloads that file to a staging folder — you replace files yourself, with the gateway stopped.",
         "backup_restore_foreign_confirm": "This archive was uploaded by another install ({{install}}). Restoring it downloads that install's data, not this install's. Download it anyway?",
         "backup_restore_unverified_confirm": "This archive is stored under this install's own folder, but this install has no record of uploading it. Anything that can write to the drive can create that folder, so it may not be this install's. Download it anyway?",
@@ -5990,20 +5993,32 @@
       "label": "Ultracode"
     },
     "updateFoundModal": {
+      "cancel_update": "Cancel the update",
+      "cancel_update_failed": "Could not cancel the update. Try again.",
       "copied": "Copied",
       "copy_command": "Copy command",
       "could_not_save_choice": "Couldn't save your choice — it may ask again after a reload.",
       "dismiss": "Dismiss",
+      "dont_remind_me_about_version": "Don't remind me about {{version}}",
       "download": "Download",
       "nothing_downloads_until_you_choose_to": "Nothing downloads until you choose to.",
       "remind_me_tomorrow": "Remind me tomorrow",
+      "restart_anyway": "Restart anyway",
+      "restart_cancelled": "Restart cancelled.",
+      "restart_to_update": "Restart to update",
       "skip_this_version": "Skip this version",
+      "update_apply_failed": "The last update did not install, and the old version is still running: {{error}}",
+      "update_armed_note": "The update is set. It installs the next time you restart {{productName}}; nothing restarts now.",
       "update_available": "Update available",
       "update_failed": "Update failed. Try again from Settings → About.",
-      "update_now": "Update now",
+      "update_installed_restart_note": "The new version is already installed. Restart the gateway to start using it.",
+      "update_when_i_restart": "Update when I restart",
       "updating": "Updating…",
       "updating_and_restarting": "Updating and restarting…",
       "version_is_available": "{{productName}} <0>{{version}}</0> is available.",
+      "work_running_busy": "Restarting now would interrupt running work. Active items: {{active}}.",
+      "work_running_quiet": "A chat was active recently, and a restart now could cut a message you are writing. It is safe after {{minutes}} min without activity.",
+      "work_running_title": "Work is still running",
       "you_can_update_anytime_from_settings_about": "Update anytime from Settings → About."
     },
     "updateModal": {
@@ -6019,7 +6034,8 @@
       "downloading_percent": "Downloading {{percent}}%",
       "open_update_settings": "Open update settings",
       "update_available": "Update available",
-      "update_ready": "Update ready"
+      "update_ready": "Update ready",
+      "update_when_i_restart": "Update when I restart"
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "Esc to cancel, click the mic to finish",
@@ -7099,7 +7115,9 @@
         "turn_took_credits_cost": "Turn took {{elapsed}} and used {{credits}} credits ({{cost}} API cost)",
         "pin_message": "Pin message",
         "unpin_message": "Unpin message",
-        "turn_credits": "{{credits}} credits"
+        "turn_credits": "{{credits}} credits",
+        "turn_cache_rewritten": "Cache rewritten",
+        "turn_cache_rewritten_hint": "The prompt cache was rebuilt this turn, so its input was billed at the cache-write rate."
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Your browser is asking “Allow remote debugging?”. Click Allow and {{productName}} can work in the tab. Asked once; {{productName}} only touches tabs it opens itself.",
@@ -9162,6 +9180,9 @@
       "patrol_stopped_approval": "Stopped while waiting for your approval",
       "patrol_stopped_session": "Its chat was closed",
       "panel_toggle": "Dashboard & files",
+      "linked_to": "Linked to {{label}}",
+      "linked_to_paused": "Linked to {{label}} · replies paused",
+      "connect_channel": "Connect to a channel",
       "create_advanced_settings": "Advanced settings",
       "dashboard_kept_last_good": "A newer version of this dashboard did not load, so this is the last one that did.",
       "dashboard_none_yet": "No dashboard set up for this bot yet.",
@@ -10370,7 +10391,6 @@
         "couldn_t_check_for_updates_reason": "Couldn't check for updates: {{reason}}",
         "couldn_t_check_for_updates_2": "Couldn't check for updates.",
         "download_install": "Download & Install",
-        "downloaded_and_verified_the_app_restarts_to_fini": "Downloaded and verified. The app restarts to finish installing; you can also quit later and it installs on exit.",
         "downloading": "Downloading...",
         "is_available": "is available.",
         "loading_changelog": "Loading changelog…",
@@ -10380,10 +10400,10 @@
         "update": "Update",
         "update_available": "Update available",
         "update_channel": "Update channel",
+        "update_installs_at_next_restart": "The update installs the next time you restart {{productName}}. Nothing restarts now.",
+        "update_when_i_restart": "Update when I restart",
         "updates": "Updates",
         "updating": "Updating…",
-        "updating_gateway_restarting": "Updating — gateway restarting…",
-        "updating_restarts_the_gateway_active_sessions_wi": "Updating restarts the gateway — active sessions will briefly disconnect.",
         "v": "v",
         "view_all_releases": "View all releases",
         "view_this_commit_on_github": "View this commit on GitHub",

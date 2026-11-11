@@ -455,7 +455,8 @@ Runtime
   deps:        ✅ websockets, slack_sdk, aiohttp available
   <<_doctor_import_path>>
   sqlite fts5: ✅ available
-  tz data:     ✅ current (America/Vancouver stays UTC-7 in winter)
+  tz data:     ✅ current (IANA tzdb 2026b or later)
+               Sample check on America/Vancouver, not your configured zone.
 
 Vector Memory (in-process embeddings)
   runtime:     ✅ vendored llama-cpp-python importable
@@ -1137,3 +1138,34 @@ def test_bundle_route_without_node_on_path_reads_the_bundles_node(
     ) in out
     assert "Fix: install Node.js" not in out
     assert "node" not in (out.rsplit("Fix these issues:", 1)[1] if code else "")
+
+
+@pytest.mark.parametrize(("member_backend", "fails"), [(ACP_BACKEND_KAS, False), ("claude", True)])
+def test_bundle_route_judges_an_old_node_by_every_selected_role(
+    host, capsys, monkeypatch, member_backend, fails
+) -> None:
+    """An old Node on PATH is only a warning when every selected role runs on the
+    bundle; a Bot role on Claude's adapter spawns on that Node, so it still fails."""
+    _ready(host)
+    host.kiro = None
+    host.runs[("/usr/bin/node", "-v")] = _done("v18.19.0\n")
+    host.cfg.agent.acp_backend = ACP_BACKEND_KAS
+    host.cfg.agent.member_acp_backend = member_backend
+    monkeypatch.setattr(cli_doctor.kas_bundle, "kas_bundle_route", lambda: True)
+    monkeypatch.setattr(
+        cli_doctor.kas_bundle,
+        "installed_bundle",
+        lambda: SimpleNamespace(node_version="22.23.3"),
+    )
+    monkeypatch.setattr(cli_doctor.kas_bundle, "installed_engine_label", lambda: "KAS 0.66.33")
+
+    out, code = host.run(capsys)
+
+    listed = out.rsplit("Fix these issues:", 1)[1].split("\n", 1)[0] if code else ""
+    if fails:
+        assert "  node:        ❌ v18.19.0 < " in out
+        assert "node" in [item.strip() for item in listed.split(",")]
+    else:
+        assert "  node:        ⚠  v18.19.0 on PATH < " in out
+        assert "engine bundle's own Node 22.23.3" in out
+        assert "node" not in [item.strip() for item in listed.split(",")]

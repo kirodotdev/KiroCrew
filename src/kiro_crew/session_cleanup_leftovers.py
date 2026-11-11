@@ -28,6 +28,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import session_pid
+from kiro_crew.session_cleanup_spare import rss_limit_for
 
 if TYPE_CHECKING:
     from kiro_crew.session_cleanup import SessionCleanup
@@ -184,7 +185,10 @@ async def report_busy_sessions(
                     cleanup._deps.get_maintenance_executor(), measure, pid
                 )
                 rss_by_pid[pid] = rss
-            if rss <= ceiling:
+            # Scaled by the chat leases on the pid, as the idle pass scales it: a
+            # shared runtime's tree holds every co-tenant's memory.
+            limit = rss_limit_for(cleanup, pid, rss)
+            if rss <= limit:
                 continue
             leftovers = await snapshot(cleanup, pid, loop)
             if leftovers is None or not leftovers.items:
@@ -196,7 +200,7 @@ async def report_busy_sessions(
                     "processes outside its runtime's tree hold memory: %s",
                     key,
                     rss,
-                    ceiling,
+                    limit,
                     describe(leftovers),
                 )
             # The opt-in is honoured on every tick, not only when the set changes:
@@ -215,6 +219,6 @@ async def report_busy_sessions(
             noticed[key] = pids
             callback = getattr(cleanup._owner, "on_leftover_memory", None)
             if first and callback is not None:
-                callback(key, leftover_notice(leftovers, ceiling, ended, can_end=can_end))
+                callback(key, leftover_notice(leftovers, limit, ended, can_end=can_end))
         except Exception:
             cleanup._deps.logger.exception("Leftover-process report failed for session %s", key)

@@ -22,9 +22,11 @@ import pytest
 
 import kiro_crew.acp.client as client_mod
 import kiro_crew.acp.runtime as runtime_mod
+from kiro_crew.acp import runtime_process_tree
 from kiro_crew.acp.client import AcpClient, _resolve_spawn_env
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
 
 # A pid above every supported platform's pid_max: a cleanup path that signals it
@@ -457,8 +459,11 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
         ["finish_suspended_spawn", "track_pid", "track_session_pid", "child_scan"],
     )
     async def test_client_spawn_kills_the_process_when_the_window_raises(
-        self, tmp_path, raise_in
+        self, tmp_path, raise_in, monkeypatch
     ) -> None:
+        # The early scan is one of the steps that raises here, and it runs only
+        # where the walk can see a descendant: pin that answer for every runner.
+        monkeypatch.setattr(runtime_process_tree, "walk_observes_descendants", lambda: True)
         client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
 
         mock_proc = MagicMock()
@@ -512,6 +517,49 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
         # outcome is that _spawn reaps it before re-raising. Anything else is a
         # permanent leak with no log line and no reaper that can reach it.
         killed.assert_awaited_once_with(force=True)
+
+    @pytest.mark.asyncio
+    async def test_client_spawn_skips_the_early_scan_where_the_walk_sees_nothing(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The wait before the early scan and the scan itself are one step, and
+        neither runs on a platform whose walk cannot see a descendant.
+
+        The settle delay is set far beyond the test, so the spawn can only come
+        back because it did not take it."""
+        monkeypatch.setattr(runtime_process_tree, "walk_observes_descendants", lambda: False)
+        monkeypatch.setattr(runtime_process_tree, "EARLY_WALK_SETTLE_DELAY", 3600.0)
+        client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = UNALLOCATABLE_PID
+        mock_proc.returncode = None
+        mock_proc.stderr = None
+
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
+            patch.object(client_mod, "ensure_agent_materialized"),
+            patch(
+                "kiro_crew.acp.client.wrap_argv",
+                return_value=(["/usr/bin/kiro-cli", "acp"], None),
+            ),
+            patch(
+                "asyncio.create_subprocess_exec",
+                new_callable=AsyncMock,
+                return_value=mock_proc,
+            ),
+            patch.object(client_mod, "finish_suspended_spawn"),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=1.0),
+            patch("kiro_crew.session._track_pid"),
+            patch("kiro_crew.session._track_session_pid"),
+            patch.object(client_mod, "_get_child_pids") as scan,
+        ):
+            await await_until(asyncio.ensure_future(client._spawn()))
+
+        await _stop_stderr_drain(client)
+
+        scan.assert_not_called()
+        assert client._child_pids == {}
 
     @pytest.mark.asyncio
     async def test_client_spawn_reports_the_failure_at_error(self, tmp_path, caplog) -> None:

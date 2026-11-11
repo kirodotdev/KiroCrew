@@ -26,7 +26,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "about.update-the-gateway-automatically",
     "label": "Update the gateway automatically",
     "labelKey": "pages.settings.aboutPanel.automatic_updates",
-    "description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
+    "description": "Updates are downloaded automatically and take effect the next time you restart Kiro Crew. Nothing restarts by itself. When off, it stays on its current version.",
     "tab": "about",
     "type": "toggle",
     "occurrence": 1,
@@ -2490,6 +2490,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "sessionEnvironments.title",
     "description": "Runs a chat in its own remote workspace.",
     "hint": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
+    "id": "developer.share-one-background-program-across-chats",
+    "label": "Share one background program across chats",
+    "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
+    "description": "Saves computer memory by running several chats in one background program. Chats can't see each other's messages, but they reply one at a time. Turn it off and each new chat gets its own program again.",
+    "hint": "Chats reply one at a time, so a long reply in one chat makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,

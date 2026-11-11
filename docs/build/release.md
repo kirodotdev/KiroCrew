@@ -1010,11 +1010,14 @@ Two Windows details do not generalise from the other platforms:
   it also has to contend with `Provider.findFile()` disambiguating entries by
   matching `process.arch` against the URL path.
 - **Windows updates are visible but non-interactive.** `quitAndInstall` passes
-  `isSilent=false` and `isForceRunAfter=true`. The assisted installer
+  `isSilent=false` and `isForceRunAfter=false` (see "Updates install on the
+  user's quit" below), so the installer does not start the app again; the one
+  exception is a Restart now the user asked for. The assisted installer
   (`nsis.oneClick: false`) uses update-only hooks in `installer.nsh` to skip the
   Welcome, install-mode, and Finish decisions, leaving only the native
-  extraction page and its real progress visible. At completion it runs the
-  locked electron-builder `StartApp` contract and exits successfully. The same
+  extraction page and its real progress visible. At completion it exits
+  successfully, running the locked electron-builder `StartApp` contract only
+  when the update was started with `--force-run`. The same
   hooks call `SetSilent normal` for `/S --updated`, so a client released before
   this behavior change also gets visible progress on its first upgrade into it.
   The downloaded installer owns this UI contract: a downgrade or channel
@@ -1103,11 +1106,30 @@ platform — on macOS that flag stages eagerly, which arms ShipIt to swap the
 bundle on ANY exit (including exits that skip the gateway teardown) and cannot
 be un-armed, so it would also defeat release retraction.
 
+**Updates install on the user's quit, never while the app runs.** The Install
+click ARMS the staged build (`install()` on the lane, `updateAPI.install()` in
+the renderer): it does not stop the gateway, does not call `quitAndInstall` and
+quits nothing, and the renderer is told with `armed: true` on the `downloaded`
+state. The renderer reads that as finished, not as an install still in flight:
+`useInstallDispatch` releases its latch, the modal and the About card say the
+update installs when the user quits, and a Restart now action calls
+`updateAPI.relaunch()`. An armed stage installs even when the auto-download preference is off,
+because the user chose it. The install itself runs only from the `before-quit`
+handler, after the gateway has fully stopped, and that handler calls
+`quitAndInstall(false, false)`: the app is not relaunched by it. Squirrel.Mac
+brings the app back after its swap whatever that argument says; that is the
+platform's behavior. `updateAPI.relaunch()` (Restart now) is a plain quit and
+relaunch: with an armed stage the quit's install runs and then relaunches
+(`quitAndInstall(false, true)`), otherwise it is `app.relaunch()`. The maintainer's
+rulings are
+the 2026-11-10 decision "updates never restart a running gateway".
+The managed lane follows the same rule with its own commands; see
+[desktop-app.md → Externally-managed installs](desktop-app.md#externally-managed-installs-repackagers).
+
 **A stage is re-verified against the feed before it installs, so an install
 always applies the NEWEST build.** A download can sit staged for hours while
 newer releases publish, and installing it then applies a superseded build the
-user must immediately update again. Both install paths — the About panel's
-explicit install and the deferred install on quit — therefore call
+user must immediately update again. The quit-time install therefore calls
 `verifyStageIsLatest` (`website/electron/runtime/update/freshness-gate.js`, composed by `feed-lane.js`) first.
 It drives an ordinary `checkForUpdates`, or waits for the one already in flight,
 and reads the verdict back out of the existing handlers, so the direction gate

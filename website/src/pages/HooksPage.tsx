@@ -10,7 +10,6 @@ import ErrorNotice from '../components/ErrorNotice'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../components/ui/dropdown-menu'
 import InfoTip from '../components/InfoTip'
 import SimpleSelect from '../components/SimpleSelect'
-import { esc } from '../api/helpers'
 import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -641,7 +640,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${h.enabled ? 'left-[18px]' : 'left-0.5'}`} />
                         </button>
                       </td>
-                      <td className={rowCell(h.enabled, 'text-sm font-medium text-text')}>{esc(h.name)}</td>
+                      <td className={rowCell(h.enabled, 'text-sm font-medium text-text')}>{h.name}</td>
                       {/* The gloss STACKS under the pill rather than sitting beside it.
                           This table is auto-layout inside an overflow-x scroller whose
                           ACTIONS column is `sticky right-0`, so a cell's min-content is
@@ -651,8 +650,8 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           Stacked, it is max(pill, gloss) instead. Same idiom the Status
                           cell already uses for its mark and result. */}
                       <td className={rowCell(h.enabled, 'text-sm')}><span className="inline-flex flex-col items-start gap-0.5"><span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border font-mono ${EVENT_STYLE[h.event] || 'bg-bg-elevated text-muted border-border'}`}>{h.event}</span>{eventGloss(h.event) && <span className="text-[11px] text-text/80 whitespace-nowrap" data-testid="lane-pill-gloss">{eventGloss(h.event)}</span>}</span></td>
-                      <td className={rowCell(h.enabled, 'text-sm font-mono text-text/80 truncate max-w-[300px]')} title={h.command}>{esc(h.command)}</td>
-                      <td className={rowCell(h.enabled, 'text-sm text-muted')}>{h.matcher ? esc(h.matcher) : <span className="italic">—</span>}</td>
+                      <td className={rowCell(h.enabled, 'text-sm font-mono text-text/80 truncate max-w-[300px]')} title={h.command}>{h.command}</td>
+                      <td className={rowCell(h.enabled, 'text-sm text-muted')}>{h.matcher ? h.matcher : <span className="italic">—</span>}</td>
                       <td className={rowCell(h.enabled, 'text-sm font-mono')}>{h.run_count}</td>
                       <td className={rowCell(h.enabled, 'text-sm')}>
                         {/* The persisted last_error is not tooltip-only: the

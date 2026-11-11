@@ -1012,7 +1012,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 at_ts=at_ts,
                 channel=channel,
                 thread_ts=thread_ts,
-                delete_after_run=bool(at_ts),
+                # build_job prefers cron_expr/every over at_ts: one-shot only if neither.
+                delete_after_run=bool(at_ts) and not every and not cron_expr,
                 timezone=tz,
                 skip_dates=skip_dates,
                 agent_id=_agent_id,
@@ -1066,9 +1067,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             not (command or script),
             list(args.get("agent_sequence") or []),
         )
+        ignored = at_ts and (every or cron_expr)
         return (
             f"Added job: {job.id} ({job.name}) [{sched_str}]. "
             f"Tell the user: scheduled for {sched_str}.{caveats}"
+            + (" Note: at/delay/at_time is not used; the job repeats." if ignored else "")
             + _sub_floor_timeout_note(timeout_secs_val)
             + _never_fires_note(job)
         )

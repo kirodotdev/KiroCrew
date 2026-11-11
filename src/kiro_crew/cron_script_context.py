@@ -42,6 +42,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.cron_script")
 
 
+def _delivered_text(message: object) -> str:
+    """The text a ``Done`` or ``Report`` raised with *message* carries.
+
+    A falsy value (``None``, ``0``, ``[]``, ``""``) gives ``""``, which sends nothing;
+    any other value that is not a string gives ``str()`` of it (``Done(42)`` gives
+    ``"42"``), because the gateway only sends text.
+    """
+    if not message:
+        return ""
+    if isinstance(message, str):
+        return message
+    return str(message)
+
+
 class SkipError(Exception):
     """Abort this tick silently. Cron fires again next interval."""
 
@@ -52,9 +66,9 @@ class DoneError(Exception):
     Use ctx.notify() before raising Done() to deliver a message.
     """
 
-    def __init__(self, message: str = ""):
-        self.message = message
-        super().__init__(message)
+    def __init__(self, message: object = ""):
+        self.message = _delivered_text(message)
+        super().__init__(self.message)
 
 
 class ReportError(Exception):
@@ -63,14 +77,14 @@ class ReportError(Exception):
     Use for long-lived monitors that need to report multiple times.
     """
 
-    def __init__(self, message: str = ""):
-        self.message = message
-        super().__init__(message)
+    def __init__(self, message: object = ""):
+        self.message = _delivered_text(message)
+        super().__init__(self.message)
 
 
-# Backward-compat aliases: Skip/Done/Report are the public API used by
-# user-authored cron scripts. Renamed to *Error for flake8 N818; aliases
-# preserve the existing import/raise surface with zero behavior change.
+# Skip, Done and Report are the public names user-authored cron scripts import and
+# raise; the classes they alias carry the ``Error`` suffix pep8-naming's N818 asks of
+# an exception name.
 Skip = SkipError
 
 Done = DoneError

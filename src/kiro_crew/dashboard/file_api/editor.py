@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _resolve_project_relative,
         _run_path_probe,
         _sel,
+        bounded_read,
         git_command_env,
         is_sensitive_path,
         platform_compat,
@@ -701,7 +702,7 @@ async def api_file_diff(request: web.Request) -> web.Response:
                 if isinstance(checked, _OpenDenied):
                     raise OSError(checked.code)
                 with checked.file as fh:
-                    data = fh.read(_FILE_DIFF_MAX_BYTES + 1)
+                    data = bounded_read(fh, _FILE_DIFF_MAX_BYTES + 1)
                 if len(data) > _FILE_DIFF_MAX_BYTES:
                     result["status"] = "error"
                     return result

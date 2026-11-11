@@ -566,7 +566,10 @@ state after the merge minus every entry in `~/.kiro/crew/mcp.json` whose
 (`mcp_cleanup.mcp_entry_is_muted`, which fails closed); the other badges are raw
 membership in that scope's file.
 
-Probes run from `POST /api/mcp/probe`:
+Probes run from `POST /api/mcp/probe`. A server is probed as HTTP when
+`mcp_cleanup.mcp_transport_is_remote` reads it as remote (a `url` with a `type`
+of `http` or `sse`, or a `url` with a blank or absent `command`), the same rule
+the sharing rows and the gateway rewriter use; otherwise it is stdio.
 
 - **stdio** servers are spawned and driven through an MCP `initialize` handshake
   followed by `tools/list`.
@@ -4643,6 +4646,55 @@ scales with the tool count. An operator's `ASBX_KIRO_MANDATORY_MCPS` value
 (comma-separated server names) in the gateway's environment always wins, including
 an explicit empty value; per-session overlays cannot change it.
 
+**Job tools.** A deferred tool also costs its first caller one extra model round
+trip, the load. For an agent whose whole procedure is a few MCP tools that is a
+round trip on every session, so each shipped agent declares its job tools, once, in
+`JOB_TOOLS` (`agent_sdk/tool_search.py`), and `job_tool_ids` puts the declared tools
+the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
+`tool_search`. Everything else the spec mounts stays deferred.
+
+| Agents | Job tools | Budget (schema tokens per request, as the engine counts them) |
+|---|---|---:|
+| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status` | 3,300 |
+| `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report` | 1,200 |
+| `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start`, `wait` | 7,600 |
+| `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the ten above and `work_brief` | 7,800 |
+
+The rules the table is held to (`test/test_job_tools.py`):
+
+- **A row is the tools the agent's own prompt makes its procedure**, not the tools
+  it might use. Anything else is one `tool_search` away.
+- **A row fits its budget.** Its tools ride in every request of that agent. The
+  budgets live in `test/test_job_tools.py` (`JOB_TOOL_BUDGETS`), beside the test
+  that enforces them, because nothing at run time reads one. They are counted the
+  way KAS's own context breakdown counts a listed tool,
+  `ceil(len(id + description + schema) / 4)` with the id `mcp_<server>_<tool>` and
+  the schema as compact JSON, which reproduces the `tools.mcp.tokens` a live
+  session reports to within six tokens on every row. Each budget is that reported
+  figure plus 5%, rounded up to the next 50. A tool joins a row, or a job tool's
+  description grows, only while the row still fits; the budget is what keeps the
+  table from becoming "defer nothing".
+- **The set is fixed per agent**, never per session, so the tool definitions an
+  agent's requests open with are the same in every session of it and the cached
+  prefix stays valid.
+- **An agent with no row is untouched**: an operator's own agent, an app's agent
+  and a crew member's template put on the wire what they did before. The table is
+  keyed by agent name, so this is about the name: a spec an operator saved under a
+  shipped name (their own `kirocrew-worker.json`, say) takes that name's row, for
+  the row's tools the spec itself mounts and for nothing else it mounts.
+- **An operator's `ASBX_KIRO_MANDATORY_MCPS` is the whole decision.** When it is
+  set, even empty, Crew adds no job tool beside it.
+- **Deferral is a prompt-size mechanism, not a permission.** The list changes one
+  key of the `initialize` request. What a session may call is still the spec's
+  `tools` minus `excludedTools`, and a never-deferred tool's call still passes
+  Crew's PreToolUse gate, governance and approvals like any other MCP call.
+
+Only KAS takes a per-tool list. kiro-cli's own engine exempts whole servers, so
+there the declaration reaches no channel and the job tools stay behind its loader.
+`neverDefer` is read once per process, at `initialize`, from the agent the process
+was spawned for; a process later asked to run a different agent keeps the first
+agent's list.
+
 That makes the placement question a real one rather than a matter of taste:
 
 - **Core** is for capabilities a session may need *without being asked* —
@@ -5851,9 +5903,14 @@ digest closes without the stuck-wave sweep.
 The loop registers it
 and, from its own 100 ms tick, runs the deferred's short `step()` whenever its
 `due_at()` has passed; the call is answered by the step that returns text. A
-`step` is one loopback round-trip (a keepalive POST, one poll pass, one wait
-slice), never a sleep, and runs with the call's caller identity installed as the
-worker had it. An ask step's wait slice is the server's fixed
+`step` is one loopback round-trip (a keepalive POST, one pass over a wave's
+children, one wait slice), never a sleep, and runs with the call's caller
+identity installed as the worker had it. A `spawn_sub_agents` pass asks the
+gateway to hold its status reads until the child ends, for at most 2s per pass,
+and at most half of the pool's threads sit in such a read at once
+(`spawn_parts/wave.py` `_HELD_READS`); a wave past that bound reads without
+holding and is stepped again on its 2s interval, so held reads never take the
+threads the quick steps and the ask slices run on. An ask step's wait slice is the server's fixed
 `validation.ASK_WAIT_SLICE_SECS` (5s; the wait route reads no body, so a caller
 cannot choose it): a step holds a pool thread for one slice, so the admitted-card
 queue budget `ceil(DEFERRED_PARKED_MAX / DEFERRED_STEP_WORKERS) * 5` = 40s stays

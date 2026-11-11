@@ -220,9 +220,14 @@ def _answer_generation() -> int | None:
         return None
 
 
-def _row_denied(surface_key: str, scope: str, item: str = "") -> bool:
+def _row_denied(surface_key: str, scope: str, item: str = "", *, audit: bool = True) -> bool:
     """Evaluate and audit ONE capability row or list item. Fail-closed; see
-    :func:`is_decisions_denied`."""
+    :func:`is_decisions_denied`.
+
+    With ``audit=False`` the same answer is computed and no SEL row is written for
+    it, for a reader that asks about many items to decide what to offer rather than
+    to act on an answer.
+    """
     from kiro_crew.edition_locks import UNNAMED_REASON, follows_policy, locked_off
 
     try:
@@ -237,8 +242,14 @@ def _row_denied(surface_key: str, scope: str, item: str = "") -> bool:
             permitted = bool(getattr(decision, "permitted", False))
             denied = not permitted or not follows_policy(decision)
             reason = UNNAMED_REASON if permitted and denied else getattr(decision, "reason", "")
-            _audit_row(surface_key, scope, "denied" if denied else "allowed", reason)
+            if audit:
+                _audit_row(surface_key, scope, "denied" if denied else "allowed", reason)
             return denied
+        if not audit:
+            decision = governance_permits(
+                scope, item, session_key=surface_key, log_warning=False, fail_closed=True
+            )
+            return not getattr(decision, "permitted", False)
         decision = vet_and_audit(
             scope,
             item,
@@ -253,7 +264,8 @@ def _row_denied(surface_key: str, scope: str, item: str = "") -> bool:
         # itself failed — the ceiling is unevaluable, which is the same condition
         # as a degrade. Fail closed, and record the denial the seam could not.
         logger.debug("decisions governance probe failed; denying", exc_info=True)
-        _audit_unevaluable(surface_key, scope)
+        if audit:
+            _audit_unevaluable(surface_key, scope)
         return True
     return not getattr(decision, "permitted", False)
 
@@ -264,6 +276,7 @@ def targets_denied(
     point: str | None,
     model: str | None,
     endpoint: str | None,
+    audit: bool = True,
 ) -> bool:
     """Whether the ceiling's lists refuse this request's point, model or endpoint.
 
@@ -274,6 +287,12 @@ def targets_denied(
     as before. Every item is evaluated and audited, never short-circuited, so which
     rows appear does not depend on another item's answer. Fail-closed, like
     :func:`is_decisions_denied`. Blocking: call off the event loop.
+
+    ``audit=False`` gives the same answer, with the same policy-generation bracket,
+    without writing a ``governance_decision`` row for any item: the settings read that
+    decides which options to offer asks about a host per region, and those questions
+    are not requests. Every request that acts on an answer (the provider and consent
+    writes, the send path) keeps the default.
     """
     # No point for a request no decision point makes (the owner's connection test):
     # only its model and endpoint are asked about.
@@ -291,10 +310,11 @@ def targets_denied(
     # the endpoint. Bracketed as in :func:`denied_sides`, failing closed if it moved.
     _prime_profiles()
     before = _answer_generation()
-    denied = [_row_denied(surface_key, DECISIONS_SCOPE, item) for item in items]
+    denied = [_row_denied(surface_key, DECISIONS_SCOPE, item, audit=audit) for item in items]
     if not any(denied) and (before is None or _answer_generation() != before):
         logger.debug("decisions governance answer moved mid-evaluation; denying the request")
-        _audit_unevaluable(surface_key, DECISIONS_SCOPE)
+        if audit:
+            _audit_unevaluable(surface_key, DECISIONS_SCOPE)
         return True
     return any(denied)
 

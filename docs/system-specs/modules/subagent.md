@@ -2502,7 +2502,7 @@ class SubagentInfo:
     id: str               # 16-char hex run id (see _RUN_ID_HEX_CHARS)
     task: str             # original task text
     started: float        # time.time() at spawn
-    done: bool            # True when finished (success or error)
+    done: bool            # True when finished (success or error); a plain field, and writing True wakes wait_done()
     result: str           # LLM response text (trimmed to completion_keep for the event)
     result_path: str      # ~/.kiro/crew/subagents/<id>/result.txt (full transcript)
     result_truncated: bool  # completion copy dropped content → event carries summary+path
@@ -3916,9 +3916,12 @@ Delegation guidance is injected from `src/kiro_crew/config/prompt.md`; no dedica
 
 ### CLI: `kirocrew spawn run "task"`
 
-Posts to the dashboard API on the configured `--port`. By default it polls until
-the run finishes and prints the result; `--async` returns immediately with the
-subagent ID. `--crew NAME` runs the task as that crew member (its memory store and
+Posts to the dashboard API on the configured `--port`. By default it waits until
+the run finishes and prints the result: each status read asks the gateway to hold
+it until the run ends (`GET /api/spawn/{id}?wait_secs=2`, the read
+`spawn_sub_agents` waits on), and a read answered sooner with the run not done
+(it is queued, or the gateway did not hold) is repeated 2s after it was sent.
+`--async` returns immediately with the subagent ID. `--crew NAME` runs the task as that crew member (its memory store and
 template) and `--agent NAME` under that agent template; they are sent as the same
 `crew` / `agent` request fields `spawn_run` uses, so an unknown name is refused by
 the gateway (`unknown_member`, `agent_not_found`) and the CLI exits 1 rather than
@@ -4063,11 +4066,14 @@ parallel, waits until all of them finish, then returns their collected
 results inline to the calling tool invocation.
 
 Blocking for the CALLER only. Submission posts one member per bounded deferred
-step; polling the children every 2s, holding for the parent's slot grant and
+step; waiting for the children, holding for the parent's slot grant and
 collecting results are also `mcp_shared.DeferredTool` phases
-(`spawn._SubAgentsStep`) the stdio dispatch loop times from its own tick, so a
+(`spawn._SubAgentsStep`) the stdio dispatch loop steps, so a
 parent parked on its children holds no worker and other sessions' calls on the
-pooled backend are unaffected. Why that shape, and the in-flight report that
+pooled backend are unaffected. A phase that finishes hands over to the next in
+the same step (the pass that sees the last child end goes on to the slot probe,
+and a granted probe to the collection), so the reply is not held for a loop tick
+between them. Why that shape, and the in-flight report that
 keeps the gateway's wedge detector from recycling a backend full of parked
 parents: [`docs/architecture/mcp.md`](../../architecture/mcp.md#a-tool-that-only-waits-returns-a-deferredtool).
 If the server exits for a pruned install while the parent is still parked, the
@@ -4306,8 +4312,9 @@ Parameters:
 - `cwd` (str, optional): absolute path to launch all sub-agents in. Must be under a configured `subagent_cwd_allowed_roots` entry (default: `~/workspace`, `~/workspaces`, `~/workplace`, `~/workplaces`), same validation as `spawn_run`.
 - `include_memory` / `include_lessons` / `include_project` (bool, optional, default `true`): the same batch-wide context switches as `spawn_run`.
 
-Blocking poll semantics:
-- Each sub-agent is spawned via `POST /api/spawn` (with `parent_session`), then the handler polls `GET /api/spawn/{id}` every 2s until every sub-agent reports `done` (or `error`).
+Blocking wait semantics:
+- Each sub-agent is spawned via `POST /api/spawn` (with `parent_session`), then the handler waits until every sub-agent reports `done` (or `error`). **The wait is woken by the child's own ending.** One pass reads the unsettled members in order with `GET /api/spawn/{id}?wait_secs=N`, which the gateway holds until that run's record flips `done` (see [`GET /api/spawn/{id}`](#dashboard-api-post-apispawn)), so the pass returns the moment the last child ends. One budget of `POLL_INTERVAL` (2s) covers a whole pass: a step never keeps its pool thread longer, and the next pass is due when the budget is spent.
+- **The 2s interval is the fallback, not the path.** A pass that could not wait on the gateway is repeated `POLL_INTERVAL` after it started: the member has no live run to wait on (queued behind the cap, or its read failed), the gateway answered without holding (a wake-up lost to a gateway restart, a record replaced under the read), or no held read was free. Held reads are bounded process-wide (`_HELD_READS`, half of `DEFERRED_STEP_WORKERS`): a held read keeps a step-pool thread, and one pool serves every parked call of the process, on a pooled backend every session's. A wave that finds none free reads without `wait_secs` for that pass. A held read's client timeout is the plain read's 10s plus the hold, so the hold never eats the answer's margin.
 - An errored/crashed sub-agent is treated as settled so one bad agent cannot keep the loop spinning until the deadline.
 - A member that is accepted but not started answers `queued: true` with `done: false`, and when the gate DEFERRED it (its own `reason_detail` sentence, sent only while the deferral is in force; the parent-wide `reason` label is last-writer-wins and not trusted for this) it SETTLES the wait: the call returns once every member is done, errored or deferral-held, so one gate-deferred member does not hold a dashboard parent's turn inside the tool for up to `max_wait`. A member queued only behind the concurrency cap (`concurrency_limit`) or waiting to resume is NOT settled: it drains with the wave, and the tool returns its result (a sub-agent parent still waits for its own slot grant afterwards, `_ResumeHold`, which follows its children). Done and queued members are not polled again; an error settles only the pass it was seen in, since it can be one failed poll of a running member. A queued member is reported ONCE, in the `{"status": "queued", "agents": {id: reason}}` record (the reason is its current wait, `queued_wait_text`), never as an `error` member too: a caller shown an error for accepted work dispatches it again. Its result arrives later as a completion event, and it is never marked collected. A queued member that already ran and waits to resume (`resuming: true`) is reported under `still_running` as `waiting_to_resume`, never as not started. "Held" is read off `queued: true` only, never off a 404's prose. The gateway sends `error` only on a finished row, so a final poll that answers `error` without `done: true` is a read that failed (a timeout, a 404, a 503): it says nothing about the child, which may still be running, so that member is reported under `still_running` as `unread`, never as an `error` entry, and is not marked collected.
 - The loop pings `POST /api/session-keepalive` every 60s so the gateway's `is_responsive()` does not flag the (legitimately long-blocked) session as stale and SIGTERM the ACP subprocess mid-poll. The `wait` tool pings the same endpoint for the same reason but on a **5s** interval and with a body, because there the reply doubles as an early-end control channel (see `modules/learn-cron-dashboard.md` § Wait countdown and early end); this loop sends `{}` and ignores the reply, so 60s is sufficient.
@@ -4843,6 +4850,28 @@ The spawn routes are composed into `dashboard/handlers/messaging.py`, which stay
 their import path. Admission and continue live in `dashboard/messaging_api/spawn.py`,
 the run controls and their session fence (`_spawn_scope_refusal`) in
 `run_control.py`, and the status and list views in `run_views.py`, beside it.
+
+**`GET /api/spawn/{id}` can wait for the run to end.** `wait_secs` (0..8, the
+bound `/resume` uses) holds the answer for a live, unfinished run until it ends
+or the bound passes, then answers exactly as a plain read does; for such a run
+a value that is not a finite, non-negative number is a `400` coded
+`invalid_wait_secs`. A run with no live record (queued, or read from disk) and
+a finished run are answered at once, whatever `wait_secs` says, as `/resume`
+answers a run it does not hold. The wake-up has ONE owner: a write of True to
+`SubagentInfo.done` calls the run's waiters (`_DoneFlag.__set__`,
+`subagent_parts/run_record.py`), and the route waits through `wait_done(info,
+timeout)`. Every ending writes that field (the run loop, a stop, the reaper, a
+refusal, on whichever thread), so no flip site signals anything itself and a new
+one cannot forget to. The wake-up is on the write, which happens once per run,
+and never on the read: admission reads `done` for every registered run on every
+admission (`_live_run_ids`, the fairness scans, `_startup_population`). So
+`_DoneFlag` defines `__set__` and no `__get__`: the value lives on the instance,
+a read is served from there and runs no code, and no other field's write is
+touched. `test/test_subagent_done_flag_read.py` pins all three by counting calls. The hold comes before the handler's `done` read, so that
+read still shares a step with the parent-turn read beside it. A caller that waits
+for a run (`spawn_sub_agents`, a blocking `kirocrew spawn run`) uses this read
+instead of an interval of its own, and keeps its interval only for a read that
+came back early.
 
 The view-only Agent Worlds hook polls the global `GET /api/spawn` list and reads
 its `{"agents": [...]}` envelope; it does not call the parent-scoped

@@ -818,6 +818,9 @@ async def api_session_control_generate_title(request: web.Request) -> web.Respon
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        # The title is built from the target's rows: a target restored as a
+        # sidebar row loads its window first, ahead of the gate's prewarm.
+        await sc.load_target_window(state, _target(body))
         result = await sc.generate_title_target(
             state,
             caller_session_key=_read_session_key(request),

@@ -14,6 +14,7 @@ boolean shell ``autoAllowReadonly`` does not.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, cast
 
@@ -22,6 +23,9 @@ from kiro_crew.acp.kas_permissions import (
     _SHELL_SETTINGS_KEYS,
     _WRITE_SETTINGS_KEYS,
     CREW_SPEC_DENIES_KEY,
+    shell_denies_carried,
+    shell_deny_carried,
+    shell_deny_globs,
     withhold_answered_under_authored_rules,
 )
 from kiro_crew.platform import allowed_commands, allowed_paths
@@ -171,6 +175,93 @@ def _checkable(tools_settings: Any, keys: tuple[str, ...], field: str, read: Any
             out.append(raw)
     out = list(dict.fromkeys(out))
     return out if len(out) <= _MAX_DENIES else []
+
+
+def _refusable_deny(raw: object) -> bool:
+    """Whether the ``spec-denies`` row can refuse what the ``deniedCommands`` entry
+    *raw* names: Crew reads it as wide as kiro-cli (``allowed_commands.parse_deny``)
+    and, with an optional ``^`` / ``\\A`` and ``$`` / ``\\z`` anchor taken off, it
+    holds no character a command the row judges never holds
+    (``allowed_commands.UNGRANTABLE_COMMAND_CHARS``: a redirect, a separator, a
+    substitution). The row judges a plain command and each command of a chain, so
+    an entry naming one of those characters could never match. One reader for the
+    record and the notice, so they cannot disagree."""
+    if not isinstance(raw, str) or allowed_commands.parse_deny(raw) is None:
+        return False
+    body = raw.removeprefix("\\A") if raw.startswith("\\A") else raw.removeprefix("^")
+    if body.endswith("\\z") and not body.endswith("\\\\z"):
+        body = body[:-2]
+    elif body.endswith("$") and not body.endswith("\\$"):
+        body = body[:-1]
+    return not allowed_commands.UNGRANTABLE_COMMAND_CHARS.intersection(body)
+
+
+def uncarried_denied_commands(tools_settings: Any, policy: Any) -> list[str]:
+    """The ``deniedCommands`` entries the gate refuses on its own, or ``[]``.
+
+    Empty when every entry reaches *policy* as a KAS deny rule
+    (``kas_permissions.shell_denies_carried``). Otherwise every entry Crew reads as
+    wide as kiro-cli and the row can judge (:func:`_refusable_deny`), so a command
+    one names is refused on every approval policy, not only where KAS asks. Any
+    other entry refuses nothing, as on main; the session-start notice names it
+    (``kas_agents.spec_keys_without_carrier``). *tools_settings* has one key per
+    kiro-cli alias group.
+    """
+    if not isinstance(tools_settings, dict) or shell_denies_carried(tools_settings, policy):
+        return []
+    out: list[str] = []
+    for key in _SHELL_SETTINGS_KEYS:
+        settings = tools_settings.get(key)
+        entries = settings.get("deniedCommands") if isinstance(settings, dict) else None
+        for raw in entries if isinstance(entries, list) else ():
+            if _refusable_deny(raw):
+                out.append(raw)
+    return list(dict.fromkeys(out))[:_MAX_DENIES]
+
+
+def unread_denied_commands(tools_settings: Any, policy: Any = None) -> list[str]:
+    """Each ``deniedCommands`` entry neither KAS nor :func:`uncarried_denied_commands`
+    enforces, as ``<key>.deniedCommands: <entry>`` (JSON when not a printable
+    string), for the session-start notice: one :func:`_refusable_deny` refuses and
+    *policy* (the translated ``permissions``) does not carry
+    (``kas_permissions.shell_deny_carried``), or one past the
+    :data:`_MAX_DENIES` bound (marked so), or one the gate refuses only as a plain
+    command (:data:`GATE_JUDGED_MARK`). A value that is not a list is
+    ``<key>.deniedCommands``."""
+    out: list[str] = []
+    if not isinstance(tools_settings, dict):
+        return out
+    globs = shell_deny_globs(policy)
+    kept: set[str] = set()
+    for key in _SHELL_SETTINGS_KEYS:
+        settings = tools_settings.get(key)
+        if not isinstance(settings, dict) or "deniedCommands" not in settings:
+            continue
+        entries = settings["deniedCommands"]
+        if not isinstance(entries, list):
+            out.append(f"{key}.deniedCommands")
+            continue
+        for raw in entries:
+            shown = raw if isinstance(raw, str) and raw.isprintable() else json.dumps(raw)
+            # KAS refuses an entry it carries, so only the rest can go unenforced.
+            carried = isinstance(raw, str) and shell_deny_carried(raw, globs)
+            if not _refusable_deny(raw):
+                if not carried:
+                    out.append(f"{key}.deniedCommands: {shown}")
+            elif raw not in kept and len(kept) >= _MAX_DENIES:
+                if not carried:
+                    out.append(f"{key}.deniedCommands: {shown} (past the first {_MAX_DENIES})")
+            else:
+                kept.add(raw)
+                if not carried:
+                    out.append(f"{key}.deniedCommands: {shown}{GATE_JUDGED_MARK}")
+    return out
+
+
+#: Marks a notice item the gate refuses, one command of a chain at a time; a
+#: command that does not split there (``spec_denied_gate.spec_denies_refusal``)
+#: is not judged.
+GATE_JUDGED_MARK = " (refused by Kiro Crew's gate)"
 
 
 def _without(tools_settings: Any, keys: tuple[str, ...], field: str) -> Any:

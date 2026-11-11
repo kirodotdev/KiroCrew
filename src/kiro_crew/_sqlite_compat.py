@@ -62,12 +62,18 @@ _CJK_RANGES = (
     (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
     (0x20000, 0x2EBEF),  # CJK Unified Ideographs Extensions B..F (astral)
 )
+_CJK_MIN = min(lo for lo, _ in _CJK_RANGES)
 
 
 def is_cjk_char(ch: str) -> bool:
     """True if ``ch`` belongs to a script written without word spacing."""
     cp = ord(ch)
-    return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
+    if cp < _CJK_MIN:  # ASCII and Latin text never reach the range scan
+        return False
+    for lo, hi in _CJK_RANGES:
+        if lo <= cp <= hi:
+            return True
+    return False
 
 
 def is_kana_char(ch: str) -> bool:

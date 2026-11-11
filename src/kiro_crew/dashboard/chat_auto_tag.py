@@ -11,7 +11,8 @@ Two passes, in order:
    repo/directory name). No model call.
 2. Topic tags, off unless ``dashboard.topic_tags_enabled`` is set: one call on
    the shared background session (``run_bg_oneliner``, the same ``_bg`` runtime
-   auto-title uses, so it stays serialized and on the cheap background model)
+   auto-title uses, so it stays serialized and on the cheap background model),
+   made once the turn the send started has handed its prompt to the engine,
    asks for up to ``_TOPIC_TAG_MAX`` short topic tags from the first user
    message. This pass never takes a session above ``MAX_TAGS_PER_SESSION``
    tags; the cap is applied here, on the server, not by the model's reply. With an
@@ -41,6 +42,7 @@ from kiro_crew.dashboard.chat_tags import (
 )
 from kiro_crew.dashboard.chat_title import _titling_messages, _ui_language
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.prompt_handoff import turn_handed_off
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -291,6 +293,9 @@ async def _maybe_topic_tags(state: Any, slot: Any, message: str, history_key: st
         count=count,
         language=_LANGUAGE_TEMPLATE.format(lang=ui_language) if ui_language else "",
     )
+    # The background session may have to start; the turn this send started must
+    # not wait behind that, so the call follows the turn's prompt handoff.
+    await turn_handed_off(slot)
     try:
         text = await run_bg_oneliner(
             state.sessions,

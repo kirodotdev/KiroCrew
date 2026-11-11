@@ -74,6 +74,7 @@ const UPDATE_HANDLES = [
   "update:download",
   "update:get-info",
   "update:install",
+  "update:relaunch",
   "update:set-auto-download",
   "update:set-channel",
 ].sort();
@@ -1564,7 +1565,7 @@ test("bind and unregister remain owned by the dedicated hotkey helper", () => {
   assert.equal(h.hotkey.state.current, "");
 });
 
-test("registerUpdater owns six handlers and preserves lazy gateway hooks", async () => {
+test("registerUpdater owns seven handlers and preserves lazy gateway hooks", async () => {
   const updater = updaterHandle({ disabled: "test-disabled" });
   let initCalls = 0;
   let deps;
@@ -1626,7 +1627,8 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
   // It must be a function (not a static boolean) so the lane re-checks each call.
   assert.strictEqual(typeof deps.isPolicyGoverned, "function",
     "isPolicyGoverned must be a live function, not a captured boolean");
-  assert.equal(deps.isPolicyGoverned(), false, "governance must start false");
+  // null, not false: the dashboard has not reported yet, so there is no verdict to act on.
+  assert.equal(deps.isPolicyGoverned(), null, "governance has no live verdict before the dashboard reports");
 
   // Build a minimal fake event that satisfies assertLocalDashboard's three gates.
   // The harness's windows mock already returns true for isGatewayLocalForWindow
@@ -1713,7 +1715,7 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
     assert.strictEqual(hRemote.registerUpdater(hRemote.registrar), remoteUpdater);
     const evRemote = makeEvent();
     await hRemote.listeners.get("update:notify-policy-governed")(evRemote, true);
-    assert.equal(remoteDeps.isPolicyGoverned(), false,
+    assert.equal(remoteDeps.isPolicyGoverned(), null,
       "SSH tunnel on primary port must not set governance (gate 3 rejection)");
   }
 
@@ -1729,7 +1731,7 @@ test("registerUpdater owns six handlers and preserves lazy gateway hooks", async
     assert.strictEqual(hOther.registerUpdater(hOther.registrar), otherUpdater);
     const evOther = makeEvent();
     await hOther.listeners.get("update:notify-policy-governed")(evOther, true);
-    assert.equal(otherDeps.isPolicyGoverned(), false,
+    assert.equal(otherDeps.isPolicyGoverned(), null,
       "gateway from another desktop bundle must not set governance (gate 4 rejection)");
   }
 

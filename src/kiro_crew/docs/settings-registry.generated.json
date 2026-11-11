@@ -19,7 +19,7 @@
       "label": "Update the gateway automatically",
       "tab": "about",
       "route": "/settings/about?highlight=key%3Aauto_update",
-      "description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
+      "description": "Updates are downloaded automatically and take effect the next time you restart Kiro Crew. Nothing restarts by itself. When off, it stays on its current version.",
       "configKey": "auto_update"
     },
     {
@@ -1458,6 +1458,14 @@
       "route": "/settings/developer/feature-previews?highlight=developer.session-environments",
       "description": "Runs a chat in its own remote workspace.",
       "hint": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message."
+    },
+    {
+      "id": "developer.share-one-background-program-across-chats",
+      "label": "Share one background program across chats",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.share-one-background-program-across-chats",
+      "description": "Saves computer memory by running several chats in one background program. Chats can't see each other's messages, but they reply one at a time. Turn it off and each new chat gets its own program again.",
+      "hint": "Chats reply one at a time, so a long reply in one chat makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory."
     },
     {
       "id": "developer.shared-crew",

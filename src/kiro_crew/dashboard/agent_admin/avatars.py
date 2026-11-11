@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         _safe_color,
         _sel,
         agent_route_name,
+        bounded_read,
         data_home,
         invalid_agent_name_response,
         logger,
@@ -200,7 +201,7 @@ def _read_avatar_file(path: Path) -> bytes | None:
             logger.warning("refusing non-regular avatar file %s", path.name)
             return None
         with path.open("rb") as fh:
-            data = fh.read(_AVATAR_MAX_BYTES + 1)
+            data = bounded_read(fh, _AVATAR_MAX_BYTES + 1)
     except OSError:
         return None
     if len(data) > _AVATAR_MAX_BYTES:

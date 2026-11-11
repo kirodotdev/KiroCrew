@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -159,8 +159,14 @@ from kiro_crew.acp.kas_settings_mcp import include_mcp_json
 from kiro_crew.acp.kas_skill_scope import _skill_scope_summary
 from kiro_crew.acp.kas_spec_carry import projected_resources, user_tool_aliases, with_use_aws_denies
 from kiro_crew.acp.kas_spec_denies import commands_lifted_by_denies as _commands_lifted_by_denies
-from kiro_crew.acp.kas_spec_denies import spec_denies_record, web_fetch_carried, web_fetch_gate
-from kiro_crew.acp.kas_spec_grants import shell_auto_allows_readonly
+from kiro_crew.acp.kas_spec_denies import (
+    spec_denies_record,
+    uncarried_denied_commands,
+    unread_denied_commands,
+    web_fetch_carried,
+    web_fetch_gate,
+)
+from kiro_crew.acp.kas_spec_grants import SHELL_SETTINGS_KEYS, shell_auto_allows_readonly
 from kiro_crew.acp.kas_tool_limits import (
     _KAS_CARRIED_ELSEWHERE,
     _KAS_DISCARDED_ENTRY_KEYS,
@@ -329,6 +335,18 @@ def spec_keys_without_carrier(
     named = name_unreadable_entries(
         tools_settings, [path for path in not_carried if path not in gate_carried]
     )
+    # A `deniedCommands` KAS did not carry is enforced at Crew's gate
+    # (`uncarried_denied_commands`): only the entries neither enforces are lost.
+    unread_denies = unread_denied_commands(tools_settings, translated)
+    named = [
+        entry
+        for path in named
+        for entry in (
+            [e for e in unread_denies if e.partition(":")[0] == path]
+            if path in {f"{key}.deniedCommands" for key in SHELL_SETTINGS_KEYS}
+            else [path]
+        )
+    ]
     lost.extend(f"toolsSettings.{as_authored(raw, path)}" for path in named)
     if authored is not None and not projection_accepts(authored):
         lost.append("permissions")
@@ -578,7 +596,24 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
     return []
 
 
-def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
+def _authored_allow_gate(session_key: str, governance_app: str | None) -> Callable[[str], bool]:
+    """The ceiling predicate for the spec's own allows (``allowedTools``, ``permissions``).
+
+    ``may_skip_gate_now``, except for the sub-agent tool, whose grant meets only the
+    profiles that govern this session (``may_skip_gate_for_session``), as a translated
+    ``trustedAgents`` allow does. Both fail closed.
+    """
+    for_session = may_skip_gate_for_session(session_key, governance_app)
+
+    def permits(ref: str) -> bool:
+        return for_session(ref) if ref == "use_subagent" else may_skip_gate_now(ref)
+
+    return permits
+
+
+def _ceiling_permitted(
+    allowed_tools: Any, agent_id: str, permits: Callable[[str], bool]
+) -> list[str]:
     """``allowedTools`` with every entry the governance ceiling withholds removed.
 
     Every writer of an ``allowedTools`` list already consults the ceiling when
@@ -588,8 +623,8 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
     edited by hand carries grants nobody ever cleared. Re-asking at projection, like
     ``rebuild_agent_config``'s last sanitizer pass over ``mcpServers``, is deliberate.
 
-    Each entry is asked under Crew's name for it (``subagent`` as ``use_subagent``).
-    ``may_skip_gate_now`` fails closed: what is dropped here keeps prompting.
+    Each entry is asked of *permits* under Crew's name for it (``subagent`` as
+    ``use_subagent``). It fails closed: what is dropped here keeps prompting.
     """
     if not isinstance(allowed_tools, list):
         return []
@@ -599,7 +634,7 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
         if not isinstance(raw, str) or not raw.strip():
             continue
         entry = canonical_kiro_cli_tool_name(raw.strip())
-        if may_skip_gate_now(entry):
+        if permits(entry):
             permitted.append(entry)
         else:
             withheld.append(entry)
@@ -1056,7 +1091,8 @@ def to_client_custom_agent(
     skills its kiro-cli twin loads (:func:`kiro_crew.acp.kas_skill_scope.skill_scope_rules`);
     they join ``permissions`` after every merge. Empty adds nothing.
 
-    A translated ``toolsSettings`` allow meets only the profiles the gate could resolve for
+    A translated ``toolsSettings`` allow, and the spec's own sub-agent allow
+    (:func:`_authored_allow_gate`), meet only the profiles the gate could resolve for
     *session_key* and *governance_app* (``governance.may_skip_gate_for_session``).
     """
     if not agent_id:
@@ -1143,8 +1179,9 @@ def to_client_custom_agent(
     # `permissions` and no `allowedTools` reaches KAS with the field absent, and
     # absent resolves every request to `ask`, so the author's policy becomes a
     # prompt for each of the calls it described.
+    authored_gate = _authored_allow_gate(session_key, governance_app)
     permissions = allowed_tools_to_permissions(
-        _ceiling_permitted(allowed_tools_input, agent_id), agent_id=agent_id
+        _ceiling_permitted(allowed_tools_input, agent_id, authored_gate), agent_id=agent_id
     )
     # The built-ins the projection keeps at ``ask`` that the spec still granted:
     # Crew answers their permission requests itself, after its own checks. Kept
@@ -1161,7 +1198,7 @@ def to_client_custom_agent(
     permissions = merge_user_permissions(
         permissions,
         spec.get("permissions"),
-        ceiling_permits=may_skip_gate_now,
+        ceiling_permits=authored_gate,
         audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
             refs, outcome, reason, agent_id
         ),
@@ -1272,6 +1309,13 @@ def to_client_custom_agent(
     if web_fetch:
         base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
         denies = {**base, **web_fetch}
+    # A `deniedCommands` entry KAS received no rule for: the gate refuses what it
+    # names on every approval policy, so an auto-approved call cannot run it. It
+    # grants nothing (a record with no lifted grant only refuses).
+    uncarried = uncarried_denied_commands(tools_settings, permissions)
+    if uncarried and not (denies and denies["deniedCommands"]):
+        base = denies or {"builtins": [], "commands": [], "deniedCommands": [], "deniedPaths": []}
+        denies = {**base, "deniedCommands": uncarried}
     if denies:
         out[CREW_SPEC_DENIES_KEY] = denies
     # `toolsSettings.shell.denyByDefault`: the only commands the shell may run.

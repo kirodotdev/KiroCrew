@@ -68,6 +68,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # Pure helper: `_run_apply_child` redacts the tail of the boot-time
+        # `kirocrew update` child's output before it is stored as the armed update's
+        # `pending_apply_error`. It emits nothing itself; the dashboard status route
+        # that serves that stored text is the egress.
+        "update_boot_apply.py",
         # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
         # only caller is `notifications/bridge.py`, the registered sink that hands
         # the copy to a transport.
@@ -893,7 +898,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/taskrunner.py",
         "dashboard/handlers/terminal.py",
         "dashboard/handlers/themes.py",
-        "dashboard/handlers/updates_apply.py",
         "dashboard/handlers/webapp_preview.py",
         "dashboard/handlers_project.py",
         # The spawn and Slack workspace owners composed into ``dashboard/handlers/messaging.py``:
@@ -1120,7 +1124,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/gateway_runtime/subagent_report.py",
         "slack/gateway_runtime/subagent_wiring.py",
         "slack/gateway_runtime/turn_approvals.py",
-        "slack/gateway_runtime/update_apply.py",
         "slack/gateway_runtime/update_schedule.py",
         # The owners composed into discord/transport_dispatch.py's class, beside the
         # registered "Discord direct send" sink (the !compact owner, which holds that

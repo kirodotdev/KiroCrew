@@ -250,7 +250,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoni
         className={`flex items-center gap-2 px-3 py-2 rounded-md text-[13px] leading-5 font-mono text-muted bg-card ring-1 ring-inset forced-colors:border cursor-pointer transition-all w-full text-left ${headerPending ? 'ring-warn hover:ring-warn/80' : localResolved ? 'ring-ok/60 hover:ring-ok/80' : 'ring-border hover:ring-border-strong'} hover:text-text`}
         onClick={() => { userToggled.current = true; setExpanded(e => !e) }}
         aria-expanded={expanded}
-        aria-label={`${expanded ? i18nT('pages.chat.collapsibleToolGroup.collapse') : i18nT('pages.chat.collapsibleToolGroup.expand')} ${labelText}`}
+        aria-label={expanded ? i18nT('pages.chat.collapsibleToolGroup.collapse', { name: labelText }) : i18nT('pages.chat.collapsibleToolGroup.expand', { name: labelText })}
       >
         {headerPending ? (
           <span className="relative w-2.5 h-2.5 flex-shrink-0" aria-label={i18nT('pages.chat.collapsibleToolGroup.approval_needed')}>

@@ -221,7 +221,10 @@ async def import_bundle(request: web.Request) -> web.Response:
     # what the synchronous call raised; the rejection arms keep their own
     # audit lines because they are tied to the HTTP response they build.
     def _import_and_audit() -> dict:
-        result = store.import_bundle(body)
+        # An import writes entities and aliases, and the launch's maintenance sweeps
+        # (the split-entity merge among them) assume no such writer runs in the window.
+        with store.ingestion_in_flight():
+            result = store.import_bundle(body)
         _sel_log("import", **result)
         return result
 

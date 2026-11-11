@@ -16,6 +16,7 @@ import contextlib
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 from urllib.parse import quote
@@ -843,6 +844,58 @@ async def fetch_app_contributors(url: str, *, refresh: bool = False) -> list[dic
     # Shield the shared fetch so one disconnected browser cannot cancel work
     # another concurrent view is still awaiting for the same repo.
     return await asyncio.shield(task)
+
+
+# Issue search (``POST /api/source/issues``): key -> (stored_at, bytes, payload).
+# ``issue_search`` validates and fetches; the redaction, byte cap and cache that
+# every other source read gets live here with theirs.
+_SEARCH_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
+_SEARCH_CACHE_MAX_BYTES = 8 * 1024 * 1024
+
+
+async def search_issues(
+    key: str,
+    fetch: Callable[[], Awaitable[dict[str, Any]]],
+    project: Callable[[dict[str, Any]], dict[str, Any]],
+    finish: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Answer one validated issue search from the cache or one *fetch*.
+
+    *key* identifies the normalized query. The provider's rows are redacted
+    BEFORE *project* reshapes them (a PEM key is only recognised across its
+    newlines). *project* strips markdown but keeps line breaks, and that list is
+    redacted again (the strip can join pieces into a secret), still whole and
+    newline-preserving. Only then does *finish* flatten and cut each excerpt,
+    which joins nothing, and the result is byte-capped before it is cached or
+    returned.
+    """
+    cached = _SEARCH_CACHE.get(key)
+    if not refresh and cached and time.monotonic() - cached[0] < _CACHE_TTL_SECS:
+        return cached[2]
+    # shortcut: concurrent identical searches each read the provider (no
+    # in-flight sharing like fetch_issue); add it if list reads get hot.
+    rows = sanitize._redact_provider_data(await fetch())
+    if not isinstance(rows, dict):
+        raise SourceProviderError("provider returned an invalid issue list")
+    data = sanitize._redact_provider_data(project(rows))
+    if not isinstance(data, dict):
+        raise SourceProviderError("provider returned an invalid issue list")
+    data = finish(data)
+    size = sanitize._payload_size_bytes(data)
+    if size > sanitize._MAX_PAYLOAD_BYTES:
+        raise SourceProviderError("provider issue list was too large")
+    now = time.monotonic()
+    for stale in [k for k, entry in _SEARCH_CACHE.items() if now - entry[0] >= _CACHE_TTL_SECS]:
+        del _SEARCH_CACHE[stale]
+    _SEARCH_CACHE[key] = (now, size, data)
+    while (
+        len(_SEARCH_CACHE) > _CACHE_MAX_ENTRIES
+        or sum(entry[1] for entry in _SEARCH_CACHE.values()) > _SEARCH_CACHE_MAX_BYTES
+    ):
+        del _SEARCH_CACHE[min(_SEARCH_CACHE, key=lambda k: _SEARCH_CACHE[k][0])]
+    return data
 
 
 async def _invalidate_full_payload_cache(url: str) -> None:

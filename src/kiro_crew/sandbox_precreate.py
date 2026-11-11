@@ -371,6 +371,14 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # residual below), so in-sandbox readers see the saved rules, never a pinned ``{}``.
     "denied_commands.json",
     "decisions_consent.json",
+    # The update armed for the next start: ``update_next_start.read`` answers an
+    # absent, empty and unreadable record alike as nothing armed, so a pre-created
+    # ``{}`` means what an absent file means (criterion 1); the writer publishes
+    # through ``atomic_write`` (new inode), so a sandboxed reader frozen at ``{}``
+    # under-reports the arm, which is narrower than the truth (criterion 2). Without
+    # this entry the mount seal skips the absent leaf, which is the default before
+    # any click, leaving it creatable from inside the sandbox.
+    "update_next_start.json",
     # The Shared Crew preview switch: ``preview.read_stored`` reads an absent,
     # empty and unreadable store alike as OFF, so a pre-created ``{}`` means
     # exactly what an absent file means (criterion 1); the writer rewrites an

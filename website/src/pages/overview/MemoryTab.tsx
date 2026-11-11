@@ -7,7 +7,6 @@ import { api } from '../../api/client'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, FilteredEmpty, SearchInput, Skeleton, IconButton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
-import { esc } from '../../api/helpers'
 import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import VectorMemoryCard, { SEMANTIC_CARD_ID } from './VectorMemoryCard'
@@ -107,7 +106,7 @@ function sourceCell(lesson: Lesson) {
     case 'user_explicit': return i18nT('pages.overview.memoryTab.source_user_explicit')
     case 'consolidation': return i18nT('pages.overview.memoryTab.source_consolidation')
     case 'taskrunner': return i18nT('pages.overview.memoryTab.source_taskrunner')
-    default: return <span className="font-mono">{esc(lesson.source ?? '')}</span>
+    default: return <span className="font-mono">{lesson.source}</span>
   }
 }
 
@@ -902,7 +901,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
           const key = lessonKey(l)
           // The rule cell holds the same text as a box while editing.
           const draft = editing?.key === key ? editing.text : null
-          return <tr key={key} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{draft === null ? esc(l.rule) : <Input className="w-full" aria-label={i18nT('pages.overview.memoryTab.edit_rule')} autoFocus disabled={editing?.saving} value={draft} onChange={e => setEditing(old => old && { ...old, text: e.target.value })} />}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
+          return <tr key={key} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{draft === null ? l.rule : <Input className="w-full" aria-label={i18nT('pages.overview.memoryTab.edit_rule')} autoFocus disabled={editing?.saving} value={draft} onChange={e => setEditing(old => old && { ...old, text: e.target.value })} />}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm"><div className="flex gap-1.5">{draft === null ? <>
               {/* Edit only on a JSONL row (one that names its file tier); vector lessons
                   are edited in the Semantic browser. No Edit where the scope cannot be

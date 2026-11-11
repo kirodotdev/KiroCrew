@@ -19,6 +19,7 @@ from kiro_crew.dashboard.chat_runner import (
     release_regenerate_on_done,
 )
 from kiro_crew.dashboard.chat_utils import (
+    GATEWAY_PROMPT_INJECT_KINDS,
     adopt_variant_text,
     effective_session_key,
     reject_if_slot_under_construction,
@@ -132,6 +133,21 @@ def _destructive_history_busy(slot: "_ChatSlot") -> web.Response | None:
     return None
 
 
+def _is_gateway_prompt_row(row: dict) -> bool:
+    """The gateway's own prompt that opened a turn: a workflow follow-up or a
+    heartbeat prompt, drawn as an ``inject`` row (``GATEWAY_PROMPT_INJECT_KINDS``).
+
+    Regenerate treats it as the request its reply answers, as it did while these
+    prompts were ``user`` rows. Mirrors ``isGatewayPromptRow`` in ``turnActions.ts``.
+    """
+    meta = row.get("meta")
+    return (
+        row.get("role") == "inject"
+        and isinstance(meta, dict)
+        and meta.get("injectKind") in GATEWAY_PROMPT_INJECT_KINDS.values()
+    )
+
+
 async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/regenerate — regenerate the last assistant reply.
 
@@ -190,8 +206,8 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             # Never cross a real user turn: the replace step removes everything
             # after the target reply's user row, so a reply found PAST a newer
             # user row (e.g. a /compact row awaiting only its notice) would take
-            # that newer turn with it.
-            if role == "user":
+            # that newer turn with it. A gateway prompt row opens a turn too.
+            if role == "user" or _is_gateway_prompt_row(msgs[i]):
                 break
             if role != "assistant":
                 continue
@@ -210,7 +226,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             )
         u_idx = -1
         for i in range(ai_idx - 1, -1, -1):
-            if msgs[i].get("role") == "user" and not is_retracted_steer_row(msgs[i]):
+            if (
+                msgs[i].get("role") == "user" and not is_retracted_steer_row(msgs[i])
+            ) or _is_gateway_prompt_row(msgs[i]):
                 u_idx = i
                 break
         if u_idx < 0:
@@ -283,13 +301,19 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         _regen_kwargs: dict = {}
         if _card_row:
             _regen_kwargs["_card_origin"] = True
+        # A gateway prompt is the gateway's text: it re-runs as the synthetic payload
+        # it first ran as, never as words the person typed.
+        _gateway_prompt = _is_gateway_prompt_row(msgs[u_idx])
         task = asyncio.create_task(
             _run_chat(
                 state,
                 slot,
                 user_msg,
                 regenerate_hint=hint,
-                _directive_user_origin=not bool(request.get("app", "")) and not _card_row,
+                _synthetic_payload=_gateway_prompt,
+                _directive_user_origin=(
+                    not bool(request.get("app", "")) and not _card_row and not _gateway_prompt
+                ),
                 # A regenerated row is not new typed text (it may be an API
                 # request's flattened prompt), so it never starts an MCP sign-in.
                 _message_is_typed=False,

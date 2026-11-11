@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -23,7 +24,7 @@ from typing import Any
 from kiro_crew import mcp_core
 from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
-from kiro_crew.mcp_shared import DeferredTool
+from kiro_crew.mcp_shared import DEFERRED_STEP_WORKERS, DeferredTool
 from kiro_crew.mcp_tools.spawn_parts.listing import _queued_why
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.subagent_read_collected import post_mark_collected
@@ -132,6 +133,13 @@ _TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 #: Server-side hold per resume-poll request (seconds); under the client GET
 #: timeout so a held request never reads as a hang.
 RESUME_HOLD_SECS = 8.0
+
+#: Step-pool threads that may sit in a held status read at once. A held read keeps
+#: its thread until the member ends or ``POLL_INTERVAL`` passes, and one pool serves
+#: every parked call of the process (on a pooled backend, every session), so half of
+#: it stays free for the steps that do not wait. A wave that finds none free reads
+#: without holding and is stepped again on the interval.
+_HELD_READS = threading.BoundedSemaphore(DEFERRED_STEP_WORKERS // 2)
 
 
 class _ResumeHold:
@@ -324,11 +332,16 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
 class _SubAgentsStep(DeferredTool):
     """Submit the batch, then poll, hold and collect without owning the worker.
 
-    One submission step posts one member. Later steps poll the children, probe
-    the parent's slot (``hold``), or build the final reply (``collect``).
+    One submission step posts one member. Later steps wait for the children, probe
+    the parent's slot (``hold``) and build the final reply (``collect``); a phase
+    that finishes hands over to the next in the same step, so the reply is not held
+    for a dispatch-loop tick between them.
     """
 
-    #: Seconds between polls of the children.
+    #: Longest one pass waits on the gateway for the children, and the seconds
+    #: between passes when it could not wait there: the member has no live run to
+    #: wait on (queued, or its read failed), no held read was free, or the gateway
+    #: answered without holding.
     POLL_INTERVAL = 2.0
     #: Seconds between session keepalives while polling. Pinging
     #: ``/api/session-keepalive`` keeps the gateway's ``is_responsive()`` from
@@ -515,7 +528,8 @@ class _SubAgentsStep(DeferredTool):
             return self._submit_one()
         if self.phase == "poll":
             self._poll_once()
-            return None
+            if self.phase == "poll":
+                return None
         if self.phase == "hold":
             # Hold the result until the PARENT holds its execution slot again. A
             # subagent parent blocked here yielded its lane slot
@@ -528,11 +542,20 @@ class _SubAgentsStep(DeferredTool):
             # with the pending resume named.
             self.hold.release_deferred(self.deferral_settled)
             done, self.resume_note = self.hold.probe()
-            if done:
-                self.phase = "collect"
             self.next_due = mcp_core.time.monotonic()
-            return None
+            if not done:
+                return None
+            self.phase = "collect"
         return self._collect()
+
+    def _read_member(self, aid: str, hold_until: float) -> dict[str, Any]:
+        """One member's status, held by the gateway until the member ends or
+        *hold_until* passes; read at once when there is no time left to hold."""
+        wait = hold_until - mcp_core.time.monotonic()
+        if wait <= 0:
+            return mcp_core._get(f"/api/spawn/{aid}")
+        # The hold is the gateway's, so the answer keeps a plain read's margin.
+        return mcp_core._get(f"/api/spawn/{aid}?wait_secs={wait:.2f}", timeout=10 + wait)
 
     def _poll_once(self) -> None:
         now = mcp_core.time.monotonic()
@@ -553,22 +576,33 @@ class _SubAgentsStep(DeferredTool):
         # result. An error settles only THIS pass (an agent that never sets
         # done=True would otherwise spin the loop until max_wait), since it can
         # be one failed poll of a member that is still running.
+        #
+        # The members are read in order and each read is held by the gateway
+        # until that member ends, so the pass returns the moment the last one
+        # does. One budget of POLL_INTERVAL covers the whole pass: a step never
+        # keeps its pool thread longer, and the next pass is due when it is spent.
+        held = _HELD_READS.acquire(blocking=False)
+        hold_until = min(now + self.POLL_INTERVAL, self.deadline) if held else now
         all_settled = True
-        for aid in [a for a in self.sa_ids if a not in self.wait_settled]:
-            sa_st = mcp_core._get(f"/api/spawn/{aid}")
-            if sa_st.get("done"):
-                self.wait_settled.add(aid)
-            elif _held_by_a_deferral(sa_st):
-                self.wait_settled.add(aid)
-                self.deferral_settled.add(aid)
-            elif not sa_st.get("error"):
-                all_settled = False
-                break
+        try:
+            for aid in [a for a in self.sa_ids if a not in self.wait_settled]:
+                sa_st = self._read_member(aid, hold_until)
+                if sa_st.get("done"):
+                    self.wait_settled.add(aid)
+                elif _held_by_a_deferral(sa_st):
+                    self.wait_settled.add(aid)
+                    self.deferral_settled.add(aid)
+                elif not sa_st.get("error"):
+                    all_settled = False
+                    break
+        finally:
+            if held:
+                _HELD_READS.release()
         if all_settled:
             self.phase = "hold"
             self.next_due = mcp_core.time.monotonic()
             return
-        self.next_due = mcp_core.time.monotonic() + self.POLL_INTERVAL
+        self.next_due = now + self.POLL_INTERVAL
 
     def _collect(self) -> str:
         # Collect results

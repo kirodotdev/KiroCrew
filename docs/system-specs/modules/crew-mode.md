@@ -1160,6 +1160,10 @@ Bot that owns its file takes the in-place path (`mate_capabilities`), and its
 GET, preview and PUT responses pass the same `safe_view`; its MCP `set` applies the
 same `retain_paths` rules against the transport stored in the file, under the file's
 optimistic lock, and refuses an unretained mask as `redacted_value_not_writable`.
+The one exception is a server the file lacks whose value masks an env or
+header value: it is written as the gateway's own switched-on entry when that
+entry, masked, equals the value, and refused `409 entry_changed` otherwise (the
+`request_capabilities` card, below).
 MCP `set`
 accepts `retain_paths`, RFC6901 pointers into the complete replacement value.
 Each pointer must address exactly `[REDACTED]` and the same redacted scalar leaf
@@ -4995,13 +4999,14 @@ transport. The conductor then calls `request_capabilities` with a draft naming
 `disabledTools` and the rendered spec's `x-kirocrew-derived` and
 `x-kirocrew-withheld` records, which `request_server`'s record would refuse as
 unknown keys) of a server the gateway lists as switched on
-(`member_capability_catalog._switched_on`), and only when that entry sets no
-`env` or `headers` value and nothing in it is masked by
-`agent_capabilities.safe_view` (a credential argument such as `--api-key <value>`,
-`--token=<value>` or `-e NAME=<value>`): a card's params and plan reach the proposing
-Bot, so an entry that may hold a credential is refused
-`carries_settings` and the conductor tells the user to add it in advanced
-settings; `{server, source: "registry", registry_id}` takes the official
+(`member_capability_catalog._switched_on`). A card's params and plan reach the
+proposing Bot, so the entry's `env` and `headers` values are masked on the card
+(`member_capability_catalog.mask_settings`: each set value reads `[REDACTED]`,
+the keys stay), and an entry that would still show a credential once masked
+(`agent_capabilities.safe_view`: a credential argument such as
+`--api-key <value>`, `--token=<value>` or `-e NAME=<value>`, or a setting value
+repeated in an argument) is refused `carries_settings` and the conductor tells
+the user to add it in advanced settings; `{server, source: "registry", registry_id}` takes the official
 registry's install plan (`mcp_discover.official_install_plan`, the spec
 `/api/mcp/discover/install` would write, under the name that install would give
 it); `{skill}` adds a loaded skill; each server may name `auto_approve` tools.
@@ -5018,7 +5023,8 @@ only `additions` and `enroll`
 raw operation riding along would be folded there unseen. The `crewmate.capabilities` card shows the full launch line, a
 "comes from" row per server (this gateway's only while the draft's entry still
 equals, key for key, what a file takes from the gateway's switched-on entry
-(`transport_for_file`: command, args, env, headers, cwd and the rest),
+(`transport_for_file`: command, args, env, headers, cwd and the rest), as it
+is or with its env and header values masked,
 `member_capability_catalog.gateway_matches`, re-read when the card is built; the
 registry id otherwise). The `origins` map is the gateway's own record:
 `propose_change` (`POST /api/cards/agent/propose`) refuses a
@@ -5043,7 +5049,16 @@ both. Pressing it applies through
 `/api/agents/{name}/capabilities`, which for a Bot that owns its file is
 `mate_capabilities.put`: the gateway writes `~/.kiro/mates/agents/<id>.json` in
 place under its optimistic lock, never the user's MCP config; neither the
-conductor nor the worker writes the file. The worker picks the change up at its
+conductor nor the worker writes the file. A server the card showed masked is
+written as the gateway's own entry, read at preview and again at the write
+(`member_capability_catalog.gateway_transport_behind`), never a value from the
+request; both refuse `409 entry_changed` unless that entry, masked, is still
+exactly the card's (server present and switched on, same launch line and setting
+keys, no new credential). Only `request_capabilities` puts such an entry on a
+card: a `crewmate.capabilities` card with a masked server entry that its
+`origins` do not name as `source: "gateway"` (a raw draft, a registry addition)
+is refused when the card is built, `redacted_value_not_writable`
+(`member_capability_catalog.masks_unresolved`). The worker picks the change up at its
 next spawn, when the projection merges the file again. A card press starts no
 turn, so once a `crewmate.capabilities` card reaches applied or partly applied
 (`handlers/change_cards._complete`), the Bot's own thread gets one hidden
@@ -5185,12 +5200,22 @@ kiro-cli that lacks its engine.
   (`crewmate_harness.worker_harnesses` for a worker, `crewmate_harnesses` for
   a chat) and clearing the pin only when the member route would carry it
   (`crewmate_harness.pin_remedy`). A worker on a `kiro` pin that kept the v2
-  launch also gets the `kiro-cli update`. With no pin a worker's refusal names
-  `agent.member_acp_backend` with only the kit backends selectable now, and
-  when this host cannot serve KAS (`host_unservable_reason`) it says why and
-  names the fixes: update kiro-cli or turn on `agent.kas_bundle`, then restart.
-  A `spawn_run(backend=...)` or `session_create(backend=...)` that named the
-  backend is told to name one that carries the kit.
+  launch also gets the `kiro-cli update`. A Bot's worker or DM with no pin
+  names the fixes a person can reach (`mate_worker.inherited_harness_remedy`):
+  pick a harness that can in the Bot's settings (the same `worker_harnesses` or
+  `crewmate_harnesses` list), and either change Settings → Agent Harness or,
+  when a stored `agent.member_acp_backend` wins over Settings, remove that key.
+  A chat started on a picked harness is told to start a new chat on one that
+  can, since the pick outranks the pin; a chat that is not a Bot's DM runs on
+  Settings → Agent Harness, so it names that and the selectable harnesses in
+  `ACP_BACKENDS_MEMBER_CAPABILITIES`. No refusal tells a person to set
+  `agent.member_acp_backend`. A worker's
+  refusal, when this host cannot serve KAS (`host_unservable_reason`), also
+  says why and names the fixes: update kiro-cli or turn on `agent.kas_bundle`,
+  then restart. A `spawn_run(backend=...)` or `session_create(backend=...)`
+  that named the backend is told to name one that carries the kit. The
+  `capability_tool_limits_unsupported` row names the harness the session runs
+  on, as the selection gate answers it (`turn_failures._chat_harness_name`).
 - **Read path.** Only the owner-only `GET /api/agents/resolved-model` reads the
   pin (`acp_backend`, the effective `harness`, `harnesses` from
   `crewmate_harnesses`, `worker_harnesses` (`ACP_BACKENDS_MATE_WORKER_KIT`), and

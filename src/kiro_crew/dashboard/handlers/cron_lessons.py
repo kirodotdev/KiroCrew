@@ -463,6 +463,26 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # Bounded: a saturated inference queue yields None here rather than holding
         # the request past the client timeout, and the lesson still lands below.
         rule_emb = await asyncio.to_thread(_embed_lesson_bounded, vs, rule)
+        # The lesson tier policy's re-teach signal, before the write can merge into
+        # the lesson it compares with: does this rule repeat one shadow would demote?
+        # Only a person re-teaches: an agent's own write counts only when the chat's
+        # latest input row is the person's (the origin gate's fail-closed rule).
+        from kiro_crew import memory_tier_policy as _tier_policy
+        from kiro_crew.memory_origin_gate import TURN_HUMAN, triggering_turn
+
+        tier_mode = _tier_policy.configured_mode()
+        if (
+            tier_mode == _tier_policy.MODE_SHADOW
+            and rule_emb is not None
+            and (
+                request.get("internal_auth") is not True
+                or triggering_turn(
+                    getattr(memory_changes.slot_for_session(state, sk), "messages", None)
+                )
+                == TURN_HUMAN
+            )
+        ):
+            await asyncio.to_thread(_tier_policy.record_reteach, vs, rule_emb, tier_mode)
         # Persist the lesson immediately so the request returns fast. The
         # contradiction sweep below makes a per-candidate LLM call (~27s each);
         # running it inline would exceed the MCP client's 30s timeout while the

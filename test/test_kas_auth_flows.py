@@ -229,8 +229,9 @@ async def test_builder_id_start_device_authorization_ok_and_failure():
 @pytest.mark.parametrize(
     "description, advice, names_start_url",
     [
-        # Both bodies are what SSO-OIDC answered when probed: an unknown host or
-        # path, and a well-formed portal looked up in the wrong region.
+        # Both bodies are what SSO-OIDC answered when probed: a host that is not an
+        # access portal or a wrong path; and a portal that does not exist or is
+        # looked up in the wrong region.
         ("Invalid start url provided", "access portal URL", True),
         ("Invalid request", "in region eu-west-1", False),
     ],
@@ -250,6 +251,26 @@ async def test_idc_start_url_refusal_says_what_to_change(description, advice, na
     assert "https://acme.awsapps.com/start" in message
     assert f"(AWS: {description})" in message
     assert getattr(raised.value, "names_start_url", None) is names_start_url
+
+
+async def test_a_bare_idc_refusal_names_the_start_url_before_the_region():
+    """A portal that does not exist gets the same bare answer as one in the wrong
+    region, so the mistyped company name is not sent off to change a right region."""
+    body = json.dumps({"error": "invalid_request", "error_description": "Invalid request"})
+    session = _FakeSession([_FakeResp(400, body)])
+    with pytest.raises(builder_id.StartUrlRejectedError) as raised:
+        await builder_id.start_device_authorization(
+            RegisteredClient("cid", "csec"),
+            region="us-east-1",
+            start_url="https://example-not-a-real-company.awsapps.com/start",
+            session=session,
+        )
+    assert str(raised.value) == (
+        "AWS found no Identity Center for "
+        "'https://example-not-a-real-company.awsapps.com/start' in region us-east-1. "
+        "Check the start URL for a typo; if it is right, set Region to the "
+        "region your company's Identity Center is in. (AWS: Invalid request)"
+    )
 
 
 async def test_builder_id_400_is_not_blamed_on_a_start_url():

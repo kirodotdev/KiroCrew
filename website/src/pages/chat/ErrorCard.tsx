@@ -19,6 +19,7 @@ import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
 import { AgentSpecChoiceCard, agentSpecAmbiguity } from './AgentSpecChoiceCard'
 import { injectOpensTurn } from './RecoveryCard'
 import { resumeProseFor } from './gatewayNotice'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
 
 /** Where a capability refusal's fix lives: the member's Approvals section in
  *  the crewmate editor, or the editor itself (its Built from field picks the
@@ -463,6 +464,9 @@ function RestartGatewayCard({ displayText, onRestartGateway }: {
     onMutate: () => setFailure(null),
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
+      // Declining the "work is running" confirmation (raised by the client's
+      // restart wrapper) is a quiet cancel: no failure card.
+      if (e instanceof WorkConfirmDeclined) return
       // The owner gate's 403 only. A lapsed dashboard cookie also answers 403
       // (`authRequired`), but the client refreshes that in the background, so
       // the next press can pass and the button must stay.

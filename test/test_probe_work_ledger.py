@@ -912,6 +912,7 @@ def test_a_parked_items_seen_set_outlives_closed_items_under_the_tracked_cap(mon
         finished = _create(title=f"finished {index}")
         _report(finished, "done", summary="shipped")
         briefs.extend(o.brief for o in _observe(_probe(), _ctx()).observations)
+        work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=finished, verdict="pass")
         work_ledger.apply_conductor_action(
             CONDUCTOR, "close", item_id=finished, state="accepted", decision="verified"
         )
@@ -939,6 +940,7 @@ def test_a_closed_items_seen_tokens_are_dropped(monkeypatch):
         _run_once()
     assert done in lw._read_rate(CONDUCTOR)
 
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=done, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=done, state="accepted", decision="verified"
     )
@@ -1235,6 +1237,7 @@ def test_every_item_closed_wakes_once_and_is_never_terminal():
     _open_ledger()
     assert _observe(_probe(), _ctx()).observations == []
     item = _create()
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=item, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=item, state="accepted", decision="verified"
     )
@@ -1266,6 +1269,7 @@ def test_one_unaccepted_item_decides_the_whole_board_did_not_finish_well():
 
     _open_ledger()
     good, bad = _create(), _create()
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=good, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=good, state="accepted", decision="verified"
     )
@@ -1414,6 +1418,7 @@ def test_an_unreadable_item_cannot_terminate_the_watch():
     _open_ledger()
     closed = _create(title="finished")
     torn = _create(title="still open, and unreadable")
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=closed, verdict="pass")
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=closed, state="accepted", decision="verified"
     )

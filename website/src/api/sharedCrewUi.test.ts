@@ -71,8 +71,31 @@ describe('principals', () => {
   it('falls back to the login and builds initials without fetching anything', () => {
     expect(principalName(person('', 'alice@example.test'))).toBe('alice@example.test')
     expect(principalInitials(person('Ada Lovelace'))).toBe('AL')
-    expect(principalInitials(person('', 'bob@example.test'))).toBe('BE')
+    expect(principalInitials(person('', 'bob@example.test'))).toBe('BO')
     expect(principalInitials(null)).toBe('?')
+  })
+
+  it('builds initials from the part of an email before the @, or from a handle', () => {
+    // A Tailscale login with no display name is shown as the email itself.
+    expect(principalInitials(person('', 'priyashah@example.com'))).toBe('PR')
+    expect(principalInitials(person('jordan.lee@example.com'))).toBe('JL')
+    expect(principalInitials(person('', 'sam_okafor@example.com'))).toBe('SO')
+    // A bare handle, with and without a separator.
+    expect(principalInitials(person('priyashah'))).toBe('PR')
+    expect(principalInitials(person('samokafor'))).toBe('SA')
+    expect(principalInitials(person('jordan-lee'))).toBe('JL')
+    // A relay label: a display name, an email, or the id fallback with spaces.
+    expect(principalInitials(person('Ada Lovelace'))).toBe('AL')
+    expect(principalInitials(person('ada.lovelace@example.com'))).toBe('AL')
+    expect(principalInitials(person('Kiro user ...a1b2c3'))).toBe('KU')
+  })
+
+  it('never crashes on a one-letter, separator-only or empty label', () => {
+    expect(principalInitials(person('x'))).toBe('X')
+    expect(principalInitials(person('', 'x@example.com'))).toBe('X')
+    expect(principalInitials(person('@'))).toBe('?')
+    expect(principalInitials(person('._-'))).toBe('?')
+    expect(principalInitials(person('', ''))).toBe('?')
   })
 
   it('reads a server-stamped message author and ignores garbage', () => {

@@ -261,6 +261,7 @@ def test_two_declarations_of_one_launch_never_reach_the_launch_cap(tmp_path, mon
         json.dumps(
             {
                 "name": "b",
+                "tools": ["*"],
                 "mcpServers": {
                     "srv": {
                         "command": _APPROVED_CMD,
@@ -287,6 +288,7 @@ def _second_agent_declaring_the_same_launch(tmp_path: Path) -> None:
         json.dumps(
             {
                 "name": "b",
+                "tools": ["*"],
                 "mcpServers": {
                     "srv": {
                         "command": _APPROVED_CMD,
@@ -352,7 +354,9 @@ def _crew_agents(tmp_path: Path, agents: dict[str, dict]) -> None:
     source = tmp_path / "agents"
     source.mkdir(parents=True, exist_ok=True)
     for name, servers in agents.items():
-        (source / f"{name}.json").write_text(json.dumps({"name": name, "mcpServers": servers}))
+        (source / f"{name}.json").write_text(
+            json.dumps({"name": name, "tools": ["*"], "mcpServers": servers})
+        )
 
 
 def _crowd_before(tmp_path: Path, server: str, count: int) -> None:
@@ -364,7 +368,7 @@ def _crowd_before(tmp_path: Path, server: str, count: int) -> None:
         name = f"aim-{index:02d}"
         entry = {"command": _APPROVED_CMD, "args": ["--skill-paths", f"/skills/{index}"]}
         (tmp_path / "agents" / f"{name}.json").write_text(
-            json.dumps({"name": name, "mcpServers": {server: entry}})
+            json.dumps({"name": name, "tools": ["*"], "mcpServers": {server: entry}})
         )
 
 

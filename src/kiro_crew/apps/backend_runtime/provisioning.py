@@ -139,6 +139,9 @@ def _deps_tree_stamp_current(root: Path, req_file: Path) -> bool:
     safe direction: the backend runs without the deps and surfaces the
     provisioning error, instead of crashing on foreign wheels).
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     try:
         # Same reader shape as provisioning: the shared containment rule
         # (`requirements_in_tree`, the fast refusal), then a component-pinned
@@ -154,7 +157,7 @@ def _deps_tree_stamp_current(root: Path, req_file: Path) -> bool:
         with os.fdopen(rfd, "rb") as rfh:
             if not stat.S_ISREG(os.fstat(rfh.fileno()).st_mode):
                 return False
-            req_bytes = rfh.read(_DEPS_REQ_MAX_BYTES + 1)
+            req_bytes = bounded_read(rfh, _DEPS_REQ_MAX_BYTES + 1)
         if len(req_bytes) > _DEPS_REQ_MAX_BYTES:
             return False
         digest = _deps_digest(req_bytes)
@@ -635,6 +638,9 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
     ahead of the trusted module - so this is only ever called for apps whose
     code runs from the writable app dir itself.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read
+
     # Install Python dependencies into a per-app deps dir (isolated from the
     # Kiro Crew runtime). `pip install --target` rather than a venv: packaged
     # installs bundle an interpreter that ships pip but no ensurepip, so
@@ -694,7 +700,7 @@ def _provision_app_deps_locked(app_name: str, root: Path, pin: _PinnedDir) -> st
                 # Bounded read: this buffer lives in the GATEWAY's memory
                 # and the file is app-controlled - cap it instead of letting
                 # a giant file take the gateway down.
-                req_bytes = fh.read(_DEPS_REQ_MAX_BYTES + 1)
+                req_bytes = bounded_read(fh, _DEPS_REQ_MAX_BYTES + 1)
                 if len(req_bytes) > _DEPS_REQ_MAX_BYTES:
                     raise OSError("requirements.txt exceeds the size cap")
         except OSError:

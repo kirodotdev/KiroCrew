@@ -845,6 +845,11 @@ async def _consolidate(
                 "full file body."
             )
 
+        # The lesson tier policy's mode, read once so the prompt and the policy
+        # agree. Only enforce changes the prompt; off and shadow ask today's text.
+        from kiro_crew import memory_tier_policy as _tier_policy
+
+        tier_mode = _tier_policy.configured_mode() if include_history else _tier_policy.MODE_OFF
         if include_history:
             keys.append(
                 '"lessons": Array of corrections the user taught '
@@ -854,7 +859,8 @@ async def _consolidate(
                 # The same instruction learn_add's schema carries, from one
                 # constant, so both writers ask the model the same question.
                 f'"applies": {LESSON_APPLIES_INSTRUCTION} '
-                '"repo_scope" is OPTIONAL: include it ONLY when the correction is '
+                + _tier_policy.prompt_rule_for(tier_mode)
+                + '"repo_scope" is OPTIONAL: include it ONLY when the correction is '
                 "genuinely specific to one codebase worked on in the chat. Give a "
                 "RELATIVE directory path inside that repository that is distinctive "
                 'of it (e.g. "src/kiro_crew") -- never an absolute path, no leading '
@@ -1006,6 +1012,12 @@ async def _consolidate(
             result, _prompt_rows(chunk), _origin_mode(), session_key=key
         )
         result = origin.result
+        # The lesson tier policy, on the answer the origin gate returned, over the
+        # same rows.
+        tier = _tier_policy.apply_tier_policy(
+            result, _prompt_rows(chunk), tier_mode, session_key=key
+        )
+        result = tier.result
 
         if member_memory:
             stage = "member memory"
@@ -1072,6 +1084,9 @@ async def _consolidate(
             # display-only rows carried with the head). An ordinary
             # message-aligned span keeps its receipt over ``chunk`` unchanged.
             receipt_messages = _prompt_rows(chunk) if is_sub_slice else chunk
+            from kiro_crew.memory_lesson_dedup import configured_mode as _dedup_mode
+
+            lesson_dedup_mode = _dedup_mode()
 
             def _apply_member_consolidation() -> dict:
                 with self._publication_hold_checked(key, commit_state) as publication:
@@ -1087,6 +1102,7 @@ async def _consolidate(
                         messages=receipt_messages,
                         facets=facets,
                         kind_routing=kind_routing,
+                        lesson_dedup_mode=lesson_dedup_mode,
                     )
                     publication.mark_committed()
                     return applied
@@ -1257,6 +1273,16 @@ async def _consolidate(
                         publication.mark_committed()
 
             await _run_in_memory_background_pool(_record_origin)
+
+        if tier.loggable and vector_store is not None and not _lesson_extraction_disabled():
+            tier_store = vector_store
+
+            def _record_tier() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if _tier_policy.record_tier_policy(tier_store, tier):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_record_tier)
 
         # Auto skill detection — a SEPARATE LLM pass over the full-session
         # window (see _run_skill_detection), not the incremental tail. Runs

@@ -210,7 +210,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_compat_files": tuple("""
         _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
         _build_renameat2_via_syscall RENAME_NOREPLACE_AVAILABLE TCC_PROTECTED_HOME_DIRS
-        TCC_LIBRARY_WALKABLE_CHILDREN _LIBRARY_DIR rename_noreplace publish_dir_noreplace
+        rename_noreplace publish_dir_noreplace
         tcc_protected_dirs_for_walk tcc_prune_walk_dirs fchmod_safe dup_fd_at_or_above
         chmod_safe
         claude_code_managed_settings_dir
@@ -248,7 +248,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         """.split()),
     "kiro_crew.platform_compat_identity": tuple("""
         process_cwd get_ppid _ANCESTRY_MAX_DEPTH _PYTHON_INTERPRETER_NAME
-        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process
+        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process is_exec_supervisor_of _exec_supervisor_walk
         get_process_start_identity get_process_start_id process_namespaces_match
         process_is_sandboxed process_can_read_under_sandbox ProcessIdentitySource
         _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS _WINDOWS_EXIT_FILETIME_POLL_SECS

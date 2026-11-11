@@ -82,7 +82,11 @@ def _split_transcript_head(data: bytes) -> tuple[list[str], bool]:
     except UnicodeDecodeError:
         first = None
     text = (first or "") + rest.decode("utf-8")
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").splitlines(keepends=True)
+    del data, head, rest
+    if "\r" in text:
+        # Two whole-file copies, so only for a file that has a ``\r`` at all.
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.splitlines(keepends=True)
     if first is None:
         # A placeholder the caller's JSON parse rejects, so it takes the
         # corrupt-line rewrite and replaces it with a real metadata line.

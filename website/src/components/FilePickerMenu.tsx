@@ -8,7 +8,7 @@ import { pickerQueryKey, type FileKind, type FileResult, type FileSearchResponse
 import ErrorNotice from './ErrorNotice'
 import { RETRYABLE_SEARCH_CAUSES, SEARCH_FAILURE_KEYS, searchErrorCause, type SearchErrorCause } from '../lib/searchErrorCause'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
-import { splitPathToken } from './composerTokens'
+import { matchSpecQuery, SPEC_DIR, splitPathToken } from './composerTokens'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import { buildFileLabels } from '../utils/fileTokens'
 import { backslashIsSeparator, stripTrailingSeparators } from '../utils/pathBasename'
@@ -208,16 +208,32 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // results on screen while the next query resolves so the list doesn't flicker
   // to empty.
   const source = usePickerSource()
-  const load = pathMode ? source.pathComplete : source.fileSearch
+  // `@.kiro/specs/<partial>` picks a spec: the rows are one listing of
+  // `.kiro/specs/` (spec folders first, loose files after), not a fuzzy search
+  // whose many `tasks.md` files would bury the spec folders. Needs the listing read and the project it resolves
+  // against; without either the query stays an ordinary fuzzy search.
+  const specPartial = pathMode ? null : matchSpecQuery(debounced)
+  const specMode = specPartial !== null && !!source.pathComplete && !!project
+  const load = pathMode || specMode ? source.pathComplete : source.fileSearch
   const { data, isFetching, isError, isPlaceholderData, error, refetch } = useQuery<PickerPayload>({
     queryKey: pickerQueryKey(source, pathMode
       ? ['path-complete', project, scope.dir, scope.partial]
+      : specMode
+      ? ['spec-list', project, specPartial]
       : ['file-search', debounced, project]),
-    queryFn: async ({ signal }) => pathMode
-      // Stamped with the prefix it was asked for, which is what makes a
-      // placeholder payload self-describing rather than merely stale.
-      ? { ...(await source.pathComplete!(project ?? '', scope.dir, scope.partial, signal)), dir: scope.dir, project: project ?? '' }
-      : { ...(await source.fileSearch!(debounced, project, signal)), project: project ?? '' },
+    queryFn: async ({ signal }) => {
+      if (pathMode) {
+        // Stamped with the prefix it was asked for, which is what makes a
+        // placeholder payload self-describing rather than merely stale.
+        return { ...(await source.pathComplete!(project ?? '', scope.dir, scope.partial, signal)), dir: scope.dir, project: project ?? '' }
+      }
+      if (specMode) {
+        // The listing already puts folders (the specs) first; a loose file under
+        // `.kiro/specs/` stays reachable below them, as the fuzzy search had it.
+        return { ...(await source.pathComplete!(project ?? '', `./${SPEC_DIR}`, specPartial ?? '', signal)), project: project ?? '' }
+      }
+      return { ...(await source.fileSearch!(debounced, project, signal)), project: project ?? '' }
+    },
     // An empty `scope.dir` means the debounced token is not a path token yet —
     // the tick right after the menu opens. Fetching there would ask for the
     // project root under a token that names something else.
@@ -230,6 +246,8 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     staleTime: 10_000,
   })
   rootRef.current = data?.root || ''
+  // The project folder's own name, for the spec rows' second line.
+  const projectLabel = stripTrailingSeparators(rootRef.current).split(/[\\/]/).pop() ?? ''
   // The prefix an accepted row is rebuilt on is read back out of the PAYLOAD the
   // rows came in, so the two cannot come from different tokens (see `dir` above).
   dirPrefixRef.current = pathMode ? (data?.dir ?? '') : ''
@@ -478,7 +496,12 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
             : <FileText size={14} className="shrink-0 lucide-inline" />}
           <div className="flex-1 min-w-0">
             <div className="text-[13px] font-mono font-semibold truncate">{isDir ? f.name + '/' : f.name}</div>
-            {pathTail
+            {specMode
+              // A spec row names the project it belongs to, the way Kiro's own
+              // spec menu does: every row shares the `.kiro/specs/` prefix, so
+              // the path line would repeat it on each row and say nothing.
+              ? <div data-testid="file-picker-row-project" className="text-[11px] text-muted truncate">{projectLabel}</div>
+              : pathTail
               // rtl on the box puts the ellipsis at the START; the inner
               // ltr bdi keeps the path itself reading left to right.
               ? <div dir="rtl" data-testid="file-picker-row-folder" className="text-[11px] text-muted truncate text-left"><bdi dir="ltr">{rowFolder(f.path, rootRef.current)}</bdi></div>

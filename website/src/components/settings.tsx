@@ -30,6 +30,10 @@ interface SettingsToggleProps {
   // Telegram forum toggle describes setup with inline <span className="font-mono">
   // fragments. The render path already wraps it in a <div>, so any node is safe.
   description?: React.ReactNode
+  /** A small status badge drawn before `description` on the same line (e.g. a
+   *  "Restart" badge on a switch that applies at the next gateway start). A
+   *  separate prop so `description` stays the literal the settings extractor reads. */
+  descriptionBadge?: React.ReactNode
   checked: boolean
   onChange: (value: boolean) => void
   disabled?: boolean
@@ -69,7 +73,7 @@ interface SettingsToggleProps {
   anchor?: boolean
 }
 
-export function SettingsToggle({ label, description, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
+export function SettingsToggle({ label, description, descriptionBadge, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
   // Busy refuses the row click. The row is disabled for assistive tech while it
   // runs -- `aria-disabled` plus `aria-busy`, out of the tab order -- so a screen
   // reader does not announce an active button that does nothing. Focus is not
@@ -96,7 +100,14 @@ export function SettingsToggle({ label, description, hint, checked, onChange, di
               event target, so the tip needs no handler of its own. */}
           {hint && <span data-settings-hint><InfoTip text={hint} placement="top" /></span>}
         </div>
-        {description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
+        {descriptionBadge ? (
+          // Badge and description each in their own block: two separate UI
+          // units side by side, not one sentence built from two catalog keys.
+          <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted mt-0.5">
+            <div className="shrink-0">{descriptionBadge}</div>
+            {description && <div>{description}</div>}
+          </div>
+        ) : description && <div className="text-[12px] text-muted mt-0.5">{description}</div>}
       </div>
       {/* stopPropagation prevents the row's mouse-click convenience from double-
           toggling; the inner Toggle carries all keyboard/AT semantics. */}
@@ -557,7 +568,26 @@ export function SettingsSection({ title, badge, hint, collapsible, children }: S
  */
 export const SETTINGS_CARD_STAGGER_MS = 60
 
-export function SettingsCard({ index, children }: {
+/**
+ * The opt-in boxed look (`SettingsCard boxed`): one rounded, bordered card whose
+ * DIRECT children are its rows, each padded, with a hairline between rows. A row
+ * that renders nothing leaves no DOM node, so it draws no padding and no
+ * hairline. A card nested inside a row loses its own bottom gap, so a card-shaped
+ * row (an edition row, the KAS card) sits flush like the others.
+ * `data-settings-box` lets a caller test for an empty box with `:empty`.
+ */
+const SETTINGS_BOX_CLASS =
+  'rounded-xl overflow-hidden border border-[var(--border)] bg-[var(--card)] empty:hidden '
+  + '[&>*]:px-4 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-[var(--border)] [&_[data-settings-card]]:mb-0'
+
+export function SettingsCard({ index, boxed, children }: {
+  /**
+   * Draw the card as one bordered box with a hairline between its direct
+   * children. Off by default: most panels keep the borderless group, and only a
+   * page that lists many rows of one kind (Settings > Developer > Feature
+   * Previews) opts in.
+   */
+  boxed?: boolean
   /**
    * Ordinal of this card within its panel (0-based). Maps onto the shared
    * entrance-stagger ladder: the card's `animate-rise` entrance is delayed by
@@ -582,9 +612,15 @@ export function SettingsCard({ index, children }: {
       className="mb-2 animate-rise"
       style={index ? { animationDelay: `${index * SETTINGS_CARD_STAGGER_MS}ms` } : undefined}
     >
-      <div className="flex flex-col gap-2.5">
-        {children}
-      </div>
+      {boxed ? (
+        <div data-settings-box="" className={SETTINGS_BOX_CLASS}>
+          {children}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2.5">
+          {children}
+        </div>
+      )}
     </div>
   )
 }

@@ -42,6 +42,7 @@ const {
 const {
   windowsGatewayExecutablePaths,
   windowsProcessCommand,
+  windowsTaskkill,
 } = require("./windows-port");
 const {
   gatewayWaitTimeoutMs,
@@ -448,6 +449,10 @@ function createGatewaySupervisor({
     sameHomeGatewayPid, runGatewayStop, runPortStop, probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness,
     resolveFamilyConflict, getRunLocalGateway, setGatewayOwnership,
     isLaunchdJob: IS_MAC ? isLaunchdJob : null,
+    windowsCommand: IS_WIN ? (pid) => windowsProcessCommand(pid, { execFileFn: execFile }) : null,
+    windowsStopPid: IS_WIN
+      ? (pid, isTrustedCommand) => windowsTaskkill(pid, { execFileFn: execFile, isTrustedCommand })
+      : null,
   });
   const {
     stopGatewayGracefully,
@@ -1748,6 +1753,12 @@ function createGatewaySupervisor({
     fetchRemoteToken,
     entryUrl: dashboardEntryUrl,
     probePrimaryPortOwner,
+    // Whether anything listens on the launch port, whoever it is: "bound", "free"
+    // or "unknown". The start-time apply defers on anything but "free".
+    probePrimaryPortBinding: () => probeGatewayPortBinding(PORT),
+    // Who holds the home gateway.lock, whatever the listener is doing: a booting or
+    // draining gateway holds it with the port free. Verdict "released" means nobody.
+    probePrimaryLockHolder: () => probeLockHolderPid(),
     isCurrentBundleGateway,
     stopForUpdate: stopGatewayForUpdate,
     stopOnQuit: stopGatewayOnQuit,

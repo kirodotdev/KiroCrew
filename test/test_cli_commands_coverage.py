@@ -247,7 +247,8 @@ class TestSpawnCli:
         ):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=False))
         assert "final answer" in capsys.readouterr().out
-        assert slept.call_count == 2
+        # One wait: after the read that found the run unfinished, none after the last.
+        assert slept.call_count == 1
 
     def test_run_blocking_surfaces_agent_error_as_exit_1(
         self, capsys: pytest.CaptureFixture[str]

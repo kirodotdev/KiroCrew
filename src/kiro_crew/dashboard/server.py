@@ -726,13 +726,6 @@ _CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
 _OWN_HOST_WARM_TASKS: "set[asyncio.Future[None]]" = set()
 
 
-# Deep link at the approval toggle itself (Settings -> Skills, highlighted), so
-# the notification can offer the opt-out at the exact moment the user is being
-# asked to review yet another candidate. Same highlight=key:<configKey> format
-# the frontend's <SettingRef> builds, consumed by useSettingHighlight.
-_SKILL_APPROVAL_SETTING_URL = "/settings/skills?highlight=key:skills.approval_required"
-
-
 async def start_dashboard(
     sessions: SessionManager,
     crons: CronService,
@@ -1336,6 +1329,8 @@ async def start_dashboard(
     # the sidecar is filed under the real one -- which would publish coverage for
     # an address nothing listens on and leave the real one free for anyone to take.
     _bound_port = _resolved_bound_port(runner, port)
+    # The gateway announces this to the MCP gateway daemon it owns.
+    state._listener_bound_port = _bound_port
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
     _unix_socket_holder["path"] = await _start_unix_site(runner, _bound_port)
@@ -1595,8 +1590,8 @@ async def start_dashboard(
         await asyncio.to_thread(migrate_existing_crewmates, cfg)
     except Exception:
         logger.warning("bot-owned-config migration failed", exc_info=True)
-    # A folder Default agent saved as a crewmate's label is pointed at that
-    # crewmate's key: once per data home, after the socket is up; never raises.
+    # Each folder whose Default agent holds a crewmate's label is named in one
+    # notice: once per data home, after the socket is up; never raises.
     # Imported here, like the Crew Mode start pass below, so the server's own
     # namespace, which its composition contract test freezes, gains no name.
     from kiro_crew.dashboard.chat_folders_records import migrate_folder_member_labels

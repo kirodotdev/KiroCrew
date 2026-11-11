@@ -23,6 +23,7 @@ from typing import Any
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.config.schema import requires_restart
 from kiro_crew.dashboard.change_cards_records import _MESSAGE_MAX, _jsonable
+from kiro_crew.update_deferral import with_skip_list
 
 logger = logging.getLogger("kiro_crew.dashboard.change_cards")
 
@@ -188,6 +189,9 @@ def read_setting_value(target: dict[str, Any]) -> Any:
     if target["key"] == "dashboard.update_nudge":
         # The PATCH route's own clock stamp: a card neither writes nor restores it.
         value.pop("stored_at", None)
+        # A card reads and restores the whole record, skip list included, so its
+        # Undo replaces the list instead of merging into it.
+        value = with_skip_list(value)
     return value
 
 
@@ -691,6 +695,9 @@ def check_setting_value(spec: dict[str, Any], value: Any) -> None:
                 "invalid_value", f"each item must be at most {spec['max_item_len']} characters"
             )
     elif kind == "dict":
+        # Every key, optional ones too: a card writes and restores a WHOLE
+        # record, which the route stores as sent (the update popup's skip list
+        # is merged only for a verdict that omits it).
         if not isinstance(value, dict) or set(value) != set(spec.get("keys", {})):
             raise err("invalid_value", "value must be a record with every declared key")
     elif kind == "normalized":

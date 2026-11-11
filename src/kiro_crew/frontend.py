@@ -31,6 +31,7 @@ from typing import BinaryIO, Callable, Iterator, Literal, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.node_modules_txn import NodeModulesBackup
 
@@ -480,10 +481,15 @@ class FrontendBuildResult:
     tail: str = ""
 
     def failure_message(self) -> str:
-        """One message naming the failure, the log file and its last lines."""
+        """One message: the failure, its log file and last lines, or that no log was written."""
         message = "Frontend build did not complete — the dashboard still serves the previous bundle"
         if self.log_path is not None:
             message += f". Build output: {self.log_path}"
+        else:
+            message += (
+                ". No build log was written; run `npm ci` and `npm run build` in website/"
+                " to see the npm output"
+            )
         if self.tail:
             message += f"\n{self.tail}"
         return message
@@ -581,7 +587,7 @@ def _build_log_tail(build_log: Optional[BinaryIO]) -> str:
         if os.fstat(build_log.fileno()).st_size > _BUILD_LOG_REDACT_MAX_BYTES:
             return ""
         build_log.seek(0)
-        data = build_log.read(_BUILD_LOG_REDACT_MAX_BYTES + 1)
+        data = bounded_read(build_log, _BUILD_LOG_REDACT_MAX_BYTES + 1)
     except (OSError, ValueError):
         return ""
     if len(data) > _BUILD_LOG_REDACT_MAX_BYTES:
@@ -1251,7 +1257,8 @@ def build_frontend_sync(
     edition rather than staging a stock bundle over it.
 
     Returns a :class:`FrontendBuildResult`; the install and build output is
-    written to ``<data home>/logs/frontend-build.log``, which it names.
+    written to ``<data home>/logs/frontend-build.log``, which it names. Where no
+    pinned walk exists (Windows) no log is opened and the output is discarded.
     """
     website_dir = proj_path / _DIR_NAME
     if not website_dir.is_dir():

@@ -14,6 +14,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Optional
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.cloud.fargate.identity import SecretRef, sole_binding
 from kiro_crew.cloud.fargate.taskdef import (
     CPU_ARCHITECTURES,
@@ -621,7 +622,7 @@ class CloudConfig:
             # smallest read that can tell "at the limit" from "over it" without a second
             # look at the file, and it replaces the `stat()` for the same reason.
             with open(p, "rb") as fh:
-                raw = fh.read(_MAX_FILE_BYTES + 1)
+                raw = bounded_read(fh, _MAX_FILE_BYTES + 1)
         except FileNotFoundError:
             # Absence, not failure: the first run has no file and must be able to write one.
             return None, None

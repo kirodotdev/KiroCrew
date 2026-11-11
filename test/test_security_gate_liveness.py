@@ -763,7 +763,19 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 38, from 35,373, for ``shell_commands.pipelines`` and the rm floor reading
 #: each pipeline's ``echo`` / ``printf`` stages and shells in ``_command_tokens``. It only
 #: adds refusals. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_411
+#: Raised by 122, from 35,411, to the package's measured size with the structured
+#: credential detectors' seam: ``redaction`` splits pass 1 from passes 2-4 so the
+#: detectors' hits can run in front of them, carries pass 4's prefix snapshot
+#: across that split, routes the plan by the internal switch, and names the
+#: whole-text fail-closed placeholder; ``text_redaction`` asks the detectors where
+#: to hold a stream buffer, lets only a unit they are still deciding lower the
+#: holdback floor, and drops a unit decided while still running, which does
+#: nothing while the switch is off. The detectors live in a subpackage this
+#: budget does not count. Re-measured.
+#: Raised by one, from 35,533, for the ``update_next_start.json`` entry on the
+#: file-tool write fence: the update armed for the next start, which the sandbox
+#: seals read-only too.
+_PACKAGE_LINE_BUDGET = 35_534
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

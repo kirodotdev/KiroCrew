@@ -383,6 +383,21 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # scrubbed that capability would break the feature it is guarding. Gated
         # behind KIROCREW_DEBUG and reachable only from the CLI.
         "cli_perf.py::_sample_out_of_process",
+        # `kirocrew app install <git-url>`: the operator's own `git clone` of the
+        # URL they typed, and a `git rev-parse HEAD --abbrev-ref HEAD` in the folder
+        # it made. Reached only from that CLI verb, never from a tool dispatch
+        # path. Fixed list argv (no shell), binary from PATH as the operator's
+        # own git; the URL passes the registry's https/ssh transport allowlist
+        # with no credentials, query or fragment, the ref and subdirectory are
+        # charset-validated, the URL follows `--`, and the destination is a
+        # fresh `mkdtemp` folder under the data home. Every spawn carries
+        # core.hooksPath=<devnull>, core.fsmonitor=false, an https/ssh-only
+        # protocol allowlist, no submodules and an empty template, so nothing
+        # the repository supplies runs. NOT sandbox-routed because the feature
+        # IS the operator's own git access: the clone needs their SSH agent,
+        # ~/.ssh and credential helpers, which the sandbox hides.
+        "apps/git_install.py::_run_clone",
+        "apps/git_install.py::_cloned_head",
         # The SINGLE shared gh spawn chokepoint (github_runner.run_gh), serving
         # Issue Radar (`_gh_run`), Code Review Sage (`run_gh_json`,
         # `current_login`, `pipeline.list_open_prs`), and any future gh caller.
@@ -690,6 +705,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # primary branch refs; stdin=DEVNULL, 60s timeout. Pinned by the
         # `checkout_on_no_branch` tests in test_cli_server_more_coverage.py.
         "cli_server_update.py::_detached_upstream_branch",
+        # The changed-path listing before the reset: `git diff --name-status -z
+        # --no-renames HEAD <pinned commit>`. Literal flags plus the commit pinned
+        # right after the fetch, the same `git` under the same env as the fetch and
+        # reset beside it, cwd the detected install, stdin=DEVNULL, 30s timeout,
+        # read-only. Pinned by test_update_restart_round3_review.py.
+        "cli_server_update.py::_untracked_collisions",
         # The agent-only config refresh extracted from _update: a fixed argv
         # (`<this interpreter> -m kiro_crew setup --agent-only`) built from
         # sys.executable plus literals, cwd from the detected install layout —
@@ -825,7 +846,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # sandboxing would break lsof's access to host process state.
         "dashboard/handlers/terminal.py::_proc_cwd",
         "dashboard/handlers/terminal.py::api_terminal_ws",
-        "dashboard/handlers/updates_apply.py::_apply",
         # The update check's git side: fixed `git fetch` / `rev-parse` / `show` /
         # `diff` list-argv (no shell=True) run in KIROCREW_PROJECT_DIR, an operator
         # environment value, never agent input. Read-only version comparison —
@@ -833,10 +853,6 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "dashboard/handlers/updates_check.py::_check_git_checkout",
         # (_venv_pip_install removed — it now delegates the install to
         # dep_sync.sync_or_reinstall and spawns nothing itself.)
-        "dashboard/handlers/updates_apply.py::api_update_apply",
-        # Fixed argv `git config --global --path --get core.excludesFile`: reads the
-        # operator's own config file for an ignore-list path, runs no program.
-        "dashboard/handlers/updates_apply.py::_user_excludes_file",
         "dashboard/handlers_system.py::_collect_system_metrics",
         # Split out of _collect_system_metrics above so the whole-machine process
         # walk can be cached on its own (much longer) TTL instead of the live
@@ -1238,13 +1254,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # comes only from platform_compat.trusted_system_bin("launchctl"); a miss
         # answers unknown and spawns nothing.
         "service/gateway_identity.py::_launchd_pids",
-        "slack/gateway_runtime/update_apply.py::_auto_apply_update",
-        # The `git status --porcelain` and `git diff --diff-filter=A` spawns,
-        # moved out of _auto_apply_update into its nested pre-check so every
-        # refusal also runs before the memory copy. Same trusted git binary
-        # (trusted_git_bin, never PATH), same git_command_env, fixed argv apart
-        # from the rev-parse'd target OID, cwd the configured checkout.
-        "slack/gateway_runtime/update_apply.py::_refused_before_reset",
+        # The boot-time apply's one child: `<this interpreter> -m kiro_crew update`
+        # (isolated_python_argv), a fixed argv with no shell and no agent input,
+        # run before the gateway serves or restores a session, bounded by a timeout
+        # and tree-killed on timeout or cancel. It is the operator's own update
+        # command; sandboxing it would block the install it exists to run.
+        "update_boot_apply.py::_run_apply_child",
         # Pluggable update provider: CommandProvider runs operator-configured
         # shell commands from security_policy.json or config.json (sensitive
         # home dirs the agent cannot write). The check command probes for a

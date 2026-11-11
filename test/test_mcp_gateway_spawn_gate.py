@@ -701,6 +701,7 @@ _CAPACITY_FAILURES: list[tuple[str, BaseException, int]] = [
     ("gate wait spent", adm.SpawnGateTimeout(3, 4, 600.0), 30),
     ("gate closed", adm.SpawnGateClosed("drain"), 5),
     ("breaker OPEN", BackendUnavailable("breaker OPEN"), 60),
+    ("owner port unproven", gw.OwnerPortUnproven("'kirocrew-core': no port"), 30),
     *[
         (f"pressure errno {name}", OSError(getattr(errno, name), name), 30)
         for name in ("ENOMEM", "EAGAIN", "EMFILE", "ENFILE", "ENOSPC")
@@ -780,6 +781,7 @@ class TestRejectionClasses:
             adm.SpawnGateTimeout,
             adm.SpawnGateClosed,
             BackendUnavailable,
+            gw.OwnerPortUnproven,
         }
         measured = {type(exc) for _, exc, _ in _CAPACITY_FAILURES if not isinstance(exc, OSError)}
         assert measured == set(gw._CAPACITY_FAILURES)

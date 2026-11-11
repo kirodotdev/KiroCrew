@@ -168,6 +168,8 @@ interface TranscriptRenderingOptions {
  */
 /** The repeat-session-start card's restart (#13791). Module scope so the
  *  transcript renderers' memo never sees a new identity. */
+// A declined "work is running" confirmation rejects with `WorkConfirmDeclined`,
+// which the card treats as a quiet cancel (no failure shown).
 const restartGatewayFromError = (): Promise<unknown> => api.restartGateway()
 
 export function useTranscriptRendering({

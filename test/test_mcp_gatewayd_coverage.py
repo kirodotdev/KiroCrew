@@ -939,6 +939,8 @@ class TestEnvTargetResolver:
         spawn-site tests.
         """
         key = _pool_key(server="kirocrew-core")
+        # A control-plane target is resolved only once its gateway announced a port.
+        monkeypatch.setattr(gw, "_OWNER_PORT", 47211)
         monkeypatch.delenv("KIROCREW_MCP_TARGET_KIROCREW_CORE", raising=False)
         monkeypatch.setenv("MC_MCP_TARGET_KIROCREW_CORE", "kirocrew mcp-core")
         python_env = {

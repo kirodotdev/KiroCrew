@@ -270,6 +270,11 @@ def init_transcript_fields(self: _ChatSlot) -> None:
     # file since we last saved?" signal that gates the cross-process
     # foreign-append merge. See chat_persistence._save_*.
     self._frozen_prefix_cache = None
+    # What the last committed save left on disk (path, file identity,
+    # disk_older, metadata line, window digests, first file-change row), so
+    # the next save can append its new rows instead of rewriting the file.
+    # None: the next save rewrites.
+    self._append_basis = None
     # Hashes of kept foreign lines already logged, so a re-scan stays quiet.
     self._foreign_reported = frozenset()
     # Set by rewind/regenerate after they TRUNCATE the window. While set,

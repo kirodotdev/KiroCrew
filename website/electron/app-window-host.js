@@ -285,6 +285,8 @@ function createAppWindowHost(deps) {
       if (rec.decl.kind === "overlay") setIgnore(rec, true);
       win.hide();
     }
+    // A blanked overlay has no regions left, so the poll may have nothing to do.
+    syncHitPoll();
   }
 
   /**

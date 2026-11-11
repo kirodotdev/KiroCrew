@@ -211,6 +211,7 @@
     "builder_id": "Builder ID",
     "check_logs_for_details": "Check logs for details.",
     "collapse_sidebar": "Collapse sidebar",
+    "couldn_t_load_full_changelog": "Couldn't load the full changelog.",
     "cpu_unavailable": "CPU: unavailable",
     "disk_unavailable": "Disk: unavailable",
     "expand_sidebar": "Expand sidebar",
@@ -219,7 +220,7 @@
     "hide_full_changelog": "▾ Hide Full Changelog",
     "i_d_like_to_request_a_feature": "I’d like to request a feature!",
     "iam_identity_center": "IAM Identity Center",
-    "kiro_credit_usage_signin_required": "Kiro account & credits — no live Kiro sign-in could be read; sign in again to restore it",
+    "kiro_credit_usage_signin_required": "Kiro account & credits — no active Kiro sign-in; sign in to see your credits",
     "kiro_credit_usage_unavailable": "Kiro account & credits — unavailable",
     "memory_unavailable": "Memory: unavailable",
     "n_more_one": "{{count}} more",
@@ -1927,6 +1928,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
+      "credit_usage_sign_in_to_see": "No active Kiro sign-in. Sign in to see your account and credits.",
+      "credit_usage_sign_in_lapsed": "Your Kiro sign-in is no longer valid, so your account and credits can’t be shown. Sign in again to see them.",
+      "sign_in_in_settings": "Sign in to Kiro in Settings",
       "balance_checked_at": "Checked at {{time}}",
       "forecast_lasts": "At this cycle's pace, your credits should last until the reset.",
       "forecast_runs_out": "At this cycle's pace, you'll run out around {{date}}, before the reset.",
@@ -3042,6 +3046,8 @@
       "unlink_from": "Unlink from {{label}}",
       "unlink_outcome": "Removes the connection — {{label}} stops driving this session. Reconnect anytime from the session menu.",
       "unlink_outcome_out": "Removes the connection — replies stop going to {{label}}. Reconnect anytime from the session menu.",
+      "unlink_outcome_here": "Removes the connection: no more messages to or from {{label}}. Connect again from this menu.",
+      "unlink_outcome_out_here": "Removes the connection: replies stop going to {{label}}. Connect again from this menu.",
       "unlink_stale": "The {{label}} connection changed while this menu was open. Nothing was unlinked; the row was refreshed.",
       "held_elsewhere": "{{label}} is in use by another session.",
       "unavailable": "This destination is unavailable.",
@@ -3228,7 +3234,9 @@
         "chat_stopped_unrecovered_body": "The chat stopped and could not recover. Open the chat to start a new one.",
         "chat_stopped_busy_body": "The chat stayed busy and could not recover. Open the chat to start a new one.",
         "chat_stopped_refused_body": "The model declined to answer and the chat stopped. Open the chat to see why.",
-        "chat_stopped_stalled_body": "The chat stalled and could not recover. Open the chat to start a new one."
+        "chat_stopped_stalled_body": "The chat stalled and could not recover. Open the chat to start a new one.",
+        "folder_agent_label_title": "Check a folder's Default agent",
+        "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",
@@ -3695,15 +3703,19 @@
       "update_required": "Update required"
     },
     "updateModal": {
-      "restart_update": "Install Update & Restart App",
-      "install_restart_timing": "Installing may take several minutes. The app will close and relaunch automatically when the update is complete.",
       "windows_installer_handoff": "A Windows installation window will show progress.",
       "installing_update": "Installing update…",
-      "installing_update_body": "This can take several minutes. It will relaunch automatically.",
+      "installing_update_body": "This can take several minutes. The app will close. Open it again when it has finished.",
       "install_failed": "Update failed to install",
       "install_failed_body": "The update could not be applied. {{productName}} is restoring the local gateway — you can keep using this version and retry from Settings > About.",
       "back_to_dashboard": "Back to dashboard",
-      "restarting": "Restarting..."
+      "restarting": "Restarting...",
+      "install_on_quit": "Install when I quit",
+      "install_on_quit_timing": "The update installs the next time you quit the app. Nothing restarts until you do.",
+      "armed_installs_on_quit": "{{productName}} {{version}} installs when you quit the app.",
+      "restart_now": "Restart and install now",
+      "restart_now_failed": "Could not restart the app. The update still installs when you quit.",
+      "armed_app_too_old": "This version of the desktop app cannot schedule the update from here. Download the latest version of the app to update."
     },
     "voiceStatusBar": {
       "default_microphone": "Default microphone",
@@ -5923,8 +5935,8 @@
         "show_result": "Show result"
       },
       "collapsibleToolGroup": {
-        "collapse": "Collapse",
-        "expand": "Expand"
+        "collapse": "Collapse {{name}}",
+        "expand": "Expand {{name}}"
       },
       "toolCallLine": {
         "answers_load_failed": "The answers couldn't load. Check the connection to the gateway, then try again.",
@@ -6239,7 +6251,7 @@
         "repair_images_failed": "Images can't be repaired twice in one chat. Start a fresh session to keep going — this chat is kept, and the assistant continues from a summary.",
         "repair_images_not_persistent": "Images can't be repaired in an Incognito or Temporary chat, because reloading it erases its history. Start a fresh session to keep going.",
         "repair_images_retry_hint": "Something went wrong this time, so your one repair wasn't used — press “Repair images and resume” to try again.",
-      "hidden_scratch_folder": "This chat's folder was a temporary folder from an earlier run and can't be opened anymore. The chat now works in the default folder."
+        "hidden_scratch_folder": "This chat's folder was a temporary folder from an earlier run and can't be opened anymore. The chat now works in the default folder."
       },
       "crewLog": {
         "tab_load_failed": "The crew log couldn't load. Check the connection to the gateway, then try again.",
@@ -6661,6 +6673,7 @@
       "could_not_rename_session": "Couldn't rename the session to “{{title}}”",
       "could_not_rename_session_to": "Couldn't rename the session to “{{title}}” — the previous title stays",
       "could_not_generate_title": "Couldn't generate a title",
+      "undo_auto_title_named": "Undo: {{title}}",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "could_not_fork_session": "Couldn't fork this session",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",
@@ -6723,6 +6736,9 @@
     "chatSidebar": {
       "no_sessions_match_folders": "No sessions match — only a folder name did",
       "history_search_failed": "Search failed. Showing title matches only.",
+      "search_results_count_one": "{{count}} match, best first",
+      "search_results_count_other": "{{count}} matches, best first",
+      "search_clear_filters": "Clear filters",
       "answered_by": "answered by {{agent}}",
       "archive_session_one": "Archive {{count}} session",
       "archive_session_other": "Archive {{count}} sessions",
@@ -8719,8 +8735,6 @@
         "download_failed_reason": "Download failed: {{reason}}",
         "download_the_latest_version": "download the latest version",
         "install_failed_reason": "Couldn’t install the update: {{reason}}",
-        "install_update_restart_app": "Install Update & Restart App",
-        "installing_quiet_note": "Installing — this can take several minutes. {{productName}} will reopen automatically when the update is complete.",
         "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
         "published": "published {{when}}",
         "restarting": "Restarting...",
@@ -8739,7 +8753,6 @@
         "stable": "Stable",
         "update_failed": "Update failed",
         "update_noun": "update",
-        "update_now": "Update now",
         "update_to_version": "Update to v{{version}}",
         "channel_help_show": "▸ What's the difference between Stable and Insider?",
         "channel_help_hide": "▾ Hide",
@@ -8766,10 +8779,10 @@
         "install_app_updates_automatically_hint": "Downloads new versions in the background and installs them the next time you quit the app.",
         "automatic_updates": "Update the gateway automatically",
         "gateway_auto_update_unknown_hint": "Whether this switch applies here is known after the first update check, shortly after startup.",
-        "gateway_auto_update_mandatory_note": "A policy requires a newer version than this one; when one is available it is installed whatever this switch says.",
-        "gateway_auto_update_description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
+        "gateway_auto_update_mandatory_note": "A policy requires a newer version than this one; when one is available it is prepared whatever this switch says, and starts the next time you restart the gateway.",
+        "gateway_auto_update_description": "Updates are downloaded automatically and take effect the next time you restart {{productName}}. Nothing restarts by itself. When off, it stays on its current version.",
         "gateway_updates_heading": "Gateway updates",
-        "gateway_auto_update_desktop_context": "Your agents and chats run in a background program called the gateway, installed separately from {{productName}}. This switch keeps the gateway up to date, not this app. The gateway only restarts when no work is active.",
+        "gateway_auto_update_desktop_context": "Your agents and chats run in a background program called the gateway, installed separately from {{productName}}. This switch keeps the gateway up to date, not this app. The gateway never restarts by itself.",
         "nightly": "Nightly",
         "channel_help_show_all": "▸ What's the difference between Stable, Insider and Nightly?",
         "channel_explainer_nightly": "Untested daily builds from main. Expect breakage — useful for trying a fix the day it lands.",
@@ -8805,9 +8818,9 @@
         "arm_failed": "Couldn't prepare the update on the gateway host. Try again.",
         "armed_run_on_host": "Approve and apply by running this command on the gateway host.",
         "armed_expires_in": "Approval window closes in {{time}}",
-        "armed_waiting_note": "Waiting for approval — once approved, progress appears here and the gateway restarts itself.",
+        "armed_waiting_note": "Waiting for approval: once approved, progress appears here and the new version starts the next time you restart the gateway.",
         "applying_update": "Applying the update…",
-        "applying_restart_note": "The gateway restarts itself when the new version is ready; this page reconnects automatically.",
+        "applying_restart_note": "The new version is installed beside the running one and starts the next time you restart the gateway; this page keeps working.",
         "approval_window_expired": "The approval window expired without an approval. Arm the update again when ready.",
         "arm_ended_without_update": "The update request ended before the update started. It was dismissed or the gateway restarted, not something you did. Press “{{label}}” to try again.",
         "try_again": "Try again",
@@ -8832,11 +8845,10 @@
         "app_lane_title": "The desktop app you installed. Its own version, separate from the service below.",
         "gateway_lane_label": "Gateway",
         "gateway_lane_title": "The background service that runs your agents and serves this dashboard. The branch and commit chips are its build.",
-        "app_updates_heading": "App updates"
+        "app_updates_heading": "App updates",
+        "downloaded_and_verified_installs_on_quit": "Downloaded and verified. It installs when you quit the app; nothing restarts until you do."
       },
       "crewmatesSection": {
-        "title": "Bots",
-        "description": "Server settings for bots, not previews. They're saved on the server, so they apply on every device.",
         "reply_threads": "Reply threads on bot chat messages",
         "reply_threads_desc": "Let any message in a bot's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
         "failed_to_save": "Couldn't save the bot setting. Try again.",
@@ -8869,7 +8881,13 @@
       },
       "developerPanel": {
         "feature_previews": "Feature Previews",
-        "feature_previews_desc": "Unreleased features and pages. Your choices here are saved on this {{productName}}, so they apply wherever you open the dashboard, in any browser or in the desktop app. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose.",
+        "feature_previews_intro": "Unfinished features. Turn one on to try it.",
+        "group_crew_and_bots": "Crew and bots",
+        "group_chats_and_dashboards": "Chats and Dashboards",
+        "group_engines_and_workspaces": "Engines and Workspaces",
+        "group_publishing_and_sign_in": "Publishing and Sign-in",
+        "group_for_developers": "For {{productName}} developers",
+        "restart_badge": "Restart",
         "feature_previews_save_denied": "Only the owner of this {{productName}} can change feature previews, so “{{name}}” was switched back.",
         "feature_previews_save_failed": "Couldn’t save “{{name}}”, so it was switched back. Try again."
       },
@@ -10465,6 +10483,7 @@
         "decisions_provider_sagemaker_invalid_profile": "A profile name may use letters, digits, underscores, dots, plus signs and hyphens.",
         "decisions_provider_sagemaker_unknown_profile": "No AWS profile by that name in your AWS config files.",
         "decisions_no_model_note": "No decision model is chosen. Pick one below to turn this on.",
+        "decisions_hosted_refused": "Your fleet's policy blocks Jev, hosted by TypeSafe, so decisions use the built-in rules. Pick another model below.",
         "decisions_provider_quality": "About {{percent}} of Jev's accuracy, {{hard}} on hard decisions",
         "decisions_provider_memory": "Uses about {{peak}} of memory; recommended with {{total}} or more",
         "decisions_provider_speed": "About {{p50}} per decision on a CPU, up to {{p95}} on long inputs",
@@ -10535,6 +10554,9 @@
         "bridge_approvals": "Send pending approvals to chat apps",
         "bridge_approvals_desc": "When a tool approval opens, {{productName}} sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard.",
         "bridge_approvals_desc_summary": "Tells a connected chat app when a tool needs approval.",
+        "chat_runtime_sharing": "Share one background program across chats",
+        "chat_runtime_sharing_desc": "Chats reply one at a time, so a long reply in one chat makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
+        "chat_runtime_sharing_desc_summary": "Saves computer memory by running several chats in one background program. Chats can't see each other's messages, but they reply one at a time. Turn it off and each new chat gets its own program again.",
         "crew_mode": "Ultra Mode",
         "crew_mode_desc": "Lets a chat hand tasks to a crew and track them on a Board.",
         "crew_mode_desc_summary": "Hands a chat's tasks to a crew.",

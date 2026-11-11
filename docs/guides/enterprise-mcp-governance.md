@@ -365,6 +365,12 @@ identity_unattestable ... This host is MCP registry-governed (agent.mcp_registry
 and the admin's MCP registry is blocking Kiro Crew's own tools ...
 ```
 
+This field requires Kiro Crew **0.13.0** or later. Kiro Crew 0.12.1 and
+earlier reject `mcp_registry_local_control_plane` as an unknown governed key,
+and with `boot.fail_closed` set Kiro Crew then does not start. On those
+releases, leave the field out. Run `kirocrew policy validate` before you
+restart.
+
 To enable session identity, set one field at the top level of the security policy
 (`~/.kiro/crew/security_policy.json`, or your centrally distributed document) and
 restart Kiro Crew:
@@ -443,6 +449,11 @@ Enforcement in the V2 TUI arrived in **2.2.2**, and **2.6.0** made personal
 `mcp.json` servers load alongside registry-managed ones. Kiro Crew's servers
 live in an agent spec (`~/.kiro/agents/kirocrew.json`), not in personal
 `mcp.json`, so that last change does not exempt them.
+
+The `mcp_registry_local_control_plane` security policy field
+([session identity](#session-identity-for-kiro-crews-own-tools-an-admin-opt-in-off-by-default))
+requires Kiro Crew **0.13.0** or later. Earlier releases reject it as an
+unknown governed key, and with `boot.fail_closed` set they do not start.
 
 ## Central policy distribution: one security policy, every host
 

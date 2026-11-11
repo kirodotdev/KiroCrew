@@ -67,6 +67,7 @@
         "tool_search_min_pct": 5,
         "tool_search_min_tokens": 50000,
         "session_sharing": true,
+        "chat_runtime_sharing_max_sessions": 10,
         "agent_started_turns": true,
         "max_subagents": 0,
         "max_stop_hook_nudges": 100,
@@ -1113,6 +1114,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "agent.chat_runtime_sharing_max_sessions",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Chat Runtime Sharing: max sessions per process",
+      "help": "How many dashboard chat sessions one shared agent process may serve before the next session starts another, while the chat_runtime_sharing feature preview is on. This is the blast radius of one process dying: a larger value pools more sessions onto one process and loses more of them at once. Has no effect while the preview is off, which keeps one process per session. Clamped to 1..64.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 10
     },
     {
       "path": "agent.agent_started_turns",
@@ -2715,6 +2730,9 @@
         "lesson_extraction_enabled": true,
         "kind_routing": "off",
         "lesson_origin_gate": "off",
+        "lesson_tier_policy": "off",
+        "rule_authority_order": "off",
+        "member_lesson_dedup": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3307,6 +3325,60 @@
       "tags": [],
       "label": "Lesson Origin Gate",
       "help": "Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the gate would demote. 'enforce' stores such a lesson as an on_topic finding instead, and gives an agent-triggered learn_add its own source. Stored lessons are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.lesson_tier_policy",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lesson Tier Policy",
+      "help": "Which tier a new lesson from consolidation gets. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, which new lessons the policy would store as on_topic findings, and how often you later teach one of them again. 'enforce' asks the model for your own words behind each 'always' lesson and stores a lesson as an on_topic finding unless those words are found in one of your messages. Your own learn_add and dashboard writes, and stored lessons, are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.rule_authority_order",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Rule Authority Order",
+      "help": "How the session-start rule block orders its rules. 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids the new order would add or drop. 'enforce' lists rules saved as yours (learn_add, dashboard, CLI) first, then rules inferred from sessions; inside each group the current order holds. Keep memory.lesson_origin_gate at 'enforce' too, or a learn_add an agent made on its own counts as yours. The rule budget is unchanged and no stored lesson is changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.member_lesson_dedup",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Private Lesson Dedup",
+      "help": "Whether a private memory store folds a consolidation lesson into a stored copy of the same rule (same scope and tier, the same text, or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, what the fold would do. 'enforce' skips a textual copy and retires a new near-copy with a saved revision before a dashboard turn has been given it; turning the flag off restores those rows. Lessons you taught are never folded.",
       "hasChildren": false,
       "enumValues": [
         "off",
@@ -9786,6 +9858,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.chat_runtime_sharing",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: chat_runtime_sharing",
+      "help": "Turn on the 'chat_runtime_sharing' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.crew_mode",
       "kind": "core",
       "type": "boolean",
@@ -10882,7 +10968,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Update Nudge",
-      "help": "Per-version state for the proactive update popup. Written by the dashboard when the user snoozes or skips a release; a record only suppresses the popup for the version it names. Validated as one atomic record by the PATCH allowlist (dashboard.update_nudge); no Settings control reads it, so it carries no schema properties.",
+      "help": "Per-version state for the proactive update popup. Written by the dashboard when the user snoozes or skips a release; a snooze only suppresses the popup for the version it names, and every skipped version stays in skipped_versions. Validated as one atomic record by the PATCH allowlist (dashboard.update_nudge); no Settings control reads it, so it carries no schema properties.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
@@ -12460,7 +12546,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto Update",
-      "help": "Where the install can apply updates, true installs them once no work is running and restarts; false only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless.",
+      "help": "Where the install can apply updates, true downloads and prepares them automatically and they take effect the next time you restart Kiro Crew; nothing restarts by itself. False only notifies. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true

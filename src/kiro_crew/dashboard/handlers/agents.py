@@ -48,6 +48,7 @@ from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (  # noqa: F401 - selectable_backend_values is a facade name
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     model_registry_namespace,
@@ -112,10 +113,12 @@ from kiro_crew.apps.manager import (  # noqa: F401
     apps_dir,
 )
 from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
+from kiro_crew.bounded_read import bounded_read  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     ConfigReadError,
     KiroCrewAgentConfig,
     KiroCrewConfig,
+    PendingEditBlocksSave,
     _overlay_kiro_agent,
     _safe_color,
     coerce_dict_section,
@@ -328,7 +331,10 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
 from kiro_crew.dashboard.handlers.agents_effort_levels import api_effort_levels  # noqa: F401
-from kiro_crew.dashboard.handlers.agents_session_commands import menu_with_session_commands
+from kiro_crew.dashboard.handlers.agents_session_commands import (
+    menu_backend,
+    menu_with_session_commands,
+)
 from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
@@ -1549,15 +1555,16 @@ async def api_models(request: web.Request) -> web.Response:
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
     cfg = KiroCrewConfig.load()
-    # The configured default backend decides the base list, independent of the
-    # provider label; ``?slot=`` adds only what that chat's live session advertised.
+    # The ``?slot=`` chat's backend decides the base list, the one the slash gate
+    # resolves for that chat, so a chat pinned off the configured default lists
+    # what runs there. With no slot it is the configured default. ``?slot=`` then
+    # adds what that chat's live session advertised.
+    backend = await menu_backend(request, cfg.agent.acp_backend)
     blocked_commands = _BLOCKED_SLASH_COMMANDS
-    if capabilities_for(cfg.agent.acp_backend).supports_native_todos:
+    if capabilities_for(backend).supports_native_todos:
         blocked_commands = blocked_commands - {"/todos"}
     # A harness that runs its own commands gets its own list, not kiro-cli's.
-    if capabilities_for(cfg.agent.acp_backend).runs_own_slash_commands or is_claude_code(
-        cfg.agent.provider
-    ):
+    if capabilities_for(backend).runs_own_slash_commands or is_claude_code(cfg.agent.provider):
         cc_commands = [
             "compact",
             "clear",
@@ -1592,8 +1599,13 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # The same holds for a harness with no command channel: the slash gate answers
     # its commands with a notice, so list only what the dashboard serves there
     # (local_harness_menu, which /help prints too).
-    if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
-        offered = offered & local_harness_menu(cfg.agent.acp_backend)
+    if backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
+        offered = offered & local_harness_menu(backend)
+    # A harness whose prompt handler runs only some harness commands gets the
+    # notice for the rest too, so list what the dashboard serves and that row.
+    runs_from_prompt = ACP_BACKEND_PROMPT_HANDLER_COMMANDS.get(backend)
+    if runs_from_prompt is not None:
+        offered = offered & (local_harness_menu(backend) | runs_from_prompt)
     rows = [
         {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)
     ]

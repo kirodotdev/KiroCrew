@@ -323,6 +323,9 @@ def _sidecar_record_in(
     metadata_dir: Path, stem: str
 ) -> tuple[dict[str, Any] | None, Path, tuple[int, int] | None]:
     """:func:`_sidecar_record` over ONE records directory."""
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     path = metadata_dir / f"{stem}.json"
     directory_info = pinned_fs.lstat_by_name(metadata_dir)
     if directory_info is None:
@@ -341,7 +344,7 @@ def _sidecar_record_in(
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         try:
             opened = os.fstat(fd)
-            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+            raw = bounded_read_fd(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
         finally:
             os.close(fd)
     except OSError:

@@ -766,9 +766,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "update_required: 'bool' = False, update_min_version: 'str' = '', "
         "update_can_arm: 'bool' = False, update_auto_effect: 'str' = 'unknown', "
         "update_auto_manual_only: 'bool' = False, "
-        "update_bundled_by_app: 'bool' = False, version_display: 'str' = '', "
-        "bundle_id: 'str' = '', background_turns: 'dict[str, int] | None' = None) "
-        "-> 'dict[str, Any]'",
+        "update_bundled_by_app: 'bool' = False, update_restart_ready: 'bool' = False, "
+        "update_restart_ready_version: 'str' = '', update_restart_ready_reason: 'str' = '', "
+        "update_armed_version: 'str | None' = None, "
+        "pending_apply_error: 'str | None' = None, "
+        "version_display: 'str' = '', bundle_id: 'str' = '', "
+        "background_turns: 'dict[str, int] | None' = None) -> 'dict[str, Any]'",
     ),
     "subscribe_logs": ("function", False, False, "(self, ws: 'web.WebSocketResponse') -> 'None'"),
     "subscribe_subagents": (

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1825,91 +1824,6 @@ class TestTelemetryEnabledEgressGate:
             async with TestClient(TestServer(_make_app())) as c:
                 assert (await _patch(c, "telemetry.enabled", True)).status == 409
         reset.assert_not_called()
-
-
-# ── Update-nudge snooze/skip (dashboard.update_nudge) ────────────────────
-
-
-class TestUpdateNudgeKeys:
-    """The proactive update popup's per-version snooze/skip persistence.
-
-    One atomic dict write, since the three fields form one verdict. The strict spec
-    (all keys required, no extras) keeps it from being a generic JSON passthrough.
-    """
-
-    _REC = {"version": "0.5.0", "snoozed_until": 1756000000.0, "skipped": True}
-
-    @pytest.mark.asyncio
-    async def test_full_record_round_trips_atomically(self, tmp_config) -> None:
-        # Stored with the gateway's own clock beside it, which the unattended-apply
-        # hold counts from (update_deferral.user_deferred_update).
-        before = time.time()
-        async with TestClient(TestServer(_make_app())) as c:
-            assert (await _patch(c, "dashboard.update_nudge", self._REC)).status == 200
-        after = time.time()
-        stored = json.loads(tmp_config.read_text(encoding="utf-8"))["dashboard"]["update_nudge"]
-        assert stored == {**self._REC, "stored_at": stored["stored_at"]}
-        assert before <= stored["stored_at"] <= after
-
-    @pytest.mark.asyncio
-    async def test_the_stamp_is_neither_refused_nor_read_back(self, tmp_config) -> None:
-        # A client that writes back the record it read sends the stamp too; the
-        # route keeps its own. A change card reads the three keys it writes, so
-        # its post-apply check holds and its Undo writes back a valid record.
-        from kiro_crew.change_card_catalog import KIND_SETTING_CHANGE
-        from kiro_crew.dashboard import change_cards as cards
-
-        async with TestClient(TestServer(_make_app())) as c:
-            rec = {**self._REC, "stored_at": 1.0}
-            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 200
-        stored = json.loads(tmp_config.read_text(encoding="utf-8"))["dashboard"]["update_nudge"]
-        assert stored["stored_at"] > 1.0
-        params = {"path": "dashboard.update_nudge", "value": self._REC}
-        after = cards._sync_read_state(KIND_SETTING_CHANGE, params, [])
-        assert after["value"] == self._REC
-        assert cards.after_shows_the_write(KIND_SETTING_CHANGE, params, after)
-
-    @pytest.mark.asyncio
-    async def test_non_object_rejected(self, tmp_config) -> None:
-        async with TestClient(TestServer(_make_app())) as c:
-            assert (await _patch(c, "dashboard.update_nudge", "0.5.0")).status == 400
-
-    @pytest.mark.asyncio
-    async def test_missing_key_rejected(self, tmp_config) -> None:
-        async with TestClient(TestServer(_make_app())) as c:
-            rec = {"version": "0.5.0", "skipped": True}
-            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
-
-    @pytest.mark.asyncio
-    async def test_unknown_key_rejected(self, tmp_config) -> None:
-        async with TestClient(TestServer(_make_app())) as c:
-            rec = {**self._REC, "extra": 1}
-            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
-
-    @pytest.mark.asyncio
-    async def test_version_overlong_rejected(self, tmp_config) -> None:
-        async with TestClient(TestServer(_make_app())) as c:
-            rec = {**self._REC, "version": "x" * 129}
-            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
-
-    @pytest.mark.asyncio
-    async def test_negative_snooze_rejected(self, tmp_config) -> None:
-        async with TestClient(TestServer(_make_app())) as c:
-            rec = {**self._REC, "snoozed_until": -1.0}
-            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
-
-    @pytest.mark.asyncio
-    async def test_bool_snooze_rejected(self, tmp_config) -> None:
-        # bool is an int subclass; a bare float() coercion would store 1.0.
-        async with TestClient(TestServer(_make_app())) as c:
-            rec = {**self._REC, "snoozed_until": True}
-            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
-
-    @pytest.mark.asyncio
-    async def test_skipped_wrong_type_rejected(self, tmp_config) -> None:
-        async with TestClient(TestServer(_make_app())) as c:
-            rec = {**self._REC, "skipped": "yes"}
-            assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
 
 
 class TestChatTurnTimeout:

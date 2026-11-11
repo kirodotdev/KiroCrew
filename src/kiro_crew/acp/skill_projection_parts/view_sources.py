@@ -27,6 +27,7 @@ from kiro_crew.acp.skill_projection_parts.view_ownership import (
     _MANAGED_AGENT,
     _MANAGED_CREW_HOME,
     _managed_marker,
+    _managed_metadata_for_alias,
     _same_crew_home,
     _sidecar_record,
 )
@@ -371,6 +372,34 @@ def source_agent_name(name: str) -> str:
     if source is None:
         raise RetiredSkillView(name)
     return source
+
+
+def owned_view_source(path: Path) -> str | None:
+    """The agent the view file at *path* was projected from, judged on the file itself.
+
+    :func:`source_agent_name` answers for a NAME, from records that outlive the
+    file. This answers only when this home's ownership record binds the file's
+    CURRENT bytes or view identity (:func:`_managed_metadata_for_alias`, the
+    record the reclaim trusts), so a hand-written spec left at a view's name
+    while its record survives has no source. ``None`` for anything else: a
+    non-regular file, an unreadable one, or no record that binds it. Blocking.
+    """
+    if path.suffix != ".json" or not _LEGACY_ALIAS_NAME_RE.fullmatch(path.stem):
+        return None
+    info = pinned_fs.lstat_by_name(path)
+    if info is None or platform_compat.is_link_or_junction(path) or not stat.S_ISREG(info.st_mode):
+        return None
+    try:
+        raw = safe_read_file_bytes(str(path))
+    except FileTooLargeError:
+        return None
+    if raw is None:
+        return None
+    managed = _managed_metadata_for_alias(path.parent, path, raw)
+    if managed is None:
+        return None
+    agent_name = managed[0].get(_MANAGED_AGENT)
+    return str(agent_name) if _admissible_source_agent(agent_name) else None
 
 
 async def resolve_source_agent(name: str) -> str:

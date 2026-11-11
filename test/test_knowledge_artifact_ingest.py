@@ -1471,3 +1471,37 @@ class TestPostIngestOwnershipSettle:
             "WHERE source_id = ? AND slug = ?", (sid, art.slug)).fetchone())
         assert (row["content_hash"], row["item_ids"], row["status"]) == (
             "sweep-verdict", "[]", "deduped")
+
+
+@pytest.mark.asyncio
+async def test_a_deduped_html_artifact_records_the_hash_its_claim_names(
+    pipeline, art_store, kstore, tmp_path
+):
+    """An html artifact is hashed as markup but its items as extracted text.
+
+    The deduped row has to carry the items' hash: removing the artifact detaches
+    its claim by that hash, so the markup hash would leave the claim behind.
+    """
+    html = "<h1>Spec</h1><p>shared <b>body</b></p>"
+    page = tmp_path / "spec.html"
+    page.write_text(html, encoding="utf-8")
+    folder = kstore.add_source(name="docs", source_type="local_folder",
+                               uri=str(tmp_path))
+    await pipeline.ingest_file(str(page), source_id=folder)
+    held = kstore.db.execute(
+        "SELECT id, content_hash FROM items WHERE source_id = ?", (folder,)).fetchone()
+    assert held is not None
+
+    sid, _ = ensure_artifact_source(kstore)
+    art = art_store.create(name="Spec", content=html, kind="html")
+    job_id = await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+    assert (pipeline.get_job_status(job_id) or {}).get("status") == DUPLICATE_JOB_STATUS
+    assert sid in kstore.sources_holding_item(held["id"])
+    row = kstore.db.execute(
+        "SELECT content_hash, status FROM artifact_item_state "
+        "WHERE source_id = ? AND slug = ?", (sid, art.slug)).fetchone()
+    assert (row["content_hash"], row["status"]) == (held["content_hash"], "deduped")
+
+    remove_artifact(kstore, sid, art.slug)
+    assert sid not in kstore.sources_holding_item(held["id"]), (
+        "a removed html artifact must release its claim on the holder")

@@ -396,7 +396,8 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `agent.streaming` | Stream response text as it is generated | `true` |
 | `agent.bot_name` | Custom name the bot identifies as | `""` |
 | `agent.session_sharing` | Reuse a shared ACP runtime for subagents on the kiro-cli backend; alternate ACP backends ignore it | `true` |
-| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; On KAS, an agent whose `tools` grants `tool_search` has all of its MCP tools deferred and loaded through KAS's own `tool_load`; an agent that grants no `tool_search` keeps them direct, because Kiro Crew lists each of its MCP tools in KAS's never-defer list (a whole-server `@server` grant is expanded from the tool list Kiro Crew already holds for that server, and a server it holds none for stays deferred). KAS ignores this toggle and both thresholds. Other ACP backends ignore it. Kiro Crew's own MCP servers defer only when the spawn runs the pinned kiro-cli install (or its `kiro-cli-chat`) at 2.27.0 or later; any other executable, or an older or unknown version, keeps them resident. On Kiro Crew's own KAS engine bundle (`agent.kas_bundle`) they always defer, because that engine keeps the request's tools list fixed when a deferred tool loads; the KAS relay follows the kiro-cli rule above. Setting `ASBX_KIRO_MANDATORY_MCPS` (comma-separated server names) in the gateway's environment overrides that never-defer list | `true` |
+| `agent.chat_runtime_sharing_max_sessions` | How many dashboard chats one shared agent process serves before the next chat starts another, while the `chat_runtime_sharing` feature preview is on; the blast radius of one process dying. No effect with the preview off. Clamped to 1..64 | `10` |
+| `agent.tool_search` | Defer MCP tool definitions so the model loads them on demand with `tool_search`. kiro-cli defers once either threshold below is exceeded; On KAS, an agent whose `tools` grants `tool_search` has its MCP tools deferred and loaded through KAS's own `tool_load`, except the few tools that are a built-in agent's own job (the default agent's `spawn_run`, `spawn_sub_agents` and `spawn_status`, a worker's `work_brief` and `work_report`, a conductor's dispatch and work-ledger tools), which stay direct unless `ASBX_KIRO_MANDATORY_MCPS` is set; an agent that grants no `tool_search` keeps them direct, because Kiro Crew lists each of its MCP tools in KAS's never-defer list (a whole-server `@server` grant is expanded from the tool list Kiro Crew already holds for that server, and a server it holds none for stays deferred). KAS ignores this toggle and both thresholds. Other ACP backends ignore it. Kiro Crew's own MCP servers defer only when the spawn runs the pinned kiro-cli install (or its `kiro-cli-chat`) at 2.27.0 or later; any other executable, or an older or unknown version, keeps them resident. On Kiro Crew's own KAS engine bundle (`agent.kas_bundle`) they always defer, because that engine keeps the request's tools list fixed when a deferred tool loads; the KAS relay follows the kiro-cli rule above. Setting `ASBX_KIRO_MANDATORY_MCPS` (comma-separated server names) in the gateway's environment overrides that never-defer list | `true` |
 | `agent.tool_search_min_pct` | Tool-definition context threshold as a percentage; `0` with the token threshold also `0` always defers | `5` |
 | `agent.tool_search_min_tokens` | Tool-definition token threshold; `0` with the percentage threshold also `0` always defers | `50000` |
 | `agent.fallback_model` | Model used after the active model exhausts its transient-retry budget. `"auto"` defers to availability-aware routing; `""` disables fallback | `"auto"` |
@@ -462,7 +463,7 @@ saved by hand to a harness not on that list still shows, marked unavailable.
 | `dashboard.link_patterns` | Rewrite matching plain text in transcripts into links at display time, through the same autolink rule engine editions register vocabulary on. Each rule pairs a JavaScript regex with an absolute http(s) URL template in which `{match}` inserts the matched text percent-encoded (no userinfo, placeholder outside the host), e.g. `{"pattern": "\\bPROJ-\\d+\\b", "url": "https://tracker.example.com/browse/{match}"}`. Code blocks and existing links are never rewritten; an inline code span whose whole text matches becomes a link chip. At most 50 rules with distinct patterns, each carrying at most one wide quantifier (`*`, `+`, `{n,}` or a wide `{n,m}`; narrow ranges may accompany it), scanning at most 2000 characters per text block | `[]` |
 | `dashboard.feature_videos_cache_max_mb` | Disk budget for downloaded clips. Whole release folders are removed oldest-first to fit; the release you are running is never removed. `0` = no cap | `500` |
 | `dashboard.crewmates_in_agent_picker` | List Bots in the chat composer's agent picker beside the agent templates. Off: the picker lists templates plus any Bot no listed template already covers. A Bot is covered when it runs a listed template on the shared memory with nothing of its own: the default workspace, no model or effort pin, no label, triggers or description beyond the template's, and no permanent rules, goal, briefing, harness, worker, approval or dynamic-capabilities choice. Takes effect when the dashboard is reloaded; no gateway restart | `false` |
-| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `crew_mode`, `crew_oauth`, `dashboard_stale_fields`, `dashboard_stale_wake`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `session_harness`, `webhooks`). `session_harness` lets `session_create` and `work_dispatch` take `backend` (off: neither tool offers it, and one passed is refused `session_harness_preview_off` with nothing created; a Bot's own harness setting and `spawn_run(backend=...)` work either way); `crew_oauth` lets the gateway sign in to GitHub, Asana, the six Google Connections and the seven visible DCR cards (Atlassian, Notion, Linear, Stripe, Vercel, GitLab, TickTick) itself and serve them to KAS chats (a DCR card's sign-in replaces KAS's own for that card, so turning the preview off means signing in to it again in chat); `dashboard_stale_fields` labels a Bot-written Dashboard field with how old it is once it passes its `stale_after_s` (24 hours by default) and names it in the Bot's turn; `dashboard_stale_wake` (needs `dashboard_stale_fields`) also starts one short turn in the Bot's own chat when such a field goes out of date, with no check-in needed, at most one per Bot every 30 minutes; the older hand-edited `connections.crew_oauth` is ignored. The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off. An LTS build reads every switch as off and refuses to save one | `{}` |
+| `dashboard.feature_previews` | Which unreleased dashboard features are on under Settings > Developer > Feature previews, as `{name: true/false}` (names: `artifact_deploy`, `chat_runtime_sharing`, `crew_mode`, `crew_oauth`, `dashboard_stale_fields`, `dashboard_stale_wake`, `explore`, `folder_conductor`, `layout_harness`, `remote_crew_chat`, `session_environments`, `session_harness`, `webhooks`). `session_harness` lets `session_create` and `work_dispatch` take `backend` (off: neither tool offers it, and one passed is refused `session_harness_preview_off` with nothing created; a Bot's own harness setting and `spawn_run(backend=...)` work either way); `crew_oauth` lets the gateway sign in to GitHub, Asana, the six Google Connections and the seven visible DCR cards (Atlassian, Notion, Linear, Stripe, Vercel, GitLab, TickTick) itself and serve them to KAS chats (a DCR card's sign-in replaces KAS's own for that card, so turning the preview off means signing in to it again in chat); `dashboard_stale_fields` labels a Bot-written Dashboard field with how old it is once it passes its `stale_after_s` (24 hours by default) and names it in the Bot's turn; `dashboard_stale_wake` (needs `dashboard_stale_fields`) also starts one short turn in the Bot's own chat when such a field goes out of date, with no check-in needed, at most one per Bot every 30 minutes; the older hand-edited `connections.crew_oauth` is ignored. `chat_runtime_sharing` lets dashboard chats on kiro-cli (and KAS on kiro-cli 3.1.0 or newer) share one agent process, up to `agent.chat_runtime_sharing_max_sessions` each, instead of one process per chat; chats on one process take turns one at a time, and it applies to chats started after the change. The dashboard keeps a browser copy as a cache and writes each switch here, so it stays set on every browser and dashboard address. An absent name, an unknown name, or a value that is not `true`/`false` reads as off. An LTS build reads every switch as off and refuses to save one | `{}` |
 | `dashboard.jira_auth` | Per-host Jira connection entries for the Issues panel, each `{"host": ..., "email": ...}`. `user` is accepted as an alias of `email` (`email` wins when both are set). The API token is not stored here: it is read from the secrets vault first, then from `.env` as `JIRA_API_TOKEN` (or a per-host token name when several hosts are configured). A Jira Cloud host (`*.atlassian.net`) with no `email`/`user` fails with `jira_config_error` before any request is sent | `[]` |
 
 ### Slack
@@ -731,6 +732,9 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.lesson_extraction_enabled` | Off: history consolidation and the task runner save no extracted lessons. The rest of each consolidation pass (history, preferences, semantic and episodic memory) still runs, and `learn_add` still saves lessons | `true` |
 | `memory.kind_routing` | What history consolidation does with the `kind` it tags each `project.*` fact with: `fact`, `event` (something that happened) or `state` (a PR, issue, CI, branch or round status that GitHub, git or the work ledger already holds). `off` keeps today's prompt and writes. `shadow` (opt-in) asks for the tag, writes every fact as before and only logs what routing would do, inside fixed caps (one counter row a day; at most 150 samples a day, drawn evenly across the whole day, 2,000 in all and 1 MB, for the first 14 days, a window that starts again when the tagging rules change). `enforce` skips a state item and writes facts and events as before. Stored facts are never changed. `pref.*`, `user.*`, lessons and facts you state yourself are never routed | `"off"` |
 | `memory.lesson_origin_gate` | Whether a lesson learned from turns no person sent (another session's message, an auto-nudge, a cron or heartbeat run) may become a standing rule. `off` keeps today's prompt and writes. `shadow` (opt-in) writes every lesson as before and only counts what the gate would demote, inside the same caps as kind routing (one counter row a day; lesson keys only, at most 150 a day, for the first 14 days). `enforce` stores such a lesson as an `on_topic` finding, never dropping it, and saves a `learn_add` that such a turn triggered as `on_topic` under its own source rather than as yours. A span with any message from you keeps its tiers. Stored lessons are never changed | `"off"` |
+| `memory.lesson_tier_policy` | Which tier a new lesson from history consolidation gets. `off` keeps today's prompt and writes. `shadow` (opt-in) writes every lesson as before and only counts, inside the same caps as kind routing, which new lessons the policy would save as `on_topic` findings, and how often a later `learn_add` teaches one of them again. `enforce` asks the model for your own words behind each `always` lesson and saves a lesson as an `on_topic` finding unless those words are in one of your messages; a lesson with no tier is saved as a finding too. Your own `learn_add` and dashboard writes, and stored lessons, are never changed | `"off"` |
+| `memory.rule_authority_order` | How the session-start rule block orders its rules. `off` keeps today's block. `shadow` (opt-in) keeps today's block and only records, in the injection receipt (`usage/injections/`, field `rule_authority_order`), which rule ids the new order would add or drop, inside the same caps as kind routing (at most 150 lines a day, 2,000 and 1 MB in all, for the first 14 days). `enforce` lists rules saved as yours (`learn_add`, dashboard, CLI) first, then rules inferred from sessions; inside each group the current order holds. Set `memory.lesson_origin_gate` to `enforce` too, or a `learn_add` an agent made on its own still counts as yours. The rule budget and its omission line are unchanged, and no stored lesson is changed | `"off"` |
+| `memory.member_lesson_dedup` | Whether a crew member's private memory folds a lesson its consolidation learned into a stored copy of the same rule: same scope and tier, and either the same text (ignoring case, spacing and Unicode width) or stored vectors at cosine 0.95 or more. `off` keeps today's writes. `shadow` (opt-in) writes every lesson as before and only counts what the fold would do, inside the same caps as kind routing (one counter row a day; lesson keys only, at most 150 a day, for the first 14 days). `enforce` skips a textual copy, and retires a new near-copy with a saved revision once it has its vector and before a dashboard turn was given it; setting the flag back to `off` restores those rows on the next embedding sweep. A copy that adds a NOT-clause is kept. Lessons you taught are never folded. Under `shadow` or `enforce` the main store also counts how many of its own merges (newest wins above cosine 0.85) fall below 0.95; its merges do not change | `"off"` |
 | `memory.inject_memory` | Inject the stored memory block (preferences, the memory activity index, recent-session snippets) into new-session context, including the re-injection after a compaction. On-demand `memory_recall` and writes are unaffected | `true` |
 | `memory.inject_lessons` | Inject the learned-corrections and user-profile blocks into new-session context. Writes are unaffected | `true` |
 | `memory.inject_lessons_per_turn` | On each follow-up message, add up to three stored lessons (2,000 characters) that match it and that the session has not been shown yet: the session-start block holds only what fits its budget. A lesson matches when it shares at least two distinct words with the message that are each rare among stored lessons: carried by at most 1% of them, and never fewer than one. Request words on the lesson stop list and words of two letters or fewer are ignored. Each lesson is sent at most once until a compaction drops it from context, even when the turn that carried it was cancelled or failed; a gateway restart, or turning this on mid-session, can send one once more; it can also be sent once more after 256 newer lessons in that session or after its record is dropped past 256 sessions. Vector stores only. Requires `inject_lessons` | `false` |
@@ -863,6 +867,9 @@ restarts when the gateway restarts, when a credential file the gateway watches
 changes, or when `mcp_gateway.max_backends` is full and it is the least
 recently used idle backend.
 
+A script cron is not covered: each of its runs still starts its own copy of the
+server (see [Script and command crons](cron-and-scheduling.md#script-and-command-crons)).
+
 On the `kas` backend, a background helper whose agent mounts no tool
 (`kirocrew-lite`) no longer starts the servers in `~/.kiro/settings/mcp.json`.
 
@@ -920,7 +927,7 @@ The desktop app's list of remote Crews it can open through the Kiro relay. See [
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `auto_update` | Where the install can apply updates, `true` installs them and restarts the gateway; `false` only notifies. When work is running, a checkout waits before applying, while the `cli.sh` managed venv builds the new version alongside and waits only to restart. Elsewhere it has no effect. On those same installs a policy minimum version applies regardless. A hand-edited recognized boolean spelling (such as `"false"`) is honoured; any other non-boolean value reads as off; an absent key stays on. See [Updates](#updates) | `true` |
+| `auto_update` | Where the install can build a new version beside the running one, `true` prepares it and leaves it for the next restart you choose; `false` only notifies. The gateway never restarts itself for an update. Only the `cli.sh` managed venv prepares an update by itself; a checkout, pip and pipx only notify, and Update (or `kirocrew update`) applies them. A policy minimum version prepares an update on the managed venv regardless. A hand-edited recognized boolean spelling (such as `"false"`) is honoured; any other non-boolean value reads as off; an absent key stays on. See [Updates](#updates) | `true` |
 | `timezone` | IANA timezone name, e.g. `"America/Los_Angeles"`, or `"local"` to follow this computer's time zone wherever it travels. The default zone for cron jobs that name none, and for the agent's "now" | `""` (same as `"local"`) |
 | `snapshot_dir` | Where `kirocrew snapshot` writes tarballs | `""` (`~/.kiro/crew/snapshots`) |
 
@@ -984,36 +991,45 @@ A per-job `timezone` on a cron job wins over this global value.
 ### When the gateway checks
 
 The gateway checks for a newer release when it starts (its own restarts
-included), every 12 hours, and every five minutes while an update is waiting
-for running work to finish. Depending on the install, the check is a `git
-fetch` or a release-feed fetch. Docker and the desktop app's bundled gateway
-skip it (see below); everywhere else it runs whatever `auto_update` is set to.
+included) and every 12 hours, and again every five minutes after a preparation
+that was interrupted. Depending on the install, the check is a `git fetch` or a
+release-feed fetch. Docker and the desktop app's bundled gateway skip it (see
+below); everywhere else it runs whatever `auto_update` is set to.
 
-`auto_update` decides what happens when the check finds something. With `true`
-(the default), the gateway applies the update and restarts itself, on the
-installs that can apply. With `false`, it only notifies.
+**The gateway never updates or restarts itself while it is running.** What
+`auto_update` decides is what happens to an update the check finds. With `true`
+(the default), the `cli.sh` managed venv builds the new version beside the live
+install while turns keep running, and nothing the running gateway loads from is
+changed. The dashboard then says an update is ready ("Update ready" on the top
+bar, "Restart to update" in the update dialog), and the new version starts the
+next time you stop or restart the gateway, or start it fresh. Every other
+install, and `auto_update` set to `false`, only notifies.
 
-A checkout applies only when no turn or background job is running. If work is
-in flight, it keeps serving and tries again five minutes later, so steady
-activity can postpone even a mandatory update. While a checkout's update
-applies, the gateway does not start new turns.
+A checkout, a policy update command, pip and pipx replace the tree the running
+gateway serves from, so they are never applied while it runs. **Update** ("Update
+when I restart") only sets the update to apply: nothing installs and nothing
+restarts now, and the gateway applies it at its next start, before it serves
+anything. If that apply fails, the old version starts and the dashboard shows why.
+You can also run `kirocrew update` and restart yourself. Clicking **Restart**
+while work is running (a turn, a background job, a queued message, an approval
+card, or a chat you typed into within 15 minutes) shows what is running and asks
+before it restarts anyway; declining just cancels.
 
-The `cli.sh` managed venv does not wait to apply. It builds the new version
-beside the live install while turns keep running, and nothing the running
-gateway loads from is changed. Only the restart into the new version waits for
-running work to finish, retried on the same five-minute cadence. On a Linux host
-where the `kirocrew-userns` AppArmor profile is attached to one version's
-launcher only, the gateway does not apply by itself: it posts a notice to run
-`kirocrew update` and then `kirocrew service install`, which re-attaches the
-profile. Where the directory holding the install is owned by the service's
-account and writable by no other, `kirocrew service install` attaches the
-profile to every version's launcher, and updates apply on their own.
+On a Linux host where the `kirocrew-userns` AppArmor profile is attached to one
+version's launcher only, the gateway does not prepare an update by itself: it
+posts a notice to run `kirocrew update` and then `kirocrew service install`,
+which re-attaches the profile. Where the directory holding the install is owned
+by the service's account and writable by no other, `kirocrew service install`
+attaches the profile to every version's launcher, and updates prepare on their
+own.
 
-If an update removes the dashboard bundle while the gateway cannot be relaunched
-(the service manager could not start it, or the update moved the install but
-could not sync its dependencies), the gateway stays up on its loaded code. The
-dashboard then serves its fallback page, and the log carries a CRITICAL line
-naming the reason. See the
+If an update removes the dashboard bundle from under the running gateway (a
+terminal-run installer, for example), the gateway keeps serving on its loaded
+code. The dashboard then serves its fallback page, the log carries a CRITICAL
+line, and the same "Update ready" notice asks you to restart. Setting
+`KIROCREW_AUTO_RESTART=0` (or an `auto-restart.disabled` file in the edition's
+state directory) turns off automatic restarts for an edition that has them; the
+gateway itself restarts nothing. See the
 [stale-asset watchdog](../../../docs/system-specs/modules/slack-gateway.md) in the
 gateway spec.
 
@@ -1026,37 +1042,29 @@ Windows, where they never run and the gateway does not update itself. See the
 
 A security policy can also turn unattended installs off with
 `"unattended_apply": false` in its `updates` block. The gateway then never
-applies an update by itself, whatever `auto_update` says: it still checks and
-shows the update badge, and Update installs the update when you ask. A policy
-minimum version still installs a mandatory update.
+prepares an update by itself, whatever `auto_update` says: it still checks and
+shows the update badge, and Update sets the update to apply at the next start. A
+policy minimum version still prepares a mandatory update, and never restarts for it.
 
 | Install | With `auto_update` on |
 |---|---|
-| Git or source checkout (any OS) on a primary branch: `main`, `mainline` or `master` <!-- wokeignore:rule=master --> | Applies |
-| The `cli.sh` managed venv (macOS, Linux) | Applies |
+| Git or source checkout (any OS) | Notifies. **Update** applies it at the next start |
+| The `cli.sh` managed venv (macOS, Linux) | Prepares it beside the running install; the next restart uses it |
 | pipx (what `cli.sh` uses when pipx is on `PATH`) or plain `pip` | Notifies only |
-| Docker | Neither checks nor applies. The About page says to pull a newer image |
+| Docker | Neither checks nor prepares. The About page says to pull a newer image |
 | The gateway bundled in the desktop app | Neither. The app's own updater owns it |
 
-Of the non-checkout installs, the gateway applies an update itself only on the
+Of the non-checkout installs, the gateway prepares an update itself only on the
 `cli.sh` managed venv, so pip and pipx only notify.
 
-A checkout applies when the tip of its branch carries a newer `__version__` than
-the running code, and then hard-resets to that tip and restarts. It does not
-apply over local changes, local commits or untracked files the update would
-overwrite, and it does not restart a gateway whose checkout you already pulled
-by hand. Other branches,
-`release/*` included, never auto-apply. `main` is always one minor version ahead
-of the release line, so a `main` checkout moves onto nightly code each time a
-release branch is cut. Below a policy minimum version, a primary-branch checkout
-applies on the same newer-`__version__` test and only when the checkout can take
-the update cleanly, so a floor moves it toward a build that satisfies the minimum
-rather than resetting to every intermediate commit. When the floor is pinned
-above the newest available build, or the checkout has diverged (local commits a
-reset would discard), the gateway refreshes the update badge instead of applying.
-A mandated apply that finds the required code already on disk leaves a restart
-pending and refreshes the badge rather than reporting a restart that does not
-happen.
+**Update** on a checkout applies, at the next start, when the tip of its branch
+carries a newer `__version__` than the running code, and then hard-resets to that
+tip. It does not apply over local changes, local commits or untracked files
+the update would overwrite. Below a policy minimum version, a primary-branch
+checkout shows the update badge and the required-update prompt; it is not reset
+by itself. When the floor is pinned above the newest available build, or the
+checkout has diverged (local commits a reset would discard), the gateway
+refreshes the update badge instead.
 
 ### Turning it off and updating by hand
 
@@ -1083,10 +1091,10 @@ the version the running gateway serves.
 ### What can still update a host with `auto_update` off
 
 - **A policy minimum version.** An administrator can set `min_version` in the
-  `updates` block of `security_policy.json`. On an install whose gateway updates
-  itself, a gateway below that version applies the update even with
-  `auto_update` off — but only toward a build carrying a newer `__version__`, so
-  a floor advances the host instead of churning on commit distance alone. The
+  `updates` block of `security_policy.json`. On an install whose gateway prepares
+  updates itself (the managed venv), a gateway below that version prepares the
+  update even with `auto_update` off, and the prompt to restart cannot be
+  dismissed; the gateway still does not restart itself. The
   scope per install is in the
   [governance spec](../../../docs/system-specs/modules/governance.md#update-pins-updates--policy-only).
 - **The desktop app's own updater.** On a desktop install, **Install app

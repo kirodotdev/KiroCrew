@@ -343,28 +343,35 @@ every wheel apply checks the pin again under the update lock before downloading
 (`wheel_engine.check_policy_channel`, enforced inside `apply_wheel_update` under the update lock immediately before `promote` swaps the stable link, which the dashboard approve, the scheduled auto-apply and `kirocrew update` all reach; the reads before the download are advisory). Two tiers fold to the
   authority's channel, else the subordinate's. The `cli.sh` installer still
   reads the file directly.
-- **`min_version`** — the minimum version the fleet may run. On an install
-  whose gateway updates itself, a host below it takes a **mandatory** update,
-  overriding the user's `auto_update=false` (user config sits under the
-  enterprise ceiling). It never refuses to *boot*: bricking a fleet on a policy
-  typo would remove the surface an admin needs to fix it. An unparseable floor
-  imposes none, for the same reason. What "takes the update" means depends on
-  the install (`slack/gateway_runtime/update_schedule.py` `_check_for_updates`
-  and `_check_for_updates_via_provider`):
-  - **A policy provider** (`check_command` below) applies whenever the check
-    reports a version.
-  - **A git checkout** on a primary branch applies only toward a build whose
+- **`min_version`**: the minimum version the fleet may run. A host below it
+  gets a **mandatory** update notice, overriding the user's `auto_update=false`
+  (user config sits under the enterprise ceiling): the update prompt cannot be
+  dismissed. It never refuses to *boot*: bricking a fleet on a policy typo would
+  remove the surface an admin needs to fix it. An unparseable floor imposes none,
+  for the same reason. The gateway never restarts itself for a floor (maintainer
+  decision of 2026-11-10,
+  [decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)),
+  so what "takes the update" means depends on the install
+  (`slack/gateway_runtime/update_schedule.py` `_check_for_updates` and
+  `_check_for_updates_via_provider`):
+  - **A policy provider** (`check_command` below) only announces: its
+    `apply_command` rewrites the running install in place, so a person's Update
+    only arms it and the gateway runs it at its next start, before it serves
+    anything (`update_boot_apply`; a gateway the desktop app hosts leaves it to
+    the app).
+  - **A git checkout** only announces: a reset rewrites the tree the gateway
+    serves from. A person's Update arms it, the next start applies it, and only toward a build whose
     `__version__` outranks the running one AND that the checkout can take
     cleanly (behind-only, or already pulled and awaiting a restart). Below the
     floor with nothing newer, or with a diverged checkout that a reset would
-    strip of local commits, it notifies and refreshes the badge instead of
-    resetting to every new upstream commit, released or not
-    ([#15796](https://github.com/kirodotdev/KiroCrew/issues/15796)). A no-op
-    apply (the required code already on disk) leaves a restart pending without
-    arming a reload. A non-primary branch never applies, floor or not.
-  - **The `cli.sh` managed venv** re-runs the installer when the feed has a
-    newer build that `source` permits. With nothing newer it writes a log line
-    and does not reinstall; About can still read "up to date".
+    strip of local commits, the badge is refreshed and nothing resets
+    ([#15796](https://github.com/kirodotdev/KiroCrew/issues/15796)). A
+    non-primary branch never applies, floor or not.
+  - **The `cli.sh` managed venv** builds the newer build the feed offers (that
+    `source` permits) beside the running install and stages it ("update ready,
+    restart to use it"); the new version starts at the next restart a person
+    chooses. With nothing newer it writes a log line and builds nothing; About
+    can still read "up to date".
   - **pip and pipx installs** only light the update badge, even when the feed
     has nothing newer.
   - **Docker and the desktop app's bundled gateway** (without a provider) do
@@ -372,10 +379,7 @@ every wheel apply checks the pin again under the update lock before downloading
     updater does not act on the floor: with the app's update switch off, the
     floor only makes the update-found prompt undismissable, and with it on (the
     default) the floor has no effect.
-  - A mandatory apply waits for idle like any other
-    ([configuration.md → Updates](../../../src/kiro_crew/docs/configuration.md#when-the-gateway-checks))
-    and is never forced: the grace period (`_MANDATORY_UPDATE_MAX_DEFER_SECS`)
-    only logs.
+  - No floor forces a restart, however long the update has been waiting.
 - **`check_command`** / **`apply_command`** — select the command update
   provider (`platform/update_provider.py` `CommandProvider`), which then owns
   the check, the badge and the Update button, and is resolved before any
@@ -405,7 +409,7 @@ every wheel apply checks the pin again under the update lock before downloading
   provider on every host, so a host whose platform has no command then never
   checks or applies.
 - **`unattended_apply`** — a JSON boolean; absent or `null` reads `true`. `false`
-  stops the gateway installing an update by itself on every install shape,
+  stops the gateway preparing an update by itself on every install shape,
   whatever the user's `auto_update` says: the check still runs, the badge still
   lights, and a person's Update applies it. `auto_update_effect` answers `notify`
   but keeps the route, so the provider path still reads `can_apply` off it, the
@@ -417,7 +421,8 @@ every wheel apply checks the pin again under the update lock before downloading
   unlike every other pin (see "an unresolvable pin" below). Each routine install reads
   the pin again at its last step before it changes anything, so a policy
   installed while the update waited still decides. A build below `min_version`
-  still takes its mandatory update, because the floor is the stronger pin. A
+  still gets its mandatory notice (and, on the managed venv, its staged build),
+  because the floor is the stronger pin. A
   string such as `"false"` fails the load rather than reading as on.
 
 The bullets above name every key `updates` accepts (`UpdatePins.from_dict`). Any
@@ -440,7 +445,7 @@ else*; a per-app profile that could redirect the update source would be
 privilege escalation.
 
 `platform/update_governance.py` is the one seam the three update paths share
-(`POST /api/update`, `kirocrew update`, the gateway-boot auto-apply) so they
+(`POST /api/update`, `kirocrew update`, the gateway's staged apply) so they
 cannot drift. It resolves the remote git would *actually* fetch from — reading
 `branch.<name>.remote` rather than assuming `origin`, via `ls-remote --get-url`
 so `url.<base>.insteadOf` rewriting is applied — and returns a blocking reason or
@@ -1488,7 +1493,10 @@ the rule. Its sibling `availableAgents` travels as a `deny` with the listed name
 `exclude`, which only narrows and so travels whatever the ceiling says.
 
 The projection is built per session, so the translated merge asks
-`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`. The ceiling
+`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`, and so does
+the spec's own sub-agent allow (`use_subagent` in `allowedTools`, a `subagent` allow in its
+`permissions`, `kas_agents._authored_allow_gate`); the spec's other authored allows still
+ask `may_skip_gate_now`. The ceiling
 and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
 resolve for one of that session's calls count
 (`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
@@ -2096,7 +2104,7 @@ disposition:
 - **Inbound message receive (`messaging.identity.channel_inbound_permitted`)**
   gates each transport's per-message dispatch on the SAME `channels` allowlist,
   resolved on the host surface with `fail_closed=True` and run OFF the event loop
-  (it walks the ProfileStore). Called at the top of every dispatcher's
+  (it walks the ProfileStore). Called on every message by every dispatcher's
   `handle_message` (Slack / Discord / Telegram / Webex / WeCom — Slack is NOT
   exempt), it closes the gap the connect-time gate alone leaves: a host-profile
   deny added AFTER a transport connected would otherwise keep dispatching inbound
@@ -2875,12 +2883,14 @@ otherwise let a denied channel trigger a download by attaching a file to the one
 word that skips the gate. Both arguments default to the gated behaviour, so a
 caller that does not pass them is unchanged. This matters most where the channel
 has no widgets: with `max_buttons=0` a typed `/stop` is the only cancel
-affordance the operator has. The Feishu, iMessage, Teams, Webex, WeCom and Weixin
-dispatchers pass `text` only when their own `parse_command` reads the message as
-`stop` (Feishu, Webex and WeCom after removing the bot's @mention; never for a Teams or
-Webex card press, and never for drained turn content), so a cancel word another
-channel spells, such as `!stop`, keeps the strict gate instead of passing into
-the busy path's steer. WhatsApp passes its text as is.
+affordance the operator has. The Discord, Feishu, iMessage, Teams, Telegram, Webex,
+WeCom and Weixin dispatchers pass `text` only when their own `parse_command` reads the
+message as `stop` (Feishu, Webex and WeCom after removing the bot's @mention, Telegram
+after removing its own `@username`; never for a Teams or Webex card press, and never for
+drained turn content), so a cancel word another channel spells, such as `!stop`, keeps
+the strict gate instead of passing into the busy path's steer. Discord's `/stop` slash
+command passes the same gate as `!stop`, and a Telegram stop is never taken as the
+answer to a bridged approval note. WhatsApp passes its text as is.
 
 `_CANCEL_ALIASES` is the recognised set, and it is a MIRROR of the per-channel
 command tables (`/stop`, `/cancel`, Discord's `!` bang forms, WeCom's `停止`),
@@ -3721,8 +3731,9 @@ started by hand on a preset's port from answering. Both
 chokepoints select the row from the configured provider and the runtime, never from
 the request. `PUT /api/decisions/provider`
 refuses a switch to a withdrawn side with `403 decisions_capability_denied`, and its
-`GET` reports `hosted_permitted` / `local_permitted` so the picker greys that side
-out. `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
+`GET` reports `hosted_permitted` / `local_permitted` / `sagemaker_permitted`; the
+picker hides a refused hosted option and greys out a refused local one, and the
+PUT also asks the `endpoints` list for a hosted or SageMaker host, as does an enabling `PUT /api/decisions/consent`, and a refused hosted default reads as `active: "none"` (see decisions.md). `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
 only when `capabilities.decisions` is pinned off (which covers both sides) or both
 rows are. A fleet that permits hosted Jev but wants no local model pins this row.
 

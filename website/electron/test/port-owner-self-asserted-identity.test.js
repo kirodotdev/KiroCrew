@@ -99,6 +99,11 @@ const OCCUPANCY_SITES = [
     code: 'if ((await probeGatewayPortBinding(PORT)) !== "free") return;',
     times: 1,
   },
+  {
+    what: "the exported primary-port probe hands the occupancy reading to the IPC gate",
+    code: 'probePrimaryPortBinding: () => probeGatewayPortBinding(PORT),',
+    times: 1,
+  },
 ];
 
 // The identity judgements. These MAY rest on the holder's command line -- that
@@ -148,6 +153,11 @@ const IDENTITY_SITES = [
   {
     what: "existing-gateway dialog: a service manager needs the extra recovery step",
     code: 'const serviceNote = localOwner === "service"',
+    times: 1,
+  },
+  {
+    what: "boot: a Windows gateway proven by this home's lock is adopted as a plain local one",
+    code: 'const PROVEN_HOME_OWNER = "kirocrew";',
     times: 1,
   },
   {
@@ -203,6 +213,11 @@ const NON_PORT_SITES = [
   {
     what: "the HTTP readiness probe's own timeout result",
     code: 'req.on("timeout", () => { req.destroy(); resolve("unknown"); });',
+    times: 1,
+  },
+  {
+    what: "the HTTP readiness probe's result for a body cut off mid-read",
+    code: 'res.on("error", () => resolve("unknown"));',
     times: 1,
   },
   {

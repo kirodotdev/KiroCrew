@@ -83,7 +83,7 @@ _BASE_NAMES = frozenset("""
         _MAX_HEADER_FIELD_SIZE _MIXED_INTERNAL_API_PATHS _NO_STORE_CACHE_CONTROL
         _OWN_HOST_WARM_TASKS _PERMISSIONS_POLICY _PNA_REQUEST_HEADER
         _PNA_RESPONSE_HEADER _PREVENT_SLEEP_POLL_INTERVAL_SECS
-        _PRE_AUDIT_DENY_STATUSES _SKILL_APPROVAL_SETTING_URL _STATIC_DIR
+        _PRE_AUDIT_DENY_STATUSES _STATIC_DIR
         _STRICT_INTERNAL_API_PATHS _STT_PREWARM_BOOT_DELAY_SECS
         _STT_SWEEP_BOOT_DELAY_SECS _TAILNET_AWAKE_TTL_SECS _TIME_WAIT_BUDGET_SECS
         _TUNNEL_STOP_TIMEOUT_SECS _UNATTENDED_EXPIRY_TITLE _VENDOR_CORS_HEADER_VALUE
@@ -298,7 +298,7 @@ def _global_names(code: types.CodeType):
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Tests and other modules read private names off the server as well as public
     ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 318
+    assert len(_BASE_NAMES) == 317
     assert sorted(name for name in _BASE_NAMES if not hasattr(server, name)) == []
 
 
@@ -457,6 +457,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.memory_startup_prebuild": "prebuild_startup_reads",
     "kiro_crew.history_index_worker": "SessionIndexWorkerSupervisor",
     "kiro_crew.kiro_prerequisite": "KiroPrerequisiteService register_turn_auth_service",
+    "kiro_crew.knowledge.entity_resolution": "merge_split_entities",
     "kiro_crew.hooks": "set_builtin_app_agents set_builtin_app_mcp_servers set_builtin_app_names",
     "kiro_crew.memory": "MemoryStore",
     "kiro_crew.messaging.session_trust": "clear_trusted_sessions",
@@ -494,7 +495,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 149
+    assert len(expected) == 150
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

@@ -38,6 +38,7 @@ function desktopBridge(info: object = {}) {
     onState: vi.fn(() => () => {}),
     check: vi.fn(async () => ({ ok: true })),
     download: vi.fn(async () => ({ ok: true })),
+    armsOnQuit: true,
     install: vi.fn(async () => ({ ok: true })),
     getInfo: vi.fn(async () => ({ version: '0.5.0', channel: 'stable', packaged: true, platform: 'darwin-arm64', ...info })),
   }

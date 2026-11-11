@@ -174,7 +174,9 @@ def _serve_sign_in_first(args: argparse.Namespace, exc: BaseException) -> None:
     # One gateway per data home, the sign-in screen included: the same lock the
     # gateway takes, held until this process exits.
     try:
-        lock = GatewayLock(config_dir(), port=port or None, bind_address=signin.BIND_HOST).acquire()
+        lock = GatewayLock(
+            config_dir(), port=port or None, bind_address=signin.BIND_HOST, signed_out=True
+        ).acquire()
     except GatewayLockError as lock_err:
         print(f"👻 {lock_err}", file=sys.stderr)
         sys.exit(LIVE_HOLDER_EXIT_CODE if lock_err.live_holder else 1)
@@ -1096,6 +1098,13 @@ def main() -> None:
             from kiro_crew.cli_server import _update
 
             _update(force=args.force)
+            # A manual update that finished is the fix for a failed boot apply.
+            from kiro_crew import update_next_start
+
+            try:
+                update_next_start.clear_error()
+            except OSError:
+                pass  # the notice stays; the update itself succeeded
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 
@@ -1115,7 +1124,7 @@ def main() -> None:
     elif args.command == "gateway-pid":
         from kiro_crew.cli_server import _gateway_pid
 
-        _gateway_pid()
+        _gateway_pid(args.port)
     elif args.command == "service":
         from kiro_crew.cli_server import _service_cmd
 

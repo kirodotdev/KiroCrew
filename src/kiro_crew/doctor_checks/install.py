@@ -759,7 +759,8 @@ def _doctor_tz_data(issues: list[str]) -> None:
         issues.append("timezone data missing")
         return
     if offset == _TZ_PROBE_OFFSET:
-        print("  tz data:     ✅ current (America/Vancouver stays UTC-7 in winter)")
+        print("  tz data:     ✅ current (IANA tzdb 2026b or later)")
+        print("               Sample check on America/Vancouver, not your configured zone.")
         return
     print("  tz data:     ⚠️  out of date (older than IANA tzdb 2026b)")
     print("               It still moves America/Vancouver back to UTC-8 on")

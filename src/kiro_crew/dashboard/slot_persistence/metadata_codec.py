@@ -687,7 +687,8 @@ def _read_color_index(r: _Read) -> None:
 def _read_color_hex(r: _Read) -> None:
     color_hex = r.meta.get("color_hex")
     if isinstance(color_hex, str) and COLOR_HEX_RE.match(color_hex):
-        r.slot.color_hex = color_hex.lower()
+        # The pattern's ``$`` admits one trailing newline; keep the colour only.
+        r.slot.color_hex = color_hex[:7].lower()
 
 
 def _read_color_theme(r: _Read) -> None:

@@ -75,6 +75,7 @@ from kiro_crew.agent_sdk.backends import (
     launch_effort_supported,
 )
 from kiro_crew.agent_sdk.host_auth import HOST_TERMINAL_NOTE
+from kiro_crew.bounded_read import bounded_read_fd
 from kiro_crew.config.paths import config_dir
 from kiro_crew.config.sections import AGENT_ENV_NAME_GRAMMAR, DEFAULT_MODEL
 from kiro_crew.config.sections_agent_env import STRANDS_ENV_NAMES, STRANDS_PROVIDER_CHOICES
@@ -718,7 +719,7 @@ def _read_marker(marker_path: str) -> object:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode) or not 0 <= metadata.st_size <= _MARKER_MAX_BYTES:
             return None
-        payload = os.read(fd, metadata.st_size + 1)
+        payload = bounded_read_fd(fd, metadata.st_size + 1)
         if len(payload) != metadata.st_size:
             return None
     except OSError:

@@ -141,7 +141,6 @@ src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/port_reclaim.py
 src/kiro_crew/dashboard/routes/skills.py
 src/kiro_crew/dashboard/slowloris.py
-src/kiro_crew/dashboard/stale_asset_watchdog.py
 src/kiro_crew/dashboard/tailnet_serve.py
 src/kiro_crew/dashboard/terminal_commands.py
 src/kiro_crew/dashboard/theme_validate.py
@@ -671,7 +670,6 @@ test/test_tailnet_serve.py
 test/test_tailnet_session_url.py
 test/test_taskrunner_atomic_persistence.py
 test/test_taskrunner_autoapprove.py
-test/test_tcc_protected_dirs.py
 test/test_teams_config.py
 test/test_teams_gateway.py
 test/test_telegram_album.py
@@ -688,7 +686,6 @@ test/test_turn_duration_hooks.py
 test/test_turn_duration_slack.py
 test/test_turn_duration_task_runner.py
 test/test_turn_duration_workflow.py
-test/test_update_venv_detection.py
 test/test_user_resolution_fallback.py
 test/test_validation.py
 test/test_validation_user_actions.py

@@ -20,7 +20,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from kiro_crew import __version__, code_fingerprint, platform_compat, release_channel
 from kiro_crew.cloud import aws, sizes
@@ -408,7 +408,12 @@ def assert_ami_matches_tier(ami_id: str, tier: sizes.SizeTier, profile: str, reg
     )
 
 
-def discover_network(profile: str, region: str, instance_type: str = "") -> tuple[str, str, str]:
+def discover_network(
+    profile: str,
+    region: str,
+    instance_type: str = "",
+    on_fallback: Optional[Callable[[str], None]] = None,
+) -> tuple[str, str, str]:
     """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
 
     ``egress_kind`` is ``"nat"`` or ``"igw"`` — the caller uses it to decide
@@ -424,6 +429,10 @@ def discover_network(profile: str, region: str, instance_type: str = "") -> tupl
     the launch until the WaitCondition times out. Raises :class:`aws.AWSError`
     with actionable text if no default VPC, no AZ-compatible subnet, or no
     egress-capable subnet is available.
+
+    With no default VPC it falls back to the Region's only VPC, a choice the user
+    did not make, so ``on_fallback`` is then called with one sentence naming the
+    VPC, subnet and egress picked and how to choose another.
     """
     vpcs = aws.checked_json(
         ["ec2", "describe-vpcs", "--filters", "Name=isDefault,Values=true"],
@@ -432,7 +441,8 @@ def discover_network(profile: str, region: str, instance_type: str = "") -> tupl
         action="ec2:DescribeVpcs",
     )
     vpc_list = vpcs.get("Vpcs", []) if isinstance(vpcs, dict) else []
-    if not vpc_list:
+    fallback = not vpc_list
+    if fallback:
         # Fall back to any VPC if there is exactly one.
         allv = aws.checked_json(
             ["ec2", "describe-vpcs"], profile, region, action="ec2:DescribeVpcs"
@@ -482,15 +492,27 @@ def discover_network(profile: str, region: str, instance_type: str = "") -> tupl
     # only "egress" is an IGW when the launch can't get a public IP. Prefer, in
     # order: NAT (always works) > IGW (works via the associated public IP).
     egress = _subnet_egress_kinds(vpc_id, profile, region)  # {subnet_id: "igw"|"nat"}
+
+    def _picked(subnet_id: str, kind: str) -> tuple[str, str, str]:
+        if fallback and on_fallback is not None:
+            via = "NAT" if kind == "nat" else "an internet gateway"
+            on_fallback(
+                f"No default VPC in {region}, so this launch uses the only VPC there, "
+                f"{vpc_id}, with subnet {subnet_id} (internet through {via}). This launch "
+                "goes on; to use another network next time, give a subnet ID (the Subnet "
+                "ID field, or --subnet)."
+            )
+        return vpc_id, subnet_id, kind
+
     nat = [s for s in candidates if egress.get(s["SubnetId"]) == "nat"]
     if nat:
-        return vpc_id, nat[0]["SubnetId"], "nat"
+        return _picked(nat[0]["SubnetId"], "nat")
     igw = [s for s in candidates if egress.get(s["SubnetId"]) == "igw"]
     if igw:
         # Prefer one that also auto-assigns a public IP, but the template's
         # conditional AssociatePublicIpAddress makes any IGW subnet workable.
         igw.sort(key=lambda s: not s.get("MapPublicIpOnLaunch"))
-        return vpc_id, igw[0]["SubnetId"], "igw"
+        return _picked(igw[0]["SubnetId"], "igw")
     raise aws.AWSError(
         f"no subnet in VPC {vpc_id} has a verified internet egress route (internet "
         "gateway or NAT). KiroCrew needs outbound access to install packages and "
@@ -731,6 +753,31 @@ def _account_of_policy_arn(arn: str) -> str:
     return parts[4]
 
 
+def _account_refusal(failures: list[dict[str, str]], tier: sizes.SizeTier) -> str:
+    """The plain-words cause and next step when EC2 refused the instance on an
+    account limit, else ``""``.
+
+    Matched on EC2's own message: CloudFormation's resource handler drops EC2's
+    error code from the event reason.
+    """
+    reasons = " ".join(f["reason"] for f in failures)
+    if "current vCPU limit" in reasons:
+        smaller = any(t.vcpu < tier.vcpu for t in sizes.all_tiers())
+        return (
+            f"this AWS account's vCPU quota in this Region has no room for the {tier.vcpu} "
+            f"vCPU of the {tier.label} size: request a higher Running On-Demand Standard "
+            "instances quota (L-1216C47A) in Service Quotas"
+            + (", or pick a smaller size," if smaller else "")
+            + " and retry"
+        )
+    if "in this region is being validated" in reasons:
+        return (
+            "this AWS account is still being validated for launches in this Region: AWS "
+            "emails you when it is done (usually within minutes, up to 4 hours), then retry"
+        )
+    return ""
+
+
 def build_deploy_argv(
     *,
     tag: str,
@@ -825,6 +872,7 @@ def deploy(
     ami_id: str = "",
     extra_packages: str = "",
     ssm_kms_key_arn: str = "",
+    on_network_fallback: Optional[Callable[[str], None]] = None,
 ) -> DeployResult:
     """Provision (or update) the KiroCrew stack. Idempotent by stack name.
 
@@ -842,6 +890,8 @@ def deploy(
     opts in to encrypted Session Manager: the role gets the opt-in KMS-session
     boundary and an inline grant on exactly that key. Empty means the default
     boundary and no KMS grant, byte-identical to a launch before the flag existed.
+    ``on_network_fallback`` is handed to :func:`discover_network`, so a caller can
+    show which network a launch with no default VPC picked before the stack exists.
     """
     if not dry_run:
         aws.assert_human_action("cloudformation:CreateStack")
@@ -965,7 +1015,9 @@ def deploy(
                 subnet_id, profile, region, tier.instance_type
             )
         else:
-            vpc_id, subnet_id, egress_kind = discover_network(profile, region, tier.instance_type)
+            vpc_id, subnet_id, egress_kind = discover_network(
+                profile, region, tier.instance_type, on_fallback=on_network_fallback
+            )
         # Both paths above settle on a VPC; check the resolver BEFORE provisioning
         # anything. A private hosted zone that shadows a download host makes the
         # bootstrap fail deterministically minutes later, blaming the wrong layer.
@@ -1031,6 +1083,8 @@ def deploy(
                     missing = aws.map_missing_action(f["reason"])
             if missing:
                 cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
+            elif refusal := _account_refusal(failures, tier):
+                cause = f"{refusal} — {cause}"
         _cleanup_uploaded_source()
         raise aws.AWSError(
             f"cloudformation deploy failed: {cause}{detail}",

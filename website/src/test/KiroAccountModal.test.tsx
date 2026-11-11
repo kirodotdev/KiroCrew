@@ -44,6 +44,15 @@ vi.mock('../api/client', async importOriginal => {
 
 const refreshMock = vi.mocked(api.sessionsUsageRefresh)
 const kiroUsageMock = vi.mocked(api.kiroUsage)
+/** The next config read names the kiro-cli harness, whose sign-in-required state
+ *  sends the user to `kiro-cli login`. On KAS that state names Crew's own sign-in
+ *  instead (KiroAccountModal.signOutLink.test.tsx). */
+const onKiroCliHarness = () =>
+  vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'kiro' } } as never)
+// A queued answer a test left unread must not reach the next test: back to the KAS default.
+beforeEach(() => {
+  vi.mocked(api.kirocrewConfig).mockReset()
+})
 
 const BASE_USAGE: KiroCreditUsage = {
   used: 10,
@@ -442,6 +451,7 @@ describe('KiroAccountModal', () => {
   it('tells the user to sign in again and offers no Refresh for it', async () => {
     // 'signin-required' is terminal until the user re-authenticates. The /usage
     // read needs the same sign-in, so a Refresh here could only fail again.
+    onKiroCliHarness()
     renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="signin-required" />)
 
     expect(await screen.findByText(/Sign in to Kiro again/)).toBeInTheDocument()
@@ -458,6 +468,7 @@ describe('KiroAccountModal', () => {
     // (AUTOSDE errors-use-error-notice). The hand-off opens the chat this modal
     // sits over, so the modal must close with it: a hand-off the user cannot see
     // reads as a dead button.
+    onKiroCliHarness()
     const onClose = vi.fn()
     renderWithProviders(
       <KiroAccountModal open onClose={onClose} usage="signin-required" />,
@@ -918,6 +929,7 @@ describe('KiroAccountModal refresh', () => {
     // signin_required. The pill's query must hold that state NOW -- not after
     // its next poll -- so neither the modal nor the pill keeps showing A.
     refreshMock.mockResolvedValue({ usage: { available: false, reason: 'signin_required' } })
+    onKiroCliHarness()
     const { queryClient } = renderWithProviders(<QueryFedModal initial={BASE_USAGE} />)
     expect(screen.getByText('owner@example.com')).toBeInTheDocument()
 

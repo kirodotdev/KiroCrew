@@ -43,8 +43,20 @@ from kiro_crew.dashboard.handlers.core_config_view import (
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
 from kiro_crew.metrics import provider as _metrics_provider
+from kiro_crew.update_deferral import SkipListFull, merge_update_nudge_record
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
+
+
+def _str_list_problem(value: object, spec: dict) -> str:
+    """Why *value* is not a list *spec* (``max_items``, ``max_item_len``) allows, or ""."""
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        return "must be a list of strings"
+    if len(value) > spec["max_items"]:
+        return f"must be at most {spec['max_items']} items"
+    if any(len(item) > spec["max_item_len"] for item in value):
+        return f"each item must be at most {spec['max_item_len']} characters"
+    return ""
 
 
 # Keys a caller may reasonably try to PATCH that have a dedicated endpoint whose
@@ -420,13 +432,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     elif spec["type"] == "str_list":
         # The audit resource is the key alone: the refused value can be up to the whole
         # request body, and a list is no shorter in the log than in config.json.
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            return _deny("must be a list of strings", path_key)
-        max_items, max_item_len = spec["max_items"], spec["max_item_len"]
-        if len(value) > max_items:
-            return _deny(f"must be at most {max_items} items", path_key)
-        if any(len(item) > max_item_len for item in value):
-            return _deny(f"each item must be at most {max_item_len} characters", path_key)
+        problem = _str_list_problem(value, spec)
+        if problem:
+            return _deny(problem, path_key)
         item_pattern = spec.get("item_pattern")
         if item_pattern and any(not re.fullmatch(item_pattern, item) for item in value):
             return _deny(f"an item has the wrong shape for {path_key}", path_key)
@@ -446,13 +454,19 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         unknown = set(value) - set(keys_spec)
         if unknown:
             return _deny(f"unknown key(s): {sorted(unknown)}", f"{path_key}={value}")
-        missing = set(keys_spec) - set(value)
+        missing = {k for k, s in keys_spec.items() if not s.get("optional")} - set(value)
         if missing:
             return _deny(f"missing key(s): {sorted(missing)}", f"{path_key}={value}")
         validated: dict = {}
         for sub_key, sub_spec in keys_spec.items():
+            if sub_key not in value:
+                continue
             sub_val = value[sub_key]
-            if sub_spec["type"] == "str":
+            if sub_spec["type"] == "str_list":
+                problem = _str_list_problem(sub_val, sub_spec)
+                if problem:
+                    return _deny(f"{sub_key}: {problem}", f"{path_key}={value}")
+            elif sub_spec["type"] == "str":
                 if not isinstance(sub_val, str):
                     return _deny(f"{sub_key} must be a string", f"{path_key}={value}")
                 if len(sub_val) > sub_spec.get("max_len", 256):
@@ -697,7 +711,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             if path_key == "dashboard.update_nudge":
                 # This host's clock beside the browser's ``snoozed_until``: the
                 # unattended-apply hold counts from it (update_deferral.py).
-                stored = {**value, "stored_at": time.time()}
+                # Skips merge with the saved ones under the lock, so a verdict
+                # from a dashboard holding a stale record cannot erase a skip.
+                stored = {
+                    **merge_update_nudge_record(section.get(parts[-1]), value),
+                    "stored_at": time.time(),
+                }
             if path_key == "session_environments" and isinstance(value, dict):
                 # Under the lock, so it merges with what is saved at this write.
                 stored = _keep_omitted_session_environment_keys(section.get(parts[-1]), value)
@@ -724,6 +743,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
         try:
             await asyncio.to_thread(update_config_locked, cfg_path, mutate=_mutate_config_patch)
+        except SkipListFull as exc:
+            # Refused under the lock, before any write: the popup shows the
+            # failure instead of the gateway evicting a skip that still holds.
+            _log_sel("denied", f"{path_key}=skip_list_full")
+            return web.json_response({"error": str(exc), "code": "skip_list_full"}, status=409)
         except _UnknownDefaultProfile as exc:
             _log_sel("denied", f"{path_key}=unknown_profile")
             return web.json_response({"error": str(exc), "code": "unknown_profile"}, status=400)

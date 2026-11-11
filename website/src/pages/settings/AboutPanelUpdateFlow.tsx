@@ -245,7 +245,7 @@ export function InAppUpdateFlow({
   /** Disable hand-off where an enforcement overlay must remain visible. */
   askAgent?: boolean
 }) {
-  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'failed' | 'expired' | 'ended'>('idle')
+  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'staged' | 'failed' | 'expired' | 'ended'>('idle')
   const [armed, setArmed] = useState<{
     approveCommand: string
     /**
@@ -325,7 +325,7 @@ export function InAppUpdateFlow({
     ? i18nT(isChannelMove
       ? 'pages.settings.aboutPanel.switch_to_version'
       : 'pages.settings.aboutPanel.update_to_version', { version })
-    : i18nT('pages.settings.aboutPanel.update_now')
+    : i18nT('pages.settings.aboutPanel.update_when_i_restart')
   const dispatch = useAppDispatch()
   const arm = useMutation({
     // The offered version rides as the mutation variable so `onSuccess` records
@@ -440,6 +440,8 @@ export function InAppUpdateFlow({
   useEffect(() => {
     if (phase !== 'applying' && phase !== 'armed') return
     if (progressStep === 'failed' || progressStep === 'error') setPhase('failed')
+    // The apply installed beside the running version; it starts at the next restart.
+    else if (progressStep === 'done') setPhase('staged')
   }, [progressStep, phase])
   // `armed: false` before the deadline is read as the approval, but a dismissed
   // request or a gateway that restarted and forgot the arm answers the same. Only
@@ -472,9 +474,11 @@ export function InAppUpdateFlow({
     ? 'in-app-update-armed'
     : phase === 'applying'
       ? 'in-app-update-applying'
-      : phase === 'failed'
-        ? 'in-app-update-failed'
-        : 'in-app-update'
+      : phase === 'staged'
+        ? 'in-app-update-staged'
+        : phase === 'failed'
+          ? 'in-app-update-failed'
+          : 'in-app-update'
   const canStart = phase === 'idle' || phase === 'expired' || phase === 'ended'
 
   return (
@@ -487,6 +491,19 @@ export function InAppUpdateFlow({
             </p>
           )}
           <p className="text-[12px] text-muted">
+            {i18nT('pages.settings.aboutPanel.applying_restart_note')}
+          </p>
+        </>
+      )}
+
+      {phase === 'staged' && (
+        <>
+          {progress?.detail && (
+            <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
+              {progress.detail}
+            </p>
+          )}
+          <p className="text-[12px] text-muted" data-testid="update-staged-note">
             {i18nT('pages.settings.aboutPanel.applying_restart_note')}
           </p>
         </>

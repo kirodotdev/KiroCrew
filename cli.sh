@@ -242,6 +242,8 @@ _venv_rollback_on_exit() {
       echo "interrupted, and the previous install could not be restored from $_VENV_BACKUP." >&2
     fi
   fi
+  # A first install that stopped short leaves no half-built venv behind.
+  if [ "${_VENV_FRESH:-0}" = 1 ]; then rm -rf "$VENV" 2>/dev/null || true; fi
   rm -rf "$TMP"
 }
 
@@ -403,6 +405,14 @@ _platform_description() {
   printf '%s' "$_plat"
 }
 
+# A failed step whose log ($1) shows the disk filled up says so in plain words,
+# after the step's own output, and names where to free space (_SPACE_DIR is set
+# by the free-space check before the first download).
+_report_disk_full() {
+  grep -q 'No space left on device' "$1" 2>/dev/null || return 0
+  echo "kirocrew-install: the disk filled up during the install (No space left on device). Free some space where Kiro Crew installs ($_SPACE_DIR) and in the temp directory (${TMP%/*}), then re-run this installer." >&2
+}
+
 # Report a failed pip/pipx install from its captured log ($1). The log tail
 # always goes first so pip's own words stay visible. Under binary-only
 # resolution, pip's "No matching distribution found" means no release it may
@@ -422,6 +432,7 @@ _report_pip_failure() {
     tail -n 30 "$1" >&2
     echo "-----------------------------" >&2
   fi
+  _report_disk_full "$1"
   [ -n "$PIP_BINARY_ONLY" ] || return 0
   grep -q 'No matching distribution found for' "$1" 2>/dev/null || return 0
   _missing="$(grep 'No matching distribution found for' "$1" \
@@ -537,14 +548,41 @@ _is_within() {
   && [ "$CLI_MANIFEST_PUBLIC_KEY_B64" != "UNCONFIGURED" ] \
   || err "manifest signing trust root is not configured; refusing unsigned installation"
 
-command -v curl    >/dev/null 2>&1 || err "curl is required"
-command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the signed manifest"
+# A minimal image can lack any of these tools (Amazon Linux 2023 ships no
+# openssl binary), so each refusal names the package that provides it.
+_err_missing() {
+  err "$1. Install the $2 package (Debian/Ubuntu: 'sudo apt-get install -y $2'; Fedora/RHEL/Amazon Linux: 'sudo dnf install -y $2'), then re-run this installer."
+}
+command -v curl    >/dev/null 2>&1 || _err_missing "curl is required" curl
+command -v openssl >/dev/null 2>&1 || _err_missing "openssl is required to verify the signed manifest" openssl
 if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
 elif command -v shasum  >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
-else err "need sha256sum or shasum to verify the download"; fi
+else _err_missing "need sha256sum or shasum to verify the download" coreutils; fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
+
+# ── Free space ───────────────────────────────────────────────────────────────
+# Stop before the first download when a disk cannot hold the least an install
+# writes: the venv (~350 MiB) and the managed Python (~110 MiB) beside the data
+# home, uv and the wheel in the temp directory. A directory df cannot report on
+# is not checked. _free_mb DIR prints the free MiB on DIR's filesystem, or
+# nothing; _require_free_mb DIR MB HINT stops when that is under MB.
+_free_mb() {
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print int($4 / 1024) }'
+}
+_require_free_mb() {
+  _rf_free="$(_free_mb "$1")"
+  [ -z "$_rf_free" ] || [ "$_rf_free" -ge "$2" ] \
+    || err "Kiro Crew needs about $2 MB free in $1, and that disk has $_rf_free MB. Free some space there$3, then re-run this installer. Nothing was changed."
+}
+# The venv goes beside the data home, which a first install has not created
+# yet, so the nearest directory that exists is measured.
+_SPACE_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}"
+_SPACE_DIR="${KIROCREW_VENV:-${_SPACE_DIR%/}-venv}"
+until [ -d "$_SPACE_DIR" ]; do _SPACE_DIR="$(dirname -- "$_SPACE_DIR")"; done
+_require_free_mb "$_SPACE_DIR" 500 ""
+_require_free_mb "${TMP%/*}" 100 " (or point TMPDIR at a disk with room)"
 
 # Kiro Crew needs Python >=3.12 at runtime -- that is what every release
 # artifact bundles and the only version CI tests, and older published wheels'
@@ -673,15 +711,17 @@ _provision_python_via_uv() {
   _uv_py_dir="${KIROCREW_PYTHON_DIR:-${_uv_data_home%/}-python}"
   # uv draws its own download progress on a terminal and reuses an already
   # installed interpreter without a download, so it is not wrapped in _run_step.
+  # --no-bin: the interpreter is found below with `python find`, so uv must not
+  # also link a python3.12 into ~/.local/bin and warn that it is off PATH.
   echo "Installing Python ($UV_PYTHON_SERIES) into $_uv_py_dir via uv ..."
-  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES"; then
+  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install --no-bin "$UV_PYTHON_SERIES"; then
     # uv trusts its own bundled CA roots, not the system store curl uses, so
     # behind a TLS-intercepting proxy it fails (UnknownIssuer) where curl got
     # through. Retry once on the system store unless the user set UV_NATIVE_TLS
     # (the pinned uv's name); uv pins the archive's SHA-256 either way.
     [ -z "${UV_NATIVE_TLS:-}" ] || return 1
     echo "Retrying the Python download with the system certificate store (UV_NATIVE_TLS=1) ..."
-    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
+    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install --no-bin "$UV_PYTHON_SERIES" \
       || return 1
   fi
   # only-managed: resolve the interpreter just installed, never a system one
@@ -1147,6 +1187,9 @@ else
   # _run_step owns the signals while a step runs and puts these back.
   _VENV_BACKUP=""
   _VENV_MOVED=0
+  # Nothing at $VENV yet: everything there is this run's, removed on failure.
+  _VENV_FRESH=0
+  if [ ! -e "$VENV" ] && [ ! -L "${VENV%/}" ]; then _VENV_FRESH=1; fi
   trap '_venv_rollback_on_exit' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -1181,12 +1224,15 @@ else
   # working install orphaned at the backup path.
   if ! _run_step "$TMP/venv-create.log" "Creating virtual environment" "$PY" -m venv "$VENV"; then
     if [ -s "$TMP/venv-create.log" ]; then tail -n 20 "$TMP/venv-create.log" >&2; fi
+    _report_disk_full "$TMP/venv-create.log"
     if [ -n "$_VENV_BACKUP" ] && [ -d "$_VENV_BACKUP" ]; then
       _venv_restore_after_failure \
         "creating the venv at $VENV failed (disk full?). The previous install was restored and keeps working; re-run this installer to retry." \
         "creating the venv at $VENV failed and the previous install could not be restored from $_VENV_BACKUP."
     fi
-    err "creating the venv at $VENV failed."
+    # `python -m venv` swallows ensurepip's own output, so a full disk often
+    # reaches this line with nothing above naming it.
+    err "creating the venv at $VENV failed (disk full?)."
   fi
   _rs_optional=1
   _run_step "$TMP/pip-upgrade.log" "Updating pip" "$VENV/bin/pip" install --quiet --upgrade pip || _tolerate $?
@@ -1353,12 +1399,49 @@ else
   _write_marker python-mode system-pinned
 fi
 
+# When $BIN is off PATH, the line that adds it for the user's own shell
+# ($SHELL), ready to paste; a shell not named here keeps the general advice.
+# zsh reads its .zshrc from $ZDOTDIR when that is set.
+# bash on macOS opens login shells, which read only the first of
+# ~/.bash_profile, ~/.bash_login and ~/.profile that exists, never ~/.bashrc.
+_path_hint() {
+  case ":$PATH:" in
+    *":$BIN:"*) return 0 ;;
+  esac
+  _ph_shell="${SHELL:-}"
+  case "${_ph_shell##*/}" in
+    fish)
+      echo "$BIN is not on your PATH yet. To add it, run:"
+      echo "  fish_add_path \"$BIN\""
+      return 0
+      ;;
+    zsh)
+      _ph_rc="~/.zshrc"
+      if [ -n "${ZDOTDIR:-}" ]; then _ph_rc="$ZDOTDIR/.zshrc"; fi
+      ;;
+    bash)
+      _ph_rc="~/.bashrc"
+      if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+        _ph_rc="~/.bash_profile"
+        for _ph_f in .bash_profile .bash_login .profile; do
+          if [ -e "$HOME/$_ph_f" ]; then _ph_rc="~/$_ph_f"; break; fi
+        done
+      fi
+      ;;
+    *)
+      echo "Add $BIN to your PATH first (e.g. add it in your shell profile)."
+      return 0
+      ;;
+  esac
+  echo "$BIN is not on your PATH yet. To add it, run:"
+  printf '  %s\n' "printf '\\n%s\\n' 'export PATH=\"$BIN:\$PATH\"' >> $_ph_rc"
+  echo "then open a new terminal, or run this in the current one:"
+  echo "  export PATH=\"$BIN:\$PATH\""
+}
+
 echo ""
 echo "Installed kirocrew $VER (channel: $CHANNEL)."
-case ":$PATH:" in
-  *":$BIN:"*) : ;;
-  *) echo "Add $BIN to your PATH first (e.g. add it in your shell profile)." ;;
-esac
+_path_hint
 
 # The KAS engine this release pins. The just-installed CLI fetches it from the
 # project's CDN and verifies it against the pin the wheel carries, into the
@@ -1425,11 +1508,12 @@ else
   # wants a running gateway. The persistent-service path (systemd/launchd) is
   # otherwise buried in the docs, which is the #1 remote-crew onboarding
   # complaint. `service install` is the durable path; `gateway` is the foreground
-  # one for a quick look.
+  # one for a quick look. On Linux the service is a system unit, so its line says
+  # up front that it needs sudo.
   echo ""
   echo "Next steps:"
   echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
-  echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
+  echo "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service (survives logout, restarts on crash)"
   echo "  kirocrew --help             # everything else"
   echo ""
   echo "Need a non-default port (e.g. 5476 is already taken)?"

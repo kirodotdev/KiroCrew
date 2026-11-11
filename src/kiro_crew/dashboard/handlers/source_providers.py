@@ -487,6 +487,8 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "unresolve_pull_request_thread",
         "_validated_comment_body",
     ),
+    # Holds no re-exported name; listed so the import-order checks cover it.
+    "issue_search": (),
     "review": (
         "_branch_pattern_matches",
         "_flatten_paginated",
@@ -668,6 +670,48 @@ async def api_issue_source(request: web.Request) -> web.Response:
     except SourceProviderError as exc:
         return _provider_error_response(request, "source.issue.read", exc)
     _audit_source_api(request, "source.issue.read", "completed")
+    return web.json_response(data)
+
+
+async def api_issue_search(request: web.Request) -> web.Response:
+    """Owner-only POST ``/api/source/issues``: list or search one scope's issues.
+
+    Same authorization, audit and error mapping as :func:`api_issue_source`. The
+    body is validated by ``source_providers.issue_search``; a refused field is a
+    400 whose ``code`` is ``invalid_request``, or ``provider_not_supported`` for a
+    provider the contract names but the gateway does not serve yet.
+    """
+    operation = "source.issues.list"
+    denied = _authorize_owner_request(request, operation)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except asyncio.CancelledError:
+        _audit_source_api(request, operation, "failed", "request_cancelled")
+        raise
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        data = await _submodule("issue_search").search_issues(body, refresh=_body_refresh(body))
+    except asyncio.CancelledError:
+        _audit_source_api(request, operation, "failed", "request_cancelled")
+        raise
+    except ValueError as exc:
+        if not isinstance(exc, _submodule("issue_search").IssueQueryError):
+            # Not a refusal issue_search wrote, so it came from reading provider
+            # output: never echo its text.
+            return _provider_error_response(
+                request, operation, SourceProviderError("provider returned an invalid issue list")
+            )
+        code = exc.code if exc.code == "provider_not_supported" else "invalid_request"
+        _audit_source_api(request, operation, "failed", code)
+        return web.json_response({"error": str(exc), "code": code}, status=400)
+    except SourceProviderError as exc:
+        return _provider_error_response(request, operation, exc)
+    _audit_source_api(request, operation, "completed")
     return web.json_response(data)
 
 

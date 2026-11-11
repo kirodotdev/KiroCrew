@@ -23,6 +23,34 @@ if TYPE_CHECKING:
     from kiro_crew.session_cleanup import SessionCleanup
 
 
+def rss_limit_for(cleanup: SessionCleanup, pid: int, rss: int | None = None) -> int:
+    """The RSS ceiling for runtime *pid*, scaled by how many chat sessions it serves.
+
+    Given the measured *rss*, a SHARED runtime over that ceiling is also closed to
+    new chats (``RuntimeOwnership.close_to_joins``), so the recycles that follow
+    drain it instead of feeding it.
+
+    ``session.watchdog_rss_max_mb`` is a budget for ONE session's runtime. A shared
+    chat runtime (``chat_runtime_sharing`` preview) serves several, and the figure
+    compared is the whole process tree, so an unscaled comparison would charge one
+    session's budget for N sessions' memory and recycle a healthy session every tick
+    once sharing begins. The count is the chat LEASES on the pid, so an unshared
+    runtime (one lease) and a subagent's tenancy (no lease) keep the plain ceiling.
+    """
+    from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+
+    leases = RUNTIME_OWNERSHIP.leases_on_pid(pid)
+    limit = cleanup.state.rss_max_mb * max(1, leases)
+    if rss is not None and rss > limit and leases > 1:
+        # A shared process over its ceiling is reclaimed by draining it, not by
+        # one lease: recycling a co-tenant releases a lease and frees nothing,
+        # and that chat would rejoin the same process. Closed to joins, recycled
+        # and returning chats found a new one, and this one dies with its last
+        # holder as the next ticks recycle the rest.
+        RUNTIME_OWNERSHIP.close_to_joins(pid)
+    return limit
+
+
 async def build_rss_measure(
     cleanup: SessionCleanup, loop: asyncio.AbstractEventLoop
 ) -> Callable[[int], int]:

@@ -1009,7 +1009,9 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 - `shell_commands.py` — the shared quote-aware command reader. `read_commands(text, track)`
   walks the text once with `shell_normalizer._iter_shell_chars` and returns one `ShellCommand`
   per command: its steps (raw text, raw offsets, quote state), its words (split at live
-  blanks, a live redirection starting its own word with a standalone fd prefix kept on it),
+  blanks, a live redirection starting its own word with a standalone fd prefix kept on it,
+  a `\`-newline continuation before the first word dropped as bash drops it, so
+  `cd repo && \`-newline `cat x` reads `cat` as the program),
   its redirections with their separate targets (leading ones included), its `argv`, and the
   live separator that ended it (`;`, `&`, `&&`, `|`, `||`, newline, a backtick or paren,
   `<<` where a heredoc stopped the read). It keeps the two facts a dequoted token list
@@ -1057,48 +1059,35 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
 - `text_redaction.py` — the redaction entry points that compose `redaction.py` with
   `exfil.py`: `redact`, `redact_with_findings`, `redact_and_truncate`, and the
   `StreamRedactor` with the holdback bounds it reads.
-- `redaction_rules/` — a data-driven credential rule table that no seam calls yet;
-  `redaction.py` and `text_redaction.py` stay the redactors every surface uses. It is
-  a subpackage reached by its own path, not a facade submodule. `rules.yaml` is the
-  only place a rule is defined: each row has a tier (`secret`, `bearer_link`,
-  `identifier`) and one detector (`checksum_prefix`, `vendor_prefix`, `structural`,
-  `labelled`, `key_id_pair`, `url_param`, most certain first). `rules.py` loads it with
-  `importlib.resources`, refuses an unknown field, tier, detector or validator, a
-  missing pattern, label list or corpus path, a misplaced `pair_with`, a duplicate id
-  and any unbounded regex repeat. No detector fires on a value's shape alone: there is
-  no entropy or length-only rule, `key_id_pair` needs an AWS key ID within its window,
-  and `labelled` / `url_param` decide by the field or parameter name. Tiers follow
-  the recorded decision in
-  `docs/decisions/2026-10-20-redaction-classifies-by-what-a-value-can-do.md`: keys,
-  passwords, private keys, session tokens, JWTs, bearer values and session cookies
-  are `secret`; webhook URLs and credential URL parameters (`?token=`, presigned
-  signatures) are `bearer_link`; key IDs, account SIDs and public OAuth values are
-  `identifier`. `labelled` reads
-  `key <sep> value` in env, INI, YAML, JSON, CLI-flag, HTTP-header and cookie shapes,
-  XML elements (`<password>…</password>`) and name/value pairs (`"name": "password",
-  "value": …`), strips an auth scheme, ignores values under 4 characters and keys
-  inside a URL (for this skip a URL ends at `;`, so connection-string pairs after it
-  are read; `url_param` still reads query parameters over the whole URL), and
-  resumes after every separator so nested pairs (`-H "X-Api-Key: …"`) match. An
-  unquoted value in a line-oriented assignment (env, INI, YAML, a header) runs to the
-  end of its line, a CLI flag's to the next blank, and a nested pair's to its
-  container's delimiter. A shell line whose credential value starts with a
-  placeholder is read to the end of the line, so a credential later on the same
-  line is still redacted. `labelled.secret_field`'s allow list holds the
-  status words (`required`, `expired`) a credential field carries in place of a value,
-  matched against the whole value, so `enabledXYZ` is still redacted. Every value under
-  a `session` key is redacted at any length, including an app's own session name such
-  as `session=chat-1830`. It judges a key's name before reading its value, so text full
-  of unrelated pairs stays linear. `redact.hits` resolves overlaps by tier, then
-  detector certainty, then length, then position, then rule id; it drops a hit inside
-  or cutting across an existing `[REDACTED…]` placeholder but keeps one that encloses a
-  whole placeholder only for a `structural` hit, and a pattern hit inside a name-keyed
-  hit splits it: a key ID or account SID stays readable, a vendor key keeps its own
-  record, and the rest of the value is still replaced.
-  `redact.redact_with_findings` replaces `secret` and `bearer_link` values with the
-  credential tag, keeps identifiers, returns one value-free record per placeholder
-  (rule id, tier, detector, length), and raises `RedactionFailed` on any internal
-  error. Pinned by `test_redaction_rules.py`.
+- `redaction_structured/` — credential detectors built from structure, with no
+  regular expressions and no randomness or character-mix scores; a source test
+  (`test_redaction_structured.py`) holds the package to both. Rules are data in
+  `table.ROWS` (names, literal prefixes, alphabets, lengths, checksum ids) and the
+  loader refuses a `pattern` field. `tokens.py` reads a token from its literal
+  anchor over its format's alphabet and checks its length, fixed structure and
+  vendor checksum (GitHub CRC32); a JWT or JWE header must decode to JSON naming
+  `alg` or `enc`. `armour.py` reads PEM and PGP private-key blocks by their
+  BEGIN/END lines. `known_key.py` reads the four AWS secret key names in JSON,
+  assignments, CLI flags and XML. `identifiers.py` parses a URL's query per
+  RFC 3986 and replaces only the values of six keys (`client_secret`,
+  `access_token`, `refresh_token`, `id_token`, `code_verifier`, `password`). A 40-
+  or 64-character lowercase hex value is a git object name and is never a Secret.
+  `identifiers.py` and `identifier_values.py` mark values that stay visible (AWS key IDs, ARNs, request ids, public OAuth
+  values, data URIs, SSH fingerprints, documentation example keys). Every unit has a size bound and fails closed past
+  it, so `stream.py` yields the whole-text result for any split.
+  `compat.py` is the seam `redaction.py`'s credential plan reads. Its switch,
+  `compat.use_rule_table()`, is off and has no user setting; only code (the tests)
+  turns it on, and nothing in the package runs at gateway start or when
+  `dashboard.display_battery` is imported. Off, the plan is pass 1 (the fixed
+  patterns, `_pattern_pass`) then passes 2-4 (`_later_passes`), as before. On, the
+  detectors read the text first, their Secret hits are replaced by the credential
+  tag, the four passes run on that text, and their spans are moved back and
+  merged. A detector error replaces the whole text with
+  `REDACTION_UNAVAILABLE_TAG`, a value-free record, a log line naming the error
+  type, and one count on `kirocrew.security.redaction.fail_closed`. `StreamRedactor`
+  asks `compat.stream_read()` where to hold a buffer and drops a unit decided
+  while still running to its end (`test_stream_table_parity.py`). The verdict
+  version keys the switch value.
 - `display_safety.py` — what the product may show as it is: the OAuth endpoint sanitizer
   and its copy-ready display form, and `BINARY_MIME_ALLOWLIST`.
 - `memory_audit.py` — audits of stored content: `scan_history` (the newest rows of the
@@ -1902,6 +1891,7 @@ transfer may hold its worker for a long time on a healthy mount.
 - **Runtime config (`config.json`, `config.local.json`) sealed read-only** — both files are `READONLY` leaves in `sandbox_leaves.py` (and on `_CREW_PRECREATE_READONLY_FILE_LEAVES`, so the Linux mount seal has a file to bind before the overlay exists), not merely write-fenced on the file-edit tool path. They carry the switches that LOOSEN confinement: `agent.sandbox` (`"off"` skips Kiro Crew's own sandbox for every later spawn, after which the other read-only ceilings are writable), `agent.apps_allow_third_party` / `agent.apps_trusted` (admit app code the gateway runs in-process), `agent.sandbox_allow_unsandboxed_exec` and `agent.approval_mode`. The loader's load-time clamp neutralises an inflated number, not a loosened switch, and `is_sensitive_write_path` never sees a spawned shell's `open()`, so a writable file let an in-sandbox agent end its own confinement. Both are sealed because `KiroCrewConfig.load()` deep-merges the overlay over the base with the overlay winning; sealing one would leave every key writable through the other. Every legitimate writer runs outside the sandbox (dashboard config API, channel handlers, the gateway's boot default and write-back migrations, `kirocrew config` from the operator's own terminal). Inside the sandbox reads keep working, a load-time migration write-back fails soft (`Config write-back failed` warning), and `kirocrew config set` exits with a pointer to the dashboard (`cli_config._sandboxed_config_write_hint`). The `<leaf>.lock` sidecar is not sealed: it holds no setting. Residuals, both shared with every other `READONLY` leaf in this list: (1) on Linux the seal is a per-file bind mount, and every host writer publishes through `atomic_write` (temp + rename), which the kernel answers by detaching a mount whose file is renamed over from another mount namespace — so the seal holds from spawn until the next gateway save of that file, after which the name is unsealed in that sandbox until it respawns. That save is not only the operator's: the gateway also saves `config.json` on its own (boot migrations, member-identity publication and memory-store provisioning in `memory_stores.py`, the embedding-model stamp), and some of those paths an in-sandbox agent can reach indirectly through an ordinary tool call, so on Linux the agent can shorten the wait rather than only sit it out. macOS (Seatbelt, path-based) is unaffected. Closing this for all sealed leaves at once (one read-only directory instead of per-file binds) is tracked as a follow-up; until then, on Linux, saving a setting during a session reopens the pre-seal exposure for that session. (2) A symlinked or hardlinked `config.json` (a dotfile manager) is sealed by name only: the other name stays writable. The Linux spawn path treats it as it does every pre-created leaf: a RESOLVING link warns and continues, because refusing would block all agent work on a host whose dotfiles legitimately carry a second name; a DANGLING link (target absent) refuses the spawn with `SandboxCeilingUnsealable` via `_refuse_if_dangling_symlink`, since a mount on a dangling name has nothing to seal.
 
 - **Shared Crew preview switch (keystone leaf `shared_crew_preview.json`)** — the owner's choice to run Shared Crew (`{"enabled": bool}`, see [shared-crew.md](shared-crew.md) "Release gate") is `~/.kiro/crew/shared_crew_preview.json`, on `_CREW_SECRET_LEAVES`, `sandbox._CREW_READONLY_LEAVES`, `_CREW_PRECREATE_READONLY_FILE_LEAVES` and `_CREW_CHILD_WITHHELD_LEAVES`, the same four places as `decisions_consent.json`. Turning Shared Crew on opens this machine to other people on the next start, so a writable record would let an agent do that for itself; `config.json` is deliberately not where it lives and no change card or `FEATURE_PREVIEW_FLAGS` entry carries it. The only writer is the owner-only `PUT /api/shared-crew/preview`, audited to the SEL. It rewrites an existing record in place, keeping its inode: a rename over the name would detach a running Linux sandbox's read-only bind mount and leave the new file writable there. Reads fail soft: a missing, empty or malformed file is off, and a pre-created `{}` means what an absent file means. The gateway reads it once at start, so a PUT applies on the next start.
+- **Armed update (READONLY leaf `update_next_start.json`)**: the update a click armed for the next start (see [update_next_start](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)). The boot-time apply installs on this record alone, so it is in `sandbox._CREW_READONLY_LEAVES` (and pre-created, so the seal holds before any click) and on the file-tool write fence (`_WRITE_PROTECTED_HOME_PATHS`, which `/api/file-write` also honours). In-sandbox code reads it; only the gateway and the operator's own `kirocrew update` write it. Pinned by `test/test_update_next_start.py` and `test_sandbox_governance_mask.py`.
 - **Decision-seam consent (keystone leaf `decisions_consent.json`)** — the switch that lets the decision seam send message text and skill descriptions to the external Jev provider (see [decisions.md](decisions.md)) is `~/.kiro/crew/decisions_consent.json`, on `_CREW_SECRET_LEAVES` (agent file tools refuse read and write), `sandbox._CREW_READONLY_LEAVES` (mounted read-only in every mode) and the absent-ceiling pre-create list. Same class and same reasoning as `aws_service_consent.json`: consent to send the operator's data to a paid external service is an authorization, and `config.json` is a hot-applied SETTINGS file: the sandbox seals it read-only (`sandbox._CREW_READONLY_LEAVES`), so an in-sandbox agent shell can no longer write it, but every ordinary settings writer (the config PATCH, `kirocrew config set`) still reaches it without the owner-only handler a consent needs, so a `decisions.enabled` there would be one settings edit away from taking effect on the next message. `DecisionsConfig` therefore carries no `enabled` field and the config PATCH refuses the path. Consent is bound to a destination: the keystone records the `provider.endpoint` the config named when the owner consented, and `consent.permits()` sends only while the configured endpoint still equals it — `provider.endpoint` lives in that same settings file, so a bare yes/no would let an endpoint edit the owner never reviewed redirect consented messages to another server. Reads fail soft to `{}` → not consented, with a strict `is True` identity test; the only writer is the owner-only, browser-called `PUT /api/decisions/consent` handler, which refuses app tokens and allow-listed non-owner users on the read as well as the write, audits every grant/revocation to SEL, and leaves a corrupt file byte-identical rather than resetting it.
 - **Browsing has no keystone capability toggle, deliberately (see [browser.md](browser.md)); its driver's prefix is a READONLY keystone leaf.** The agent's browser driver is installed under the data home (the browser live harness's own virtual environment, `browser-harness`; an earlier version's browser CLI prefix left on disk is only named by `kirocrew doctor`). The prefix is on `_CREW_SECRET_LEAVES` for agent file tools and `_CREW_READONLY_LEAVES` for every OS sandbox: in-sandbox code can read and execute it, while a write to it that would choose the binary the gateway runs is refused in both layers. The driver's code is in the sealed prefix in every case. When the runtime ships the pinned harness, the gateway copies its recorded package files into a fresh venv there at install time, without hash-checking them; it does not link the venv to the runtime's site-packages. Until that copy is taken, the runtime tree has the gateway's own exposure: only the `kiro_crew` package directory is sealed (next entry). A sandboxed child that can write the runtime's site-packages can affect a future install's source, as it can affect what the gateway itself loads, but runtime edits after installation cannot change the driver's installed copy. Browsing itself is governed by `capabilities.browse`, checked on every `browser` tool call, and a denial never falls back to another driver. The keystone decides what RUNS; governance decides whether the agent may browse.
 - **The packaged install directory is sealed read-only for every sandboxed child.** When the running gateway imports `kiro_crew` from a package directory sitting directly in `site-packages` (or `dist-packages`) -- a wheel install, or the desktop bundle's embedded interpreter -- `sandbox._resolved_install_root_targets` returns that directory (lexical and canonical spellings) and the plan adds it to the same read-only floor as the crew-home ceilings: `readonly_dirs` on the Linux namespace launcher, `file-write*` and `file-link` denies on Seatbelt, plus a `literal` write deny on every ancestor directory so a parent cannot be renamed around the path-based rule (the namespace launcher pins them instead; see the next entry). It holds in every tier, an `extra_visible_dirs` entry does not lift it, and an `extra_writable_dirs` carve-out inside it is refused. On a delegated spawn (Windows, macOS with kiro-cli's own sandbox) a workspace at or inside it is refused; a workspace that merely contains it (a project holding its own venv) is allowed. An editable or from-source checkout is never sealed, so a developer's working copy stays writable. The surrounding `site-packages` and the rest of the environment (`.pth` files, `sitecustomize.py`, dependency packages, the venv's `bin/` and `pyvenv.cfg`, and the managed install's `crew-venv-current` link, which a child that can write its parent can repoint at another tree) are not sealed, because sandboxed provisioning steps install into that same `site-packages`; a child can still change what the gateway loads at start-up through those paths, so this seal closes direct edits to the package directory only. Closing the rest needs those provisioning steps moved to target directories first. The updater writes the install directory from the gateway process, which no seal reaches. **The desktop app's staged KAS engine root rides the same seal.** When the Electron shell exports `KIROCREW_BUNDLED_KAS_DIR` (`constants.BUNDLED_KAS_DIR_ENV`; only a `BUNDLE_KAS` build that staged the root with a well-formed record does, and the shell runs nothing from it at boot), `sandbox_tiers._resolved_install_root_targets` adds that directory too, both spellings, so it reaches every launcher's read-only floor, the Seatbelt ancestor guards and the delegated-spawn overlap refusal exactly as the package directory does. Its `install.json` names the Node binary the gateway spawns, outside any sandbox, for every `agent.kas_bundle` session, re-reading the record on each spawn (`acp.kas_bundle._read_installed`), and the binary sits beside it; the tree has no legitimate in-process writer (the build wrote it, `kirocrew kas install` writes the data home). Three layers, each holding one thing: the shell refuses to export a root whose `BUNDLED-VERSION` is not a single plain segment, or whose `<version>/install.json` names a `node_bin` that is absolute or carries a `.`/`..`/empty segment, checked once at gateway start (`gateway-env.js`, `staysWithinStagedTree`); the per-spawn reader `_read_installed` refuses an `acp_server` or `node_bin` that is absolute (POSIX, drive-lettered or rooted) or carries a `..` segment, so the program the gateway runs is always inside the root it read; and the seal is what keeps sandboxed children from rewriting the record after boot. None of them re-hashes the tree at read time, the same as for the data home's own install. **So does the desktop app's bundled kiro-cli directory.** When the shell exports `KIROCREW_BUNDLED_KIRO_DIR` (`kiro_cli_bundle.BUNDLED_KIRO_DIR_ENV`, re-exported by `kiro_cli`; only a build that shipped the payload does), `_resolved_install_root_targets` adds that directory the same way, both spellings. The shell runs its `kiro-cli-chat --version` at every gateway start and the gateway spawns it, outside any sandbox, for every relay session; it sits beside the package directory in `backend-dist/`, not inside it, so the package seal does not reach it on any layout. Nothing writes it in normal operation: the shell also exports `KIRO_NO_AUTO_UPDATE=1`, and the app's own update replaces the bundle from outside every sandbox.
@@ -3052,6 +3042,25 @@ target it cannot read or resolve, or an exhausted match budget grants nothing.
 Any other key beside the deny (`denyByDefault`, `fallbackAction`, an authored
 `ask`) still withholds the grant; a boolean shell `autoAllowReadonly` does not. The KAS deny rules the translation carries
 are unchanged.
+
+A `deniedCommands` entry KAS receives no rule for (no glob spelling, a redirect
+character, a merge dropped it: `kas_permissions.shell_denies_carried` is false)
+is refused by the same row with no grant beside it
+(`kas_spec_denies.uncarried_denied_commands`) when the row can judge it
+(`kas_spec_denies._refusable_deny`: `parse_deny` reads it and it holds none of
+`allowed_commands.UNGRANTABLE_COMMAND_CHARS` once an optional `^`/`\A` and
+`$`/`\z` anchor is taken off, so not a redirect, separator or substitution): the record then holds those entries and no grant, so on KAS an
+auto-approved call (a cron job with `approval_mode: auto`, a workflow, a spawned
+run) cannot run a plain command, or a plain chain, that such an entry names. Any other entry,
+a redirect deny such as `echo .* > /etc/hosts` included, refuses nothing, as
+before, and the session-start notice names it as not refused
+(`kas_spec_denies.unread_denied_commands`). A refused uncarried entry is named too,
+marked `GATE_JUDGED_MARK` ("refused by Kiro Crew's gate"), and the notice says what
+the row does not judge: any command `allowed_commands.chain_commands` cannot split
+into plain commands (`$(...)`, a backtick, a redirect, a newline, a lone `&`, a tab,
+a `( )` group, a quote, `#` or `[[` in a chain, past the length or part bounds),
+which runs without a refusal (`spec_denied_gate.spec_denies_refusal`). An
+entry KAS carries is not named.
 
 **KAS spec `web_fetch.trusted` on a plain URL** (`spec-builtin-grant` row, `kas_spec_denies.web_fetch_gate`, `spec_denied_gate.url_literal`) — kiro-cli matches each `web_fetch.blocked` / `trusted` entry against the whole URL, anchored and case-sensitive: a blocked match refuses, then a trusted match runs without a prompt (`evaluate_url_permission` in kiro-cli's `crates/agent/src/agent/permissions.rs`). KAS matches a `web_fetch` rule on the host only, so the translation carries a blocked entry that maps to a host as a KAS host deny and names the rest, and carries no trusted entry; Crew's gate adds no refusal. It grants a KAS `web_fetch` whose `rawInput.url` a trusted entry names, read with string work only, never as a regex: a plain URL (equal) or a plain URL followed by `.*` (`startswith`), with an optional `^`/`\A` and `$`/`\z`, and a backslash before ASCII punctuation read as that character (`\<`, `\>` and a trailing `\$` refused). The grant holds only when every blocked entry has the same shape and none matches the URL, the URL has no control character, and the spec's own `permissions` has no `ask` or `deny` reaching `web_fetch` and is not refused by the merge. Any other entry keeps main's prompt and is named in the session notice. shortcut: a blocked entry KAS cannot express still applies only as main applies it; whole-URL blocked refusal is follow-up work (#33068).
 

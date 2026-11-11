@@ -18,6 +18,21 @@ preview or a warm-up render records nothing.
 A line carries memory keys (``lesson.<hash>``) and counts, never lesson text. The
 keys are the join to the store's own rows; the transcript message id is the join to
 the reply that follows. Incognito and temporary sessions write nothing.
+
+A memory stage under a ``shadow`` or ``enforce`` flag adds its own field to the
+line (:data:`STAGE_KINDS`, recorded with :func:`record_stage`): its mode, its
+policy version and the ids its new policy would add to or drop from a block. A
+line with no stage record is the same bytes it was before stages existed. Stage
+fields are bounded by the kind-routing caps (:mod:`kiro_crew.memory_kind_routing`),
+kept in ``stage-log.json`` beside the shards:
+
+* one counter entry per UTC day, by kind and mode (lines, would-add and
+  would-drop counts), pruned past ``COUNTER_DAYS_KEPT`` days;
+* a stage field is written on at most ``SAMPLES_PER_DAY`` lines a day,
+  ``SAMPLES_TOTAL`` lines and ``SAMPLE_BYTES_CAP`` bytes in all, and only for
+  ``SHADOW_SAMPLE_WINDOW_SECS`` after the stage first wrote one; a new policy
+  version restarts the window and the sample budget. Past a cap the line is
+  written without the field and only the counters move.
 """
 
 from __future__ import annotations
@@ -25,13 +40,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final
 
+from kiro_crew import memory_kind_routing as _caps
 from kiro_crew.config.paths import data_home
 from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener_for
 
@@ -41,12 +58,23 @@ LESSONS: Final = "lessons"
 FINDINGS: Final = "findings"
 #: The per-message lessons ``memory.inject_lessons_per_turn`` adds to a follow-up.
 TURN_LESSONS: Final = "turn_lessons"
+#: ``memory.rule_authority_order``: the rule-block ids its order would add or drop.
+RULE_AUTHORITY_ORDER: Final = "rule_authority_order"
 
-#: The blocks a receipt names. A record is keyed by these names only.
-KINDS: Final[tuple[str, ...]] = (LESSONS, FINDINGS, TURN_LESSONS)
+#: The blocks a line always names, recorded with :func:`record`.
+_BLOCK_KINDS: Final[tuple[str, ...]] = (LESSONS, FINDINGS, TURN_LESSONS)
+#: Stage fields, recorded with :func:`record_stage` and named only when recorded.
+STAGE_KINDS: Final[tuple[str, ...]] = (RULE_AUTHORITY_ORDER,)
+
+#: Every name a record is keyed by.
+KINDS: Final[tuple[str, ...]] = _BLOCK_KINDS + STAGE_KINDS
 
 #: The budgeted tiers, whose line also states how many rows the budget cut.
 _COUNTED_KINDS: Final[tuple[str, ...]] = (LESSONS, FINDINGS)
+
+_STAGE_LOG_NAME: Final = "stage-log.json"
+#: One writer at a time reads and rewrites the stage log.
+_STAGE_LOG_LOCK = threading.Lock()
 
 _SINK: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
     "kiro_crew_injection_receipts", default=None
@@ -79,7 +107,14 @@ def replay(records: dict[str, dict[str, Any]]) -> None:
     if sink is None:
         return
     for kind, entry in records.items():
-        if kind in KINDS and isinstance(entry, dict):
+        if kind in STAGE_KINDS and isinstance(entry, dict):
+            sink[kind] = _stage_entry(
+                entry.get("mode"),
+                entry.get("policy"),
+                _str_list(entry.get("would_add")),
+                _str_list(entry.get("would_drop")),
+            )
+        elif kind in KINDS and isinstance(entry, dict):
             ids = entry.get("ids")
             omitted = entry.get("omitted")
             sink[kind] = {
@@ -108,13 +143,53 @@ def record(kind: str, rows: Sequence[object] | Iterable[object], *, omitted: int
     when protected content runs over its ceiling), and the LAST render is the one
     the prompt carries, so a later record replaces an earlier one.
     """
-    if kind not in KINDS:
+    if kind not in _BLOCK_KINDS:
         raise ValueError(f"unknown receipt kind {kind!r}")
     sink = _SINK.get()
     if sink is None:
         return
     keys = [key for key in (row_key(row) for row in rows) if key]
     sink[kind] = {"ids": keys, "omitted": max(0, int(omitted))}
+
+
+def _str_list(raw: object) -> list[str]:
+    return [i for i in raw if isinstance(i, str)] if isinstance(raw, list) else []
+
+
+def _stage_entry(mode: object, policy: object, add: list[str], drop: list[str]) -> dict[str, Any]:
+    return {
+        "mode": mode if isinstance(mode, str) else "",
+        "policy": policy if isinstance(policy, int) and not isinstance(policy, bool) else 0,
+        "would_add": add,
+        "would_drop": drop,
+    }
+
+
+def record_stage(
+    kind: str,
+    *,
+    mode: str,
+    policy: int,
+    would_add: Iterable[object] = (),
+    would_drop: Iterable[object] = (),
+) -> None:
+    """Record what stage *kind*'s new policy would change in this composition.
+
+    *would_add* and *would_drop* are rows (or their keys) the new policy would put
+    into or take out of the block the prompt carries. Like :func:`record`, a later
+    record replaces an earlier one and a call outside a collection is a no-op.
+    """
+    if kind not in STAGE_KINDS:
+        raise ValueError(f"unknown receipt stage {kind!r}")
+    sink = _SINK.get()
+    if sink is None:
+        return
+
+    def keys(rows: Iterable[object]) -> list[str]:
+        named = (row if isinstance(row, str) else row_key(row) for row in rows)
+        return [key for key in named if key]
+
+    sink[kind] = _stage_entry(mode, policy, keys(would_add), keys(would_drop))
 
 
 def build_line(
@@ -135,7 +210,7 @@ def build_line(
     session start, with no per-message lessons) writes no line: the lessons in
     front of the model are still the ones the session's earlier lines recorded.
     """
-    if not any(kind in receipts for kind in KINDS):
+    if not any(kind in receipts for kind in _BLOCK_KINDS):
         return None
     stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     head, sep, _ = session_key.partition(":")
@@ -150,11 +225,20 @@ def build_line(
         "phase": phase or "",
         "memory_store": store or "",
     }
-    for kind in KINDS:
+    for kind in _BLOCK_KINDS:
         entry = receipts.get(kind) or {}
         line[kind] = list(entry.get("ids") or [])
         if kind in _COUNTED_KINDS:
             line[f"{kind}_omitted"] = int(entry.get("omitted") or 0)
+    for kind in STAGE_KINDS:
+        stage = receipts.get(kind)
+        if isinstance(stage, dict):
+            line[kind] = _stage_entry(
+                stage.get("mode"),
+                stage.get("policy"),
+                _str_list(stage.get("would_add")),
+                _str_list(stage.get("would_drop")),
+            )
     return line
 
 
@@ -186,15 +270,109 @@ def _receipt_dir() -> Path:
     return data_home() / "usage" / "injections"
 
 
+def _as_dict(raw: object) -> dict[str, Any]:
+    return raw if isinstance(raw, dict) else {}
+
+
+def _sample(raw: object) -> tuple[int, int]:
+    """A ``[lines, bytes]`` sample entry; a malformed one counts as full, never empty."""
+    if raw is None:
+        return 0, 0
+    if (
+        isinstance(raw, list)
+        and len(raw) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in raw)
+    ):
+        return raw[0], raw[1]
+    return _caps.SAMPLES_TOTAL, _caps.SAMPLE_BYTES_CAP
+
+
+def _cap_stage_fields(line: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """*line* with each stage field kept only while it is inside every cap.
+
+    Counts every stage field in the stage log first, so a field dropped by a cap
+    is still counted. The caller holds :data:`_STAGE_LOG_LOCK`.
+    """
+    present = [kind for kind in STAGE_KINDS if isinstance(line.get(kind), dict)]
+    if not present:
+        return line
+    path = _receipt_dir() / _STAGE_LOG_NAME
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        state = {}
+    # Any other read or parse failure raises: the caller then drops the field,
+    # because a log it cannot read cannot bound it.
+    state = _as_dict(state)
+    counts = _as_dict(state.get("counts"))
+    stages = _as_dict(state.get("stages"))
+    day = now.date().isoformat()
+    capped = dict(line)
+    for kind in present:
+        entry = line[kind]
+        by_kind = _as_dict(counts.get(day))
+        by_mode = _as_dict(by_kind.get(kind))
+        tally = _as_dict(by_mode.get(str(entry.get("mode"))))
+        for name, n in (
+            ("lines", 1),
+            ("would_add", len(entry.get("would_add") or ())),
+            ("would_drop", len(entry.get("would_drop") or ())),
+        ):
+            tally[name] = _caps._count(tally.get(name)) + n
+        by_mode[str(entry.get("mode"))] = tally
+        by_kind[kind] = by_mode
+        counts[day] = by_kind
+        stage = _as_dict(stages.get(kind))
+        raw_start = stage.get("started_at")
+        started = _caps._parse_instant(raw_start) if isinstance(raw_start, str) else None
+        if stage.get("policy") != entry.get("policy") or started is None:
+            started = now
+            stage = {"policy": entry.get("policy"), "started_at": now.isoformat()}
+        # ``{day: [lines, bytes]}`` of fields written under this policy version.
+        samples = _as_dict(stage.get("samples"))
+        size = len(json.dumps(entry, separators=(",", ":")))
+        spent = [_sample(v) for v in samples.values()]
+        today = _sample(samples.get(day))
+        if (
+            (now - started).total_seconds() < _caps.SHADOW_SAMPLE_WINDOW_SECS
+            and today[0] < _caps.SAMPLES_PER_DAY
+            and sum(n for n, _ in spent) < _caps.SAMPLES_TOTAL
+            and sum(b for _, b in spent) + size <= _caps.SAMPLE_BYTES_CAP
+        ):
+            samples[day] = [today[0] + 1, today[1] + size]
+        else:
+            del capped[kind]
+        stage["samples"] = samples
+        stages[kind] = stage
+    cutoff = (now - timedelta(days=_caps.COUNTER_DAYS_KEPT)).date().isoformat()
+    counts = {d: v for d, v in counts.items() if d >= cutoff}
+    from kiro_crew.atomic_write import atomic_write
+
+    if not path.parent.exists():
+        mkdirs_owner_only(path.parent)
+    atomic_write(
+        path,
+        json.dumps({"counts": counts, "stages": stages}, sort_keys=True),
+        mode=0o600,
+    )
+    return capped
+
+
 def write_line(line: dict[str, Any]) -> None:
     """Append *line* to the shard for its local day (blocking I/O).
 
     Never raises: the receipt is an observation of a turn, and failing to write it
-    must not fail the turn.
+    must not fail the turn. A stage field past its caps is left off the line.
     """
     try:
         stamp = datetime.fromisoformat(str(line["ts"]).replace("Z", "+00:00"))
         path = _receipt_dir() / f"{stamp.astimezone().strftime('%Y-%m-%d')}.jsonl"
+        with _STAGE_LOG_LOCK:
+            try:
+                line = _cap_stage_fields(line, stamp.astimezone(timezone.utc))
+            except Exception:  # noqa: BLE001 -- an unbounded field is never written
+                logger.warning("injection receipt: stage log unreadable", exc_info=True)
+                line = {k: v for k, v in line.items() if k not in STAGE_KINDS}
         if not path.parent.exists():
             mkdirs_owner_only(path.parent)
         text = json.dumps(line, ensure_ascii=False, separators=(",", ":"))

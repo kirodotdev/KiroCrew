@@ -885,13 +885,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _handle_app_import,
         _install_app_through_gateway,
         _print_file_only_app_result,
+        _print_git_update_hint,
         _print_pointer_cleanup,
         _refuse_session_approval_from_cli,
         _refuse_unsafe_app_name,
         _register_app_crons_to_scheduler,
         _register_unrecorded_builtin,
+        _resolve_install_source,
         _run_app_action_through_gateway,
         _run_app_mcp_server,
+        _shell_quoted,
         _warn_backend_not_stopped,
         _warn_hooks_need_restart,
     )
@@ -914,6 +917,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         write_eval_artifacts,
     )
     from kiro_crew.cli_commands_gateway_api import (  # noqa: F401
+        _SPAWN_WAIT_SECS,
         _artifact,
         _client_port,
         _create_cron_folder,

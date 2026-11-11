@@ -612,19 +612,42 @@ def _save_slot_to_history(
                 )
                 return False
 
-            payload, frozen_prefix, foreign_lines, drop_archives = (
-                _transcript_merge.compose_payload(
-                    state,
-                    slot,
-                    path,
-                    history_key,
-                    window,
-                    disk_older,
-                    meta_str,
-                    rewrite=rewrite,
-                    retired_rows=retired_rows,
-                )
+            # Digested before any row is built, so a row mutated after this
+            # point reads as changed on the next save rather than as written.
+            digests = _transcript_merge.row_digests(window)
+            tail = _transcript_merge.appendable_tail(
+                slot,
+                path,
+                history_key,
+                window,
+                digests,
+                disk_older,
+                meta_str,
+                rewrite=rewrite,
+                retired_rows=retired_rows,
             )
+            # Text from a rewrite; on an append, the cache's entry, possibly a range.
+            frozen_prefix: str | tuple[int, int] | None
+            if tail is None:
+                payload, frozen_prefix, foreign_lines, drop_archives = (
+                    _transcript_merge.compose_payload(
+                        state,
+                        slot,
+                        path,
+                        history_key,
+                        window,
+                        disk_older,
+                        meta_str,
+                        rewrite=rewrite,
+                        retired_rows=retired_rows,
+                    )
+                )
+            else:
+                # The file already holds everything but the new rows.
+                # The prefix cache stays valid only while its ``disk_older`` does.
+                _cache = slot._frozen_prefix_cache
+                frozen_prefix = _cache[3] if _cache and _cache[2] == disk_older else None
+                payload, foreign_lines, drop_archives = "".join(tail), [], lambda: None
 
             _preserve_mtime: float | None = None
             # A save that keeps this slot's own close is not channel activity either.
@@ -660,12 +683,15 @@ def _save_slot_to_history(
                 # count-based retry's short window. Off the event loop (the slot
                 # save offloads) the budget is spent; on the loop the retry
                 # re-raises at once and never sleeps.
-                atomic_write(
-                    path,
-                    payload,
-                    fsync=True,
-                    replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
-                )
+                if tail is not None:
+                    _transcript_merge.append_tail(path, tail)
+                else:
+                    atomic_write(
+                        path,
+                        payload,
+                        fsync=True,
+                        replace_budget_s=TRANSCRIPT_REPLACE_BUDGET_SECONDS,
+                    )
             except BaseException:
                 # A failed save keeps nothing staged: its rows stay unjudged and
                 # the next save offers them again. Nor does it keep an archive of
@@ -718,19 +744,46 @@ def _save_slot_to_history(
             # foreign-append fast path. The foreign lines just preserved are cached
             # too: they now sit in the window region, and a bare frozen+window
             # rebuild would delete them.
-            _post_write_cache: tuple[float, int, int, str, list[str]] | None
+            #
+            # The prefix is cached as where it sits in this file, not as its
+            # text: a slot that stays open would otherwise hold a second copy of
+            # its whole older history for as long as it lives.
+            _post_write_cache: tuple[float, int, int, str | tuple[int, int], list[str]] | None
             try:
                 _st = path.stat()
             except OSError:
                 _post_write_cache = None
             else:
                 _post_write_cache = (
-                    _st.st_mtime,
-                    _st.st_size,
-                    disk_older,
-                    frozen_prefix,
-                    foreign_lines,
+                    None
+                    if frozen_prefix is None
+                    else (
+                        _st.st_mtime,
+                        _st.st_size,
+                        disk_older,
+                        (
+                            frozen_prefix
+                            if not isinstance(frozen_prefix, str)
+                            else _transcript_merge.prefix_range(meta_str, frozen_prefix)
+                        ),
+                        foreign_lines,
+                    )
                 )
+            # What the next save needs to append instead of rewriting: only when
+            # the file holds exactly meta + prefix + this window, so no foreign line.
+            _identity = _transcript_merge.file_identity(path)
+            _post_write_basis = (
+                (
+                    str(path),
+                    _identity,
+                    disk_older,
+                    meta_str,
+                    digests,
+                    _transcript_merge.first_file_change_row(window),
+                )
+                if _identity is not None and not foreign_lines
+                else None
+            )
             # The disk identity this save just wrote (carried forward from
             # ``existing_meta`` when present), so the delete-won guard can
             # recognize a file recreated by another writer after a permanent
@@ -756,6 +809,7 @@ def _save_slot_to_history(
                 # drift apart from a delete-recreate.
                 slot._disk_meta_key = history_key
                 slot._frozen_prefix_cache = _post_write_cache
+                slot._append_basis = _post_write_basis
                 if queue_line_is_ours:
                     # The queued prompts are now on disk, so the flush's drift
                     # check stops reporting them as owed until the queue moves

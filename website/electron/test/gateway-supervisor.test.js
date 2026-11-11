@@ -33,6 +33,8 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "fetchRemoteToken",
     "entryUrl",
     "probePrimaryPortOwner",
+    "probePrimaryPortBinding",
+    "probePrimaryLockHolder",
     "isCurrentBundleGateway",
     "stopForUpdate",
     "stopOnQuit",

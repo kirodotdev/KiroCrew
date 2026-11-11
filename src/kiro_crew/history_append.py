@@ -40,6 +40,7 @@ from kiro_crew.owner_only_files import (
     owner_only_opener,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.transcript_count import bump_after_append, stamp_before_append
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
@@ -250,9 +251,13 @@ def append(
 
         # Session transcripts are intentionally local plaintext JSONL (the
         # documented storage format), not a credential/secret store.
+        stored = stamp_before_append(path)
+        line = json.dumps(msg)
         append_line(  # lgtm[py/clear-text-storage-sensitive-data]
-            path, json.dumps(msg), opener=owner_only_opener
+            path, line, opener=owner_only_opener
         )
+        # Same lock hold as the append: keeps the stored message count current.
+        bump_after_append(path, stored, line)
 
         # Invalidate cache since file changed
         self._invalidate_cache(key)

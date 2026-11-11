@@ -24,9 +24,7 @@ not become new skills.
 pending candidates under **Customize > Skills** before approving them. Turning
 that setting off lets new prose-only skills go live without review. Skills
 containing scripts always require approval, and so does an update to a skill
-that is already live: it waits in the same queue, marked **Update**. The
-**Stop requiring skill approval…** button on a pending-skill notification only
-opens that setting, so it changes nothing about updates.
+that is already live: it waits in the same queue, marked **Update**.
 
 The separate `skills.auto_refine_on_deviation` setting, off by default, works
 differently: when it is on, a session that finds a better procedure for a

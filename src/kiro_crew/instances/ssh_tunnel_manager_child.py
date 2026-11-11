@@ -54,6 +54,7 @@ from kiro_crew.instances.token_mint import (
     proxy_tool_missing_message,
     ssh_spawn_argv_env,
 )
+from kiro_crew.sandbox import without_python_env
 
 #: The manager's own logger: this code logs under the facade module's name.
 logger = logging.getLogger("kiro_crew.instances.ssh_tunnel_manager")
@@ -321,6 +322,10 @@ class _SshTunnel:
             self._remote_port,
         )
         spawn_env = tool_spawn_env(argv[0])
+        if self._transport == "ssm":
+            # aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME would make
+            # it import the gateway's packages instead.
+            spawn_env = without_python_env(spawn_env)
         # Kept for the exit classifier: a ProxyCommand whose program is missing
         # is reported with the PATH this child actually searched.
         self._child_path = spawn_env.get("PATH", "")

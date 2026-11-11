@@ -51,7 +51,7 @@ from kiro_crew.mcp_gateway.daemon.identity import (
     _resolve_register_identity,
     _StubConn,
 )
-from kiro_crew.mcp_gateway.daemon.launch import TargetResolver
+from kiro_crew.mcp_gateway.daemon.launch import TargetResolver, bound_to_owner_port
 from kiro_crew.mcp_gateway.daemon.replacement import _ReplacementRefused
 from kiro_crew.mcp_gateway.daemon.wire import (
     _jsonrpc_error,
@@ -574,13 +574,25 @@ async def _handle_connection(
             if msg.get("method") == "initialize":
                 captured_init = dict(msg)
 
-            # ``caller`` itself stays tokenless for the life of the connection:
-            # the token is attached to a per-forward copy, decided against the
-            # backend that receives THIS frame. A respawn hands the tokenless
-            # base on and re-decides for the replacement.
-            forward_caller = _caller_for_backend(backend, caller, conn)
-
             try:
+                if not bound_to_owner_port(backend):
+                    # The owner announced a new port after this connection
+                    # attached (``control._apply_owner_port``). The pool hands
+                    # this backend to no one else, but this connection still
+                    # holds it, and it dials the old port. Replaced through the
+                    # respawn below BEFORE the forward, so neither this frame
+                    # nor the caller block it would carry reaches a process
+                    # bound to a port that another process can now bind.
+                    raise BackendGone(
+                        f"bound to owner port {backend.owner_port}, "
+                        f"which is now {facade._OWNER_PORT}"
+                    )
+                # ``caller`` itself stays tokenless for the life of the
+                # connection: the token is attached to a per-forward copy,
+                # decided against the backend that receives THIS frame. A
+                # respawn hands the tokenless base on and re-decides for the
+                # replacement.
+                forward_caller = _caller_for_backend(backend, caller, conn)
                 await backend.forward_from_stub(
                     stub_uuid, msg, caller=forward_caller, tenant_nonce=conn.tenant_nonce
                 )

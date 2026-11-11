@@ -155,7 +155,7 @@ const API_KEY_ORDER = [
   'removeWorkflowDefinition', 'runWorkflowDefinition', 'refineTaskInput', 'refineStatus', 'refineCancel',
   'planTask', 'cancelPlan', 'updatePlan', 'executePlan',
   'planFromChat', 'planContext', 'exportPlanYaml', 'checkUpdate',
-  'changelog', 'releases', 'applyUpdate', 'setAutoUpdate',
+  'changelog', 'releases', 'applyUpdate', 'disarmUpdate', 'setAutoUpdate',
   'autoUpdatePin', 'setUpdateChannel', 'restartGateway', 'armUpdate', 'armStatus',
   'dismissUpdateArm', 'cancelUpdate', 'simulateUpdate', 'pickFiles',
   'fileDiff', 'fileSearch', 'pathComplete', 'uploadFiles',

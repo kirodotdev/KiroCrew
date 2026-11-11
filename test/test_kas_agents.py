@@ -355,7 +355,8 @@ class TestTheSpecIsSpelledInKasToolIds:
             asked.append(ref)
             return ref != "use_subagent"
 
-        monkeypatch.setattr(kas_agents, "may_skip_gate_now", ceiling)
+        # The sub-agent ref is judged by the session's predicate (_authored_allow_gate).
+        monkeypatch.setattr(kas_agents, "may_skip_gate_for_session", lambda *_a: ceiling)
         out = to_client_custom_agent("a", _spec(tools=["*"], allowedTools=["subagent"]), "p")
         assert asked == ["use_subagent"]
         rules = (out.get("permissions") or {}).get("rules", [])

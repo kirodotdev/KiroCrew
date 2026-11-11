@@ -154,6 +154,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "search_items_fts": ("function", "b580228dc456", "fulltext_index"),
     "source_count": ("function", "fa6cfecd5574", "content_stats"),
     "sources_holding_item": ("function", "38e1d5ac5668", "item_ownership"),
+    "split_entity_candidates": ("function", "f4ca892d9e9f", "entity_graph"),
     "_refuse_live_source": ("function", "abf534c1cf14", "item_ownership"),
     "_reassignment_candidates": ("function", "ca98b671cebb", "item_ownership"),
     "surviving_group_in_txn": ("function", "90373a793d37", "item_ownership"),

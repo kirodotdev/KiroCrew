@@ -250,6 +250,9 @@ export interface FilterDimension {
    *  `pinnedExemptNarrowing`, so the pinned-band caption follows the same
    *  rule `filtersRow` applies instead of restating it. */
   exemptsPinned: boolean
+  /** Is this the search box rather than a filter? Read by `filtersNarrowing`,
+   *  which the search lane's "Clear filters" asks: that action keeps the query. */
+  isSearch: boolean
   /** Does this dimension hide THIS row from a reveal? `excluded` reports list
    *  membership, for dimensions (search, status) that rank against backend
    *  state a single row cannot answer for alone. Non-nullable on purpose,

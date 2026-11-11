@@ -182,7 +182,8 @@ def _validate_identifier(name: str) -> str:
     return name
 
 
-def _merge_memory(src_db: Path, dst_db: Path) -> None:
+def _merge_memory(src_db: Path, dst_db: Path) -> bool:
+    """Row-merge src_db into dst_db; False when the source is refused and nothing is imported."""
     # The integrity check runs on the attached database, so the staged name is resolved
     # once and a database swapped in at that name after the check is never imported.
     # SQLite takes only a path, never a descriptor.
@@ -200,11 +201,11 @@ def _merge_memory(src_db: Path, dst_db: Path) -> None:
         except Exception as e:
             conn.rollback()
             print(f"  ⚠️  Source DB unreadable: {e} — skipping merge")
-            return
+            return False
         if result != "ok":
             conn.rollback()
             print(f"  ⚠️  Source DB integrity check failed: {result} — skipping merge")
-            return
+            return False
         for table, cols, where in [
             (
                 "semantic_memory",
@@ -253,6 +254,7 @@ def _merge_memory(src_db: Path, dst_db: Path) -> None:
             except Exception:
                 pass
         conn.close()
+    return True
 
 
 def _usable_cron_shape(parsed: object, path: Path) -> bool:

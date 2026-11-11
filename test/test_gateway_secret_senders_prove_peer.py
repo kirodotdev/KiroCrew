@@ -85,7 +85,10 @@ class TestSpawnSendsThroughThePeerProof:
         with (
             patch("kiro_crew.cli_server._owner_verified_secret_urlopen", sender),
             # The module's own clock binding, so no other code sees the stub.
-            patch("kiro_crew.cli_commands._time", SimpleNamespace(sleep=lambda _s: None)),
+            patch(
+                "kiro_crew.cli_commands._time",
+                SimpleNamespace(sleep=lambda _s: None, monotonic=lambda: 0.0),
+            ),
         ):
             cc._spawn(_ns(spawn_action="run", port=_PORT, task="t", fire_and_forget=False))
         assert [op for _req, _port, op in sender.sent] == ["cli_spawn_run", "cli_spawn_poll"]

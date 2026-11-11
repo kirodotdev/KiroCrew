@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib  # noqa: F401
 import functools  # noqa: F401
 import hashlib
@@ -51,7 +52,6 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling,
 )
 from kiro_crew.acp.types import (
-    ACP_BACKENDS_MEMBER_CAPABILITIES,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -80,6 +80,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_PROMPT_HANDLER_COMMANDS,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_LOCAL_CLEAR,
     ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
@@ -119,6 +120,7 @@ from kiro_crew.dashboard import chat_turn as _chat_turn
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard import engine_fallback as _engine_fallback
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches
+from kiro_crew.dashboard import trace_binding
 from kiro_crew.dashboard.chat_delivery import COMMANDS_OFF_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import START_BACKGROUND_META_KEY  # noqa: F401
 from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY as _TURN_ACTOR_META_KEY
@@ -240,6 +242,7 @@ from kiro_crew.dashboard.chat_turn.slash_commands import (  # noqa: F401
     _answer_slash_without_channel,
     _begin_compact_command,
     _forwards_harness_command,
+    _slash_command_backend,
     _turn_compact_command,
     _turn_slash_gate,
 )
@@ -348,6 +351,7 @@ from kiro_crew.dashboard.handlers.usage import (
 )
 from kiro_crew.dashboard.mate_thread_wakes import note_turn_end as _note_mate_wakes
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
+from kiro_crew.dashboard.prompt_handoff import prompt_handed_off
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
 from kiro_crew.dashboard.recovery_replays import ReplayFamily
 
@@ -459,6 +463,7 @@ from kiro_crew.providers.base import (
     SessionMcpReport,
 )
 from kiro_crew.repeat_loop import RepeatLoopTracker
+from kiro_crew.runtime_ownership import chat_turn_gate_hold
 from kiro_crew.safety_override import safety_override  # noqa: F401
 from kiro_crew.security import (
     REDACTED_CREDENTIAL_TAG,
@@ -630,17 +635,6 @@ _RECIPIENT_LOGGED_CAP = 512
 #: dashboard rungs are stubbed through — the rungs below look it up on this
 #: module at call time.
 _name_grant_refusal_off_loop = refusal_for_command_off_loop
-
-
-def _member_capable_backend_names() -> str:
-    """The ``agent.member_acp_backend`` values that can load a member's saved spec.
-
-    Read from :data:`ACP_BACKENDS_MEMBER_CAPABILITIES` so the remedy a refused member
-    chat shows names the set the refusal was judged against. kiro-cli is left out:
-    a member backend set to ``kiro`` runs on KAS, which the list already names.
-    """
-    names = sorted(ACP_BACKENDS_MEMBER_CAPABILITIES - {ACP_BACKEND_KIRO})
-    return ", ".join(names[:-1]) + " or " + names[-1] if len(names) > 1 else names[0]
 
 
 # Global cap on concurrent speculative spawns. Bounds the process/RSS burst
@@ -1066,12 +1060,17 @@ async def _run_chat(
     # ``_queue_recovery`` substitutes it for a requeue of ``message``.
     _message_without_merge_cards = message
     turn._message_without_merge_cards = _message_without_merge_cards
+    # This turn's id roots the ACP turns it streams, or joins the run it reports
+    # on (dashboard/trace_binding.py). Awaited before anything below needs undoing:
+    # it binds nothing until its reads are done.
+    _trace_root = await trace_binding.bind_turn(
+        state, slot, getattr(turn, "_recovery_turn_id", ""), top=_prompt_depth == 0
+    )
     # A turn that is not timed (a nested ``/prompts get`` turn shares its outer
     # turn's task and context) hides the open record from every gate and phase
     # it reaches, and gives it back on the way out.
     _timing_hidden = None if _timed else turn_timing.suspend()
-    # This turn's id is the trace id of the ACP turns it streams (tracing/turns.py).
-    _trace_root = trace_turns.bind_turn_root(getattr(turn, "_recovery_turn_id", ""))
+    _turn_gate = contextlib.AsyncExitStack()
     try:
         if _timed:
             turn_timing.mark("admit_start")
@@ -1088,6 +1087,14 @@ async def _run_chat(
         if _timed:
             turn_timing.mark("prompt_built")
 
+        # On a shared chat runtime, take the per-process chat turn gate BEFORE the
+        # dispatch gates, and hold it to the ``finally`` (a null hold otherwise).
+        # Waiting for a co-tenant's turn here means a Stop or a close that lands
+        # during the wait is seen by the checks below, instead of being answered
+        # "idle" while this turn runs once the gate frees. The stream's own gate is
+        # reentrant for this task, and a /compact keeps it through its deferred
+        # receipt, so no co-tenant turn can take this session's ownerless frames.
+        await _turn_gate.enter_async_context(chat_turn_gate_hold(client))
         # No await from here to the stream loop: begin_turn (in _turn_dispatch_gates) and the
         # stream's turn registration stay one yield-free span.
         _flow = await _turn_dispatch_gates(turn)
@@ -1128,6 +1135,10 @@ async def _run_chat(
             event_stream = client.stream(_segment_user_span(turn, full_message))
         if _timed:
             turn_timing.mark("stream_open")
+        # Admission, the session claim, the prompt build and every gate are
+        # behind this turn, so the session's background helpers (title, tags)
+        # cannot delay it from here on: this is the mark they wait for.
+        prompt_handed_off(slot)
         async for event in event_stream:
             if _timed:
                 turn_timing.mark("first_event")
@@ -1428,6 +1439,8 @@ async def _run_chat(
     except Exception as exc:
         await _on_error(turn, exc)
     finally:
+        with contextlib.suppress(Exception):
+            await _turn_gate.aclose()
         trace_turns.release_turn_root(_trace_root)
         state.release_turn_heartbeat(turn)
         if _timed:

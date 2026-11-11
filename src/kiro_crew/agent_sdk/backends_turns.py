@@ -648,10 +648,37 @@ ACP_BACKENDS_LOCAL_CLEAR = frozenset(
 # kiro is not a member: it runs its commands over ``_kiro.dev/commands/execute``.
 # claude is not a member: its harness owns its own command set. codex, opencode,
 # pi, deepseek, goose and copilot are not members: each serves the commands it
-# knows from its own prompt handler, so their other commands keep the prompt
-# path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the ``/clear`` most of them lack). A
-# harness added later stays out until its command handling is checked.
+# knows from its own prompt handler. Codex's commands are checked, so the dashboard
+# answers its other commands too (``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``). The
+# others' commands keep the prompt path (``ACP_BACKENDS_LOCAL_CLEAR`` covers the
+# ``/clear`` most of them lack). A harness added later stays out until its command
+# handling is checked.
 ACP_BACKENDS_LOCAL_HARNESS_COMMANDS = frozenset({ACP_BACKEND_KAS, ACP_BACKEND_STRANDS})
+
+# Harness id -> the harness commands (``_SLASH_COMMANDS`` names) that the
+# harness's own prompt handler runs. The dashboard answers every other harness
+# command of a member itself, as it does for ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``:
+# ``/clear`` is dropped the way ``reset_conversation`` does, and any other command
+# gets a notice instead of reaching the model as text. ``GET /api/slash-commands``
+# lists only the row's commands and the commands the dashboard serves without the
+# harness.
+#
+# - codex: codex-acp 2.3.0's ``classifyPrompt`` runs plan, mcp, skills, status,
+#   review, review-branch, review-commit, compact, goal, rename and logout, and
+#   sends any other name to the model. Of Crew's harness commands only ``/compact``
+#   and ``/mcp`` are in that list, so a ``/help``, ``/context`` or ``/tools`` sent
+#   as prompt text reached the model as a bare word. The row does not forward
+#   Codex's other built-ins: they are not Crew harness commands, so they stay text.
+#
+# kiro-cli has no row, because it runs every command over its own command channel.
+# claude has no row, because it owns its command set
+# (``ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS``). opencode, pi, deepseek, goose and
+# copilot have no row: each keeps the prompt path until its own command handling is
+# checked. A member of ``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS`` has no row, because it
+# runs no command.
+ACP_BACKEND_PROMPT_HANDLER_COMMANDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {ACP_BACKEND_CODEX: frozenset({"/compact", "/mcp"})}
+)
 
 # Backends whose model-side REFUSAL arrives with a structured reason, not just a
 # stop reason. When the Kiro service's content filter declines a turn, kiro-cli

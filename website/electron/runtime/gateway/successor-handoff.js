@@ -350,6 +350,8 @@ function createSuccessorHandoff({
       const req = http.get(healthUrl, { timeout: 2000 }, (res) => {
         let body = "";
         res.on("data", (chunk) => { body += chunk; });
+        // A body cut off mid-read emits error, never end.
+        res.on("error", () => resolve(null));
         res.on("end", () => {
           try { resolve(JSON.parse(body)); } catch { resolve(null); }
         });
@@ -384,6 +386,7 @@ function createSuccessorHandoff({
       const req = http.get(readyUrl, { timeout: 2000 }, (res) => {
         let body = "";
         res.on("data", (chunk) => { body += chunk; });
+        res.on("error", () => resolve("unknown"));
         res.on("end", () => {
           let payload = null;
           try { payload = JSON.parse(body); } catch { /* classify on status alone */ }
