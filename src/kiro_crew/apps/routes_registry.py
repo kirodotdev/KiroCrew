@@ -212,6 +212,7 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers._shared import (
         body_not_object_error,
         require_owner_dashboard_request,
+        string_field_error,
     )
 
     denied = await require_owner_dashboard_request(request, "app_registry_install")
@@ -226,6 +227,8 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         return not_object
 
     name = body.get("name", "")
+    if (wrong_type := string_field_error("name", name)) is not None:
+        return wrong_type
     if not name:
         return web.json_response({"error": "app name required"}, status=400)
 
