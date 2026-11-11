@@ -168,7 +168,9 @@ class TestRewriter:
             "odd-type": {"command": "http", "type": ["http"], "url": URL},
             "local-mcp": {"command": sys.executable},
         }
-        spec = {"name": "alpha", "mcpServers": servers, "tools": ["*"]}
+        # Grant only local-mcp: an ``http`` executable on PATH would get a granted
+        # odd-type wrapped too. Its malformed type is still read, before the grant.
+        spec = {"name": "alpha", "mcpServers": servers, "tools": ["@local-mcp"]}
 
         new_spec, wrapped = self._rewrite(spec, tmp_path, stub_servers=frozenset(servers))
 
