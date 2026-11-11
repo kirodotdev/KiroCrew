@@ -34,6 +34,7 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "entryUrl",
     "probePrimaryPortOwner",
     "probePrimaryPortBinding",
+    "probePrimaryLockHolder",
     "isCurrentBundleGateway",
     "stopForUpdate",
     "stopOnQuit",

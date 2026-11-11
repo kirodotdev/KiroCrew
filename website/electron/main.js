@@ -786,6 +786,7 @@ app.whenReady().then(async () => {
     probeGateway: createStartupGatewayProbe({
       isCurrentBundleGateway: () => gateway.isCurrentBundleGateway(),
       probePortBinding: () => gateway.probePrimaryPortBinding(),
+      probeLockHolder: () => gateway.probePrimaryLockHolder(),
       stopCommand: `kirocrew stop --port ${PORT}`,
     }),
     Notification: electron.Notification,

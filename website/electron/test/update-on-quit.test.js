@@ -722,6 +722,7 @@ test("D-c: an unidentified gateway on a busy port defers the apply; a free port 
       probeGateway: createStartupGatewayProbe({
         isCurrentBundleGateway: async () => false,
         probePortBinding: async () => binding,
+        probeLockHolder: async () => ({ verdict: "released", pid: null }),
         stopCommand: "kirocrew stop --port 18800",
       }),
     });
@@ -738,6 +739,36 @@ test("D-c: an unidentified gateway on a busy port defers the apply; a free port 
     stopCommand: "kirocrew stop",
   });
   assert.strictEqual((await throwing()).running, true, "a probe that fails counts as a gateway that may be running");
+});
+
+test("a free port with the home lock held or unreadable keeps the arm; a free lock applies", async (t) => {
+  const cases = [
+    { lock: async () => ({ verdict: "captured", pid: 4242 }), outcome: "gateway-running", what: "booting or draining gateway holds the lock" },
+    { lock: async () => ({ verdict: "held", pid: null }), outcome: "gateway-running", what: "lock held, owner unnameable" },
+    { lock: async () => ({ verdict: "unverified", pid: null }), outcome: "gateway-running", what: "probe timed out" },
+    { lock: async () => ({ verdict: "refused", pid: null }), outcome: "gateway-running", what: "lock state indeterminate" },
+    { lock: async () => { throw new Error("spawn failed"); }, outcome: "gateway-running", what: "probe threw" },
+    { lock: null, outcome: "gateway-running", what: "no lock probe wired" },
+    { lock: async () => ({ verdict: "released", pid: null }), outcome: "relaunching", what: "lock free and port free" },
+  ];
+  for (const { lock, outcome, what } of cases) {
+    const f = startFixture();
+    t.after(f.sp.restore);
+    const r = await startupApply({
+      app: f.app, store: f.store, managed: MANAGED, managedPath: () => "/usr/bin", log: f.log,
+      probeGateway: createStartupGatewayProbe({
+        isCurrentBundleGateway: async () => false,
+        probePortBinding: async () => "free",
+        probeLockHolder: lock,
+        stopCommand: "kirocrew stop --port 18800",
+      }),
+    });
+    assert.strictEqual(r.outcome, outcome, what);
+    if (outcome === "gateway-running") {
+      assert.deepStrictEqual(f.sp.commands, [], `${what}: no update command ran`);
+      assert.strictEqual(f.arm.read().version, "2.0.0", `${what}: the arm stays`);
+    }
+  }
 });
 
 test("public lane: on Windows, Restart now says the app reopens itself and a plain quit names the Start menu", async () => {
