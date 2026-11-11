@@ -8,6 +8,7 @@ independent of the artifact store's, and only reaches artifacts through the
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -127,8 +128,9 @@ class ArtifactFolderStore:
             if self._icon_epochs.get(folder_id, 0) != expected_epoch:
                 # Icon or name changed while generation ran -- drop the result.
                 return None
+            snapshot = self._snapshot()
             folder["icon"] = str(icon or "")[:16]
-            self._save()
+            self._save_or_restore(snapshot)
             return dict(folder)
 
     # ── persistence ───────────────────────────────────────────────────────
@@ -171,6 +173,21 @@ class ArtifactFolderStore:
             raise
 
     # ── internal helpers (call under lock) ────────────────────────────────
+
+    def _snapshot(self) -> _List[dict[str, Any]]:
+        return copy.deepcopy(self._folders)
+
+    def _save_or_restore(self, snapshot: _List[dict[str, Any]]) -> None:
+        """Save, or put the tree back as ``snapshot`` found it when the save fails.
+
+        Without this a failed write leaves the change in memory only, so every read
+        reports a tree a restart will not load.
+        """
+        try:
+            self._save()
+        except BaseException:
+            self._folders = snapshot
+            raise
 
     def _by_id(self) -> dict[str, dict[str, Any]]:
         return {f["id"]: f for f in self._folders if isinstance(f, dict) and f.get("id")}
@@ -274,6 +291,7 @@ class ArtifactFolderStore:
                 raise ArtifactValidationError(
                     f"folder nesting exceeds max depth {MAX_FOLDER_DEPTH}"
                 )
+            snapshot = self._snapshot()
             folder = {
                 "id": uuid.uuid4().hex[:12],
                 "name": name,
@@ -283,7 +301,7 @@ class ArtifactFolderStore:
             if color:
                 folder["color"] = color
             self._folders.append(folder)
-            self._save()
+            self._save_or_restore(snapshot)
             logger.info(
                 "artifact folder created: id=%s name=%s parent=%s",
                 folder["id"],
@@ -313,10 +331,11 @@ class ArtifactFolderStore:
             folder = self._by_id().get(folder_id)
             if folder is None:
                 raise ArtifactNotFoundError(f"folder not found: {folder_id}")
+            snapshot = self._snapshot()
             folder["name"] = name
             # An in-flight icon was derived from the OLD name -- invalidate it.
             self._bump_icon_epoch_locked(folder_id)
-            self._save()
+            self._save_or_restore(snapshot)
             return dict(folder), self._icon_epochs[folder_id]
 
     def reparent(self, folder_id: str, new_parent: str = "") -> dict[str, Any]:
@@ -346,8 +365,9 @@ class ArtifactFolderStore:
                     raise ArtifactValidationError(
                         f"folder nesting exceeds max depth {MAX_FOLDER_DEPTH}"
                     )
+            snapshot = self._snapshot()
             folder["parent_id"] = new_parent
-            self._save()
+            self._save_or_restore(snapshot)
             return dict(folder)
 
     def set_icon(self, folder_id: str, icon: str) -> dict[str, Any]:
@@ -355,11 +375,12 @@ class ArtifactFolderStore:
             folder = self._by_id().get(folder_id)
             if folder is None:
                 raise ArtifactNotFoundError(f"folder not found: {folder_id}")
+            snapshot = self._snapshot()
             folder["icon"] = str(icon or "")[:16]
             # A manual set OR a clear (icon == "") invalidates any in-flight
             # generation: its result was derived before the user's choice.
             self._bump_icon_epoch_locked(folder_id)
-            self._save()
+            self._save_or_restore(snapshot)
             return dict(folder)
 
     @staticmethod
@@ -377,24 +398,33 @@ class ArtifactFolderStore:
             folder = self._by_id().get(folder_id)
             if folder is None:
                 raise ArtifactNotFoundError(f"folder not found: {folder_id}")
+            snapshot = self._snapshot()
             if color:
                 folder["color"] = color
             else:
                 folder.pop("color", None)
-            self._save()
+            self._save_or_restore(snapshot)
             return dict(folder)
 
     def reorder(self, orders: _List[dict[str, Any]]) -> None:
-        """Apply ``[{id, order}, ...]`` sibling ordering (minimal patch)."""
+        """Apply ``[{id, order}, ...]`` sibling ordering (minimal patch).
+
+        Every order is converted before any folder changes, and a failed save
+        restores the tree, so an error never leaves a half-applied ordering.
+        """
         with self._lock:
+            snapshot = self._snapshot()
             by_id = self._by_id()
+            updates: _List[tuple[str, int]] = []
             for entry in orders:
                 if not isinstance(entry, dict):
                     continue
                 fid = entry.get("id")
                 if fid in by_id and "order" in entry:
-                    by_id[fid]["order"] = int(entry["order"])
-            self._save()
+                    updates.append((fid, int(entry["order"])))
+            for fid, order in updates:
+                by_id[fid]["order"] = order
+            self._save_or_restore(snapshot)
 
     def resolve_path(
         self, ref: str, *, create_missing: bool = False, as_parent: bool = False
@@ -467,7 +497,12 @@ class ArtifactFolderStore:
                 del self._folders[snapshot_len:]
                 raise
             if created_any:
-                self._save()
+                try:
+                    self._save()
+                except BaseException:
+                    # Nothing reached disk, so the appended folders go as well.
+                    del self._folders[snapshot_len:]
+                    raise
             return parent
 
     def breadcrumb(self, folder_id: str, sep: str = FOLDER_PATH_SEP) -> str:
@@ -554,6 +589,7 @@ class ArtifactFolderStore:
             if folder is None:
                 raise ArtifactNotFoundError(f"folder not found: {folder_id}")
             parent = str(folder.get("parent_id") or "")
+            snapshot = self._snapshot()
             if delete_contents:
                 affected_ids = self._subtree_ids(folder_id)
             else:
@@ -563,7 +599,7 @@ class ArtifactFolderStore:
                     if str(f.get("parent_id") or "") == folder_id:
                         f["parent_id"] = parent
             self._folders = [f for f in self._folders if f.get("id") not in affected_ids]
-            self._save()
+            self._save_or_restore(snapshot)
             # Pop the icon epochs only after _save() succeeds. A failed save leaves
             # the folder on disk, to return on reload, and a reset epoch would let
             # a stale generation clobber its manual icon. Popping after a confirmed
