@@ -864,6 +864,9 @@ restarts when the gateway restarts, when a credential file the gateway watches
 changes, or when `mcp_gateway.max_backends` is full and it is the least
 recently used idle backend.
 
+A script cron is not covered: each of its runs still starts its own copy of the
+server (see [Script and command crons](cron-and-scheduling.md#script-and-command-crons)).
+
 On the `kas` backend, a background helper whose agent mounts no tool
 (`kirocrew-lite`) no longer starts the servers in `~/.kiro/settings/mcp.json`.
 
