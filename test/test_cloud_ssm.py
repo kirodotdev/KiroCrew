@@ -218,6 +218,31 @@ class TestOpenPortForward:
         assert str(install_dir) in child_path  # the plugin's install dir
         assert child_path.index(str(inherited)) < child_path.index(str(install_dir))
 
+    def test_child_gets_no_python_interpreter_settings(self, monkeypatch):
+        """aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME must not reach it.
+
+        Everything else ``aws_spawn_env`` builds, the widened PATH included, still does.
+        """
+        captured: dict = {}
+
+        def fake_popen(argv, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        spawn_env = {
+            "PATH": "<widened>",
+            "PYTHONPATH": "<gw>",
+            "PYTHONHOME": "<gw>",
+            "AWS_PROFILE": "k",
+        }
+        monkeypatch.setattr(ssm, "aws_spawn_env", lambda head: dict(spawn_env))
+        monkeypatch.setattr(ssm, "require_session_manager_plugin", lambda: None)
+        monkeypatch.setattr(ssm.subprocess, "Popen", fake_popen)
+
+        ssm.open_port_forward("i-0abc", 5476, 5599, "dev", "us-east-1")
+
+        assert captured["env"] == {"PATH": "<widened>", "AWS_PROFILE": "k"}
+
     @pytest.mark.skipif(os.name == "nt", reason="provenance branch is dead on Windows")
     def test_refused_aws_binary_is_not_put_back_on_the_child_path(self, monkeypatch, tmp_path):
         """A provenance-REFUSED aws must not become reachable again via the env.

@@ -849,6 +849,34 @@ class TestSsmTunnelProcessGroup:
         child_path = seen["env"]["PATH"].split(os.pathsep)
         assert child_path.index(str(inherited)) < child_path.index(str(install_dir))
 
+    @pytest.mark.asyncio
+    async def test_ssm_child_gets_no_python_interpreter_settings(self, monkeypatch):
+        """aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME must not reach it.
+
+        Everything else ``tool_spawn_env`` builds, the widened PATH included, still does.
+        """
+        import kiro_crew.instances.ssh_tunnel_manager as mod
+
+        seen = {}
+
+        async def fake_exec(*argv, **kw):
+            seen.update(kw)
+            raise OSError("stop here — we only care about the spawn kwargs")
+
+        spawn_env = {
+            "PATH": "<widened>",
+            "PYTHONPATH": "<gw>",
+            "PYTHONHOME": "<gw>",
+            "AWS_PROFILE": "k",
+        }
+        monkeypatch.setattr(mod, "tool_spawn_env", lambda head: dict(spawn_env))
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(mod.platform_compat, "IS_POSIX", True)
+
+        await self._tunnel("ssm").start()
+
+        assert seen["env"] == {"PATH": "<widened>", "AWS_PROFILE": "k"}
+
     def test_teardown_routes_through_the_platform_shim(self, monkeypatch):
         """Not raw os.killpg — that leaves the plugin alive on Windows."""
         import kiro_crew.instances.ssh_tunnel_manager as mod
