@@ -929,6 +929,11 @@ class DashboardState:
         # gateway announces it to the MCP gateway daemon it owns, which binds
         # pooled control-plane backends to it. Never read from os.environ.
         self._listener_bound_port: int = 0
+        # Set when the gateway stops itself because the policy refuses the primary
+        # listener's address; read for the exit status (``bind_refresh``).
+        self._bind_refused_stop: bool = False
+        # The address the primary bind asked ``bind_address`` for, IPv6 zone included.
+        self._bind_asked: str = ""
         # Prevent-sleep inhibitor + its poll task. Held to prevent GC and
         # released/cancelled on shutdown; annotated here so the assignments in
         # start_dashboard type-check under mypy.

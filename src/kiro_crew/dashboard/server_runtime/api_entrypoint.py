@@ -403,7 +403,7 @@ async def start_api_server(
     # container override honored inside bind_address_for). Without this the
     # documented `gateway --slack-only` container path would silently bind
     # loopback and be unreachable through a published Docker port.
-    bind_addr = bind_address_for(local_only)
+    bind_addr = state._bind_asked = bind_address_for(local_only)
     site = web.TCPSite(runner, bind_addr, port)
     await _start_site(site, port)
     # After the bind, never on the boot path (no-new-work-on-gateway-boot-path):
