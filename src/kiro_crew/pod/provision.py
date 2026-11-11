@@ -904,6 +904,14 @@ def _run_uv(cmd: list[str], checkout: Path) -> int:
         return 1
 
 
+def _runs_from_venv(checkout: Path) -> bool:
+    """True when this interpreter is the one inside *checkout*'s ``.venv``."""
+    try:
+        return Path(sys.prefix).resolve() == (checkout / ".venv").resolve()
+    except OSError:
+        return False
+
+
 def ensure_venv(checkout: Path) -> bool:
     """Create the worktree's editable venv if missing. Idempotent. Returns True if
     the venv is ready afterward.
@@ -917,8 +925,14 @@ def ensure_venv(checkout: Path) -> bool:
     exactly as it already does over a venv an interrupted pip provision left
     behind, so two provisioners racing on one checkout (CLI and Dev Fleet) can
     never remove each other's finished venv.
+
+    A venv this process is itself running from is never rebuilt: it is accepted
+    on presence alone. Re-running ``python -m venv`` over the interpreter that is
+    executing fails on Windows (the running ``python.exe`` is locked, EACCES) and
+    on POSIX rewrites the install under the live command. Whoever built that venv
+    (a CI step, a manual ``pip install -e .``) owns its freshness.
     """
-    if has_venv(checkout):
+    if has_venv(checkout, require_stamp=not _runs_from_venv(checkout)):
         return True
     py = _find_python()
     if not py:
