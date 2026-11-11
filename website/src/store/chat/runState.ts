@@ -9,6 +9,18 @@ import { isUnsafeKey, safeKey } from './wire'
 import { jsonEqual } from '../../utils/structuralEqual'
 import { boundSlotWindow, parkActiveTranscript, setPagingCursor } from './slotCache'
 
+/** A new parent turn on *slot* adopts its still-running subagents again, so the
+ *  "parent stopped" mark a Stop left on them is lifted. Both maps, as
+ *  `sseParentStopped` marks both. */
+function clearParentStopped(state: ChatState, slot: string) {
+  if (isUnsafeKey(slot)) return
+  const key = safeKey(slot)
+  const maps = [state.slotActivity[key]?.subagents, key === state.activeSlot ? state.subagents : undefined]
+  for (const subs of maps) {
+    for (const a of Object.values(subs ?? {})) if (a.parentStopped) delete a.parentStopped
+  }
+}
+
 export function pushHistory(history: string[], key: string): string[] {
   const deduped = history.filter(k => k !== key)
   deduped.push(key)
@@ -293,6 +305,9 @@ export const runStateReducers = {
     state.pendingTurnSlot = null
   },
   setSlotRunning(state: ChatState, action: PayloadAction<boolean>) {
+    // Only an idle -> running flip is a new parent turn; a repeat `true` while a
+    // Stop is still settling must not lift the parent-stopped mark.
+    if (action.payload && !state.slotRunning && state.activeSlot) clearParentStopped(state, state.activeSlot)
     state.slotRunning = action.payload
     if (!action.payload) state.pendingTurnSlot = null
   },
@@ -303,6 +318,7 @@ export const runStateReducers = {
     const slot = action.payload
     state.pendingTurnSlot = slot
     bumpRunEpoch(state, slot)
+    clearParentStopped(state, slot)
     if (slot === state.activeSlot) state.slotRunning = true
   },
   /** A turn the gateway started on `slot` at this tab's request, with no
@@ -316,6 +332,7 @@ export const runStateReducers = {
     if (isUnsafeKey(slot)) return
     if ((state.runEpoch?.[safeKey(slot)] ?? 0) !== epoch) return
     bumpRunEpoch(state, slot)
+    clearParentStopped(state, slot)
     if (slot === state.activeSlot) {
       state.pendingTurnSlot = slot
       state.slotRunning = true

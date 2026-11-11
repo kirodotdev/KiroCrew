@@ -643,6 +643,7 @@ export interface SubagentActivity {
    *  while `stalled` holds there is by definition no activity to reset it. */
   stalledAt?: number
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
+  parentStopped?: boolean  // parent turn was stopped; agent still runs but is orphaned
   approval_id?: string
   /** The coordinator request a pending spawn waits on (types/approvalTarget). */
   approval_target?: CoordinatorApprovalTarget
