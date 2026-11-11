@@ -594,6 +594,25 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     # within the multi-tab grace window, treat as theft and revoke.
     if state.is_consumed(jti):
         cached = state.grace_replacement(chain_id, jti, client_ip, now=now)
+        if not cached:
+            # A duplicate that lands while this jti's own rotation is still being written
+            # is the benign race, not reuse: the replacement is installed only once the
+            # write lands. Wait for that write on a worker, then read the grace entry
+            # again. A rotation that failed or outlasted the wait leaves none, and the
+            # duplicate is told to retry instead of revoking a chain nobody stole.
+            pending = await asyncio.to_thread(
+                state.await_pending_rotation, chain_id, jti, client_ip
+            )
+            cached = state.grace_replacement(chain_id, jti, client_ip, now=now)
+            if not cached and (pending or not state.is_consumed(jti)):
+                _audit(user_id, "refresh_token_use", "rotation_in_flight", chain_id)
+                return web.json_response(
+                    {
+                        "error": "This token's rotation did not complete. Retry the refresh.",
+                        "code": "refresh_state_unavailable",
+                    },
+                    status=503,
+                )
         if cached:
             # Multi-tab race: re-serve the same replacement pair.
             try:
