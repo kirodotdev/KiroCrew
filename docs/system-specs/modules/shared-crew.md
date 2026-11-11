@@ -1054,7 +1054,9 @@ stops the child (`_stop_child`), wakes every waiter and logs a warning. The work
 keeps its slot and stays tracked with its last durable record
 (`_Live.unpersisted`); every ticker pass retries the terminal write
 (`admission_settle.persist_pending`) and frees the slot only once the store
-records it, so capacity is never released ahead of the durable transition. A
+records it, so capacity is never released ahead of the durable transition. The
+in-memory end is the one the retry writes: when the durable state cannot reach
+`failed` (a `queued` record), memory and store both say `cancelled`. A
 merged queued message whose settlement write fails is kept the same way. A
 deadline whose `cancelling` write fails still stops the
 child. A caller cancelled before its work starts (a queued chat closed while it
