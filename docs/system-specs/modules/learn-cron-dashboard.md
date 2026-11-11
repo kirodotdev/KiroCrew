@@ -783,7 +783,14 @@ channel-first ladder above and keep Slack as the fallback:
   counted and the failure dedup anchor does not move. The bell note
   (`⏹ Interrupted: ...`, plus "The job runs again at its next scheduled time"
   for a recurring job, which on a cron expression adds "or at once if Kiro Crew
-  is back within the minute this run was due") is awaited until it is on disk, then the one-surface
+  is back within the minute this run was due"; a paused recurring job, which a
+  manual run reaches but the scheduler skips, gets "The job is paused, so it does
+  not run again until you resume it in Schedule" instead, including when the
+  pause lands during the run; the stopped run passes the stored row, refreshed
+  by its result merge, so a pause or resume another process (the CLI, MCP)
+  wrote during the run counts too, pinned by
+  `test_a_pause_or_resume_from_another_process_is_told_right`) is awaited until
+  it is on disk, then the one-surface
   ladder runs through `_deliver_failure_alert`; `silent` gates every surface. A
   run stopped in its jitter wait is told too, with the note that it never
   started. A run `cancel()` stopped or the reaper ended is not told this way:
