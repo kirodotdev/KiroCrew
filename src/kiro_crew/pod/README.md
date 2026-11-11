@@ -416,6 +416,8 @@ the boot prints its error and serves anyway.
   `*_TOKEN`, so a pod can never grab a live messaging identity — not even a
   seeded one, which is the point: `--seed ~/.kiro/crew` clones the real config.
   Pod HOME is `0700`; `config.json` is `0600`.
+- A seeded config loses `dashboard.instance_label`, so a pod's tab and its
+  session transfers never name it as the gateway it was cloned from.
 
 ## Platform
 

@@ -451,8 +451,9 @@ async def api_chat_slot_export(request: web.Request) -> web.StreamResponse:
             state,
             slot,
             # A downloaded file can be shared with anyone, so it must not stamp
-            # this host's identity. ``local_instance_label()`` is the machine's
-            # hostname, which on a Linux dev host can embed the operator's login
+            # this host's identity. ``local_instance_label()`` is the gateway's
+            # ``dashboard.instance_label`` or else the machine's hostname, which on
+            # a Linux dev host can embed the operator's login
             # and in any case names a machine the
             # recipient cannot act on. The tunnel path keeps the real label
             # (it reaches the operator's own trusted peer instance); the file

@@ -3,8 +3,12 @@
  * same way the popout windows do (`{{label}} — {{productName}}`): the session
  * title, then the panel, then the product, with the attention count kept in
  * front so it survives tab truncation. While a remote crew's pane fills the
- * page, that crew's registry name stands in for the hidden local detail.
+ * page, that crew's registry name stands in for the hidden local detail. A
+ * labelled gateway (`dashboard.instance_label`) names itself before the product
+ * and in its favicon, and before the app loads.
  */
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { describe, it, expect, vi, onTestFinished } from 'vitest'
 import { act, render, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -18,6 +22,7 @@ import instancesReducer, { setActiveId } from '../store/instancesSlice'
 import { api } from '../api/client'
 import App from '../App'
 import { ThemeProvider } from '../hooks/useTheme'
+import { BrandingProvider } from '../hooks/useBranding'
 import type { ChatSlot } from '../types'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
@@ -41,6 +46,7 @@ vi.mock('../api/client', () => ({
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
     approvals: vi.fn().mockResolvedValue([]),
+    branding: vi.fn().mockResolvedValue({ bot_name: 'Kiro Crew', avatar: '/logo.png' }),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class extends Error { status: number; constructor(s: number, m: string) { super(m); this.status = s } },
@@ -56,7 +62,7 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 })
 
-function renderAt(path: string) {
+function renderAt(route: string) {
   const store = configureStore({
     reducer: {
       dashboard: dashboardReducer,
@@ -69,11 +75,13 @@ function renderAt(path: string) {
   render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
-        <ThemeProvider>
-          <MemoryRouter initialEntries={[path]}>
-            <App />
-          </MemoryRouter>
-        </ThemeProvider>
+        <BrandingProvider>
+          <ThemeProvider>
+            <MemoryRouter initialEntries={[route]}>
+              <App />
+            </MemoryRouter>
+          </ThemeProvider>
+        </BrandingProvider>
       </QueryClientProvider>
     </Provider>,
   )
@@ -122,5 +130,51 @@ describe('main window tab title', () => {
     await waitFor(() => expect(document.title).toBe('Lab box — Kiro Crew'))
     act(() => { store.dispatch(setActiveId(null)) })
     await waitFor(() => expect(document.title).toBe('Schedule — Kiro Crew'))
+  })
+
+  it('names a labelled gateway between the page and the product, a remote crew\'s pane included', async () => {
+    const noCrews = { instances: [], warm_set_cap: 5 }
+    vi.mocked(api.branding).mockResolvedValue({ bot_name: 'Kiro Crew', avatar: '/logo.png', instance_label: 'Pod A' })
+    vi.mocked(api.listInstances).mockResolvedValue({ ...noCrews, instances: [{ id: 'lab-1', name: 'Lab box' }] } as never)
+    onTestFinished(() => {
+      vi.mocked(api.branding).mockResolvedValue({ bot_name: 'Kiro Crew', avatar: '/logo.png' })
+      vi.mocked(api.listInstances).mockResolvedValue(noCrews as never)
+      localStorage.removeItem('mc-instance-label')
+    })
+    const store = renderAt('/schedule')
+    await waitFor(() => expect(document.title).toBe('Schedule — Pod A — Kiro Crew'))
+    expect(localStorage.getItem('mc-instance-label')).toBe('Pod A')
+    act(() => { store.dispatch(setActiveId('lab-1')) })
+    await waitFor(() => expect(document.title).toBe('Lab box — Pod A — Kiro Crew'))
+  })
+
+  it("draws a labelled gateway's favicon from its initial, in a tab that never paints", async () => {
+    // A background tab runs no animation frames, and its icon is what finds it.
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0)
+    const icon = document.createElement('link')
+    icon.rel = 'icon'
+    icon.href = '/logo.png'
+    document.head.prepend(icon)
+    vi.mocked(api.branding).mockResolvedValue({ bot_name: 'Kiro Crew', avatar: '/logo.png', instance_label: 'pod-a' })
+    onTestFinished(() => {
+      raf.mockRestore()
+      icon.remove()
+      vi.mocked(api.branding).mockResolvedValue({ bot_name: 'Kiro Crew', avatar: '/logo.png' })
+      localStorage.removeItem('mc-instance-label')
+    })
+    renderAt('/schedule')
+    await waitFor(() => expect(icon.href).toMatch(/^data:image\/svg\+xml,/))
+    expect(decodeURIComponent(icon.href)).toContain('>P</text>')
+  })
+
+  it('names a labelled gateway before the app loads, from the label it last served', () => {
+    const html = readFileSync(path.resolve(__dirname, '..', '..', 'index.html'), 'utf8')
+    const line = html.split('\n').find(l => l.includes("localStorage.getItem('mc-instance-label')"))
+    expect(line).toBeDefined()
+    localStorage.setItem('mc-instance-label', 'Pod A')
+    document.title = 'Kiro Crew'
+    onTestFinished(() => { localStorage.removeItem('mc-instance-label') })
+    new Function(line!)()
+    expect(document.title).toBe('Pod A — Kiro Crew')
   })
 })
