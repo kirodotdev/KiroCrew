@@ -623,6 +623,7 @@ def resolve_worker_spec(
     refuse_tool_limits: bool = False,
     refuse_spec_policy: bool = False,
     mcp_tool_limits_carried: bool = False,
+    native_tool_limits_carried: bool = False,
 ) -> dict[str, Any]:
     """The worker spec a session of *member_id*'s worker runs on.
 
@@ -634,7 +635,8 @@ def resolve_worker_spec(
     ``capability_tool_limits_unsupported``, judged on the same read the merge uses;
     with *mcp_tool_limits_carried* too (a host that carries the MCP half,
     ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``), only what
-    :func:`uncarried_tool_limits_of` names refuses.
+    :func:`uncarried_tool_limits_of` names refuses, read with
+    *native_tool_limits_carried*.
     With *refuse_spec_policy* (a host that applies none of ``hooks``, ``permissions``
     and ``toolsSettings``), a file that sets any refuses with
     :class:`~kiro_crew.mate_spec_policy.SpecPolicyUncarried` naming them.
@@ -681,8 +683,13 @@ def resolve_worker_spec(
             f"Bot {member_id!r}: its worker file {name!r} cannot be read, so its "
             f"worker would run without the Bot's own limits; fix or re-save the file"
         ) from exc
-    limits_of = uncarried_tool_limits_of if mcp_tool_limits_carried else tool_limits_of
-    if refuse_tool_limits and limits_of(mate_spec):
+    if mcp_tool_limits_carried:
+        limits = uncarried_tool_limits_of(
+            mate_spec, native_tool_limits_carried=native_tool_limits_carried
+        )
+    else:
+        limits = tool_limits_of(mate_spec)
+    if refuse_tool_limits and limits:
         from kiro_crew.session_capabilities import CapabilityStartupError
 
         raise CapabilityStartupError("capability_tool_limits_unsupported")
@@ -868,6 +875,7 @@ def worker_session_spec(
     refuse_tool_limits: bool = False,
     refuse_spec_policy: bool = False,
     mcp_tool_limits_carried: bool = False,
+    native_tool_limits_carried: bool = False,
 ) -> dict[str, Any]:
     """The spec a crewmate's worker session on *session_key* runs: base plus its kit.
 
@@ -906,6 +914,7 @@ def worker_session_spec(
             refuse_tool_limits=refuse_tool_limits,
             refuse_spec_policy=refuse_spec_policy,
             mcp_tool_limits_carried=mcp_tool_limits_carried,
+            native_tool_limits_carried=native_tool_limits_carried,
         )
     return resolve_worker_spec(literal_base, member_id)
 
@@ -1028,7 +1037,10 @@ def _pinned_worker_remedy(config: KiroCrewConfig, pin: CrewBackendPin, backend: 
 
 
 def crewmate_tool_limited_servers(
-    member_id: str, *, mcp_tool_limits_carried: bool = False
+    member_id: str,
+    *,
+    mcp_tool_limits_carried: bool = False,
+    native_tool_limits_carried: bool = False,
 ) -> tuple[str, ...]:
     """What crewmate *member_id*'s own file narrows for its worker, sorted.
 
@@ -1038,8 +1050,8 @@ def crewmate_tool_limited_servers(
     native tool itself. The worker spec carries all of them as ``excludedTools``
     (:func:`worker_additions`), which only ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``
     honour. A server the file mutes whole is not counted. With
-    *mcp_tool_limits_carried*, only what :func:`uncarried_tool_limits_of` names.
-    Blocking.
+    *mcp_tool_limits_carried*, only what :func:`uncarried_tool_limits_of` names, read
+    with *native_tool_limits_carried*. Blocking.
     """
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
@@ -1051,7 +1063,9 @@ def crewmate_tool_limited_servers(
         spec = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), name)
     except agent_specs.AgentSpecUnreadable:
         return ()
-    return uncarried_tool_limits_of(spec) if mcp_tool_limits_carried else tool_limits_of(spec)
+    if mcp_tool_limits_carried:
+        return uncarried_tool_limits_of(spec, native_tool_limits_carried=native_tool_limits_carried)
+    return tool_limits_of(spec)
 
 
 def kas_only_worker_fields(member_id: str, backend: str) -> tuple[str, ...]:
@@ -1095,14 +1109,25 @@ def kas_only_worker_detail(
         return (), ()
     fields: list[str] = []
     items: list[KasOnlyItem] = []
-    from kiro_crew.acp_backends import ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+        ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
+    )
 
     # The same rule ``resolve_worker_spec`` refuses on: a host that carries MCP
     # tool limits as denies is judged only on what no deny can carry.
     if backend in ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS:
         uncarried: tuple[str, ...] = ()
     elif backend in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS:
-        uncarried = uncarried_tool_limits_of(spec)
+        native = backend in ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS
+        if native and backend == ACP_BACKEND_CLAUDE:
+            # Below the session-options floor the start stops such a worker, so
+            # the Bot keeps its KAS fallback there.
+            from kiro_crew.agent_sdk.drivers.acp import claude_adapter_honours_session_options
+
+            native = claude_adapter_honours_session_options()
+        uncarried = uncarried_tool_limits_of(spec, native_tool_limits_carried=native)
         keep = set(uncarried)
         items.extend(
             (group, label) for group, label, key in _tool_limit_entries(spec) if key in keep
@@ -1191,7 +1216,9 @@ def _unreadable_tool_names(value: Any) -> bool:
     )
 
 
-def uncarried_tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
+def uncarried_tool_limits_of(
+    spec: dict[str, Any], *, native_tool_limits_carried: bool = False
+) -> tuple[str, ...]:
     """The ``excludedTools`` entries of crewmate file *spec* no MCP deny can carry.
 
     A host in ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` carries a switched-off
@@ -1203,8 +1230,12 @@ def uncarried_tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
     spell, so the worker is refused rather than run wider. A ``disabledTools`` that
     is set but is not a list of tool names names that server, since no deny can be
     read from it. A server the file mutes whole is not counted, as in
-    :func:`tool_limits_of`.
+    :func:`tool_limits_of`. With *native_tool_limits_carried* (a host in
+    ``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS``), a native tool the worker's
+    ``tools`` list can withhold (``claude_worker_tools.excluded_builtin_rows``) is
+    carried too.
     """
+    from kiro_crew.agent_sdk.claude_worker_tools import excluded_builtin_rows
     from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 
     servers = _servers(spec.get("mcpServers"))
@@ -1220,6 +1251,8 @@ def uncarried_tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
         if server and server in servers and mcp_entry_is_muted(servers[server]):
             continue
         native = not server or server.strip() == _BUILTIN_SERVER
+        if native and native_tool_limits_carried and excluded_builtin_rows(ref):
+            continue
         if ref and (native or ref.endswith("/") or _GLOB_CHARS & set(ref)):
             uncarried.add(ref)
     return tuple(sorted(uncarried))

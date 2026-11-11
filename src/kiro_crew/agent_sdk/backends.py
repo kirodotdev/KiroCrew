@@ -104,7 +104,11 @@ with no row here.
    * - ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``
      - pre-session registry query and the claude settings seed (whether the MCP
        half of a crewmate worker's single-tool limits is honoured, so only a
-       native-tool exclude refuses the worker)
+       native-tool exclude the native set below does not carry refuses the worker)
+   * - ``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS``
+     - pre-session registry query and the claude session options (whether a
+       crewmate worker's native-tool excludes are honoured, so only an entry no
+       built-in table covers refuses the worker)
    * - ``ACP_BACKENDS_MEMBER_DISPATCH``
      - driver-internal (whether a per-session tool set can be mounted)
    * - ``ACP_BACKENDS_MEMBER_PANEL``
@@ -1252,6 +1256,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
 from kiro_crew.agent_sdk.backends_members import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+    ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MEMBER_CAPABILITIES,

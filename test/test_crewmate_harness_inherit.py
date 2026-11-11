@@ -40,6 +40,10 @@ def _registry(_floor_monkeypatch):
     _floor_monkeypatch.setattr(crewmate_harness, "_fallback_logged", set())
     _floor_monkeypatch.setattr(crewmate_harness, "_VERDICTS", {})
     _floor_monkeypatch.setattr(crewmate_harness, "_REFRESHING", set())
+    # An installed claude adapter at or above the session-options floor.
+    _floor_monkeypatch.setattr(
+        "kiro_crew.agent_sdk.drivers.acp.claude_adapter_honours_session_options", lambda: True
+    )
 
 
 def _member(agent: dict) -> str:
@@ -716,7 +720,7 @@ class TestKasOnlyWorkerFields:
         from kiro_crew.mate_worker import kas_only_worker_fields
 
         spec["spec"] = {
-            "excludedTools": ["shell"],
+            "excludedTools": ["use_aws"],
             "hooks": {"preToolUse": [{"command": "x"}]},
             "permissions": {"allow": ["read"]},
             "toolsSettings": {"shell": {"allowedCommands": ["ls"]}},
@@ -759,10 +763,10 @@ class TestKasOnlyWorkerFields:
 
         spec["spec"] = {
             "mcpServers": {"github": {"command": "gh", "disabledTools": ["create_issue"]}},
-            "excludedTools": ["shell", "@github/x"],
+            "excludedTools": ["shell", "use_aws", "@github/x"],
         }
         assert kas_only_worker_detail("atlas-0123456789ab", "claude")[1] == (
-            ("excludedTools", "shell"),
+            ("excludedTools", "use_aws"),
         )
 
 
@@ -1184,8 +1188,22 @@ class TestCarriedMcpToolLimits:
         assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ()
         assert kas_only_worker_fields("atlas-0123456789ab", "codex") == ("tool limits",)
 
-    def test_a_native_tool_limit_still_needs_kas(self, spec):
+    def test_a_native_tool_limit_no_built_in_covers_still_needs_kas(self, spec):
         from kiro_crew.mate_worker import kas_only_worker_fields
 
+        spec["spec"] = {"excludedTools": ["use_aws"]}
+        assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ("tool limits",)
+        spec["spec"] = {"excludedTools": ["shell"]}
+        assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ()
+
+    def test_a_native_tool_limit_needs_kas_below_the_adapter_options_floor(
+        self, spec, _floor_monkeypatch
+    ):
+        from kiro_crew.mate_worker import kas_only_worker_fields
+
+        _floor_monkeypatch.setattr(
+            "kiro_crew.agent_sdk.drivers.acp.claude_adapter_honours_session_options",
+            lambda: False,
+        )
         spec["spec"] = {"excludedTools": ["shell"]}
         assert kas_only_worker_fields("atlas-0123456789ab", "claude") == ("tool limits",)

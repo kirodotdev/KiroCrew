@@ -1201,7 +1201,8 @@ async def _get_or_create_impl(
                 # cannot honour them for a worker (``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``:
                 # KAS carries them as the worker spec's ``excludedTools``). One that
                 # carries only their MCP half (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``)
-                # refuses only the rest.
+                # refuses only the rest, less the native tools it carries
+                # (``ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS``).
                 from kiro_crew.members import is_crewmate_worker_session
 
                 if is_crewmate_worker_session(key):
@@ -1221,6 +1222,7 @@ async def _get_or_create_impl(
                             _worker_tool_limited_servers,
                             key,
                             provider.mate_worker_mcp_tool_limits_supported is True,
+                            provider.mate_worker_native_tool_limits_supported is True,
                         )
                         if limited:
                             raise CapabilityStartupError("capability_tool_limits_unsupported")
@@ -1554,17 +1556,22 @@ async def _get_or_create_impl(
     return result
 
 
-def _worker_tool_limited_servers(key: str, mcp_carried: bool = False) -> tuple[str, ...]:
+def _worker_tool_limited_servers(
+    key: str, mcp_carried: bool = False, native_carried: bool = False
+) -> tuple[str, ...]:
     """The servers whose single tools worker *key*'s crewmate file turns off.
 
-    With *mcp_carried*, only the limits no MCP deny carries. Blocking.
+    With *mcp_carried*, only the limits no MCP deny carries, less the native tools
+    the session's built-in list withholds with *native_carried*. Blocking.
     """
     from kiro_crew.execution_context import read_session_execution
     from kiro_crew.mate_worker import crewmate_tool_limited_servers
 
     execution = read_session_execution(key)
     member_id = str(getattr(execution, "member_id", "") or "") if execution is not None else ""
-    return crewmate_tool_limited_servers(member_id, mcp_tool_limits_carried=mcp_carried)
+    return crewmate_tool_limited_servers(
+        member_id, mcp_tool_limits_carried=mcp_carried, native_tool_limits_carried=native_carried
+    )
 
 
 def _crew_oauth_bridges_chat() -> bool:

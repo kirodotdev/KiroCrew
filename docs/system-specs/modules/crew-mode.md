@@ -4511,8 +4511,11 @@ parts:
   KAS honours the limits as the worker spec's `excludedTools`). claude, in
   `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`, honours the MCP ones as
   `permissions.deny` rules read from the worker's own spec by its session
-  (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`), so it refuses only a
-  native-tool exclude (`@builtin` included), a wildcard, or a `disabledTools` that is not a list of tool
+  (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`), and, in
+  `ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS`, a native-tool exclude its built-in
+  table covers as a `tools` allow-list of the built-ins the worker keeps
+  (`agent_sdk.claude_worker_tools.claude_worker_builtin_tools`), so it refuses only another
+  native entry (a bare `@builtin`, `use_aws`), a wildcard, or a `disabledTools` that is not a list of tool
   names (`mate_worker.uncarried_tool_limits_of`). The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
 
@@ -5084,7 +5087,9 @@ else `agent.acp_backend` (Kiro CLI as KAS), else KAS when Crew bots cannot run o
 that harness, logged and rung in the bell (`crewmate_harness_notice`). One Crew bot
 also runs on KAS on its own when it follows the Settings harness and its own file
 sets something for its workers that harness cannot carry: worker tool limits
-(outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`) or `hooks` / `permissions` /
+(outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`; on claude a native-tool exclude
+counts only when the installed adapter is below the session-options floor,
+`claude_adapter_honours_session_options`, where the start would stop the worker) or `hooks` / `permissions` /
 `toolsSettings` (`mate_spec_policy.applies_spec_policy`), read by
 `mate_worker.kas_only_worker_fields` (`crewmate_harness.worker_spec_forces_kas`). Its
 workers would each be refused. The answer is held in memory, read off the loop at

@@ -335,6 +335,9 @@ class AcpClient:
         # refuses EVERY permission request when it is set (``_handle_permission``).
         # Cleared on reset with the array.
         self._spec_zero_tools: bool = False
+        # The built-ins a crewmate worker keeps (``SessionProjection.builtin_tools``),
+        # carried as claude's ``tools`` option; None keeps the harness's preset.
+        self._claude_worker_builtin_tools: tuple[str, ...] | None = None
         # Narrowed servers the projection withheld because THIS session cannot put
         # their per-tool rule in force (``SessionProjection.unhonoured_servers``). No
         # member mount may re-add one, whatever the backend's PerToolDeny says.
