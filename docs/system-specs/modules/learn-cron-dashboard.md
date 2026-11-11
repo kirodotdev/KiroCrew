@@ -492,15 +492,21 @@ Nothing is guessed: the identity written is the one `legacy_member_cron_executio
 attributed, and a record naming anyone else, a restricted mode or an app is left as
 it is and logged, since dispatch refuses it with its own reason. Only the stable
 single-agent key `cron:<id>` is reconciled: a `persistent_session: false` job mints
-a fresh key per fire (only transcripts tagged `cron_run="ephemeral"` are removed,
-after 7 days without writes or once the job has 20 newer run transcripts; the tag
+a fresh key per fire (only transcripts tagged `cron_run="ephemeral"`, and untagged
+ones that hold nothing besides their metadata line, are removed, after 7 days
+without writes or once the job has 20 newer run transcripts; the tag
 is recorded when the run starts, in `_cron_run_single` after the fire-time gate and
 admission and once the key is active, so a refused fire leaves no transcript), by
 the reaper's hourly
 `cron_service.run_residue.prune_stale_run_transcripts` (first pass 5 minutes after
 start, and 5 minutes after a pass that filled its cap), unless a run still holds
-the key or it is pinned; untagged legacy transcripts, and a `new_chat_per_run`
-run's that got a tab and was re-tagged `tab`, are retained), and a dispatching
+the key or it is pinned; an untagged transcript with any row, such as a durable
+sequence step's, and a `new_chat_per_run` run's that got a tab and was re-tagged
+`tab`, are retained; builds before the tag wrote one metadata-only file per fire,
+and the untagged rule drains that pile; the verdict and the delete share one
+transcript lock hold, and the live-key check is asked again inside it against the
+service's current keys, since a sequence step registers its stable key before it
+binds its record under that lock), and a dispatching
 `agent_sequence` reads and replaces its own
 per-agent record. A schedule the old build never fired has no record, and the first
 fire writes one. A reconciliation that raises is logged and leaves that schedule
