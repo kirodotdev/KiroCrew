@@ -43,6 +43,7 @@ from kiro_crew.dashboard.chat import _run_chat
 from kiro_crew.dashboard.deny_override import (
     DENY_OVERRIDE_META_KEY,
     deny_key_family,
+    deny_key_note_label,
     override_decision,
     override_offer_key,
     slot_deny_waivers,
@@ -678,6 +679,76 @@ class TestDenyKeyFamily:
     def test_operator_or_unknown_key_has_none(self, key):
         # The client shows its generic line for an empty family.
         assert deny_key_family(key) == ""
+
+
+def _code_span_content(label: str) -> str:
+    """What a CommonMark parser reads out of the inline code span *label* is."""
+    fence = label[: len(label) - len(label.lstrip("`"))]
+    assert fence, f"not a code span: {label!r}"
+    assert label.endswith(fence), f"unbalanced fence: {label!r}"
+    inner = label[len(fence) : -len(fence)]
+    if inner.startswith(" ") and inner.endswith(" ") and inner.strip():
+        inner = inner[1:-1]
+    return inner
+
+
+class TestDenyKeyNoteLabel:
+    """How the transcript notice names a waived rule: an id when there is one, and
+    never a bare pattern -- the row renders markdown, so an unfenced regex is
+    reparsed and the rule it quotes comes out a different rule."""
+
+    def test_a_pattern_is_named_by_its_rule_id(self):
+        from kiro_crew.security import denied_rules
+
+        rule = next(r for r in denied_rules.BUILTIN_DENIED_RULES if r.pattern != r.id)
+        assert deny_key_note_label(rule.pattern) == f"`{rule.id}`"
+
+    def test_an_id_passes_through(self):
+        assert deny_key_note_label("self-protection-restart") == "`self-protection-restart`"
+
+    def test_an_operator_pattern_survives_the_markdown_pass(self):
+        # The shape the notice got wrong: a backtick pair (the command-substitution
+        # alternative) and a `*` pair, both of which markdown consumes.
+        pattern = r"`command\s+-v\s+tb`[^;&|\n]*\sinstall"
+        label = deny_key_note_label(pattern)
+        assert _code_span_content(label) == pattern
+        # The fence outgrew the backticks inside it, so neither can close the span.
+        assert label.startswith("``") and label.endswith("``")
+
+    def test_an_operator_pattern_is_trimmed_at_both_ends(self):
+        # The boilerplate head every deny pattern shares, then the part that
+        # actually names the rule -- which a head-only elision would drop.
+        boilerplate = r"(?:\A|[;&|\n ])(?:sudo|env|nohup)\s+" * 4
+        pattern = boilerplate + r"toolbox\s+install\s+kirocrew(?![\w-])"
+        inner = _code_span_content(deny_key_note_label(pattern))
+        assert len(inner) <= 72
+        head, _, tail = inner.partition("…")
+        assert head and tail, f"nothing elided: {inner!r}"
+        assert pattern.startswith(head)
+        assert pattern.endswith(tail)
+        assert "kirocrew(?![\\w-])" in tail
+
+    def test_a_newline_inside_a_pattern_cannot_end_the_paragraph(self):
+        assert _code_span_content(deny_key_note_label("a\nb")) == "a b"
+
+    @pytest.mark.parametrize("key", ["", "   "])
+    def test_a_nameless_key_says_so(self, key):
+        # Still a sentence a person can read, rather than "Security rule  overridden".
+        assert deny_key_note_label(key) == "(unnamed)"
+
+    def test_the_transcript_row_carries_the_label(self):
+        from kiro_crew.dashboard.chat_turn.tool_approval import (
+            DenyOverrideOffer,
+            _note_override_used,
+        )
+
+        rows: list[tuple] = []
+        slot = SimpleNamespace(append=lambda *a, **k: rows.append(a))
+        pattern = r"toolbox\s+install[^;&|\n]*\skirocrew"
+        _note_override_used(slot, DenyOverrideOffer(key=pattern, reason="", scope="session"))
+        _role, text, _cls = rows[0]
+        assert f"`{pattern}`" in text
+        assert text.endswith("overridden for the rest of this session.")
 
 
 class TestIneligibleKeepsTodaysRefusal:

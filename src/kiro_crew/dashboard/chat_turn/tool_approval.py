@@ -17,6 +17,7 @@ from kiro_crew.dashboard.deny_override import (
     DenyOverrideOffer,
     client_accepts_deny_waivers,
     deny_key_family,
+    deny_key_note_label,
     override_offer_key,
     slot_deny_waivers,
 )
@@ -1700,8 +1701,13 @@ async def _refuse_overridden_call(turn: _ChatTurn, event: Any, reason: str, *, w
 
 
 def _note_override_used(slot: Any, offer: DenyOverrideOffer) -> None:
-    """Show in the transcript that a person let a security rule step aside."""
-    shown = _redact_display_text(offer.key)
+    """Show in the transcript that a person let a security rule step aside.
+
+    The rule is named through :func:`deny_key_note_label`: a built-in by its id,
+    an operator rule by its trimmed pattern inside a code span, so the regex the
+    notice quotes survives the transcript's markdown pass unaltered.
+    """
+    shown = deny_key_note_label(_redact_display_text(offer.key))
     if offer.scope == "session":
         text = f"⚠️ Security rule {shown} overridden for the rest of this session."
     else:
