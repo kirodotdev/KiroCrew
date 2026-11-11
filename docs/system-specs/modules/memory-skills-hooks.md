@@ -5972,7 +5972,9 @@ alias was deleted or a symlink retargeted. Repeat calls avoid a re-walk only thr
     409 `name_collision`. The bytes are written under the final name, so a reader
     can see a partially written file while the upload runs, and a failed write
     removes it (see [learn-cron-dashboard.md](learn-cron-dashboard.md)).
-- `delete_skill(name)` — removes entire skill directory
+- `delete_skill(name)` — removes entire skill directory; a directory with no
+  `SKILL.md` entry of its own (a folder of nested skills such as `auto`) is not a skill
+  and is refused (`False`, so the DELETE route answers 404 as GET does)
 - All three address the leaf relative to a descriptor pinning the parent chain
   (`pinned_fs`) where the platform has the descriptor-relative syscalls, so an
   ancestor swapped for a link after resolution cannot redirect the write. Windows
