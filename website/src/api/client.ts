@@ -210,7 +210,7 @@ export type {
   WebhookTokenCreated,
   WebhookTestResult,
 } from './client/hooks'
-export type { SkillScriptValidation } from './client/skills'
+export type { AgentPluginRecord, AgentPluginsResponse, SkillScriptValidation } from './client/skills'
 export { SKILLS_TIMEOUT_MS } from './client/skills'
 export { FILE_SEARCH_TIMEOUT_MS, BROWSE_FILES_TIMEOUT_MS } from './client/files'
 export type { ProjectAwsProfile } from './client/files'

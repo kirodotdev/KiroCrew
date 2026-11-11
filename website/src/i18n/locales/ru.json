@@ -12795,6 +12795,8 @@
       "workflows_label": "Рабочие процессы",
       "workflows_description": "Создавайте, изменяйте и запускайте повторно используемые процессы агентов",
       "connections_description": "Подключайте официальные сервисы и управляйте пользовательскими MCP-серверами",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Powers и Agent Plugins, установленные для Kiro: в списке, но не загружены",
       "connections_label": "Подключения",
       "crews_description": "ИИ-агенты, которые работают всегда",
       "crews_label": "Bot",
@@ -17366,6 +17368,27 @@
       "unread": "Непрочитанные"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "Прочитаны из ~/.kiro/powers. {{productName}} показывает их в списке, но пока не загружает ни один, поэтому их навыки и MCP-серверы не попадают в твои сессии.",
+        "not_loaded": "Не загружено",
+        "reason_legacy_power": "Устаревший Power в формате POWER.md, а не Agent Plugin. {{productName}} не загружает Powers в формате POWER.md.",
+        "reason_no_manifest": "В этой папке нет plugin.json, поэтому это не Agent Plugin.",
+        "reason_invalid": "Этот плагин недействителен, поэтому ни одну его часть нельзя использовать: {{reason}}",
+        "reason_valid": "Действительный Agent Plugin. {{productName}} пока не загружает Agent Plugins.",
+        "reason_read_failed": "Не удалось прочитать {{name}}, поэтому ни одну его часть нельзя использовать: {{reason}}",
+        "would_add_skills": "Навыки, которые он добавит",
+        "would_add_servers": "MCP-серверы, которые он добавит",
+        "problems_found": "Найденные проблемы",
+        "issue_read_failed": "Не удалось прочитать часть {{name}}: {{message}}",
+        "issue_read_failed_entry": "Не удалось прочитать {{entry}} в {{name}}: {{message}}",
+        "empty_title": "Kiro Powers не установлены",
+        "empty_subtitle": "Здесь появляются Powers, которые ты устанавливаешь в Kiro IDE или через kiro-cli.",
+        "failed_to_load": "Не удалось прочитать установленные Kiro Powers",
+        "index_read_failed": "Не удалось прочитать список установленных Kiro Powers, поэтому их нельзя показать: {{reason}}",
+        "retry": "Повторить",
+        "owner_only": "Установленные Kiro Powers видит только владелец панели.",
+        "list_label": "Установленные Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "Адаптировано из",
         "create_draft": "Создать черновик",

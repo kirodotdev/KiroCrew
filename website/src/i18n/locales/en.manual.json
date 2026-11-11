@@ -5522,6 +5522,8 @@
       "crews_description": "Always-on AI agents",
       "connections_label": "Connections",
       "connections_description": "Connect official services and manage custom MCP servers",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Powers and Agent Plugins installed for Kiro, listed but not loaded",
       "skills_label": "Skills",
       "skills_awaiting_review": "Skills awaiting review ({{count}})",
       "skills_awaiting_review_failed": "Couldn't check for skills awaiting review",
@@ -7752,6 +7754,27 @@
       "click_a_notification_to_view_details_jump_to_the": "Click a notification to view details. Jump to the source chat or job from the detail panel."
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "Read from ~/.kiro/powers. {{productName}} lists them but loads none of them yet, so their skills and MCP servers do not reach your sessions.",
+        "not_loaded": "Not loaded",
+        "reason_legacy_power": "A legacy POWER.md Power, not an Agent Plugin. {{productName}} does not load POWER.md Powers.",
+        "reason_no_manifest": "This folder has no plugin.json, so it is not an Agent Plugin.",
+        "reason_invalid": "This plugin is invalid, so none of it can be used: {{reason}}",
+        "reason_valid": "A valid Agent Plugin. {{productName}} does not load Agent Plugins yet.",
+        "reason_read_failed": "Could not read {{name}}, so none of it can be used: {{reason}}",
+        "would_add_skills": "Skills it would add",
+        "would_add_servers": "MCP servers it would add",
+        "problems_found": "Problems found",
+        "issue_read_failed": "Could not read part of {{name}}: {{message}}",
+        "issue_read_failed_entry": "Could not read {{entry}} in {{name}}: {{message}}",
+        "empty_title": "No Kiro Powers installed",
+        "empty_subtitle": "Powers you install in Kiro IDE or with kiro-cli are listed here.",
+        "failed_to_load": "Could not read the installed Kiro Powers",
+        "index_read_failed": "Could not read the list of installed Kiro Powers, so none can be shown: {{reason}}",
+        "retry": "Retry",
+        "owner_only": "Only the dashboard owner can see the installed Kiro Powers.",
+        "list_label": "Installed Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "Adapted from",
         "create_draft": "Create draft",

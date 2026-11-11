@@ -12009,6 +12009,8 @@
       "workflows_label": "워크플로",
       "workflows_description": "재사용 가능한 에이전트 워크플로를 만들고 편집하고 실행합니다",
       "connections_description": "공식 서비스를 연결하고 사용자 지정 MCP 서버를 관리합니다",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Kiro에 설치된 Powers 및 Agent Plugins 목록, 로드하지 않음",
       "connections_label": "연결",
       "crews_description": "항상 켜져 있는 AI 에이전트",
       "crews_label": "Bot",
@@ -16094,6 +16096,27 @@
       "unread": "읽지 않음"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "~/.kiro/powers에서 읽습니다. {{productName}}은(는) 이를 목록에 표시하지만 아직 하나도 로드하지 않으므로, 스킬과 MCP 서버가 세션에 전달되지 않습니다.",
+        "not_loaded": "로드되지 않음",
+        "reason_legacy_power": "이전 형식의 POWER.md Power이며 Agent Plugin이 아닙니다. {{productName}}은(는) POWER.md Power를 로드하지 않습니다.",
+        "reason_no_manifest": "이 폴더에는 plugin.json이 없으므로 Agent Plugin이 아닙니다.",
+        "reason_invalid": "이 플러그인은 유효하지 않으므로 어떤 부분도 사용할 수 없습니다: ‘{{reason}}’",
+        "reason_valid": "유효한 Agent Plugin입니다. {{productName}}은(는) 아직 Agent Plugins를 로드하지 않습니다.",
+        "reason_read_failed": "{{name}}을(를) 읽을 수 없으므로 어떤 부분도 사용할 수 없습니다: ‘{{reason}}’",
+        "would_add_skills": "추가될 스킬",
+        "would_add_servers": "추가될 MCP 서버",
+        "problems_found": "발견된 문제",
+        "issue_read_failed": "{{name}}의 일부를 읽을 수 없습니다: ‘{{message}}’",
+        "issue_read_failed_entry": "{{name}}의 {{entry}}을(를) 읽을 수 없습니다: ‘{{message}}’",
+        "empty_title": "설치된 Kiro Powers 없음",
+        "empty_subtitle": "Kiro IDE나 kiro-cli로 설치한 Powers가 여기에 표시됩니다.",
+        "failed_to_load": "설치된 Kiro Powers를 읽을 수 없습니다",
+        "index_read_failed": "설치된 Kiro Powers 목록을 읽을 수 없으므로 아무것도 표시할 수 없습니다: ‘{{reason}}’",
+        "retry": "다시 시도",
+        "owner_only": "설치된 Kiro Powers는 대시보드 소유자만 볼 수 있습니다.",
+        "list_label": "설치된 Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "원본",
         "create_draft": "초안 만들기",

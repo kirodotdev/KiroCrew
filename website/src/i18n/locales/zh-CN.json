@@ -12009,6 +12009,8 @@
       "workflows_label": "工作流",
       "workflows_description": "创建、编辑和运行可复用的代理工作流",
       "connections_description": "连接官方服务并管理自定义 MCP 服务器",
+      "powers_label": "Kiro Powers",
+      "powers_description": "为 Kiro 安装的 Powers 和 Agent Plugins，仅列出，不加载",
       "connections_label": "连接",
       "crews_description": "一直在线的 AI agent",
       "crews_label": "Bot",
@@ -16094,6 +16096,27 @@
       "unread": "未读"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "读取自 ~/.kiro/powers。{{productName}} 会列出它们，但目前一个都不加载，所以它们的技能和 MCP 服务器不会进入你的会话。",
+        "not_loaded": "未加载",
+        "reason_legacy_power": "旧版 POWER.md Power，不是 Agent Plugin。{{productName}} 不加载 POWER.md Power。",
+        "reason_no_manifest": "此文件夹没有 plugin.json，所以不是 Agent Plugin。",
+        "reason_invalid": "此插件无效，其中任何部分都不能使用：{{reason}}",
+        "reason_valid": "有效的 Agent Plugin。{{productName}} 目前还不加载 Agent Plugins。",
+        "reason_read_failed": "无法读取 {{name}}，其中任何部分都不能使用：{{reason}}",
+        "would_add_skills": "它会添加的技能",
+        "would_add_servers": "它会添加的 MCP 服务器",
+        "problems_found": "发现的问题",
+        "issue_read_failed": "无法读取 {{name}} 的部分内容：{{message}}",
+        "issue_read_failed_entry": "无法读取 {{name}} 中的 {{entry}}：{{message}}",
+        "empty_title": "未安装 Kiro Powers",
+        "empty_subtitle": "在 Kiro IDE 中或用 kiro-cli 安装的 Powers 会列在这里。",
+        "failed_to_load": "无法读取已安装的 Kiro Powers",
+        "index_read_failed": "无法读取已安装的 Kiro Powers 列表，所以无法显示任何项：{{reason}}",
+        "retry": "重试",
+        "owner_only": "只有仪表板所有者可以查看已安装的 Kiro Powers。",
+        "list_label": "已安装的 Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "改编自",
         "create_draft": "创建草稿",
