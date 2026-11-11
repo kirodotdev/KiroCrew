@@ -993,6 +993,16 @@ class AcpProvider(LLMProvider):
         if isinstance(self._client, AcpSessionProvider):
             self._sign_in_ask: str = text
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
+        # Only the shared runtime's session starts a KAS sign-in, as above.
+        if isinstance(self._client, AcpSessionProvider):
+            self._client.set_mcp_sign_in_ended_hook(hook)
+
+    def mcp_sign_in_ended(self, server_name: str) -> bool:
+        return isinstance(self._client, AcpSessionProvider) and self._client.mcp_sign_in_ended(
+            server_name
+        )
+
     @property
     def member_dispatch_mounted(self) -> bool | None:
         # Both transports answer from the composition that built THIS session's

@@ -6,6 +6,7 @@ strings it shows, and the stream's MCP arms (``_on_mcp_oauth_request``,
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -615,6 +616,66 @@ def _supersede_open_mcp_oauth_banners(
     """
     if ambiguous:
         return
+    label = safe_name or "MCP server"
+    _retire_open_mcp_oauth_banners(
+        state,
+        slot,
+        safe_name,
+        {"superseded": True},
+        f"↻ {label} sign-in is no longer active — a newer request replaced it.",
+    )
+
+
+def _expire_ended_mcp_oauth_banners(
+    state: "DashboardState", slot: "_ChatSlot", server_name: str
+) -> None:
+    """Withdraw ``server_name``'s open Authorize links once its sign-in attempt ended.
+
+    The runtime calls this (see :func:`_watch_mcp_sign_in_ends`) when a sign-in
+    Crew started ends unconnected, whether or not a turn is running. The engine
+    kept that attempt's callback listener open only for its connect timeout (60 s
+    by default), so the link would walk the user through the provider's consent
+    page to a refused ``localhost`` port. The row takes
+    ``expired`` with ``expired_reason: "attempt_ended"``, which the banner draws
+    as a timed-out sign-in; a later success still turns it green (see
+    :func:`_mark_mcp_oauth_completed`). An ambiguous name retires nothing, for
+    the reason :func:`_supersede_open_mcp_oauth_banners` gives.
+    """
+    safe_name = _redact_acp_string(server_name)
+    if _mcp_server_name_is_ambiguous(server_name, safe_name):
+        return
+    label = safe_name or "MCP server"
+    _retire_open_mcp_oauth_banners(
+        state,
+        slot,
+        safe_name,
+        {"expired": True, "expired_reason": "attempt_ended"},
+        f"⌛ {label} sign-in timed out before it was completed.",
+    )
+
+
+def _watch_mcp_sign_in_ends(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
+    """Have *client* retire this chat's Authorize links whose sign-in attempt ended.
+
+    Called by the mid-turn arm before it draws a link, the only path a sign-in
+    Crew starts reaches the chat by. An attempt that ends before that row exists
+    (its link queued behind a prompt, or the arm still awaiting discovery) finds
+    nothing to retire, so the arm asks ``client.mcp_sign_in_ended`` once the row
+    is appended.
+    """
+    client.set_mcp_sign_in_ended_hook(
+        functools.partial(_expire_ended_mcp_oauth_banners, state, slot)
+    )
+
+
+def _retire_open_mcp_oauth_banners(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    safe_name: str,
+    terminal: dict[str, Any],
+    new_content: str,
+) -> None:
+    """Withdraw the link from every open banner for ``safe_name``, marking it *terminal*."""
     for message in slot.messages:
         if message.get("role") != "mcp_oauth":
             continue
@@ -633,13 +694,11 @@ def _supersede_open_mcp_oauth_banners(
         # both slot.messages and a broadcast that bypasses _prepare_messages.
         # Safe here despite that gate being stricter than the emit-path one
         # (see the long note in _mark_mcp_oauth_completed) because `oauth_url`
-        # is dead data on this path — it is dropped outright below and the
-        # superseded branch renders no link.
+        # is dead data on this path — it is dropped outright below and a
+        # retired row renders no link.
         new_meta = _redact_meta_for_role("mcp_oauth", dict(meta))
         new_meta.pop("oauth_url", None)
-        new_meta["superseded"] = True
-        label = safe_name or "MCP server"
-        new_content = f"↻ {label} sign-in is no longer active — a newer request replaced it."
+        new_meta.update(terminal)
         row_mid = new_meta.get("mid")
         # Resolve by `mid`, this row's server-minted identity, NOT by `ts`. That
         # column is not an identity: `_ChatSlot.append` preserves an explicitly
@@ -667,7 +726,7 @@ def _supersede_open_mcp_oauth_banners(
         # the persisted meta, because the client MERGES an incoming meta over the
         # row's existing one rather than replacing it. Omitting the key would leave
         # the live URL in place on the client row -- harmless for a client that
-        # knows `superseded`, but a tab still running pre-upgrade JS would keep
+        # knows the terminal flag, but a tab still running pre-upgrade JS would keep
         # rendering the dead link. An empty string fails that client's own
         # isSafeOAuthUrl check, so the banner withdraws instead.
         state.broadcast_ws(
@@ -720,11 +779,14 @@ def _mark_mcp_oauth_completed(
         # Compare against the redacted form already stored on the banner.
         if meta.get("server_name") != safe_name:
             continue
+        # A success still lands on a timed-out attempt's row: the server is
+        # signed in, however the sign-in finished.
+        attempt_ended = meta.get("expired_reason") == "attempt_ended"
         if (
             meta.get("completed")
             or meta.get("failed")
             or meta.get("superseded")
-            or meta.get("expired")
+            or (meta.get("expired") and not (success and attempt_ended))
         ):
             continue
         target = m
@@ -769,6 +831,8 @@ def _mark_mcp_oauth_completed(
         new_meta["completed"] = True
         new_meta.pop("failed", None)
         new_meta.pop("error", None)
+        new_meta.pop("expired", None)
+        new_meta.pop("expired_reason", None)
     else:
         new_meta["failed"] = True
         safe_err = _redact_acp_string(error)
@@ -815,6 +879,7 @@ async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
     # tagged exactly as the session-init drain tags it, or the render layer
     # cannot drop a prompt the Connections card already shows.
     server_name = event.server_name or ""
+    _watch_mcp_sign_in_ends(state, slot, client)
     managed = (
         await asyncio.to_thread(_connections_managed_mcp_names) if server_name else frozenset()
     )
@@ -828,6 +893,8 @@ async def _on_mcp_oauth_request(turn: _ChatTurn, event) -> None:
         minted_by=str(getattr(client, "process_instance", "") or ""),
         session_id=_provider_session_id(client),
     )
+    if client.mcp_sign_in_ended(server_name):
+        _expire_ended_mcp_oauth_banners(state, slot, server_name)
     _record_session_mcp_event(
         state,
         slot,
