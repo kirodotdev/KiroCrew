@@ -32,7 +32,7 @@ import pytest
 from kiro_crew.acp import runtime_session_load
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import ACP_BACKEND_KAS, EVENT_TEXT_CHUNK, METHOD_KAS_SESSION_DELETE
-from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 _CORE = "kirocrew-core"
 
@@ -309,6 +309,28 @@ class TestSessionStartBehindSlowServers:
             await runtime._send_and_await("_test/release", {}, timeout=FALLBACK_TIMEOUT_SECS)
             await handle.wait_mounted_mcp(names, FALLBACK_TIMEOUT_SECS)
             assert handle.mcp_session_report().unreported(names) == ()
+        finally:
+            await runtime.kill()
+
+    @pytest.mark.asyncio
+    async def test_a_late_server_reaches_the_report_with_nothing_reading_the_session(
+        self, queue_stub, tmp_path, monkeypatch
+    ):
+        """Between turns nobody takes frames off the session's queue. The report
+        follows the server all the same, and its reader is told when it moved."""
+        names = _write_agent(tmp_path, monkeypatch, 4)
+        runtime, handle = await _start(tmp_path)
+        try:
+            report = handle.mcp_session_report()
+            assert report.not_ready() == {"connecting": names}
+            changes: list[dict] = []
+            report.on_change = lambda: changes.append(report.not_ready())
+
+            await runtime._send_and_await("_test/release", {}, timeout=FALLBACK_TIMEOUT_SECS)
+            await async_wait_until(lambda: report.not_ready() == {})
+
+            assert changes and changes[-1] == {}
+            assert set(names) <= set(report.payload()["ready"])
         finally:
             await runtime.kill()
 

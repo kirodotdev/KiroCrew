@@ -2469,6 +2469,88 @@ none of which disarms a plain-English instruction. A log a person reads takes th
 reasons; a sink that feeds a MODEL asks without them, and fences the names it does
 pass.
 
+### The session MCP report follows its servers (`acp/mcp_session_report.py`)
+
+A session's report is current for as long as its transport reads, during a turn
+and between turns. A report filled only while the session starts would show a
+server that connects eight seconds later as "no report" for the life of the
+session, in the chat's MCP panel and for every other reader.
+
+- **One fold, at arrival.** A frame a session owns is folded in once, by
+  `McpSessionReport.fold_frame`, where it first reaches the session. On the shared
+  runtime that is the reader loop, before it routes the frame
+  (`AcpRuntime._fold_mcp_frame`, beside `mcp_connect_progress.observe`), and the
+  copy of the frames staged while the session id was unknown
+  (`_finish_create_session`, `load_session`). The start drain, the pre-turn drain
+  and a turn's dispatch loop take frames off the session's queue and fold nothing.
+  A frame must name the session (`params.sessionId`): a sessionless one is
+  broadcast and is never credited. The fold never raises into the reader, which
+  serves every session on the runtime: a frame it cannot read is left out. A
+  frame the runtime makes itself (the consent request of a sign-in,
+  `_answer_open_external_url`) is folded the same way before it is queued. A
+  server awaiting sign-in stays that while the host's snapshots list it as
+  connecting: its consent link is still open.
+- **The report is opened with the queue.** `_open_mcp_report` begins the report
+  and registers it under the session id with no `await` before the queue is
+  registered, so no frame can reach the session ahead of its report and nothing a
+  frame reported is wiped by a later reset. The handle holds the same object.
+- **A real mode switch forgets the previous agent's servers.** The session-start
+  paths take `fold_mark()` just before they send `set_mode` and, when the mode
+  really changed, call `forget_reported(mark)`: what frames reported up to the mark
+  described the agent the host started the session on. A frame that arrived after
+  the mark is the new agent's (the host can report it before it answers the
+  switch) and stays, and so does everything Kiro Crew recorded itself (a server it
+  left out, a governed drop, a mount-check finding). The registry-dropped list
+  goes the same way: it is forgotten when the snapshot that set it came before
+  the mark. The marks are kept only for names the report tracks, so the bucket
+  caps bound them too.
+- **One vocabulary for a server's state.** `not_ready()` sorts every server the
+  session cannot use into exactly one of `disabled`, `registry_dropped`,
+  `needs_sign_in`, `failed`, `connecting` (`NOT_READY_STATES`, tested in that
+  order); `ready` is the connected list. `connecting` is every server the session
+  expects and has not heard a settled state from: one the spec declares, one Kiro
+  Crew sent on the wire (a Connection's bridge, a routed stub), or one the host's
+  latest snapshot lists as not settled. A status frame is the host's whole list,
+  so what the host calls disabled or pending is replaced by each snapshot, never
+  added to. The sources are joined whole and a name is placed by what is true of
+  it before any list is cut, so servers that are ready never crowd a connecting
+  one out. `payload()` carries the reading as `states` (empty states left out,
+  each list at most the bucket cap) and `states_omitted`: the names cut from
+  those lists plus the names each source's own cap cut (declared servers past
+  the ones kept by name, muted servers, registry-dropped servers, not-connected
+  snapshot entries past the ones read). It is exact while every source fits its
+  cap; past the caps a server two sources both cut is counted by each, so it is
+  an upper bound and never an under-count. Names only: a failure reason stays in
+  `failures`.
+- **A change is announced, not polled for.** `fold_frame` calls the report's
+  `on_change` when the fold changed it, and `forget_reported` when it dropped
+  something. A reader sets it through
+  `LLMProvider.set_mcp_report_changed_hook(hook)`. The hook follows the session:
+  where a transport re-opens a session and so gets a new report (a fresh
+  conversation, a re-sent server set, a respawned dedicated client), the old
+  report hands its reader to the new one and calls it (`hand_over`). A reader
+  handed another provider sets the hook there. The chat does, at turn admission
+  (`_watch_session_mcp_report`): the hook republishes the slot's copy while the
+  slot still shows that session's report, so a server that connects between
+  turns reaches the MCP panel with no turn event to carry it.
+- **The report has one writer per transport.** The runtime's report is marked
+  `folded_on_arrival`. A turn's MCP event on such a report only republishes it
+  (`_record_session_mcp_event`): the frame behind the event is already in, and
+  writing a queued older event would put its state over a newer frame's. The
+  dedicated client's report is not marked, and its turn events are still
+  written. The readiness barrier (`wait_mcp_ready`) reads the queue behind the
+  fold, so it writes no server it saw connect; it records only a governed drop,
+  and only for a server with no report of its own (`_record_drops`), the same
+  rule the mount check follows.
+- **The dedicated client** (the non-runtime harnesses) reads on demand into a
+  buffer whose indices carry which session attempt a frame belongs to, so its fold
+  stays in its drain (`AcpClient._drain_notifications`), through the same
+  `fold_frame`. Its report moves at each drain and through the turn's MCP events,
+  not between turns.
+
+Pinned by `test_mcp_report_arrival_fold.py` and, against a real engine stub,
+`test_kas_session_start_queue.py::test_a_late_server_reaches_the_report_with_nothing_reading_the_session`.
+
 ### KAS managed MCP readiness
 
 KAS opts into a readiness barrier through its harness notification declaration.

@@ -235,6 +235,21 @@ async def test_the_url_goes_to_the_session_that_started_the_sign_in(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_the_consent_request_is_in_the_sessions_report_before_anyone_reads_it(monkeypatch):
+    """The runtime makes this frame itself, so the reader's fold never sees it."""
+    runtime = _runtime()
+    _capture_answers(runtime, monkeypatch)
+    report = runtime._open_mcp_report("s2", [{"name": "remote"}])
+    runtime._mcp_sign_in = ("s2", "remote")
+
+    await runtime._answer_open_external_url(8, {"url": _LIVE_URL})
+
+    assert report.payload()["awaiting_auth"] == ["remote"]
+    assert report.not_ready() == {"needs_sign_in": ("remote",)}
+    assert runtime._session_queues["s2"].qsize() == 1
+
+
+@pytest.mark.asyncio
 async def test_only_one_sign_in_runs_per_process(monkeypatch):
     runtime = _runtime()
     gate = asyncio.Event()

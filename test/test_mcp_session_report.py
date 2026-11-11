@@ -77,6 +77,8 @@ class TestBuckets:
             "ready": ["github-mcp"],
             "failed": [],
             "awaiting_auth": [],
+            "states": {},
+            "states_omitted": 0,
             "failures": {},
             "restart_to_load": [],
         }
@@ -112,6 +114,8 @@ class TestBuckets:
             "ready": ["builder-mcp"],
             "failed": [],
             "awaiting_auth": [],
+            "states": {},
+            "states_omitted": 0,
             "failures": {},
             "restart_to_load": [],
         }

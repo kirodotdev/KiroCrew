@@ -10,9 +10,10 @@ Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_
 ``_session_queues``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
-``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
-``_kas_telemetry_sent``,
-``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
+``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_fold_mcp_frame``,
+``_initialized``, ``_kas_telemetry_sent``,
+``_mcp_gateway_overlay``, ``_open_mcp_report``, ``_pid``, ``_pool_lookup``,
+``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
@@ -423,11 +424,16 @@ async def load_session(
     # arriving AFTER this point (from future prompt() calls) reach the queue.
     # The load response itself routes via _pending_requests, not the session
     # queue, so this reorder is safe.
+    # session/load re-initializes this session's servers, so the resumed
+    # session gets its own report against the roster load re-declared. Opened
+    # with the queue and no await in between, as create_session does.
+    report = self._open_mcp_report(resume_sid, wire_servers)
     queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
     self._session_queues[resume_sid] = queue
     self._session_cwds[resume_sid] = str(session_work_dir)
     for msg in buffered_init:
         queue.put_nowait(msg)
+        self._fold_mcp_frame(resume_sid, msg)
 
     # Mirrors create_session: a resumed session gets the same
     # canonical-crew watchdog snapshot, resolved off-loop.
@@ -441,6 +447,7 @@ async def load_session(
         crew_agent=_crew,
         session_key=session_key,
         bound_cwd=str(load_params["cwd"]),
+        mcp_report=report,
     )
     # Mirrors create_session: the resumed session's own stub token.
     handle.stub_session_token = stub_token
@@ -493,9 +500,6 @@ async def load_session(
     except Exception:
         await self.terminate_session(resume_sid)
         raise
-    # session/load re-initializes this session's servers, so the resumed
-    # session gets its own report against the roster load re-declared.
-    handle.mcp_session_report().begin_session(wire_servers)
     self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers, mcp_json)
     # Mirrors create_session: load re-declares the servers, so re-record them.
     handle.record_mcp_launches(ref_spec, wire_servers)
@@ -542,6 +546,7 @@ async def load_session(
         # then consumed without being recorded, leaving the panel at a false
         # "no report" for the rest of the session.
         staged_before_switch = handle.queued_frame_count()
+        reported_before_switch = handle.mcp_session_report().fold_mark()
         self._switched_model_record().pop(resume_sid, None)
         activated_alias = await self._activate_mode_bracketed(
             resume_sid,
@@ -560,6 +565,9 @@ async def load_session(
         mode_switched = mode_wire != _current and (
             bool(_current) or self._harness.notification_aliases.mcp_readiness
         )
+        if mode_switched:
+            # See create_session: those frames were the previous agent's roster.
+            handle.mcp_session_report().forget_reported(reported_before_switch)
     elif mode_agent:
         # Guard (A) — see create_session. A resumed session always echoes a
         # `modes` list (checked above), so an absent agent means its config

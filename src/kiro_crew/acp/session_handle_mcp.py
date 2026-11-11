@@ -48,7 +48,6 @@ from kiro_crew.acp.session_handle_runtime_contract import (
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INIT_FAILURE,
-    EVENT_MCP_SERVER_INITIALIZED,
     METHOD_KAS_MCP_STATUS,
     JsonRpcMessage,
 )
@@ -454,7 +453,6 @@ async def wait_mcp_ready(
             continue
         if dropped_compaction:
             continue
-        self._mcp_report.record_frame(msg, owned=self._owns_mcp_frame(msg))
         readiness.record(msg)
         _hold_reattempted(readiness, reattempted)
         while readiness.failure:
@@ -464,12 +462,10 @@ async def wait_mcp_ready(
             # The host said its registry dropped these: no wait makes them start.
             if governed:
                 if readiness.all_pending_filtered:
-                    _record_drops(self._mcp_report, readiness, readiness.pending_names)
+                    _record_drops(self._mcp_report, readiness.pending_names)
                     return
             else:
                 raise AcpRuntimeError(_registry_filtered_message(readiness))
-    for name in required:
-        self._mcp_report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
 
 
 def _reattempt_timed_out_start(
@@ -537,26 +533,25 @@ def _hold_reattempted(readiness: KasMcpReadiness, reattempted: dict[str, bool]) 
 
 
 def _record_dropped(report: McpSessionReport, readiness: KasMcpReadiness, governed: bool) -> bool:
-    """On a governed start, record the never-named servers dropped; False otherwise.
-
-    Ready servers are recorded initialized, as a satisfied barrier does.
-    """
+    """On a governed start, record the never-named servers dropped; False otherwise."""
     absent = readiness.never_reported if governed else ()
     if not absent:
         return False
-    _record_drops(report, readiness, absent)
+    _record_drops(report, absent)
     return True
 
 
-def _record_drops(
-    report: McpSessionReport, readiness: KasMcpReadiness, absent: tuple[str, ...]
-) -> None:
-    """Record *absent* failed with :data:`GOVERNED_DROP_REASON`, the rest initialized."""
-    for name in readiness.required:
-        if name in absent:
+def _record_drops(report: McpSessionReport, absent: tuple[str, ...]) -> None:
+    """Record *absent* failed with :data:`GOVERNED_DROP_REASON`, unless it has reported.
+
+    The only thing the barrier writes to the report. A server's own frames are
+    folded as they arrive, ahead of this reader, so the servers that satisfied
+    the barrier are in the report already, and one that reported while the
+    barrier still read it as absent keeps what its frame said.
+    """
+    for name in absent:
+        if not report.has_reported(name):
             report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, name, GOVERNED_DROP_REASON)
-        else:
-            report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
 
 
 def _registry_filtered_message(readiness: KasMcpReadiness) -> str:
@@ -715,17 +710,29 @@ async def wait_mounted_mcp(self: AcpSessionHandle, names: tuple[str, ...], timeo
 async def _drain_until_reported(
     handle: AcpSessionHandle, names: tuple[str, ...], timeout: float
 ) -> bool:
-    """Drain init frames until every one of *names* has reported; True if the runtime died."""
+    """Drain init frames until every one of *names* has reported; True if the runtime died.
+
+    The report is folded where a frame arrives, not here, so it can already
+    name a server whose frame is still queued. The frames that are queued are
+    consumed all the same: each may carry a sign-in request or a config update
+    this start owes its session. Only the WAIT for more ends once every name
+    has reported.
+    """
     report = handle._mcp_report
     deadline = time.monotonic() + max(0.0, timeout)
-    while report.unreported(names):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        try:
-            msg = await asyncio.wait_for(handle._queue.get(), timeout=remaining)
-        except asyncio.TimeoutError:
-            break
+    while True:
+        if not report.unreported(names):
+            if handle._queue.empty():
+                break
+            msg = handle._queue.get_nowait()
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                msg = await asyncio.wait_for(handle._queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
         if msg is None:
             # Runtime died: re-poison so the turn that follows sees it.
             await handle._queue.put(None)
@@ -733,7 +740,6 @@ async def _drain_until_reported(
         if consume_stale_compaction_status(handle, msg):
             continue
         try:
-            report.record_frame(msg, owned=handle._owns_mcp_frame(msg))
             handle._apply_init_notification(msg, classify_notification(msg))
         except Exception:
             logger.debug("declared MCP wait: error processing init frame", exc_info=True)
@@ -1187,17 +1193,6 @@ async def drain_init(
             continue
         try:
             action = classify_notification(msg)
-            if not stale_backlog:
-                # Deliberately narrower than the "still drained and
-                # processed normally" treatment the stale backlog gets
-                # otherwise: those frames describe the PRE-switch agent's
-                # roster, so recording one could show a server the current
-                # agent does not have as mounted here. Skipping it can
-                # instead leave a server that is genuinely up looking
-                # unreported until it reports again — and that is the safe
-                # direction, because the report renders an unreported server
-                # as "no report", never as "not mounted".
-                self._mcp_report.record_frame(msg, owned=self._owns_mcp_frame(msg))
             if not reported and not stale_backlog and action in _MCP_DRAIN_REPORT_ACTIONS:
                 # First server report: arm the idle shortcut and give the
                 # remaining servers up to ``duration`` from this point.

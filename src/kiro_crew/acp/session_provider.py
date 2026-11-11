@@ -478,6 +478,7 @@ class AcpSessionProvider(LLMProvider):
         # Still the session the keepalive route's registry holds, if it was.
         new_handle.keepalive_routed = getattr(old, "keepalive_routed", False) is True
         self._handle = new_handle
+        old.mcp_session_report().hand_over(new_handle.mcp_session_report())  # its reader follows
         # The fresh session/new restored nothing: a session/load observation from
         # the old handle would make the next turn skip its history replay
         # (``turn_dispatch_gates``) and run on an empty conversation. Same as
