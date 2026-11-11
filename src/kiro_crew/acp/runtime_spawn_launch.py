@@ -1098,6 +1098,10 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         # right answer to that, and it cannot fire for a merely FAILED scan:
         # _snapshot_descendants swallows every Exception itself, so only a
         # cancellation reaches this arm.
+        #
+        # The handshake a caller is waiting on ends here, so this never waits
+        # for a tree to appear: a scan that sees no descendant hands its one
+        # retry to a task of its own.
         await self._snapshot_descendants(retry_when_empty=True)
     except BaseException:
         # One task this frame only WAITS on, so a cancellation cannot cut the
@@ -1178,10 +1182,9 @@ async def _record_tree_before_failed_start_kill(self: AcpRuntime) -> dict[int, C
     runs it inside a shielded cleanup task, so the spawning task's
     cancellation never reaches it; a cancellation of the cleanup task itself
     (loop shutdown) is absorbed so the kill that follows still runs, leaving
-    the tree to the group kill alone.
+    the tree to the group kill alone. Where the walk cannot see a descendant
+    the scan is a no-op and this returns nothing.
     """
-    if platform_compat.IS_WINDOWS:
-        return {}
     try:
         await self._snapshot_descendants()
     except asyncio.CancelledError:
