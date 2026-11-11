@@ -15,7 +15,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Input } from '../../components/ui'
 import { fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE } from './decisionsProviderQuery'
+import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE, isRefusedHostedDefault, isRefusedSageMaker } from './decisionsProviderQuery'
 
 /** Preset id for hosted Jev; the gateway's `local_models.PRESET_JEV`. */
 export const PRESET_JEV = 'jev'
@@ -434,8 +434,14 @@ export function DecisionsProviderPicker({
     runtime && chosenPreset && runtime.preset === chosenPreset.id && runtime.state !== 'idle' ? runtime : undefined
   const sageMakerChosen = chosen === PRESET_SAGEMAKER
   // Another endpoint while one is in use is a change too, not only another option.
+  // A refused hosted default is reported as "No model" while the config still names
+  // it, so choosing "No model" over it is a change that has to be written.
+  const refusedDefault = isRefusedHostedDefault(data)
   const needsSave =
-    chosen !== '' && (chosen !== data.active || (sageMakerChosen && !sameSageMaker(smValue, data.sagemaker)))
+    chosen !== '' &&
+    (chosen !== data.active ||
+      (chosen === PRESET_NONE && refusedDefault) ||
+      (sageMakerChosen && !sameSageMaker(smValue, data.sagemaker)))
   const sageMakerReady = !sageMakerChosen || (sageMakerAvailable && smValue.endpoint_name !== '' && smValue.region !== '')
   const canSave = needsSave && sageMakerReady && !frozen && !saveMut.isPending && !blockedId(chosen)
   const save = () => saveMut.mutate(sageMakerChosen ? { preset: chosen, sagemaker: smValue } : { preset: chosen })
@@ -511,6 +517,15 @@ export function DecisionsProviderPicker({
           askAgent
           message={i18nT('pages.developer.featurePreviewsTab.decisions_provider_memory_unavailable')}
         />
+      )}
+      {refusedDefault && (
+        <p className="text-[12px] text-warn m-0">
+          {i18nT(
+            isRefusedSageMaker(data)
+              ? 'pages.developer.featurePreviewsTab.decisions_provider_blocked'
+              : 'pages.developer.featurePreviewsTab.decisions_hosted_refused',
+          )}
+        </p>
       )}
       {!jevHidden &&
         option(

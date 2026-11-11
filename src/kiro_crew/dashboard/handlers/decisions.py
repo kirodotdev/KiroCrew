@@ -1097,6 +1097,7 @@ def _provider_payload() -> dict:
     from kiro_crew.dashboard.handlers.decisions_sagemaker import (
         PRESET_SAGEMAKER,
         configured_sagemaker,
+        endpoint_refused,
         hosted_offers,
     )
     from kiro_crew.decisions import gate as _gate
@@ -1125,6 +1126,14 @@ def _provider_payload() -> dict:
     # The config is not rewritten. A row-level denial keeps its own reading.
     if active == local_models.PRESET_JEV and not hosted_denied and not hosted_permitted:
         active = local_models.PRESET_NONE
+    # The same holds for a configured SageMaker address whose own regional runtime host
+    # the ceiling refuses, whatever other regions it permits: the send path and the
+    # consent PUT refuse that host, so it reads "No model". Whether the SageMaker OPTION
+    # is offered (any region) is a separate answer, ``sagemaker_permitted``.
+    configured_refused = False
+    if active == PRESET_SAGEMAKER and not hosted_denied and endpoint_refused(endpoint, audit=False):
+        active = local_models.PRESET_NONE
+        configured_refused = True
     return {
         "presets": [
             {**local_models.as_payload(m), "installed": m.id in installed}
@@ -1151,6 +1160,9 @@ def _provider_payload() -> dict:
         # The hosted row permits and the ceiling's ``endpoints`` list permits a
         # SageMaker runtime host in at least one region.
         "sagemaker_permitted": sagemaker_permitted,
+        # The configured SageMaker address itself is refused by the ceiling's
+        # ``endpoints`` list (its own regional host), so ``active`` reads "none".
+        "configured_refused": configured_refused,
     }
 
 

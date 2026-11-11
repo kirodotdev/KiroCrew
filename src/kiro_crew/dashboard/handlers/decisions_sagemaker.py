@@ -194,8 +194,11 @@ SAGEMAKER_REGIONS: tuple[str, ...] = (
 )
 
 
-def endpoint_refused(endpoint: str) -> bool:
+def endpoint_refused(endpoint: str, *, audit: bool = True) -> bool:
     """Whether the ceiling's ``endpoints`` list refuses the host a request to *endpoint* reaches.
+
+    ``audit=False`` is for the picker's offer probe, which asks about many hosts and
+    acts on none: same answer, no SEL row.
 
     A ``sagemaker://`` address is asked as the regional runtime URL the client is
     pinned to. The same question the send path asks, so an option the answer refuses
@@ -203,12 +206,17 @@ def endpoint_refused(endpoint: str) -> bool:
     """
     from kiro_crew.decisions import capability, impl_sagemaker
 
-    url = (
-        impl_sagemaker.policy_endpoint(endpoint)
-        if impl_sagemaker.is_sagemaker_endpoint(endpoint)
-        else endpoint
-    )
-    return capability.targets_denied(point=None, model=None, endpoint=url)
+    try:
+        url = (
+            impl_sagemaker.policy_endpoint(endpoint)
+            if impl_sagemaker.is_sagemaker_endpoint(endpoint)
+            else endpoint
+        )
+    except (impl_sagemaker.SageMakerConfigError, ValueError):
+        # An address that names no host cannot be sent to, which is the send
+        # path's own answer (``gate._targets_denied`` denies on the same raise).
+        return True
+    return capability.targets_denied(point=None, model=None, endpoint=url, audit=audit)
 
 
 def consent_endpoint_refused(endpoint: str) -> bool:
@@ -228,12 +236,29 @@ def consent_endpoint_refused(endpoint: str) -> bool:
     return endpoint_refused(endpoint)
 
 
+_botocore_regions_cache: tuple[str, ...] | None = None
+
+
 def _botocore_regions() -> tuple[str, ...]:
     """Every region botocore's bundled metadata lists for the SageMaker runtime, any partition.
 
-    Local data only, no network. Empty when botocore is absent or its metadata cannot
-    be read, so the caller falls back to :data:`SAGEMAKER_REGIONS`.
+    Local data only, no network. Computed once per process: the list is bundled
+    with the installed botocore, and a settings read must not build a ``Session``
+    each time. Empty when botocore is absent or its metadata cannot be read, so the
+    caller falls back to :data:`SAGEMAKER_REGIONS`; that failure is not cached, so a
+    later read tries again.
     """
+    global _botocore_regions_cache
+    if _botocore_regions_cache is None:
+        found = _read_botocore_regions()
+        if found:
+            _botocore_regions_cache = found
+        return found
+    return _botocore_regions_cache
+
+
+def _read_botocore_regions() -> tuple[str, ...]:
+    """One read of botocore's endpoint metadata; empty on any failure."""
     try:
         from botocore.session import Session
 
@@ -264,7 +289,7 @@ def sagemaker_hosts_permitted(configured_region: str = "") -> bool:
             address = impl_sagemaker.build_endpoint("probe", region)
         except impl_sagemaker.SageMakerAddressFieldError:
             continue
-        if not endpoint_refused(address):
+        if not endpoint_refused(address, audit=False):
             return True
     return False
 
@@ -276,7 +301,7 @@ def hosted_offers(hosted_denied: bool, configured_region: str = "") -> tuple[boo
     if hosted_denied:
         return False, False
     return (
-        not endpoint_refused(DECISION_PROVIDER_ENDPOINT_DEFAULT),
+        not endpoint_refused(DECISION_PROVIDER_ENDPOINT_DEFAULT, audit=False),
         sagemaker_hosts_permitted(configured_region),
     )
 

@@ -15741,6 +15741,7 @@
         "decisions_provider_sagemaker_invalid_profile": "Имя профиля может содержать буквы, цифры, подчёркивания, точки, знаки плюс и дефисы.",
         "decisions_provider_sagemaker_unknown_profile": "В твоих файлах конфигурации AWS нет профиля с таким именем.",
         "decisions_no_model_note": "Модель решений не выбрана. Выбери модель ниже, чтобы включить это.",
+        "decisions_hosted_refused": "Политика твоего парка блокирует Jev, размещённый у TypeSafe, поэтому решения принимаются по встроенным правилам. Выбери другую модель ниже.",
         "decisions_provider_quality": "Около {{percent}} точности Jev, {{hard}} на сложных решениях",
         "decisions_provider_memory": "Занимает около {{peak}} памяти; рекомендуется при {{total}} и больше",
         "decisions_provider_speed": "Около {{p50}} на решение на CPU, до {{p95}} на длинных входных данных",
