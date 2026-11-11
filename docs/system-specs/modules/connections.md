@@ -954,6 +954,21 @@ those entries are reflections of the scopes this transaction is purging rather
 than independent grant holders — counting them made an ordinary Disconnect see its
 own reflection as a sharer and skip the revoke *every time*, which is the failure
 mode where the feature silently never fires and no census-mocking test can see it.
+A mirror is only an entry the transaction removes or re-derives from the purged
+default agent (`ownership._is_mirror_spec`): `kirocrew.json` itself, the worker spec
+the rebuild derives from it again (only when its installer would accept the file,
+`_foreign_worker_spec_reason`), and a `kirocrew-skill-view-*.json` view whose ownership
+record binds the file as it is now and names the default agent
+(`agent_sdk.drivers.acp_skill_views.skill_view_owned_source`), which the next session
+re-projects. A view whose record names the worker is a mirror too, but only while
+the worker spec beside it passes the same `_foreign_worker_spec_reason` test; a view
+of a worker spec the user wrote keeps its grant. A record that outlived its view proves nothing about a spec written at
+that name later, so the census never judges a view by its name alone. Every other
+spec is an `agent:` sharer, the other
+`OWNED_KIRO_AGENT_FILES` included: their installers keep an entry from an `agent.json`
+override or a customized copy that the purge never edits. A file that cannot be read,
+a view no record binds and a check that raises all read as a sharer, so
+damaged state never aborts the Disconnect.
 A hand-written agent spec is the opposite: Kiro Crew never writes it, so its entry
 keeps its own grant and must be able to block a revoke. The exclusion is scoped to
 the justification — with nothing owned the purge does not run, so a mirrored entry
