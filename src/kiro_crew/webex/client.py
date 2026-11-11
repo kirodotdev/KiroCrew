@@ -1118,8 +1118,15 @@ class WebexClient:
         if cached is not None:
             return cached
         person = await self._api("GET", f"/people/{person_id}", None)
+        if person is None:
+            # A failed lookup (5xx, timeout, rate limit) is not an answer: caching
+            # its "" would refuse every later press by this person until restart.
+            return ""
         emails = (person.get("emails") or []) if isinstance(person, dict) else []
         email = str(emails[0]).lower() if emails else ""
+        if not email:
+            # Nor is a reply that names no email (an unreadable 2xx body included).
+            return ""
         # Bounded: a room's membership is small, but a long-lived gateway seeing
         # many rooms should not accumulate without limit.
         if len(self._person_emails) >= _PERSON_CACHE_MAX:
