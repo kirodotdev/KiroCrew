@@ -19960,6 +19960,8 @@
         "retry": "Reintentar",
         "ssh_host_alias": "Host / alias SSH",
         "ssh_tunnel": "Túnel SSH",
+        "ssh_tunnel_not_supported_windows": "No compatible con Windows",
+        "ssh_tunnel_not_supported_windows_hint": "Los túneles SSH aún no son compatibles cuando {{productName}} se ejecuta en Windows: necesita el cliente OpenSSH en el PATH y puede fallar al conectar. Usa AWS SSM Session Manager en su lugar.",
         "ssm_target_instance_id": "Destino SSM (id de instancia)",
         "state_connected": "Conectado",
         "state_connecting": "Conectando",

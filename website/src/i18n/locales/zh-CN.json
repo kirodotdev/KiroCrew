@@ -18978,6 +18978,8 @@
         "retry": "重试",
         "ssh_host_alias": "SSH 主机 / 别名",
         "ssh_tunnel": "SSH 隧道",
+        "ssh_tunnel_not_supported_windows": "Windows 上不支持",
+        "ssh_tunnel_not_supported_windows_hint": "{{productName}} 在 Windows 上运行时暂不支持 SSH 隧道：它需要 PATH 中有 OpenSSH 客户端，并且可能无法连接。请改用 AWS SSM Session Manager。",
         "ssm_target_instance_id": "SSM 目标（实例 id）",
         "state_connected": "已连接",
         "state_connecting": "正在连接",

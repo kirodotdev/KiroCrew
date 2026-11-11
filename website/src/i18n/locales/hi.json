@@ -19469,6 +19469,8 @@
         "retry": "पुनः प्रयास करें",
         "ssh_host_alias": "SSH होस्ट / उपनाम",
         "ssh_tunnel": "SSH टनल",
+        "ssh_tunnel_not_supported_windows": "Windows पर समर्थित नहीं",
+        "ssh_tunnel_not_supported_windows_hint": "जब {{productName}} Windows पर चलता है, तब SSH टनल अभी समर्थित नहीं हैं: इसके लिए PATH में OpenSSH क्लाइंट चाहिए और कनेक्ट होना विफल हो सकता है। इसके बजाय AWS SSM Session Manager इस्तेमाल करो।",
         "ssm_target_instance_id": "SSM लक्ष्य (इंस्टेंस id)",
         "state_connected": "कनेक्टेड",
         "state_connecting": "कनेक्ट हो रहा है",
