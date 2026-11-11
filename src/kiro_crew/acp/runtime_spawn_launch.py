@@ -54,6 +54,7 @@ from kiro_crew.acp.client import (
     finish_suspended_spawn,
 )
 from kiro_crew.acp.harness import SpawnContext, SpawnPlan
+from kiro_crew.acp.harness._common import operator_mandatory_mcps
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
 from kiro_crew.acp.runtime_process_tree import ChildRecord, _kill_escaped_children
 from kiro_crew.acp.runtime_tree_kill import _prune_dead_descendants
@@ -69,6 +70,7 @@ from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
+    job_tool_ids,
     kas_client_meta_settings,
     kas_never_defer_ids,
     spec_grants_tool_search,
@@ -1280,7 +1282,11 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     payload lists every MCP tool that spec can call there
     (``kas_never_defer_ids``, expanding whole-server grants from
     :func:`_known_server_tool_names`) and ``enabled`` goes out as an explicit
-    false. A spec that grants the loader is sent no ``neverDefer``.
+    false. A spec that grants the loader is sent the spawn agent's declared job
+    tools (``job_tool_ids``), so the calls that agent's prompt makes its
+    procedure cost no load round trip, and nothing when it declares none. An
+    operator who set their own never-defer list (``operator_mandatory_mcps``)
+    has decided what stays direct: Crew adds no job tool beside it.
     The spec judged is the one the KAS projection will PUT ON THE
     WIRE at session/new -- the freshness gate's snapshot for a derived agent,
     else the spec ``resolve_projected_spec`` resolves nearest-first, the same
@@ -1310,6 +1316,8 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     never_defer: list[str] = []
     if not loader_granted:
         never_defer = await asyncio.to_thread(kas_never_defer_ids, spec, _known_server_tool_names)
+    elif operator_mandatory_mcps() is None:
+        never_defer = job_tool_ids(self._agent, spec)
     settings = kas_client_meta_settings(
         self._tool_search, loader_granted=loader_granted, never_defer=never_defer
     )

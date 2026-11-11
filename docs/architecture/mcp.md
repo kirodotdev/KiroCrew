@@ -4643,6 +4643,47 @@ scales with the tool count. An operator's `ASBX_KIRO_MANDATORY_MCPS` value
 (comma-separated server names) in the gateway's environment always wins, including
 an explicit empty value; per-session overlays cannot change it.
 
+**Job tools.** A deferred tool also costs its first caller one extra model round
+trip, the load. For an agent whose whole procedure is a few MCP tools that is a
+round trip on every session, so each shipped agent declares its job tools, once, in
+`JOB_TOOLS` (`agent_sdk/tool_search.py`), and `job_tool_ids` puts the declared tools
+the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
+`tool_search`. Everything else the spec mounts stays deferred.
+
+| Agents | Job tools | Budget (schema tokens per request) |
+|---|---|---:|
+| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status` | 4,000 |
+| `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report` | 1,500 |
+| `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start` | 9,000 |
+| `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the nine above and `work_brief` | 9,200 |
+
+The rules the table is held to (`test/test_job_tools.py`):
+
+- **A row is the tools the agent's own prompt makes its procedure**, not the tools
+  it might use. Anything else is one `tool_search` away.
+- **A row fits its budget.** Its tools ride in every request of that agent, counted
+  as the bytes of each tool's `{name, description, inputSchema}` over 3.25, the
+  ratio KAS's own context breakdown reports for these schemas. A tool
+  joins a row, or a job tool's description grows, only while the row still fits;
+  the budget is what keeps the table from becoming "defer nothing".
+- **The set is fixed per agent**, never per session, so the tool definitions an
+  agent's requests open with are the same in every session of it and the cached
+  prefix stays valid.
+- **An agent with no row is untouched**: an operator's own agent, an app's agent
+  and a crew member's template put on the wire what they did before.
+- **An operator's `ASBX_KIRO_MANDATORY_MCPS` is the whole decision.** When it is
+  set, even empty, Crew adds no job tool beside it.
+- **Deferral is a prompt-size mechanism, not a permission.** The list changes one
+  key of the `initialize` request. What a session may call is still the spec's
+  `tools` minus `excludedTools`, and a never-deferred tool's call still passes
+  Crew's PreToolUse gate, governance and approvals like any other MCP call.
+
+Only KAS takes a per-tool list. kiro-cli's own engine exempts whole servers, so
+there the declaration reaches no channel and the job tools stay behind its loader.
+`neverDefer` is read once per process, at `initialize`, from the agent the process
+was spawned for; a process later asked to run a different agent keeps the first
+agent's list.
+
 That makes the placement question a real one rather than a matter of taste:
 
 - **Core** is for capabilities a session may need *without being asked* —
