@@ -299,6 +299,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
             orch.sessions,
             channel_type="slack",
             route=None,
+            human_input=False,
         ):
             logger.info("slack envelope left unacknowledged during update restart")
             return

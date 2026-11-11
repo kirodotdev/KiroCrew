@@ -58,12 +58,11 @@ _update_info: dict[str, object] = {
     #: consumer needs the narrower one.
     #:
     #: ``update_available`` is what the dashboard shows, and for a git checkout it
-    #: is true on commit distance alone. The unattended
-    #: ``GatewayOrchestrator._auto_apply_update`` applies `git reset --hard`, so
-    #: it requires BOTH: acting on commit distance alone would reset a
-    #: developer's checkout within 12 hours of any upstream commit, where before
-    #: it only did so at a release. Requiring both keeps that path firing no more
-    #: often than it did while the verdict was version-only.
+    #: is true on commit distance alone. The apply
+    #: (`kirocrew update`, run at the start after a click armed it) does
+    #: `git reset --hard`, so it requires BOTH: acting on commit distance alone
+    #: would reset a developer's checkout on any upstream commit, where before it
+    #: only did so at a release.
     "version_newer": False,
     #: Commit distance from the tracked upstream, BOTH directions. A DIVERGED
     #: checkout (ahead and behind at once) reports ``update_available: False``

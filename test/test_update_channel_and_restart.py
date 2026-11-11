@@ -696,7 +696,7 @@ class TestRestartEndpoint:
         """
         started = asyncio.Event()
 
-        async def _fake_restart(_state: object) -> None:
+        async def _fake_restart(_state: object, **_kwargs: object) -> None:
             started.set()
 
         async def _run() -> web.Response:
@@ -716,7 +716,7 @@ class TestRestartEndpoint:
     def test_a_restart_failure_is_surfaced_not_swallowed(self, caplog):
         caplog.set_level(logging.ERROR, logger=_UPDATES_LOGGER)
 
-        async def _boom(_state: object) -> None:
+        async def _boom(_state: object, **_kwargs: object) -> None:
             raise RuntimeError("exec failed")
 
         async def _run() -> MagicMock:
@@ -739,7 +739,7 @@ class TestRestartEndpoint:
         calls = 0
         release = asyncio.Event()
 
-        async def _fake_restart(_state: object) -> None:
+        async def _fake_restart(_state: object, **_kwargs: object) -> None:
             nonlocal calls
             calls += 1
             await release.wait()

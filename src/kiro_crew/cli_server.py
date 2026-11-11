@@ -796,6 +796,7 @@ sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew import update_next_start  # noqa: F401
     from kiro_crew.cli_server_peer import (  # noqa: F401
         _CLI_LOOPBACK,
         _PEER_RESOLVE_RETRY_INTERVAL,
@@ -847,6 +848,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GatewayLogMark,
         _incumbent_from_lock_holder,
         _own_console_script,
+        _print_applying_update,
         _print_running_cron_runs,
         _print_still_starting,
         _print_token_url,
@@ -890,6 +892,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _refresh_agent_config,
         _revalidate_gateway_update_check,
         _snapshot_memory_or_exit,
+        _untracked_collisions,
         _update,
         _update_managed_venv,
         _update_wheel,

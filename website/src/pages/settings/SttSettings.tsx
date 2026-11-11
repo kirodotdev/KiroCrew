@@ -54,6 +54,7 @@ import {
 } from '../../lib/pushToTalk'
 
 import { i18nT } from '../../i18n/t'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import ErrorNotice from '../../components/ErrorNotice'
 import { errMessage } from '../../utils/thunkError'
 
@@ -986,7 +987,9 @@ export default function SttSettings({ cardIndex }: {
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
       // Restarting normally resets the connection before a response arrives.
-      // Only a structured server rejection is a real failure.
+      // Only a structured server rejection is a real failure. A declined
+      // "work is running" confirmation is a quiet cancel, not one.
+      if (e instanceof WorkConfirmDeclined) return
       if (e instanceof ApiError) setErr(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
       else setRestarting(true)
     },

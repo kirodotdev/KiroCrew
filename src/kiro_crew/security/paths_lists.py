@@ -931,6 +931,7 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
         "config.local.json",
         "subagents",
         "app-agent-launch",
+        "update_next_start.json",
     )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write

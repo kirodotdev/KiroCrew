@@ -293,6 +293,19 @@ def pending_for(session_key: str, conversation_id: str = "") -> Optional[Pending
     return None
 
 
+def pending_count() -> int:
+    """Typed-reply approval prompts still waiting for an answer.
+
+    What the update paths read (``kiro_crew.quiescence``): a restart now would
+    deny every one of them, as a timeout does.
+    """
+    return sum(
+        1
+        for entry in list(_PENDING.values())
+        if not entry.future.done() and not entry.future.get_loop().is_closed()
+    )
+
+
 def parse_approval_reply(text: str) -> str:
     """The verdict a typed reply carries, or ``""`` when it carries none.
 

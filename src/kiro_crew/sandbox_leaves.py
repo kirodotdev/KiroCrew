@@ -522,6 +522,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # is being prompt-injected through. The read-only mount is the load-bearing
     # half; the shell gate matches no paths.
     "decisions_consent.json",
+    # The update armed for the next start (``update_next_start``). The boot-time
+    # apply installs on the strength of this record alone, so a writable copy lets
+    # a sandboxed shell skip the step-up, the self-protection deny floor and the
+    # operator's unattended-apply switch. Every writer is the gateway or the
+    # operator's own ``kirocrew update``, outside the sandbox; in-sandbox code may
+    # read the arm and the error the last apply left.
+    "update_next_start.json",
     # The owner's Shared Crew preview switch. A writable record lets an
     # auto-approved agent choose whether the Crew opens to other people on its
     # next start. The read-only mount is the load-bearing half; the shell gate
@@ -1072,6 +1079,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # the product depends on and buy nothing.
     "cloud.json",
     "cloud_launch_state.json",
+    # The arm record: a version, a timestamp and an error line, no credential. The
+    # risk is a write, answered by the read-only seal.
+    "update_next_start.json",
     # The runtime config and its overlay. NOT credential-free, unlike ``cloud.json``:
     # a channel bot token stored inline (``telegram.bot_token``, ``discord.bot_token``,
     # ``weixin``/``webex``; the ``sensitive`` fields in ``config/sections_*.py``) lives
