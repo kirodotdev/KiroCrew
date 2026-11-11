@@ -238,6 +238,7 @@
     "click_to_hide": "Нажмите, чтобы скрыть",
     "close": "Закрыть",
     "collapse_sidebar": "Свернуть боковую панель",
+    "couldn_t_load_full_changelog": "Не удалось загрузить полный журнал изменений.",
     "cpu": "CPU",
     "cpu_unavailable": "CPU: недоступен",
     "credits": "кредитов",

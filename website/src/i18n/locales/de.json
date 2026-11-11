@@ -218,6 +218,7 @@
     "click_to_hide": "Klicken zum Ausblenden",
     "close": "Schließen",
     "collapse_sidebar": "Seitenleiste einklappen",
+    "couldn_t_load_full_changelog": "Das vollständige Änderungsprotokoll konnte nicht geladen werden.",
     "cpu": "CPU",
     "cpu_unavailable": "CPU: nicht verfügbar",
     "credits": "Credits",

@@ -228,6 +228,7 @@
     "click_to_hide": "Cliquer pour masquer",
     "close": "Fermer",
     "collapse_sidebar": "Réduire la barre latérale",
+    "couldn_t_load_full_changelog": "Impossible de charger le journal complet des modifications.",
     "cpu": "CPU",
     "cpu_unavailable": "CPU : indisponible",
     "credits": "crédits",

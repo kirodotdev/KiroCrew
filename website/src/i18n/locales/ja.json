@@ -208,6 +208,7 @@
     "click_to_hide": "クリックして非表示",
     "close": "閉じる",
     "collapse_sidebar": "サイドバーを折りたたむ",
+    "couldn_t_load_full_changelog": "チェンジログ全文を読み込めませんでした。",
     "cpu": "CPU",
     "cpu_unavailable": "CPU: 利用不可",
     "credits": "クレジット",
