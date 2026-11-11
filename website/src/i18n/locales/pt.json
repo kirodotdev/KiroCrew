@@ -21676,6 +21676,7 @@
         "save_stopped_note": "A espera foi interrompida. Esse salvamento pode ter sido aplicado ou não; a lista mostra o estado atual. Suas alterações continuam aqui. Salve novamente ou cancele.",
         "saving": "Salvando…",
         "service_missing": "Ainda não disponível com este perfil — o lançamento precisa de permissão para este serviço.",
+        "service_not_checked": "Ainda não verificado — primeiro são necessárias credenciais da AWS que funcionem.",
         "service_ok": "Acessível com este perfil.",
         "set_up_a_new_one": "Configurar uma nova",
         "setting_up": "Configurando",

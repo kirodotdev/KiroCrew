@@ -21160,6 +21160,7 @@
         "save_stopped_note": "Warten beendet. Ob dieses Speichern durchgegangen ist, lässt sich nicht sagen; die Liste zeigt den aktuellen Stand. Deine Änderungen sind noch da. Speichere erneut oder brich ab.",
         "saving": "Wird gespeichert…",
         "service_missing": "Mit diesem Profil noch nicht verfügbar — der Start braucht eine Berechtigung für diesen Dienst.",
+        "service_not_checked": "Noch nicht geprüft — dafür braucht es zuerst funktionierende AWS-Anmeldedaten.",
         "service_ok": "Mit diesem Profil erreichbar.",
         "set_up_a_new_one": "Neue einrichten",
         "setting_up": "Wird eingerichtet",

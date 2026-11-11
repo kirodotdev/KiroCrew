@@ -900,6 +900,16 @@ export function RemoteCrewPanel() {
   // The same for an `aws` CLI the gateway found and refused: the credentials row
   // says why, instead of the CLI's "not found" error and its install link.
   const cliRefusal = preflight ? awsCliRefusalCopy(preflight) : null
+  // The service calls run with the profile's credentials, so when those did not
+  // resolve none of them ran: the rows say so instead of blaming a permission.
+  // A call that ran and failed is an error, so it goes through `failure`.
+  const serviceRow = (reachable: boolean) => !preflight?.reachable
+    ? { ok: null, detail: i18nT('pages.settings.remoteCrewPanel.service_not_checked') }
+    : reachable
+      ? { ok: true, detail: i18nT('pages.settings.remoteCrewPanel.service_ok') }
+      : { ok: false, detail: '', failure: i18nT('pages.settings.remoteCrewPanel.service_missing') }
+  // Copy policy JSON only on a CloudFormation call that ran and failed.
+  const cloudformationRow = serviceRow(!!preflight?.cloudformation_reachable)
   // The first row, in checklist order, that keeps Launch off: the hint under
   // Launch names it instead of sending the reader through every row.
   const blockingCheck = !preflight
@@ -1457,9 +1467,9 @@ export function RemoteCrewPanel() {
                   onRecheck={runCheck}
                   rechecking={preflightQuery.isFetching}
                 />
-                <PrereqRow ok={preflight.ec2_reachable} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} detail={preflight.ec2_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
-                <PrereqRow ok={preflight.cloudformation_reachable} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <><Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>{policyNotice ? <span role="status" className="text-[12px] text-muted">{policyNotice}</span> : null}</>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
-                <PrereqRow ok={preflight.ssm_reachable} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} detail={preflight.ssm_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
+                <PrereqRow {...serviceRow(preflight.ec2_reachable)} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} />
+                <PrereqRow {...cloudformationRow} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} extraAction={cloudformationRow.ok !== false ? undefined : <><Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>{policyNotice ? <span role="status" className="text-[12px] text-muted">{policyNotice}</span> : null}</>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
+                <PrereqRow {...serviceRow(preflight.ssm_reachable)} stale={checkStale} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} />
                 <PrereqRow
                   ok={preflight.session_manager_plugin}
                   stale={checkStale}
