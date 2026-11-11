@@ -146,6 +146,15 @@ the cold start, the warm-pool re-apply and a live switch already use. A
 on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
 the one `--list-models` row it left out failed the turn with `InvalidModelError`.
 
+Saving a pin is judged against the same select before any session sends it:
+with no `models` list on the newest live KAS session, the agent and role-pin
+validators (`dashboard/handlers/core_config_models.py`, `_kas_select_ids`) refuse
+an id the recorded select does not list, since the engine fails every prompt on
+such an id
+with `InvalidModelError`. They read it through `recorded_catalog_snapshot` with the
+vault identity the save read off the loop, so a select recorded for another
+account is no evidence and the pin is accepted as unknown.
+
 The same select IS the engine's catalog, and the shared-runtime driver records it
 as one (`agent_sdk/kas_model_catalog.py`, `record_catalog`, on a positive KAS
 identity, from `AcpSessionHandle.store_session_config`; KAS runs on `AcpRuntime`

@@ -747,6 +747,112 @@ class TestSavePathRefusesAnUnusablePin:
         assert cfg.agents[seeded_agent].model != "pending-model"
 
 
+def _kas_session(backend: str = ACP_BACKEND_KAS) -> SimpleNamespace:
+    """A live session shaped like the registered provider, advertising no ``models`` list."""
+    return SimpleNamespace(client=SimpleNamespace(backend=backend), available_models=lambda: [])
+
+
+@pytest.fixture()
+def kas_account(monkeypatch):
+    """Record a KAS select for account ``acct-a`` and sign the vault in as *who*.
+
+    Goes through the real ``record_catalog`` so the rows are the ones a KAS
+    ``session/new`` records; the module's recording is restored afterwards.
+    """
+    from kiro_crew.agent_sdk import kas_model_catalog
+
+    monkeypatch.setattr(kas_model_catalog, "_recorded", None)
+    monkeypatch.setattr(kas_model_catalog, "_recorded_identity", "")
+    select = {
+        "type": "select",
+        "id": "model",
+        "currentValue": "auto",
+        "options": [{"value": i, "name": i} for i in ("auto", "claude-sonnet-4.5")],
+    }
+    assert kas_model_catalog.record_catalog(
+        {"configOptions": [select]}, ACP_BACKEND_KAS, identity="acct-a"
+    )
+
+    def _sign_in(who: str) -> None:
+        monkeypatch.setattr(kas_model_catalog, "vault_identity", lambda: who)
+
+    _sign_in("acct-a")
+    return _sign_in
+
+
+def _app_with(*providers: object) -> web.Application:
+    app = _crud_app()
+    app["state"] = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: providers))
+    return app
+
+
+class TestKasSelectJudgesASavedPin:
+    """KAS lists its models only in the select, so the select judges a saved pin."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["post", "put"])
+    @pytest.mark.parametrize("model, status", [("claude-sonnet-4.5", 200), ("gpt-x", 400)])
+    async def test_the_kas_select_decides(
+        self, seeded_agent, kas_account, method: str, model: str, status: int
+    ) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        name = "kaspin" if method == "post" else seeded_agent
+        body = {"model": model}
+        if method == "post":
+            body.update({"name": name, "kiro_agent": "kirocrew"})
+
+        async with TestClient(TestServer(_app_with(_kas_session()))) as client:
+            response = await getattr(client, method)(
+                "/api/agents" if method == "post" else f"/api/agents/{name}",
+                json=body,
+            )
+            assert response.status == status, await response.text()
+            if status == 400:
+                payload = await response.json()
+                assert payload["code"] == "invalid_model"
+                assert "claude-sonnet-4.5" in payload["error"]
+
+        agents = KiroCrewConfig.load().agents
+        stored = agents[name].model if name in agents else None
+        assert (stored == model) is (status == 200)
+
+    @pytest.mark.asyncio
+    async def test_another_accounts_select_is_no_evidence(self, seeded_agent, kas_account) -> None:
+        """After a sign-in switch the retained select belongs to the old account."""
+        kas_account("acct-b")
+
+        async with TestClient(TestServer(_app_with(_kas_session()))) as client:
+            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
+            assert response.status == 200, await response.text()
+
+    @pytest.mark.asyncio
+    async def test_the_registered_acp_provider_wrapper_is_read_through(
+        self, seeded_agent, kas_account
+    ) -> None:
+        """The session registry holds ``AcpProvider``, whose backend is on its client."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = object.__new__(AcpProvider)
+        provider._client = _kas_session().client
+        provider._client.available_models = lambda: []
+
+        async with TestClient(TestServer(_app_with(provider))) as client:
+            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
+            assert response.status == 400, await response.text()
+            assert (await response.json())["code"] == "invalid_model"
+
+    @pytest.mark.asyncio
+    async def test_another_harness_session_reads_no_kas_select(
+        self, seeded_agent, kas_account
+    ) -> None:
+        """Only a live KAS session lets the KAS select judge; kiro's empty list stays unknown."""
+        async with TestClient(TestServer(_app_with(_kas_session(ACP_BACKEND_KIRO)))) as client:
+            response = await client.put(f"/api/agents/{seeded_agent}", json={"model": "gpt-x"})
+
+        assert response.status == 200
+
+
 class TestNoCatalogRefusesAPinKiroHasNoIdFor:
     def test_names_the_spelling_and_suggests_no_other_id(self, monkeypatch):
         from kiro_crew.dashboard.handlers.core import _validate_role_model
