@@ -209,6 +209,7 @@ from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     subagents_hold_user_messages,
 )
 from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
+    MIRROR_ECHO_OWED_META_KEY,
     _authorize_recipient,
     _recipient_principal,
     _resolve_channel_target,

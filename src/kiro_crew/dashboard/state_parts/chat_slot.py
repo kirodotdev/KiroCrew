@@ -104,6 +104,7 @@ class _ChatSlot:
         "_unstarted_generation",
         "_handoff_generation",
         "_handoff_mark",
+        "_unsent_resends",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -537,6 +538,7 @@ class _ChatSlot:
     _unstarted_generation: int
     _handoff_generation: int
     _handoff_mark: asyncio.Future[None] | None
+    _unsent_resends: tuple[dict[str, Any], str, dict[str, Any]] | None
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event

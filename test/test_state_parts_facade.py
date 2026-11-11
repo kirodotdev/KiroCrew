@@ -698,6 +698,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_wrote_text": ("value", "False"),
     "_turns_started": ("value", "0"),
     "_unknown_row_fields_bytes": ("value", "0"),
+    "_unsent_resends": ("value", "None"),
     "_unstarted_generation": ("value", "-1"),
     "_wait_contested": ("value", "False"),
     "_wait_last_ping": ("value", "0.0"),
