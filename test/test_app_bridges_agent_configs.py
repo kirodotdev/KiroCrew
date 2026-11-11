@@ -671,6 +671,18 @@ class TestAppPromptPathIsContained:
         merged, _ = self._call(tmp_path, f"file://{prompt}")
         assert merged["prompt"] == f"file://{prompt.resolve()}"
 
+    def test_a_file_uri_spelled_path_inside_the_app_root_is_kept(self, tmp_path, monkeypatch):
+        """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is an absolute path."""
+        from kiro_crew.apps import bridges, manager
+
+        monkeypatch.setattr(manager, "app_data_dir", lambda n: tmp_path / "data")
+        monkeypatch.setattr(bridges, "app_data_dir", lambda n: tmp_path / "data")
+        (tmp_path / "app").mkdir(exist_ok=True)
+        prompt = tmp_path / "app" / "persona.md"
+        prompt.write_text("you are")
+        merged, _ = self._call(tmp_path, "file:///" + prompt.as_posix().lstrip("/"))
+        assert merged["prompt"] == f"file://{prompt.resolve()}"
+
     def test_a_symlink_escaping_the_app_is_refused(self, tmp_path, monkeypatch):
         from kiro_crew.apps import bridges, manager
 

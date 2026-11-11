@@ -490,6 +490,14 @@ itself:
   exception and gets the short `_KAS_FALLBACK_PROMPT` brief for its one-shot text
   tasks.
 
+On Windows these Crew readers of a `file://` declaration take `file:///C:/...`,
+the form `Path.as_uri()` writes, as the absolute `C:/...`: the KAS and
+session-start prompt readers, the skill projection, the steering globs, the
+member essentials, an app's prompt policy and a local file link in a reply. Only
+the `/` before the drive is dropped and nothing is percent-decoded
+(`file_uri.file_uri_path_text`); each reader's own containment and
+sensitive-path checks are unchanged.
+
 The managed default (`kirocrew`) spec does NOT point `prompt` at the
 operating-contract template. `build_agent_config` and `_refresh_dynamic_fields`
 set it to `_NATIVE_PROMPT_STUB` (`agent_parts/spec_build.py`), a short authority-delegating

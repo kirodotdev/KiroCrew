@@ -38,6 +38,7 @@ from kiro_crew.config.paths import (  # noqa: F401
     kiro_home,
     project_agents_dir,
 )
+from kiro_crew.file_uri import file_uri_path_text  # noqa: F401
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes  # noqa: F401
 from kiro_crew.security import _PATH_RESOLVE_TIMEOUT_SECS  # noqa: F401
 from kiro_crew.user_json import copy_json_document  # noqa: F401

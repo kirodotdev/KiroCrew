@@ -64,6 +64,18 @@ def test_native_view_bounds_metadata_and_preserves_original_scope(native_tree):
     assert projection.prepare_native_skill_projection(project).agent("custom") == alias
 
 
+def test_a_file_uri_spelled_absolute_prompt_is_kept_as_written(native_tree, tmp_path):
+    """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is not re-anchored."""
+    _home, agents, project = native_tree
+    prompt = "file:///" + (tmp_path / "own.md").as_posix().lstrip("/")
+    (agents / "custom.json").write_text(
+        json.dumps({"name": "custom", "prompt": prompt}), encoding="utf-8"
+    )
+    prepared = projection.prepare_native_skill_projection(project)
+    view = json.loads((agents / f"{prepared.agent('custom')}.json").read_text(encoding="utf-8"))
+    assert view["prompt"] == prompt
+
+
 def test_native_view_preserves_explicit_noninheritance_and_other_settings(native_tree):
     _home, agents, project = native_tree
     (agents / "custom.json").write_text(

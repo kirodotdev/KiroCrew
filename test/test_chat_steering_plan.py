@@ -138,6 +138,17 @@ def test_kiro_cli_without_inheritance_still_loads_what_the_agent_declares(
     assert by_name["always.md"] == (plan.REACHES_NO, plan.REASON_INHERITANCE_OFF)
 
 
+def test_a_file_uri_spelled_absolute_resource_is_a_declared_target(home, tmp_path):
+    """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, names its own folder."""
+    rule = _write(tmp_path / "abs-rules" / "abs.md", "# Abs\n")
+    glob = "file:///" + (tmp_path / "abs-rules").as_posix().lstrip("/") + "/*.md"
+    _write(
+        home / ".kiro" / "agents" / "kirocrew.json",
+        json.dumps({"name": "kirocrew", "resources": [glob]}),
+    )
+    assert plan.declared_steering_targets("kirocrew", None) == frozenset({rule.resolve()})
+
+
 def test_a_project_agent_spec_makes_kiro_cli_verdicts_unknown(home, tmp_path, monkeypatch):
     """kiro-cli serves the project's spec of that name, which this plan does not read."""
     from kiro_crew import context as ctx

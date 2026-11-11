@@ -146,6 +146,7 @@ def steering_resource_documents(
     only itself.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.file_uri import file_uri_path_text
     from kiro_crew.folder_steering import every_session_body
 
     try:
@@ -186,7 +187,7 @@ def steering_resource_documents(
         if not isinstance(res, str) or not res.startswith("file://"):
             continue
         try:
-            anchor, pattern = _steering_glob_anchor(res.removeprefix("file://"), project_root)
+            anchor, pattern = _steering_glob_anchor(file_uri_path_text(res), project_root)
             hits = sorted(anchor.glob(pattern))
         except Exception as exc:
             # pathlib refuses some patterns outright; skip this entry only.
@@ -578,6 +579,7 @@ def _load_agent_prompt(
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.file_uri import file_uri_path_text
     from kiro_crew.member_essential_context import (
         read_template_spec,
         resolve_relative_prompt_path,
@@ -614,7 +616,7 @@ def _load_agent_prompt(
         if agent == owner_template:
             return ""
         if prompt.startswith("file://"):
-            source = Path(prompt[7:]).expanduser()
+            source = Path(file_uri_path_text(prompt)).expanduser()
             if not source.is_absolute():
                 resolved_source = resolve_relative_prompt_path(source, path, project)
                 if resolved_source is None:

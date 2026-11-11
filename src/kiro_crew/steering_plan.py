@@ -75,6 +75,7 @@ def declared_steering_targets(agent: str | None, project: str | None) -> frozens
     from kiro_crew.agent_spec_pins import spec_pin_for
     from kiro_crew.config.paths import project_agents_dir
     from kiro_crew.context_assembly.agent_spec import _steering_glob_anchor
+    from kiro_crew.file_uri import file_uri_path_text
 
     name = agent or "kirocrew"
     if spec_pin_for(name) is not None:
@@ -94,7 +95,7 @@ def declared_steering_targets(agent: str | None, project: str | None) -> frozens
         if not isinstance(res, str) or not res.startswith("file://"):
             continue
         try:
-            anchor, pattern = _steering_glob_anchor(res.removeprefix("file://"), project_root)
+            anchor, pattern = _steering_glob_anchor(file_uri_path_text(res), project_root)
             targets.update(p.resolve() for p in anchor.glob(pattern) if p.suffix == ".md")
         except (OSError, ValueError, RuntimeError):
             continue

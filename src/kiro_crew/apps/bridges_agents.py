@@ -45,6 +45,7 @@ from kiro_crew.config.loader import (
     publish_materialized_agents,
     schedule_materialized_agents_refresh,
 )
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.mcp_utils import without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
@@ -139,7 +140,7 @@ def _apply_agent_prompt(
     raw = per_agent.get("prompt")
     if not isinstance(raw, str) or not raw:
         return agent_data
-    path = Path(raw[len("file://") :] if raw.startswith("file://") else raw)
+    path = Path(file_uri_path_text(raw) if raw.startswith("file://") else raw)
     if not path.is_absolute():
         logger.warning("Agent %s: prompt path is not absolute, ignoring: %s", agent_name, raw)
         return agent_data

@@ -107,6 +107,7 @@ from types import ModuleType
 
 from kiro_crew.agent_scratch import scratch_root as managed_scratch_root
 from kiro_crew.browser_snapshots import snapshot_dir
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.hooks import (
     FileTooLargeError,
     is_unc_shape,
@@ -794,7 +795,7 @@ def strip_url_syntax(raw_dest: str) -> str:
         return raw_dest
     clean = raw_dest.split("?", 1)[0].split("#", 1)[0]
     if clean.startswith("file://"):
-        clean = clean[len("file://") :]
+        clean = file_uri_path_text(clean)
     return clean
 
 
