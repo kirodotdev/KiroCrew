@@ -33,6 +33,7 @@ from kiro_crew.mcp_dashboard_session_runs import (
     _run_session_send,
     _run_session_set_color,
     _run_session_set_model,
+    _run_session_set_note,
     _run_session_status,
     _run_session_stop,
     _run_session_summary,
@@ -478,6 +479,38 @@ def _session_tools() -> tuple[Tool, ...]:
             run=_run_session_set_color,
             identity="strict",
             routes=("POST /api/session-control/set-color",),
+        ),
+        Tool(
+            name="session_set_note",
+            description=(
+                "Leave a note in a session you created without starting a turn there: "
+                "a note line in its transcript, which its next turn also reads once as "
+                'background context labelled "session_set_note". A session that is '
+                "running a turn gets the note when that turn ends. State facts, do not "
+                "ask questions: a question rides along and may be answered on an "
+                "unrelated turn. This session itself and sessions you did not create "
+                "are refused, including the person's own tabs."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Session key from list_sessions or session_status, or its "
+                            "exact title."
+                        ),
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "The note text, a short declarative statement.",
+                    },
+                },
+                "required": ["target", "note"],
+            },
+            run=_run_session_set_note,
+            identity="strict",
+            routes=("POST /api/session-control/set-note",),
         ),
         Tool(
             name="session_rename",

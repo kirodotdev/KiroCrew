@@ -87,6 +87,7 @@ if TYPE_CHECKING:
         _detach_appended_context,
         _folder_steering_turn,
         _startup_query_prewarm_applies,
+        drop_session_notes_out_of_reach,
         resolve_turn_transcript_identity,
         take_turn_context,
     )
@@ -805,6 +806,8 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # queued on another slot of this session is this turn's as well; the
         # transcript identity that admits it is read off the loop first.
         _turn_identity = await resolve_turn_transcript_identity(state, slot)
+        # After the await, so a link gained while it waited is compared too.
+        drop_session_notes_out_of_reach(state, slot)
         _turn_context = take_turn_context(state, slot, transcript_identity=_turn_identity)
         _ctx_prefix = _turn_context.prefix
         turn._drained_merge_contexts = _turn_context.consumed
