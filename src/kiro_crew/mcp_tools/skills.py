@@ -42,6 +42,9 @@ _SLOT_REFUSAL = (
     "query and key gets this answer; it does not mean the skill is missing"
 )
 
+#: How long a one-shot skill call waits for its loader's installed-plugin scan.
+PLUGIN_SCAN_WAIT_SECS = 10.0
+
 
 def skill_search(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SKILL_SEARCH_SCHEMA)
@@ -130,6 +133,13 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
         else:
             # No signed session (CLI, or an unidentified child): global-only.
             loader = mcp_core.SkillsLoader(install_builtins=False)
+            # This loader lives for one call, so let its installed-plugin scan
+            # land first, or a plugin skill reads as out of scope every time.
+            # Safe to block: this is a sync tool call, never the gateway loop.
+            # Bounded, so a slow plugin tree costs a wait, not a hang.
+            _scan = getattr(loader, "_power_scan_thread", None)
+            if _scan is not None:
+                _scan.join(timeout=PLUGIN_SCAN_WAIT_SECS)
             try:
                 incomplete = False
                 if action == "read":

@@ -68,7 +68,7 @@ from kiro_crew.mcp_gateway.rewriter_launch import (
 )
 from kiro_crew.mcp_gateway.rewriter_overlay import env_sidecar_dir_for_stubs, env_sidecar_name
 from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
-from kiro_crew.mcp_provenance import WITHHELD_KEY, is_withheld_mute
+from kiro_crew.mcp_provenance import WITHHELD_KEY, is_power_entry, is_withheld_mute
 from kiro_crew.mcp_utils import mcp_server_alias
 
 if TYPE_CHECKING:
@@ -673,6 +673,15 @@ def _rewrite_single_spec(
             # projection's own scope check runs, so wrapping here started
             # the server the user switched off. Passed through unchanged, so the
             # projection reads the scope and withholds it.
+            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
+        if is_power_entry(entry):
+            # An installed Agent Plugin's server is never routed through the
+            # broker, even when ``stub_servers`` names it. The session launches it
+            # directly, inside the session sandbox and in its own declared
+            # ``cwd``, so the broker's launch approval (which does not cover the
+            # working directory) never has to vouch for third-party code. A
+            # forged marker only narrows a server to that same direct launch.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
         # The stub is opt-in per server, and ``mcp_gateway.stub_servers`` is the

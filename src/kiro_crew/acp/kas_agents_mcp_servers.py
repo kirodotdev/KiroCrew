@@ -38,6 +38,7 @@ from kiro_crew.mcp_cleanup import (
     mcp_server_muted_in_any_store,
 )
 from kiro_crew.mcp_oauth_projection import registry_withheld
+from kiro_crew.mcp_provenance import without_local_power_entries
 
 logger = logging.getLogger("kiro_crew.acp.kas_agents")
 
@@ -200,7 +201,7 @@ def _project_mcp_servers(
     # reading, else this pass's, through the one reader (and patch seam).
     if scope_muted is None:
         scope_muted = mcp_cleanup.mcp_scope_muted_aliases()
-    for name, entry in servers.items():
+    for name, entry in without_local_power_entries(servers).items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
         managed = name in MANAGED_MCP_SERVER_NAMES

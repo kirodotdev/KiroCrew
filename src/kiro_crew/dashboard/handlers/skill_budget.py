@@ -67,17 +67,22 @@ def _safe_description(meta: dict[str, str]) -> str:
 
 
 def _origin(skills_loader: Any, key: str, skill_file: Path, confine_root: Any) -> str:
-    """Where this skill came from: ``"builtin"``, ``"app"`` or ``"user"``.
+    """Where this skill came from: ``"builtin"``, ``"app"``, ``"plugin"`` or ``"user"``.
 
     The loader's own ``_is_user_authored`` decides the user's skills from the
     rest, so the tag never disagrees with it. Of the rest, a skill resolving
-    into ``<data home>/apps`` was registered by an app the user installed, not
-    shipped with Kiro Crew, so it gets its own answer instead of "builtin".
+    into ``<data home>/apps`` was registered by an app the user installed, and a
+    skill under an installed Agent Plugin's ``skills/`` root came from a third
+    party. Neither shipped with Kiro Crew, so each gets its own answer instead
+    of "builtin".
     """
     if skills_loader._is_user_authored(
         {"key": key, "path": str(skill_file), "confine_root": confine_root}
     ):
         return "user"
+    power_roots = tuple(str(r) for r in getattr(skills_loader, "_power_extra_paths", ()))
+    if power_roots and _within_any(os.path.realpath(skill_file), power_roots):
+        return "plugin"
     try:
         apps_root = os.path.realpath(config_dir() / "apps")
     except Exception:  # noqa: BLE001 — an unresolvable data home has no installed apps
