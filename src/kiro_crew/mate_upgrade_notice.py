@@ -33,6 +33,38 @@ KEPT_OWED_FILENAME = "worker_kept_owed.json"
 #: Claimed once, right before that notice is delivered.
 KEPT_CLAIMED_FILENAME = "worker_kept_claimed.json"
 
+#: Written by ``mate_policy_repair`` for each moved crewmate whose old agent's
+#: restrictions it put back, with what it did.
+POLICY_OWED_FILENAME = "worker_policy_owed.json"
+#: Claimed once, right before that notice is delivered.
+POLICY_CLAIMED_FILENAME = "worker_policy_claimed.json"
+
+
+def policy_notice_prompt(change: str) -> str:
+    """The hidden turn that tells a crewmate's user its old restrictions apply again."""
+    return WORKER_UPGRADE_PREFIX + crewmate_prompts.fill("upgrade_notice_policy", change=change)
+
+
+def mark_policy_owed(name: str, change: str) -> None:
+    """Record that crewmate *name* owes its user the restored-restrictions *change*. Never raises."""
+    try:
+        path = _dir(name) / POLICY_OWED_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from kiro_crew.atomic_write import atomic_write
+
+        atomic_write(
+            path, json.dumps({"member": name, "change": change}) + "\n", restrict_to_owner=True
+        )
+    except Exception:  # noqa: BLE001 - no notice is the safe direction
+        logger.warning("could not record the policy notice owed by %r", name, exc_info=True)
+
+
+def claim_policy_notice(slug: str, member: str) -> str:
+    """Claim *member*'s restored-restrictions notice once: its prompt, ``""`` when none is owed."""
+    record = _claim(slug, member, POLICY_OWED_FILENAME, POLICY_CLAIMED_FILENAME)
+    change = record.get("change") if record else None
+    return policy_notice_prompt(change) if isinstance(change, str) and change else ""
+
 
 def kept_notice_prompt(reason: str) -> str:
     """The hidden turn that tells a crewmate's user why it was not moved."""

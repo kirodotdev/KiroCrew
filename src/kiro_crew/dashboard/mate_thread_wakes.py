@@ -335,7 +335,11 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
     if not is_crewmate_thread(slot) or slot.key in _notice_checked(state):
         return False
     _notice_checked(state).add(slot.key)
-    from kiro_crew.mate_upgrade_notice import claim_kept_notice, claim_notice_prompt
+    from kiro_crew.mate_upgrade_notice import (
+        claim_kept_notice,
+        claim_notice_prompt,
+        claim_policy_notice,
+    )
 
     binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, slot.key)
     slug = members_mod.slug_from_dm_slot_key(slot.key)
@@ -346,8 +350,12 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
         _notices(state).add(slot.key)
         _notice_prompts(state)[slot.key] = prompt
     else:
-        # Not moved: a crewmate the migration left where it was says why, once.
-        kept = await asyncio.to_thread(claim_kept_notice, slug, slot.agent)
+        # Moved at an earlier upgrade without its old agent's restrictions, which
+        # this start put back (``mate_policy_repair``); else, a crewmate the
+        # migration left where it was says why, once.
+        kept = await asyncio.to_thread(claim_policy_notice, slug, slot.agent)
+        if not kept:
+            kept = await asyncio.to_thread(claim_kept_notice, slug, slot.agent)
         if not kept:
             return False
         _kept_notices(state)[slot.key] = kept

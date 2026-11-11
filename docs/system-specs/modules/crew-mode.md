@@ -4683,12 +4683,25 @@ prompt, servers the base lacks with their approvals and selectors, skills, and
 its restrictions. Before any write, `plan_move` merges the planned file as a
 worker session would (`differences`; `dry_run` is the same as one sentence)
 and sorts what differs (`docs/decisions/2026-10-27-every-used-crewmate-moves-to-the-conductor.md`).
-A **loosening** keeps the crewmate where it is: a grant the worker would gain
-or a switched-off server it would start. A `hooks` entry it would not run or a
-`permissions` / `toolsSettings` restriction it would not keep does not: the crewmate
-moves as it is, no tool is withheld for it, and its one notice names each restriction
-that no longer applies (`dropped_restrictions`, `restrictions_notice`); the governance
-ceiling still governs the merged worker spec. The two loosenings are cured
+A **loosening** keeps the crewmate where it is: a grant the worker would gain,
+a switched-off server it would start, or a `hooks` entry it would not run or a
+`permissions` / `toolsSettings` restriction it would not keep. The file carries
+every restriction the source adds to the base (`carried_policy`: its hooks, every
+`permissions` rule that is not allow-only, its `toolsSettings`), so the worker
+runs under them (`mate_spec_policy.layer_policy`); one that cannot land exactly,
+or a crewmate whose worker runs on a backend that applies none of them
+(`_policy_backend_refusal`, `mate_spec_policy.backend_refusal`), keeps the crewmate on
+its old agent and is told once (`mark_kept_owed`); the governance ceiling still
+governs the merged worker spec. A crewmate an earlier release moved without its old
+agent's restrictions gets them back at startup
+(`mate_policy_repair.restore_dropped_policy`, run from
+`migrate_existing_crewmates` before the moves): they are layered into its file
+when its worker then keeps every one, gains nothing and runs on KAS; else it is
+pointed back at its old agent (compare-and-set on `kiro_agent`) when that agent
+is still readable at the user level; else it is logged and checked again at the
+next start. A repaired Bot owes one notice in its chat
+(`mate_upgrade_notice.mark_policy_owed`, `upgrade_notice_policy`); each is
+checked once (`migrated.json` `policy_checked`). The two other loosenings are cured
 first: a server the source switched off is written `{"disabled": true}`, and a
 grant the worker would gain is taken out of the file (`_strip_grants`), so
 nothing the old agent lacked is ever granted; the user gets it only through
@@ -4729,9 +4742,9 @@ governed (its `file://` prompt does not resolve) still has its stated limits
 read raw, and the default template's file never loosens them
 (`_fallback_keeping_limits`): a server it switched off is written
 `{"disabled": true}`, a tool it excludes or disables goes into
-`excludedTools`, and a grant it never had is taken out. A hook or a
-`permissions` / `toolsSettings` restriction the file cannot carry moves with it
-and is named in its notice. Governance applies as before: the source is read
+`excludedTools`, and a grant it never had is taken out. Its hooks and
+`permissions` / `toolsSettings` restrictions are carried into the file
+(`carried_policy`); one that cannot land keeps the crewmate where it is. Governance applies as before: the source is read
 governed, and the worker session still passes POLICY ∩ PROFILE. A crewmate
 whose id is also a user-level agent's name is moved only when that agent is its
 own private copy (a fork whose lineage is private to it and that its binding runs,

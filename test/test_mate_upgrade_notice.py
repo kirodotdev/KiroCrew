@@ -270,3 +270,21 @@ def test_the_notice_names_the_editor_labels_the_dashboard_shows():
     # The section the notice points the user at is "Abilities".
     assert labels["crewEditorNext"]["section_capabilities"] == "Abilities"
     assert labels["crewEditorNext"]["section_capabilities"] in notice.NOTICE_PROMPT
+
+
+def test_a_bot_whose_restrictions_were_put_back_is_told_once_after_its_moved_notice(
+    dispatched,
+):
+    """The moved notice was claimed at an earlier start; the policy notice is its own."""
+    slot = _thread("vega")
+    directory = members_mod.member_dir(members_mod.member_slug("vega"))
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / notice.NOTICE_CLAIMED_FILENAME).write_text('{"member": "vega"}')
+    notice.mark_policy_owed("vega", "these limits apply to its worker again: deny shell")
+
+    asyncio.run(_offer(_State(slot)))
+    asyncio.run(_offer(_State(slot)))  # a later start: a fresh gateway state
+
+    assert [key for key, _ in dispatched] == [slot.key]
+    assert dispatched[0][1].startswith(notice.WORKER_UPGRADE_PREFIX)
+    assert "deny shell" in dispatched[0][1]
