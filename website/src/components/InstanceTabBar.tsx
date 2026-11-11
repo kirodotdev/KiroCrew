@@ -1284,8 +1284,9 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         // Same reading as the row's visible word, for the same reason as the host-side
         // title below: the relayed tab already carries `reachable` and `brokenAt`, so a
         // title from the raw state would tell a screen reader "connected" about a row
-        // that reads "unreachable" on screen.
-        title: `${t.name} (${t.sshHost}) — ${rowStateLabel({ state: t.state, reachable: t.reachable, brokenAt: t.brokenAt })}`,
+        // that reads "unreachable" on screen. An older host relays no machine for an
+        // SSM crew, and an empty "()" names nothing.
+        title: `${t.name}${t.sshHost ? ` (${t.sshHost})` : ''} — ${rowStateLabel({ state: t.state, reachable: t.reachable, brokenAt: t.brokenAt })}`,
         state: t.state,
         connecting: t.state === 'connecting',
         unread: t.unread,
