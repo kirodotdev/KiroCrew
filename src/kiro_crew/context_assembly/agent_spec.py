@@ -77,15 +77,17 @@ def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool
 #: The project half of the resources kiro-cli adds to an agent's own while a
 #: workspace inherits its defaults (``acp/skill_projection_parts/preparation.py``):
 #: the project's steering and ``AGENTS.md``, when a project is bound. The global
-#: half is ``_GLOBAL_DEFAULT_RESOURCE``. The Claude Code backend reads none of
-#: them itself.
+#: half is ``_GLOBAL_DEFAULT_RESOURCE``. A harness this load serves reads none of
+#: them from the spec. Codex reads ``AGENTS.md`` from its working directory, so
+#: the load leaves that file out there (``harness_reads_agents_md``).
 _PROJECT_DEFAULT_RESOURCES = ("file://.kiro/steering/**/*.md", "file://AGENTS.md")
 
 
 #: The global half: the operator's steering under the host ``~/.kiro``. It stays
 #: there under a relocated ``KIRO_HOME`` because the folder-steering dedup
 #: (``folder_steering._double_load_roots``) skips the host tree as delivered on
-#: this backend, and a root it skips must be the root this load reads.
+#: the harnesses this load serves, and a root it skips must be the root this load
+#: reads.
 _GLOBAL_DEFAULT_RESOURCE = "file://~/.kiro/steering/**/*.md"
 
 
@@ -109,10 +111,16 @@ def _steering_glob_anchor(pattern: str, project: Path | None) -> tuple[Path, str
     return Path(*parts[:split]), str(Path(*parts[split:]))
 
 
-def _load_steering_resources(project: str | None = None) -> str:
+def _load_steering_resources(
+    project: str | None = None, *, harness_reads_agents_md: bool = False
+) -> str:
     """The steering text :func:`steering_resource_documents` keeps, joined."""
     parts = [
-        body for _path, _resolved, body in steering_resource_documents(project) if body is not None
+        body
+        for _path, _resolved, body in steering_resource_documents(
+            project, harness_reads_agents_md=harness_reads_agents_md
+        )
+        if body is not None
     ]
     if parts:
         logger.debug(
@@ -122,13 +130,18 @@ def _load_steering_resources(project: str | None = None) -> str:
 
 
 def steering_resource_documents(
-    project: str | None = None,
+    project: str | None = None, *, harness_reads_agents_md: bool = False
 ) -> list[tuple[Path, Path, str | None]]:
     """``(path, resolved, body)`` for each document the steering load admits.
 
     The one reader behind :func:`_load_steering_resources` and the dashboard's
     per-chat steering list, so the two cannot disagree. *body* is ``None`` for an
     admitted document :func:`kiro_crew.folder_steering.every_session_body` withholds.
+
+    *harness_reads_agents_md* says the harness reads ``<project>/AGENTS.md`` itself
+    from its working directory. The load then leaves that file out, whether the
+    default or the spec's own entry names it, because the harness reads it
+    whatever the spec lists, and a second copy only doubles its tokens.
 
     Loads steering files from the agent config's resources array.
 
@@ -177,11 +190,18 @@ def steering_resource_documents(
             _GLOBAL_DEFAULT_RESOURCE,
             *(_PROJECT_DEFAULT_RESOURCES if project_root is not None else ()),
         ]
+        # Matched by resolved path, as the de-duplication below is: an entry
+        # that reaches the same file another way is the same file.
+        read_by_harness = (
+            {(project_root / "AGENTS.md").resolve()}
+            if harness_reads_agents_md and project_root is not None
+            else set()
+        )
     except Exception as exc:
         logger.debug("steering load failed: %s", type(exc).__name__)
         return []
     documents: list[tuple[Path, Path, str | None]] = []
-    seen: set[Path] = set()
+    seen: set[Path] = set(read_by_harness)
     for res in resources:
         if not isinstance(res, str) or not res.startswith("file://"):
             continue

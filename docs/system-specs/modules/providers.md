@@ -1085,11 +1085,13 @@ identical `SpawnPlan` for a folder chat and a non-folder chat; delivery cannot b
 lost by adding a provider. A file whose realpath lies under the chat project's
 `.kiro/steering` or under `~/.kiro/steering` is skipped ONLY where the active provider
 already delivers those trees -- kiro-cli loads them natively while the workspace
-inherits kiro-cli's default resources, the Claude Code seam receives the explicit
-steering load, KAS reports `native_steering` -- so they are not sent twice; on a
-harness with no such path (Codex, OpenCode, Pi, Goose, DeepSeek) the folder
+inherits kiro-cli's default resources, the Claude Code seam and Codex receive the
+explicit steering load, KAS reports `native_steering` -- so they are not sent twice; on a
+harness with no such path (OpenCode, Pi, Goose, DeepSeek) the folder
 delivers them like any other document rather than skipping rules nothing else
-would carry. The context builder's entry points (`build_message`,
+would carry. The explicit load serves only the Kiro Crew default agent, so on
+Claude Code and Codex the folder still delivers the trees in a custom agent's chat.
+The context builder's entry points (`build_message`,
 `build_session_context`) pass a harness to the member essentials builder only
 when the caller or its context provider names one, so an unnamed harness keeps a
 private member inheriting. One rule holds everywhere the value is read: a harness

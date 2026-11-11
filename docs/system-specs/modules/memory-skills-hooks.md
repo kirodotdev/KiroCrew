@@ -7496,11 +7496,11 @@ A spawning parent decides which of three groups its sub-agent inherits, via `inc
 | conduct | `_CRITICAL_RULES`, date, agent/runtime, UI language, workspace identity, bounded skill discovery | no |
 | `memory` | complete preferences, activity index, budgeted `[Memory activity]` block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes; `memory.inject_activity`), memory tool guidance, `Recent Session Context` source snippets; V2 essential anchors | yes |
 | `lessons` | `[Learned corrections]` (global + workspace), `[USER PROFILE]` | yes |
-| `project` | `[DOCUMENTATION]` pointer, steering resources (CC backend only), `[PROJECT]` directory line | yes |
+| `project` | `[DOCUMENTATION]` pointer, steering resources (CC and Codex backends only), `[PROJECT]` directory line | yes |
 
-The steering row carries a backend caveat: the steering block is injected only on the Claude Code backend (`is_cc`), because on the ACP/kiro backend `kiro-cli --agent` loads the agent's own `resources` natively. `include_project=false` therefore suppresses steering on CC only — an ACP sub-agent still receives it, and nothing in Kiro Crew can prevent that from this call site.
+The steering row carries a backend caveat: the steering block is injected only on the Claude Code and Codex backends (`ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`, asked by provider label through `crew_loads_spec_steering`), because on the ACP/kiro backend `kiro-cli --agent` loads the agent's own `resources` natively. `include_project=false` therefore suppresses steering on CC and Codex only. An ACP sub-agent still receives it, and nothing in Kiro Crew can prevent that from this call site.
 
-On CC the block mirrors what kiro-cli would load for the same project: `_load_steering_resources(project)` anchors each `file://` entry as kiro-cli does (relative at the project, else `$HOME`; `~/` at `$HOME`; absolute at its glob-free prefix), adds kiro-cli's inherited defaults (global steering under the host `~/.kiro`, the same root `_double_load_roots` skips as delivered, so a relocated `KIRO_HOME` cannot leave a folder-selected global document on neither path; the project's steering and `AGENTS.md` when a project is bound), admits each hit against its own entry's anchor, reads a document two entries match once, and skips only an entry it cannot glob. That is what keeps the `is_claude_code` disjunct of `_project_steering_delivered` true for the project root the folder dedup skips.
+On CC and Codex the block mirrors what kiro-cli would load for the same project: `_load_steering_resources(project)` anchors each `file://` entry as kiro-cli does (relative at the project, else `$HOME`; `~/` at `$HOME`; absolute at its glob-free prefix), adds kiro-cli's inherited defaults (global steering under the host `~/.kiro`, the same root `_double_load_roots` skips as delivered, so a relocated `KIRO_HOME` cannot leave a folder-selected global document on neither path; the project's steering and `AGENTS.md` when a project is bound), admits each hit against its own entry's anchor, reads a document two entries match once, and skips only an entry it cannot glob. On Codex the load leaves out `<project>/AGENTS.md`, also when the spec lists it, because Codex reads that file from its working directory (`ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`). That is what keeps the `crew_loads_spec_steering` disjunct of `_project_steering_delivered` true for the project root the folder dedup skips.
 
 conduct is not switchable because it supplies the output contract and capability
 entry points. Default skill discovery is a small name/purpose list plus
@@ -7532,7 +7532,7 @@ it is not the public turn's slim-resume path.
 
 Post-compaction reinjection separately refreshes bounded skill discovery,
 protected skill bodies, memory navigation, reply preferences and member identity,
-and on the Claude Code backend the steering resources, under the session-start gate
+and on the Claude Code and Codex backends the steering resources, under the session-start gate
 (`context_assembly/inclusion.py` → `steering_resources_part`).
 A minimal-context turn refreshes only what its minimal session start carried, the
 agent contract and reply preferences; memory navigation, skills, steering

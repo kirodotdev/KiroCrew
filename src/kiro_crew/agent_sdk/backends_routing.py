@@ -332,6 +332,30 @@ ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS = ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
 #: to make every shell and write call ask.
 ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS: FrozenSet[str] = frozenset({ACP_BACKEND_CLAUDE})
 
+#: Backends whose session never reads the agent spec's ``resources``, so Crew puts
+#: the steering documents its ``file://`` entries name into the prompt, with the
+#: global and project ``.kiro/steering`` trees kiro-cli adds to them
+#: (``context_assembly.inclusion.steering_resources_part``). Crew sends them at
+#: session start and again after a compaction, for the Kiro Crew default agent in a
+#: chat that is not a crew member's. Context assembly asks it by provider label
+#: (``agent_sdk.drivers.acp.crew_loads_spec_steering``).
+#:
+#: claude and codex are the members: each is handed no spec, and Crew's prompt text
+#: reaches each one. kiro-cli is NOT a member and must never become one: it reads
+#: the spec off disk, so membership would send every document twice. KAS is not
+#: either: it reports ``native_steering`` and loads the trees itself. The other
+#: harnesses stay out until their prompt is shown to carry the documents.
+ACP_BACKENDS_CREW_LOADS_SPEC_STEERING: FrozenSet[str] = frozenset(
+    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+)
+
+#: Backends that read the project's ``AGENTS.md`` themselves from the session's
+#: working directory, so Crew's steering load leaves that file out
+#: (``agent_sdk.drivers.acp.reads_project_agents_md``). codex is the member: Crew
+#: sends the project as the ACP ``cwd``, and Codex's project-doc discovery reads
+#: ``AGENTS.md`` from it. claude is not: Crew's load is how the file reaches it.
+ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD: FrozenSet[str] = frozenset({ACP_BACKEND_CODEX})
+
 
 # ── How a harness is made to ask ──
 # Kiro Crew's PreToolUse gate -- the bundled denied-command rules, the

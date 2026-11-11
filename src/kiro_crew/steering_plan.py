@@ -12,12 +12,14 @@ verdict is read from the writer itself; where a harness loads it, the plan says 
    documents the agent's own ``resources`` name: ``harness`` for those, ``no``
    for the rest, and ``harness`` with ``agent_spec_unread`` when the plan cannot
    tell which spec serves the chat.
-4. The Claude Code seam loads them through ``steering_resources_part``, only for the
-   Kiro Crew default agent. The documents come from
+4. The Claude Code seam and Codex load them through ``steering_resources_part``,
+   only for the Kiro Crew default agent. The documents come from
    :func:`kiro_crew.context_assembly.agent_spec.steering_resource_documents`, the
    same list the loader joins: ``yes`` for each it keeps, ``no`` for one it reads
    and withholds, ``no`` for a listed file it does not pick up, and a row of its own
-   for a document it loads from outside the two trees (``AGENTS.md``).
+   for a document it loads from outside the two trees (``AGENTS.md`` on Claude
+   Code; Codex reads the project's ``AGENTS.md`` itself, so the load and the list
+   leave it out).
 5. Every other harness has no path for them: ``no``.
 
 Folder steering (``steering_dirs``) is rendered by Crew on every harness; the caller
@@ -52,7 +54,7 @@ REASON_NOT_LOADED: Final = "not_loaded"
 REASON_FOLDER_CAP: Final = "folder_cap"
 REASON_HARNESS_HAS_NO_PATH: Final = "harness_has_no_path"
 
-#: Values of a document's state in the Claude Code load.
+#: Values of a document's state in Crew's steering load.
 LOADER_KEPT: Final = "kept"
 LOADER_WITHHELD: Final = "withheld"
 
@@ -101,17 +103,17 @@ def declared_steering_targets(agent: str | None, project: str | None) -> frozens
     return frozenset(targets)
 
 
-def _loads_through_claude_seam(
+def _loads_through_crew(
     provider_type: str, native_steering: bool, agent: str | None, is_member: bool
 ) -> bool:
-    """Whether this chat's turns run the Claude Code steering load at all."""
+    """Whether this chat's turns run Crew's steering load (``steering_resources_part``)."""
     from kiro_crew import context as ctx
     from kiro_crew.agent_files import is_kirocrew_default_agent
 
     return (
         not is_member
         and not native_steering
-        and ctx.is_claude_code(provider_type)
+        and ctx.acp_driver.crew_loads_spec_steering(provider_type)
         and (not agent or is_kirocrew_default_agent(agent))
     )
 
@@ -132,7 +134,7 @@ def tree_verdict(
 
     *provider_type* is the session's provider label (``provider_label``). *target* is
     the document's resolved path. *declared* is :func:`declared_steering_targets` for
-    the chat's agent. *loaded* is the document's state in the Claude Code load
+    the chat's agent. *loaded* is the document's state in Crew's steering load
     (:data:`LOADER_KEPT`, :data:`LOADER_WITHHELD`, or ``None`` when that load does
     not pick it up), and *linked* whether the listing found it through a link.
     """
@@ -150,8 +152,8 @@ def tree_verdict(
         if target is not None and target in declared:
             return REACHES_HARNESS, REASON_AGENT_RESOURCES
         return REACHES_NO, REASON_INHERITANCE_OFF
-    if ctx.is_claude_code(provider_type):
-        if not _loads_through_claude_seam(provider_type, native_steering, agent, is_member):
+    if ctx.acp_driver.crew_loads_spec_steering(provider_type):
+        if not _loads_through_crew(provider_type, native_steering, agent, is_member):
             return REACHES_NO, REASON_CUSTOM_AGENT
         if loaded == LOADER_KEPT:
             return REACHES_YES, ""
@@ -198,7 +200,7 @@ def chat_steering_plan(
     the same spelling. A listed file the folder delivers (a folder that declares a
     tree the harness does not load) keeps one row, marked ``yes``.
     *loader_documents* is ``(display path, resolved path, kept)`` for each document
-    the Claude Code load admits.
+    Crew's steering load admits.
     """
     from kiro_crew import context as ctx
 
@@ -207,7 +209,7 @@ def chat_steering_plan(
         if provider_type == ctx.PROVIDER_ACP and not native_steering and not is_member
         else None
     )
-    via_seam = _loads_through_claude_seam(provider_type, native_steering, agent, is_member)
+    via_seam = _loads_through_crew(provider_type, native_steering, agent, is_member)
     load = {resolved: kept for _display, resolved, kept in loader_documents} if via_seam else {}
     rows: list[dict[str, str]] = []
     seen: set[str] = set()

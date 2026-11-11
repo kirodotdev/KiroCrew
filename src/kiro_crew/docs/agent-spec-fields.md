@@ -327,17 +327,21 @@ context rather than as config — `context.py`'s `_skills_injection_plan` return
 `bool(globs) or not is_custom`, with no backend condition, so Crew injects the
 mapped set on every backend, as a bounded directory plus each `always: true`
 body. The `file://` steering
-load runs on one of them only: it is gated on `is_cc`, which is
-`is_claude_code(provider_type)`, true for the `claude` `acp_backend` (its provider
-label is `claude_code`) and for no other harness. `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
+load runs on two of them only: it is gated on `ACP_BACKENDS_CREW_LOADS_SPEC_STEERING`,
+asked by provider label through `crew_loads_spec_steering(provider_type)`. The
+members are the `claude` `acp_backend` (its provider label is `claude_code`) and
+`codex`. No other harness gets the load. On `codex` the load leaves out the
+project's `AGENTS.md`, because Codex reads that file from its working directory
+(`ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD`). `claude_code.py`, `codex.py` and `opencode.py` give `withheld`
 the shared reason `RESOURCES_NO_READER` (`providers/mirrors/base.py`), which opens
 with this page's class name, `no-reader`; `goose.py`'s reason says no channel is
 advertised for them. A new session of a custom agent on a backend whose mirror
 rules `resources` `withheld` or `no-channel` gets one notice row naming the spec's
 `file://` entries (`spec_steering_read_nowhere` in
-`src/kiro_crew/agent_sdk/spec_hooks.py`). The default agent gets no row, because
-its steering trees reach these harnesses by other routes. Injecting the steering
-itself is a separate, open decision. The ruling stays
+`src/kiro_crew/agent_sdk/spec_hooks.py`). The default agent gets no row. On
+`claude` and `codex` Crew's load sends its steering, and on the other harnesses
+folder steering or member essentials can carry it. Injecting a custom agent's
+steering is a separate, open decision. The ruling stays
 **no-reader** rather than context-instead because it is a statement about the
 harness: what reaches the session on the skill half is Crew's own injected
 directory, not the key the mirror declined to project.
@@ -831,9 +835,9 @@ nothing duplicates it there, and on KAS the wire projection forwards the array
 while Crew's own directory stays the bounded one.
 
 The `file://` steering block does NOT follow that shape. It is still gated on the
-backend: injected only on the Claude Code backend, and only for the default agent,
-because kiro-cli and KAS read `resources` from the spec themselves and injecting
-would duplicate what the backend already loaded. KAS also loads each root's
+backend: injected only on the Claude Code backend and on Codex, and only for the
+default agent, because kiro-cli and KAS read `resources` from the spec themselves
+and injecting would duplicate what the backend already loaded. KAS also loads each root's
 `.kiro/steering` tree natively, honouring `inclusion`, so the KAS projection drops a
 relative `file://.kiro/steering/...` entry that can match only `.md` files
 (`acp/kas_steering.py`). When the workspace tree holds files that may be

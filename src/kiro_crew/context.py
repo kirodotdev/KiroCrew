@@ -1049,7 +1049,11 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
 
 
 def _project_steering_delivered(
-    provider_type: str | None, native_steering: bool, project: str | None
+    provider_type: str | None,
+    native_steering: bool,
+    project: str | None,
+    *,
+    agent: str | None = None,
 ) -> bool:
     """Whether the project/global ``.kiro/steering`` trees already reach the model.
 
@@ -1060,10 +1064,13 @@ def _project_steering_delivered(
     project and global ``.kiro/steering`` trees arrive wholesale too (a
     workspace that sets ``chat.disableInheritingDefaultResources`` gets only
     the declared resources, so the folder carries the trees minus the
-    documents in the launch record); the Claude Code
-    seam receives the explicit ``[Steering resources]`` load in ``build_message`` (gated on
-    ``is_cc``); KAS reports ``native_steering`` on
-    its session provider. Every other harness -- Codex, OpenCode, Pi, Goose,
+    documents in the launch record); a harness Crew loads the spec's steering
+    for (``acp_driver.crew_loads_spec_steering``: the Claude Code seam and
+    Codex) receives the explicit ``[Steering resources]`` load in
+    ``build_message``, but only for the Kiro Crew default agent: that load
+    sends nothing for a custom *agent*, so there the folder still carries the
+    trees (``None`` is the default agent); KAS reports ``native_steering`` on
+    its session provider. Every other harness -- OpenCode, Pi, Goose,
     DeepSeek -- has NO path for those trees today, so a folder that declares one
     of them must deliver its documents itself rather than skip them as "already
     delivered" with nothing arriving in their place. A harness that is not
@@ -1073,9 +1080,14 @@ def _project_steering_delivered(
     harness. The driver is asked directly, with no admission check on
     *project*: this path also serves non-member sessions and must not raise.
     """
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
     return (
         (provider_type == PROVIDER_ACP and acp_driver.inherits_default_resources(project))
-        or is_claude_code(provider_type)
+        or (
+            acp_driver.crew_loads_spec_steering(provider_type)
+            and (not agent or is_kirocrew_default_agent(agent))
+        )
         or bool(native_steering)
     )
 

@@ -594,10 +594,11 @@ async def _notice_unread_steering(
 ) -> None:
     """One notice row naming the custom agent's ``file://`` steering *client* never loads.
 
-    Only a custom agent: the default agent's steering trees reach a mirrored
-    harness by other routes (folder steering, member essentials), so a row there
-    could claim a loss that did not happen. Best-effort: a spec that cannot be
-    read renders no row rather than failing the turn.
+    Only a custom agent: Crew's steering load serves the default agent alone. On
+    Claude Code and Codex it sends the default agent's entries and steering trees
+    itself, and elsewhere folder steering or member essentials can carry them, so
+    a row there could claim a loss that did not happen. Best-effort: a spec that
+    cannot be read renders no row rather than failing the turn.
     """
     agent = session_agent(client, agent)
     if not agent or is_kirocrew_default_agent(agent):

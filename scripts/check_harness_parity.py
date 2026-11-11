@@ -501,6 +501,8 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS": (
         "Crew-side: Crew's gate enforces the spec's shell and write allowlists"
     ),
+    "ACP_BACKENDS_CREW_LOADS_SPEC_STEERING": "Crew-side: steering files in the prompt text",
+    "ACP_BACKENDS_NATIVE_PROJECT_AGENTS_MD": "off the wire: AGENTS.md read from the cwd",
     "ACP_BACKENDS_LOCAL_CLEAR": "Crew-side: dashboard answers /clear",
     "ACP_BACKENDS_LOCAL_HARNESS_COMMANDS": "Crew-side: dashboard answers harness commands",
     "ACP_BACKENDS_CONTEXT_RECYCLE": "Crew-side: session recycle on full context",
