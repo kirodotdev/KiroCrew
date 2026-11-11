@@ -17356,6 +17356,8 @@
         "cache_creation": "ক্যাশ তৈরি",
         "cache_read": "ক্যাশ পঠন",
         "credits": "ক্রেডিট",
+        "cost_usd": "খরচ",
+        "cost_usd_compact": "খরচ: {{cost}}",
         "credits_used": "ব্যবহৃত ক্রেডিট",
         "credits_used_compact": "ব্যবহৃত ক্রেডিট: {{credits}} · {{pct}}",
         "credits_used_pct": "ব্যবহৃত ক্রেডিট (%)",

@@ -9773,6 +9773,8 @@
         "billing": "Billing",
         "cache_creation": "Cache creation",
         "cache_read": "Cache read",
+        "cost_usd": "Cost",
+        "cost_usd_compact": "Cost: {{cost}}",
         "credits_used": "Credits used",
         "credits_used_compact": "Credits used: {{credits}} · {{pct}}",
         "credits_used_pct": "Credits used (%)",

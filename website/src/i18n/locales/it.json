@@ -17799,6 +17799,8 @@
         "cache_creation": "Creazione della cache",
         "cache_read": "Lettura cache",
         "credits": "Crediti",
+        "cost_usd": "Costo",
+        "cost_usd_compact": "Costo: {{cost}}",
         "credits_used": "Crediti usati",
         "credits_used_compact": "Crediti usati: {{credits}} · {{pct}}",
         "credits_used_pct": "Crediti usati (%)",

@@ -16913,6 +16913,8 @@
         "cache_creation": "缓存创建",
         "cache_read": "缓存读取",
         "credits": "额度",
+        "cost_usd": "费用",
+        "cost_usd_compact": "费用：{{cost}}",
         "credits_used": "已用额度",
         "credits_used_compact": "已用额度：{{credits}} · {{pct}}",
         "credits_used_pct": "已用额度 (%)",

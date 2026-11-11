@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.handlers.usage_spend import daily_credits
+from kiro_crew.dashboard.handlers.usage_spend import daily_spend
 from kiro_crew.dashboard.handlers.usage_store import (
     _SESSIONS_HISTORY_DAYS,
     _parse_row_day,
@@ -336,24 +336,36 @@ def _parse_sessions() -> dict:
             sessions_dir.parent,
         )
 
-    # Build daily history sorted by date. Credits come from the per-turn usage
+    # Build daily history sorted by date. Spend comes from the per-turn usage
     # shards, not the transcripts, so a day can carry spend without a transcript
     # (a background slot, a refused file): such a day still gets a row, with
     # zero sessions, so that spend is shown rather than dropped. Counter lookups
     # on those days read 0 without inserting a key.
-    credits_by_day = daily_credits(_SESSIONS_HISTORY_DAYS)
-    all_days = sorted(set(daily.keys()) | set(credits_by_day.keys()))
+    spend_by_day = daily_spend(_SESSIONS_HISTORY_DAYS)
+    all_days = sorted(set(daily.keys()) | set(spend_by_day.keys()))
     history: list[dict[str, Any]] = []
     for d in all_days:
-        history.append(
-            {
-                "date": d,
-                "sessions": daily[d],
-                "messages": daily_msgs[d],
-                "tool_calls": daily_tools[d],
-                "credits": round(credits_by_day.get(d, 0.0), 2),
-            }
-        )
+        spend = spend_by_day.get(d, {})
+        credits = spend.get("credits", 0.0)
+        cost = spend.get("cost", 0.0)
+        row: dict[str, Any] = {
+            "date": d,
+            "sessions": daily[d],
+            "messages": daily_msgs[d],
+            "tool_calls": daily_tools[d],
+        }
+        # Every row records both fields, so presence cannot tell a credit-billed
+        # turn from a dollar-billed one. A day whose only spend is dollars (a
+        # Claude Code day) leaves ``credits`` off, so the page shows a dash rather
+        # than a 0.00 that reads as "nothing was spent". A day with no spend at
+        # all keeps its 0.00, as before.
+        if credits or not cost:
+            row["credits"] = round(credits, 2)
+        if cost:
+            # Unrounded: formatCost rounds for display, and a round here would
+            # double-round a total or turn a fraction of a cent into zero.
+            row["cost_usd"] = cost
+        history.append(row)
 
     # Compute period summaries
     week_start = (now_dt - timedelta(days=now_dt.weekday())).strftime("%Y-%m-%d")

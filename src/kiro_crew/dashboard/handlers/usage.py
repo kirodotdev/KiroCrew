@@ -800,12 +800,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
+        _DAILY_SPEND_FIELDS,
         _SLOT_SPEND_CACHE,
         _SLOT_SPEND_CACHE_AT,
         _SLOT_SPEND_CACHE_SIG,
         _SLOT_SPEND_TTL_S,
         TURN_USAGE_FIELDS,
+        _finite_number,
         daily_credits,
+        daily_spend,
         slot_spend,
         slot_turn_usage,
         spend_key_for_slot,

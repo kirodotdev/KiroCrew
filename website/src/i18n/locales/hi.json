@@ -17356,6 +17356,8 @@
         "cache_creation": "कैश निर्माण",
         "cache_read": "कैश रीड",
         "credits": "क्रेडिट",
+        "cost_usd": "लागत",
+        "cost_usd_compact": "लागत: {{cost}}",
         "credits_used": "इस्तेमाल किए गए क्रेडिट",
         "credits_used_compact": "इस्तेमाल किए गए क्रेडिट: {{credits}} · {{pct}}",
         "credits_used_pct": "इस्तेमाल किए गए क्रेडिट (%)",

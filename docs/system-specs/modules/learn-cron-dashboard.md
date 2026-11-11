@@ -82,6 +82,17 @@ em dash rather than 0% when no plan parsed, the allowance is zero or absent, or
 the row has no figure. On a phone the two columns fold onto one second line
 under each day so the table never scrolls sideways.
 
+Every shard row records both `credits` and the dollar `cost`, so a field's
+presence cannot tell a credit-billed turn from a dollar-billed one.
+`usage_spend.daily_spend` sums both per day under the same row guard, and
+`daily_credits` is its credits half. A day whose credits sum to zero while its
+cost is positive (a Claude Code day) leaves `credits` off its row, so both credit
+columns show the em dash rather than a 0.00 that reads as "nothing was spent"; a
+day with no spend at all keeps `credits: 0`. A day with a positive cost carries
+it as `cost_usd`, and the table adds a "Cost" column (and a "Cost:" phone line)
+only when some day in the window carries one, so a credit-billed install's table
+is unchanged.
+
 The Kiro Account modal's run-out line (`website/src/api/creditForecast.ts`) reads
 these same `daily_history` credits through the shared `providerUsageQuery`, and
 takes from them only the SHAPE of a week, never the pace: these rows count turns
