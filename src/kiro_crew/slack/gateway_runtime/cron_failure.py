@@ -391,7 +391,11 @@ async def _alert_cron_interrupted(self: GatewayOrchestrator, job: CronJob, detai
         label, _ = redact_exfiltration_urls(label)
         label, _ = redact_credentials(label)
         text = f"{detail}."
-        if job.schedule.kind != "at":
+        if job.schedule.kind != "at" and not job.enabled:
+            # A paused job can still be run by hand; the scheduler skips it,
+            # so no next scheduled time is coming.
+            text += " The job is paused, so it does not run again until you resume it in Schedule."
+        elif job.schedule.kind != "at":
             text += " The job runs again at its next scheduled time"
             if job.schedule.kind == "cron":
                 text += ", or at once if Kiro Crew is back within the minute this run was due"
