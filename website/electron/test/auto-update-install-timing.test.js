@@ -99,76 +99,8 @@ function makeDeps({ appVersion = "1.0.0", withNative = true } = {}) {
   };
 }
 
-test("TEMPORAL: the app is NOT force-exited while the installer is still working", async () => {
-  mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const { deps, calls, emit, hasNativeListener } = makeDeps();
-    const u = initAutoUpdate(deps);
-    emit("update-downloaded", { version: "1.1.0" });
-    await u.install();
 
-    assert.strictEqual(calls.quitAndInstall.length, 1, "install must dispatch quitAndInstall");
-    assert.ok(
-      hasNativeListener("before-quit-for-update"),
-      "the failsafe must wait for before-quit-for-update, the only proof the installer took over",
-    );
 
-    // Squirrel's loopback fetch + unpack of a real build takes far longer than
-    // the old 5s budget. Exiting here destroys the update.
-    mock.timers.tick(60_000);
-    assert.strictEqual(
-      calls.exit,
-      0,
-      "force-exited before the installer took over -- this is the field bug: staged app on disk, ShipIt never armed",
-    );
-  } finally {
-    mock.timers.reset();
-  }
-});
-
-test("Windows uses visible native progress and leaves a recovery notification", async () => {
-  const { deps, calls, emit } = makeDeps();
-  deps.osPlatform = "win32";
-  const u = initAutoUpdate(deps);
-  emit("update-downloaded", { version: "1.1.0" });
-  await u.install();
-
-  assert.deepStrictEqual(
-    calls.quitAndInstall,
-    [[false, true]],
-    "Windows must not pass /S; the update-only NSIS path owns the visible progress and automatic relaunch",
-  );
-  assert.strictEqual(calls.notifications.length, 1);
-  assert.match(calls.notifications[0].body, /Start menu/i);
-  assert.doesNotMatch(calls.notifications[0].body, /several minutes|reopen automatically/i);
-  assert.strictEqual(
-    calls.states.find((state) => state.state === "downloaded").installHandoff,
-    "windows-installer",
-  );
-});
-
-test("TEMPORAL: once the installer HAS taken over, the failsafe still guarantees exit", async () => {
-  // The failsafe's original purpose is real: ShipIt aborts the swap with
-  // "App Still Running Error" (Code=-9) if anything keeps the process alive, and
-  // the user then silently relaunches the OLD version. Deferring it must not
-  // discard it.
-  mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const { deps, calls, emit, fireNative, fireAppOnce } = makeDeps();
-    const u = initAutoUpdate(deps);
-    emit("update-downloaded", { version: "1.1.0" });
-    await u.install();
-
-    fireNative("before-quit-for-update");
-    // darwin: Squirrel's own quit (before-quit) is the handoff to ShipIt.
-    fireAppOnce("before-quit");
-    assert.strictEqual(calls.exit, 0, "must not exit instantly -- give the quit a chance to complete");
-    mock.timers.tick(5_000);
-    assert.strictEqual(calls.exit, 1, "a process still alive after the handoff must be forced out");
-  } finally {
-    mock.timers.reset();
-  }
-});
 
 // #29449. On darwin Electron emits before-quit-for-update BEFORE it closes the
 // windows, and calls Squirrel (which launches ShipIt and then quits the app)
@@ -196,23 +128,6 @@ test("TEMPORAL #29449: darwin does not force-exit before Squirrel hands the swap
   }
 });
 
-test("TEMPORAL #29449: a darwin handoff that never quits the app still ends in an exit", async () => {
-  // Otherwise a stalled handoff leaves a running app with no windows.
-  mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const { deps, calls, emit, fireNative } = makeDeps();
-    deps.getAllWindows = () => [];
-    const u = initAutoUpdate(deps);
-    emit("update-downloaded", { version: "1.1.0" });
-    await u.install();
-
-    fireNative("before-quit-for-update");
-    mock.timers.tick(60_000);
-    assert.strictEqual(calls.exit, 1);
-  } finally {
-    mock.timers.reset();
-  }
-});
 
 test("TEMPORAL #29449: an install failure during the darwin handoff is not followed by an exit", async () => {
   // The failure path owns recovery: it brings the gateway back and keeps the app.
@@ -233,36 +148,6 @@ test("TEMPORAL #29449: an install failure during the darwin handoff is not follo
   }
 });
 
-test("TEMPORAL #29449: a window that will not close is destroyed so the handoff can run", async () => {
-  mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const { deps, calls, emit, fireNative, fireAppOnce } = makeDeps();
-    const stuck = fakeWindow();
-    const closed = fakeWindow();
-    closed.destroyed = true;
-    let destroyCalls = 0;
-    const realDestroy = closed.destroy;
-    closed.destroy = () => { destroyCalls += 1; realDestroy(); };
-    deps.getAllWindows = () => [stuck, closed];
-    const u = initAutoUpdate(deps);
-    emit("update-downloaded", { version: "1.1.0" });
-    await u.install();
-
-    fireNative("before-quit-for-update");
-    mock.timers.tick(4_999);
-    assert.strictEqual(stuck.isDestroyed(), false, "a window gets the normal close first");
-    mock.timers.tick(1);
-    assert.strictEqual(stuck.isDestroyed(), true, "destroy skips the close a window can veto");
-    assert.strictEqual(destroyCalls, 0, "an already-destroyed window is left alone");
-    assert.strictEqual(calls.exit, 0, "closing the windows is not an exit");
-
-    fireAppOnce("before-quit");
-    mock.timers.tick(5_000);
-    assert.strictEqual(calls.exit, 1, "after the handoff the exit failsafe is armed as before");
-  } finally {
-    mock.timers.reset();
-  }
-});
 
 test("TEMPORAL #29449: once the handoff quit arrives, open windows are not destroyed", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
@@ -283,38 +168,7 @@ test("TEMPORAL #29449: once the handoff quit arrives, open windows are not destr
   }
 });
 
-test("off darwin the failsafe still arms on before-quit-for-update", async () => {
-  mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const { deps, calls, emit, fireNative } = makeDeps();
-    deps.osPlatform = "win32";
-    const u = initAutoUpdate(deps);
-    emit("update-downloaded", { version: "1.1.0" });
-    await u.install();
 
-    fireNative("before-quit-for-update");
-    mock.timers.tick(5_000);
-    assert.strictEqual(calls.exit, 1);
-  } finally {
-    mock.timers.reset();
-  }
-});
-
-test("TEMPORAL: with no native updater surface, the timer fallback is kept", async () => {
-  // Outside an Electron runtime there is nothing to observe, so losing the
-  // guarantee entirely would be worse than the timer.
-  mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    const { deps, calls, emit } = makeDeps({ withNative: false });
-    const u = initAutoUpdate(deps);
-    emit("update-downloaded", { version: "1.1.0" });
-    await u.install();
-    mock.timers.tick(5_000);
-    assert.strictEqual(calls.exit, 1);
-  } finally {
-    mock.timers.reset();
-  }
-});
 
 // --------------------------------------------------------------------------
 // Library contract: WHERE the expensive work happens.
@@ -466,56 +320,8 @@ test("STAGING contract: nothing in electron-updater can un-arm a staged Squirrel
 // the contract: fired after stopGateway would leave the race open.
 // --------------------------------------------------------------------------
 
-test("install() fires onInstallDispatched BEFORE stopping the gateway", async () => {
-  const order = [];
-  const { deps, emit } = makeDeps();
-  const updater = initAutoUpdate({
-    ...deps,
-    onInstallDispatched: () => order.push("dispatched"),
-    stopGateway: async () => { order.push("stopGateway"); },
-  });
-  // Stage an update so install() passes the updateReady guard.
-  emit("update-downloaded", { version: "9.9.9" });
-  await updater.install();
-  assert.deepStrictEqual(order.slice(0, 2), ["dispatched", "stopGateway"]);
-});
 
-test("a throwing onInstallDispatched cannot block the install", async () => {
-  const order = [];
-  const { deps, emit } = makeDeps();
-  const updater = initAutoUpdate({
-    ...deps,
-    onInstallDispatched: () => { throw new Error("host hook broke"); },
-    stopGateway: async () => { order.push("stopGateway"); },
-  });
-  emit("update-downloaded", { version: "9.9.9" });
-  await updater.install();
-  assert.deepStrictEqual(order, ["stopGateway"], "install must proceed past a broken advisory hook");
-});
 
-test("a FAILED install fires onInstallFailed and allows a retry", async () => {
-  // GPT round-3 finding on #786: dispatch disarms gateway recovery, so a
-  // Squirrel failure at handoff time (observed live in the OTA lane: signature
-  // rejection) left a running app with a dead dashboard and a dead button.
-  const calls = { failed: 0, stops: 0 };
-  const { deps, emit } = makeDeps();
-  const updater = initAutoUpdate({
-    ...deps,
-    onInstallDispatched: () => {},
-    onInstallFailed: () => { calls.failed += 1; },
-    stopGateway: async () => { calls.stops += 1; },
-  });
-  emit("update-downloaded", { version: "9.9.9" });
-  await updater.install();
-  assert.strictEqual(calls.stops, 1);
-
-  emit("error", new Error("Code signature at URL ... did not pass validation"));
-  assert.strictEqual(calls.failed, 1, "host must be told the install failed");
-
-  // `installing` was reset, so the user can click Install Update & Restart App again.
-  await updater.install();
-  assert.strictEqual(calls.stops, 2, "retry must reach stopGateway again");
-});
 
 test("a failure OUTSIDE an install does not fire onInstallFailed", async () => {
   const calls = { failed: 0 };
@@ -721,51 +527,9 @@ async function until(predicate) {
   assert.ok(predicate(), "condition never became true");
 }
 
-test("TEMPORAL: a quit while Squirrel stages a manual install is held, not obeyed", async () => {
-  const { deps, calls, emit, fireQuit } = makeQuitDeps();
-  const u = initAutoUpdate(deps);
-  emit("update-downloaded", { version: "1.1.0" });
-  await u.install();
-  assert.strictEqual(calls.quitAndInstall.length, 1);
 
-  assert.strictEqual(fireQuit(), true, "a quit before the installer takes over kills the stage -- it must be held");
-  assert.strictEqual(fireQuit(), true, "a second quit in the same window must be held too");
-  const notices = calls.notifications.filter((n) => n.title === "Finishing the update");
-  assert.strictEqual(notices.length, 1, "say once why the app did not quit");
-});
 
-test("TEMPORAL: once the installer takes over, quits are no longer held", async () => {
-  const { deps, emit, fireQuit, fireNative } = makeQuitDeps();
-  const u = initAutoUpdate(deps);
-  emit("update-downloaded", { version: "1.1.0" });
-  await u.install();
 
-  fireNative("before-quit-for-update");
-  assert.strictEqual(fireQuit(), false, "the installer's own quit follows before-quit-for-update and must go through");
-});
-
-test("TEMPORAL: an installer failure after a held quit releases the hold and replays the quit", async () => {
-  const { deps, emit, fireQuit, failed, app } = makeQuitDeps();
-  const u = initAutoUpdate(deps);
-  emit("update-downloaded", { version: "1.1.0" });
-  await u.install();
-
-  assert.strictEqual(fireQuit(), true);
-  emit("error", new Error("Code signature at URL did not pass validation"));
-  assert.strictEqual(failed.count, 1, "a manual install failure still restores the gateway");
-  assert.strictEqual(app.quits, 1, "the quit the user asked for while staging must be honored, not swallowed");
-});
-
-test("TEMPORAL: an installer failure with no held quit keeps the app open and stops holding", async () => {
-  const { deps, emit, fireQuit, app } = makeQuitDeps();
-  const u = initAutoUpdate(deps);
-  emit("update-downloaded", { version: "1.1.0" });
-  await u.install();
-
-  emit("error", new Error("Code signature at URL did not pass validation"));
-  assert.strictEqual(app.quits, 0, "nobody asked to quit");
-  assert.strictEqual(fireQuit(), false, "after the failure a quit must go through again");
-});
 
 test("TEMPORAL: a second Cmd+Q during the quit-time install's staging is held", async () => {
   const { deps, calls, emit, fireQuit } = makeQuitDeps();
@@ -777,13 +541,228 @@ test("TEMPORAL: a second Cmd+Q during the quit-time install's staging is held", 
   assert.strictEqual(fireQuit(), true, "a second quit while Squirrel stages would leave the old version");
 });
 
+// The install runs from the user's quit, never from a click: the Install click
+// only arms. Arm it as the renderer would, then fire the quit like Electron and
+// drain the freshness gate and the gateway stop that precede quitAndInstall.
+async function installOnQuit(u, fireAppOnce) {
+  await u.install();
+  fireAppOnce("before-quit");
+  for (let i = 0; i < 12; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+test("TEMPORAL: the app is NOT force-exited while the installer is still working", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, hasNativeListener, fireAppOnce } = makeDeps();
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await installOnQuit(u, fireAppOnce);
+
+    assert.strictEqual(calls.quitAndInstall.length, 1, "install must dispatch quitAndInstall");
+    assert.ok(
+      hasNativeListener("before-quit-for-update"),
+      "the failsafe must wait for before-quit-for-update, the only proof the installer took over",
+    );
+
+    // Squirrel's loopback fetch + unpack of a real build takes far longer than
+    // the old 5s budget. Exiting here destroys the update.
+    mock.timers.tick(60_000);
+    assert.strictEqual(
+      calls.exit,
+      0,
+      "force-exited before the installer took over -- this is the field bug: staged app on disk, ShipIt never armed",
+    );
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("Windows uses visible native progress and leaves a recovery notification", async () => {
+  const { deps, calls, emit, fireAppOnce } = makeDeps();
+  deps.osPlatform = "win32";
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  await installOnQuit(u, fireAppOnce);
+
+  assert.deepStrictEqual(
+    calls.quitAndInstall,
+    [[false, false]],
+    "Windows must not pass /S, and no force-run: the update-only NSIS path owns the visible progress and the user opens the app again",
+  );
+  assert.strictEqual(calls.notifications.length, 1);
+  assert.match(calls.notifications[0].body, /Start menu/i);
+  assert.doesNotMatch(calls.notifications[0].body, /several minutes|reopen automatically/i);
+  assert.strictEqual(
+    calls.states.find((state) => state.state === "downloaded").installHandoff,
+    "windows-installer",
+  );
+});
+
+test("TEMPORAL: once the installer HAS taken over, the failsafe still guarantees exit", async () => {
+  // The failsafe's original purpose is real: ShipIt aborts the swap with
+  // "App Still Running Error" (Code=-9) if anything keeps the process alive, and
+  // the user then silently relaunches the OLD version. Deferring it must not
+  // discard it.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative, fireAppOnce } = makeDeps();
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await installOnQuit(u, fireAppOnce);
+
+    fireNative("before-quit-for-update");
+    // darwin: Squirrel's own quit (before-quit) is the handoff to ShipIt.
+    fireAppOnce("before-quit");
+    assert.strictEqual(calls.exit, 0, "must not exit instantly -- give the quit a chance to complete");
+    mock.timers.tick(5_000);
+    assert.strictEqual(calls.exit, 1, "a process still alive after the handoff must be forced out");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("TEMPORAL #29449: a darwin handoff that never quits the app still ends in an exit", async () => {
+  // Otherwise a stalled handoff leaves a running app with no windows.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative, fireAppOnce } = makeDeps();
+    deps.getAllWindows = () => [];
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await installOnQuit(u, fireAppOnce);
+
+    fireNative("before-quit-for-update");
+    mock.timers.tick(60_000);
+    assert.strictEqual(calls.exit, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("TEMPORAL #29449: a window that will not close is destroyed so the handoff can run", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative, fireAppOnce } = makeDeps();
+    const stuck = fakeWindow();
+    const closed = fakeWindow();
+    closed.destroyed = true;
+    let destroyCalls = 0;
+    const realDestroy = closed.destroy;
+    closed.destroy = () => { destroyCalls += 1; realDestroy(); };
+    deps.getAllWindows = () => [stuck, closed];
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await installOnQuit(u, fireAppOnce);
+
+    fireNative("before-quit-for-update");
+    mock.timers.tick(4_999);
+    assert.strictEqual(stuck.isDestroyed(), false, "a window gets the normal close first");
+    mock.timers.tick(1);
+    assert.strictEqual(stuck.isDestroyed(), true, "destroy skips the close a window can veto");
+    assert.strictEqual(destroyCalls, 0, "an already-destroyed window is left alone");
+    assert.strictEqual(calls.exit, 0, "closing the windows is not an exit");
+
+    fireAppOnce("before-quit");
+    mock.timers.tick(5_000);
+    assert.strictEqual(calls.exit, 1, "after the handoff the exit failsafe is armed as before");
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("off darwin the failsafe still arms on before-quit-for-update", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireNative, fireAppOnce } = makeDeps();
+    deps.osPlatform = "win32";
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await installOnQuit(u, fireAppOnce);
+
+    fireNative("before-quit-for-update");
+    mock.timers.tick(5_000);
+    assert.strictEqual(calls.exit, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("TEMPORAL: with no native updater surface, the timer fallback is kept", async () => {
+  // Outside an Electron runtime there is nothing to observe, so losing the
+  // guarantee entirely would be worse than the timer.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { deps, calls, emit, fireAppOnce } = makeDeps({ withNative: false });
+    const u = initAutoUpdate(deps);
+    emit("update-downloaded", { version: "1.1.0" });
+    await installOnQuit(u, fireAppOnce);
+    mock.timers.tick(5_000);
+    assert.strictEqual(calls.exit, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("TEMPORAL: a quit while Squirrel stages a manual install is held, not obeyed", async () => {
+  const { deps, calls, emit, fireQuit } = makeQuitDeps();
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  fireQuit();
+  await until(() => calls.quitAndInstall.length === 1);
+  assert.strictEqual(calls.quitAndInstall.length, 1);
+
+  assert.strictEqual(fireQuit(), true, "a quit before the installer takes over kills the stage -- it must be held");
+  assert.strictEqual(fireQuit(), true, "a second quit in the same window must be held too");
+  const notices = calls.notifications.filter((n) => n.title === "Finishing the update");
+  assert.strictEqual(notices.length, 1, "say once why the app did not quit");
+});
+
+test("TEMPORAL: once the installer takes over, quits are no longer held", async () => {
+  const { calls, deps, emit, fireQuit, fireNative } = makeQuitDeps();
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  fireQuit();
+  await until(() => calls.quitAndInstall.length === 1);
+
+  fireNative("before-quit-for-update");
+  assert.strictEqual(fireQuit(), false, "the installer's own quit follows before-quit-for-update and must go through");
+});
+
+test("TEMPORAL: an installer failure after a held quit releases the hold and replays the quit", async () => {
+  const { calls, deps, emit, fireQuit, failed, app } = makeQuitDeps();
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  fireQuit();
+  await until(() => calls.quitAndInstall.length === 1);
+
+  assert.strictEqual(fireQuit(), true);
+  emit("error", new Error("Code signature at URL did not pass validation"));
+  assert.strictEqual(failed.count, 0, "a quit-time install failure finishes the quit; it does not restore a gateway for an app that is leaving");
+  assert.strictEqual(app.quits, 1, "the quit the user asked for while staging must be honored, not swallowed");
+});
+
+test("TEMPORAL: a quit-time installer failure finishes the quit and stops holding", async () => {
+  const { calls, deps, emit, fireQuit, app } = makeQuitDeps();
+  const u = initAutoUpdate(deps);
+  emit("update-downloaded", { version: "1.1.0" });
+  fireQuit();
+  await until(() => calls.quitAndInstall.length === 1);
+
+  emit("error", new Error("Code signature at URL did not pass validation"));
+  assert.strictEqual(app.quits, 1, "the user quit, so a failed install finishes that quit");
+  assert.strictEqual(fireQuit(), false, "after the failure a quit must go through again");
+});
+
 test("TEMPORAL: a wedged installer does not leave an app that can never quit", async () => {
   mock.timers.enable({ apis: ["setTimeout"] });
   try {
-    const { deps, emit, fireQuit, app } = makeQuitDeps();
+    const { calls, deps, emit, fireQuit, app } = makeQuitDeps();
     const u = initAutoUpdate(deps);
     emit("update-downloaded", { version: "1.1.0" });
-    await u.install();
+    fireQuit();
+  await until(() => calls.quitAndInstall.length === 1);
 
     assert.strictEqual(fireQuit(), true);
     mock.timers.tick(10 * 60 * 1000);
@@ -795,9 +774,10 @@ test("TEMPORAL: a wedged installer does not leave an app that can never quit", a
 });
 
 test("off darwin the installer's own quit is never held", async () => {
-  const { deps, emit, fireQuit } = makeQuitDeps({ osPlatform: "win32" });
+  const { calls, deps, emit, fireQuit } = makeQuitDeps({ osPlatform: "win32" });
   const u = initAutoUpdate(deps);
   emit("update-downloaded", { version: "1.1.0" });
-  await u.install();
+  fireQuit();
+  await until(() => calls.quitAndInstall.length === 1);
   assert.strictEqual(fireQuit(), false, "NSIS and AppImage quit the app themselves to install");
 });

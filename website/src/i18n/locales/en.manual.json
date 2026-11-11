@@ -3695,15 +3695,19 @@
       "update_required": "Update required"
     },
     "updateModal": {
-      "restart_update": "Install Update & Restart App",
-      "install_restart_timing": "Installing may take several minutes. The app will close and relaunch automatically when the update is complete.",
       "windows_installer_handoff": "A Windows installation window will show progress.",
       "installing_update": "Installing update…",
-      "installing_update_body": "This can take several minutes. It will relaunch automatically.",
+      "installing_update_body": "This can take several minutes. The app will close. Open it again when it has finished.",
       "install_failed": "Update failed to install",
       "install_failed_body": "The update could not be applied. {{productName}} is restoring the local gateway — you can keep using this version and retry from Settings > About.",
       "back_to_dashboard": "Back to dashboard",
-      "restarting": "Restarting..."
+      "restarting": "Restarting...",
+      "install_on_quit": "Install when I quit",
+      "install_on_quit_timing": "The update installs the next time you quit the app. Nothing restarts until you do.",
+      "armed_installs_on_quit": "{{productName}} {{version}} installs when you quit the app.",
+      "restart_now": "Restart and install now",
+      "restart_now_failed": "Could not restart the app. The update still installs when you quit.",
+      "armed_app_too_old": "This version of the desktop app cannot schedule the update from here. Download the latest version of the app to update."
     },
     "voiceStatusBar": {
       "default_microphone": "Default microphone",
@@ -8719,8 +8723,6 @@
         "download_failed_reason": "Download failed: {{reason}}",
         "download_the_latest_version": "download the latest version",
         "install_failed_reason": "Couldn’t install the update: {{reason}}",
-        "install_update_restart_app": "Install Update & Restart App",
-        "installing_quiet_note": "Installing — this can take several minutes. {{productName}} will reopen automatically when the update is complete.",
         "manual_install_fallback": "If updating doesn't work, you can {{link}} and reinstall over this copy. Your settings, chats, and files are kept.",
         "published": "published {{when}}",
         "restarting": "Restarting...",
@@ -8825,7 +8827,8 @@
         "app_lane_title": "The desktop app you installed. Its own version, separate from the service below.",
         "gateway_lane_label": "Gateway",
         "gateway_lane_title": "The background service that runs your agents and serves this dashboard. The branch and commit chips are its build.",
-        "app_updates_heading": "App updates"
+        "app_updates_heading": "App updates",
+        "downloaded_and_verified_installs_on_quit": "Downloaded and verified. It installs when you quit the app; nothing restarts until you do."
       },
       "crewmatesSection": {
         "title": "Bots",

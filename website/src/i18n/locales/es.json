@@ -9932,16 +9932,20 @@
       "dismiss_update_dialog": "Descartar el diálogo de actualización",
       "install_failed": "No se pudo instalar la actualización",
       "install_failed_body": "No se pudo aplicar la actualización. {{productName}} está restaurando la puerta de enlace local — puedes seguir usando esta versión y reintentarlo en Configuración > Acerca de.",
-      "install_restart_timing": "La instalación puede tardar varios minutos. La app se cerrará y volverá a abrirse automáticamente cuando termine la actualización.",
       "windows_installer_handoff": "Una ventana de instalación de Windows mostrará el progreso.",
       "installing_update": "Instalando la actualización…",
-      "installing_update_body": "Puede tardar varios minutos. La app volverá a abrirse automáticamente.",
+      "installing_update_body": "Puede tardar varios minutos. La app se cerrará. Vuelve a abrirla cuando termine.",
       "is_downloaded_and_ready_to_install": "se ha descargado y está listo para instalarse.",
       "kirocrew": "{{productName}}",
       "later": "Más tarde",
-      "restart_update": "Instalar actualización y reiniciar app",
       "restarting": "Reiniciando…",
-      "update_ready": "Actualización lista"
+      "update_ready": "Actualización lista",
+      "install_on_quit": "Instalar al salir",
+      "install_on_quit_timing": "La actualización se instala la próxima vez que salgas de la aplicación. No se reinicia nada hasta entonces.",
+      "armed_installs_on_quit": "{{productName}} {{version}} se instala cuando sales de la aplicación.",
+      "restart_now": "Reiniciar e instalar ahora",
+      "restart_now_failed": "No se pudo reiniciar la aplicación. La actualización se instalará igualmente al salir.",
+      "armed_app_too_old": "Esta versión de la aplicación de escritorio no puede programar la actualización desde aquí. Descarga la última versión de la aplicación para actualizar."
     },
     "updatePill": {
       "downloading": "Descargando…",
@@ -18950,13 +18954,10 @@
         "download_failed_reason": "La descarga ha fallado: {{reason}}",
         "download_install": "Descargar e instalar",
         "download_the_latest_version": "descargar la última versión",
-        "downloaded_and_verified_the_app_restarts_to_fini": "Descargada y verificada. La app se reinicia para terminar la instalación; también puedes salir más tarde y se instalará al cerrar.",
         "downloading": "Descargando...",
         "insider": "Insider",
         "lts": "LTS (soporte a largo plazo)",
         "install_failed_reason": "No se pudo instalar la actualización: {{reason}}",
-        "install_update_restart_app": "Instalar actualización y reiniciar app",
-        "installing_quiet_note": "Instalando — puede tardar varios minutos. {{productName}} volverá a abrirse automáticamente cuando termine la actualización.",
         "is_available": "está disponible.",
         "loading_changelog": "Cargando el registro de cambios…",
         "manual_install_fallback": "Si la actualización no funciona, puedes {{link}} y reinstalar sobre esta copia. Se conservan tus ajustes, chats y archivos.",
@@ -19059,7 +19060,8 @@
         "gateway_lane_label": "Gateway",
         "gateway_lane_title": "El servicio en segundo plano que ejecuta tus agentes y sirve este panel. Los chips de rama y commit son su compilación.",
         "update_refused_dirty_worktree": "La actualización se detuvo para proteger tus cambios locales: tu carpeta de {{productName}} tiene cambios sin confirmar ({{changed}}). Confírmalos o guárdalos con stash y vuelve a pulsar Actualizar ahora. Para guardarlo todo con stash, ejecuta el comando de abajo en una terminal dentro de tu carpeta de {{productName}}.",
-        "app_updates_heading": "Actualizaciones de la app"
+        "app_updates_heading": "Actualizaciones de la app",
+        "downloaded_and_verified_installs_on_quit": "Descargada y verificada. Se instala cuando sales de la aplicación; no se reinicia nada hasta entonces."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",

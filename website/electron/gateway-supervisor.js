@@ -1748,6 +1748,9 @@ function createGatewaySupervisor({
     fetchRemoteToken,
     entryUrl: dashboardEntryUrl,
     probePrimaryPortOwner,
+    // Whether anything listens on the launch port, whoever it is: "bound", "free"
+    // or "unknown". The start-time apply defers on anything but "free".
+    probePrimaryPortBinding: () => probeGatewayPortBinding(PORT),
     isCurrentBundleGateway,
     stopForUpdate: stopGatewayForUpdate,
     stopOnQuit: stopGatewayOnQuit,

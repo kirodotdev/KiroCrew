@@ -51,7 +51,8 @@ const { describeSingletonLock } = require("./singleton-lock");
 const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
 const { describeChromiumSandboxOff, showChromiumSandboxNotice } = require("./chromium-sandbox-notice");
 const { findKirocrewBin } = require("./find-bin");
-const { resolveLinuxInstall, readExternallyManaged } = require("./auto-update");
+const { resolveLinuxInstall, readExternallyManaged, runStartupApply } = require("./auto-update");
+const { createStartupGatewayProbe } = require("./runtime/update/gateway-probe");
 const { reregisterBundleIfManaged } = require("./mac-launch-services");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
@@ -605,6 +606,8 @@ const ipcRegistrar = createIpcRegistrar({
   crashScan: scanCrashArtifacts,
   downloadExpectations,
   readInternalSecret,
+  fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
+  cookieHeader: sessionCookieHeader,
 });
 
 /**
@@ -768,6 +771,26 @@ app.whenReady().then(async () => {
       // Ignore a failure in the failure logger.
     }
   }
+
+  // An update the user armed whose quit-time apply was interrupted or failed is
+  // finished HERE: before the gateway spawns and before any window opens, so the
+  // gateway and the app are never on different versions. On success the app
+  // relaunches once into the new bundle and this launch ends; on failure the
+  // installed version starts and the updater shows the error.
+  const startupApply = await runStartupApply({
+    app,
+    store,
+    resourcesPath: process.resourcesPath,
+    log: { info: glog, error: (m, e) => glog(m + (e ? " " + ((e && e.stack) || e) : "")) },
+    // A gateway from this bundle that outlived the quit holds the arm back.
+    probeGateway: createStartupGatewayProbe({
+      isCurrentBundleGateway: () => gateway.isCurrentBundleGateway(),
+      probePortBinding: () => gateway.probePrimaryPortBinding(),
+      stopCommand: `kirocrew stop --port ${PORT}`,
+    }),
+    Notification: electron.Notification,
+  });
+  if (startupApply.outcome === "relaunching") return;
 
   await offerRelocationIfUnupdatable();
 

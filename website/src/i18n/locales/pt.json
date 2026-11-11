@@ -9932,16 +9932,20 @@
       "dismiss_update_dialog": "Descartar diálogo de atualização",
       "install_failed": "Falha ao instalar a atualização",
       "install_failed_body": "Não foi possível aplicar a atualização. O {{productName}} está restaurando o gateway local — você pode continuar usando esta versão e tentar novamente em Configurações > Sobre.",
-      "install_restart_timing": "A instalação pode levar vários minutos. O app será fechado e abrirá novamente automaticamente quando a atualização terminar.",
       "windows_installer_handoff": "Uma janela de instalação do Windows mostrará o progresso.",
       "installing_update": "Instalando a atualização…",
-      "installing_update_body": "Isso pode levar vários minutos. O app abrirá novamente automaticamente.",
+      "installing_update_body": "Isso pode levar vários minutos. O app será fechado. Abra-o novamente quando terminar.",
       "is_downloaded_and_ready_to_install": "foi baixado e está pronto para instalar.",
       "kirocrew": "{{productName}}",
       "later": "Depois",
-      "restart_update": "Instalar atualização e reiniciar app",
       "restarting": "Reiniciando...",
-      "update_ready": "Atualização pronta"
+      "update_ready": "Atualização pronta",
+      "install_on_quit": "Instalar ao sair",
+      "install_on_quit_timing": "A atualização é instalada na próxima vez que você sair do app. Nada é reiniciado até lá.",
+      "armed_installs_on_quit": "{{productName}} {{version}} é instalado quando você sai do app.",
+      "restart_now": "Reiniciar e instalar agora",
+      "restart_now_failed": "Não foi possível reiniciar o app. A atualização ainda será instalada ao sair.",
+      "armed_app_too_old": "Esta versão do app para desktop não consegue agendar a atualização daqui. Baixe a versão mais recente do app para atualizar."
     },
     "updatePill": {
       "downloading": "Baixando…",
@@ -18950,13 +18954,10 @@
         "download_failed_reason": "Falha no download: {{reason}}",
         "download_install": "Baixar e instalar",
         "download_the_latest_version": "baixar a versão mais recente",
-        "downloaded_and_verified_the_app_restarts_to_fini": "Baixado e verificado. O app reinicia para concluir a instalação; você também pode sair mais tarde e a instalação ocorre na saída.",
         "downloading": "Baixando...",
         "insider": "Insider",
         "lts": "LTS (suporte de longo prazo)",
         "install_failed_reason": "Não foi possível instalar a atualização: {{reason}}",
-        "install_update_restart_app": "Instalar atualização e reiniciar app",
-        "installing_quiet_note": "Instalando — isso pode levar vários minutos. O {{productName}} abrirá novamente automaticamente quando a atualização terminar.",
         "is_available": "está disponível.",
         "loading_changelog": "Carregando changelog…",
         "manual_install_fallback": "Se a atualização não funcionar, você pode {{link}} e reinstalar sobre esta cópia. Suas configurações, conversas e arquivos são preservados.",
@@ -19059,7 +19060,8 @@
         "gateway_lane_label": "Gateway",
         "gateway_lane_title": "O serviço em segundo plano que executa seus agentes e serve este painel. Os chips de branch e commit são o build dele.",
         "update_refused_dirty_worktree": "A atualização foi interrompida para proteger suas edições locais: sua pasta do {{productName}} tem alterações não confirmadas ({{changed}}). Faça commit ou stash delas e pressione Atualizar agora de novo. Para guardar tudo com stash, execute o comando abaixo em um terminal na sua pasta do {{productName}}.",
-        "app_updates_heading": "Atualizações do app"
+        "app_updates_heading": "Atualizações do app",
+        "downloaded_and_verified_installs_on_quit": "Baixada e verificada. Ela é instalada quando você sai do app; nada é reiniciado até lá."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",

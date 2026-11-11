@@ -9932,16 +9932,20 @@
       "dismiss_update_dialog": "Ignorer la boîte de dialogue de mise à jour",
       "install_failed": "Échec de l’installation de la mise à jour",
       "install_failed_body": "La mise à jour n’a pas pu être appliquée. {{productName}} restaure la passerelle locale — vous pouvez continuer avec cette version et réessayer depuis Paramètres > À propos.",
-      "install_restart_timing": "L’installation peut prendre plusieurs minutes. L’application va se fermer, puis se rouvrir automatiquement une fois la mise à jour terminée.",
       "windows_installer_handoff": "Une fenêtre d’installation Windows affichera la progression.",
       "installing_update": "Installation de la mise à jour...",
-      "installing_update_body": "Cela peut prendre plusieurs minutes. L’application se rouvrira automatiquement.",
+      "installing_update_body": "Cela peut prendre plusieurs minutes. L’application va se fermer. Rouvrez-la une fois l’opération terminée.",
       "is_downloaded_and_ready_to_install": "a été téléchargé et est prêt à être installé.",
       "kirocrew": "{{productName}}",
       "later": "Plus tard",
-      "restart_update": "Installer la mise à jour et redémarrer l’app",
       "restarting": "Redémarrage...",
-      "update_ready": "Mise à jour prête"
+      "update_ready": "Mise à jour prête",
+      "install_on_quit": "Installer à la fermeture",
+      "install_on_quit_timing": "La mise à jour s’installe la prochaine fois que tu quittes l’application. Rien ne redémarre d’ici là.",
+      "armed_installs_on_quit": "{{productName}} {{version}} s’installe quand tu quittes l’application.",
+      "restart_now": "Redémarrer et installer maintenant",
+      "restart_now_failed": "Impossible de redémarrer l’application. La mise à jour s’installera tout de même à la fermeture.",
+      "armed_app_too_old": "Cette version de l’application de bureau ne peut pas programmer la mise à jour d’ici. Télécharge la dernière version de l’application pour la mettre à jour."
     },
     "updatePill": {
       "downloading": "Téléchargement…",
@@ -18950,13 +18954,10 @@
         "download_failed_reason": "Échec du téléchargement : {{reason}}",
         "download_install": "Télécharger et installer",
         "download_the_latest_version": "télécharger la dernière version",
-        "downloaded_and_verified_the_app_restarts_to_fini": "Téléchargée et vérifiée. L'application redémarre pour terminer l'installation ; vous pouvez aussi quitter plus tard et elle s'installera à la fermeture.",
         "downloading": "Téléchargement...",
         "insider": "Insider",
         "lts": "LTS (support à long terme)",
         "install_failed_reason": "Impossible d'installer la mise à jour : {{reason}}",
-        "install_update_restart_app": "Installer la mise à jour et redémarrer l’app",
-        "installing_quiet_note": "Installation — cela peut prendre plusieurs minutes. {{productName}} se rouvrira automatiquement une fois la mise à jour terminée.",
         "is_available": "est disponible.",
         "loading_changelog": "Chargement du journal des modifications…",
         "manual_install_fallback": "Si la mise à jour ne fonctionne pas, vous pouvez {{link}} et réinstaller par-dessus cette copie. Vos paramètres, conversations et fichiers sont conservés.",
@@ -19059,7 +19060,8 @@
         "gateway_lane_label": "Passerelle",
         "gateway_lane_title": "Le service en arrière-plan qui exécute vos agents et sert ce tableau de bord. Les puces de branche et de commit indiquent sa version compilée.",
         "update_refused_dirty_worktree": "La mise à jour a été arrêtée pour protéger tes modifications locales : ton dossier {{productName}} contient des modifications non validées ({{changed}}). Valide-les ou mets-les de côté avec stash, puis appuie de nouveau sur Mettre à jour maintenant. Pour tout mettre de côté, exécute la commande ci-dessous dans un terminal ouvert dans ton dossier {{productName}}.",
-        "app_updates_heading": "Mises à jour de l'app"
+        "app_updates_heading": "Mises à jour de l'app",
+        "downloaded_and_verified_installs_on_quit": "Téléchargée et vérifiée. Elle s’installe quand tu quittes l’application ; rien ne redémarre d’ici là."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID d'utilisateurs autorisés",

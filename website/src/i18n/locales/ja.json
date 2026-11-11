@@ -9476,16 +9476,20 @@
       "dismiss_update_dialog": "更新ダイアログを閉じる",
       "install_failed": "更新をインストールできませんでした",
       "install_failed_body": "更新を適用できませんでした。{{productName}} はローカルゲートウェイを復旧しています。このバージョンのまま利用を続け、「設定 > このアプリについて」から再試行できます。",
-      "install_restart_timing": "インストールには数分かかる場合があります。アプリは閉じ、更新が完了すると自動的に再び開きます。",
       "windows_installer_handoff": "Windows のインストール画面に進行状況が表示されます。",
       "installing_update": "更新をインストール中…",
-      "installing_update_body": "数分かかる場合があります。完了後に自動的に再び開きます。",
+      "installing_update_body": "数分かかる場合があります。アプリは終了します。完了後にもう一度開いてください。",
       "is_downloaded_and_ready_to_install": "がダウンロードされ、インストール準備ができています。",
       "kirocrew": "{{productName}}",
       "later": "後で",
-      "restart_update": "更新をインストールしてアプリを再起動",
       "restarting": "再起動中…",
-      "update_ready": "更新準備完了"
+      "update_ready": "更新準備完了",
+      "install_on_quit": "終了時にインストール",
+      "install_on_quit_timing": "アップデートは、次にアプリを終了したときにインストールされます。それまでは何も再起動されません。",
+      "armed_installs_on_quit": "{{productName}} {{version}} は、アプリを終了したときにインストールされます。",
+      "restart_now": "今すぐ再起動してインストール",
+      "restart_now_failed": "アプリを再起動できませんでした。アップデートは終了時に引き続きインストールされます。",
+      "armed_app_too_old": "このバージョンのデスクトップアプリでは、ここからアップデートを予約できません。アプリの最新バージョンをダウンロードして更新してください。"
     },
     "updatePill": {
       "downloading": "ダウンロード中…",
@@ -17982,13 +17986,10 @@
         "download_failed_reason": "ダウンロード失敗：{{reason}}",
         "download_install": "ダウンロードしてインストール",
         "download_the_latest_version": "最新版をダウンロード",
-        "downloaded_and_verified_the_app_restarts_to_fini": "ダウンロードおよび検証完了。アプリは再起動してインストールを完了するか、後で終了するとインストールされます。",
         "downloading": "ダウンロード中…",
         "insider": "Insider",
         "lts": "LTS（長期サポート）",
         "install_failed_reason": "更新をインストールできませんでした：{{reason}}",
-        "install_update_restart_app": "更新をインストールしてアプリを再起動",
-        "installing_quiet_note": "インストール中 — 数分かかる場合があります。更新が完了すると {{productName}} は自動的に再び開きます。",
         "is_available": "が利用可能です。",
         "loading_changelog": "変更ログを読み込み中…",
         "manual_install_fallback": "更新がうまくいかない場合は、{{link}} をして、このコピーの上に再インストールできます。設定、チャット、ファイルは保持されます。",
@@ -18091,7 +18092,8 @@
         "gateway_lane_label": "ゲートウェイ",
         "gateway_lane_title": "エージェントを実行し、このダッシュボードを提供するバックグラウンドサービス。ブランチとコミットのチップはそのビルドです。",
         "update_refused_dirty_worktree": "ローカルの編集を守るため、更新を停止しました。{{productName}} フォルダーにコミットされていない変更があります（{{changed}}）。コミットするか stash してから、もう一度「今すぐ更新」を押してください。すべてを stash するには、{{productName}} フォルダーで開いたターミナルで下のコマンドを実行してください。",
-        "app_updates_heading": "アプリのアップデート"
+        "app_updates_heading": "アプリのアップデート",
+        "downloaded_and_verified_installs_on_quit": "ダウンロードと検証が完了しました。アプリを終了したときにインストールされ、それまでは何も再起動されません。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "許可されたユーザー ID",

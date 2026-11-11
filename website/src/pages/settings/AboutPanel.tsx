@@ -375,7 +375,10 @@ export function AboutPanel() {
   const downloadMutation = useMutation({ mutationFn: () => desktopApi!.download!() })
   // Install-and-restart, with its one-way latch and the reset for a refused or
   // aborted handoff (see useInstallDispatch).
-  const { installMutation, dispatched: installDispatched, dispatchInstall } = useInstallDispatch(updateState)
+  const {
+    installMutation, dispatched: installDispatched, dispatchInstall,
+    armed: updateArmed, canArmOnQuit, canRestartNow, restartNow, restartNowPending, restartNowFailed,
+  } = useInstallDispatch(updateState)
   // An agent's pending request for THIS packaged install. Polled while on
   // desktop; the poll is also how the card leaves — a decline, an expiry, or
   // the install itself (which quits the app under this tab) all end it.
@@ -742,11 +745,21 @@ export function AboutPanel() {
         </div>
         <div className="shrink-0">
           {ctaOwnedByRequest ? null : cardReady ? (
-            <Btn primary onClick={dispatchInstall} disabled={installDispatched}>
-              <RefreshCw size={13} className={`lucide-inline ${installDispatched ? 'animate-spin' : ''}`} /> {installMutation.isSuccess
-                ? i18nT('pages.settings.aboutPanel.restarting')
-                : i18nT('pages.settings.aboutPanel.install_update_restart_app')}
-            </Btn>
+            // Armed: the click is done and nothing restarts by itself, so the
+            // control is the plain Restart now (a quit whose install runs).
+            updateArmed ? (
+              canRestartNow && (
+                <Btn primary onClick={restartNow} disabled={restartNowPending} data-testid="update-restart-now">
+                  <RefreshCw size={13} className={`lucide-inline ${restartNowPending ? 'animate-spin' : ''}`} /> {restartNowPending
+                    ? i18nT('pages.settings.aboutPanel.restarting')
+                    : i18nT('components.updateModal.restart_now')}
+                </Btn>
+              )
+            ) : canArmOnQuit && (
+              <Btn primary onClick={dispatchInstall} disabled={installDispatched}>
+                <RefreshCw size={13} className={`lucide-inline ${installDispatched ? 'animate-spin' : ''}`} /> {i18nT('components.updateModal.install_on_quit')}
+              </Btn>
+            )
           ) : (
             <Btn primary onClick={() => downloadMutation.mutate()} disabled={cardBusy || downloadMutation.isPending}>
               {cardBusy || downloadMutation.isPending
@@ -806,15 +819,24 @@ export function AboutPanel() {
         />
       )}
       {cardReady && (
-        <span className="text-[12px] text-muted">
-          {/* Once dispatched, the gateway goes down ON PURPOSE and the dashboard
-              disconnects during the platform installer handoff. This line is the
-              last thing the card says, so it must explain what happens next. */}
-          {installDispatched
-            ? i18nT('pages.settings.aboutPanel.installing_quiet_note')
-            : i18nT('pages.settings.aboutPanel.downloaded_and_verified_the_app_restarts_to_fini')}
-          {showsWindowsInstaller && ` ${i18nT('components.updateModal.windows_installer_handoff')}`}
+        <span className="text-[12px] text-muted" data-testid="update-ready-note">
+          {/* Install only arms: nothing goes down or restarts until the user
+              quits, so the line says when it installs, not that it is installing. */}
+          {updateArmed
+            ? i18nT('components.updateModal.armed_installs_on_quit', { version: updateState?.version || '' })
+            : canArmOnQuit
+              ? i18nT('pages.settings.aboutPanel.downloaded_and_verified_installs_on_quit')
+              : i18nT('components.updateModal.armed_app_too_old')}
+          {showsWindowsInstaller && !updateArmed && ` ${i18nT('components.updateModal.windows_installer_handoff')}`}
         </span>
+      )}
+      {cardReady && updateArmed && restartNowFailed && (
+        <ErrorNotice
+          variant="inline"
+          message={i18nT('components.updateModal.restart_now_failed')}
+          askAgent
+          testId="update-restart-error"
+        />
       )}
       {showManualFallback && (
         <span className="text-[12px] text-muted flex items-start gap-1.5 pt-0.5 border-t border-border" data-testid="update-manual-fallback">
