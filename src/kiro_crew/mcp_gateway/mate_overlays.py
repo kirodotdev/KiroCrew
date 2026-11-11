@@ -370,11 +370,24 @@ def _write_each(
             out.incomplete = True
             continue
         if shadowed:
-            logger.warning(
-                "crewmate %r: an agent in ~/.kiro/agents has the same name, so no "
-                "session binds this crewmate file; no overlay for it until one is renamed",
-                path.stem,
-            )
+            app = _own_app_export(agents_dir, path.stem)
+            if app:
+                # Registration rewrites this export on every start, so a warning here
+                # would repeat on every pass for a precedence that is by design.
+                logger.info(
+                    "crewmate %r: enabled app %r exports an agent of the same name to "
+                    "~/.kiro/agents, so the Bot's chats run that app's agent, not this "
+                    "crewmate file; no overlay for it (disable the app or rename the Bot "
+                    "to use the file)",
+                    path.stem,
+                    app,
+                )
+            else:
+                logger.warning(
+                    "crewmate %r: an agent in ~/.kiro/agents has the same name, so no "
+                    "session binds this crewmate file; no overlay for it until one is renamed",
+                    path.stem,
+                )
             continue
         first = claimed.get(overlay_name.casefold())
         if first is not None and _overlay_names_collide(target_dir, first, overlay_name):
@@ -431,6 +444,47 @@ def _shadowed_by_agent(agents_dir: Path | None, file_id: str) -> bool | None:
             exc,
         )
         return None
+
+
+def _own_app_export(agents_dir: Path | None, file_id: str) -> str:
+    """The installed app whose own export is the only spec in *agents_dir* declaring
+    *file_id*, else ``""``.
+
+    App registration writes each shipped agent as ``<app>--<name>.json`` carrying the
+    bare ``name``, so that export declares a crewmate id equal to the agent's name by
+    design, and a session of that name runs it, not the crewmate file
+    (``mate_worker.mate_file_for_member``). It counts only when the first installed
+    app that declares the agent (``owning_app_for_agent``) is enabled, the owner's
+    own disable included (``is_app_enabled``), has that export as a plain file (no
+    link) declaring exactly *file_id* when re-read, and no other spec in
+    *agents_dir* claims the name, case folded (``agents_dir_competing_claim``). Any
+    doubt answers ``""``, which keeps the warning. Blocking.
+    """
+    if agents_dir is None:
+        return ""
+    try:
+        from kiro_crew.agent_discovery import read_agent_spec_strict
+        from kiro_crew.agent_sdk import agents_dir_competing_claim
+        from kiro_crew.apps import bridges
+        from kiro_crew.apps.manager import is_app_enabled, owning_app_for_agent
+
+        owner = owning_app_for_agent(file_id)
+        if owner is None or not is_app_enabled(owner.app):
+            # A disabled app's export is not its live agent, whatever is left on disk.
+            return ""
+        export = agents_dir / (
+            bridges._safe_link_name(bridges._namespace(owner.app, file_id)) + ".json"
+        )
+        if not _is_plain_file(export):
+            return ""
+        spec = read_agent_spec_strict(export, operation="mcp_overlay_rewrite", source="unknown")
+        if not isinstance(spec, dict) or spec.get("name") != file_id:
+            return ""
+        if agents_dir_competing_claim(file_id, agents_dir, export) is not None:
+            return ""
+    except Exception:  # noqa: BLE001 - an export that cannot be verified keeps the warning
+        return ""
+    return owner.app
 
 
 def kept_identities(overlay_dir: Path, names: Collection[str]) -> set[str] | None:

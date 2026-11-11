@@ -9,6 +9,7 @@ rewrites each crewmate file under the identity ``crewmate:<id>`` into
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -816,6 +817,186 @@ class TestAnAgentOfTheSameName:
         assert not (mate_overlays.mate_overlay_dir(home.overlay) / "pixel.json").exists()
         assert not (home.overlay / rewriter._FINGERPRINT_NAME).exists()
         assert approvals.live_incomplete is True
+
+
+APP = "demo-app"
+_SAME_NAME = "has the same name"
+_APP_RUNS = "so the Bot's chats run that app's agent"
+
+
+class TestAnInstalledAppsOwnExport:
+    """An app's ``<app>--<id>.json`` export wins the binding by design: said at INFO.
+
+    Every other same-name spec keeps the warning, and the overlay is refused either way.
+    """
+
+    @pytest.fixture
+    def app_home(self, home, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "data-home"))
+        caplog.set_level("INFO", logger="kiro_crew.mcp_gateway.rewriter")
+        return home
+
+    @staticmethod
+    def _install(app: str = APP, enabled: bool = True) -> None:
+        from kiro_crew.apps import manager
+
+        root = manager.app_dir(app)
+        _write(
+            root / manager.APP_MANIFEST_FILENAME,
+            {"name": app, "version": "1.0.0", "agents": ["agents/a.json"]},
+        )
+        _write(root / "agents" / "a.json", {"name": "pixel", "prompt": "p"})
+        manager._write_installed(
+            app, manager.InstalledApp(name=app, version="1.0.0", enabled=enabled)
+        )
+
+    @staticmethod
+    def _export(home, app: str = APP) -> Path:
+        return _write(home.agents / f"{app}--pixel.json", {"name": "pixel", "mcpServers": {}})
+
+    @staticmethod
+    def _lines(caplog, text: str) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if "'pixel'" in r.getMessage() and text in r.getMessage()]
+
+    def _assert_refused(self, home, approvals) -> None:
+        assert not (mate_overlays.mate_overlay_dir(home.overlay) / "pixel.json").exists()
+        assert (home.overlay / rewriter._FINGERPRINT_NAME).exists()
+        assert approvals.live_incomplete is False
+
+    def _assert_warned(self, caplog) -> None:
+        assert [r.levelname for r in self._lines(caplog, _SAME_NAME)] == ["WARNING"]
+        assert self._lines(caplog, _APP_RUNS) == []
+
+    def test_the_only_claimant_being_the_apps_export_logs_info_not_a_warning(
+        self, app_home, caplog
+    ):
+        sidecar = _credentialed_pixel(app_home)
+        self._install()
+        self._export(app_home)
+        approvals = LaunchApprovals()
+        _rewrite(app_home, pooling=False, approvals=approvals)
+        self._assert_refused(app_home, approvals)
+        assert not sidecar.exists()
+        [line] = self._lines(caplog, _APP_RUNS)
+        assert line.levelname == "INFO" and f"'{APP}'" in line.getMessage()
+        assert self._lines(caplog, _SAME_NAME) == []
+
+    def test_a_users_own_file_still_warns(self, app_home, caplog):
+        _write(app_home.agents / "pixel.json", {"name": "pixel", "mcpServers": {}})
+        approvals = LaunchApprovals()
+        _rewrite(app_home, pooling=False, approvals=approvals)
+        self._assert_refused(app_home, approvals)
+        self._assert_warned(caplog)
+
+    @pytest.mark.parametrize(
+        ("other", "declared"), [("mine.json", "pixel"), ("PIXEL.json", "PIXEL")]
+    )
+    def test_a_second_claimant_beside_the_export_still_warns(
+        self, app_home, caplog, other, declared
+    ):
+        """A hand-written spec, also one whose name differs only by case."""
+        self._install()
+        self._export(app_home)
+        _write(app_home.agents / other, {"name": declared})
+        approvals = LaunchApprovals()
+        _rewrite(app_home, pooling=False, approvals=approvals)
+        self._assert_refused(app_home, approvals)
+        self._assert_warned(caplog)
+
+    def test_two_apps_exporting_the_name_still_warn(self, app_home, caplog):
+        for app in (APP, "other-app"):
+            self._install(app)
+            self._export(app_home, app)
+        approvals = LaunchApprovals()
+        _rewrite(app_home, pooling=False, approvals=approvals)
+        self._assert_refused(app_home, approvals)
+        self._assert_warned(caplog)
+
+    def test_another_apps_export_still_warns(self, app_home, caplog):
+        """The installed app declaring the name is not the one whose export is on disk."""
+        self._install()
+        self._export(app_home, "other-app")
+        approvals = LaunchApprovals()
+        _rewrite(app_home, pooling=False, approvals=approvals)
+        self._assert_refused(app_home, approvals)
+        self._assert_warned(caplog)
+
+    @pytest.mark.parametrize("state", ["removed", "disabled", "owner-disabled"])
+    def test_an_export_left_by_a_removed_or_disabled_app_still_warns(
+        self, app_home, caplog, monkeypatch, state
+    ):
+        """``owner-disabled``: the app's own record says enabled, the owner's disable wins."""
+        from kiro_crew.apps import protected_app_state
+
+        if state != "removed":
+            self._install(enabled=state == "owner-disabled")
+        if state == "owner-disabled":
+            monkeypatch.setattr(protected_app_state, "owner_disabled", lambda name: name == APP)
+        self._export(app_home)
+        approvals = LaunchApprovals()
+        _rewrite(app_home, pooling=False, approvals=approvals)
+        self._assert_refused(app_home, approvals)
+        self._assert_warned(caplog)
+
+    @requires_symlinks
+    def test_a_linked_export_still_warns(self, app_home, caplog):
+        self._install()
+        real = _write(app_home.tmp / "elsewhere" / "real.json", {"name": "pixel"})
+        (app_home.agents / f"{APP}--pixel.json").symlink_to(real)
+        _rewrite(app_home, pooling=False)
+        assert not (mate_overlays.mate_overlay_dir(app_home.overlay) / "pixel.json").exists()
+        self._assert_warned(caplog)
+
+    @pytest.mark.parametrize("reread", ["fails", "names-another-agent"])
+    def test_an_export_that_changes_before_its_re_read_still_warns(
+        self, app_home, caplog, monkeypatch, reread
+    ):
+        """The agents half reads the export first; the crewmate half's re-read differs."""
+        self._install()
+        export = self._export(app_home)
+        real_read = agent_discovery.read_agent_spec_strict
+        reads: list[Path] = []
+
+        def _read(path, **kwargs):
+            if Path(path) == export:
+                reads.append(export)
+                if len(reads) > 1:
+                    if reread == "fails":
+                        raise OSError("busy")
+                    return {"name": "someone-else"}
+            return real_read(path, **kwargs)
+
+        monkeypatch.setattr(agent_discovery, "read_agent_spec_strict", _read)
+        approvals = LaunchApprovals()
+        _rewrite(app_home, pooling=False, approvals=approvals)
+        assert len(reads) == 2
+        self._assert_refused(app_home, approvals)
+        self._assert_warned(caplog)
+
+    def test_an_owner_lookup_that_fails_still_warns(self, app_home, caplog, monkeypatch):
+        from kiro_crew.apps import manager
+
+        self._install()
+        self._export(app_home)
+
+        def _fail(_agent):
+            raise RuntimeError("unreadable")
+
+        monkeypatch.setattr(manager, "owning_app_for_agent", _fail)
+        approvals = LaunchApprovals()
+        _rewrite(app_home, pooling=False, approvals=approvals)
+        self._assert_refused(app_home, approvals)
+        self._assert_warned(caplog)
+
+    def test_a_malformed_export_declares_nothing_so_the_crewmate_keeps_its_overlay(
+        self, app_home, caplog
+    ):
+        """As before this change: a spec with no readable name shadows no crewmate."""
+        self._install()
+        (app_home.agents / f"{APP}--pixel.json").write_text("{", encoding="utf-8")
+        _rewrite(app_home, pooling=False)
+        assert (mate_overlays.mate_overlay_dir(app_home.overlay) / "pixel.json").exists()
+        assert self._lines(caplog, _SAME_NAME) == [] and self._lines(caplog, _APP_RUNS) == []
 
 
 @requires_symlinks
