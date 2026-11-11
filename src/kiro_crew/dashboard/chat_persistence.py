@@ -496,7 +496,7 @@ def _coerce_requested_mode(raw: Any) -> Any:
 # way the working-set bounds do.
 _ENTRY_MAX_CACHEABLE_BYTES = 256 * 1024
 _entry_cache_lock = threading.Lock()
-_entry_cache: OrderedDict[str, tuple[dict | None, int]] = OrderedDict()
+_entry_cache: OrderedDict[str, tuple[dict | None, int, str | None]] = OrderedDict()
 _entry_cache_bytes = 0
 
 # Lazily resolved ``(max_entries, max_bytes)`` for the entry cache. Resolved
@@ -642,17 +642,49 @@ def _build_message_entry(m: dict, *, attachments: tuple[Path, str] | None = None
     # Resolve the configured bounds BEFORE taking the cache lock: the first call
     # in the process reads config from disk, and that read must not run under a
     # lock the flush path contends on.
+    _entry_cache_store(key, (entry, size, None))
+    return entry
+
+
+def _entry_cache_store(key: str, value: tuple[dict | None, int, str | None]) -> None:
+    """File *value* under *key* as the newest entry, then evict to the configured bounds."""
+    global _entry_cache_bytes
     max_entries, max_bytes = _entry_cache_bounds()
     with _entry_cache_lock:
         previous = _entry_cache.pop(key, None)
         if previous is not None:
             _entry_cache_bytes -= previous[1]
-        _entry_cache[key] = (entry, size)
-        _entry_cache_bytes += size
+        _entry_cache[key] = value
+        _entry_cache_bytes += value[1]
         while _entry_cache and (len(_entry_cache) > max_entries or _entry_cache_bytes > max_bytes):
-            _, (_evicted_entry, evicted_size) = _entry_cache.popitem(last=False)
-            _entry_cache_bytes -= evicted_size
-    return entry
+            _entry_cache_bytes -= _entry_cache.popitem(last=False)[1][1]
+
+
+def _build_message_line(
+    m: dict, *, attachments: tuple[Path, str], digest: bytes
+) -> tuple[dict | None, str]:
+    """``(entry, line)`` for a slot save, from the entry cache keyed by the row's *digest*.
+
+    *digest* is the save's own raw-message digest (``transcript_merge.row_digests``),
+    so a hit costs no serialization of *m*. The value also holds the entry's
+    written line, ``json.dumps(entry) + "\\n"`` (``""`` for a row that builds no
+    entry), so a hit writes the bytes a rebuild would. Same guards as
+    :func:`_build_message_entry`: one huge row is not cached, and a row whose
+    digest changed during the build is not filed under the old one.
+    """
+    from kiro_crew.dashboard.slot_persistence.transcript_merge import _row_digest
+
+    key = f"{attachments}\x00{digest.hex()}"
+    with _entry_cache_lock:
+        hit = _entry_cache.get(key)
+        if hit is not None and hit[2] is not None:
+            _entry_cache.move_to_end(key)
+            return hit[0], hit[2]
+    entry = _build_message_entry_uncached(m, attachments=attachments)
+    line = "" if entry is None else json.dumps(entry) + "\n"
+    if len(line) <= _ENTRY_MAX_CACHEABLE_BYTES and _row_digest(m) == digest:
+        _entry_cache_store(key, (entry, len(line), line))
+    return entry, line
 
 
 def _build_history_prefix(

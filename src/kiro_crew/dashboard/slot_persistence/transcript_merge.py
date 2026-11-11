@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import marshal
 import os
 import re
 from collections import deque
@@ -847,23 +848,30 @@ def _frozen_prefix_and_foreign_appends(
     return (prefix, foreign, dedup_dropped)
 
 
+def _row_digest(m: dict) -> bytes:
+    """blake2b of *m*'s ``marshal`` bytes, or ``b""`` when it cannot be marshalled.
+
+    Version 0 writes no object references and no interning flags, so the bytes
+    depend only on the values, their types and the dicts' key order. A key-order
+    change reads as a change, which only costs a rebuild.
+    """
+    try:
+        # nosemgrep: python.lang.security.audit.marshal.marshal-usage -- dumps only, an in-process fingerprint; nothing is ever unmarshalled
+        raw = marshal.dumps(m, 0)
+    except ValueError:
+        return b""
+    return hashlib.blake2b(raw, digest_size=16).digest()
+
+
 def row_digests(window: list[dict]) -> list[bytes]:
     """One digest per window message, over the raw message.
 
     The next save compares these to tell an unchanged row apart without
-    rebuilding or redacting it. Raw, not the built entry: a message mutated in
-    place changes its digest. A message that cannot be serialized gets ``b""``,
-    which :func:`appendable_tail` never treats as a match.
+    rebuilding or redacting it, and the entry cache is keyed by them. Raw, not
+    the built entry: a message mutated in place changes its digest. A message
+    that cannot be marshalled gets ``b""``, which never matches or hits.
     """
-    out: list[bytes] = []
-    for m in window:
-        try:
-            raw = json.dumps(m, sort_keys=True, default=str).encode()
-        except Exception:
-            out.append(b"")
-            continue
-        out.append(hashlib.blake2b(raw, digest_size=16).digest())
-    return out
+    return [_row_digest(m) for m in window]
 
 
 def first_file_change_row(window: list[dict]) -> int:
@@ -965,6 +973,7 @@ def compose_payload(
     *,
     rewrite: bool,
     retired_rows: list[dict] | None = None,
+    digests: list[bytes] | None = None,
 ) -> tuple[str, str, list[str], Callable[[], None]]:
     """The file a full save writes: ``(payload, frozen_prefix, foreign_lines, drop_archives)``.
 
@@ -1017,10 +1026,29 @@ def compose_payload(
     # ``path`` is this session's transcript, so its directory and stem are
     # what pairs an attachment with the session that will delete it.
     attachments = (path.parent, path.stem)
-    window_entries = [
-        e for m in window if (e := build_entry(m, attachments=attachments)) is not None
-    ]
-    window_lines = [json.dumps(e) + "\n" for e in window_entries]
+    # The newest rows that fit the cache's bounds go through it, keyed by the
+    # save's digests; older rows are built uncached. A save walks the window in
+    # order, so caching more rows than fit would evict each before the next save
+    # reached it, while caching this suffix leaves it as the newest entries.
+    if digests is None:
+        digests = row_digests(window)
+    start, room = max(0, len(window) - cache_max_entries), cache_max_bytes
+    for i in range(len(window) - 1, start - 1, -1):
+        room -= cp._approx_window_payload_bytes(window[i : i + 1])
+        if room < 0:
+            start = i + 1
+            break
+    window_entries: list[dict] = []
+    window_lines: list[str] = []
+    for i, (m, digest) in enumerate(zip(window, digests)):
+        if i >= start and digest:
+            e, line = cp._build_message_line(m, attachments=attachments, digest=digest)
+        else:
+            e = cp._build_message_entry_uncached(m, attachments=attachments)
+            line = "" if e is None else json.dumps(e) + "\n"
+        if e is not None:
+            window_entries.append(e)
+            window_lines.append(line)
     # Rows this transcript has not had its display verdicts recorded for; the
     # save projects them once its write commits (display_verdicts).
     display_verdicts.note_written_lines(history_key, window_lines)

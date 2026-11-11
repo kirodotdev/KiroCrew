@@ -640,6 +640,7 @@ def _save_slot_to_history(
                         meta_str,
                         rewrite=rewrite,
                         retired_rows=retired_rows,
+                        digests=digests,
                     )
                 )
             else:
