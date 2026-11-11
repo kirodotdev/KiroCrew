@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import time
 from typing import Any
@@ -52,6 +53,7 @@ from kiro_crew.subagent import SubagentManager, _SharingPlan
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
 from kiro_crew.subagent_manager.admission.types import MemoryWait
 from kiro_crew.subagent_wait_reasons import QUEUED_REASON_LOW_MEMORY, QUEUED_WAIT_EXPIRED_TEXT
+from kiro_crew.taskq import lanes
 from kiro_crew.testing.wait import await_until
 
 pytestmark = [pytest.mark.timeout(60), pytest.mark.usefixtures("healthy_host_memory")]
@@ -375,6 +377,38 @@ class TestTwoLanesNearTheFloor:
             await h.end(a1, frees_gb=0.0)
             await h.end(a2, frees_gb=0.0)
             assert adm.lane_share_holds(_A, "probe") is False
+
+    @pytest.mark.asyncio
+    async def test_a_lane_is_not_held_for_a_lower_priority_lane(self, monkeypatch) -> None:
+        """The share only holds a start for a waiting lane on its tier or higher."""
+        async with _host(monkeypatch) as h:
+            await _wave_near_the_floor(h)
+            b1 = await h.spawn(_B, "b1")
+            assert not h.running(b1)
+            adm = h.mgr._admission
+            lane_a, lane_b = adm.lane_for_session(_A), adm.lane_for_session(_B)
+            assert adm.lane_share_holds(_A, "probe") is True
+            h.mgr.set_lane_priority_source(lambda: {lane_a: "high"})
+            assert adm.lane_share_holds(_A, "probe") is False
+            h.mgr.set_lane_priority_source(lambda: {lane_a: "high", lane_b: "high"})
+            assert adm.lane_share_holds(_A, "probe") is True
+            h.mgr.set_lane_priority_source(lambda: {lane_b: "low"})
+            assert adm.lane_share_holds(_A, "probe") is False
+
+    @pytest.mark.asyncio
+    async def test_a_high_lane_is_still_held_for_a_waiting_system_lane(self, monkeypatch) -> None:
+        """Cron and hook spawns have no tier, so a High chat's start still gives way to them."""
+        async with _host(monkeypatch) as h:
+            await _wave_near_the_floor(h)
+            b1 = await h.spawn(_B, "b1")
+            assert not h.running(b1)
+            waits = h.mgr._memory_waits
+            for aid, wait in list(waits.items()):
+                waits[aid] = dataclasses.replace(wait, lane=lanes.SYSTEM_LANE)
+            adm = h.mgr._admission
+            lane_a = adm.lane_for_session(_A)
+            h.mgr.set_lane_priority_source(lambda: {lane_a: "high"})
+            assert adm.lane_share_holds(_A, "probe") is True
 
     @pytest.mark.asyncio
     async def test_a_nested_start_of_a_held_lane_is_not_held(self, monkeypatch) -> None:

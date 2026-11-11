@@ -113,11 +113,13 @@ def taskq_refill_window(self: _TaskqBridgeMixin, *, children_only: bool = False)
     # what runs whenever capacity moves.
     self.taskq_expire_waits()
     rows: list[_taskq.TaskRecord] = []
+    tiered = not children_only or self.capacity_view().root_slot
+    priorities = self.lane_priorities() if tiered else {}
     try:
         absent, lanes = self._refill_absent(store, children_only)
         room, want = self._refill_make_room(store, absent, lanes)
         rows, retired, stranded = self._refill_fetch_retiring(
-            store, absent, room, want, children_only
+            store, absent, room, want, children_only, priorities
         )
         self._report_retired_stage_rows(store, retired, stranded)
         self._refill_apply(rows)
@@ -142,11 +144,17 @@ async def taskq_refill_window_async(self: _TaskqBridgeMixin, *, children_only: b
     if store is None:
         return 0
     rows: list[_taskq.TaskRecord] = []
+    # One tier snapshot for the pass, read on the loop and handed to the
+    # hydrating fetch on the writer thread. The child reserve's refill is
+    # untiered only when capacity is reserve-only; while a root slot is free a
+    # tier still decides which heads the fetch brings in.
+    tiered = not children_only or self.capacity_view().root_slot
+    priorities = self.lane_priorities() if tiered else {}
     try:
         absent, lanes = await store.run(self._refill_absent, store, children_only)
         room, want = self._refill_make_room(store, absent, lanes)
         rows, retired, stranded = await store.run(
-            self._refill_fetch_retiring, store, absent, room, want, children_only
+            self._refill_fetch_retiring, store, absent, room, want, children_only, priorities
         )
         self._report_retired_stage_rows(store, retired, stranded)
         self._refill_apply(rows)
@@ -216,18 +224,22 @@ def _refill_fetch(
     room: int,
     want: int,
     children_only: bool,
+    priorities: "Mapping[str, int] | None" = None,
 ) -> list["_taskq.TaskRecord"]:
-    """Store read: the absent lanes' heads first, then whatever room is left."""
+    """Store read: the absent lanes' heads first, then whatever room is left.
+
+    *priorities* is the pass's tier snapshot (see :func:`lane_refill_scheduler`)."""
     from kiro_crew import taskq as _taskq
 
     exclude = self.taskq_dispatch_excluded_ids()
+    sched = self.lane_refill_scheduler(priorities=priorities)
     rows: list[_taskq.TaskRecord] = []
     if absent and room > 0:
         rows.extend(
             store.fetch_dispatchable_fair(
                 _taskq.KIND_SUBAGENT,
                 limit=min(room, want),
-                scheduler=self.lane_refill_scheduler(),
+                scheduler=sched,
                 exclude_ids=exclude,
                 children_only=children_only,
                 lanes=absent,
@@ -241,7 +253,7 @@ def _refill_fetch(
             store.fetch_dispatchable_fair(
                 _taskq.KIND_SUBAGENT,
                 limit=room,
-                scheduler=self.lane_refill_scheduler(),
+                scheduler=sched,
                 exclude_ids=exclude,
                 children_only=children_only,
             )
@@ -499,9 +511,21 @@ def _evict_for_lanes(
     return evicted
 
 
-def lane_refill_scheduler(self: _TaskqBridgeMixin) -> "_lanes.LaneScheduler":
+def lane_refill_scheduler(
+    self: _TaskqBridgeMixin, *, priorities: "Mapping[str, int] | None" = None
+) -> "_lanes.LaneScheduler":
     """A second balance for the store->window refill, so filling the window
-    does not spend the credit the drain picks with."""
+    does not spend the credit the drain picks with.
+
+    *priorities* is the refill pass's tier snapshot (``None`` reads it now).
+    An empty mapping clears the tiers on it for this caller, which is how
+    the ``children_only`` refill hydrates rows when capacity is reserve-only:
+    the store reader drives :meth:`LaneScheduler.interleave` itself, so the
+    exemption is expressed on the scheduler handed to it rather than as an
+    argument. A tier there would hydrate one chat's queued children pass
+    after pass and leave another chat's in-flight tree with no head in the
+    window for the reserve to start.
+    """
     from kiro_crew.taskq import lanes as _lanes
 
     scheduler = getattr(self._manager, "_lane_refill_scheduler", None)
@@ -511,4 +535,5 @@ def lane_refill_scheduler(self: _TaskqBridgeMixin) -> "_lanes.LaneScheduler":
         setattr(self._manager, "_lane_refill_scheduler", scheduler)
     else:
         scheduler.weights = settings.lane_weights
+    scheduler.priorities = dict(self.lane_priorities() if priorities is None else priorities)
     return scheduler
