@@ -23,6 +23,7 @@ tested against a fake — no AWS calls in tests.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import logging
@@ -33,7 +34,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Mapping, Optional, Protocol
+from typing import Callable, List, Mapping, Optional, Protocol
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
@@ -692,10 +693,19 @@ def _begin_signin_with_target(engine: "LaunchEngine", job: "LaunchJob") -> Signi
 
 
 def _engine_accepts_login_target(engine: "LaunchEngine") -> bool:
+    return _accepts_keyword(engine.begin_signin, "login_target")
+
+
+def _accepts_keyword(method: Callable[..., object], name: str) -> bool:
     try:
-        return "login_target" in inspect.signature(engine.begin_signin).parameters
+        return name in inspect.signature(method).parameters
     except (TypeError, ValueError):
         return False
+
+
+def _show_detail(job: "LaunchJob", store: "LaunchJobStore", step: LaunchStep, text: str) -> None:
+    step.detail = text
+    store.save(job)
 
 
 def _target_unsupported_message(engine: "LaunchEngine", job: "LaunchJob") -> str:
@@ -1029,9 +1039,13 @@ def run_launch(
         _check_cancel()
         s = _activate(STEP_PROVISION)
         # Only the built-in EC2 engine takes a subnet; the handler refuses it elsewhere.
-        subnet = {"subnet_id": job.subnet_id} if job.subnet_id else {}
+        extra: dict = {"subnet_id": job.subnet_id} if job.subnet_id else {}
+        if _accepts_keyword(engine.provision, "on_network_fallback"):
+            # A network the engine picked for the user is named on this step
+            # before the stack is created, not after.
+            extra["on_network_fallback"] = functools.partial(_show_detail, job, store, s)
         job.instance_id = engine.provision(
-            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **subnet
+            tag=job.tag, size_key=job.size_key, profile=job.profile, region=job.region, **extra
         )
         s.detail = job.instance_id
         s.state = STEP_DONE

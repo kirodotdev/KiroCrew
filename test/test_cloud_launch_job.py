@@ -178,6 +178,34 @@ class TestRunLaunch:
         # Persisted terminal state is visible to a fresh reader.
         assert lj.LaunchJobStore(root=s.root).get(job.id).status == lj.DONE
 
+    def test_a_fallback_network_is_on_the_provision_step_before_the_stack(
+        self, tmp_path, monkeypatch
+    ):
+        # The dashboard card names the VPC the launcher picked by itself while the
+        # stack is created, through the real engine's provision.
+        from kiro_crew.cloud import launch_engine as le
+
+        s = _store(tmp_path)
+        job = s.create(profile="dev", region="us-east-2", size_key="balanced")
+        mid_deploy = {}
+
+        def fake_deploy(**kw):
+            kw["on_network_fallback"]("No default VPC in us-east-2, so ...")
+            mid_deploy["detail"] = s.get(job.id).step(lj.STEP_PROVISION).detail
+            return SimpleNamespace(instance_id="i-0abc")
+
+        monkeypatch.setattr(le.ec2, "deploy", fake_deploy)
+        monkeypatch.setattr(le.sizes, "get_tier", lambda k: SimpleNamespace(key=k))
+        eng = le.RealLaunchEngine()
+        eng.preflight = lambda profile, region: None
+        eng.begin_signin = lambda **kw: FakeHandle(already=True)
+        eng.register = lambda **kw: None
+
+        out = lj.run_launch(job, s, eng)
+
+        assert mid_deploy["detail"] == "No default VPC in us-east-2, so ..."
+        assert out.status == lj.DONE
+
     def test_verified_identity_mismatch_registers_then_fails_not_done(self, tmp_path):
         """A refused sign-in (the box holds a session for a DIFFERENT identity
         than the pinned target -- ordinary on a re-launch onto a reused stack) is

@@ -80,6 +80,7 @@ def _deploy_with_progress(
                 extra_packages=extra_packages,
                 ssm_kms_key_arn=ssm_kms_key_arn,
                 proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
+                on_network_fallback=ui.info,
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced on join
             box["error"] = exc
