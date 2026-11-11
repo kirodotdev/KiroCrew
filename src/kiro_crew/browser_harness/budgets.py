@@ -68,6 +68,10 @@ HANDBACK_POLL_S = 5.0
 HANDBACK_WAIT_S = 3.0
 #: The shim's HTTP timeout for one hand-back poll.
 HANDBACK_CALL_TIMEOUT_S = HANDBACK_WAIT_S + SHIM_MARGIN_S
+#: The gateway's hub ends the hold at ``HOLD_TIMEOUT_S`` and says so on the next
+#: poll (``hold_over``); the shim's own bound is a poll and its call later, so it
+#: fires only when the gateway stopped answering.
+HOLD_GRACE_S = HANDBACK_POLL_S + HANDBACK_CALL_TIMEOUT_S
 
 #: A quick ask (the ``ask`` op, ``browser_harness.quick_ask``) waits this long for
 #: the person's answer; a human_check takeover is bounded tighter. The agent's
@@ -131,6 +135,7 @@ __all__ = [
     "HANDBACK_CALL_TIMEOUT_S",
     "HANDBACK_POLL_S",
     "HANDBACK_WAIT_S",
+    "HOLD_GRACE_S",
     "HOLD_TIMEOUT_S",
     "LOCK_WAIT_S",
     "OP_TIMEOUT_S",

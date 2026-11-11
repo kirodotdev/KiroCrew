@@ -621,7 +621,11 @@ ends a tool call silent for 600 s) that every `HANDBACK_POLL_S` (5 s) posts
 `/api/browser/handback` -- a short long-poll of at most `HANDBACK_WAIT_S` (3 s) on
 `LiveHub.wait_for_release`, the awaitable the release sets -- and every 30 s pings
 the session keepalive. On `released` the op is posted again and runs. Bounded by
-`HOLD_TIMEOUT_S` (10 minutes) in the shim, after which the agent is told
+`HOLD_TIMEOUT_S` (10 minutes) from each park, owned by the gateway's hub
+(`LiveSession.parked_until`, one per session, so every call parked there hears
+the end; a re-posted op held again starts a new hold on both sides): a poll after it
+answers `hold_over: true`, and the shim's own deadline is `HOLD_GRACE_S` later,
+only for a gateway that stopped answering. Either way the agent is told
 `user_in_control` ("held for 10 minutes; tell them you are waiting and end your
 turn"). An op the claim cut short mid-flight answers `interrupted` with `hold`:
 the tool waits for the hand-back and then tells the agent to snapshot first; the op
@@ -676,13 +680,18 @@ are dropped. The answer's `delivered` says where it went:
 * `agent`: an agent op of this turn is parked on this takeover: the op route
   answered it `hold` (`LiveHub.park`, `LiveSession.parked`), so the tool polls
   `/api/browser/handback` until the hand-back. The flag is cleared by the
-  hand-back, the turn's start and its end. The hub keeps `{choice, note}` on the
+  hand-back, the turn's start and its end, and it lapses when the hub's hold
+  ends: a hand-back after that goes to chat, never to the turn's next op, and
+  the op's poll answers `hold_over` so the op is not run behind words the agent
+  never sees (`LiveHub.hold_over`). A claim before the poll saw a hand-back parks
+  the op again on the same end, so that earlier hand-back resumes nothing; a note
+  it carried rides on the `hold_over` answer instead. The hub keeps `{choice, note}` on the
   session (`LiveHub.take_handback` takes it once; a second note while one is
   untaken goes to chat); the poll answers `released` with `handed_back`, and the
   tool appends one line to the op's result (or to the `interrupted` text):
   `handed_back: {"choice", "note"}`, marked as the user's own words, not page
-  content. Should the poll go away without taking it, the turn's next op answer
-  carries it.
+  content. Should a poll that was still inside its hold go away without taking
+  it, the turn's next op answer carries it.
 * `chat`: no op is parked -- the turn is between ops (it may end without
   another), a view was reopened after its turn, or the turn ended under the
   takeover. The card fires `mc:browser-handback-chat`
