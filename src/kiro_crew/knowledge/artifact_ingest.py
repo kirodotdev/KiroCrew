@@ -534,9 +534,12 @@ async def ingest_artifact(
             # Recorded inside the gate's own hop: by the time it reports a refusal
             # it has already committed the delete and the location claim, and a
             # cancellation between here and a post-hoc write would leave both
-            # durable with nothing naming them.
-            on_duplicate=lambda _text_hash: _record_deduped_state(
-                kstore, source_id, slug, content_hash, title, art.kind),
+            # durable with nothing naming them. The row records the gate's
+            # ``text_hash``, the hash the claimed items carry: for html it differs
+            # from ``content_hash`` (the raw markup), and the claim helpers and
+            # ``_adopt_reassigned_item`` match the row against the items' hash.
+            on_duplicate=lambda text_hash: _record_deduped_state(
+                kstore, source_id, slug, text_hash, title, art.kind),
         )
     finally:
         if tmp_path:
