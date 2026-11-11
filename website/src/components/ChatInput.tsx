@@ -72,6 +72,7 @@ import { usePickerSource } from './dashboardPickerSource'
 import { useDictationControls, useHoldToTalk } from './chat-input/voice'
 import { HoldToTalkBar, MicButton, VoiceCaptureStatus } from './chat-input/VoiceControls'
 import { AgentChip, ContextUsageControl, ModelChip, SessionControlChips, useContextPopover, useShelfMeasure } from './chat-input/ContextShelf'
+import { MastermindSummaryPicker } from './MastermindSummaryPicker'
 import { useAutoCompactThreshold } from './chat-input/autoCompact'
 import { useOfflinePlaceholder } from './chat-input/offlinePlaceholder'
 import { AttachMenu, usePlusMenu } from './chat-input/attach'
@@ -1981,6 +1982,9 @@ function ChatInput({
           {contextPct != null && (
             <ContextUsageControl contextPct={contextPct} contextUnknown={contextUnknown} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} cacheSlot={sessionOnPeer ? null : activeSlot} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} autoCompactThreshold={autoCompactThreshold} />
           )}
+          {/* Mastermind's summary model, beside the response model (renders nothing
+              off the enabled Mastermind slot). */}
+          {onModelClick && modelName && activeSlot && <MastermindSummaryPicker slotKey={activeSlot} compact={shelfCompact} />}
           {onModelClick && modelName && (
             <ModelChip modelName={modelName} harnessBackend={harnessBackend} modelIsJevRouted={modelIsJevRouted} modelIsInheritedDefault={modelIsInheritedDefault} modelIsAutoChosen={modelIsAutoChosen} reasoningEffort={reasoningEffort} effortIsDefault={effortIsDefault} hasEffort={hasEffort} isRunning={isRunning} shelfTiny={shelfTiny} composerControl={composerControl} modelChipPressedFromComposerRef={modelChipPressedFromComposerRef} onModelClick={onModelClick} />
           )}

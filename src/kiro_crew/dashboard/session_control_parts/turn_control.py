@@ -717,6 +717,16 @@ async def close_target(
         raise SessionControlError(
             "a Bot cannot close its own thread", status=403, code="member_thread_self_close"
         )
+    from kiro_crew.mastermind.slot import (  # this owner runs on the facade's globals
+        is_mastermind_turn,
+    )
+
+    if is_mastermind_turn(state, slot):
+        raise SessionControlError(
+            "Mastermind cannot be closed; turn it off or remove it in Settings > Mastermind.",
+            status=409,
+            code="mastermind_protected",
+        )
     # Deferred for the same import cycle `stop_target` documents.
     from kiro_crew.dashboard.chat_handlers import SlotCloseError, close_slot
 

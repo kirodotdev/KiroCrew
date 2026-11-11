@@ -41,6 +41,7 @@ from kiro_crew.executors import (
     run_in_embed_pool,
 )
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
+from kiro_crew.mastermind.slot import is_mastermind_turn
 from kiro_crew.messaging.dispatch import (
     consume_reinjection,
     rearm_reinjection,
@@ -130,6 +131,12 @@ async def _session_replay_history(
     context from quoting the forgotten turns too.
     """
     compressed: str | None = ""
+    if _context_is_new and not _provider_has_history and is_mastermind_turn(state, slot):
+        # Mastermind's memory is its tree's view (mastermind.service), never the
+        # replayed transcript; paid like the suppression arm below.
+        state.sessions.consume_replay_suppression(session_key)
+        state.sessions.consume_first_turn_history_owed(session_key)
+        return ""
     # Provider-agnostic session replay: Kiro Crew's conversation_log
     # is the canonical history source. Skip only when the provider
     # successfully resumed its own native session (same provider,
@@ -759,6 +766,8 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                 _interrupted_turn_preamble = preamble
                 turn._interrupted_turn_preamble = _interrupted_turn_preamble
         logger.info("🔍 Chat slot=%s is_new=%s mode=%r", slot.key, is_new, slot.mode)
+        # The turn's own message, before the notices below are prepended to it.
+        _mastermind_text = message
         # Drain any pending subagent delivery failures so the LLM knows
         # about timed-out results and can read them from disk. Settled or put
         # back in _turn_settle_debts; a notice the message already carries (a
@@ -775,6 +784,26 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
         # mirror — avoids leaking injected context to the linked thread.
         _user_msg_for_mirror = message
         turn._user_msg_for_mirror = _user_msg_for_mirror
+        if is_mastermind_turn(state, slot):
+            from kiro_crew.mastermind import service as mastermind  # only Mastermind loads it
+
+            if is_slash:
+                mastermind.service_for(state).pending.pop(slot.key, None)
+            else:
+                # The memory view stands in for the conversation's history.
+                from kiro_crew.context import window_for_provider_client
+
+                _request_prefix_context = (
+                    await mastermind.turn_prefix(
+                        state,
+                        slot,
+                        _mastermind_text,
+                        synthetic=_is_synthetic,
+                        window_tokens=window_for_provider_client(client),
+                    )
+                    + _request_prefix_context
+                )
+                turn._request_prefix_context = _request_prefix_context
         # Shared Crew: tell the agent who sent this message (prompt only).
         from kiro_crew.shared_crew.attribution import sender_line
 

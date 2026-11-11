@@ -31,7 +31,7 @@
  * by its generated id. The generator rejects an unknown id or locale, a blank or
  * duplicate term, and a term that only repeats the label.
  */
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_MASTERMIND, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { LOCATIONS as apps } from './areas/apps'
 import { LOCATIONS as artifacts } from './areas/artifacts'
 import { LOCATIONS as capabilities } from './areas/capabilities'
@@ -161,6 +161,7 @@ export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_EXPLORE]: 'developer.explore',
   [PREVIEW_CREW_MODE]: 'developer.ultra-mode',
   [PREVIEW_DASHBOARD_STALE_FIELDS]: 'developer.mark-out-of-date-dashboard-fields',
+  [PREVIEW_MASTERMIND]: 'developer.mastermind',
 }
 
 /** Single settings a panel draws only while a preview flag is on, on a tab that
@@ -178,4 +179,5 @@ export const SETTING_PREVIEW: Record<string, string> = {
 export const SETTINGS_TAB_PREVIEW: Record<string, string> = {
   webhooks: PREVIEW_WEBHOOKS,
   'session-environments': PREVIEW_SESSION_ENVIRONMENTS,
+  mastermind: PREVIEW_MASTERMIND,
 }

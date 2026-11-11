@@ -1235,7 +1235,10 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
       <ErrorNotice
         title={i18nT('pages.chatSidebar.close_refused_title')}
         message={closeRefused
-          ? i18nT(closeRefused.reason === 'historyWrite' ? 'pages.chatSidebar.close_refused' : 'pages.chatSidebar.close_refused_other', { title: closeRefused.title ?? sessionDisplayTitle({ key: closeRefused.key, title: null }) })
+          ? closeRefused.reason === 'mastermind'
+            // Mastermind is turned off or removed from Settings, never closed here.
+            ? i18nT('pages.chatSidebar.close_refused_mastermind')
+            : i18nT(closeRefused.reason === 'historyWrite' ? 'pages.chatSidebar.close_refused' : 'pages.chatSidebar.close_refused_other', { title: closeRefused.title ?? sessionDisplayTitle({ key: closeRefused.key, title: null }) })
           : null}
         askAgent={closeRefused?.reason === 'failed'}
         onDismiss={() => dispatch(setCloseRefused(null))}

@@ -760,7 +760,7 @@ export interface ChatState {
   // menu, Cmd+W) reports it; the sidebar renders it. `historyWrite` is the
   // server's "still saving" refusal; anything else is a plain failed close.
   /** `title` is null for a found, untitled session; the notice localizes it at render. */
-  closeRefused: { key: string; title: string | null; reason: 'historyWrite' | 'failed' } | null
+  closeRefused: { key: string; title: string | null; reason: 'historyWrite' | 'mastermind' | 'failed' } | null
 }
 
 export const initialState: ChatState = {

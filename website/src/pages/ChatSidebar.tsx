@@ -7,6 +7,7 @@ import { useCrewMode, useMateSessionsHidden, usePreviewFlag } from '../hooks/use
 import { selectLiveMateThreads } from '../store/dashboardSlice'
 import { selectCloseNotice } from '../store/dashboard/closeWatch'
 import { PREVIEW_FOLDER_CONDUCTOR } from '../utils/previewFlags'
+import { MASTERMIND_SLOT_KEY, useMastermindInfo } from '../hooks/useMastermind'
 import { useStore } from 'react-redux'
 import { useAppDispatch, useAppSelector } from '../store'
 import type { RootState } from '../store'
@@ -154,6 +155,16 @@ function ChatSidebar({
   const mateThreads = useAppSelector(selectLiveMateThreads)
   // eslint-disable-next-line react-hooks/exhaustive-deps -- crewMode and mateHidden stand for the previews crewModeView reads
   const localSlots = useMemo(() => crewModeView(slotsProp, false, mateThreads), [slotsProp, crewMode, mateHidden, mateThreads])
+  // Mastermind (Settings > Mastermind): while the backend reports it enabled, its
+  // slot is the HEAD row of every lane -- the ordinary session row, held first and
+  // top-level, decorated and locked (./chat-sidebar/rows `headKey`, SessionRow).
+  // Read only when such a slot exists, so an install without one asks nothing.
+  const hasMastermindSlot = localSlots.some(s => s.key === MASTERMIND_SLOT_KEY && !s.peer_id)
+  const { data: mastermindInfo } = useMastermindInfo({ enabled: hasMastermindSlot, refreshMs: 60_000 })
+  const mastermindKey = hasMastermindSlot && mastermindInfo?.enabled === true ? MASTERMIND_SLOT_KEY : null
+  const mastermindRemembered = typeof mastermindInfo?.messages === 'number' ? mastermindInfo.messages : null
+  const mastermindScene = useMemo(() => (mastermindKey ? { key: mastermindKey, remembered: mastermindRemembered } : null),
+    [mastermindKey, mastermindRemembered])
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   // Read-only store handle for point-in-time reads inside async callbacks (the
@@ -507,6 +518,7 @@ function ChatSidebar({
     sortKey,
     clock: Date.now,
     frozen: dragFrozen,
+    headKey: mastermindKey,
   }, previousRowsRef.current)
   previousRowsRef.current = sidebarRows
   const { listNarrowed, pinnedExemptNarrowing, revealBlockingFilters, laneOrder, isRowFolderHidden, isRowStatusHidden } = sidebarRows
@@ -880,6 +892,7 @@ function ChatSidebar({
       digits: digitModifierHeld ? shortcutDigitByKey : null,
       renaming: { key: renamingSlot, scope: renameScope, value: renameValue },
       revealFlash, nativeDragKey: nativeSessionDrag,
+      mastermind: mastermindScene,
     },
     drag: activeDrag,
   }

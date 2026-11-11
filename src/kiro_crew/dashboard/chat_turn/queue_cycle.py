@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from kiro_crew.dashboard.chat_utils import SYNTHESIS_HELD, SYNTHESIS_UNKNOWN
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE, SUBAGENT_SYNTHESIS_PROMPT
+from kiro_crew.mastermind.slot import turn_ended as mastermind_turn_ended
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -734,6 +735,9 @@ async def _end_turn_tail(
         # skip_if_busy for that case. Guarded because a raise here would skip the queue
         # hand-off below, silently stranding queued work at the end of an
         # otherwise successful turn.
+        # A landed Mastermind turn drops its backend conversation here: the next
+        # turn starts fresh, with the memory tree's view as its memory.
+        mastermind_turn_ended(state, slot, effective_session_key(slot))
         try:
             # A model pick the picker took during THIS turn lands first: the
             # session is idle now, so the harness's live switch can take it
