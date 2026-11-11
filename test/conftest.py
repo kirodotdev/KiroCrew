@@ -16,6 +16,7 @@ import sys
 import time
 import urllib.error
 import urllib.parse
+from collections.abc import Iterator
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -829,6 +830,17 @@ def _isolate_aim_skills_dir(_floor_monkeypatch):
 #: eight times 37.5 s. A scan measured above 37.5 s carries its own larger timeout.
 #: ``test/test_tree_scan_budget.py`` pins this hook.
 TREE_SCAN_TIMEOUT_SECS = 300
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _drop_facade_scan_text_caches() -> Iterator[None]:
+    """Drop ``facade_mirror_scan``'s per-text caches after each module, so a corpus guard's
+    readings of the whole test tree are not held for the rest of the worker. Only clears
+    when a module has imported the scanner."""
+    yield
+    scan = sys.modules.get("facade_mirror_scan")
+    if scan is not None:
+        scan.clear_text_caches()
 
 
 def in_tree_scan_group(item: pytest.Item) -> bool:
