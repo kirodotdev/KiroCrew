@@ -270,7 +270,6 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
     from kiro_crew.platform_compat_files import (  # noqa: F401
         _AT_EMPTY_PATH,
         _AT_FDCWD,
-        _LIBRARY_DIR,
         _RENAME_NOREPLACE_FLAG,
         _RENAME_NOREPLACE_FN,
         _RMTREE_BACKOFF_SECONDS,
@@ -284,7 +283,6 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _WIN_FILE_SHARE_READ_WRITE_DELETE,
         _WINDOWS_RUNNABLE_HOOK_SUFFIXES,
         RENAME_NOREPLACE_AVAILABLE,
-        TCC_LIBRARY_WALKABLE_CHILDREN,
         TCC_PROTECTED_HOME_DIRS,
         _build_renameat2_via_syscall,
         _clear_readonly_and_retry,

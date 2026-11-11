@@ -1646,8 +1646,10 @@ clear the quarantine flag.
 
 ## macOS folder-access (TCC) prompts
 
-macOS gates `~/Downloads`, `~/Documents`, `~/Desktop`, `~/Pictures`, `~/Movies`
-and `~/Music` behind **TCC** (Transparency, Consent and Control). The first time
+macOS gates `~/Downloads`, `~/Documents`, `~/Desktop`, `~/Pictures`, `~/Movies`,
+`~/Music`, and the iCloud Drive and cloud-drive folders under `~/Library`
+(`Mobile Documents`, `CloudStorage`) behind **TCC** (Transparency, Consent and
+Control). The first time
 an app reads one of them, macOS shows a modal *"Kiro Crew would like to access
 files in your Downloads folder"*, and consent is recorded **per (app, folder)
 pair** — so an operation that incidentally touches three of those folders
@@ -1662,10 +1664,10 @@ stay out of them:
 - **Walks rooted at `$HOME` itself are pruned.** The `@`-mention file index
   (`dashboard/file_index.py`) and the unscoped `/api/file-search` walk call
   `platform_compat.tcc_prune_walk_dirs`. At a `$HOME` root it drops the
-  TCC-protected top-level folders, and at `<root>/Library` it keeps only the
-  walkable children (the cloud mounts) and drops the rest, most of which is
-  Full-Disk-Access gated. Every other root and every deeper position is walked
-  unchanged.
+  TCC-protected top-level folders and all of `~/Library` (iCloud Drive, the
+  cloud-drive mounts, and many Full-Disk-Access gated folders). Every other
+  root and every deeper position is walked unchanged, so a project inside
+  iCloud Drive or a cloud drive is opened by naming its root.
 
 Two consequences worth knowing:
 
