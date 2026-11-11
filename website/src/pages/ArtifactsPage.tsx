@@ -1231,6 +1231,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             <ArtifactsQuickCreate
               onNewDoc={handleNewArtifact}
               newDocBusy={newArtifactMut.isPending}
+              onNewCanvas={handleNewCanvas}
+              newCanvasBusy={newCanvasMut.isPending}
               onImport={handleAddArtifact}
               importBusy={addArtifactMut.isPending}
               onNewFolder={handleNewFolder}

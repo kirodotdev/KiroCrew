@@ -11,7 +11,7 @@ import { i18nT } from '../i18n/t'
 import type { QueryClient } from '@tanstack/react-query'
 import type { NavigateFunction } from 'react-router-dom'
 import { importRejectionText } from './artifactsPageModel'
-import { emptyCanvas, serializeCanvas } from '../components/canvas/canvasModel'
+import { emptyCanvasDocument } from '../components/canvas/lazyCanvas'
 
 /** The page's "Add Artifact" and "New Artifact" state and handlers, called
  *  where they sat in the page so their hooks register in the page's order. */
@@ -174,7 +174,7 @@ export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, 
     mutationFn: async (vars: { folder: string }) => {
       const art = (await api.createArtifact({
         name: i18nT('pages.artifactsPage.untitled_canvas_name'),
-        content: serializeCanvas(emptyCanvas()),
+        content: await emptyCanvasDocument(),
         kind: 'canvas',
       })) as Artifact
       let filed = true
@@ -190,7 +190,12 @@ export function useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, 
     onSuccess: ({ art, filed }) => {
       qc.invalidateQueries({ queryKey: ['artifacts'] })
       invalidateFolders()
-      if (!filed) setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
+      if (!filed) {
+        // Stay put so the note is read, as an import does: opening the canvas
+        // would unmount the only place it is shown. The canvas is at the root.
+        setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
+        return
+      }
       navigate(`/artifacts/${art.slug}`)
     },
   })

@@ -321,7 +321,7 @@ in-app-browser hand-off below applies. Uploading the same file to Kiro Space is
 |---|---|---|
 | `slug` | string | URL-safe handle. Derived from `name` when not given, resolving a collision by suffixing (`-2`, `-3`, …); an explicitly-passed slug is refused — never renamed — when it is already taken or malformed |
 | `name` | string | Human-readable display name |
-| `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image`, `dashboard`, `canvas` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)), except `dashboard`, which inference never returns and a caller passes explicitly (see [Dashboard packages](#dashboard-packages-kinddashboard)), and `canvas`, which only a `.kcanvas` source path infers (see [Canvases](#canvases-kindcanvas)) |
+| `kind` | enum | `widget`, `html`, `markdown`, `svg`, `json`, `text`, `webapp`, `image`, `dashboard`, `canvas` — inferred on save when the caller omits it (see [Kind inference](#kind-inference)), except `dashboard`, which inference never returns and a caller passes explicitly (see [Dashboard packages](#dashboard-packages-kinddashboard)), and `canvas`, which only a `.canvas` source path infers (see [Canvases](#canvases-kindcanvas)) |
 | `source` | enum | `chat` (default), `cron`, `subagent`, `manual`, `import`, `dashboard`, `slack`, `cli`, `task-runner`, `unknown`; a non-string the store is asked to record is a validation error (400 on the create route). The create route still falls back to the request's own source for a falsy value (`{}`, `[]`), and a `source_path` dedup update never reads the field, both as before |
 | `pinned` | bool | "Starred" — user-curated keep flag (default `false`). Drives the Artifacts page **Starred** view. Metadata-only; toggling does NOT bump `version`. |
 | `auto_registered` | bool | `true` when the store created this record automatically from a chat-emitted `<mcwidget>` (see [Widget auto-registration](#widget-auto-registration)) rather than from an explicit save. Sweepable by the retention pass while unpinned; tolerant-loaded (pre-existing artifacts default `false`, so they are never swept). |
@@ -507,7 +507,7 @@ route, the `artifact_save` MCP tool, the `kirocrew artifact save` CLI) infers
 1. **Explicit wins** — a non-empty `kind` argument is used as-is (back-compat).
 2. **Extension** — for file-backed artifacts (`source_path` set): `.md` /
    `.markdown` → `markdown`, `.html` / `.htm` → `html`, `.svg` → `svg`,
-   `.json` → `json`, `.txt` → `text`, `.kcanvas` → `canvas`, any other
+   `.json` → `json`, `.txt` → `text`, `.canvas` → `canvas`, any other
    extension → `text`.
 3. **Content sniff** — for inline content with no `source_path`: HTML-ish
    markup (`<div`, `<span`, `<style`, `<table`, `<mcwidget`, `<html`,
@@ -1735,28 +1735,130 @@ to this kind would store content no reader can parse.
 
 ### Canvases (`kind="canvas"`)
 
-A `canvas` artifact is a whiteboard: one `.kcanvas` JSON document,
-`{"kind": "kirocrew-canvas", "schema": 1, "shapes": [...], "connectors": [...]}`,
-drawn and edited on its detail page by the dashboard's canvas editor
-(`website/src/components/canvas/`). Shapes are stickies, rectangles, ellipses,
-diamonds, text and sections; connectors join two shapes by id. The format's
-reader is `canvasModel.ts`: it drops a shape or connector it cannot read and
-reports a document that is not a canvas at all as unreadable.
+A `canvas` artifact is a whiteboard: one [JSON Canvas 1.0](https://jsoncanvas.org/spec/1.0/)
+document with Kiro's own fields added, `{"kirocanvas": 1, "nodes": [...], "edges": [...]}`,
+saved with the `.canvas` extension, drawn and edited on its detail page by the
+dashboard's canvas editor (`website/src/components/canvas/`). Shapes are
+stickies, rectangles, ellipses, diamonds, text and sections; connectors join
+two shapes by id. `jsonCanvas.ts` reads and writes the format:
+
+- Every shape is a JSON Canvas `text` node, and a section a `group` with its
+  title in `label`, carrying the standard id, position, size (whole numbers),
+  text and one resolved `color`, so any JSON Canvas reader (Obsidian) opens the
+  board. What JSON Canvas has no field for rides along as added fields: `shape`,
+  `swatch` (the named colour), `hex`, `fill`, `weight`, `border`, `borderColor`,
+  `borderHex`, `ink`, `inkHex`, `fontSize`, `bold`, `strike`, `align`, `locked`
+  on nodes, and `swatch`, `line`, `dashed`, `route` on edges. Array order is
+  stacking order, back to front.
+- A document written elsewhere reads too: `color` wins over a stale `swatch`,
+  presets `"1"`-`"6"` become red, orange, yellow, green, teal and violet, a
+  text node without `shape` is a rectangle, a missing `toEnd` is an arrow, and a
+  line with only a start arrow is read the other way round.
+- An imported canvas holds one frozen, JSON-safe `source`: raw nodes and edges
+  by id, their original order, and the remaining top-level fields. Every edit
+  and undo snapshot shares that reference. For an existing object, the writer
+  compares its current model output with a memoized `write(read(source[id]))`
+  baseline. It starts with the raw object, replaces only changed keys (comparing
+  structured values by content), and deletes keys present in the baseline but
+  absent now. Untouched values, including exact hex colours, presets, omitted
+  defaults and unknown fields, stay as the file held them. Top-level fields
+  come from `source.top`; saving an import does not add a Kiro marker.
+- Source order supplies slots: foreign nodes (`file`, `link`) stay in their
+  slots, surviving drawable slots take the current drawable sequence, deleted
+  slots disappear, and new ids append after the last source slot. Edges use
+  the same rule; a deleted node also removes its edges, including foreign ones.
+  Duplicate ids are the exception to exact preservation: each repeat gets a
+  fresh id. Pasted shapes and connectors also receive fresh ids and are written
+  from their model, not from the copied object's source.
+- An untouched start-only arrow keeps its original endpoint and route fields.
+  Editing that edge writes its endpoints, sides, arrows and route together in
+  model orientation. Undo restores the original source values. A canvas created
+  in Kiro with no source uses the ordinary JSON Canvas writer above.
+- A document that is not a JSON Canvas object at all is reported as unreadable.
 
 - **Created with its kind named.** The Artifacts page's **New canvas** stores an
   empty canvas document with `kind="canvas"`, so `kind_auto` is never set and the
   blank re-typing that turns a JSON-looking first save into `json` cannot apply.
-  Importing a `.kcanvas` file through **Add Artifact** gives the same kind, and
+  Importing a `.canvas` file through **Add Artifact** gives the same kind, and
   **Download** writes one back out.
 - **No edit mode, live saves.** The editor is always live on the current
   version and saves a moment after the last change as a silent live save
   (`snapshot: false`), so moving shapes never adds a numbered version; the
   page's Snapshot control still takes one. Every save carries the
   `expected_token` of the content it was based on: a canvas changed elsewhere
-  is refused (409), autosave stops, and the person reloads or keeps theirs.
+  is refused (409), autosave stops, and the person reloads or keeps theirs. The
+  live token is taken on every return to the current version, even one whose
+  bytes match the past version just shown, because a versioned read carries no
+  token and a save without one skips the compare-and-set. A read deferred while
+  a draft or save is pending is reconciled when the draft becomes clean,
+  including undo back to the saved base, a successful save and discard. A token-bearing
+  live read is adopted only when its token differs from the base and is not one this
+  page's saves made or replaced; own echoes never replace either bytes or token.
+  History keeps the live bytes and token together; returning to Live restores
+  those bytes before reconciling the current read, so an ignored echo cannot
+  leave the last snapshot on screen. Reload replaces that saved live state.
+  Untokened reads reconcile by bytes without replacing the save token, so a
+  linked read-only canvas refreshes and returns from a snapshot to its live content.
+  Discard restores the saved base before reconciling the latest read. Reload's
+  direct response remains the latest read until the page delivers another one.
+- **The page's controls see its saves.** A canvas has no edit buffer, so the
+  page's `dirty` never covers it; `canvasPending.ts` lets the page reach the
+  mounted canvas instead. Back, the version picker, Compare with, Snapshot and Send to
+  session flush what is waiting first, so a snapshot holds what the screen
+  shows, and Snapshot refuses when the flush cannot save. Every local exit
+  through the page's navigation dispatcher checks the leave guard immediately
+  before navigating, including after asynchronous session creation. Download and Copy
+  content read the document the editor shows, waiting edits included. A guarded
+  in-app exit is held while a save is waiting or in flight, and the save is
+  finished while the page still exists to show a failure; edits a failed or
+  refused save left on the page ask before Back, a version switch, entering a
+  comparison or any guarded exit drops them.
+- **Undo never crosses a replacement.** Content that replaces the canvas from
+  outside (another tab, an agent, Reload) clears the editor's undo history and
+  ends any gesture still open (a text edit, a colour drag, a move or resize), so
+  neither an undo nor a finished gesture can write an older whole document back
+  over the newer one. A colour gesture enters history on its first live change;
+  later values replace that entry, retaining its starting state. Each new drag,
+  typing session or eyedropper pick starts a separate entry, even when the last
+  picker was dismissed without a final value, on the same shape or another one.
+  Dismissing the picker leaves its undo step intact.
+- **Fits the canvas width.** Finger drags belong to the canvas (`touch-action:
+  none`). The tool dock scrolls sideways inside the canvas at every width,
+  including a desktop split pane, and its tooltips render outside the scroll
+  container. Zoom stays top right, off the dock's row. Below `md` the selection
+  toolbar sits across the top with its panels opening beneath it, their colour
+  rows wrapping to the canvas's width; colour panels stay within the space below
+  the toolbar and scroll vertically without panning the canvas, including when
+  Custom colour is open. On desktop the selection toolbar stays inside the canvas
+  horizontally, opens below the selection when there is more room there, and
+  right-aligns panels that would cross the right edge, clamping them at the left
+  edge when needed.
+- **Zoom is one menu.** Its trigger shows the zoom; zoom in, zoom out, 100% and
+  fit are its items, as in FigJam's corner control.
 - **Read-only where a save could do harm.** A past version opens pan-and-zoom
-  only, and a document the reader cannot parse is not opened at all, so the
-  editor never saves an empty canvas over content it could not read.
+  only, and so does a current canvas with no `content_token` (one mirroring a
+  file through `source_path`), since a save could not be checked against what
+  changed on disk. A canvas whose shown content was masked (the detail read
+  redacts credentials and suspicious URLs, and then sets `content_redacted`) is
+  read-only too, since an autosave writes the whole document and would put the
+  placeholders over the text they hide. The exception is a masked read whose
+  `content_token` is one this page's own saves made current or replaced (each
+  save adds the token it returned and the token it was based on): the masking
+  covers only bytes the page itself wrote, so the page keeps showing the bytes
+  its last save wrote, keeps its undo history and stays editable. Such a read
+  never sets the page's save token back, so a refetch still on an earlier own
+  token cannot turn the next save into a conflict. A fresh load, a read under
+  any other token (another tab, an agent), Reload (which forgets those tokens)
+  and a past version open read-only as above. The edit callback refuses new changes
+  while read-only, and an eyedropper result is ignored after its picker unmounts.
+  An adopted foreign live token updates the shown read's redaction status even
+  when its bytes are unchanged; own/base-token echoes and untokened reads cannot
+  clear a masked Reload's read-only state.
+  Edits already waiting before a version switch can still be flushed.
+  A document the reader cannot parse is not opened at all, so
+  the editor never saves an empty canvas over content it could not read. A
+  chat's artifact side panel draws a canvas read-only too
+  (`CanvasPanelView.tsx`); editing happens on the detail page.
 - **Not picked by hand.** Like `dashboard`, the kind is in `ALLOWED_KINDS` but
   not in `USER_SELECTABLE_KINDS`: prose flipped to `canvas` is a document the
   editor cannot read. The store does not validate the document's shape on write;

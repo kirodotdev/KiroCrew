@@ -159,6 +159,9 @@ export interface Artifact {
   /** Opaque optimistic-concurrency token for `content`; echo it back as
    * `expected_token` on a content save. Absent for live file-backed artifacts. */
   content_token?: string
+  /** The shown `content` had text masked (credentials, suspicious URLs), so it is
+   *  not the stored content; saving it back would write the placeholders. */
+  content_redacted?: boolean
   /** Original source path for file-backed artifacts (live pointer). */
   source_path?: string
   /** True when the live state differs from the latest numbered snapshot.

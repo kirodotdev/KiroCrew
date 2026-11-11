@@ -47,9 +47,9 @@ ALLOWED_KINDS = frozenset(
         # it is absent from USER_SELECTABLE_KINDS: a prose document hand-flipped
         # to this kind would hold content no reader can parse.
         "dashboard",
-        # A whiteboard: a ``kirocrew-canvas`` JSON document of shapes and the
-        # connectors between them, drawn and edited by the dashboard's canvas
-        # editor. Absent from USER_SELECTABLE_KINDS for the same reason as
+        # A whiteboard: a JSON Canvas document (``.canvas``) of shapes and the
+        # lines between them, with Kiro's own fields added, drawn and edited by
+        # the dashboard's canvas editor. Absent from USER_SELECTABLE_KINDS for the same reason as
         # ``dashboard``: prose flipped to this kind is a document the editor
         # cannot read.
         "canvas",
@@ -342,7 +342,7 @@ _EXT_KIND_MAP = {
     ".svg": "svg",
     ".json": "json",
     ".txt": "text",
-    ".kcanvas": "canvas",
+    ".canvas": "canvas",
 }
 
 #: Substrings whose presence marks inline content as renderable HTML (→

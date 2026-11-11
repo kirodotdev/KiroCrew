@@ -2,14 +2,15 @@
  * A canvas artifact's data: shapes, the connectors between them, and the pure
  * helpers the editor uses to read, hit-test and lay them out.
  *
- * On disk a canvas is one JSON document (the `.kcanvas` format):
- * `{ "kind": "kirocrew-canvas", "schema": 1, "shapes": [...], "connectors": [...] }`.
- * Reading never throws: an unknown value is dropped, and a document that is not
- * a canvas at all is reported as unreadable, so the editor can refuse to save
- * over it rather than replace it with an empty canvas.
+ * On disk a canvas is one JSON Canvas document with Kiro's fields added (the
+ * `.canvas` format; `jsonCanvas.ts` reads and writes it). Reading never throws:
+ * an unknown value is dropped, and a document that is not a canvas at all is
+ * reported as unreadable, so the editor can refuse to save over it rather than
+ * replace it with an empty canvas.
  */
 
 import { toHex } from './colorMath'
+import { fromJsonCanvas, toJsonCanvas } from './jsonCanvas'
 
 export const CANVAS_KIND = 'kirocrew-canvas'
 export const CANVAS_SCHEMA = 1
@@ -26,6 +27,22 @@ export type FillMode = 'solid' | 'transparent' | 'none'
 export type StrokeWeight = 'thin' | 'medium' | 'thick'
 /** A shape's outline: solid, dashed, or none. */
 export type BorderStyle = 'solid' | 'dashed' | 'none'
+export type TextAlign = 'left' | 'center' | 'right'
+
+/** FigJam's named text sizes, in canvas units; any other size is a custom one. */
+export const TEXT_SIZES = { small: 16, medium: 20, large: 28, xlarge: 40, huge: 64 } as const
+export type TextSizeName = keyof typeof TEXT_SIZES
+export const DEFAULT_TEXT_SIZE = TEXT_SIZES.medium
+/** A kind's text size when none is set: a text box is medium, the text inside a shape or sticky small. */
+export const defaultFontSize = (kind: ShapeKind): number => (kind === 'text' ? DEFAULT_TEXT_SIZE : TEXT_SIZES.small)
+/** A stored text size, clamped and kept only when it differs from the kind's default. */
+export function fontSizeOf(kind: ShapeKind, v: unknown): { fontSize?: number } {
+  if (kind === 'section' || typeof v !== 'number' || !Number.isFinite(v)) return {}
+  const px = Math.round(Math.min(MAX_TEXT_SIZE, Math.max(MIN_TEXT_SIZE, v)))
+  return px === defaultFontSize(kind) ? {} : { fontSize: px }
+}
+export const MIN_TEXT_SIZE = 8
+export const MAX_TEXT_SIZE = 400
 
 export interface Shape {
   id: string
@@ -50,6 +67,36 @@ export interface Shape {
   hex?: string
   /** A custom outline colour, `#RRGGBB`. Overrides `borderColor`. */
   borderHex?: string
+  /** A text box only: its text colour; unset, the theme's ink. */
+  ink?: Swatch
+  /** A text box only: a custom text colour, `#RRGGBB`. Overrides `ink`. */
+  inkHex?: string
+  /** The text's size in canvas units; unset is the kind's default (see `defaultFontSize`). */
+  fontSize?: number
+  bold?: boolean
+  strike?: boolean
+  /** How the text lines up; unset is the kind's own default (see `defaultAlign`). */
+  align?: TextAlign
+}
+
+/** Where a kind's text lines up when nothing says otherwise: shapes centre it, as in FigJam. */
+export const defaultAlign = (kind: ShapeKind): TextAlign => (kind === 'rect' || kind === 'ellipse' || kind === 'diamond' ? 'center' : 'left')
+
+/** A stored alignment, kept only when it differs from the kind's default. */
+export function alignOf(kind: ShapeKind, v: unknown): { align?: TextAlign } {
+  return (v === 'left' || v === 'center' || v === 'right') && v !== defaultAlign(kind) && kind !== 'section' ? { align: v } : {}
+}
+
+/** A text box's style fields to spread onto a shape: only those valid and not the default. */
+export function textStyleOf(o: Record<string, unknown>): Partial<Pick<Shape, 'ink' | 'inkHex' | 'bold' | 'strike' | 'align'>> {
+  const ink = toSwatch(o.ink)
+  const inkHex = toHex(o.inkHex)
+  return {
+    ...(ink ? { ink } : {}),
+    ...(inkHex ? { inkHex } : {}),
+    ...(o.bold === true ? { bold: true } : {}),
+    ...(o.strike === true ? { strike: true } : {}),
+  }
 }
 
 export type ConnectorSide = 'top' | 'right' | 'bottom' | 'left'
@@ -75,11 +122,21 @@ export interface Connector {
   route?: Pt[]
 }
 
+export type Obj = Readonly<Record<string, unknown>>
+
 export interface Canvas {
   kind: typeof CANVAS_KIND
   schema: typeof CANVAS_SCHEMA
   shapes: Shape[]
   connectors: Connector[]
+  /** Frozen file values and stacking order, shared by every edit and undo snapshot. */
+  source?: Readonly<{
+    nodes: Readonly<Record<string, Obj>>
+    edges: Readonly<Record<string, Obj>>
+    nodeOrder: readonly string[]
+    edgeOrder: readonly string[]
+    top: Obj
+  }>
 }
 
 /** The strong row of FigJam's colour picker, then its light row. */
@@ -143,12 +200,6 @@ export const DEFAULT_SIZE: Record<ShapeKind, { w: number; h: number }> = {
 
 export const emptyCanvas = (): Canvas => ({ kind: CANVAS_KIND, schema: CANVAS_SCHEMA, shapes: [], connectors: [] })
 
-const KINDS = new Set<ShapeKind>(['sticky', 'rect', 'ellipse', 'diamond', 'text', 'section'])
-const CONN_SIDES = new Set<ConnectorSide>(['top', 'right', 'bottom', 'left'])
-const CONN_LINES = new Set<ConnectorLine>(['elbow', 'straight', 'curve'])
-const CONN_ARROWS = new Set<ConnectorArrows>(['end', 'both', 'none'])
-const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
-
 export type ShapeLookFields = Partial<Pick<Shape, 'fill' | 'weight' | 'border' | 'borderColor' | 'hex' | 'borderHex'>>
 
 /** The look fields to spread onto a shape: only those that are valid and not the default. */
@@ -173,60 +224,33 @@ export type ParsedCanvas = { ok: true; canvas: Canvas } | { ok: false }
 
 /**
  * A canvas from its document. An empty document is an empty canvas (a canvas
- * just created). Anything that is not a canvas document is `ok: false`; inside
- * one, a shape or connector it cannot read is dropped.
+ * just created). Anything that is not a JSON Canvas document is `ok: false`.
  */
 export function parseCanvas(raw: string): ParsedCanvas {
   if (!raw.trim()) return { ok: true, canvas: emptyCanvas() }
-  let data: Record<string, unknown>
   try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false }
-    data = parsed as Record<string, unknown>
+    const data: unknown = JSON.parse(raw)
+    const canvas = fromJsonCanvas(data)
+    return canvas ? { ok: true, canvas } : { ok: false }
   } catch {
     return { ok: false }
   }
-  if (data.kind !== CANVAS_KIND) return { ok: false }
-  const shapes: Shape[] = []
-  for (const s of Array.isArray(data.shapes) ? data.shapes : []) {
-    const o = s as Record<string, unknown>
-    if (!o || typeof o.id !== 'string' || !KINDS.has(o.kind as ShapeKind)) continue
-    const kind = o.kind as ShapeKind
-    shapes.push({
-      id: o.id, kind,
-      x: num(o.x, 0), y: num(o.y, 0),
-      w: Math.max(24, num(o.w, DEFAULT_SIZE[kind].w)), h: Math.max(24, num(o.h, DEFAULT_SIZE[kind].h)),
-      text: typeof o.text === 'string' ? o.text : '',
-      color: toSwatch(o.color) ?? 'yellow',
-      ...(o.locked === true ? { locked: true } : {}),
-      ...lookOf(o),
-    })
-  }
-  const ids = new Set(shapes.map(s => s.id))
-  const connectors = (Array.isArray(data.connectors) ? data.connectors : [])
-    .map(c => c as Record<string, unknown>)
-    .filter(c => c && typeof c.id === 'string' && ids.has(c.from as string) && ids.has(c.to as string))
-    .map(c => {
-      const conn: Connector = { id: c.id as string, from: c.from as string, to: c.to as string }
-      if (CONN_SIDES.has(c.fromSide as ConnectorSide)) conn.fromSide = c.fromSide as ConnectorSide
-      if (CONN_SIDES.has(c.toSide as ConnectorSide)) conn.toSide = c.toSide as ConnectorSide
-      if (CONN_LINES.has(c.line as ConnectorLine)) conn.line = c.line as ConnectorLine
-      const color = toSwatch(c.color)
-      if (color) conn.color = color
-      if (c.dashed === true) conn.dashed = true
-      if (CONN_ARROWS.has(c.arrows as ConnectorArrows)) conn.arrows = c.arrows as ConnectorArrows
-      const route = Array.isArray(c.route) ? (c.route as unknown[]).map(p => p as Record<string, unknown>) : []
-      if (route.length && route.every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))) {
-        conn.route = route.map(p => ({ x: p.x as number, y: p.y as number }))
-      }
-      return conn
-    })
-  return { ok: true, canvas: { kind: CANVAS_KIND, schema: CANVAS_SCHEMA, shapes, connectors } }
 }
 
-export const serializeCanvas = (c: Canvas) => JSON.stringify(c, null, 1)
+export const serializeCanvas = (c: Canvas) => JSON.stringify(toJsonCanvas(c), null, 1)
 
-export const newId = (prefix = 's') => `${prefix}${Date.now().toString(36).slice(-5)}${Math.random().toString(36).slice(2, 6)}`
+/**
+ * A fresh shape or connector id: the prefix and 96 random bits. A paste makes
+ * hundreds in one synchronous loop, so nothing time-based can tell them apart;
+ * two shapes sharing an id select, move and delete together. `getRandomValues`
+ * rather than `randomUUID`, which is missing outside a secure context (a
+ * dashboard opened by LAN address over http).
+ */
+export const newId = (prefix = 's') => {
+  const bytes = new Uint8Array(12)
+  crypto.getRandomValues(bytes)
+  return prefix + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+}
 
 /**
  * How much one wheel or pinch event zooms. A trackpad pinch sends many small
@@ -300,9 +324,27 @@ export const sectionMembers = (shapes: Shape[], sec: Shape) =>
 
 export function boundsOf(shapes: Shape[]): { x: number; y: number; w: number; h: number } | null {
   if (!shapes.length) return null
-  const x = Math.min(...shapes.map(s => s.x))
-  const y = Math.min(...shapes.map(s => s.y))
-  const r = Math.max(...shapes.map(s => s.x + s.w))
-  const b = Math.max(...shapes.map(s => s.y + s.h))
+  // One pass, not Math.min(...array): a spread passes every shape as an argument,
+  // and a large canvas exceeds the engine's argument limit and throws.
+  let x = Infinity, y = Infinity, r = -Infinity, b = -Infinity
+  for (const s of shapes) {
+    if (s.x < x) x = s.x
+    if (s.y < y) y = s.y
+    if (s.x + s.w > r) r = s.x + s.w
+    if (s.y + s.h > b) b = s.y + s.h
+  }
+  return { x, y, w: r - x, h: b - y }
+}
+
+/** The box around *points*, in one pass, or null for none. */
+export function pointBounds(points: Pt[]): { x: number; y: number; w: number; h: number } | null {
+  if (!points.length) return null
+  let x = Infinity, y = Infinity, r = -Infinity, b = -Infinity
+  for (const p of points) {
+    if (p.x < x) x = p.x
+    if (p.y < y) y = p.y
+    if (p.x > r) r = p.x
+    if (p.y > b) b = p.y
+  }
   return { x, y, w: r - x, h: b - y }
 }

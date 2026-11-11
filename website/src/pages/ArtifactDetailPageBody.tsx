@@ -16,7 +16,7 @@ import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from '../components/ArtifactBody'
-import CanvasArtifactBody from '../components/canvas/CanvasArtifactBody'
+import { CanvasArtifactBody } from '../components/canvas/lazyCanvas'
 import { PublishHub } from '../components/PublishHub'
 import ArtifactVersionCompare from '../components/ArtifactVersionCompare'
 import { COMPARE_NONE } from '../lib/artifactCompare'

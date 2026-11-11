@@ -11,6 +11,10 @@
  * A past version, and a document that is not a canvas, open read-only. The
  * second matters: saving over content the editor cannot read would replace it
  * with an empty canvas.
+ *
+ * The page's own exits and its Snapshot reach these saves through
+ * `canvasPending`: they flush what is waiting first, and ask before dropping
+ * edits a failed or refused save left on this page.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -18,10 +22,13 @@ import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import type { Artifact } from '../../types'
+import { useConfirm } from '../ConfirmDialog'
 import ErrorNotice from '../ErrorNotice'
+import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../NavigationLeaveGuard'
 import { Btn } from '../ui'
 import CanvasEditor from './CanvasEditor'
 import { parseCanvas, serializeCanvas, type Canvas } from './canvasModel'
+import { registerCanvasPending } from './canvasPending'
 
 /** How long after the last change a canvas saves. */
 const SAVE_DELAY_MS = 700
@@ -30,22 +37,52 @@ type SaveState = 'saved' | 'pending' | 'saving' | 'conflict' | 'failed'
 
 const isConflict = (err: unknown) => err instanceof ApiError && err.status === 409
 
+const isOwnToken = (own: ReadonlySet<string>, token: string | undefined) => !!token && own.has(token)
+
 export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: Artifact; isCurrent: boolean }) {
   const { t } = useTranslation()
   const qc = useQueryClient()
-  const content = artifact.content ?? ''
+  // Every token this page's saves made current or replaced: each names content
+  // no newer than what the page shows. The save loop and the sync read the ref
+  // between renders; the state holds the same set, with the bytes the last save
+  // wrote, for rendering. Reload clears both.
+  const ownTokens = useRef(new Set<string>())
+  const [own, setOwn] = useState<{ tokens: ReadonlySet<string>; body: string } | null>(null)
+  // A masked read named by one of those tokens masks only bytes this page wrote
+  // or replaced, so the page keeps showing the bytes its last save wrote instead.
+  const ownMasked = isCurrent && !!artifact.content_redacted && !!artifact.content_token && !!own && own.tokens.has(artifact.content_token)
+  const content = ownMasked ? own.body : artifact.content ?? ''
+  // Every save names the token of the content it was based on, which is what
+  // stops it overwriting a change made elsewhere. A canvas that mirrors a file
+  // on disk has no token to name (the store compares nothing for it), so it
+  // opens read-only rather than saving blind over the file. A canvas whose
+  // shown content had text masked is read-only too: an autosave writes the whole
+  // document, so it would put the placeholders over the text they hide.
+  const redacted = !!artifact.content_redacted && !ownMasked
+  // Set by Reload, which adopts a read of its own ahead of the page's copy.
+  const [readRedacted, setReadRedacted] = useState(false)
+  const editable = isCurrent && !!artifact.content_token && !redacted && !readRedacted
+  const editableRef = useRef(editable)
+  editableRef.current = editable
   const parsed = useMemo(() => parseCanvas(content), [content])
   const [canvas, setCanvas] = useState<Canvas | null>(parsed.ok ? parsed.canvas : null)
   const [state, setStateNow] = useState<SaveState>('saved')
   const [error, setError] = useState<string | null>(null)
+  const resolvingRef = useRef(false)
+  const [resolving, setResolving] = useState(false)
+  // Bumped whenever content from outside replaces the canvas, so the editor
+  // drops an undo history that describes a document no longer on screen.
+  const [epoch, setEpoch] = useState(0)
+  const { confirm, confirmDialog } = useConfirm()
 
   // What the server holds as far as this page knows: the bytes last read or
   // written, and the token that names them.
   const baseRef = useRef(content)
   const tokenRef = useRef(artifact.content_token)
+  const liveBeforeHistory = useRef<string | null>(null)
   const draftRef = useRef<Canvas | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const inFlight = useRef(false)
+  const inFlight = useRef<Promise<void> | null>(null)
   // The save loop reads the state between renders (after an await, from a
   // timer), so the ref moves in the same call as the state, never a render later.
   const stateRef = useRef<SaveState>('saved')
@@ -53,55 +90,161 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
     stateRef.current = next
     setStateNow(next)
   }, [])
-
-  // Content arriving from elsewhere (a reload, an agent's update, a version
-  // picked) replaces the canvas, unless this page has edits of its own waiting:
-  // those win until they are saved or the person chooses to reload.
+  // Only a new page read replaces this ref; a local render cannot replace a
+  // newer Reload response with the page's still-stale copy.
+  const latest = useRef({ content, parsed, token: artifact.content_token, redacted: !!artifact.content_redacted })
   useEffect(() => {
-    if (content === baseRef.current) return
+    const body = artifact.content ?? ''
+    latest.current = { content: body, parsed: parseCanvas(body), token: artifact.content_token, redacted: !!artifact.content_redacted }
+  }, [artifact.content, artifact.content_token, artifact.content_redacted])
+
+  // A deferred read is reconsidered whenever the draft becomes clean. Own
+  // tokens and the base token are ignored as a whole, bytes included, so an
+  // echo cannot roll back either the canvas or its next save's token.
+  const reconcile = useCallback(() => {
     if (draftRef.current || inFlight.current) return
-    baseRef.current = content
-    tokenRef.current = artifact.content_token
-    setCanvas(parsed.ok ? parsed.canvas : null)
+    const { content: body, parsed: read, token, redacted: readIsRedacted } = latest.current
+    if (!isCurrent) {
+      // Keep the live bytes and token together while snapshots replace the view.
+      if (liveBeforeHistory.current === null) liveBeforeHistory.current = baseRef.current
+    } else {
+      // An own-token echo must leave the live canvas, not the last snapshot.
+      if (liveBeforeHistory.current !== null) {
+        baseRef.current = liveBeforeHistory.current
+        liveBeforeHistory.current = null
+        const live = parseCanvas(baseRef.current)
+        setCanvas(live.ok ? live.canvas : null)
+        setEpoch(e => e + 1)
+      }
+      if (token) {
+        if (isOwnToken(ownTokens.current, token) || token === tokenRef.current) return
+        tokenRef.current = token
+        // The adopted read's mask status can change even when its bytes do not.
+        setReadRedacted(readIsRedacted)
+      }
+    }
+    // Untokened file reads reconcile by bytes without replacing the save token.
+    // Same bytes under a new token (a past version's identical copy, a read the
+    // page already holds): take the token, keep the canvas and its undo history.
+    if (body === baseRef.current) return
+    baseRef.current = body
+    setCanvas(read.ok ? read.canvas : null)
+    setEpoch(e => e + 1)
     setError(null)
     setState('saved')
-  }, [content, parsed, artifact.content_token, setState])
+  }, [isCurrent, setState])
+  // The save's finally clears inFlight before this post-render effect runs.
+  useEffect(reconcile, [artifact.content, artifact.content_token, artifact.content_redacted, isCurrent, state, reconcile])
 
-  const save = useCallback(async () => {
+  const save = useCallback((): Promise<void> => {
     timer.current = null
+    if (inFlight.current) return inFlight.current
     const draft = draftRef.current
-    if (!draft || inFlight.current || stateRef.current === 'conflict') return
+    if (!draft || stateRef.current === 'conflict') return Promise.resolve()
     const body = serializeCanvas(draft)
-    if (body === baseRef.current) { draftRef.current = null; setState('saved'); return }
-    inFlight.current = true
+    if (body === baseRef.current) { draftRef.current = null; setState('saved'); return Promise.resolve() }
     setState('saving')
-    try {
-      const saved = await api.updateArtifact(artifact.slug, { content: body, snapshot: false, expected_token: tokenRef.current })
-      baseRef.current = body
-      tokenRef.current = (saved as Artifact | undefined)?.content_token
-      if (draftRef.current === draft) draftRef.current = null
-      setError(null)
-      setState(draftRef.current ? 'pending' : 'saved')
-      void qc.invalidateQueries({ queryKey: ['artifact', artifact.slug] })
-    } catch (err) {
-      if (isConflict(err)) {
-        setState('conflict')
-      } else {
-        setState('failed')
-        setError(err instanceof Error ? err.message : String(err))
+    const run = (async () => {
+      try {
+        const expected = tokenRef.current
+        const saved = await api.updateArtifact(artifact.slug, { content: body, snapshot: false, expected_token: expected })
+        baseRef.current = body
+        const token = (saved as Artifact | undefined)?.content_token
+        tokenRef.current = token
+        if (token) {
+          ownTokens.current.add(token)
+          if (expected) ownTokens.current.add(expected)
+          setOwn({ tokens: new Set(ownTokens.current), body })
+        } else {
+          ownTokens.current.clear()
+          setOwn(null)
+        }
+        if (draftRef.current === draft) draftRef.current = null
+        setError(null)
+        setState(draftRef.current ? 'pending' : 'saved')
+        void qc.invalidateQueries({ queryKey: ['artifact', artifact.slug] })
+      } catch (err) {
+        if (isConflict(err)) {
+          setState('conflict')
+        } else {
+          setState('failed')
+          setError(err instanceof Error ? err.message : String(err))
+        }
+      } finally {
+        inFlight.current = null
       }
-    } finally {
-      inFlight.current = false
-    }
-    // Changes made while that save was on the wire go out next. The cast is for
-    // the compiler: the ref changed across the await, which narrowing cannot see.
-    const now = stateRef.current as SaveState
-    if (draftRef.current && now !== 'conflict' && now !== 'failed') {
-      timer.current = setTimeout(() => { void save() }, SAVE_DELAY_MS)
-    }
+      // Changes made while that save was on the wire go out next. The cast is for
+      // the compiler: the ref changed across the await, which narrowing cannot see.
+      const now = stateRef.current as SaveState
+      if (draftRef.current && now !== 'conflict' && now !== 'failed') {
+        timer.current = setTimeout(() => { void save() }, SAVE_DELAY_MS)
+      }
+    })()
+    inFlight.current = run
+    return run
   }, [artifact.slug, qc, setState])
 
+  /** Send what is waiting now. `true` once the server holds what this page shows. */
+  const flush = useCallback(async (): Promise<boolean> => {
+    // A save can find more edits waiting when it lands, so go round until none
+    // are; the bound only stops a person typing through a flush from holding it.
+    for (let round = 0; round < 4; round++) {
+      if (timer.current) { clearTimeout(timer.current); timer.current = null }
+      if (inFlight.current) { await inFlight.current; continue }
+      if (!draftRef.current) return true
+      if (stateRef.current === 'conflict') return false
+      await save()
+      const now = stateRef.current as SaveState
+      if (now === 'conflict' || now === 'failed') return false
+    }
+    return !draftRef.current && !inFlight.current
+  }, [save])
+
+  const shown = useRef({ canvas, isCurrent })
+  shown.current = { canvas, isCurrent }
+  /** What the screen shows on the current version, waiting edits included. */
+  const currentDocument = useCallback((): string | null => {
+    const { canvas: now, isCurrent: live } = shown.current
+    return live && now ? serializeCanvas(now) : null
+  }, [])
+
+  /** Drop this page's unsaved edits, then reconcile any deferred server read. */
+  const discard = useCallback(() => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null }
+    draftRef.current = null
+    const base = parseCanvas(baseRef.current)
+    setCanvas(base.ok ? base.canvas : null)
+    setEpoch(e => e + 1)
+    setError(null)
+    setState('saved')
+    reconcile()
+  }, [reconcile, setState])
+
+  useEffect(() => registerCanvasPending(artifact.slug, { flush, discard, document: currentDocument }), [artifact.slug, flush, discard, currentDocument])
+
+  // Leaving unmounts the only copy of edits the server does not hold yet, so an
+  // exit waits for them. A waiting or in-flight save is finished here, while the
+  // page still exists to show if it fails; the exit is refused meanwhile, and the
+  // next one goes through once the save has landed. The guard cannot resume the
+  // exit itself: the shell's registry does not pass its target. Edits a failed or
+  // refused save left behind ask before they are dropped.
+  usePublishNavigationStake(state !== 'saved')
+  useRegisterNavigationLeaveGuard(() => {
+    const now = stateRef.current
+    if (now === 'saved' && !draftRef.current && !inFlight.current) return true
+    if (now === 'pending' || now === 'saving') {
+      void flush()
+      return false
+    }
+    void confirm({
+      title: t('pages.artifactDetailPage.discard_unsaved_changes'),
+      confirmLabel: t('pages.artifactDetailPage.discard_changes_button'),
+    }).then(ok => { if (ok) discard() })
+    return false
+  })
+
   const onChange = useCallback((next: Canvas) => {
+    if (!editableRef.current) return
     setCanvas(next)
     draftRef.current = next
     if (stateRef.current === 'conflict') return
@@ -125,38 +268,56 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
 
   /** Drop this page's edits and show what the server holds now. */
   const reload = async () => {
+    if (resolvingRef.current) return
+    resolvingRef.current = true
+    setResolving(true)
     if (timer.current) clearTimeout(timer.current)
     try {
       const live = await api.artifact(artifact.slug) as Artifact
       const body = live.content ?? ''
       const next = parseCanvas(body)
+      latest.current = { content: body, parsed: next, token: live.content_token, redacted: !!live.content_redacted }
       draftRef.current = null
       baseRef.current = body
+      liveBeforeHistory.current = null
       tokenRef.current = live.content_token
+      ownTokens.current.clear()
+      setOwn(null)
+      // What was read may be masked before the page's own copy refreshes to say so.
+      setReadRedacted(!!live.content_redacted)
       setCanvas(next.ok ? next.canvas : null)
+      setEpoch(e => e + 1)
       setError(null)
       setState('saved')
+      void qc.invalidateQueries({ queryKey: ['artifact', artifact.slug] })
     } catch (err) {
       setState('failed')
       setError(err instanceof Error ? err.message : String(err))
-      return
+    } finally {
+      resolvingRef.current = false
+      setResolving(false)
     }
-    void qc.invalidateQueries({ queryKey: ['artifact', artifact.slug] })
   }
 
   /** Keep this page's canvas: save it over whatever changed elsewhere. */
   const overwrite = async () => {
+    if (resolvingRef.current) return
+    resolvingRef.current = true
+    setResolving(true)
     try {
       const live = await api.artifact(artifact.slug) as Artifact
       tokenRef.current = live.content_token
       baseRef.current = live.content ?? ''
+      liveBeforeHistory.current = null
+      setState('pending')
+      await save()
     } catch (err) {
       setState('failed')
       setError(err instanceof Error ? err.message : String(err))
-      return
+    } finally {
+      resolvingRef.current = false
+      setResolving(false)
     }
-    setState('pending')
-    void save()
   }
 
   const retry = () => {
@@ -168,8 +329,8 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
   if (!canvas) {
     return (
       <div className="flex flex-col gap-3">
-        {/* No hand-off: nothing here is unsaved, but the canvas itself cannot be read, so there is nothing the agent could open. */}
-        <ErrorNotice title={t('components.canvas.unreadable_title')} message={t('components.canvas.unreadable_message')} noHandoffReason="the stored document is not a canvas; the agent has no edit to recover" />
+        {/* Nothing here is unsaved, so the agent can be asked to repair the stored document. */}
+        <ErrorNotice title={t('components.canvas.unreadable_title')} message={t('components.canvas.unreadable_message')} askAgent />
       </div>
     )
   }
@@ -180,6 +341,7 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
 
   return (
     <div className="flex flex-col gap-2">
+      {confirmDialog}
       {state === 'conflict' && (
         <ErrorNotice
           title={t('components.canvas.conflict_title')}
@@ -187,8 +349,8 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
           // No hand-off: this canvas holds edits that are not saved anywhere yet, and the hand-off navigates away.
           footer={(
             <div className="mt-2 flex gap-2">
-              <Btn onClick={() => { void reload() }}>{t('components.canvas.conflict_reload')}</Btn>
-              <Btn primary onClick={() => { void overwrite() }}>{t('components.canvas.conflict_keep_mine')}</Btn>
+              <Btn disabled={resolving} onClick={() => { void reload() }}>{t('components.canvas.conflict_reload')}</Btn>
+              <Btn primary disabled={resolving} onClick={() => { void overwrite() }}>{t('components.canvas.conflict_keep_mine')}</Btn>
             </div>
           )}
         />
@@ -206,19 +368,19 @@ export default function CanvasArtifactBody({ artifact, isCurrent }: { artifact: 
         className="relative overflow-hidden rounded-lg border border-border"
         style={{ height: 'max(420px, calc(100dvh - 220px))' }}
       >
-        <CanvasEditor canvas={canvas} onChange={onChange} readOnly={!isCurrent} />
-        {isCurrent && status && (
+        <CanvasEditor canvas={canvas} onChange={onChange} readOnly={!editable} epoch={epoch} />
+        {editable && status && (
           <div data-testid="canvas-save-status" aria-live="polite"
             className="pointer-events-none absolute left-3 top-3 rounded-md bg-bg-elevated px-2 py-0.5 text-[11px] text-muted shadow-sm"
             style={{ zIndex: 9 }}>
             {status}
           </div>
         )}
-        {!isCurrent && (
+        {!editable && (
           <div data-testid="canvas-readonly-note"
             className="pointer-events-none absolute left-3 top-3 rounded-md bg-bg-elevated px-2 py-0.5 text-[11px] text-muted shadow-sm"
             style={{ zIndex: 9 }}>
-            {t('components.canvas.past_version')}
+            {!isCurrent ? t('components.canvas.past_version') : redacted || readRedacted ? t('components.canvas.hidden_text') : t('components.canvas.linked_file')}
           </div>
         )}
       </div>

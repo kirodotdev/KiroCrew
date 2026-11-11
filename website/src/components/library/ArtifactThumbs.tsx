@@ -20,7 +20,7 @@ import { useSilentLoadWatch } from '../../hooks/useSilentLoadWatch'
 import { useNearViewport } from '../../hooks/useNearViewport'
 import type { Artifact } from '../../types'
 import { SvgShadow } from '../SvgShadow'
-import CanvasThumb from '../canvas/CanvasThumb'
+import { CanvasThumb } from '../canvas/lazyCanvas'
 import { THUMB_SVG_CSS } from './artifactThumbSvgCss'
 
 /** Read the current computed theme CSS vars (capped to the known set, each
@@ -247,10 +247,14 @@ export function ContentThumb({ content, kind, mini = false }: {
   kind: Artifact['kind']
   mini?: boolean
 }) {
-  // A canvas draws its shapes, empty or not: its JSON is never something to read.
-  if (kind === 'canvas') return <CanvasThumb content={content} mini={mini} />
-
+  // No content yet (the full read is loading or failed) shows the neutral tile for
+  // every kind. A saved canvas, even an empty one, is non-empty JSON.
   if (!content.trim()) return <div className="h-[64px] bg-bg-elevated" />
+
+  // A canvas draws its shapes, empty or not: its JSON is never something to read.
+  // Its drawing code loads with the first canvas shown; the neutral tile holds
+  // the card's place until then.
+  if (kind === 'canvas') return <CanvasThumb content={content} mini={mini} loading={<div className="h-[64px] bg-bg-elevated" />} />
 
   if (mini && kind === 'markdown') {
     // stripMd drops heading / emphasis / list markers but keeps table pipes, and
