@@ -7031,6 +7031,7 @@
       "tree_drop_folder_refused": "Impossible d’ajouter ce dossier : son chemin contient une espace ou @. Ajoute plutôt ses fichiers un par un.",
       "trust_reads": "Approuver les commandes en lecture seule",
       "turn_interrupted_press_resume": "Le dernier tour a été interrompu — appuie sur Reprendre, ou écris simplement",
+      "turn_interrupted_sign_in_first": "Le dernier tour demande une connexion — suis le message ci-dessus, puis appuie sur Reprendre ou renvoie ton message",
       "turn_interrupted_restored_card": "Le dernier tour a été interrompu. Reprendre relance seulement ce tour. Ton message en file d’attente ne partira pas tout seul : envoie-le avec Envoyer maintenant (⚡).",
       "turn_interrupted_restored_queue_one": "Le dernier tour a été interrompu. Reprendre relance seulement ce tour. Ton {{count}} message en file d’attente ne partira pas tout seul : ouvre la file ({{count}} en file d’attente ^), puis envoie-le avec Envoyer maintenant (⚡).",
       "turn_interrupted_restored_queue_many": "Le dernier tour a été interrompu. Reprendre relance seulement ce tour. Tes {{count}} messages en file d’attente ne partiront pas tout seuls : ouvre la file ({{count}} en file d’attente ^), puis envoie chacun avec Envoyer maintenant (⚡).",

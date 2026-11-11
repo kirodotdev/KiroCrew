@@ -1264,6 +1264,7 @@ export default function ChatPane({
           // cases the newest error card handles with a remedy of its own.
           continuable={resume.composerResume}
           continueIsRecovery={resume.interrupted}
+          resumeAfterSignIn={resume.resumeAfterSignIn}
           // A crewmate's chat has no queue card to send (`withQueuedAsBubbles`).
           restoredQueueCount={crewmate ? 0 : queuedMessages.filter(m => m.meta?.restored === true).length}
           onContinue={resume.onContinue}
