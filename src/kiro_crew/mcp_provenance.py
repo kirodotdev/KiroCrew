@@ -89,6 +89,47 @@ DERIVED_KEY = "x-kirocrew-derived"
 WITHHELD_KEY = "x-kirocrew-withheld"
 
 
+# A FOURTH reserved key: the installed Agent Plugins loader projected this entry
+# into the rendered agent spec. Ownership lives on the entry, not in a side file,
+# so it cannot drift from the config it describes: the rebuild retires a marked
+# entry once the loader stops deriving it, and never overwrites an unmarked one
+# with a plugin's server. The MCP gateway never routes a marked entry through the
+# broker; the session launches it directly, inside its own sandbox.
+#
+# Like :data:`MARKER_KEY`, this is a declaration of who may write, not a security
+# boundary, and both directions fail safe. A user who strips it keeps the entry
+# as their own, so the loader stops touching it. A user who adds it to their own
+# entry volunteers it: the rebuild may remove it, and the broker will not route
+# it, which only narrows what that server can do.
+POWER_KEY = "x-kirocrew-power"
+
+
+def is_power_entry(entry: Any) -> bool:
+    """True when *entry* carries the installed-plugin loader's :data:`POWER_KEY`."""
+    return isinstance(entry, dict) and entry.get(POWER_KEY) is True
+
+
+def is_local_power_entry(entry: Any) -> bool:
+    """True for an installed plugin's LOCAL (stdio) server, which needs its ``cwd``.
+
+    Such a server runs from its plugin root, and its ``args`` are often relative
+    (``server.js``). Only kiro-cli carries ``cwd`` from the agent config. The ACP
+    session element and the KAS projection have no slot for it, so they start it
+    in the session's directory, where it cannot find its own files. Those two
+    backends withhold it instead. A remote (``url``) plugin server needs no
+    ``cwd`` and still reaches them.
+    """
+    return is_power_entry(entry) and not entry.get("url")
+
+
+def without_local_power_entries(servers: dict[str, Any]) -> dict[str, Any]:
+    """*servers* minus every :func:`is_local_power_entry`, for a backend with no ``cwd``."""
+    withheld = [name for name, entry in servers.items() if is_local_power_entry(entry)]
+    for name in withheld:
+        logger.info("MCP: withholding plugin server %r: this backend has no cwd", name)
+    return {name: entry for name, entry in servers.items() if name not in withheld}
+
+
 def is_withheld_mute(entry: Any) -> bool:
     """True when *entry*'s mute is the rebuild's :data:`WITHHELD_KEY` mute."""
     return isinstance(entry, dict) and entry.get(WITHHELD_KEY) is True

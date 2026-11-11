@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Iterable
 
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.dashboard.handlers._shared_workspace import active_project_dir
+from kiro_crew.dashboard.handlers._shared_workspace import _get_skills, active_project_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.skills import _trusted_skill_roots, skills_dir
@@ -285,6 +285,20 @@ def _leaf_is_contained(resolved: Path, root_resolved: Path, prefix_allows_link: 
     )
 
 
+def _power_skill_roots(state: DashboardState) -> list[Path]:
+    """The installed-plugin skill roots the dashboard's ``SkillsLoader`` adopted.
+
+    Empty when the loader has none, has not finished its scan, or cannot be read:
+    a skill the list does not show is never one the finder serves.
+    """
+    try:
+        roots = getattr(_get_skills(state), "_power_extra_paths", None)
+    except Exception:  # noqa: BLE001 -- an unreadable loader serves no plugin roots
+        logger.debug("could not read installed-plugin skill roots", exc_info=True)
+        return []
+    return [Path(r) for r in roots] if isinstance(roots, list) else []
+
+
 def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "") -> Path | None:
     """Return the absolute skill directory for *name*, or None.
 
@@ -383,6 +397,11 @@ def _resolve_skill_root(name: str, state: DashboardState, session_key: str = "")
         except Exception:
             logger.debug("failed to load extra skill paths from config", exc_info=True)
         roots.extend(_edition_skill_roots())
+        # Installed Agent Plugins' roots, lowest, as the loader orders them. Read
+        # off the live loader, so the finder serves exactly the roots the list
+        # shows (already screened for links and sensitive paths) and never
+        # rescans the plugin tree per request.
+        roots.extend(_power_skill_roots(state))
 
         def _probe(r: Path) -> bool:
             try:

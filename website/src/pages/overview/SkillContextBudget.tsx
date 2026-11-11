@@ -320,7 +320,9 @@ function BudgetRow({
                 ? i18nT('pages.overview.skillsTab.budget_source_builtin')
                 : row.origin === 'app'
                   ? i18nT('pages.overview.skillsTab.budget_source_app')
-                  : i18nT('pages.overview.skillsTab.budget_source_yours')}
+                  : row.origin === 'plugin'
+                    ? i18nT('pages.overview.skillsTab.budget_source_plugin')
+                    : i18nT('pages.overview.skillsTab.budget_source_yours')}
             </span>
           )}
         </div>
