@@ -209,6 +209,7 @@ async def discard_conversation(
     skip_if_busy: bool = False,
     refuse_only_on_active_turn: bool = False,
     refuse_if: Callable[[], bool] | None = None,
+    teardown_reason: str = "",
 ) -> bool:
     """Drop native conversation state while retaining channel linkage.
 
@@ -216,7 +217,7 @@ async def discard_conversation(
     ``skip_if_busy`` refused because a turn was in flight, or ``refuse_if``
     answered true. See
     :meth:`SessionLifecycleService.discard_conversation` for the guard's
-    atomicity contract.
+    atomicity contract and ``teardown_reason``.
     """
     return await self._lifecycle_boundary().discard_conversation(
         key,
@@ -224,7 +225,17 @@ async def discard_conversation(
         skip_if_busy=skip_if_busy,
         refuse_only_on_active_turn=refuse_only_on_active_turn,
         refuse_if=refuse_if,
+        teardown_reason=teardown_reason,
     )
+
+
+async def swap_conversation(self: SessionManager, key: str) -> str:
+    """Start a fresh native conversation for *key* on its live process.
+
+    Keeps the key's sub-agent runs; answers ``"swapped"``, ``"busy"`` or
+    ``"unavailable"``. See :meth:`SessionLifecycleService.swap_conversation`.
+    """
+    return await self._lifecycle_boundary().swap_conversation(key)
 
 
 async def drain_active_turns(self: SessionManager, timeout: float | None = None) -> int:

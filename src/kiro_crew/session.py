@@ -794,6 +794,7 @@ class SessionManager:
     destroy = _teardown.destroy
     destroy_if = _teardown.destroy_if
     discard_conversation = _teardown.discard_conversation
+    swap_conversation = _teardown.swap_conversation
     drain_active_turns = _teardown.drain_active_turns
     close_all = _teardown.close_all
     absorb_orphaned_release = _teardown.absorb_orphaned_release

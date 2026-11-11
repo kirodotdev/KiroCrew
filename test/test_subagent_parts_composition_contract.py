@@ -848,7 +848,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
     "cancel_for_parent": ("async method", "(self, parent_session_key: 'str') -> 'tuple[int, int]'"),
     "cancel_for_teardown": (
         "async method",
-        "(self, agent_ids: \"'Sequence[str]'\", *, parent_session_key: 'str', verb: 'str' = '') -> 'int'",
+        "(self, agent_ids: \"'Sequence[str]'\", *, parent_session_key: 'str', verb: 'str' = '', reason: 'str' = '') -> 'int'",
     ),
     "cancel_queued": (
         "async method",
