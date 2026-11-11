@@ -25,7 +25,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from kiro_crew.atomic_write import atomic_write, fsync_dir
+from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.platform_compat import file_lock, restrict_to_owner
 
 
@@ -135,7 +135,8 @@ class SecretVault:
 
         Like :meth:`get`, this is lock-free by design: ``_load_entries`` reads
         the store atomically (writers commit via ``os.replace``, so a torn read
-        is impossible), and the key file is immutable once created. All names
+        is impossible, and the Windows window in which a read cannot open the
+        file during that replace is retried), and the key file is immutable once created. All names
         resolve against the SAME on-disk snapshot, which is the intended
         behaviour for a single spawn.
 
@@ -539,7 +540,10 @@ class SecretVault:
         if not self._store_exists():
             return {}
 
-        raw = self._store_path.read_text(encoding="utf-8")
+        # On Windows a read that meets a writer's ``os.replace`` in flight fails
+        # with ``PermissionError``; the helper retries that one sharing-violation
+        # window off the event loop and leaves every other failure as it is.
+        raw = read_bytes_with_retry(self._store_path).decode("utf-8")
         envelope = json.loads(raw)
 
         # A corrupt / hand-edited store can carry a non-object top-level value
