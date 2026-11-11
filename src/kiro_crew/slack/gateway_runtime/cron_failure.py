@@ -6,7 +6,7 @@ script and denial alert, and the single-agent turn's failure path, which also
 charges the run. Also the notice for a run the cron service's stop cut short, which
 takes the same two legs but is not a failure.
 
-Orchestrator fields read: ``_owner_id``, ``dashboard_state``, ``slack``.
+Orchestrator fields read: ``dashboard_state``, ``slack``.
 Orchestrator fields written: none.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -165,8 +165,9 @@ async def _deliver_failure_alert(
     if self.slack and not silent and not channel_delivered:
         try:
             channel = job.channel
-            if not channel and (job.created_by or self._owner_id):
-                channel = await self._open_dm_with_retry(job.created_by or self._owner_id, job.name)
+            dm_user = self._cron_dm_user(job)
+            if not channel and dm_user:
+                channel = await self._open_dm_with_retry(dm_user, job.name)
             if channel:
                 await self.slack.post_message(channel, mrkdwn)
                 slack_delivered = True
