@@ -24,6 +24,7 @@ const ROOT = path.join(__dirname, "..");
  *  string literal from reading as the start of a line comment. */
 function code(file) {
   return fs.readFileSync(path.join(ROOT, file), "utf8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
