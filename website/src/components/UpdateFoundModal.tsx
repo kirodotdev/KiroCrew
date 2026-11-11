@@ -16,7 +16,7 @@ import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { updateAffordance } from '../utils/updateAffordance'
 import { settingsPath } from './settingsPath'
-import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord } from '../utils/updateNudge'
+import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord, type UpdateNudgeVerdict } from '../utils/updateNudge'
 import { foldStableStamp } from '../utils/displayVersion'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
@@ -241,22 +241,25 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   })
 
   const persist = useMutation({
-    mutationFn: async (rec: Required<UpdateNudgeRecord>) => {
+    mutationFn: async (rec: UpdateNudgeVerdict) => {
       // ONE atomic PATCH of the whole record. Per-field writes would open a
       // crash window (old verdict paired with a new version) and let two
       // concurrent dashboards interleave fields into a verdict nobody
       // expressed — the record only means anything as a unit.
-      await api.patchConfig('dashboard.update_nudge', rec)
-      return rec
+      const cfg = await api.patchConfig('dashboard.update_nudge', rec) as
+        { dashboard?: { update_nudge?: UpdateNudgeRecord } } | undefined
+      return cfg?.dashboard?.update_nudge
     },
-    // Mirror the write into the cache: the record query's staleTime means a
-    // later candidate in this same page session would otherwise read the
-    // pre-snooze record. Cancel any in-flight refetch first — a focus-refetch
+    // Cache the record the PATCH answered with: the route merges this verdict
+    // into the saved skips, so a later candidate in this page session reads
+    // the gateway's record, not this verdict alone, and needs no second read
+    // that could fail. Cancel any in-flight refetch first — a focus-refetch
     // started before the click would otherwise resolve after this write and
     // put the pre-verdict record back.
-    onSuccess: async (rec) => {
+    onSuccess: async (stored) => {
       await queryClient.cancelQueries({ queryKey: ['mc-config-update-nudge'] })
-      queryClient.setQueryData(['mc-config-update-nudge'], rec)
+      if (stored) queryClient.setQueryData(['mc-config-update-nudge'], stored)
+      else void queryClient.invalidateQueries({ queryKey: ['mc-config-update-nudge'] })
     },
   })
 
@@ -320,7 +323,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   // Escape overwrite a pending skip with a snooze. A ref is immune to stale
   // closures: it is set before mutate() returns and read at call time.
   const persistInFlight = useRef(false)
-  const verdict = (rec: Required<UpdateNudgeRecord>) => {
+  const verdict = (rec: UpdateNudgeVerdict) => {
     if (!candidate || restarting || persistInFlight.current) return
     // After a write already failed, dismissal degrades to session-only: the
     // user has SEEN the couldn't-save note, so closing without persistence is

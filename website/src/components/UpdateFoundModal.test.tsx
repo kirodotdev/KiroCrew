@@ -291,7 +291,14 @@ describe('UpdateFoundModal — desktop source', () => {
   })
 
   it('Skip this version persists ONE atomic record and closes', async () => {
-    const { queryClient } = await mount(found)
+    // The route merges in a skip another dashboard saved; this is what it stores.
+    const stored = { version: '9.9.9', snoozed_until: 0, skipped: true, skipped_versions: ['9.9.8', '9.9.9'] }
+    mockedApi.patchConfig.mockImplementation(async () => {
+      // A config read after the write fails: the cache must not need one.
+      mockedApi.kirocrewConfig.mockRejectedValue(new Error('offline'))
+      return { dashboard: { update_nudge: stored } } as never
+    })
+    const { queryClient, push } = await mount(found)
     await waitFor(() => expect(dialog()).toBeInTheDocument())
     fireEvent.click(byName('components.updateFoundModal.skip_this_version'))
     await waitFor(() => expect(dialog()).not.toBeInTheDocument())
@@ -302,11 +309,11 @@ describe('UpdateFoundModal — desktop source', () => {
     expect(mockedApi.patchConfig).toHaveBeenCalledWith('dashboard.update_nudge', {
       version: '9.9.9', snoozed_until: 0, skipped: true,
     })
-    // The cache mirrors the write, so a later candidate in this session
-    // reads the fresh record instead of the pre-skip one.
-    await waitFor(() => expect(queryClient.getQueryData(['mc-config-update-nudge'])).toEqual({
-      version: '9.9.9', snoozed_until: 0, skipped: true,
-    }))
+    // The cache holds the STORED record the PATCH answered with, so a later
+    // candidate in this session reads the merged skips and still opens.
+    await waitFor(() => expect(queryClient.getQueryData(['mc-config-update-nudge'])).toEqual(stored))
+    await push({ state: 'found', version: '9.9.10', notes: '' })
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
   })
 
   it('Remind me tomorrow persists a ~24h snooze in one record and closes', async () => {
