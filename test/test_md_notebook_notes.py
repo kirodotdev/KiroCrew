@@ -549,6 +549,35 @@ async def test_search(fixtures) -> None:
         assert (await client.get("/api/search?q="))[1]["results"] == []
 
 
+def test_search_finds_words_outside_ascii() -> None:
+    """A word in any script is one search term, on the index and query side.
+
+    Cyrillic, Han, accented Latin and Devanagari (whose vowel signs are
+    combining marks) words are found whole. A decomposed body still matches
+    a composed query, and the snippet shows the matching text.
+    """
+    from kiro_crew.apps.builtins.md_notebook.notes import SearchDoc, SearchIndex
+
+    index = SearchIndex(
+        [
+            SearchDoc(path="ru.md", title="ru", content="Встреча с командой завтра"),
+            SearchDoc(path="fr.md", title="fr", content="Rendez-vous au cafe\u0301"),
+            SearchDoc(path="ja.md", title="ja", content="会議 メモ"),
+            SearchDoc(path="hi.md", title="hi", content="नमस्ते दुनिया"),
+            SearchDoc(path="en.md", title="en", content="lunch in the cafeteria"),
+        ]
+    )
+    queries = ("встреча", "café", "会議", "नमस्ते")
+    found = {q: [r["path"] for r in index.search(q)] for q in queries}
+    assert found == {
+        "встреча": ["ru.md"],
+        "café": ["fr.md"],
+        "会議": ["ja.md"],
+        "नमस्ते": ["hi.md"],
+    }
+    assert index.search("café")[0]["snippet"] == "Rendez-vous au café"
+
+
 # --- inline #tag extraction ----------------------------------------------------
 
 
