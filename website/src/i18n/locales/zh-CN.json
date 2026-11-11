@@ -8026,6 +8026,7 @@
       "narrow_table": "收窄表格",
       "expand_table_word": "加宽",
       "collapse_table_word": "收窄",
+      "table_width_not_saved": "无法在此浏览器中保存表格宽度",
       "diagram_source": "图表源代码",
       "copy_failed": "复制失败",
       "mermaid_render_failed": "无法渲染此图表。改为显示源代码。",

@@ -8438,6 +8438,7 @@
       "narrow_table": "Estreitar tabela",
       "expand_table_word": "Alargar",
       "collapse_table_word": "Estreitar",
+      "table_width_not_saved": "Não foi possível salvar a largura da tabela neste navegador",
       "diagram_source": "Código-fonte do diagrama",
       "copy_failed": "Falha ao copiar",
       "mermaid_render_failed": "Não foi possível renderizar este diagrama. Exibindo o código-fonte.",

@@ -3124,6 +3124,7 @@
       "narrow_table": "Narrow table",
       "expand_table_word": "Widen",
       "collapse_table_word": "Narrow",
+      "table_width_not_saved": "Couldn't save the table width in this browser",
       "diagram_source": "Diagram source",
       "copy_failed": "Copy failed",
       "mermaid_render_failed": "Couldn’t render this diagram. Showing the source instead.",
