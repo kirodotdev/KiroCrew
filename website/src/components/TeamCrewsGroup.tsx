@@ -167,13 +167,15 @@ export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
   )
 }
 
-/** The top bar's Crew switcher with the Team Crews group, while the relay viewer is on. */
+/** The top bar's Crew switcher with the Team Crews group, while the relay viewer is on
+ *  and the group has a Crew or a notice (sign-in, setup or load failure) to show. */
 export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inline' }) {
   const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
   return (
     <InstanceTabBar
       variant={variant}
-      extraGroups={hidden ? undefined : close => (
+      // An empty list passes nothing, so the bar stays as it is without the relay.
+      extraGroups={hidden || (refusal === null && crews.length === 0) ? undefined : close => (
         <TeamCrewsGroup crews={crews} refusal={refusal} retry={retry} retrying={retrying} close={close} />
       )}
     />
