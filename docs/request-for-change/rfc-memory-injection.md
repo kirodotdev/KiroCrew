@@ -451,6 +451,18 @@ least 14 days and 200 session starts:
 - its miss rate is no higher than control, and
 - the L1-absence count is zero for stages that can remove a row from a block.
 
+**Outcome check.** The miss signals show what a stage hides. They do not show
+whether the agent does better work. Each stage also runs a task-outcome eval
+before it moves to `enforce`: a `correction_repeat` scenario for the existing
+harness (`kirocrew eval`, `src/kiro_crew/eval/`), next to `lesson_application`.
+Each case has the person correct the agent in one session, then gives a task in
+a later session where the corrected mistake is possible. The score is how often
+the agent repeats a mistake it was already corrected on. The same cases run
+with the stage `off` and `enforce` on the same provider and model. A stage may
+not raise the repeat rate. For R6 the cases run before and after an approved
+Dreaming batch, so a merge or correction that weakens a rule shows up as a
+repeated mistake rather than only as a recall miss.
+
 ### 5.3 Rollback
 
 Set the stage's flag to `off`. Admit, Identify and Select take effect at the next
@@ -590,11 +602,19 @@ All must hold:
 
 1. At least 24 hours since the last completed run, **and** at least 20 new
    lesson rows or 5 sessions since then.
-2. No chat turn is running in any session.
+2. No turn a person is waiting on is running: no dashboard chat turn and no
+   channel message turn (Slack, Telegram and the other channels). Background
+   turns do not count: cron, subagent, task-runner, workflow and heartbeat
+   sessions, the `cron:`, subagent, `taskrunner:` and workflow keys that
+   `_STATELESS_PREFIXES` (`session_parts/policy.py`) already classifies. A host
+   running Crewmates, schedules or a conductor would otherwise rarely be idle.
 3. A cross-process lock file under the data home is free. One run per host.
 
 At most one automatic run a day. A manual trigger runs the same pass and still
-takes the lock and the idle check.
+takes the lock and the idle check. When a person's turn starts mid-run, the run
+stops at the next batch boundary (7.4), so a background turn running alongside
+Dreaming costs only shared CPU, not a stale read: Dreaming reads rows through
+the same revisions an edit writes.
 
 ### 7.4 Scope of one run
 
@@ -629,23 +649,31 @@ This candidate checks a row against the sessions it came from and was used in.
 
 - **Source session.** Read from `memory_items.session_key`
   (`memory_schema.py`), or on a member store from the `source_ref` that
-  `apply_consolidation` stamps (`vector_memory_member.py`). A row with neither
-  is not a candidate. Most default-store consolidation rows carry no source
-  today, so this candidate mainly reaches member stores until they do.
+  `apply_consolidation` stamps (`vector_memory_member.py`), or on the default
+  store from the session R0a records as metadata. A row with none of these is
+  not a candidate. Default-store rows written before R0a carry no session, so
+  this candidate reaches them only once R0a has run long enough to cover new
+  rows.
 - **Later use.** Sessions since the watermark whose injection receipts
   (`injection_receipts.py`) list the row's id. Receipts carry the session key,
   so the transcript is read locally at check time.
 - **Excerpts, not transcripts.** Code searches those transcripts for the row's
   P4 content words and keeps the matching turns plus one turn on each side. The
   model never reads a whole session. A row with no matching turn is skipped.
-- **Proposals.** `confirm` (records a dated confirmation, changes nothing
-  else), `correct` (carries corrected text) or `supersede` (names the newer row
-  or excerpt that replaces it). Each carries the excerpt it relies on.
+- **Proposals.** One of four kinds, each carrying the excerpt it relies on:
+
+  | Kind | Effect | Needs approval? |
+  |---|---|---|
+  | `confirm` | writes a dated confirmation and the cited session into the row's metadata; text, tier and scope are unchanged | no |
+  | `flag` | marks the row for the person's review with the excerpt that questions it; text, tier and scope are unchanged | no; it only adds a review item |
+  | `correct` | carries corrected text for the row | yes |
+  | `supersede` | names the newer row or excerpt that replaces the row | yes |
 - **Order.** The row's own source span is checked first, later sessions second.
   A row that was right when written and later contradicted is superseded with a
   date, not marked wrong.
-- **Authority.** On L1 and L2 rows only `confirm` or a flag for the person's
-  review is allowed, never `correct` or `supersede` (7.6).
+- **Authority.** On L1 and L2 rows only `confirm` and `flag` are allowed,
+  never `correct` or `supersede` (7.6). A person who agrees with a `flag` edits
+  the rule themselves, so an L1 or L2 row changes only by the person's hand.
 
 ### 7.6 Model proposes, code gates
 
@@ -653,7 +681,8 @@ Each proposal passes a pure check over store state before it reaches the
 approval list:
 
 - Every cited id exists, is live, and was in this run's batch.
-- No L1 or L2 row is changed.
+- No L1 or L2 row's text, tier or scope is changed. Only `confirm` and `flag`
+  may cite one, and both write metadata only.
 - A merged sentence adds no content word absent from its source rows.
 - A row appears in at most one proposal per run.
 - A transcript-evidence excerpt must be a substring of a turn in a session this
@@ -666,9 +695,33 @@ A refused proposal is logged with its reason and counted in the run receipt.
 
 - Output is an approval list, not a change. Deletions and merges need a
   person's approval.
+- **Where a person reviews it.** Each proposal that needs approval is written
+  as an owner proposal through `propose_conflict`
+  (`memory_record_metadata.py`), with source `dream:<run_id>`. That is the
+  mechanism member-store consolidation already uses for a conflicting write,
+  so the proposal appears where those already do: the Memory page's records
+  editor (`MemoryRecordsEditor.tsx`), as "Review N proposals" on the row
+  (counted by `_conflict_count` in `memory_edit.py`), with **Use proposal** and
+  **Keep current**. A merge is one `set` proposal on the leader and one
+  `forget` proposal on each folded row, grouped by run id so they are
+  accepted or declined together. A `flag` uses the same review item with no
+  proposed text.
+- **Finding them.** Two additions make the list reachable without opening rows
+  one by one:
+  - The records list filter, today `q` and `kind` only (`_query` in
+    `memory_edit.py`), gains `pending: true` to list rows with an open
+    proposal, and `run: <run_id>` to list one run's proposals.
+  - After a run that produced proposals, Crew sends one notification ("Dreaming
+    proposed N changes") that opens the Memory page with that run's filter.
+    The notification fires once per run, not per proposal.
+  This is the first piece of the user-facing memory cleanup that
+  [#19830](https://github.com/kirodotdev/KiroCrew/issues/19830) asks for.
 - An approved change goes through the existing edit and forget paths. They
   write `memory_revisions` and leave a tombstone, so every row restores
   (`memory_edit.py` reads `memory_revisions` to restore a prior value).
+- An unreviewed proposal never applies itself. A proposal still open when the
+  same row comes up in a later run is left in place, not duplicated, because
+  `propose_conflict` dedupes proposals per record.
 
 ### 7.8 Wake check
 
@@ -693,8 +746,13 @@ After an approved batch is applied:
 | Embedding queue | bulk priority |
 | Stop condition | a chat turn starts |
 
-`propose` passes when approval lists are produced, every refusal is logged, and
-the wake check passes on every applied batch for 14 days.
+`propose` passes when, for 14 days, approval lists are produced, every refusal
+is logged, the wake check passes on every applied batch, and the
+`correction_repeat` eval (5.2) shows no higher repeat rate after applied
+batches than before. The run receipt also counts proposals accepted, declined
+and left open. A high decline rate means the candidates are wrong, and a high
+open rate means nobody is reviewing them. Either one blocks any widening of
+trust (7.10).
 
 ### 7.10 How trust may widen
 
@@ -714,6 +772,20 @@ rows never join an automatic class.
 | Two runs collide | cross-process lock |
 | The backlog run never ends | per-night cap with a cursor |
 | Anything else | `memory.dream: off` stops scheduling at once; any run reverts from its revisions |
+
+### 7.12 What Dreaming leaves to other parts of Crew
+
+Dreaming maintains lesson and fact rows that already exist in the default
+store and in member stores. Three neighbouring jobs stay where they are:
+
+| Job | Owner today | Dreaming's part |
+|---|---|---|
+| Turning a repeated procedure into a skill | auto-generated skills (`history_consolidation_skills.py`), off by default, with their own approval queue under Customize > Skills and `skills.auto_refine_on_deviation` | none. Dreaming does not create, edit or retire skills. It may count clusters of related L3 rows that look like one procedure and report them in the run receipt, which tells reviewers whether a link is worth building (Q7) |
+| Adding a memory that extraction missed | consolidation, per session | none. Dreaming only proposes changes to rows it was shown (7.6), so it cannot invent a row. A run that reads excerpts and finds an unrecorded rule logs a count, never the text |
+| Maintaining memory kept outside these stores | that store's own owner | none. Dreaming runs only on stores Crew opens. A memory service that a Crew syncs to or reads from runs its own maintenance, and Dreaming does not write to it |
+
+Keeping these out lets each job keep the review path it already has, and keeps
+Dreaming's code gate simple: every proposal names a row that exists.
 
 ## 8. Security considerations
 
@@ -750,6 +822,8 @@ rows never join an automatic class.
 - A new shadow log beside injection receipts, other than the kind-routing
   log a write-side stage outside a turn already uses (P6).
 - Changing who may call `learn_add`.
+- Dreaming writing new rows, skills, or memory outside the stores Crew opens
+  (7.12).
 
 **Open questions for reviewers.**
 
@@ -766,3 +840,6 @@ rows never join an automatic class.
    approve, or should L1 get its own budget line?
 6. Q6. Should transcript evidence (7.5.1) share the 20,000-token cap with the
    uncertain band or get its own, and how many rows should one run check?
+7. Q7. Should a cluster of related L3 rows that Dreaming reports as one
+   procedure (7.12) become an auto-skill candidate in the existing Skills
+   review queue, or stay a count in the run receipt?
