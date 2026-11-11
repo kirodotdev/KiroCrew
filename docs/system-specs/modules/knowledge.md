@@ -444,7 +444,9 @@ so `knowledge.doc_ingest_hosts` — whose default is `[]` = deny-all — must NO
 path, or the feature would ingest nothing on a default config while its toggle read on.
 
 **Chunk budget.** `folder_watcher._do_scan` orders discovered files newest-first
-unconditionally and stops once a sweep has ingested its budget of chunks. Files not
+unconditionally and stops once a sweep has ingested its budget of chunks. A file whose
+ingest fails is charged for the chunks the pipeline reached before it failed (its
+`extracting` progress), since those extraction calls were spent. Files not
 reached keep (or lack) their `folder_file_state` row, so the next sweep resumes from
 them — the existing `status` column already carries the resume point. Every folder
 source is budgeted by `knowledge.folder_ingest_chunk_budget` (resolved by
