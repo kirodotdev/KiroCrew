@@ -2099,7 +2099,7 @@ disposition:
 - **Inbound message receive (`messaging.identity.channel_inbound_permitted`)**
   gates each transport's per-message dispatch on the SAME `channels` allowlist,
   resolved on the host surface with `fail_closed=True` and run OFF the event loop
-  (it walks the ProfileStore). Called at the top of every dispatcher's
+  (it walks the ProfileStore). Called on every message by every dispatcher's
   `handle_message` (Slack / Discord / Telegram / Webex / WeCom — Slack is NOT
   exempt), it closes the gap the connect-time gate alone leaves: a host-profile
   deny added AFTER a transport connected would otherwise keep dispatching inbound
@@ -2878,12 +2878,14 @@ otherwise let a denied channel trigger a download by attaching a file to the one
 word that skips the gate. Both arguments default to the gated behaviour, so a
 caller that does not pass them is unchanged. This matters most where the channel
 has no widgets: with `max_buttons=0` a typed `/stop` is the only cancel
-affordance the operator has. The Feishu, iMessage, Teams, Webex, WeCom and Weixin
-dispatchers pass `text` only when their own `parse_command` reads the message as
-`stop` (Feishu, Webex and WeCom after removing the bot's @mention; never for a Teams or
-Webex card press, and never for drained turn content), so a cancel word another
-channel spells, such as `!stop`, keeps the strict gate instead of passing into
-the busy path's steer. WhatsApp passes its text as is.
+affordance the operator has. The Discord, Feishu, iMessage, Teams, Telegram, Webex,
+WeCom and Weixin dispatchers pass `text` only when their own `parse_command` reads the
+message as `stop` (Feishu, Webex and WeCom after removing the bot's @mention, Telegram
+after removing its own `@username`; never for a Teams or Webex card press, and never for
+drained turn content), so a cancel word another channel spells, such as `!stop`, keeps
+the strict gate instead of passing into the busy path's steer. Discord's `/stop` slash
+command passes the same gate as `!stop`, and a Telegram stop is never taken as the
+answer to a bridged approval note. WhatsApp passes its text as is.
 
 `_CANCEL_ALIASES` is the recognised set, and it is a MIRROR of the per-channel
 command tables (`/stop`, `/cancel`, Discord's `!` bang forms, WeCom's `停止`),
