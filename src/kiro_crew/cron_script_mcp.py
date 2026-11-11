@@ -25,6 +25,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import mcp_structured_text as _structured_text
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron_script_child_env import _CRON_ENV_DENY, _GRANTED_ENV_KEYS, _clean_cron_env
@@ -286,6 +287,8 @@ class McpToolClient:
         if "error" in r:
             raise McpToolError(f"MCP tool error: {r['error']}")
         result = r.get("result", {})
+        # A payload only in ``structuredContent`` reaches the script as its JSON.
+        result = _structured_text.with_structured_text(result) or result
         content = result.get("content", [])
         if result.get("isError"):
             raise McpToolError(f"MCP tool error: {_joined_text(content) or 'unknown error'}")

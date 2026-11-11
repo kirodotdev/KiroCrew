@@ -5473,6 +5473,25 @@ so the handshake reads it as `{}` (logged) instead of failing the shared backend
 over it, on both the lazy path and `send_initialize`. `prime_initialize` refuses
 a backend that is no longer alive even when its handshake state reads ready.
 
+The pump also gives a tool result whose payload is only in `structuredContent`
+(a JSON object, `content` empty or missing or without a text block) that object
+as a compact JSON text block, keeping `structuredContent` as sent for the
+client's `outputSchema` check (`kiro_crew.mcp_structured_text`). The engines
+read only `content`, so such a result reached the agent with no output
+(Airtable's hosted server answers this way once the client sends
+`MCP-Protocol-Version`). A result that already has a text block is left alone.
+The step runs first, before the image budget (whose omission notice is a text
+block that would otherwise read as the tool's own text) and before the spill
+step, so the added text is spilled and truncated
+like any other; only a line carrying the `"structuredContent"` key is parsed,
+off the pump. The KAS remote-server bridge (`kiro_crew.kas_http_bridge`, which
+the header bridge and the Crew-owned Connection bridge both run) adds the same
+block to what it relays, and a script cron's `ctx.call_tool()` client
+(`cron_script_mcp.McpToolClient`) returns that JSON as the result text. A remote
+server the engine dials itself is not on any of these paths. Pinned by
+`test/test_mcp_structured_text.py`, `test/test_kas_header_bridge.py` and
+`test/test_cron_script.py`.
+
 ### Reference implementations
 
 Two shapes are both correct; pick by whether the tool needs a value back inside

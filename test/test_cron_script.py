@@ -1180,6 +1180,27 @@ class TestMcpToolClientProtocol:
         assert result == "=== UNTRUSTED CONTENT BOUNDARY ===\n" + payload
         assert json.loads(result.splitlines()[-1]) == {"AuthorEmail": "someone@example.com"}
 
+    def test_call_tool_returns_a_structured_only_payload_as_json(self):
+        """A server that answers ``content: []`` beside ``structuredContent``."""
+        from kiro_crew.cron_script import McpToolClient
+
+        client = object.__new__(McpToolClient)
+        client._proc = MagicMock()
+        client._proc.stdin = MagicMock()
+        client._proc.stdout = MagicMock()
+        client._req_id = 0
+        client._proc.stdout.readline.return_value = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"content": [], "structuredContent": {"bases": ["b1"]}},
+                }
+            )
+            + "\n"
+        )
+        assert json.loads(client.call_tool("list_bases", {})) == {"bases": ["b1"]}
+
     def test_call_tool_is_error_joins_every_text_block(self):
         from kiro_crew.cron_script import McpToolClient
 

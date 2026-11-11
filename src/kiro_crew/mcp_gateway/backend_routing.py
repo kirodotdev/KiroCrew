@@ -28,6 +28,7 @@ import os
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Optional
 
+from kiro_crew import mcp_structured_text as _structured_text
 from kiro_crew.executors import image_executor, maintenance_executor
 from kiro_crew.json_line import (
     ID_PROBE_BYTES,
@@ -250,7 +251,22 @@ async def _isolate_stdout_line(self: Backend, handling: Awaitable[None]) -> None
 
 
 async def _handle_stdout_line(self: Backend, line: bytes) -> None:
-    """Budget images, spill an oversized result, then route one line."""
+    """Add structured text, budget images, spill an oversized result, then route one line."""
+    # A result whose payload is only in ``structuredContent`` gets it as a
+    # JSON text block (kiro_crew.mcp_structured_text): the engines read only
+    # ``content``. First of the three steps: an image-budget omission notice
+    # is a text block, and seen first it would read as the tool's own text.
+    # Before the spill step too, so the added text is spilled and truncated
+    # like any other. The parse runs off the pump, like the spill.
+    if _structured_text.line_may_need_text(line):
+        try:
+            line = await asyncio.get_running_loop().run_in_executor(
+                maintenance_executor(),
+                _structured_text.add_text_to_line,
+                line,
+            )
+        except Exception:
+            logger.debug("structuredContent text block failed; routing raw line", exc_info=True)
     # Enforce the inline-image budget on tool results BEFORE the
     # spill step: a downscaled image both shrinks what spill writes
     # to disk and, more importantly, keeps an oversized image block
