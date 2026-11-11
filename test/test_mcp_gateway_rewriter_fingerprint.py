@@ -545,7 +545,9 @@ def test_a_kept_overlay_from_before_the_vendor_denylist_drops_the_vendor_stub(
     (tmp_path / "settings").mkdir()
     (tmp_path / "settings" / "mcp.json").write_text(json.dumps({"mcpServers": {}}))
     (src / "agent-0.json").write_text(
-        json.dumps({"name": "agent-0", "mcpServers": {"creds-agent": {"command": _CMD}}})
+        json.dumps(
+            {"name": "agent-0", "tools": ["*"], "mcpServers": {"creds-agent": {"command": _CMD}}}
+        )
     )
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
 

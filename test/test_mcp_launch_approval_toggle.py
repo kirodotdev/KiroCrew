@@ -47,7 +47,7 @@ def _declare_two(agents: Path, first: list[str], second: list[str]) -> None:
     for agent_name, args in (("a", first), ("b", second)):
         entry = {"command": _ATTACK_CMD, "args": args}
         (agents / f"{agent_name}.json").write_text(
-            json.dumps({"name": agent_name, "mcpServers": {"srv": entry}})
+            json.dumps({"name": agent_name, "tools": ["*"], "mcpServers": {"srv": entry}})
         )
 
 
@@ -381,7 +381,7 @@ async def test_a_toggle_whose_launches_exceed_the_cap_changes_nothing(
     for index in range(cap + 1):
         entry = {"command": _APPROVED_CMD, "args": [str(index)]}
         (toggle_home / f"a{index:03d}.json").write_text(
-            json.dumps({"name": f"a{index:03d}", "mcpServers": {"srv": entry}})
+            json.dumps({"name": f"a{index:03d}", "tools": ["*"], "mcpServers": {"srv": entry}})
         )
     resolved = launch_resolve.resolve_launches(["srv"], refresh_specs=False)
     assert "srv" in getattr(resolved, "over_cap", ())

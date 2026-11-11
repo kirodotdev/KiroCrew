@@ -475,6 +475,24 @@ async def test_a_target_configuring_a_pooled_server_differently_is_not_registere
 
 
 @pytest.mark.asyncio
+async def test_a_server_the_session_agent_leaves_out_of_tools_refuses_a_target_declaring_it(
+    agents_dir, files_pooled
+):
+    # The session's stub for a server its ``tools`` leaves out starts nothing
+    # (``rewriter_spec._refusing_stub_entry``), so it never launches the target's copy.
+    _write(agents_dir, {**_delegator("helper"), "mcpServers": _files("/a")})
+    _write(agents_dir, {**_SLACK, "name": "helper", "tools": ["*"], "mcpServers": _files("/a")})
+
+    extras = await _extras()
+
+    assert _ids(extras) == ["delegator"]
+    assert (
+        "helper (it sets up its own files, and every agent in this chat gets the copy "
+        "this chat's own agent loads)"
+    ) in extras.withheld_credentials_notice
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "target, excluded",
     [

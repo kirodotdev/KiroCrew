@@ -1149,12 +1149,12 @@ def test_the_approved_launch_is_wrapped_after_other_specs_fill_the_launch_cap(tm
     for index in range(cap + 1):
         name = f"aim-{index:02d}"
         entry = {"command": _APPROVED_CMD, "args": ["--skill-paths", f"/skills/{index}"]}
-        spec = {"name": name, "mcpServers": {"srv": entry}}
+        spec = {"name": name, "tools": ["*"], "mcpServers": {"srv": entry}}
         (source / f"{name}.json").write_text(json.dumps(spec))
     # Named to sort after every other spec, so it is read once the cap is full.
     crew_entry = {"command": _APPROVED_CMD, "args": []}
     (source / "kiro-crew.json").write_text(
-        json.dumps({"name": "kiro-crew", "mcpServers": {"srv": crew_entry}})
+        json.dumps({"name": "kiro-crew", "tools": ["*"], "mcpServers": {"srv": crew_entry}})
     )
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):
@@ -1375,6 +1375,7 @@ async def test_the_stored_approved_display_is_redacted(tmp_path, toggle_home):
         json.dumps(
             {
                 "name": "a",
+                "tools": ["*"],
                 "mcpServers": {
                     "srv": {"command": _APPROVED_CMD, "args": [], "env": {"API_TOKEN": secret}}
                 },
