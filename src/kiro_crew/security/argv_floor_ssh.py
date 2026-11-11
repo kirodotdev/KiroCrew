@@ -27,7 +27,11 @@ import re
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
-from .argv_floor_self import _self_token_frames, _static_substitution_output
+from .argv_floor_self import (
+    _quoted_assignment_scripts,
+    _self_token_frames,
+    _static_substitution_output,
+)
 from .shell_normalizer import (
     _argv_programs,
     _cut_at_operator,
@@ -925,6 +929,12 @@ def _function_call_binds_self(text: str) -> bool:
             if bound != body and _is_ssh_to_self(bound):
                 return True
     return False
+
+
+def _reaches_self_over_ssh(text_lower: str) -> bool:
+    """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
+    read whole: the separator mask would turn a script's own separators into data."""
+    return any(map(_is_ssh_to_self, [text_lower, *_quoted_assignment_scripts(text_lower)]))
 
 
 def _is_ssh_to_self(text_lower: str) -> bool:
