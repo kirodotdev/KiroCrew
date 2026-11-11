@@ -211,6 +211,11 @@ const NON_PORT_SITES = [
     times: 1,
   },
   {
+    what: "the HTTP readiness probe's result for a body cut off mid-read",
+    code: 'res.on("error", () => resolve("unknown"));',
+    times: 1,
+  },
+  {
     what: "readiness, short-circuited for a remote host; not an owner verdict",
     code: 'const readiness = remoteHost ? "unknown" : await fetchGatewayReadiness();',
     times: 1,
