@@ -81,14 +81,15 @@ class _Skipped:
 SKIP = _Skipped()
 
 # ── Private stdout descriptor for JSON-RPC responses ───────────────────────
-# The vendored llama-cpp model load (``_vendor/llama_cpp/_utils.py``) runs a
-# process-wide ``dup2(devnull, 1)`` on a background thread, so a response written
-# to fd 1 meanwhile is silently lost and the client hangs until the 600s ACP
-# tool-stall watchdog. ``snapshot_stdout_fd()`` dups fd 1 at startup, before any
-# tool runs; the dup keeps pointing at the real pipe. The lock is needed because
+# A library that re-points fd 1 for the whole process from a background thread
+# (upstream llama-cpp-python's model load does, with ``dup2(devnull, 1)``; Kiro
+# Crew replaces that one in ``embeddings_native``) silently loses a response
+# written to fd 1 meanwhile, and the client hangs until the 600s ACP tool-stall
+# watchdog. ``snapshot_stdout_fd()`` dups fd 1 at startup, before any tool runs;
+# the dup keeps pointing at the real pipe. The lock is needed because
 # ``os.write`` on a raw fd is not atomic, and a torn frame desyncs the stream.
-# Checking whether ``sys.stdout`` was swapped does not work: the suppressor swaps
-# it too.
+# Checking whether ``sys.stdout`` was swapped does not work: such a redirect
+# swaps it too.
 _stdout_fd: Optional[int] = None
 
 
