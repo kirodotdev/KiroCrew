@@ -65,7 +65,6 @@ __all__ = [
     "TOOL_SEARCH_DEFAULT_MIN_PCT",
     "TOOL_SEARCH_DEFAULT_MIN_TOKENS",
     "TOOL_SEARCH_LOADER_TOOL",
-    "JobTools",
     "ToolSearchSettings",
     "clamp_min_pct",
     "clamp_min_tokens",
@@ -259,39 +258,18 @@ def kas_never_defer_ids(
     return sorted(ids)
 
 
-@dataclass(frozen=True)
-class JobTools:
-    """The MCP tools an agent's own prompt makes its core procedure.
-
-    ``ids`` are ``<server>::<tool>``. ``budget_tokens`` is the most schema tokens
-    those tools may add to every request of that agent, counted as the bytes of
-    each tool's ``{name, description, inputSchema}`` JSON over 3.25, the ratio
-    KAS's own context breakdown reports for these schemas
-    (``test/test_job_tools.py`` holds each row to it). The budget is what keeps
-    this from growing into "defer nothing": a tool joins a row only when the
-    agent's prompt sends it there as procedure, and only while the row still fits.
-    """
-
-    ids: tuple[str, ...]
-    budget_tokens: int
-
-
 #: Fanning work out to sub-agents, and the status read every fan-out makes.
-_SUB_AGENTS = JobTools(
-    ids=(
-        "kirocrew-core::spawn_run",
-        "kirocrew-core::spawn_status",
-        "kirocrew-core::spawn_sub_agents",
-    ),
-    budget_tokens=4_000,
+_SUB_AGENTS = (
+    "kirocrew-core::spawn_run",
+    "kirocrew-core::spawn_status",
+    "kirocrew-core::spawn_sub_agents",
 )
 #: A dispatched worker's two calls: read its item, report on it.
-_WORK_ITEM = JobTools(
-    ids=("kirocrew-work::work_brief", "kirocrew-work::work_report"),
-    budget_tokens=1_500,
-)
-_DISPATCH_IDS = (
+_WORK_ITEM = ("kirocrew-work::work_brief", "kirocrew-work::work_report")
+#: Dispatching items to worker sessions, waiting on them, patrolling and closing them.
+_DISPATCH = (
     "kirocrew-core::monitor_start",
+    "kirocrew-core::wait",
     "kirocrew-dashboard::session_close",
     "kirocrew-dashboard::session_create",
     "kirocrew-dashboard::session_read_message",
@@ -301,18 +279,20 @@ _DISPATCH_IDS = (
     "kirocrew-work::work_ledger_read",
     "kirocrew-work::work_ledger_record",
 )
-#: Dispatching items to worker sessions, patrolling them and closing them.
-_DISPATCH = JobTools(ids=_DISPATCH_IDS, budget_tokens=9_000)
 #: The same, for the agents whose first call asks whether a parent dispatched them.
-_DISPATCH_UNDER_A_PARENT = JobTools(
-    ids=(*_DISPATCH_IDS, "kirocrew-work::work_brief"), budget_tokens=9_200
-)
+_DISPATCH_UNDER_A_PARENT = (*_DISPATCH, "kirocrew-work::work_brief")
 
-#: Shipped agent name -> its job tools. THE declaration: a tool is kept out of
-#: deferral for an agent because it is in that agent's row here, and for no other
-#: reason. An agent with no row (an operator's own, an app's, a crew member's
-#: template) keeps today's deferral.
-JOB_TOOLS: Mapping[str, JobTools] = MappingProxyType(
+#: Shipped agent name -> its job tools, as ``<server>::<tool>`` ids: the MCP tools
+#: that agent's own prompt makes its core procedure. THE declaration: a tool is
+#: kept out of deferral for an agent because it is in that agent's row here, and
+#: for no other reason. A row's tools ride in every request of that agent, so a
+#: tool joins one only when the prompt sends the agent there as procedure and the
+#: row still fits its schema-token budget; the budgets live beside the test that
+#: enforces them (``test/test_job_tools.py``), because nothing at run time reads
+#: one. The key is the agent's name: a name with no row (an operator's own agent,
+#: an app's, a crew member's template) keeps today's deferral, and a spec saved
+#: under a shipped name takes that name's row, for the tools it mounts.
+JOB_TOOLS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "kirocrew": _SUB_AGENTS,
         "kirocrew-worker": _WORK_ITEM,
@@ -341,10 +321,10 @@ def job_tool_ids(agent: str | None, spec: dict[str, Any] | None) -> list[str]:
     if declared is None:
         return []
     by_server: dict[str, list[str]] = {}
-    for tool_id in declared.ids:
+    for tool_id in declared:
         server, _, tool = tool_id.partition(_KAS_TOOL_ID_SEPARATOR)
         by_server.setdefault(server, []).append(tool)
-    return [i for i in kas_never_defer_ids(spec, by_server.get) if i in declared.ids]
+    return [i for i in kas_never_defer_ids(spec, by_server.get) if i in declared]
 
 
 def kas_client_meta_settings(
