@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,6 +26,8 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS
+
+_EN_CATALOG = Path(__file__).parent.parent / "website/src/i18n/locales/en.manual.json"
 
 # ── Restore budget ──
 
@@ -68,18 +71,34 @@ def _assert_budget_kept(state, log, restored: int) -> None:
     # Left in history, not deleted and not carried as unreadable.
     assert all(log.has_log(_history_key_for(k)) for k in left)
     assert not set(left) & set(state.unrestored_slot_keys)
-    _assert_one_history_notice(state, len(left))
+    _assert_one_history_notice(state, "moved_to_history_startup", count=len(left), limit=budget)
 
 
 def _history_notices(state) -> list[dict]:
     return [n for n in state._notification_log if n.get("url") == slot_retention.HISTORY_URL]
 
 
-def _assert_one_history_notice(state, count: int) -> None:
+def _assert_one_history_notice(state, copy_id: str, **params: int) -> None:
+    """One notice, naming its dashboard copy, whose stored English is that copy's."""
     notes = _history_notices(state)
     assert len(notes) == 1
-    assert notes[0]["count"] == count
-    assert str(count) in notes[0]["body"]
+    note = notes[0]
+    assert note["count"] == params["count"]
+    assert note.get("i18n") == {"id": copy_id, "params": params}
+    copy = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))["components"]["notifications"]
+    body = copy["systemNote"][f"{copy_id}_body_{'one' if params['count'] == 1 else 'other'}"]
+    for name, value in params.items():
+        body = body.replace("{{" + name + "}}", str(value))
+    assert note["title"] == copy["systemNote"]["moved_to_history_title"]
+    assert note["body"] == body
+
+
+def test_every_history_note_english_is_its_catalog_copy():
+    copy = json.loads(_EN_CATALOG.read_text(encoding="utf-8"))["components"]["notifications"]
+    for copy_id, forms in slot_retention._HISTORY_NOTE_BODY.items():
+        for form, english in zip(("one", "other"), forms):
+            catalog = copy["systemNote"][f"{copy_id}_body_{form}"]
+            assert english.replace("{", "{{").replace("}", "}}") == catalog
 
 
 def test_sync_restore_stops_at_the_budget_and_keeps_pinned_and_looped(tmp_path, monkeypatch):
@@ -167,7 +186,9 @@ async def test_sweep_archives_only_the_idle_slot_above_high_water(tmp_path, monk
         assert kept in state._slots
     meta = state.conversation_log.get_metadata(_history_key_for("idle"))
     assert meta.get("closed") is True
-    _assert_one_history_notice(state, 1)
+    _assert_one_history_notice(
+        state, "moved_to_history_idle", count=1, days=7, limit=MAX_LIVE_SLOTS
+    )
 
 
 @pytest.mark.asyncio
@@ -541,7 +562,7 @@ def test_crew_bound_tab_past_the_budget_is_built(tmp_path, monkeypatch, driver):
     assert restored == 2
     assert {"chat-1-new", "chat-2-worker"} <= set(state._slots)
     assert "chat-3-old" not in state._slots
-    _assert_one_history_notice(state, 1)
+    _assert_one_history_notice(state, "moved_to_history_startup", count=1, limit=1)
 
 
 def test_crew_bound_reads_an_open_item_bound_to_the_worker(monkeypatch):
@@ -612,4 +633,4 @@ def test_foldered_tab_past_the_budget_is_built_and_not_counted(tmp_path, monkeyp
     state = _make_state(tmp_path / "sessions")
     assert restore_open_slots(state) == 2
     assert "chat-2-foldered" in state._slots
-    _assert_one_history_notice(state, 1)
+    _assert_one_history_notice(state, "moved_to_history_startup", count=1, limit=1)

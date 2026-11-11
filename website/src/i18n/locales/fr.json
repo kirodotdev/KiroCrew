@@ -8711,7 +8711,14 @@
         "chat_stopped_refused_body": "Le modèle a refusé de répondre et la discussion s’est arrêtée. Ouvre la discussion pour voir pourquoi.",
         "chat_stopped_stalled_body": "La discussion s’est bloquée et n’a pas pu reprendre. Ouvre la discussion pour en démarrer une nouvelle.",
         "folder_agent_label_title": "Vérifie l’agent par défaut d’un dossier",
-        "folder_agent_label_body": "L’agent par défaut de ces dossiers porte le nom d’un Bot, mais les nouvelles discussions qui s’y trouvent ne s’exécutent pas sur ce Bot : {{folders}}. Pour utiliser le Bot, choisis-le comme agent par défaut dans les paramètres du dossier."
+        "folder_agent_label_body": "L’agent par défaut de ces dossiers porte le nom d’un Bot, mais les nouvelles discussions qui s’y trouvent ne s’exécutent pas sur ce Bot : {{folders}}. Pour utiliser le Bot, choisis-le comme agent par défaut dans les paramètres du dossier.",
+        "moved_to_history_title": "Sessions déplacées dans l’Historique",
+        "moved_to_history_startup_body_one": "Au démarrage, {{count}} onglet ouvert plus ancien a été laissé dans l’Historique pour garder au plus {{limit}} sessions ouvertes. Ouvre l’Historique pour le reprendre.",
+        "moved_to_history_startup_body_many": "Au démarrage, {{count}} onglets ouverts plus anciens ont été laissés dans l’Historique pour garder au plus {{limit}} sessions ouvertes. Ouvre l’Historique pour en reprendre un.",
+        "moved_to_history_startup_body_other": "Au démarrage, {{count}} onglets ouverts plus anciens ont été laissés dans l’Historique pour garder au plus {{limit}} sessions ouvertes. Ouvre l’Historique pour en reprendre un.",
+        "moved_to_history_idle_body_one": "{{count}} session inactive depuis plus de {{days}} jour(s) a été archivée dans l’Historique pour rester sous la limite de {{limit}} sessions. Ouvre l’Historique pour la reprendre.",
+        "moved_to_history_idle_body_many": "{{count}} sessions inactives depuis plus de {{days}} jour(s) ont été archivées dans l’Historique pour rester sous la limite de {{limit}} sessions. Ouvre l’Historique pour en reprendre une.",
+        "moved_to_history_idle_body_other": "{{count}} sessions inactives depuis plus de {{days}} jour(s) ont été archivées dans l’Historique pour rester sous la limite de {{limit}} sessions. Ouvre l’Historique pour en reprendre une."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",

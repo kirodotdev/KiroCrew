@@ -3240,7 +3240,12 @@
         "chat_stopped_refused_body": "The model declined to answer and the chat stopped. Open the chat to see why.",
         "chat_stopped_stalled_body": "The chat stalled and could not recover. Open the chat to start a new one.",
         "folder_agent_label_title": "Check a folder's Default agent",
-        "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings."
+        "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings.",
+        "moved_to_history_title": "Sessions moved to History",
+        "moved_to_history_startup_body_one": "{{count}} older open tab was left in History at startup to keep {{limit}} sessions open at most. Open History to resume it.",
+        "moved_to_history_startup_body_other": "{{count}} older open tabs were left in History at startup to keep {{limit}} sessions open at most. Open History to resume one.",
+        "moved_to_history_idle_body_one": "Archived {{count}} session idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume it.",
+        "moved_to_history_idle_body_other": "Archived {{count}} sessions idle past the {{days}}-day mark to History to stay under the {{limit}}-session limit. Open History to resume one."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",

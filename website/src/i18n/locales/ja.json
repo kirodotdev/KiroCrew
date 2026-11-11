@@ -8293,7 +8293,10 @@
         "chat_stopped_refused_body": "モデルが回答を拒否したため、チャットが停止しました。チャットを開いて理由を確認してください。",
         "chat_stopped_stalled_body": "チャットが停滞し、復旧できませんでした。チャットを開いて新しいチャットを開始してください。",
         "folder_agent_label_title": "フォルダーのデフォルトエージェントを確認",
-        "folder_agent_label_body": "これらのフォルダーのデフォルトエージェントは Bot と同じ名前ですが、新しいチャットはその Bot では実行されません：{{folders}}。その Bot を使うには、フォルダーの設定でデフォルトエージェントとして選択してください。"
+        "folder_agent_label_body": "これらのフォルダーのデフォルトエージェントは Bot と同じ名前ですが、新しいチャットはその Bot では実行されません：{{folders}}。その Bot を使うには、フォルダーの設定でデフォルトエージェントとして選択してください。",
+        "moved_to_history_title": "セッションを履歴に移動しました",
+        "moved_to_history_startup_body_other": "開いておくセッションを最大 {{limit}} 件に保つため、起動時に古いタブ {{count}} 件を履歴に残しました。履歴を開くと再開できます。",
+        "moved_to_history_idle_body_other": "{{limit}} セッションの上限を超えないよう、{{days}} 日を超えて操作のなかったセッション {{count}} 件を履歴にアーカイブしました。履歴を開くと再開できます。"
       },
       "notificationBanner": {
         "dismiss_notification": "通知を閉じる",

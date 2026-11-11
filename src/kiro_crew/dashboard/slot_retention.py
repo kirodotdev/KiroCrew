@@ -27,7 +27,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.slot_projection import summary_rows
@@ -53,6 +53,26 @@ SWEEP_INTERVAL_SECS = 3600.0
 #: Where the archive notifications send the person: the chat page with the
 #: History pane open.
 HISTORY_URL = "/chat?history=1"
+
+#: The History notice's dashboard copy ids (``noteText`` in ``notifMeta.tsx``).
+HistoryNote = Literal["moved_to_history_startup", "moved_to_history_idle"]
+
+#: The English the History notice keeps, per copy id, singular then plural: the
+#: ``_one`` / ``_other`` bodies of that id in ``en.manual.json``.
+_HISTORY_NOTE_BODY: dict[HistoryNote, tuple[str, str]] = {
+    "moved_to_history_startup": (
+        "{count} older open tab was left in History at startup to keep {limit} sessions"
+        " open at most. Open History to resume it.",
+        "{count} older open tabs were left in History at startup to keep {limit} sessions"
+        " open at most. Open History to resume one.",
+    ),
+    "moved_to_history_idle": (
+        "Archived {count} session idle past the {days}-day mark to History to stay under"
+        " the {limit}-session limit. Open History to resume it.",
+        "Archived {count} sessions idle past the {days}-day mark to History to stay under"
+        " the {limit}-session limit. Open History to resume one.",
+    ),
+}
 
 
 def _bound_keys(pairs: Iterable[tuple[Any, Any]]) -> set[str]:
@@ -330,17 +350,25 @@ async def _queued_or_attached(state: "DashboardState", slot: "_ChatSlot") -> boo
         return True
 
 
-def notify_left_in_history(state: "DashboardState", count: int, reason: str) -> None:
-    """Tell the person *count* tabs left the sidebar for History. Never raises."""
+def notify_left_in_history(
+    state: "DashboardState", copy_id: HistoryNote, count: int, **params: int
+) -> None:
+    """Tell the person *count* tabs left the sidebar for History. Never raises.
+
+    *copy_id* names the note's dashboard copy, which *count* and *params* fill.
+    """
     if count <= 0:
         return
+    params = {"count": count, **params}
+    one, other = _HISTORY_NOTE_BODY[copy_id]
     try:
         state.notify(
             "agent",
             "Sessions moved to History",
-            f"{reason} Open History to resume one.",
+            (one if count == 1 else other).format(**params),
             meta={"count": count},
             url=HISTORY_URL,
+            i18n={"id": copy_id, "params": params},
         )
     except Exception:  # noqa: BLE001 - the log line below is the fallback report
         logger.warning("Could not publish the History notice for %d tab(s)", count, exc_info=True)
@@ -412,10 +440,7 @@ async def sweep_idle_slots(
             "Idle slot sweep archived %d session(s) idle over %d day(s)", len(archived), idle_days
         )
         notify_left_in_history(
-            state,
-            len(archived),
-            f"Archived {len(archived)} session(s) idle over {idle_days} day(s) to History "
-            f"to stay under the {MAX_LIVE_SLOTS}-session limit.",
+            state, "moved_to_history_idle", len(archived), days=idle_days, limit=MAX_LIVE_SLOTS
         )
     return archived
 

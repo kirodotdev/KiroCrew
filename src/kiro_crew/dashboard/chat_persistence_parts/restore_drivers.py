@@ -318,12 +318,7 @@ def _report_restore_budget(state: DashboardState, skipped: int) -> None:
         skipped,
         RESTORE_SLOT_BUDGET,
     )
-    notify_left_in_history(
-        state,
-        skipped,
-        f"{skipped} older open tab(s) were left in History at startup to keep "
-        f"{RESTORE_SLOT_BUDGET} sessions open at most.",
-    )
+    notify_left_in_history(state, "moved_to_history_startup", skipped, limit=RESTORE_SLOT_BUDGET)
 
 
 def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":

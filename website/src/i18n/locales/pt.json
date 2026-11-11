@@ -8711,7 +8711,14 @@
         "chat_stopped_refused_body": "O modelo se recusou a responder e o chat parou. Abra o chat para ver o motivo.",
         "chat_stopped_stalled_body": "O chat travou e não conseguiu se recuperar. Abra o chat para iniciar um novo.",
         "folder_agent_label_title": "Confira o agente padrão de uma pasta",
-        "folder_agent_label_body": "O agente padrão destas pastas tem o nome de um Bot, mas os novos chats nelas não são executados nesse Bot: {{folders}}. Para usar o Bot, escolha-o como agente padrão nas configurações da pasta."
+        "folder_agent_label_body": "O agente padrão destas pastas tem o nome de um Bot, mas os novos chats nelas não são executados nesse Bot: {{folders}}. Para usar o Bot, escolha-o como agente padrão nas configurações da pasta.",
+        "moved_to_history_title": "Sessões movidas para o Histórico",
+        "moved_to_history_startup_body_one": "Na inicialização, {{count}} aba aberta mais antiga ficou no Histórico para manter no máximo {{limit}} sessões abertas. Abra o Histórico para retomá-la.",
+        "moved_to_history_startup_body_many": "Na inicialização, {{count}} abas abertas mais antigas ficaram no Histórico para manter no máximo {{limit}} sessões abertas. Abra o Histórico para retomar uma.",
+        "moved_to_history_startup_body_other": "Na inicialização, {{count}} abas abertas mais antigas ficaram no Histórico para manter no máximo {{limit}} sessões abertas. Abra o Histórico para retomar uma.",
+        "moved_to_history_idle_body_one": "{{count}} sessão inativa há mais de {{days}} dia(s) foi arquivada no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomá-la.",
+        "moved_to_history_idle_body_many": "{{count}} sessões inativas há mais de {{days}} dia(s) foram arquivadas no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomar uma.",
+        "moved_to_history_idle_body_other": "{{count}} sessões inativas há mais de {{days}} dia(s) foram arquivadas no Histórico para ficar abaixo do limite de {{limit}} sessões. Abra o Histórico para retomar uma."
       },
       "notificationBanner": {
         "dismiss_notification": "Dispensar notificação",

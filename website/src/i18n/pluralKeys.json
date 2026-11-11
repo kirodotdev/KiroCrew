@@ -552,5 +552,7 @@
   "components.publicPublishAckModal.exposure_window_provider_expiry",
   "components.jobLogsView.idle_runs_hidden",
   "pages.overview.skillsTab.budget_group_counting_detail",
-  "pages.overview.skillsTab.budget_group_cold_detail"
+  "pages.overview.skillsTab.budget_group_cold_detail",
+  "components.notifications.systemNote.moved_to_history_startup_body",
+  "components.notifications.systemNote.moved_to_history_idle_body"
 ]

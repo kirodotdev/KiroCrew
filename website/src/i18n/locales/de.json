@@ -8502,7 +8502,12 @@
         "chat_stopped_refused_body": "Das Modell hat die Antwort verweigert, und der Chat wurde abgebrochen. Öffne den Chat, um den Grund zu sehen.",
         "chat_stopped_stalled_body": "Der Chat hing fest und konnte nicht wiederhergestellt werden. Öffne den Chat, um einen neuen zu starten.",
         "folder_agent_label_title": "Standard-Agent eines Ordners prüfen",
-        "folder_agent_label_body": "Der Standard-Agent dieser Ordner trägt den Namen eines Bots, aber neue Chats darin laufen nicht auf diesem Bot: {{folders}}. Um den Bot zu nutzen, wähle ihn in den Einstellungen des Ordners als Standard-Agent aus."
+        "folder_agent_label_body": "Der Standard-Agent dieser Ordner trägt den Namen eines Bots, aber neue Chats darin laufen nicht auf diesem Bot: {{folders}}. Um den Bot zu nutzen, wähle ihn in den Einstellungen des Ordners als Standard-Agent aus.",
+        "moved_to_history_title": "Sitzungen in den Verlauf verschoben",
+        "moved_to_history_startup_body_one": "{{count}} älterer geöffneter Tab wurde beim Start im Verlauf belassen, damit höchstens {{limit}} Sitzungen geöffnet sind. Öffne den Verlauf, um ihn fortzusetzen.",
+        "moved_to_history_startup_body_other": "{{count}} ältere geöffnete Tabs wurden beim Start im Verlauf belassen, damit höchstens {{limit}} Sitzungen geöffnet sind. Öffne den Verlauf, um einen davon fortzusetzen.",
+        "moved_to_history_idle_body_one": "{{count}} Sitzung, die über {{days}} Tag(e) inaktiv war, wurde im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um sie fortzusetzen.",
+        "moved_to_history_idle_body_other": "{{count}} Sitzungen, die über {{days}} Tag(e) inaktiv waren, wurden im Verlauf archiviert, um unter dem Limit von {{limit}} Sitzungen zu bleiben. Öffne den Verlauf, um eine davon fortzusetzen."
       },
       "notificationBanner": {
         "dismiss_notification": "Benachrichtigung schließen",
