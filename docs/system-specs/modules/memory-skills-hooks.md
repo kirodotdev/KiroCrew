@@ -369,7 +369,13 @@ source remains an error, not an empty document. V2 FTS rebuild is an explicit
 transaction over current database facts, rules, episodes and history; it reads no
 learning sidecars and creates no separate database. Every normal content mutation
 updates its FTS projection in the same transaction. Recall checks current record
-status and validity before returning matches. V1 keeps its file reader and
+status and validity before returning matches. A write's metadata is a patch over
+the record's current metadata, except that a fact write through `set_semantic`
+that sets a different value (compared as `_json_value_equal` does) does not
+inherit a validity window that closed before the write (`sync_record`'s
+`new_value`): that window bounded the old value, and carrying it would hide the
+new value from every recall. A still-open window carries over, and memory editor
+corrections, restores and episode writes keep the window as it is. V1 keeps its file reader and
 self-healing derived-index behavior.
 
 ### Consolidation (`history.py` `HistoryConsolidator`)
