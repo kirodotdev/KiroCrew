@@ -8,7 +8,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { ApiError } from '../../api/client'
 import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { useRowDisclosure } from './rowDisclosure'
-import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded'
+import { useReasoningStartsExpanded, useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -117,12 +117,14 @@ function derivedHeading(meta?: Record<string, unknown>): string {
 }
 
 /** Collapsible row that wraps tool/thinking/permission messages — collapsed unless autoExpand or the
- *  "Tool calls start expanded" chat setting is on. */
+ *  "Tool calls start expanded" chat setting is on (for a reasoning-only group, or "Reasoning starts
+ *  expanded"). */
 const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, reasoningOnly = false, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, askAgent = true, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // The chat setting (#18254) raises the resting state from collapsed to
   // expanded; liveness (autoExpand) can still open a row on top of it.
-  const startExpanded = useToolCallsStartExpanded()
+  const reasoningStartsExpanded = useReasoningStartsExpanded()
+  const startExpanded = useToolCallsStartExpanded() || (reasoningOnly && reasoningStartsExpanded)
   const restingExpanded = !!autoExpand || startExpanded
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, restingExpanded)
   const userToggled = useRef(false)

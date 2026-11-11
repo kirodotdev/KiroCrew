@@ -19546,6 +19546,8 @@
         "simplified_tool_call_names": "Nomi semplificati delle chiamate agli strumenti",
         "tool_calls_start_expanded": "Mostra le chiamate agli strumenti espanse",
         "tool_calls_start_expanded_desc": "Apri le righe delle chiamate agli strumenti con input e output visibili, invece che compresse. Le righe che apri o chiudi a mano mantengono la tua scelta.",
+        "reasoning_starts_expanded": "Mostra il ragionamento espanso",
+        "reasoning_starts_expanded_desc": "Apri le righe del ragionamento con il testo visibile, invece che compresse. Le righe che apri o chiudi a mano mantengono la tua scelta.",
         "single_line": "Riga singola",
         "spellcheck_input": "Controlla l'ortografia nel campo messaggio",
         "spellcheck_input_desc": "Sottolinea le parole scritte male nel campo messaggio con una linea rossa ondulata. Disattivalo per non vedere più le sottolineature rosse mentre scrivi.",

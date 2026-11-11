@@ -1598,6 +1598,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.reasoning-starts-expanded",
+    "label": "Reasoning starts expanded",
+    "labelKey": "pages.settings.chatPanel.reasoning_starts_expanded",
+    "hint": "Open reasoning rows with their text showing, instead of collapsed. Rows you open or close by hand keep your choice.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
     "id": "chat.recall-sent-messages-with-arrow-keys",
     "label": "Recall Sent Messages with Arrow Keys",
     "labelKey": "pages.settings.chatPanel.arrow_key_prompt_history",

@@ -909,6 +909,13 @@
       "route": "/settings/chat/composer?highlight=chat.quick-send"
     },
     {
+      "id": "chat.reasoning-starts-expanded",
+      "label": "Reasoning starts expanded",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.reasoning-starts-expanded",
+      "hint": "Open reasoning rows with their text showing, instead of collapsed. Rows you open or close by hand keep your choice."
+    },
+    {
       "id": "chat.recall-sent-messages-with-arrow-keys",
       "label": "Recall Sent Messages with Arrow Keys",
       "tab": "chat",

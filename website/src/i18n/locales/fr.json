@@ -19546,6 +19546,8 @@
         "simplified_tool_call_names": "Noms d'appels d'outils simplifiés",
         "tool_calls_start_expanded": "Afficher les appels d’outils dépliés",
         "tool_calls_start_expanded_desc": "Ouvrir les lignes d’appel d’outil avec leur entrée et leur sortie visibles, au lieu de repliées. Les lignes que tu ouvres ou fermes à la main gardent ton choix.",
+        "reasoning_starts_expanded": "Afficher le raisonnement déplié",
+        "reasoning_starts_expanded_desc": "Ouvrir les lignes de raisonnement avec leur texte visible, au lieu de repliées. Les lignes que tu ouvres ou fermes à la main gardent ton choix.",
         "single_line": "Une seule ligne",
         "spellcheck_input": "Vérifier l'orthographe dans la zone de message",
         "spellcheck_input_desc": "Souligne les mots mal orthographiés dans la zone de message d'un trait rouge ondulé. Désactive-le pour arrêter les soulignements rouges pendant que tu écris.",
