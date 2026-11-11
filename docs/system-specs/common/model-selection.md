@@ -519,7 +519,12 @@ its own once the cache refreshes with a list that carries it.
   id. Live and cached rows pass the same admission: an id over 256 characters,
   or past the 512th, is refused, and a label's name and description are cut to
   400 characters (`ADVERTISED_LABEL_MAX_CHARS`). Claude shows the registry
-  unfiltered only when the cache is empty too. Other advertised-selection
+  unfiltered only when the cache is empty too. When the user's Claude settings
+  carry an `availableModels` list, the claude adapter advertises one row per
+  literal entry; Crew's session settings also name the newer models that the
+  user's own version-prefix entries cover and the user's own `modelOverrides`
+  routes, so those get a row too (see claude-code-provider.md, "Session-scoped
+  Claude settings"). Other advertised-selection
   backends preserve exact wire ids (including Pi provider/model ids) without
   substituting the Kiro CLI catalog. A cold cache offers `auto` and a scoped
   configured default until that backend advertises its choices.
