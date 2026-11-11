@@ -2598,10 +2598,15 @@ grammar admits no quotes, so a quote can only sit in the target group;
 refusing the whole token for it had mislabelled the shape), while fragment
 tokens (open quote state) still poison the split protectively. Quoted operator characters are data and none of this fires. A segment
 whose CUMULATIVE quote/escape state is still open at its end continues into the
-next line — bash line continuation (`\<newline>` vanishes) and quoted newlines
-splice words across the newline segment boundary, so `origin ma\` + newline +
-`in` pushes `main` while no scanned token spells it — and lands on the ungated
-sentinel (the `ma$in` posture); a mid-segment open whose quote closes before
+next line — bash line continuation (`\<newline>` vanishes) splices words across
+the newline segment boundary, so `origin ma\` + newline + `in` pushes `main`
+while no scanned token spells it — and lands on the ungated sentinel (the
+`ma$in` posture). A newline INSIDE quotes is not a boundary at all: it stays in
+its word (`git commit -m "title<nl><nl>body" && git push origin feature` is two
+segments), and a word holding a newline can never equal a protected name. The
+per-line split comes back where the quote state cannot be trusted — any heredoc
+(its body is not shell syntax, so an apostrophe in prose would hold a quote open
+past the tag line) or a quote left open at the end of the command; a mid-segment open whose quote closes before
 segment end stays on the disableable fallback, because in-segment joining can
 only fuse whitespace into a word (never a valid refname) and the pieces stay
 visible to the superset scan. The invariant
