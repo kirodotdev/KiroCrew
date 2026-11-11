@@ -1099,12 +1099,15 @@ def snippet_needle_tiers(query: str) -> list[list[str]]:
     across tiers a later message holding a better needle wins. Returns ``[]`` for
     a whitespace-only query.
 
-    A query with no dictionary words is ONE tier, in :func:`snippet_needles`
-    order, so its snippet is exactly what the first matching message gives.
-    A query with dictionary words has three: the phrase and each verbatim run,
-    then the full-weight needles (words of two or more characters, whole terms),
-    then the down-weighted ones (one-character words, lone characters). That is
-    what keeps a lone ``普`` in an early ``普通`` from beating ``吉普力`` later on.
+    A query with no dictionary words is one tier, in :func:`snippet_needles`
+    order, so its snippet is what the first matching message gives, except that
+    its one- and two-character ASCII terms form a last tier when it also has a
+    longer term. A query with dictionary words has three tiers: the phrase and
+    each verbatim run, then the full-weight needles (words of two or more
+    characters, whole terms), then the down-weighted ones (one-character words,
+    lone characters), and the short ASCII terms after those. That is what keeps
+    a lone ``普`` in an early ``普通`` from beating ``吉普力`` later on, and an
+    ``is`` in an early ``this`` from beating the query's real words.
     """
     needles, phrase, _ = parse_search_query(query)
     if not needles:
@@ -1117,6 +1120,12 @@ def _snippet_tiers(needles: Sequence[SearchNeedle], phrase: str) -> list[list[st
     # Stable sort on weight only: within a weight class the parse's insertion
     # order (required terms first-seen, then bigrams) is the display order.
     ordered = sorted((n for n in needles if not n.verbatim), key=lambda n: -n.weight)
+    # A one- or two-character ASCII term is a substring of so much incidental text
+    # (``is`` in ``this``, ``at`` in ``that``) that an early message holding only it
+    # would take the snippet from the message about the query's real words, so it
+    # anchors a snippet only when no message holds anything better.
+    terms = [n for n in ordered if not n.saturate_body]
+    short = [n for n in ordered if n.saturate_body]
 
     def spellings(group: Iterable[SearchNeedle]) -> list[str]:
         return [text for n in group for text in (n.text, *n.alts)]
@@ -1124,11 +1133,16 @@ def _snippet_tiers(needles: Sequence[SearchNeedle], phrase: str) -> list[list[st
     if any(n.word or n.verbatim for n in needles):
         tiers = [
             [phrase, *(n.text for n in needles if n.verbatim)],
-            spellings(n for n in ordered if n.weight >= 1.0),
-            spellings(n for n in ordered if n.weight < 1.0),
+            spellings(n for n in terms if n.weight >= 1.0),
+            spellings(n for n in terms if n.weight < 1.0),
+            spellings(short),
         ]
+    elif terms:
+        tiers = [[phrase, *spellings(terms)], spellings(short)]
     else:
-        tiers = [[phrase, *spellings(ordered)]]
+        # Nothing better to wait for, so the first message holding any of them
+        # still ends the read.
+        tiers = [[phrase, *spellings(short)]]
     seen: set[str] = set()
     out: list[list[str]] = []
     for tier in tiers:

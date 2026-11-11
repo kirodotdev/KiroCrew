@@ -1571,10 +1571,11 @@ class SessionCatalogProjection:
         with no snippet at all. Within a tier needles are tried per message, so
         the first MESSAGE containing any of them wins rather than the best
         needle overall; that preserves the streaming early-exit above. A query
-        with no dictionary words is one tier. A query with them reads on past a
-        lower-tier hit until a message holds the phrase, a verbatim run or a
-        longer word, so a lone character in an early message cannot take the
-        snippet from the phrase later on.
+        with more than one tier reads on past a lower-tier hit until a message
+        holds a top-tier needle: the phrase, a verbatim run or a longer word. So
+        a lone character, or a two-letter ASCII term inside an unrelated word, in
+        an early message cannot take the snippet from the query's real words
+        later on. A query whose terms are all that short stays one tier.
 
         Returns ``''`` when no needle is locatable in any single message, or
         when the file cannot be read (display-only — never raises at the caller).

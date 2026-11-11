@@ -533,6 +533,26 @@ class TestSearchSessions:
         assert results[0]["snippet"], "expected a non-empty snippet"
         assert "contention" in results[0]["snippet"].casefold()
 
+    def test_a_short_term_inside_an_earlier_word_does_not_take_the_snippet(self, tmp_path):
+        """``ai`` sits inside ``maintain``; the snippet comes from the message about the query."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "please maintain the release notes")
+        log.append("hit", "assistant", "we started tracking ai usage per team")
+
+        snippet = log.search_sessions("ai usage tracking")[0]["snippet"].casefold()
+
+        assert "tracking" in snippet
+        assert "maintain" not in snippet
+
+    def test_a_query_of_short_terms_alone_still_snips_its_first_hit(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "the s3 bucket for ai models")
+        log.append("hit", "assistant", "s3 ai")
+
+        snippet = log.search_sessions("s3 ai")[0]["snippet"].casefold()
+
+        assert "bucket" in snippet
+
     def test_whitespace_only_query_matches_nothing_and_reads_no_file(self, tmp_path):
         """A whitespace-only query returns [] *and* reads no session file.
 
@@ -887,6 +907,15 @@ class TestParseSearchQuery:
         needles = history.snippet_needles("beta alphabet gamma")
 
         assert needles == ["beta alphabet gamma", "beta", "alphabet", "gamma"]
+
+    def test_short_ascii_terms_anchor_a_snippet_last(self):
+        assert history_search.snippet_needle_tiers("ai usage tracking") == [
+            ["ai usage tracking", "usage", "tracking"],
+            ["ai"],
+        ]
+
+    def test_a_query_of_short_terms_alone_keeps_one_snippet_tier(self):
+        assert history_search.snippet_needle_tiers("s3 ai") == [["s3 ai", "s3", "ai"]]
 
 
 class TestNeedlesMatchText:
