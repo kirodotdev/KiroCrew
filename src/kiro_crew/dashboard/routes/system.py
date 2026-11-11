@@ -208,10 +208,15 @@ def register(app: web.Application) -> None:
     # authorization the agent must not be able to grant itself.
     app.router.add_get("/api/decisions/consent", handlers.api_decisions_consent_get)
     app.router.add_put("/api/decisions/consent", handlers.api_decisions_consent_put)
-    # Which System One server the seam asks: hosted Jev or a local preset. Owner-gated
-    # in the handler and the only dashboard writer of `decisions.provider.*`.
+    # Which System One server the seam asks: hosted Jev, a local preset or a SageMaker
+    # endpoint. Owner-gated in the handler and the only dashboard writer of
+    # `decisions.provider.*`.
     app.router.add_get("/api/decisions/provider", handlers.api_decisions_provider_get)
     app.router.add_put("/api/decisions/provider", handlers.api_decisions_provider_put)
+    # One fixed question to a SageMaker endpoint the owner typed; writes nothing.
+    app.router.add_post(
+        "/api/decisions/provider/sagemaker-test", handlers.api_decisions_provider_sagemaker_test
+    )
     app.router.add_get(
         "/api/decisions/local-models/status", handlers.api_decisions_local_model_status
     )
