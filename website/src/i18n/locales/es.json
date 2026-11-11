@@ -12796,7 +12796,9 @@
         "fork_other_in_progress": "Se está iniciando otra bifurcación.",
         "copy_failed": "Error al copiar",
         "quote_message": "Citar mensaje",
-        "turn_credits": "{{credits}} créditos"
+        "turn_credits": "{{credits}} créditos",
+        "turn_cache_rewritten": "Caché reescrita",
+        "turn_cache_rewritten_hint": "La caché del prompt se reconstruyó en este turno, así que su entrada se facturó a la tarifa de escritura de caché."
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Tu navegador pregunta «¿Permitir la depuración remota?». Pulsa Permitir y {{productName}} podrá trabajar en la pestaña. Solo se pregunta una vez; {{productName}} solo toca las pestañas que abre él mismo.",

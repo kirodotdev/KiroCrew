@@ -43,7 +43,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  *  completed turn (chat_runner._attach_turn_stats). Parity with the end-of-turn
  *  line kiro-cli prints natively: elapsed wall clock + credits (kiro) or
  *  API cost (claude_code). Zero fields are omitted by the backend. */
-export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string }
+export interface TurnStats { elapsed_ms: number; credits?: number; cost_usd?: number; model?: string; cache?: 'rewrite' }
 
 /** Trim a served model id to a compact footer label: drop region/vendor
  *  routing prefixes ("global.anthropic.claude-opus-4-8[1m]" → "claude-opus-4-8[1m]").
@@ -812,6 +812,15 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
             {billed && <span>{billed} ·</span>}
             <Clock size={11} aria-hidden="true" />
             <span>{fmtTurnElapsed(turnStats.elapsed_ms)}</span>
+            {/* Only a turn the gateway marked as one that rebuilt the prompt cache;
+                the hint says why it cost more than its neighbours. */}
+            {turnStats.cache === 'rewrite' && (
+              <span
+                className="ml-1 shrink-0 rounded-full border border-border px-1.5 text-[10px] leading-4 text-muted"
+                data-testid="turn-cache-rewrite"
+                title={i18nT('pages.chat.assistantMessage.turn_cache_rewritten_hint')}
+              >{i18nT('pages.chat.assistantMessage.turn_cache_rewritten')}</span>
+            )}
           </>
         })()}
       </div>

@@ -1351,6 +1351,22 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(screen.getByTestId('turn-stats').title).toContain('global.anthropic.claude-opus-4-8[1m]')
   })
 
+  it('shows a "Cache rewritten" chip with its reason only on a turn the gateway marked', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, cache: 'rewrite' }} />)
+    const chip = screen.getByTestId('turn-cache-rewrite')
+    expect(chip).toHaveTextContent('Cache rewritten')
+    expect(chip.title).toBe('The prompt cache was rebuilt this turn, so its input was billed at the cache-write rate.')
+    // The chip trails the elapsed time and leaves the billed amount where it was.
+    expect(screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()).toMatch(/^2\.50 credits ·\s*1m 24sCache rewritten$/)
+  })
+
+  it('draws no cache chip when the key is absent or holds another value', () => {
+    const { rerender } = render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
+    expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()
+    rerender(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, cache: 'warm' as never }} />)
+    expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()
+  })
+
   it('omits the model chip when the backend did not resolve one', () => {
     render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 42_000, credits: 1.0 }} />)
     expect(screen.queryByTestId('turn-model')).not.toBeInTheDocument()

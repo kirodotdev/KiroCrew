@@ -12258,7 +12258,9 @@
         "fork_other_in_progress": "別のフォークを開始しています。",
         "copy_failed": "コピーに失敗しました",
         "quote_message": "メッセージを引用",
-        "turn_credits": "{{credits}} クレジット"
+        "turn_credits": "{{credits}} クレジット",
+        "turn_cache_rewritten": "キャッシュを再書き込み",
+        "turn_cache_rewritten_hint": "このターンではプロンプトキャッシュが再構築されたため、その入力はキャッシュ書き込み料金で課金されました。"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "ブラウザーに「リモートデバッグを許可しますか？」と表示されます。「許可」を押すと {{productName}} がタブで作業できます。確認は一度だけ。{{productName}} は自分で開いたタブだけを扱います。",

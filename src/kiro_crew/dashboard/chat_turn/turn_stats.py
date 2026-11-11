@@ -11,6 +11,7 @@ import math
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from kiro_crew.dashboard.cache_rewrite import note_turn_cache
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.state import row_mid
 from kiro_crew.dashboard.system_notices import is_system_notice
@@ -230,6 +231,7 @@ def _attach_turn_stats(
     ttft_ms: int = 0,
     turn_start_mid: str | None = None,
     retries: int = 0,
+    cache_rewrite: bool = False,
 ) -> bool:
     """Attach per-turn stats to the turn's last reply row.
 
@@ -266,8 +268,9 @@ def _attach_turn_stats(
 
     ``retries`` is how many times the user turn was re-sent after a pre-output
     transient error (``slot._turn_retries``), recorded only when positive.
+    ``cache_rewrite`` marks a turn that rebuilt the prompt cache (see ``dashboard/cache_rewrite.py``).
     """
-    stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model)
+    stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model, cache_rewrite=cache_rewrite)
     if stats is None:
         return False
     if ttft_ms > 0:
@@ -589,7 +592,12 @@ def _emit_recovery_outcome(mechanism: str, outcome: str, attempts: int) -> None:
 
 
 def turn_stats_meta(
-    elapsed_ms: int, credits: float, cost_usd: float, model: str = ""
+    elapsed_ms: int,
+    credits: float,
+    cost_usd: float,
+    model: str = "",
+    *,
+    cache_rewrite: bool = False,
 ) -> dict[str, Any] | None:
     """The ``meta.turn_stats`` value the footer renders, or None for nothing to show.
 
@@ -599,6 +607,8 @@ def turn_stats_meta(
     A non-finite number is omitted too: ``json.dumps`` writes it as a bare
     ``Infinity``/``NaN`` that no browser parses. The provider-reported model id is
     scrubbed like every ACP-controlled string (``_redact_acp_string``) and dropped past ``_MAX_MODEL_ID_LEN``, because the row is retained.
+    ``cache_rewrite`` adds ``"cache": "rewrite"``, so a turn that rebuilt the prompt
+    cache says why it cost more; every other payload keeps its shape.
     """
     if elapsed_ms <= 0:
         return None
@@ -611,6 +621,8 @@ def turn_stats_meta(
         safe_model = _redact_acp_string(model)
         if len(safe_model) <= _MAX_MODEL_ID_LEN:
             stats["model"] = safe_model
+    if cache_rewrite:
+        stats["cache"] = "rewrite"
     return stats
 
 
@@ -933,6 +945,15 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # elsewhere. `read_context_tokens` never raises and answers (0, 0)
     # for a provider without the accessors.
     _ctx_used, _ctx_window = read_context_tokens(client)
+    # A synthesized completion (cancel, timeout) carries partial counts, and a
+    # turn that compacted, by `/compact` or automatically mid-turn, writes its new
+    # smaller prefix once, so both only move the remembered context size and are
+    # never flagged.
+    turn._turn_cache_rewrite = (
+        note_turn_cache(slot, client, _ctx_used, event.usage.cache_creation_tokens)
+        and not event.synthetic_completion
+        and not turn._compaction_completed
+    )
     # One shared predicate across every persist gate: a
     # claude-seam turn ending via a synthetic EVENT_COMPLETE
     # (timeout, tool-stall, cancel-unacked) can carry cost or cache

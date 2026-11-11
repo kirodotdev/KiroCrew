@@ -279,6 +279,7 @@ def _stamp_abnormal_turn_footer(turn) -> tuple[bool, tuple[TurnUsage, int] | Non
             turn._turn_elapsed_ms,
             model=turn._turn_model,
             ttft_ms=_ttft_visible.ms,
+            cache_rewrite=turn._turn_cache_rewrite,
         )
         return stamped, None
     if slot._acp_client is None:
@@ -303,7 +304,13 @@ def _stamp_abnormal_turn_footer(turn) -> tuple[bool, tuple[TurnUsage, int] | Non
 
 
 def _attach_abnormal_turn_stats(
-    turn, usage: TurnUsage, elapsed_ms: int, *, model: str | None = None, ttft_ms: int = 0
+    turn,
+    usage: TurnUsage,
+    elapsed_ms: int,
+    *,
+    model: str | None = None,
+    ttft_ms: int = 0,
+    cache_rewrite: bool = False,
 ) -> bool:
     """Put ``meta.turn_stats`` on the last reply row of a turn that ended abnormally.
 
@@ -316,12 +323,14 @@ def _attach_abnormal_turn_stats(
     can inject an envelope mid-turn. Scoped to this turn's rows by
     ``_turn_start_mid`` and ``_turn_msg_boundary``, which the caller only
     trusts once dispatch has set it; a turn that ended before it wrote any
-    reply row gets no footer, because there is no row to carry one. ``model``
-    and ``ttft_ms`` are the served model and first-output latency
-    EVENT_COMPLETE already read, when it did: a cut after the completion keeps
-    the footer the completion would have written, both included. A turn the
-    seam bills itself reads the model here and, as before, records no
-    ``ttft_ms``. Returns whether a row received the footer.
+    reply row gets no footer, because there is no row to carry one. ``model``,
+    ``ttft_ms`` and ``cache_rewrite`` are the served model, the first-output
+    latency and the prompt-cache rewrite flag EVENT_COMPLETE already read, when
+    it did: a cut after the completion keeps the footer the completion would
+    have written, all three included. A turn the seam bills itself reads the
+    model here and, as before, records no ``ttft_ms``; it was never judged
+    against the previous turn's cache, so it carries no rewrite flag either.
+    Returns whether a row received the footer.
 
     The row is mutated in place, so this marks the slot dirty itself, as every
     in-place row edit must: the periodic flush writes only a dirty slot, and
@@ -345,6 +354,7 @@ def _attach_abnormal_turn_stats(
                 else model
             )
             or "",
+            cache_rewrite=cache_rewrite,
         )
         row = _last_reply_row(slot, turn._turn_msg_boundary, turn._turn_start_mid)
         if stats is None or row is None:

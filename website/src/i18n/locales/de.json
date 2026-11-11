@@ -12527,7 +12527,9 @@
         "fork_other_in_progress": "Eine andere Verzweigung wird gerade erstellt.",
         "copy_failed": "Kopieren fehlgeschlagen",
         "quote_message": "Nachricht zitieren",
-        "turn_credits": "{{credits}} Credits"
+        "turn_credits": "{{credits}} Credits",
+        "turn_cache_rewritten": "Cache neu geschrieben",
+        "turn_cache_rewritten_hint": "Der Prompt-Cache wurde in diesem Zug neu aufgebaut, daher wurde seine Eingabe zum Cache-Schreibtarif abgerechnet."
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Dein Browser fragt „Remote-Debugging zulassen?“. Klick auf Zulassen, dann kann {{productName}} im Tab arbeiten. Wird nur einmal gefragt; {{productName}} berührt nur Tabs, die es selbst öffnet.",

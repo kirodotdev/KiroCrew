@@ -12796,7 +12796,9 @@
         "fork_other_in_progress": "Une autre bifurcation est en cours.",
         "copy_failed": "Échec de la copie",
         "quote_message": "Citer le message",
-        "turn_credits": "{{credits}} crédits"
+        "turn_credits": "{{credits}} crédits",
+        "turn_cache_rewritten": "Cache réécrit",
+        "turn_cache_rewritten_hint": "Le cache du prompt a été reconstruit à ce tour, donc son entrée a été facturée au tarif d’écriture du cache."
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Ton navigateur demande « Autoriser le débogage à distance ? ». Clique sur Autoriser et {{productName}} pourra travailler dans l’onglet. Demandé une seule fois ; {{productName}} ne touche qu’aux onglets qu’il ouvre lui-même.",

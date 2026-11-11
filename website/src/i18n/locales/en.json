@@ -7099,7 +7099,9 @@
         "turn_took_credits_cost": "Turn took {{elapsed}} and used {{credits}} credits ({{cost}} API cost)",
         "pin_message": "Pin message",
         "unpin_message": "Unpin message",
-        "turn_credits": "{{credits}} credits"
+        "turn_credits": "{{credits}} credits",
+        "turn_cache_rewritten": "Cache rewritten",
+        "turn_cache_rewritten_hint": "The prompt cache was rebuilt this turn, so its input was billed at the cache-write rate."
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Your browser is asking “Allow remote debugging?”. Click Allow and {{productName}} can work in the tab. Asked once; {{productName}} only touches tabs it opens itself.",
