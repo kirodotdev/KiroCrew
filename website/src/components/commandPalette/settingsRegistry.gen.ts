@@ -912,6 +912,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.slack-tools-for-your-agent-slack",
+    "label": "Slack tools for your agent (Slack)",
+    "labelKey": "pages.settings.slackPanel.slackCode.slack_mcp",
+    "labelSuffix": "Slack",
+    "description": "Let your agents search and read Slack as you. They see only what you can already see in Slack, private messages and DMs included, and they can't post or change anything there. Nothing is read until a person connects their own Slack account.",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "slack"
+    },
+    "configKey": "slack.slack_mcp"
+  },
+  {
     "id": "channels.slash-command-slack",
     "label": "Slash command (Slack)",
     "labelKey": "pages.settings.slackPanel.slash_command",

@@ -46,7 +46,11 @@ def fake_switch(monkeypatch: pytest.MonkeyPatch) -> str:
     from kiro_crew import slack_manifest
 
     monkeypatch.setitem(slack_manifest.FEATURE_SCOPES, _FAKE, _FAKE_SCOPE)
-    monkeypatch.setattr(slack_manifest, "FEATURES", tuple(slack_manifest.FEATURE_SCOPES))
+    monkeypatch.setattr(
+        slack_manifest,
+        "FEATURES",
+        (*slack_manifest.FEATURE_SCOPES, slack_manifest.SLACK_MCP),
+    )
     return _FAKE
 
 
@@ -486,6 +490,28 @@ class TestCapability:
 
     def test_an_unregistered_feature_never_latches(self, caps) -> None:
         assert caps.latch_unavailable("not_registered", "feature_disabled") is False
+        assert caps.latched() == {}
+
+    def test_a_switch_without_a_bot_scope_passes_every_scope_keyed_reader(
+        self, caps, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``FEATURES`` holds both kinds of switch on purpose: ones the gateway
+        # runs (a bot scope in ``FEATURE_SCOPES``) and manifest-only ones
+        # (``slack_mcp``). Whatever is keyed on a scope must read the second
+        # kind as "cannot run" and never raise. A second scope-less switch is
+        # registered here to stand for any later one.
+        from kiro_crew import slack_manifest
+
+        monkeypatch.setattr(slack_manifest, "FEATURES", (*slack_manifest.FEATURES, "scopeless"))
+        caps.record_granted_scopes({"chat:write", ""})
+        for name in (slack_manifest.SLACK_MCP, "scopeless"):
+            assert name not in caps.REQUIRED_SCOPE
+            on = _slack(**{name: True})
+            assert caps.toggle(on, name) is True
+            assert name in caps.manifest_features(on)
+            assert caps.availability(name) == (False, "missing_scope")
+            assert caps.enabled(on, name) is False
+            assert caps.latch_unavailable(name, "feature_disabled") is False
         assert caps.latched() == {}
 
     def test_feature_disabled_survives_a_scope_refresh(self, caps) -> None:
