@@ -5318,6 +5318,26 @@ three tiers, none of which walks the tree on the calling thread:
    short-lived loader — the unsigned MCP fallback in `mcp_tools/skills.py` builds one
    per call — instead of walking.
 
+**A gateway makes the first read before its first session.** The first skill read of
+a process costs more than every later one, whatever the catalog holds. It reads each
+packaged skill's `app:` line (`_packaged_app_claims`, asked by
+`_get_released_app_names`) and walks the packaged trees (`_packaged_skill_names`, asked
+by the startup index), two results kept for the life of the process because the
+installed package does not change while it runs; and a scope with no list in memory
+answers from tier 3 or the cold path. A session start reads skills inside its prompt
+build, after the person's message has arrived, so a gateway's first session paid for
+all of that there. `skill_first_read.first_read_after_ready` makes the read instead:
+`GatewayOrchestrator.run` starts it as a tracked task past `KIROCREW_READY`
+(`no-new-work-on-gateway-boot-path`), it waits for the builtin sync task, because the
+sync drops the catalog when it changes a skill, and then calls
+`context_assembly.inclusion.skill_parts` on a worker thread with the arguments a
+default-agent session start with no project passes. It keeps nothing of its own: the
+loader holds what it read under the invalidation it already has, and a session start
+reads through the loader as before, so the text a session receives does not change. It
+covers the global scope only; a trusted project's scope is first read by the first
+session in that project. A failed read is logged at debug, and the first session then
+reads for itself. Not started in test mode.
+
 The scope key is a digest of the skills root, the resolved `extra_paths` and the
 trusted project key (`_catalog_scope_id`), because two loaders can share a project
 and still enumerate different trees. Stored rows keep their **ordinal**: enumeration
