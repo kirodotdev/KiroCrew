@@ -1213,6 +1213,68 @@ async def test_a_clear_frame_on_a_turn_that_did_not_type_clear_leaves_the_pill(
 
 
 @pytest.mark.asyncio
+async def test_a_peers_clear_on_a_shared_runtime_wipes_nothing(tmp_path, monkeypatch) -> None:
+    """A shared runtime fans a clear frame to every peer runner (and marks it
+    ownerless whenever a subagent is registered, including for the session that
+    typed it). The gate is therefore THIS turn's own command, not the frame.
+
+    The whole destructive clear is gated, not only the pill: a peer's ``/clear``
+    fanned to this runner must NOT wipe this session's history or broadcast
+    ``slot_clear`` for it, or one session's clear silently empties another's
+    conversation."""
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.providers.base import (
+        EVENT_CLEAR_STATUS,
+        EVENT_COMPLETE,
+        EVENT_TEXT_CHUNK,
+        LLMEvent,
+    )
+
+    state, sent = _runner_state(tmp_path, monkeypatch, is_new=False, resumed=True)
+    slot = state.get_or_create_slot("peer-chat")
+    _seed_pill(slot)
+    slot.set_todo_task_completed("2", True)
+    slot.append("user", "keep me", "msg msg-u")
+    slot.append("assistant", "and me", "msg msg-a")
+    rows_before = len(slot.messages)
+    broadcasts: list[tuple[str, dict[str, Any]]] = []
+    real_broadcast = state.broadcast_ws
+    state.broadcast_ws = lambda kind, payload, *a, **k: (  # type: ignore[assignment]
+        broadcasts.append((kind, payload)),
+        real_broadcast(kind, payload, *a, **k),
+    )[1]
+    provider = (await state.sessions.get_or_create())[0]
+    # A fanned ownerless clear only reaches a peer on a chat-SHARED runtime. The
+    # runner gates the ownerless-clear skip on ``is_shared_chat_runtime(client)``
+    # (the ``_shared_runtime`` flag) so the default (non-sharing) path stays
+    # byte-identical to base -- a runtime lease does NOT separate the two, since
+    # the unshared path takes one at registration too. This shared-runtime
+    # scenario must therefore present a shared provider for the guard to engage.
+    provider._shared_runtime = True
+
+    async def stream(message, *args, **kwargs):
+        sent.append(message)
+        yield LLMEvent(kind=EVENT_CLEAR_STATUS, runtime_global=True)
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done.")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    provider.stream = stream
+    state.sessions.get_or_create = AsyncMock(return_value=(provider, False, True))
+    await _runner_turn(state, slot, "carry on")
+    # The pill survives ...
+    assert slot.todo_payload() is not None
+    assert slot.todo_payload()["completed"] == 2  # type: ignore[index]
+    assert slot._todo_overrides["2"]["completed"] is True
+    # ... and so does the history: the fanned-out clear wiped nothing and
+    # announced nothing.
+    assert len(slot.messages) >= rows_before, "a peer's clear wiped this session's history"
+    assert not any(
+        kind == "slot_clear" for kind, _ in broadcasts
+    ), "a peer's clear broadcast slot_clear for a conversation this session never cleared"
+
+
+@pytest.mark.asyncio
 async def test_own_clear_drops_the_pill_even_on_an_ownerless_frame(tmp_path, monkeypatch) -> None:
     from unittest.mock import AsyncMock
 

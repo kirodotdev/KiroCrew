@@ -87,6 +87,10 @@ with no row here.
        accept being refused when a frame classifies as nothing)
    * - ``ACP_BACKENDS_SESSION_SHARING``
      - pre-session registry query (subagent session allocation)
+   * - ``ACP_BACKENDS_CHAT_RUNTIME_SHARING``
+     - pre-session registry query (whether a top-level dashboard chat slot may
+       share a runtime -- distinct from subagent sharing because the chat
+       teardown must leave this session's own resume record intact)
    * - ``ACP_BACKENDS_MEMBER_CAPABILITIES``
      - pre-session registry query (whether enrolled members can load a full saved spec)
    * - ``ACP_BACKENDS_MEMBER_TOOL_LIMITS``
@@ -1337,6 +1341,7 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
 from kiro_crew.agent_sdk.backends_sessions import (  # noqa: E402,F401 - re-exported vocabulary
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_CHAT_RUNTIME_SHARING,
     ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
     ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,

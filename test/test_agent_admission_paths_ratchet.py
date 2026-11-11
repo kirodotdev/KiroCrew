@@ -71,6 +71,7 @@ ADMISSION_SITES: dict[Site, frozenset[str]] = {
     ("acp/runtime_mode_activation.py", "_activate_mode_bracketed"): frozenset({FRESH}),
     ("acp/runtime_spawn_launch.py", "_resolve_spawn_plan"): frozenset({FRESH}),
     ("acp/session_mcp.py", "_agent_spec_and_snapshot_for"): frozenset({FRESH}),
+    ("providers/chat_share.py", "ChatSharePlacement._admit_joiner"): frozenset({FORK}),
 }
 
 # Per admission site: (gates it does not reference, whether something else covers it).
@@ -96,6 +97,19 @@ KNOWN_GAPS: dict[Site, tuple[frozenset[str], str]] = {
         frozenset({FORK}),
         "not a start path: it resolves the spec whose MCP servers a session mounts, "
         "and the spawn that consumes it runs its own admission",
+    ),
+    ("providers/chat_share.py", "ChatSharePlacement._admit_joiner"): (
+        frozenset({FRESH}),
+        "covered: this is the SHARED-runtime JOIN confirmation, not a spawn. The "
+        "founder ran both gates inside _found_shared_runtime -> spawn(), so a joiner "
+        "lands on a process already admitted for freshness; and the confirmation "
+        "block re-reads agent_spec_generation and releases-and-retries on a moved "
+        "spec, so a joiner can never attach across a spec change. Only fork "
+        "governance is checked here, because a failed fork refresh leaves the spec "
+        "bytes unchanged and so is invisible to the generation re-read. The "
+        "enterprise ceiling needs no join-time check: the joiner's own "
+        "create_session / load_session runs AcpRuntime._refuse_over_ceiling_start "
+        "for the agent it will run, against the ceiling as it stands at that start",
     ),
 }
 

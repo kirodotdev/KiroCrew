@@ -436,7 +436,9 @@ def test_the_leaked_provider_killer_commits_the_teardown_before_it_signals() -> 
 #: subagent holds no lease, so this claim is the only thing standing between a
 #: live turn and the provider drain; one of these left unguarded is a turn that
 #: can still be SIGTERMed mid-flight.
-_TURN_ENTRY_POINTS = ("stream", "stream_command")
+#: ``stream`` runs its turn as ``_stream_turn`` inside the shared chat turn gate,
+#: so the claim is pinned where the turn body is.
+_TURN_ENTRY_POINTS = ("_stream_turn", "stream_command")
 
 
 @pytest.mark.parametrize("function", _TURN_ENTRY_POINTS)

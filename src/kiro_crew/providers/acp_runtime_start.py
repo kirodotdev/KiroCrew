@@ -471,6 +471,7 @@ async def _load_session_with_retry(
     session_key: str = "",
     channel_id: str = "",
     require_replay: bool = False,
+    crew_agent: str | None = None,
 ) -> AcpSessionHandle | None:
     """Resume via session/load, retrying past a stale native session lock.
 
@@ -503,6 +504,7 @@ async def _load_session_with_retry(
             session_key=session_key,
             channel_id=channel_id,
             require_replay=require_replay,
+            crew_agent=crew_agent,
         )
 
     swept = False
@@ -755,57 +757,120 @@ async def _start_kiro_runtime_impl(
     else:
         forget_remote_workspace(session_key)
     session_cwd: str | Path = work_dir
+
+    async def _spawn_checked(runtime: AcpRuntime) -> None:
+        # The parameter is named ``runtime`` on purpose: the startup-site count in
+        # test_acp_delegate_launch_classification reads ``...(runtime)`` here.
+        try:
+            await runtime.spawn(
+                start_priority=start_priority,
+                on_gate_queued=self._on_gate_queued,
+                on_gate_acquired=self._on_gate_acquired,
+            )
+        except AcpRuntimeError as exc:
+            # An OS sandbox that refused to build this child is checked FIRST and
+            # on all three of this module's startup paths: it is the narrower
+            # fact, it is deterministic (so the pool replacing the worker only
+            # reproduces it), and a child the sandbox would not start never got
+            # far enough to report a credential problem. The verdict comes from
+            # the shared translation so these paths cannot disagree with the
+            # per-turn one in session_provider.
+            sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
+            if sandbox_failure is not None:
+                raise sandbox_failure from exc
+            # A ``kiro-cli-chat`` delegate that would not launch is checked next,
+            # for the same reason and on all three paths: deterministic, fixed by
+            # repairing the install rather than a retry, so it must not fall
+            # through to the generic process-death card the ladder reproduces.
+            delegate_failure = await _delegate_launch_failure(runtime)
+            if delegate_failure is not None:
+                raise delegate_failure from exc
+            kas_extract_failure = _kas_extract_failure(runtime)
+            if kas_extract_failure is not None:
+                raise kas_extract_failure from exc
+            # kiro-cli refusing its v3 engine on this host is the same kind of fact,
+            # and on all three paths too: recorded as the host's verdict so the next
+            # start leaves KAS, and shown as itself rather than as a process death.
+            kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
+            if kas_refusal is not None:
+                raise kas_refusal from exc
+            # kiro-cli can exit during initialize when not authenticated —
+            # surface an actionable login prompt (parity with AcpClient) rather
+            # than a generic runtime-death error.
+            if runtime.saw_not_logged_in():
+                # ``self._client`` is still the placeholder AcpClient at this
+                # point, and it carries the backend this runtime was spawned for
+                # (it is the value passed as ``acp_backend`` above) — so the
+                # sign-in advice names the harness that actually failed to
+                # authenticate rather than assuming kiro-cli.
+                signed_out = host_auth.signed_out_message(self._client.backend)
+                # One synchronous table read, so the kiro path compares and stops (H13).
+                if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+                    signed_out = _with_credential_mask_note(runtime, signed_out, exc)
+                raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
+            if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
+                _name_credential_mask(runtime, exc)
+            raise
+
+    # Chat runtime sharing (the ``chat_runtime_sharing`` feature preview, off by
+    # default): ``None`` means this start spawns its own process as before.
+    from kiro_crew.providers.chat_share import resolve_chat_share
+
+    share = await resolve_chat_share(
+        self,
+        work_dir=work_dir,
+        agent=agent or "kirocrew",
+        sandbox_mode=sandbox_mode,
+        extra_env=extra_env,
+        mcp_gateway_overlay=mcp_gateway_overlay,
+        mcp_gateway_socket=mcp_gateway_socket,
+        configured_model=configured_model,
+        launch_agent=_launch_agent(self),
+        remote_workspace=remote is not None,
+    )
+
+    async def _found_shared_runtime() -> AcpRuntime:
+        """The registry's miss path for a shared placement: one fresh process."""
+        assert share is not None
+        fresh = AcpRuntime(
+            work_dir=work_dir,
+            agent=agent or "kirocrew",
+            sandbox_mode=sandbox_mode,
+            extra_env=extra_env,
+            mcp_gateway_overlay=mcp_gateway_overlay,
+            mcp_gateway_socket=mcp_gateway_socket,
+            acp_backend=self._client.backend,
+            crew_agent=self._crew_agent,
+            tool_search=self._tool_search_settings(),
+            member_context=self.member_context,
+            memory_mode=self.memory_mode,
+            shared_scratch=self._shared_scratch,
+            launch_agent=_launch_agent(self),
+            harness_pin=self._harness_pin,
+            # The consent frozen at placement and keyed on, so the process
+            # forwards what its key promised; None (resolve at spawn) once the
+            # key was made unique and nothing can match it.
+            forward_ssh_auth_sock=share.spawn_forward_ssh(),
+            # The agent.env snapshot the key holds, so the founding launch and
+            # handshake apply the values a joiner's key was matched on.
+            agent_env=share.spawn_agent_env(),
+            kas_telemetry=share.spawn_kas_telemetry(),
+            # The founding session's own scope, as the unshared start passes it. Per
+            # session: a joiner's key never matches it, so a joiner gets no app.
+            governance_scope=(self._owning_session_key(), getattr(self, "owning_app", "") or ""),
+        )
+        await _spawn_checked(fresh)
+        return fresh
+
     _t_spawn = time.monotonic()
     try:
-        await runtime.spawn(
-            start_priority=start_priority,
-            on_gate_queued=self._on_gate_queued,
-            on_gate_acquired=self._on_gate_acquired,
-        )
-    except AcpRuntimeError as exc:
-        # An OS sandbox that refused to build this child is checked FIRST and
-        # on all three of this module's startup paths: it is the narrower
-        # fact, it is deterministic (so the pool replacing the worker only
-        # reproduces it), and a child the sandbox would not start never got
-        # far enough to report a credential problem. The verdict comes from
-        # the shared translation so these paths cannot disagree with the
-        # per-turn one in session_provider.
-        sandbox_failure = await sandbox_init_failure_for_runtime(runtime)
-        if sandbox_failure is not None:
-            raise sandbox_failure from exc
-        # A ``kiro-cli-chat`` delegate that would not launch is checked next, for
-        # the same reason and on all three paths: deterministic, fixed by repairing
-        # the install rather than a retry, so it must not fall through to the
-        # generic process-death card the ladder reproduces identically.
-        delegate_failure = await _delegate_launch_failure(runtime)
-        if delegate_failure is not None:
-            raise delegate_failure from exc
-        kas_extract_failure = _kas_extract_failure(runtime)
-        if kas_extract_failure is not None:
-            raise kas_extract_failure from exc
-        # kiro-cli refusing its v3 engine on this host is the same kind of fact,
-        # and on all three paths too: recorded as the host's verdict so the next
-        # start leaves KAS, and shown as itself rather than as a process death.
-        kas_refusal = _kas_engine_refusal(runtime, self._client.backend)
-        if kas_refusal is not None:
-            raise kas_refusal from exc
-        # kiro-cli can exit during initialize when not authenticated —
-        # surface an actionable login prompt (parity with AcpClient) rather
-        # than a generic runtime-death error.
-        if runtime.saw_not_logged_in():
-            # ``self._client`` is still the placeholder AcpClient at this
-            # point, and it carries the backend this runtime was spawned for
-            # (it is the value passed as ``acp_backend`` above) — so the
-            # sign-in advice names the harness that actually failed to
-            # authenticate rather than assuming kiro-cli.
-            signed_out = host_auth.signed_out_message(self._client.backend)
-            # One synchronous table read, so the kiro path compares and stops (H13).
-            if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
-                signed_out = _with_credential_mask_note(runtime, signed_out, exc)
-            raise AcpAuthRequired(signed_out, backend=self._client.backend) from exc
-        if self._client.backend in ADAPTER_EXPOSED_CREDENTIAL_LEAVES:
-            _name_credential_mask(runtime, exc)
-        raise
+        if share is not None:
+            runtime = await share.place(_found_shared_runtime)
+            meta["chat_runtime_shared"] = True
+            meta["chat_runtime_joined"] = share.joined
+            meta["chat_runtime_leases"] = share.leases_on_runtime
+        else:
+            await _spawn_checked(runtime)
     finally:
         # subprocess launch + ACP `initialize` handshake
         phases["spawn_init"] = (time.monotonic() - _t_spawn) * 1000.0
@@ -886,6 +951,7 @@ async def _start_kiro_runtime_impl(
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
                         require_replay=self.is_kas_backend,
+                        crew_agent=self._crew_agent,
                     )
                 finally:
                     if cloud_hold is not None:
@@ -921,6 +987,15 @@ async def _start_kiro_runtime_impl(
                     await runtime.kill(expected=True, reason="reap before resume respawn")
                 except Exception:
                     pass
+            if not runtime.is_alive() and share is not None:
+                # A shared placement: the dead runtime's tree is what the
+                # replacement joins, and the replacement is placed (and
+                # confirmed) through the same registry as the cold start.
+                self._shared_scratch = self._shared_scratch or runtime.work_scratch_dir
+                runtime = await share.replace_dead(_found_shared_runtime)
+                meta["chat_runtime_recovered"] = True
+                meta["chat_runtime_joined"] = share.joined
+            elif not runtime.is_alive():
                 runtime = AcpRuntime(
                     work_dir=work_dir,
                     agent=agent or "kirocrew",
@@ -994,6 +1069,9 @@ async def _start_kiro_runtime_impl(
                     cwd=session_cwd,
                     agent=agent or None,
                     member_session_key=self._member_session_key(),
+                    # Per session: on a shared chat runtime the process's own
+                    # crew identity is the founder's, not this chat's.
+                    crew_agent=self._crew_agent,
                     memory_mode=self.memory_mode,
                     session_key=self._owning_session_key(),
                     channel_id=self._owning_channel_id() or "",
@@ -1190,6 +1268,13 @@ async def _start_kiro_runtime_impl(
             handle,
             runtime,
             owns_runtime=True,
+            # A shared placement's lease, taken at the acquisition, so the
+            # provider's own release is the one release implementation; and the
+            # flag that selects its shared teardown arm and chat turn gate.
+            # None / False with the preview off: the lease is then taken at
+            # registration, as before.
+            runtime_lease=share.lease if share is not None else None,
+            shared_runtime=share is not None,
             # This path is the COLD start, which never rekeys — so the
             # correlation keys have to arrive here or the per-turn re-claim
             # pushes a keyless claim gatewayd throws away.
@@ -1269,7 +1354,14 @@ async def _start_kiro_runtime_impl(
                 sanitize_sink_text(str(setup_exc), _SETUP_FAILURE_LOG_CAP),
             )
         try:
-            await runtime.kill(expected=True, reason="failed session setup cleanup")
+            if share is not None and share.lease is not None:
+                # A SHARED runtime is left, not killed: co-tenants may be
+                # mid-turn on it. The session is evicted (keeping its record),
+                # the lease released, and the runtime killed only when this
+                # start held its last lease.
+                await share.abandon(runtime, getattr(handle, "session_id", None))
+            else:
+                await runtime.kill(expected=True, reason="failed session setup cleanup")
         except Exception:
             logger.debug(
                 "Cleanup kill of runtime after failed session setup failed",

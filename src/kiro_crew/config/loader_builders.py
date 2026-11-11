@@ -864,6 +864,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
         session_sharing=bool(section.get("session_sharing")),
+        chat_runtime_sharing_max_sessions=section.read(
+            "chat_runtime_sharing_max_sessions", _safe_int, 1, 64
+        ),
         agent_started_turns=bool(section.get("agent_started_turns")),
         max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
         max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),

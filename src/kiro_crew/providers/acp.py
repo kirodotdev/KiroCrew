@@ -217,6 +217,13 @@ class AcpProvider(LLMProvider):
             kwargs["agent"] = agent
         self.member_context = member_context
         self.memory_mode = memory_mode
+        # The account era this start read and the reader it came from, written by
+        # the allocator immediately before ``start()``. The chat-sharing placement
+        # keys a shared process on the era and re-reads it after acquiring
+        # (``providers.chat_share``). Empty / None on an entry point that wires
+        # no identity reader (the CLI, tests), where sharing is not eligible.
+        self.pre_spawn_identity: str = ""
+        self.spawn_identity_reader: Any = None
         # The name kiro-cli is asked for in place of ``agent`` (an app's launch
         # copy, ``apps.agent_launch``), set by session allocation; ``agent``
         # stays the session's identity. Read by the Kiro runtime start only.
@@ -1385,6 +1392,7 @@ class AcpProvider(LLMProvider):
     steer = _acp_turns.steer
     _inline_turn_finished_cleanly = _acp_turns._inline_turn_finished_cleanly
     wait_for_compaction = _acp_turns.wait_for_compaction
+    hold_chat_turn_gate = _acp_turns.hold_chat_turn_gate
 
 
 def is_claude_backend(provider: Any) -> bool:
