@@ -608,7 +608,9 @@ class _RunContext:
         call_index = self._counter.count - 1
         agent_id = f"a{call_index}"
         use_phase = phase or self._current_phase
-        call_label = label or _fallback_label(prompt)
+        # str(): a script can pass a non-string prompt (a dict row, a number); the
+        # label is display-only, and the call's own try records what agent_fn does.
+        call_label = label or _fallback_label(str(prompt))
         self._record(
             self._stream.agent_started(
                 self.now,

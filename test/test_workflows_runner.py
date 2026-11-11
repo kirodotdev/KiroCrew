@@ -572,6 +572,28 @@ async def test_failed_agent_resolves_to_none_not_run_failure() -> None:
     assert res.agent_errors == {0: "RuntimeError: agent died"}
 
 
+async def test_a_non_string_prompt_reaches_the_agent_and_starts_a_labelled_call() -> None:
+    seen: list = []
+
+    async def _agent(prompt, opts):
+        seen.append(prompt)
+        return f"row {prompt['id']}"
+
+    script = (
+        'META = {"name": "rows"}\n'
+        "async def workflow(ctx):\n"
+        "    return await ctx.agent({'id': 7})\n"
+    )
+    res = await _runner(agent_fn=_agent).run(script, run_id="wf_row", now=NOW)
+    assert res.ok is True, res.error
+    assert res.result == "row 7"
+    assert seen == [{"id": 7}]
+    started = [e for e in res.events if e.type == "agent_started"][0]
+    assert started.data["label"] == "{'id': 7}"
+    finished = [e for e in res.events if e.type == "agent_finished"][0]
+    assert finished.data["ok"] is True
+
+
 # --------------------------------------------------------------------------- #
 # parallel / pipeline wired through ctx
 # --------------------------------------------------------------------------- #

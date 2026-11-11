@@ -159,6 +159,11 @@ Semantics, from `runner._RunContext.agent`:
   recorded in `agent_errors[call_index]` and on the `agent_finished` event's
   `error` field. A dead agent therefore does not fail the run
   (`test_workflows_runner.py::test_failed_agent_resolves_to_none_not_run_failure`).
+  That holds for a non-string prompt too (a dict row, a number): the display
+  label is built from `str(prompt)`, and the prompt reaches `agent_fn` unchanged
+  inside the per-call `try`. The admitted wrapper (`agent_pool.admitted_agent_fn`)
+  records `prompt_chars` as `len(str(prompt))`, measured before it takes a runner
+  lane slot, so a non-string prompt cannot raise while the slot is held.
 - Three distinguishable `None` reasons are recorded, because "no payload" alone
   makes a post-mortem impossible: `"agent returned no result"`, `"no schema-valid
   result after bounded re-asks"`, and an exception rendered by
