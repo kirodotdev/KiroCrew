@@ -3035,7 +3035,15 @@ The `spec-denies` deny row refuses a call a deny names: a shell command one
 `deniedCommands` entry matches whole or in a leading piece that ends at a word
 (`make clean` refuses `make clean now`, not `make cleanup`), while the grant check
 reads every leading piece, so a mid-word match only asks, or a write whose target, in any spelling, a deny
-covers. `spec-builtin-grant` honours the recorded grant only after the same
+covers. A chain is judged one command at a time with the grant side's splitter
+(`allowed_commands.chain_commands`: `&&`, `||`, `;`, `|`), so `docker push x && true`
+or `true; docker push x` is refused when a deny names one of its commands; a
+command that does not split there (a quote, backslash, `#` or non-ASCII character
+in a chain, a redirect, `$(...)`, a backtick) is not refused by the row, as before,
+and the recorded grant does not cover it (#34989). The row adds two cases
+itself: a `#` may start a comment that holds a separator, so a piece after it
+might never run; and inside a `[[ ... ]]` test a separator is part of the test,
+not a new command (`(( ... ))` already holds a parenthesis, so it never splits). `spec-builtin-grant` honours the recorded grant only after the same
 check answers a clear no; an unreadable entry, a command that is not plain, a
 target it cannot read or resolve, or an exhausted match budget grants nothing.
 Any other key beside the deny (`denyByDefault`, `fallbackAction`, an authored
