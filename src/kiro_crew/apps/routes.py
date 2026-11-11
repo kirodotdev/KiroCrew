@@ -224,7 +224,9 @@ def register_app_routes(app: web.Application) -> None:
     """Register all app management routes on an aiohttp Application."""
 
     async def _start_proxy_session(app: web.Application) -> None:
-        app["_proxy_session"] = aiohttp.ClientSession()
+        # No auto-decompress: the relay copies the backend's Content-Encoding and
+        # Content-Length, so the body must stay the bytes those headers describe.
+        app["_proxy_session"] = aiohttp.ClientSession(auto_decompress=False)
 
     async def _close_proxy_session(app: web.Application) -> None:
         session = app.get("_proxy_session")
