@@ -163,6 +163,14 @@ describe("electron-builder files list", () => {
         pending.push(resolved);
       }
     }
+    // Every file the shell loads at start is in app.asar. A module main.js
+    // reaches but build.files omits throws MODULE_NOT_FOUND in the installed
+    // app only (a checkout resolves it from disk), and the gateway never spawns.
+    assert.deepStrictEqual(
+      [...closure].filter((f) => !bundledFiles.includes(f)).sort(),
+      [],
+      "every module main.js reaches is listed in build.files",
+    );
     // Every runtime owner on disk is reached from main.js and packaged: none is
     // an orphan that only a test loads.
     const runtimeOwners = [];

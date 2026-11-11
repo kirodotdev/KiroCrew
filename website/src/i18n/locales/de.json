@@ -9487,16 +9487,20 @@
       "dismiss_update_dialog": "Aktualisierungsdialog schließen",
       "install_failed": "Aktualisierung konnte nicht installiert werden",
       "install_failed_body": "Die Aktualisierung konnte nicht angewendet werden. {{productName}} stellt das lokale Gateway wieder her — Sie können diese Version weiter nutzen und es unter Einstellungen > Info erneut versuchen.",
-      "install_restart_timing": "Die Installation kann mehrere Minuten dauern. Die App wird geschlossen und nach Abschluss des Updates automatisch wieder geöffnet.",
       "windows_installer_handoff": "Ein Windows-Installationsfenster zeigt den Fortschritt an.",
       "installing_update": "Aktualisierung wird installiert...",
-      "installing_update_body": "Das kann mehrere Minuten dauern. Danach öffnet sich die App automatisch wieder.",
+      "installing_update_body": "Das kann mehrere Minuten dauern. Die App wird geschlossen. Öffne sie danach wieder.",
       "is_downloaded_and_ready_to_install": "ist heruntergeladen und installationsbereit.",
       "kirocrew": "{{productName}}",
       "later": "Später",
-      "restart_update": "Update installieren & App neu starten",
       "restarting": "Wird neu gestartet...",
-      "update_ready": "Aktualisierung bereit"
+      "update_ready": "Aktualisierung bereit",
+      "install_on_quit": "Beim Beenden installieren",
+      "install_on_quit_timing": "Das Update wird installiert, wenn du die App das nächste Mal beendest. Bis dahin wird nichts neu gestartet.",
+      "armed_installs_on_quit": "{{productName}} {{version}} wird installiert, wenn du die App beendest.",
+      "restart_now": "Neu starten und jetzt installieren",
+      "restart_now_failed": "Die App konnte nicht neu gestartet werden. Das Update wird trotzdem beim Beenden installiert.",
+      "armed_app_too_old": "Diese Version der Desktop-App kann das Update von hier aus nicht vormerken. Lade die neueste Version der App herunter, um zu aktualisieren."
     },
     "updatePill": {
       "downloading": "Wird heruntergeladen…",
@@ -17855,12 +17859,9 @@
         "download_failed_reason": "Download fehlgeschlagen: {{reason}}",
         "download_install": "Herunterladen & installieren",
         "download_the_latest_version": "die neueste Version herunterladen",
-        "downloaded_and_verified_the_app_restarts_to_fini": "Heruntergeladen und verifiziert. Die App startet neu, um die Installation abzuschließen; Sie können sie auch später beenden, dann wird beim Verlassen installiert.",
         "downloading": "Wird heruntergeladen…",
         "insider": "Insider",
         "install_failed_reason": "Die Aktualisierung konnte nicht installiert werden: {{reason}}",
-        "install_update_restart_app": "Update installieren & App neu starten",
-        "installing_quiet_note": "Wird installiert — dies kann mehrere Minuten dauern. Nach Abschluss des Updates wird {{productName}} automatisch wieder geöffnet.",
         "is_available": "ist verfügbar.",
         "loading_changelog": "Änderungsprotokoll wird geladen…",
         "manual_install_fallback": "Wenn die Aktualisierung nicht funktioniert, können Sie {{link}} und über diese Kopie neu installieren. Ihre Einstellungen, Chats und Dateien bleiben erhalten.",
@@ -17955,7 +17956,8 @@
         "gateway_lane_label": "Gateway",
         "gateway_lane_title": "Der Hintergrunddienst, der Ihre Agenten ausführt und dieses Dashboard bereitstellt. Die Branch- und Commit-Chips zeigen seinen Build.",
         "update_refused_dirty_worktree": "Das Update wurde angehalten, um deine lokalen Änderungen zu schützen: Dein {{productName}}-Ordner hat nicht committete Änderungen ({{changed}}). Committe oder stashe sie und drücke dann erneut auf „Jetzt aktualisieren“. Um alles zu stashen, führe den Befehl unten in einem Terminal in deinem {{productName}}-Ordner aus.",
-        "app_updates_heading": "App-Updates"
+        "app_updates_heading": "App-Updates",
+        "downloaded_and_verified_installs_on_quit": "Heruntergeladen und verifiziert. Es wird installiert, wenn du die App beendest; bis dahin wird nichts neu gestartet."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",

@@ -16,6 +16,8 @@ const {
 const { initAutoUpdate } = require("./auto-update");
 const { requiredUpdateChannelFor } = require("./runtime/update/policy-channel");
 const { makeUpdaterLogger } = require("./update-logger");
+const { createUpdateArm } = require("./runtime/update/update-arm");
+const { createGatewayArm } = require("./runtime/update/gateway-arm");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
 const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
@@ -57,6 +59,11 @@ function createIpcRegistrar({
   // build). See runtime/update/policy-channel.js.
   getRequiredChannel = requiredUpdateChannelFor(),
   clipboardImageTimeoutMs = 1000,
+  // The credential chain main.js resolves for the gateway, and the cookie header
+  // for a borrowed session. The updater uses them to tell a running gateway that
+  // the user armed an update (best effort; see runtime/update/gateway-arm.js).
+  fetchGatewayAuth = null,
+  cookieHeader = null,
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -123,6 +130,9 @@ function createIpcRegistrar({
   // install's updates and the Electron feed lane must stand down. Set by the
   // renderer via update:notify-policy-governed once the gateway status lands.
   let policyGoverned = false;
+  // True once the dashboard has reported a verdict through update:notify-policy-governed.
+  // Until then `policyGoverned` is only its initial value, which is not a verdict.
+  let policyVerdictLive = false;
   // Set of webContents IDs currently reporting governance=true. Governance is
   // active as long as at least one sender is in the set; removing a sender's id
   // (on explicit false or on destroyed) clears governance only when the set
@@ -763,6 +773,10 @@ function createIpcRegistrar({
     }
   }
 
+  // The armed-update record lives in the app's store: the gateway is down when
+  // the apply runs, and an interrupted quit-time apply must survive a restart.
+  const updateArm = createUpdateArm({ store });
+
   /**
    * Initialize auto-update and register update:* IPC.
    *
@@ -780,10 +794,21 @@ function createIpcRegistrar({
     try {
       updater = initAutoUpdate({
         app,
+        updateArm,
+        gatewayArm: createGatewayArm({
+          backendUrl,
+          fetchGatewayAuth,
+          cookieHeader,
+          log: makeUpdaterLogger(log),
+        }),
+        // A start-time apply that failed (main.js runs it before any window).
+        startupApplyError: updateArm.takeApplyError(),
         // electron-updater's AppUpdater, NOT Electron's built-in autoUpdater:
         // it generates/verifies feed metadata and also supports Linux.
         autoUpdater: require("electron-updater").autoUpdater,
-        isPolicyGoverned: () => policyGoverned,
+        // null until a live verdict arrives: the lane then keeps the last recorded
+        // one instead of reading the initial false as "no provider governs".
+        isPolicyGoverned: () => (policyVerdictLive ? policyGoverned : null),
         // On Windows, 'session-end' fires on BaseWindow (not App). The feed
         // lane uses this to register its pending-update notice on the window.
         getMainWindow: () => windows.getMainWindow(),
@@ -917,6 +942,7 @@ function createIpcRegistrar({
         return;
       }
       const prev = policyGoverned;
+      policyVerdictLive = true;
       if (governed) {
         if (srcId !== null) {
           governanceSenders.add(srcId);
@@ -981,6 +1007,23 @@ function createIpcRegistrar({
     });
     ipcMain.handle("update:install", async () => {
       await updater.install();
+      return { ok: true };
+    });
+    // A plain quit and relaunch with no update command of its own (D-d). It
+    // quits the app, so it answers only the local dashboard. An armed update is
+    // applied by the quit it triggers, and the relaunch brings the app back.
+    ipcMain.handle("update:relaunch", async (event) => {
+      try {
+        await assertLocalDashboard(event, "update:relaunch");
+      } catch {
+        return { ok: false, error: "relaunch is only available from the local dashboard" };
+      }
+      if (typeof updater.relaunch === "function") {
+        updater.relaunch();
+      } else {
+        app.relaunch();
+        app.quit();
+      }
       return { ok: true };
     });
     ipcMain.handle("update:set-channel", (_event, channel) => {

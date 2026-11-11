@@ -93,6 +93,11 @@ const OCCUPANCY_SITES = [
     code: 'if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";',
     times: 1,
   },
+  {
+    what: "the exported primary-port probe hands the occupancy reading to the IPC gate",
+    code: 'probePrimaryPortBinding: () => probeGatewayPortBinding(PORT),',
+    times: 1,
+  },
 ];
 
 // The identity judgements. These MAY rest on the holder's command line -- that

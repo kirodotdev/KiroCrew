@@ -47,7 +47,8 @@ const { internalSecretFor } = require("./local-token");
 const { identityFamily } = require("./instance-guard");
 const { describeSingletonLock } = require("./singleton-lock");
 const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
-const { resolveLinuxInstall } = require("./auto-update");
+const { resolveLinuxInstall, runStartupApply } = require("./auto-update");
+const { createStartupGatewayProbe } = require("./runtime/update/gateway-probe");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
@@ -57,7 +58,7 @@ const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
 const { initMochi, shutdownMochi } = require("./mochi/index");
-const { borrowSessionToken } = require("./mochi-session-token");
+const { borrowSessionToken, sessionCookieHeader } = require("./mochi-session-token");
 const { clearCacheOnUpgrade } = require("./upgrade-cache");
 const {
   initCrewCompanion,
@@ -583,6 +584,8 @@ const ipcRegistrar = createIpcRegistrar({
   crashScan: scanCrashArtifacts,
   downloadExpectations,
   readInternalSecret,
+  fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
+  cookieHeader: sessionCookieHeader,
 });
 
 /**
@@ -746,6 +749,27 @@ app.whenReady().then(async () => {
       // Ignore a failure in the failure logger.
     }
   }
+
+  // An update the user armed whose quit-time apply was interrupted or failed is
+  // finished HERE: before the gateway spawns and before any window opens, so the
+  // gateway and the app are never on different versions. On success the app
+  // relaunches once into the new bundle and this launch ends; on failure the
+  // installed version starts and the updater shows the error.
+  const startupApply = await runStartupApply({
+    app,
+    store,
+    resourcesPath: process.resourcesPath,
+    log: { info: glog, error: (m, e) => glog(m + (e ? " " + ((e && e.stack) || e) : "")) },
+    // A gateway from this bundle that outlived the quit holds the arm back.
+    probeGateway: createStartupGatewayProbe({
+      isCurrentBundleGateway: () => gateway.isCurrentBundleGateway(),
+      probePortBinding: () => gateway.probePrimaryPortBinding(),
+      probeLockHolder: () => gateway.probePrimaryLockHolder(),
+      stopCommand: `kirocrew stop --port ${PORT}`,
+    }),
+    Notification: electron.Notification,
+  });
+  if (startupApply.outcome === "relaunching") return;
 
   await offerRelocationIfUnupdatable();
 
