@@ -1256,6 +1256,7 @@ def _nested_shell_payloads(
     *,
     allow_join: bool = True,
     joined_out: "set[str] | None" = None,
+    carriers_out: "list[int | None] | None" = None,
 ) -> "list[str]":
     """Literal shell-script payloads carried as an argument inside *tokens*.
 
@@ -1278,8 +1279,18 @@ def _nested_shell_payloads(
     origin main'`` is fused to ``git push origin main`` by the first join, so the
     publish is visible at the first joined frame and the chain would only
     re-derive suffixes of an answer already in hand.
+
+    *carriers_out*, when given, receives one entry per returned payload, in order: the
+    index in *tokens* of the shell, ``env`` or ``eval``/``source`` word that carries it,
+    or ``None`` where no single word does (a pipe into a shell, an array, an alias).
     """
     payloads: list[str] = []
+    carriers: "list[int | None]" = []
+
+    def _add(payload: str, carrier: "int | None") -> None:
+        payloads.append(payload)
+        carriers.append(carrier)
+
     # Both scans below look for the FIRST token after a program that satisfies a stop
     # predicate, handle it, and stop.  Walking forward per program made the function
     # QUADRATIC in token count: in a run of interpreter tokens with no flag among them
@@ -1355,11 +1366,12 @@ def _nested_shell_payloads(
     end_memos: "tuple[dict[int, int], dict[int, int]]" = ({}, {})
     emit_memos: "tuple[dict[int, int], dict[int, int]]" = ({}, {})
     emitted: "set[int]" = set()
+    emit_carrier: "list[int | None]" = [None]
 
     def _emit(position: int) -> None:
         if position not in emitted:
             emitted.add(position)
-            payloads.append(tokens[position])
+            _add(tokens[position], emit_carrier[0])
 
     def _run_end(i: int) -> int:
         # a shell word that is only a printer's argument opens no run: its words are
@@ -1408,8 +1420,9 @@ def _nested_shell_payloads(
                 # and the script is the token AFTER it.  Skip any run of them.
                 k = past_dashes[j + 1]
                 if k < limit:
-                    payloads.append(tokens[k])
+                    _add(tokens[k], i)
                 if j < _run_end(i):
+                    emit_carrier[0] = i
                     _c_script(j, k)  # from the carrier: ``-co pipefail`` takes a name
             # A HERESTRING feeds the script on stdin instead of as an argument
             # (``bash <<< '<script>'``), so its text is a command just the same.
@@ -1418,9 +1431,9 @@ def _nested_shell_payloads(
             if h < limit:
                 tail = herestring_tail_at.get(h)
                 if tail is not None:
-                    payloads.append(tail)
+                    _add(tail, i)
                 elif h + 1 < limit:
-                    payloads.append(tokens[h + 1])
+                    _add(tokens[h + 1], i)
             # The glued ``-c`` spelling (``-c'<script>'``, one token once shlex
             # strips the quotes) is looked up independently as well.  An
             # all-alpha cluster like ``-ecfoo`` satisfies BOTH ``-c`` readings --
@@ -1429,7 +1442,7 @@ def _nested_shell_payloads(
             # both payloads are yielded rather than picking one interpretation.
             g = _first_stop_at_or_after(glued_stops, i + 1)
             if g < limit:
-                payloads.append(glued_at[g])
+                _add(glued_at[g], i)
         elif base in _ENV_SPLIT_PROGRAMS:
             # ``env -S '<script>'`` / ``env --split-string '<script>'`` splits the
             # payload into a command and runs it, so its text is a command line.
@@ -1440,11 +1453,11 @@ def _nested_shell_payloads(
                 flag = tokens[j].lower()
                 if flag in {"-s", "--split-string"}:
                     if j + 1 < limit:
-                        payloads.append(tokens[j + 1])
+                        _add(tokens[j + 1], i)
                 elif flag.startswith("-s") and len(tokens[j]) > 2:
-                    payloads.append(tokens[j][2:])
+                    _add(tokens[j][2:], i)
                 elif flag.startswith("--split-string="):
-                    payloads.append(tokens[j].split("=", 1)[1])
+                    _add(tokens[j].split("=", 1)[1], i)
         elif base in _NESTED_SHELL_VERBS or token in _NESTED_SHELL_VERBS:
             # ``--`` ends option parsing, so ``eval -- '<script>'`` runs the token
             # AFTER it. Taking ``tokens[i + 1]`` blindly yielded the literal ``--``
@@ -1454,7 +1467,7 @@ def _nested_shell_payloads(
             # linear to remove.
             j = past_dashes[i + 1]
             if j < limit:
-                payloads.append(tokens[j])
+                _add(tokens[j], i)
                 # ``eval`` CONCATENATES all of its arguments with a space and
                 # evaluates the RESULT, so a command split across several words is
                 # one command line at run time while no single word looks like one.
@@ -1476,18 +1489,18 @@ def _nested_shell_payloads(
                 if verb == "eval" and j + 1 < limit and not joined_eval and allow_join:
                     joined_eval = True
                     joined = " ".join(tokens[j:])
-                    payloads.append(joined)
+                    _add(joined, i)
                     if joined_out is not None:
                         joined_out.add(joined)
     # ``bash<<<'<payload>'`` glues the program, the operator and the payload into ONE
     # token, so the program never appears as a token of its own for the walk above to
     # recognise.  Split on the operator and check the left half.
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if "<<<" not in token:
             continue
         head, _, tail = token.partition("<<<")
         if tail and _program_basename(head) in _NESTED_SHELL_PROGRAMS:
-            payloads.append(tail)
+            _add(tail, index)
     # EVERY ``-c`` carrier past the first shell token is swept, not only the
     # first-stop one.  The stop tables above read one token per spelling class,
     # so a decoy that satisfies the same predicate EATS the stop through which a
@@ -1502,8 +1515,13 @@ def _nested_shell_payloads(
     # consumers pinning exact payload lists are unchanged.
     if first_shell is not None:
         collected = set(payloads)
+        carrier = first_shell  # the nearest shell word before each swept cluster
         for index in range(first_shell + 1, limit):
             token = tokens[index]
+            if _program_basename(token) in _NESTED_SHELL_PROGRAMS or _is_shell_variable_reference(
+                token
+            ):
+                carrier = index
             if not token.startswith("-") or token.startswith("--"):
                 continue
             glued = _shell_c_carrier_glued(token)
@@ -1518,13 +1536,13 @@ def _nested_shell_payloads(
                 for candidate in _shell_c_carrier_payloads(tokens[index]):
                     if candidate not in collected:
                         collected.add(candidate)
-                        payloads.append(candidate)
+                        _add(candidate, carrier)
             else:
                 k = past_dashes[index + 1]
                 bare_next = tokens[k] if k < limit else None
                 if bare_next and bare_next not in collected:
                     collected.add(bare_next)
-                    payloads.append(bare_next)
+                    _add(bare_next, carrier)
     # ``a=(<name> <verb>); "${a[@]}"`` runs the array's elements AS a command line.  The
     # expansion is one token, so the argv checks have no adjacent operands to compare --
     # the joined elements are handed to the payload walk instead, which re-tokenizes them.
@@ -1540,22 +1558,22 @@ def _nested_shell_payloads(
             for match in _ARRAY_EXPAND_RE.finditer(token):
                 value = arrays.get(match.group(1))
                 if value:
-                    payloads.append(value)
+                    _add(value, None)
     # GNU ``sed`` runs the REPLACEMENT of an ``s///e`` command as a shell command, so
     # that text is a payload.  It lives INSIDE one token, which is why withdrawing the
     # data-consumer exemption is not enough on its own: there are no two adjacent
     # operands for the argv checks to compare.
-    for token in tokens:
+    for index, token in enumerate(tokens):
         replacement = _sed_exec_replacement(token)
         if replacement:
-            payloads.append(replacement)
+            _add(replacement, index)
     # A MULTIWORD alias replacement is a whole command line, not just a program name
     # (``alias x='kirocrew token'`` then ``x``), so hand it to the payload walk.
     for i, token in enumerate(tokens):
         if token == "alias" and i + 1 < len(tokens):
             spec = _LOCAL_ASSIGN_RE.match(tokens[i + 1])
             if spec and spec.group(2) and " " in spec.group(2).strip():
-                payloads.append(spec.group(2))
+                _add(spec.group(2), None)
     # A payload only matters if it looks like a command line rather than a bare
     # operand; a single word is already covered by the direct token scan.
     if _pipes_into_evaluator(tokens):
@@ -1566,18 +1584,21 @@ def _nested_shell_payloads(
         # so the "is this a command line?" test is applied to the DECODED text -- otherwise
         # the token still looks like a single word and is never recognised as a payload at
         # all.  Splitting on any whitespace (not just a space) also admits a tab escape.
-        for token in tokens:
+        for index, token in enumerate(tokens):
             decoded = _decode_printf_escapes(token)
             if len(decoded.split()) > 1:
-                payloads.append(decoded)
+                _add(decoded, index)
         # ``xargs`` is different in shape: it does not read a whole script, it APPENDS
         # the piped words to its own command.  ``echo <verb> | xargs <name>`` therefore
         # runs ``<name> <verb>`` even though neither half contains a space.  Reconstruct
         # what it will run: the xargs command line plus the producer's literal words.
         reconstructed = _xargs_reconstructed_command(tokens)
         if reconstructed:
-            payloads.append(reconstructed)
-    return [p for p in payloads if p.strip()]
+            _add(reconstructed, None)
+    keep = [n for n, p in enumerate(payloads) if p.strip()]
+    if carriers_out is not None:
+        carriers_out.extend(carriers[n] for n in keep)
+    return [payloads[n] for n in keep]
 
 
 # ``${a[@]}`` / ``${a[*]}`` / ``$a[@]`` -- the whole array as separate words.

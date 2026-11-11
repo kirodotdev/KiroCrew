@@ -773,6 +773,106 @@ class TestSandboxEscapeSshSelf:
     def test_one_glob_beside_a_literal_still_names_this_host(self, cmd):
         assert _denied_by(cmd) == self._RULE, cmd
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "bash -c \"$(cat <<'EOF'\ns?h localhost id\nEOF\n)\"",
+            "eval \"$(cat <<'EOF'\ns?h localhost id\nEOF\n)\"",
+            "sh -c 'bash -c \"`cat <<EOF\ns?h localhost id\nEOF\n`\"'",
+            "bash -c \"$(cat <<-'EOF'\ntrue\n\ts?h localhost id\n\tEOF\n)\"",
+            "sh -c 'bash -c \"$(cat <<EOF\ns?h localhost id\nEOF\n)\"'",
+            "bash -c 'true\ns?h localhost id'",
+            'bash -c "x\ns?h localhost id"',
+        ],
+    )
+    def test_a_multi_line_script_a_shell_runs_is_read_by_the_floor(self, cmd):
+        # The floor alone, so the catalog regex cannot make this pass. Bash ends a command
+        # at each newline of a script it runs, and opens a fresh quoting context inside
+        # ``"$( … )"`` and a backtick, so ``s?h localhost`` runs.
+        assert _argv_floor._reaches_self_over_ssh(cmd), cmd
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "gh pr create --body \"$(cat <<'EOF'\nrun ssh localhost id\nEOF\n)\"",
+            "git commit -m \"$(cat <<'EOF'\nfix: run ssh localhost id\nEOF\n)\"",
+            "echo bash -c 'true\ns?h localhost id'",
+            "printf '%s\\n' bash -c 'true\ns?h localhost id'",
+            "echo bash -c \"bash -c 'true\ns?h localhost id'\"",
+            "echo $shell -c 'true\ns?h localhost id'",
+            "echo env -s 'bash -c \"true\ns?h localhost id\"'",
+            "source 'foo\ns?h localhost id'",
+            "echo bash -c 'true\ns?h localhost id' ; echo true | sh",
+            "echo bash -c 'true\necho first' -c 'true\ns?h localhost id'",
+            "echo bash<<<'true\ns?h localhost id'",
+            "printf '%s\\n' '`bash -c \"true\ns?h localhost id\"`'",
+            "printf '%s' $'`bash -c \"true\ns?h localhost id\"`'",
+            "echo bash -c 'true\ns?h localhost id'; echo true | sh",
+            "echo ';' bash -c 'true\ns?h localhost id'",
+            "bash -c true; echo -c 'true\ns?h localhost id'",
+            "bash -c true; cat <<<'true\ns?h localhost id'",
+            "echo bash -c'true\ns?h localhost id'",
+            "echo env --split-string='bash -c \"true\ns?h localhost id\"'",
+            "printf '%s\\n' 'true\ns?h localhost id' | grep bash",
+        ],
+    )
+    def test_a_heredoc_a_quoted_substitution_hands_to_a_data_reader_stays_data(self, cmd):
+        # Only a script a shell runs is read whole: a PR body, a commit message, a script
+        # a printer only prints (at any depth, whatever carries it) and a ``source`` file
+        # name are text. A later, unrelated ``| sh`` does not make the print a script.
+        assert _denied_by(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "bash -c \"bash -c 'true\ns?h localhost id'\"",
+            "$shell -c 'true\ns?h localhost id'",
+            "env -s 'bash -c \"true\ns?h localhost id\"'",
+            "echo hi ; bash -c 'true\ns?h localhost id'",
+            "echo bash -c 'true\ns?h localhost id' | sh",
+            "echo x | xargs bash -c 'true\ns?h localhost id'",
+            "env bash -c 'true\ns?h localhost id'",
+            "bash -c 'true\necho first' -c 'true\ns?h localhost id'",
+            "bash<<<'true\ns?h localhost id'",
+            "sed 's/x/true\ns?h localhost id/e'",
+            "printf '%s\\n' \"`bash -c 'true\ns?h localhost id'`\"",
+            "echo bash -c 'true\ns?h localhost id;' | sh",
+            "echo x ; bash -c 'true\ns?h localhost id'",
+            "bash -c true; bash -c 'true\ns?h localhost id'",
+            "bash -c'true\ns?h localhost id'",
+            "env --split-string='bash -c \"true\ns?h localhost id\"'",
+            "printf '%s\\n' 'true\ns?h localhost id' | grep x | bash",
+            "bash -c 'x=1; bash -c \"true\ns?h localhost id\"'",
+            "bash -c \"foo=1 eval 'true\ns?h localhost id'\"",
+        ],
+    )
+    def test_a_multi_line_script_each_carrier_runs_is_read(self, cmd):
+        # The executed twin of each printed case above: the carrier runs the script.
+        assert _argv_floor._reaches_self_over_ssh(cmd), cmd
+
+    def test_the_carrier_walk_is_linear_in_the_number_of_printed_scripts(self, monkeypatch):
+        # Each list item's printer guard is computed once, however many carriers it holds.
+        from kiro_crew.security import argv_floor_ssh, shell_normalizer
+
+        calls = {"n": 0}
+        real = shell_normalizer._data_consumer_command_disqualified
+
+        def counting(tokens):
+            calls["n"] += len(tokens)
+            return real(tokens)
+
+        monkeypatch.setattr(shell_normalizer, "_data_consumer_command_disqualified", counting)
+        counts = {}
+        for n in (20, 40):
+            calls["n"] = 0
+            argv_floor_ssh._executed_multi_line_scripts(
+                "echo" + "".join(f" bash -c 'a{i}\nb'" for i in range(n))
+            )
+            counts[n] = calls["n"]
+        # Tokens the guard reads: once per list item, so doubling the carriers doubles it.
+        assert counts[40] <= 2 * counts[20] + 8, counts
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "server,tool,params",

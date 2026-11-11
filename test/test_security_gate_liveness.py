@@ -811,7 +811,11 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 196, from 36,018, for the ssh self-target floor reading a multi-line script a
+#: shell or ``eval`` runs whole, heredocs in a quoted substitution included, unless its
+#: carrier is only a printer's argument, with ``_nested_shell_payloads`` reporting each
+#: payload's carrier word so that walk keeps provenance. Deny-only.
+_PACKAGE_LINE_BUDGET = 36_214
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
