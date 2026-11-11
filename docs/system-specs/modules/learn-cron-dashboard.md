@@ -5580,7 +5580,11 @@ Two layers close that window:
   also remembers completion locally (`kirocrew:kiro-setup-complete`) so a COLD
   load with an empty query cache can still tell a returning user from a genuine
   first run. That memory only ever suppresses first-run chrome — it never grants
-  session readiness, which stays server-driven via `ready`.
+  session readiness, which stays server-driven via `ready`. A status answer that
+  says setup is not done (not `initial_setup_complete`, not `ready`, no other
+  usable harness), as after a data-home reset, removes it again; a failed or
+  pending read keeps it, and so do an LTS lock and the sign-in-only app, whose
+  statuses say `initial_setup_complete: false` regardless of the data home.
 
 Accordingly, a status-check failure for a user who has completed setup leaves the
 dashboard mounted and fully usable with **no banner at all** — an unreachable

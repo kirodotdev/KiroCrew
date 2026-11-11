@@ -21,7 +21,7 @@ import {
 } from '../api/client'
 import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
 import { clearCachedModels } from '../providers/adapters/acp'
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import KasLoginGate from './KasLoginGate'
@@ -1529,9 +1529,15 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   const setupComplete = (!!statusQuery.data
     && (statusQuery.data.initial_setup_complete || statusQuery.data.ready))
     || otherBackendReady
+  // A status saying "not set up" (a reset data home) forgets it, unless another
+  // agent may still admit (first config/probe fetch) or an LTS lock or the
+  // sign-in-only app reports `initial_setup_complete: false` regardless.
+  const setupNotDone = !!statusQuery.data && !setupComplete && !ltsLocked && !signInOnly
+    && !configQuery.isLoading && !backendsQuery.isLoading
   useEffect(() => {
     if (setupComplete) safeSetItem(SETUP_COMPLETE_KEY, '1')
-  }, [setupComplete])
+    else if (setupNotDone) safeRemoveItem(SETUP_COMPLETE_KEY)
+  }, [setupComplete, setupNotDone])
 
   // An unresolved check is UNKNOWN — never "setup required", and never a reason
   // to withhold the dashboard OR to pause sessions. Readiness is latched at
