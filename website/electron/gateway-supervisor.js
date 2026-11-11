@@ -44,6 +44,8 @@ const {
   windowsProcessCommand,
 } = require("./windows-port");
 const {
+  describeSpawnedGatewayTimeout,
+  isLiveSpawnedTimeout,
   gatewayWaitTimeoutMs,
   waitForGateway,
   readLogTail,
@@ -1450,6 +1452,17 @@ function createGatewaySupervisor({
       } else if (failedToStart) {
         title = "Kiro Crew — gateway failed to start";
         message = error.message;
+      } else if (isLiveSpawnedTimeout({
+        error,
+        ownTarget: targetBackendUrl === BACKEND_URL,
+        ownership: gatewayOwnership,
+        child: gatewayProcess,
+      })) {
+        // Our own child, still running: naming `kirocrew gateway` would send
+        // the user to start a process that is already up. Retry keeps that
+        // child and waits again (it respawns only when none is running).
+        title = "Kiro Crew — gateway is not answering";
+        message = describeSpawnedGatewayTimeout(error.waitedMs);
       } else {
         title = "Kiro Crew — can't reach the gateway";
         message = "Could not connect to the Kiro Crew backend. Make sure "
