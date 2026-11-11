@@ -21,7 +21,14 @@ import pytest
 botocore = pytest.importorskip("botocore")
 boto3 = pytest.importorskip("boto3")
 
-from botocore.exceptions import NoCredentialsError, ReadTimeoutError  # noqa: E402
+from botocore.exceptions import (  # noqa: E402
+    NoCredentialsError,
+    ParamValidationError,
+    ReadTimeoutError,
+    ResponseStreamingError,
+    TokenRetrievalError,
+    UnauthorizedSSOTokenError,
+)
 from botocore.response import StreamingBody  # noqa: E402
 from botocore.stub import Stubber  # noqa: E402
 
@@ -35,6 +42,7 @@ from kiro_crew.decisions.impl_sagemaker import (  # noqa: E402
     SageMakerConfigError,
     SageMakerCredentialsError,
     SageMakerEndpointNotFound,
+    SageMakerError,
     SageMakerModelError,
     SageMakerOracle,
     SageMakerProtocolError,
@@ -761,12 +769,46 @@ class _RaisingClient:
     [
         (ReadTimeoutError(endpoint_url="https://runtime.sagemaker"), SageMakerTimeout),
         (NoCredentialsError(), SageMakerCredentialsError),
+        # botocore loads SSO and assume-role credentials only when it signs, so an
+        # expired login surfaces from invoke_endpoint.
+        (UnauthorizedSSOTokenError(), SageMakerCredentialsError),
+        (TokenRetrievalError(provider="sso", error_msg="token expired"), SageMakerCredentialsError),
+        (ParamValidationError(report="bad"), SageMakerError),
     ],
 )
 def test_transport_errors_map_to_clear_errors(monkeypatch, exc, expected):
     monkeypatch.setattr(impl_sagemaker, "_make_client", lambda *_a: _RaisingClient(exc))
-    with pytest.raises(expected):
+    with pytest.raises(expected) as raised:
         _ask()
+    # Only the class name of botocore's error travels, never its text.
+    assert type(raised.value) is expected
+    assert str(exc) not in str(raised.value)
+
+
+class _BrokenStream:
+    def __init__(self, exc):
+        self._exc = exc
+
+    def read(self, _n):
+        raise self._exc
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (ReadTimeoutError(endpoint_url="https://runtime.sagemaker"), SageMakerTimeout),
+        (ResponseStreamingError(error="connection reset"), SageMakerError),
+    ],
+)
+def test_a_broken_answer_stream_maps_to_a_clear_error(monkeypatch, exc, expected):
+    class _Client:
+        def invoke_endpoint(self, **_kwargs):
+            return {"Body": _BrokenStream(exc)}
+
+    monkeypatch.setattr(impl_sagemaker, "_make_client", lambda *_a: _Client())
+    with pytest.raises(expected) as raised:
+        _ask()
+    assert type(raised.value) is expected
 
 
 def test_missing_boto3_is_a_clear_error(monkeypatch, _no_aws):

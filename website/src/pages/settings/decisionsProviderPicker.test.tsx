@@ -487,7 +487,7 @@ describe('DecisionsProviderPicker', () => {
 })
 
 describe('fleet policy', () => {
-  it('greys out hosted Jev when policy withdraws it and keeps local models choosable', async () => {
+  it('hides hosted Jev when policy withdraws it and keeps local models choosable', async () => {
     vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
       ...providerOf('plumb-4b'),
       hosted_permitted: false,
@@ -502,12 +502,9 @@ describe('fleet policy', () => {
         <DecisionsProviderPicker frozen={false} />
       </QueryClientProvider>,
     )
-    const jev = await screen.findByRole('radio', {
-      name: /Jev, hosted by TypeSafe/i,
-    })
-    expect(jev).toBeDisabled()
-    expect(screen.getByRole('radio', { name: 'Laya' })).not.toBeDisabled()
-    expect(screen.getAllByText(/Turned off by your organization's policy/i)).toHaveLength(1)
+    expect(await screen.findByRole('radio', { name: 'Laya' })).not.toBeDisabled()
+    expect(screen.queryByRole('radio', { name: /Jev, hosted by TypeSafe/i })).toBeNull()
+    expect(screen.queryByText(/Turned off by your organization's policy/i)).toBeNull()
   })
 
   it('keeps "No model" choosable when policy withdraws both sides', async () => {
@@ -544,5 +541,168 @@ describe('fleet policy', () => {
     expect(await screen.findByRole('radio', { name: 'Laya' })).toBeDisabled()
     expect(screen.getByRole('radio', { name: 'Plumb-4B' })).toBeDisabled()
     expect(screen.getAllByText(/Turned off by your organization's policy/i)).toHaveLength(2)
+  })
+})
+
+describe('SageMaker endpoint', () => {
+  const withSageMaker = (
+    active: string,
+    sagemaker: DecisionsProviderData['sagemaker'] = null,
+    available = true,
+  ): DecisionsProviderData => ({ ...providerOf(active), sagemaker, sagemaker_available: available })
+
+  it('is offered next to the other models, without fields until chosen', async () => {
+    await renderPicker({ data: withSageMaker('jev') })
+    expect(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' })).not.toBeChecked()
+    expect(screen.queryByLabelText('Endpoint name')).toBeNull()
+  })
+
+  it('is not offered by a gateway that reports no SageMaker support', async () => {
+    await renderPicker({ data: providerOf('jev') })
+    await screen.findByText('Plumb-4B')
+    expect(screen.queryByRole('radio', { name: 'Your SageMaker endpoint' })).toBeNull()
+  })
+
+  it('shows a configured endpoint selected, with its parts', async () => {
+    await renderPicker({
+      data: withSageMaker('sagemaker', { endpoint_name: 'decision-model-a', region: 'us-west-2', profile: 'research' }),
+    })
+    expect(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' })).toBeChecked()
+    expect(screen.getByLabelText('Endpoint name')).toHaveValue('decision-model-a')
+    expect(screen.getByLabelText('AWS region')).toHaveValue('us-west-2')
+    expect(screen.getByLabelText('AWS profile (optional)')).toHaveValue('research')
+    expect(screen.queryByRole('button', { name: 'Use this model' })).toBeNull()
+  })
+
+  it('writes the parts, never an address, and leaves an empty profile out', async () => {
+    const save = vi.spyOn(api, 'saveDecisionsSageMaker').mockResolvedValue(withSageMaker('sagemaker'))
+    await renderPicker({ data: withSageMaker('jev') })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' }))
+    const use = screen.getByRole('button', { name: 'Use this model' })
+    expect(use).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Endpoint name'), { target: { value: ' decision-model-a ' } })
+    fireEvent.change(screen.getByLabelText('AWS region'), { target: { value: 'us-west-2' } })
+    fireEvent.click(use)
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' }))
+  })
+
+  it('sends the body the gateway checks', async () => {
+    const put = vi.fn().mockImplementation(async () => new Response('{}'))
+    const { createDecisionsEndpoints } = await import('../../api/client/decisions')
+    const endpoints = createDecisionsEndpoints({
+      get: vi.fn(),
+      post: put,
+      put,
+      del: vi.fn(),
+      j: (r: Response) => r.json(),
+    } as never)
+    await endpoints.scopesAndFeedback.saveDecisionsSageMaker({ endpoint_name: 'a', region: 'us-west-2', profile: '' })
+    await endpoints.scopesAndFeedback.saveDecisionsSageMaker({ endpoint_name: 'a', region: 'us-west-2', profile: 'research' })
+    expect(put.mock.calls[0]).toEqual([
+      '/api/decisions/provider',
+      { preset: 'sagemaker', endpoint_name: 'a', region: 'us-west-2' },
+    ])
+    expect(put.mock.calls[1][1]).toEqual({ preset: 'sagemaker', endpoint_name: 'a', region: 'us-west-2', profile: 'research' })
+  })
+
+  it('says a saved endpoint without consent is not sent to yet, and how to start', async () => {
+    const saved = { endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' }
+    await renderPicker({ consentOn: false, data: withSageMaker('sagemaker', saved) })
+    const line = await screen.findByText(/Not sending decisions to this endpoint yet/)
+    expect(line).toHaveTextContent('“Decisions (Jev)” switch at the top of this card')
+    expect(line).toHaveTextContent("“Also send screenshots of the agent's browser tab” under Browser steps: pick and check")
+    expect(screen.queryByText('In use')).toBeNull()
+    // An edited draft is not the saved endpoint, so the line no longer describes it.
+    fireEvent.change(screen.getByLabelText('Endpoint name'), { target: { value: 'decision-model-b' } })
+    expect(screen.queryByText(/Not sending decisions/)).toBeNull()
+  })
+
+  it('says nothing about sending before the endpoint is saved, or once consent stands', async () => {
+    const view = await renderPicker({ consentOn: false, data: withSageMaker('jev') })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' }))
+    expect(screen.getByLabelText('Endpoint name')).toBeInTheDocument()
+    expect(screen.queryByText(/Not sending decisions/)).toBeNull()
+    view.unmount()
+    await renderPicker({
+      data: withSageMaker('sagemaker', { endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' }),
+    })
+    expect(await screen.findByText('In use')).toBeInTheDocument()
+    expect(screen.queryByText(/Not sending decisions/)).toBeNull()
+  })
+
+  it('offers a save when the configured endpoint is edited', async () => {
+    await renderPicker({
+      data: withSageMaker('sagemaker', { endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' }),
+    })
+    fireEvent.change(await screen.findByLabelText('Endpoint name'), { target: { value: 'decision-model-b' } })
+    expect(screen.getByRole('button', { name: 'Use this model' })).not.toBeDisabled()
+  })
+
+  it('says which field the gateway refused', async () => {
+    const { ApiError } = await import('../../api/apiError')
+    vi.spyOn(api, 'saveDecisionsSageMaker').mockRejectedValue(
+      new ApiError('bad', 400, JSON.stringify({ code: 'decisions_provider_sagemaker_invalid', field: 'region' })),
+    )
+    await renderPicker({ data: withSageMaker('jev') })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' }))
+    fireEvent.change(screen.getByLabelText('Endpoint name'), { target: { value: 'model' } })
+    fireEvent.change(screen.getByLabelText('AWS region'), { target: { value: 'nowhere' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Use this model' }))
+    expect(await screen.findByText('Use an AWS region code, such as us-west-2.')).toBeTruthy()
+  })
+
+  it('tests the connection and reports the answer time or the reason', async () => {
+    const test = vi
+      .spyOn(api, 'testDecisionsSageMaker')
+      .mockResolvedValueOnce({ ok: true, latency_ms: 1234, error: '', message: '' })
+      .mockResolvedValueOnce({ ok: false, latency_ms: 40, error: 'credentials', message: 'AWS refused the credentials (ExpiredTokenException)' })
+    await renderPicker({
+      data: withSageMaker('sagemaker', { endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' }),
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Test connection' }))
+    expect(await screen.findByText(/Connected\. The endpoint answered in 1\.2\s*s/)).toBeTruthy()
+    expect(test).toHaveBeenCalledWith({ endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' })
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }))
+    expect(await screen.findByText("AWS credentials were missing or refused. Refresh this machine's AWS credentials, then test again.")).toBeTruthy()
+    expect(screen.getByText(/ExpiredTokenException/)).toBeTruthy()
+  })
+
+  it('says what to install when the gateway has no boto3, and holds the fields', async () => {
+    await renderPicker({ data: withSageMaker('jev', null, false) })
+    fireEvent.click(await screen.findByRole('radio', { name: 'Your SageMaker endpoint' }))
+    expect(screen.getByText(/pip install "boto3>=1\.34,<2"/)).toBeTruthy()
+    expect(screen.getByLabelText('Endpoint name')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Test connection' })).toBeDisabled()
+  })
+
+  it('is hidden with hosted Jev when a gateway without its own answer withdraws the hosted side', async () => {
+    await renderPicker({ data: { ...withSageMaker('none'), hosted_permitted: false } })
+    await screen.findByText('Plumb-4B')
+    expect(screen.queryByRole('radio', { name: 'Your SageMaker endpoint' })).toBeNull()
+  })
+
+  it('is hidden when the ceiling permits no SageMaker runtime host, while hosted Jev stays', async () => {
+    await renderPicker({ data: { ...withSageMaker('none'), sagemaker_permitted: false } })
+    await screen.findByText('Plumb-4B')
+    expect(screen.queryByRole('radio', { name: 'Your SageMaker endpoint' })).toBeNull()
+    expect(screen.getByRole('radio', { name: /Jev, hosted by TypeSafe/i })).toBeTruthy()
+  })
+
+  it('on a ceiling that allows only SageMaker and loopback, offers SageMaker and local models and no hosted default', async () => {
+    await renderPicker({
+      data: {
+        ...withSageMaker('sagemaker', { endpoint_name: 'decision-model-a', region: 'us-west-2', profile: '' }),
+        hosted_permitted: false,
+        sagemaker_permitted: true,
+      },
+    })
+    // SageMaker has its own answer, apart from the hosted default's.
+    const sagemaker = await screen.findByRole('radio', { name: 'Your SageMaker endpoint' })
+    expect(sagemaker).toBeChecked()
+    expect(sagemaker).not.toBeDisabled()
+    expect(screen.getByLabelText('Endpoint name')).toHaveValue('decision-model-a')
+    expect(screen.getByLabelText('AWS region')).toHaveValue('us-west-2')
+    expect(screen.queryByRole('radio', { name: /Jev, hosted by TypeSafe/i })).toBeNull()
+    expect(screen.getByRole('radio', { name: 'Laya' })).not.toBeDisabled()
   })
 })
