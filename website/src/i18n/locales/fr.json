@@ -9919,6 +9919,8 @@
       "this_version_is_below_minimum": "Cette mise à jour est requise : les versions antérieures à {{version}} ne sont plus prises en charge.",
       "update_available": "Mise à jour disponible",
       "update_failed": "Échec de la mise à jour. Réessaie depuis Réglages → À propos.",
+      "update_not_responding": "Aucun progrès depuis 5 minutes. Tu peux fermer cette fenêtre. Si la mise à jour se termine, l’app se rechargera.",
+      "update_not_responding_required": "Aucun progrès depuis 5 minutes. Si la mise à jour se termine, l’app se rechargera.",
       "update_now": "Mettre à jour maintenant",
       "update_required": "Mise à jour requise",
       "updating": "Mise à jour…",

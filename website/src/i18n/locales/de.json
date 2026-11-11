@@ -9691,6 +9691,8 @@
       "this_version_is_below_minimum": "Dieses Update ist erforderlich – Versionen unter {{version}} werden nicht mehr unterstützt.",
       "update_available": "Update verfügbar",
       "update_failed": "Update fehlgeschlagen. Versuche es erneut unter Einstellungen → Über.",
+      "update_not_responding": "Seit 5 Minuten kein Fortschritt. Du kannst dieses Fenster schließen. Wenn das Update fertig ist, lädt die App neu.",
+      "update_not_responding_required": "Seit 5 Minuten kein Fortschritt. Wenn das Update fertig ist, lädt die App neu.",
       "update_now": "Jetzt aktualisieren",
       "update_required": "Update erforderlich",
       "updating": "Wird aktualisiert…",

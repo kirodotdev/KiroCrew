@@ -9463,6 +9463,8 @@
       "this_version_is_below_minimum": "이 업데이트는 필수입니다. {{version}} 미만 버전은 더 이상 지원되지 않습니다.",
       "update_available": "업데이트가 있습니다",
       "update_failed": "업데이트 실패. 설정 → 정보에서 다시 시도하세요.",
+      "update_not_responding": "5분 동안 진행이 없습니다. 이 창을 닫아도 됩니다. 업데이트가 끝나면 앱이 다시 로드됩니다.",
+      "update_not_responding_required": "5분 동안 진행이 없습니다. 업데이트가 끝나면 앱이 다시 로드됩니다.",
       "update_now": "지금 업데이트",
       "update_required": "업데이트 필요",
       "updating": "업데이트 중…",

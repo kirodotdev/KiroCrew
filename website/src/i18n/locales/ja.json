@@ -9463,6 +9463,8 @@
       "this_version_is_below_minimum": "この更新は必須です。{{version}} より前のバージョンはサポートされなくなりました。",
       "update_available": "アップデートがあります",
       "update_failed": "アップデートに失敗しました。「設定 → 概要」からもう一度お試しください。",
+      "update_not_responding": "5分間進行がありません。このウィンドウは閉じてもかまいません。更新が終わるとアプリが再読み込みされます。",
+      "update_not_responding_required": "5分間進行がありません。更新が終わるとアプリが再読み込みされます。",
       "update_now": "今すぐアップデート",
       "update_required": "更新が必要です",
       "updating": "アップデート中…",

@@ -49,13 +49,14 @@ export function handleUpdateProgress(dispatch: AppDispatch, data: FrameData): vo
   // neither `version` nor anything else the tab compares).
   if (prog.step === 'restarting') {
     try { sessionStorage.setItem(UPDATE_RESTART_LATCH_KEY, String(Date.now())) } catch { /* best effort */ }
-  } else if (prog.step === 'failed' || prog.step === 'error' || prog.step === 'done') {
+  } else if (!prog.step || prog.step === 'failed' || prog.step === 'error' || prog.step === 'done') {
     // A failure AFTER `restarting` was pushed (invalid exe path) means
     // no exec is coming — an armed latch would reload over the next
-    // unrelated blip. `done` is only ever simulated, same cleanup.
+    // unrelated blip. `done` is only ever simulated, same cleanup. An
+    // empty step is the gateway clearing progress without a restart.
     try { sessionStorage.removeItem(UPDATE_RESTART_LATCH_KEY) } catch { /* best effort */ }
   }
-  if (prog.step === 'done') {
+  if (!prog.step || prog.step === 'done') {
     dispatch(setUpdateProgress(null))
   } else {
     dispatch(setUpdateProgress(prog))

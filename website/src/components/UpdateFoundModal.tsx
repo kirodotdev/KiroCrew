@@ -47,6 +47,10 @@ import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
  * installs from merely showing this modal.
  */
 
+/** Quiet time after which an apply attempt with no progress change is ended.
+ *  Matches the update overlay's stuck threshold (App.tsx). */
+const ATTEMPT_STALL_MS = 5 * 60 * 1000
+
 function getUpdateApi(): UpdateAPI | undefined {
   return window.updateAPI
 }
@@ -204,6 +208,10 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState('')
   const [restarting, setRestarting] = useState(false)
+  // An attempt with no progress change for ATTEMPT_STALL_MS. It unlocks the
+  // dismissals only; the attempt and its "Update now" lock stay as they are.
+  const [stalled, setStalled] = useState(false)
+  const dismissLocked = restarting && !stalled
   const [applyError, setApplyError] = useState('')
   const [persistError, setPersistError] = useState('')
 
@@ -321,7 +329,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   // closures: it is set before mutate() returns and read at call time.
   const persistInFlight = useRef(false)
   const verdict = (rec: Required<UpdateNudgeRecord>) => {
-    if (!candidate || restarting || persistInFlight.current) return
+    if (!candidate || dismissLocked || persistInFlight.current) return
     // After a write already failed, dismissal degrades to session-only: the
     // user has SEEN the couldn't-save note, so closing without persistence is
     // informed — while re-gating every close on a write that keeps failing
@@ -348,7 +356,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, required, candidate?.version, restarting])
+  }, [open, required, candidate?.version, dismissLocked])
 
   // Surface a background apply failure in the same slot a synchronous
   // rejection uses, and drop the restarting latch so the buttons come back:
@@ -361,17 +369,41 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   // worker always announces a live step before it can fail, and each frame is
   // its own store update, so the live step is observed even when the failure
   // follows it within the same millisecond.
+  //
+  // Progress CLEARED after a live step ends the attempt too: the worker clears
+  // the bar without a `failed` frame whenever it stops short of a restart (a
+  // fetch that fails, a tree already at the tip), and a gateway that crashed
+  // mid-update comes back with no progress at all. A real restart reloads this
+  // tab before any cleared frame can arrive (`bundleReload.ts`), so a clear
+  // that reaches here means no restart is coming. The candidate is still
+  // offered, so the user is told the update did not happen rather than left
+  // with buttons that silently came back.
   const gwProgressStep = gwProgress?.step ?? ''
   const gwProgressDetail = gwProgress?.detail ?? ''
   useEffect(() => {
     if (!attemptActive) return
-    if (gwProgressStep !== 'failed' && gwProgressStep !== 'error') {
-      if (gwProgressStep) sawLiveStepRef.current = true
+    const failed = gwProgressStep === 'failed' || gwProgressStep === 'error'
+    if (!failed && gwProgressStep) {
+      sawLiveStepRef.current = true
       return
     }
     if (!sawLiveStepRef.current) return
     endAttempt()
-    setApplyError(gwProgressDetail || i18nT('components.updateFoundModal.update_failed'))
+    setApplyError((failed && gwProgressDetail) || i18nT('components.updateFoundModal.update_failed'))
+  }, [attemptActive, gwProgressStep, gwProgressDetail])
+
+  // The last way out: after five minutes with no progress change (a worker
+  // that hangs, a gateway that never comes back from its restart) the
+  // dismissals come back, so this full-screen modal can never hold the app
+  // behind a disabled X. The attempt itself stays open: a healthy npm build
+  // can sit on one frame for longer than that, so its later failure must
+  // still land here, and "Update now" stays off while a worker may still be
+  // running. Any new frame clears the notice and restarts the count.
+  useEffect(() => {
+    setStalled(false)
+    if (!attemptActive) return
+    const t = setTimeout(() => setStalled(true), ATTEMPT_STALL_MS)
+    return () => clearTimeout(t)
   }, [attemptActive, gwProgressStep, gwProgressDetail])
 
   // A save failure is a verdict on ONE version's write, not a permanent
@@ -470,7 +502,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
               type="button"
               className="text-muted hover:text-text cursor-pointer bg-transparent border-none disabled:opacity-50"
               onClick={dismiss}
-              disabled={restarting || persist.isPending}
+              disabled={dismissLocked || persist.isPending}
               aria-label={i18nT('components.updateFoundModal.dismiss')}
             >
               <X size={16} />
@@ -552,7 +584,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
             testId="update-found-copy-error"
           />
-          {required && applyError && candidate.affordance === 'apply' && gwCommand && (
+          {required && (applyError || stalled) && candidate.affordance === 'apply' && gwCommand && (
             // Escape hatch for the worst state: a mandatory update whose
             // in-process apply keeps failing would otherwise strand the user
             // behind this modal with only a retry button. The installer
@@ -569,7 +601,13 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
             testId="update-found-persist-error"
           />
-          {restarting && <p className="mt-2 text-[12px] text-muted">{i18nT('components.updateFoundModal.updating_and_restarting')}</p>}
+          {/* A mandatory prompt has no dismissal, so its stall copy offers no
+              close; its way out is the installer command below. */}
+          {stalled
+            ? <p data-testid="update-found-stalled" className="mt-2 text-[12px] text-warn">{required
+              ? i18nT('components.updateFoundModal.update_not_responding_required')
+              : i18nT('components.updateFoundModal.update_not_responding')}</p>
+            : restarting && <p className="mt-2 text-[12px] text-muted">{i18nT('components.updateFoundModal.updating_and_restarting')}</p>}
           {!required && (
           <p className="mt-2 text-[12px] flex items-center gap-3">
             {/* One full-sentence key, not a prefix + link-text pair: the link
@@ -589,7 +627,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
               type="button"
               className="underline text-muted hover:text-text bg-transparent border-none p-0 text-[12px] cursor-pointer disabled:opacity-50 shrink-0"
               onClick={skip}
-              disabled={restarting || persist.isPending}
+              disabled={dismissLocked || persist.isPending}
             >
               {i18nT('components.updateFoundModal.skip_this_version')}
             </button>
@@ -606,7 +644,7 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
             type="button"
             className="px-3 py-1.5 text-sm rounded-md border border-border text-text hover:border-border-strong bg-transparent cursor-pointer disabled:opacity-50"
             onClick={dismiss}
-            disabled={restarting || persist.isPending}
+            disabled={dismissLocked || persist.isPending}
           >
             {i18nT('components.updateFoundModal.remind_me_tomorrow')}
           </button>

@@ -9463,6 +9463,8 @@
       "this_version_is_below_minimum": "此更新为必需更新——低于 {{version}} 的版本已不再受支持。",
       "update_available": "发现新版本",
       "update_failed": "更新失败。请到“设置 → 关于”重试。",
+      "update_not_responding": "已有 5 分钟没有进展。你可以关闭此窗口。更新完成后，应用会重新加载。",
+      "update_not_responding_required": "已有 5 分钟没有进展。更新完成后，应用会重新加载。",
       "update_now": "立即更新",
       "update_required": "需要更新",
       "updating": "更新中…",

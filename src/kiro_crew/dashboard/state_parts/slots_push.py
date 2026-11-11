@@ -1084,8 +1084,19 @@ def push_update_progress(self: DashboardState, step: str, detail: str = "") -> N
 
 
 def clear_update_progress(self: DashboardState) -> None:
-    """Reset update progress (e.g. after cancel or completion)."""
+    """Reset update progress (e.g. after cancel or completion) and tell clients.
+
+    The update worker clears instead of pushing ``failed`` whenever it stops
+    short of a restart (a fetch that fails, a tree already at the tip). The
+    periodic status frame does not carry ``update_progress``, so without a
+    broadcast every open tab kept the last live step forever. The clear rides
+    the same event with an empty ``step``, which the SPA reads as "no update
+    in progress". Nothing is sent when there was nothing to clear.
+    """
+    if self._update_progress is None:
+        return
     self._update_progress = None
+    self._broadcast({"_type": "update_progress", "step": "", "detail": ""})
 
 
 def _broadcast(self: DashboardState, note: dict[str, Any]) -> None:
