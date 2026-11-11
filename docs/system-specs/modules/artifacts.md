@@ -2533,7 +2533,11 @@ paths rejected (`is_sensitive_path`); reads go through the inode-pinned
 the iframe) with `default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' data:
 blob:`: no `'unsafe-eval'` (the channel injects no runtime, so nothing needs JS
 eval) but `'wasm-unsafe-eval'` so served `.wasm` can still compile, plus
-`nosniff` and `no-store`. All filesystem work runs off the
+`nosniff` and `no-store`. `'unsafe-inline'` stays because refusing it removes
+no reach: the channel injects nothing and treats the whole tree as untrusted,
+so an inline script gets the same opaque origin and `'self'` fetch limit as a
+served (or `data:`) script, while apps that ship inline scripts or styles
+would break. All filesystem work runs off the
 event loop via `asyncio.to_thread`.
 
 ### Deploy Routes (`/api/deploy/*`)
