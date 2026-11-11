@@ -19,7 +19,7 @@ own module is seen here.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 class AgentSpecUnreadable(ValueError):
@@ -178,21 +178,50 @@ def sweep_kas_launch_snapshots(boot_time: float) -> bool:
     return True
 
 
+def spec_grants(spec: dict[str, Any], *, audit: bool = True) -> set[str]:
+    """The ``allowedTools`` entries and governed ``autoApprove`` refs of *spec*.
+
+    *audit* False is for a reader that only asks and projects nothing."""
+    from kiro_crew.acp.kas_auto_approve import auto_approve_refs
+
+    allowed = spec.get("allowedTools")
+    listed = allowed if isinstance(allowed, list) else []
+    return {e for e in listed if isinstance(e, str)} | set(auto_approve_refs(spec, audit=audit))
+
+
 def session_spec_grants(agent: str) -> set[str] | None:
-    """The ``allowedTools`` entries and governed ``autoApprove`` refs of *agent*'s
-    user-level spec, or ``None`` when none reads. Blocking.
+    """:func:`spec_grants` of *agent*'s user-level spec, or ``None`` when none
+    reads. Blocking.
 
     A project checkout's spec is never read: a cloned repository could plant one
     that grants what the session's own spec withholds."""
     from kiro_crew.acp import session_mcp
-    from kiro_crew.acp.kas_auto_approve import auto_approve_refs
 
     spec = session_mcp.agent_spec_snapshot(agent, work_dir=None)
     if not isinstance(spec, dict):
         return None
-    allowed = spec.get("allowedTools")
-    listed = allowed if isinstance(allowed, list) else []
-    return {e for e in listed if isinstance(e, str)} | set(auto_approve_refs(spec))
+    return spec_grants(spec)
+
+
+_SESSION_VERB = "@kirocrew-dashboard/session_"
+
+
+def creates_without_send(grants: Iterable[str]) -> bool:
+    """Whether *grants* auto-approve ``session_create`` and not ``session_send``.
+
+    The one reading of that fact. The first-message gate refuses a seeded create
+    on it (``message_needs_send_approval``), and the spec writer states it in the
+    prompt of the agent it is true of (``auto_approve.govern_spec``), so the two
+    cannot disagree. Create over-matches (a wider read refuses more); send must
+    be a grant kiro-cli itself honours, or the seed would skip a prompt it still
+    shows.
+    """
+    from kiro_crew.agent_sdk.mcp_refs import entry_grants, entry_reaches
+
+    entries = tuple(grants)
+    create = any(entry_reaches(e.strip(), _SESSION_VERB + "create") for e in entries)
+    send = any(entry_grants(e, _SESSION_VERB + "send") for e in entries)
+    return create and not send
 
 
 def deferred_call_arguments(params: Any, server: str, tool: str) -> tuple[Any, bool]:

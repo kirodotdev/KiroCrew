@@ -559,6 +559,24 @@ a bare `@kirocrew-dashboard`, or `@kirocrew-dashboard/<glob>` (case-sensitive,
 `*` and `?` only) count as granting send. A bare `session_send`, `*_send` or `@*`
 does not, since kiro-cli still prompts for them.
 
+That reading is one function, `agent_specs.creates_without_send`, and it has two
+callers: the refusal above, and the spec writer. Every spec written through
+`auto_approve.write_governed_spec` (the conductors, the team lead, the worker and
+the other service agents; not the default `kirocrew.json` or the heartbeat spec,
+which hold neither grant) passes `auto_approve.govern_spec`, which after
+filtering the grants appends one line to the prompt of a spec the function is true of
+(`auto_approve.SEED_AFTER_CREATE_RULE`): "`session_create`'s `message` is refused
+for this agent (`message_needs_send_approval`): create, then `session_send`."
+So a conductor or team lead is told before its first dispatch, no charter
+restates the rule, and a spec that gains `session_send` (a user entry) or loses
+`session_create` (a ceiling) stops carrying the line on its next write. A fork is
+the user's file and is not edited, and neither is a prompt kept in a file, an
+empty prompt, or the managed prompt stub, which is matched by equality. An
+agent outside the generated specs that auto-approves the create alone has the
+tool's own description to go by: it states the condition once, with the code.
+The server's `instructions` say the same: seed with `message` unless the prompt
+carries that line.
+
 `session_create` also takes an optional `folder` — a folder id or `/`-separated
 human path, resolved with `chat_folder_create`'s `parent` semantics (missing
 segments created, behind the same tree-shaping gate) — and files the slot as

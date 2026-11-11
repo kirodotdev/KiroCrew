@@ -78,7 +78,11 @@ says so when that model was dropped.
 No argument is formally required. Without `message` the new session **starts
 empty** — nothing runs in it until the person types, or until you send it a
 message. With `message`, its first turn starts on that message in this same
-call, so you never send to a key you have not read back yet. The reply carries
+call, so you never send to a key you have not read back yet. An agent that
+auto-approves `session_create` but not `session_send` (a conductor, a team
+lead) is told so in its own prompt and leaves `message` out:
+"`session_create`'s `message` is refused for this agent
+(`message_needs_send_approval`): create, then `session_send`." The reply carries
 the new session's key:
 
 ```

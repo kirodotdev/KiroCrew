@@ -211,6 +211,11 @@ make **one call at a time**, each after the previous reply came back, in
    The seed is the item's whole contract: the child session gets no other
    context from you.
 
+Step 2 never carries a `message`: the seed is step 4, after the bind. Where a
+`message` would be refused outright, your prompt says so:
+"`session_create`'s `message` is refused for this agent
+(`message_needs_send_approval`): create, then `session_send`."
+
 **A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft whose checks have not finished costs a whole verify cycle that answers `refused`, which you surface to the user rather than retry.
 
 **A `pr_checks` seed may name the PR procedure.** The worker gets no per-message
