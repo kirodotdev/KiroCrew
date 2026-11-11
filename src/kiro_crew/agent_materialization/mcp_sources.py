@@ -551,12 +551,17 @@ def merge_mcp_sources(config: dict) -> McpSources:
         # unmarked entry, a shared-file server or a standing grant already holds
         # belongs to someone else. Mounting over it would hand the plugin that
         # server's ``allowedTools`` grant, and its tools would skip the approval
-        # gate on authority given to a different server.
+        # gate on authority given to a different server. A transport-less
+        # override stub counts as no entry here, so a leftover grant under the
+        # name still blocks the mount, exactly as on a fresh install.
+        _no_transport = not (
+            isinstance(_existing, dict) and (_existing.get("command") or _existing.get("url"))
+        )
         _taken = (
             _declares_other_server(_existing)
             or _other_server
             or (
-                _existing is None
+                _no_transport
                 and any(
                     isinstance(_g, str) and (_g == f"@{_pwr_srv}" or _g.startswith(f"@{_pwr_srv}/"))
                     for _g in _granted

@@ -1048,3 +1048,29 @@ class TestEmittedAppIsInstallable:
         assert installed is not None
         assert installed.skills == ["skills/search"]
         assert installed.extra["importedPlugin"]["sourceFormat"] == FORMAT_VENDOR_DIRECTORY
+
+
+class TestRemoteMcpUrlsConvert:
+    """Well-formed url servers reach the emitted ``app.json`` with no unmapped note."""
+
+    @staticmethod
+    def _emitted(out: Path) -> dict:
+        return json.loads((out / "app.json").read_text(encoding="utf-8"))
+
+    def test_a_remote_https_server_is_kept(self, tmp_path):
+        root = _package(tmp_path, mcpServers={"remote": {"url": "https://api.example.com/mcp"}})
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        assert self._emitted(out)["mcpServers"] == {
+            "remote": {"url": "https://api.example.com/mcp"}
+        }
+        assert not [u for u in report.unmapped if u.kind.startswith("mcpServers")]
+
+    def test_a_loopback_http_url_is_kept(self, tmp_path):
+        root = _package(tmp_path, mcpServers={"local": {"url": "http://127.0.0.1:9000/mcp"}})
+        out = tmp_path / "out"
+        report = convert_plugin_package(root, out)
+
+        assert self._emitted(out)["mcpServers"] == {"local": {"url": "http://127.0.0.1:9000/mcp"}}
+        assert not [u for u in report.unmapped if u.kind.startswith("mcpServers")]

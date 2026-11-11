@@ -766,6 +766,9 @@ _SHARED_KIRO_PATHS: tuple[tuple[str, str, str], ...] = (
     ("kiro_crew.learn", "_DEFAULT_DIR", ".kiro/crew"),
     ("kiro_crew.instances.run_marker", "_DEFAULT_RUN_DIR", ".kiro/crew/run"),
     ("kiro_crew.apps.bridges_mcp", "_LEGACY_SHARED_MCP_PATH", ".kiro/settings/mcp.json"),
+    # The Agent Plugins install root Kiro IDE writes. Pinned so a test that turns
+    # loading on never scans the operator's real ~/.kiro/powers.
+    ("kiro_crew.apps.installed_powers", "INSTALLED_POWERS_DIR", ".kiro/powers/installed"),
     (
         "kiro_crew.dashboard.handlers.mcp_config_files",
         "_GLOBAL_MCP_JSON",
