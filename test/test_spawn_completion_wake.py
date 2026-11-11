@@ -389,7 +389,7 @@ class TestEveryEndingWakesTheWait:
         """The wake-up rides the field every ending already writes; the record's
         constructor, copy and comparison read it as the bool it was."""
         info = SubagentInfo(id="a1", task="t")
-        assert info.done is False and SubagentInfo.done is False
+        assert info.done is False and vars(info)["done"] is False
         assert SubagentInfo(id="a1", task="t", done=True).done is True
         assert dataclasses.replace(info, done=True).done is True
         by_name = {f.name: f for f in dataclasses.fields(SubagentInfo)}
