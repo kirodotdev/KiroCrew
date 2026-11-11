@@ -179,6 +179,12 @@ def _authorize_txn(args: "argparse.Namespace", path) -> None:
         verify_secret_authorizations,
     )
 
+    # Whether a --reset threw away a damaged (unparseable or unverifiable) policy
+    # that was on disk. When it did, an empty authorization map is the intended
+    # fresh start and MUST be signed and published to repair the file, so the
+    # no-op early return below for a `--remove` of an absent name does not apply.
+    reset_discarded = False
+
     try:
         if path.exists():
             # Bounded read: cap the bytes taken from disk BEFORE the JSON decode so
@@ -209,6 +215,7 @@ def _authorize_txn(args: "argparse.Namespace", path) -> None:
                 "--reset to discard it."
             )
         raw_existing = {}
+        reset_discarded = True
     if not isinstance(raw_existing, dict):
         # Valid JSON but not an object (e.g. a list or scalar). Calling .get() on
         # it would raise AttributeError; overwriting it could drop owner data.
@@ -261,11 +268,21 @@ def _authorize_txn(args: "argparse.Namespace", path) -> None:
             file=sys.stderr,
         )
         authorizations = {}
+        reset_discarded = True
     else:
         authorizations = {}
 
     name = args.name
     if args.remove:
+        if name not in authorizations and not reset_discarded:
+            # Nothing to remove: say so rather than report a removal that did not
+            # happen (and do not re-sign or audit an unchanged policy). Exit 0 so
+            # an idempotent `--remove` in a script still succeeds. A pending
+            # `--reset` that discarded a damaged policy is NOT a no-op: it must
+            # still publish the fresh signed empty policy to repair the file, so
+            # it falls through below.
+            print(f"No mediated-request authorization for {name!r}; nothing removed.")
+            return
         authorizations.pop(name, None)
     else:
         try:
