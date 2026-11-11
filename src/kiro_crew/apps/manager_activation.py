@@ -15,7 +15,9 @@ import logging
 
 from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
-from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
+from kiro_crew.apps.execution import app_execution_denied
+from kiro_crew.apps.execution import is_installed_builtin_app as _is_installed_builtin_app
+from kiro_crew.apps.execution import shipped_builtin_app_root
 from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
 from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
@@ -172,13 +174,10 @@ def enable_app(
     if gov_denied:
         return AppResult(ok=False, name=name, error=f"blocked by governance policy: {gov_denied}")
 
-    # Admission: the ban/allowlist also gates activation so a policy that bans
-    # an already-installed app blocks it from being (re-)enabled. Builtins
-    # (origin == "builtin") are trusted first-party code shipped unsigned with
-    # defaultEnabled=False, so a require_signature / non-empty allowlist policy
-    # would otherwise make every core app permanently un-enableable. The gate
-    # governs third-party install/enable, not first-party code — exempt builtins.
-    if meta.origin != "builtin":
+    # Admission exempts only a shipped builtin that still owns its installed
+    # slot. A shadowing user install cannot borrow the shipped name's exemption,
+    # and a builtin record alone cannot manufacture shipped provenance.
+    if not _is_installed_builtin_app(name):
         denied = app_admission_denied(name, manifest=get_app_manifest(name), action="enable")
         if denied:
             sel().log_api_access(

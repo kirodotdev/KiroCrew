@@ -422,7 +422,7 @@ async def test_a_bom_manifest_passes_the_pre_build_identity_gate(monkeypatch, tm
     monkeypatch.setattr(registry, "_git_clone_or_pull", _fake_clone)
     admitted: list[object] = []
 
-    def _record_and_deny(name, *, manifest=None, action=""):
+    def _record_and_deny(name, *, manifest=None, action="", app_root=None, fresh_checkout=False):
         admitted.append(manifest)
         return "stop here"
 
@@ -451,8 +451,11 @@ async def test_cloned_manifest_admission_is_revalidated_before_build(monkeypatch
 
     admission_calls: list[object] = []
 
-    def _deny_cloned(name, *, manifest=None, action=""):
+    roots: list[object] = []
+
+    def _deny_cloned(name, *, manifest=None, action="", app_root=None, fresh_checkout=False):
         admission_calls.append(manifest)
+        roots.append((app_root, fresh_checkout))
         return "signature required but manifest is unsigned"
 
     monkeypatch.setattr(registry, "app_admission_denied", _deny_cloned)
@@ -471,6 +474,9 @@ async def test_cloned_manifest_admission_is_revalidated_before_build(monkeypatch
     assert "admission" in result["error"]
     assert build_calls == []  # refused before the build
     assert len(admission_calls) == 1  # the cloned manifest was what got checked
+    # With the checkout itself, so a signature policy compares the fetched tree
+    # with the signed file list before anything in it runs.
+    assert roots == [(src, True)]  # a clone this install made: fresh
 
 
 @pytest.mark.asyncio
@@ -787,9 +793,11 @@ async def test_postbuild_admission_rejection_deletes_fresh_clone(monkeypatch, tm
     monkeypatch.setattr(registry, "_clone_build_app", _fake_clone_build)
 
     calls = {"n": 0}
+    roots: list[object] = []
 
     def _deny_postbuild(*a, **k):
         calls["n"] += 1
+        roots.append(k.get("app_root"))
         # 1st call = prefetch admission (pass); 2nd = post-build (deny).
         return "unsigned under policy" if calls["n"] >= 2 else None
 
@@ -800,6 +808,9 @@ async def test_postbuild_admission_rejection_deletes_fresh_clone(monkeypatch, tm
     assert result["ok"] is False
     assert "admission policy" in result["error"]
     assert not src.exists()  # fresh clone removed — retry starts clean
+    # The prefetch holds a manifest only; the post-build gate judges the built
+    # tree, before `onInstall` runs from it.
+    assert roots == [None, src]
 
 
 @pytest.mark.asyncio
@@ -839,8 +850,11 @@ async def test_postscript_admission_rejection_rolls_back_preexisting_checkout(
 
     calls = {"n": 0}
 
+    roots: list[object] = []
+
     def _deny_postscript(*a, **k):
         calls["n"] += 1
+        roots.append(k.get("app_root"))
         # 1st = prefetch (pass); 2nd = post-build (pass); 3rd = post-script (deny).
         return "unsigned under policy" if calls["n"] >= 3 else None
 
@@ -880,6 +894,7 @@ async def test_postscript_admission_rejection_rolls_back_preexisting_checkout(
     assert "admission policy" in result["error"]
     assert (src / ".git").is_dir() or src.exists()  # workspace preserved, not deleted
     assert any(cmd[:4] == ["git", "reset", "--keep", "b" * 40] for cmd in spawned)
+    assert roots == [None, src, src]  # the post-script gate judges the tree too
     # Surviving onInstall descendants are reaped BEFORE the final gates
     # re-read the manifest (closes the detached-child rewrite TOCTOU).
     assert 4242 in reaped

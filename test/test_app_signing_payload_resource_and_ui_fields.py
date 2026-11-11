@@ -18,8 +18,8 @@ turns into code or into text an agent obeys:
   in ``clientInstall`` (with ``needsClientInstall``) for the reader to paste into a terminal.
 
 Outside the payload, an attacker could rewrite or APPEND to any of them with the
-signature still verifying. Each is added under a NON-EMPTY guard, so a manifest declaring
-none hashes to the same bytes. Nothing here re-implements the gate's HMAC.
+signature still verifying. The scheme-2 payload signs the whole manifest document, so
+each is covered as written. Nothing here re-implements the gate's HMAC.
 """
 
 from __future__ import annotations
@@ -83,12 +83,14 @@ PUBLISHED_PLAIN: dict[str, Any] = {
     "permissions": {"api": ["/api/chat"]},
 }
 
-#: The bytes ``PUBLISHED_PLAIN`` hashed to before any of the six was covered. A
-#: literal rather than a key-absence assertion: absence of a key is satisfied by a
-#: payload whose separators or key order moved, and a signature verifies over bytes.
-PRE_CHANGE_PLAIN_PAYLOAD = (
-    b'{"name":"signed-demo","permissions":{"api":["/api/chat"]},'
-    b'"signer":"acme","version":"1.0.0"}'
+#: The bytes ``PUBLISHED_PLAIN`` hashes to under scheme 2. A literal rather than a
+#: key-absence assertion: a signature verifies over bytes, so a moved separator or a
+#: reordered key would invalidate every publisher's signature at once.
+PLAIN_PAYLOAD = (
+    b'{"manifest":{"description":"an app whose publisher signed it",'
+    b'"displayName":"Signed Demo","name":"signed-demo",'
+    b'"permissions":{"api":["/api/chat"]},"signer":"acme","version":"1.0.0"},'
+    b'"scheme":"kiro-crew-app/2"}'
 )
 
 #: A published manifest declaring all six groups at once.
@@ -148,12 +150,12 @@ def enforcing_fleet(tmp_path, monkeypatch):
     return cfg
 
 
-# Control 1 -- a signature issued under the pre-change payload still verifies
+# Control 1 -- the canonical bytes are pinned
 
 
-def test_the_payload_is_byte_identical_for_a_manifest_declaring_none_of_them():
-    """The compatibility guarantee in its smallest form, pinned as BYTES."""
-    assert AppManifest.from_dict(PUBLISHED_PLAIN).signing_payload() == PRE_CHANGE_PLAIN_PAYLOAD
+def test_the_payload_bytes_for_a_manifest_declaring_none_of_them_are_pinned():
+    """The canonicalization in its smallest form, pinned as BYTES."""
+    assert AppManifest.from_dict(PUBLISHED_PLAIN).signing_payload() == PLAIN_PAYLOAD
 
 
 def test_the_payload_is_byte_identical_when_only_the_already_covered_keys_are_declared():
@@ -206,7 +208,7 @@ def test_a_signed_app_declaring_all_six_still_verifies(enforcing_fleet):
     manifest = _carrying_signature_of(PUBLISHED, PUBLISHED)
     assert app_admission_denied(APP, manifest=manifest) is None
     assert verified_signer(manifest) == SIGNER
-    signed_keys = set(json.loads(manifest.signing_payload().decode("utf-8")))
+    signed_keys = set(json.loads(manifest.signing_payload().decode("utf-8"))["manifest"])
     assert {"ui", "agents", "skills", "sops", "dependencies", "platform"} <= signed_keys
 
 

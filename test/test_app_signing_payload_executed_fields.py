@@ -216,15 +216,16 @@ def test_no_shipped_builtin_carries_a_signature(manifest_path, enforcing_fleet):
 
     ``_signature_valid`` refuses an empty signature before computing a payload. Builtins
     install through ``register_builtin_apps``, which skips the admission gate, and
-    ``enable_app`` exempts ``origin == "builtin"``; the test below pins that second door.
+    ``enable_app`` exempts names with shipped package provenance, never a record's
+    ``origin`` claim alone.
     """
     manifest = AppManifest.from_json_file(manifest_path)
     assert manifest.signature == ""
     assert verified_signer(manifest) == ""
 
 
-def test_a_builtin_is_not_refused_by_admission_under_require_signature(tmp_path, monkeypatch):
-    """An unsigned builtin stays enableable on a fleet demanding signatures."""
+def test_an_installed_builtin_claim_is_refused_under_require_signature(tmp_path, monkeypatch):
+    """An unsigned installed record cannot claim the shipped builtin exemption."""
     from kiro_crew.apps.manager import InstalledApp, _write_installed, enable_app
 
     home = tmp_path / "kirocrew-home"
@@ -253,9 +254,8 @@ def test_a_builtin_is_not_refused_by_admission_under_require_signature(tmp_path,
         ),
     )
     result = enable_app("builtin-demo")
-    # Other gates may still refuse this synthetic entry; the ADMISSION gate
-    # must not, or an enforcing fleet would make every core app un-enableable.
-    assert "blocked by admission policy" not in (result.error or ""), result.error
+    assert not result.ok
+    assert "blocked by admission policy" in (result.error or ""), result.error
 
 
 # Control 3 -- an unsigned app on a non-enforcing install is unaffected

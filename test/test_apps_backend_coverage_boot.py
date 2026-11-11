@@ -270,22 +270,33 @@ class TestBootSpawnGating:
         assert bmod.start_enabled_app_backends() == []
         assert boot_env["started"] == []
 
+    @pytest.mark.parametrize("refuse_at", [1, 2])
     def test_an_admission_revet_error_fails_closed(
         self,
         boot_env: dict[str, list[Any]],
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
+        refuse_at: int,
     ) -> None:
         """An app whose admission cannot be confirmed must not boot unchecked."""
+        calls = 0
 
-        def _boom(_name: str, **_kw: Any) -> str:
-            raise RuntimeError("signature store unreadable")
+        def _boom(_name: str, **_kw: Any) -> str | None:
+            nonlocal calls
+            calls += 1
+            if calls == refuse_at:
+                raise RuntimeError("signature store unreadable")
+            return None
 
         monkeypatch.setattr(bmod, "app_admission_denied", _boom)
         monkeypatch.setattr(bmod, "list_apps", lambda: [_app("shady", origin="registry")])
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.WARNING):
             assert bmod.start_enabled_app_backends() == []
-        assert any("treating as denied" in r.message for r in caplog.records)
+        assert calls == refuse_at
+        assert any("signature store unreadable" in r.message for r in caplog.records)
+        assert boot_env["dereg_agents"] == ["shady"]
+        assert boot_env["dereg_skills"] == ["shady"]
+        assert boot_env["dereg_mcp"] == ["shady"]
         assert boot_env["started"] == []
 
     def test_a_boot_spawn_error_is_isolated_even_if_the_audit_sink_is_down(

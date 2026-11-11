@@ -226,7 +226,7 @@ def install_app(
 
     # Admission: the app allowlist/ban/signature gate INSTALL, not just
     # activation, so a banned / non-allowlisted app never lands on disk.
-    denied = app_admission_denied(name, manifest=manifest, action="install")
+    denied = app_admission_denied(name, manifest=manifest, action="install", app_root=source)
     if denied:
         sel().log_api_access(
             caller="app_install",
@@ -578,7 +578,7 @@ def update_app(
 
     # Admission: re-gate on update so a policy that tightens after install
     # (e.g. an app is later banned) blocks a subsequent update in place.
-    denied = app_admission_denied(name, manifest=manifest, action="update")
+    denied = app_admission_denied(name, manifest=manifest, action="update", app_root=source)
     if denied:
         sel().log_api_access(
             caller="app_update",

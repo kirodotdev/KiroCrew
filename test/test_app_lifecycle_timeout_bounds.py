@@ -89,15 +89,11 @@ def test_a_value_int_accepted_still_validates_and_parses_as_before(
 
 
 @pytest.mark.parametrize("value", [600, _HUGE, 0, -1, True, "60", 60.5])
-def test_the_signed_payload_keeps_the_value_as_int_read_it(value: Any) -> None:
-    # `setup` is in AppManifest.signing_payload: a manifest published before the bound
-    # must keep producing the bytes its publisher signed.
+def test_the_signed_payload_carries_the_value_as_published(value: Any) -> None:
+    # The signature covers the manifest document as written, so the value the
+    # publisher signed is exactly the one in the payload, whatever int() makes of it.
     payload = json.loads(_manifest(onEnableTimeout=value).signing_payload())
-    expected = int(value)
-    if expected == LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT:
-        assert "onEnableTimeout" not in payload["setup"]
-    else:
-        assert payload["setup"]["onEnableTimeout"] == expected
+    assert payload["manifest"]["setup"]["onEnableTimeout"] == value
 
 
 @pytest.mark.parametrize("field_name", _FIELDS)
@@ -115,16 +111,16 @@ def test_a_value_int_refused_fails_validation_by_name(field_name: str, value: An
     ("value", "seconds"), [(True, 1), (False, LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT)]
 )
 def test_a_bool_timeout_runs_as_the_int_its_signature_covers(value: bool, seconds: int) -> None:
-    # The run sites read the record, which carries the same int() value the
-    # signature covers, so an unsigned edit from 1 to true cannot change the budget.
+    # The run sites read the record, an int; the signature covers the value as
+    # written, so an edit from 1 to true is a different signed document.
     from kiro_crew.apps.manifest import lifecycle_timeout_seconds
 
     manifest = _manifest(onEnableTimeout=value)
     record = manifest.to_dict()["setup"].get("onEnableTimeout")
     assert record is None or type(record) is int
-    signed = json.loads(manifest.signing_payload())["setup"].get("onEnableTimeout")
-    assert record == signed
     assert lifecycle_timeout_seconds(record) == seconds
+    as_int = _manifest(onEnableTimeout=int(value))
+    assert as_int.signing_payload() != manifest.signing_payload()
 
 
 def test_an_absent_timeout_is_the_default_and_valid() -> None:

@@ -326,6 +326,13 @@ class TestRebuildSurvival:
     re-derivation a clean rebuild would silently drop every app's tools.
     """
 
+    @pytest.fixture(autouse=True)
+    def _admit_third_party(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        # The fake apps here are third-party: admit them the way an operator does,
+        # so the rebuild's MCP admission gate passes and these tests keep pinning
+        # source selection (test_app_signed_mcp_materialization covers refusal).
+        _floor_monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
+
     def test_collect_returns_enabled_app_servers(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew import agent
 
@@ -1638,10 +1645,14 @@ class TestRebuildDoesNotResurrectDeregisteredApps:
         src = inspect.getsource(default_spec_commit.write_default_spec)
         assert "on_disk_app" in src
         assert "del servers[_k]" in src, "an app key absent from on_disk must be removed"
-        # And on_disk is authoritative: present app entries are ASSIGNED
-        # (overwrite), not merely added-if-missing, so a re-registration on a new
-        # port replaces the stale snapshot rather than losing to it.
-        assert "if _k in on_disk_app:\n                        servers[_k] = _v" in src
+        # And on_disk is authoritative for ADMITTED apps: their present entries are
+        # ASSIGNED (overwrite), not merely added-if-missing, so a re-registration on
+        # a new port replaces the stale snapshot rather than losing to it; a refused
+        # app's on-disk copy is never re-inserted.
+        assert (
+            "if _k in on_disk_app and _app_of_key_enabled(_k):\n"
+            "                        servers[_k] = _v" in src
+        )
 
     def test_unverifiable_app_state_fails_closed(self) -> None:
         """If enablement cannot be verified — a malformed installed.json makes

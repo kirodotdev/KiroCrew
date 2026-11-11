@@ -1068,6 +1068,111 @@ emitted: besides the external-source label and older clients,
 `appManifest.ts::keysFor` (first-party copy gate) and `pickFeatured`'s
 legacy arm still read it.
 
+### Signed-content checks during backend provisioning and boot
+
+After an actual npm provisioning attempt, the Node backend path re-reads the
+installed manifest and verifies its packaged files before spawning Node. This
+happens after all root-to-entry-directory npm attempts, including nonzero exits
+and exceptions. A refusal is audited by the shared installed-content verifier;
+an unavailable verifier also prevents the spawn. No extra check runs when npm
+was never attempted. Shipped builtins retain their exemption, and no signature
+policy keeps the verifier's no-tree-read fast path. Dependency directories remain
+outside the inventory; this adds no per-request or per-cron-fire check.
+Backend spawn logs identify the app and port without serializing the child
+command, which can carry publisher arguments or sensitive values.
+
+Boot revokes executable resources and excludes a refused app from its in-memory
+snapshot in either admission pass. Only a packaged-content refusal persists
+disabled state, including apps without backends: a trusted key's signature
+verified and the packaged files, or the tree's shape, differ from the signed
+inventory. An app with no signature this fleet can verify (unsigned, a signer
+missing from `trust_keys`, or a signature that does not verify, which includes
+one made with an older signing scheme and an `app.json` edited after signing) is
+refused for that boot only and keeps its enabled record, so it starts again once
+it carries a current signature. Admission carries this
+classification with a private string-subclass marker, not reason-text matching or
+another inventory scan. Inventory open, enumeration, stat, read and close failures
+retain an unavailable kind through the string-compatible refusal chain; they deny
+this boot without persisting disable. A missing or unreadable manifest also carries
+no proof of a bad signature and stays nonpersistent. An unreadable policy still
+fails closed without disabling the installed record. Bans, allowlist denials and
+raised vetting errors likewise leave the record intact and can recover on a later
+boot. A failed signature-disable write is logged and cannot start the app or abort
+other apps. Both boot refusal passes share one best-effort SEL denial before
+resource revocation (`app_backend_boot`), naming the app and reason. Audit failure
+never admits the app, and the second pass does not emit a duplicate event.
+
+Each signature refusal at boot (the four kinds above) also raises one bell note
+per app per boot (`apps/boot_refusal_notice.py`), on the `system.apps` channel the
+app update note uses, linking to the app's detail page. The boot pass runs on the
+subprocess executor and only records the note; `start_dashboard` delivers it on
+the serving loop after the pass returns. The note names the app and the next step:
+an unsigned app asks its publisher for a signed release, a non-verifying one asks
+for a reinstall or a release signed with the current scheme, an untrusted signer
+asks for the signer in `trust_keys`, and a content mismatch says the app was turned
+off and asks for a reinstall or update from its source. No note tells the user to
+sign the refused tree themselves: that would sign whatever changed it. Policy refusals (bans, allowlist, version, vetting errors)
+raise no note. The log line stays.
+
+Python dependency provisioning for a file backend or a backend-less stdio MCP
+registration runs pip and its build hooks with the app root as the working
+directory, so a `requirements.txt` present means the signed tree is checked again
+through the shared installed-content verifier before the backend spawns or the
+stdio entries are written, as after npm. A refusal or a verifier error refuses the
+spawn, or removes the app's MCP entries and registers none. Builtins and fleets
+without a signature policy are unchanged.
+
+Signed hook preparation clears in-tree bytecode and only the current app's
+subtree under the gateway's active external cache prefix. Tree walks prune linked
+directories, including Windows junctions under runtime data; their targets are
+untouched. A linked cache leaf is removed without deleting its target.
+Linked mirror paths
+or cleanup errors refuse the hook; unrelated caches and the process-wide prefix
+are unchanged. Each signed registry build command and `onInstall` script receives
+its own fresh cache prefix without removing caches used by running app children.
+Before signed lifecycle, backend/exec and registry child launches, the shared
+allocator clears existing publisher-tree bytecode off-loop. Cleanup failures
+refuse the launch. This also protects ordinary Python `-E`/`-I` use inside shell
+commands and shebangs without rewriting publisher shell text. No-policy paths
+perform no cleanup.
+Signed Python stdio MCP registrations also place `-X pycache_prefix=<prefix>`
+after interpreter options and before the launch target. This preserves `-E`,
+`-I`, option clusters and script arguments. Authored cache selections are removed
+from the interpreter prefix before the gateway emits its own option, rather than
+relying on duplicate-option precedence. Non-Python commands retain the environment
+transport and their argv.
+Collection and the locked rebuild merge emit signed Python stdio entries only
+with matching environment and interpreter cache pins to an existing, unlinked
+child of `run/app-pycache/<app>` outside the installed and resource trees.
+These readers allocate no caches, so capability preview and save see the same
+launch; an unpinned manifest fallback is omitted until registration prepares it,
+and the rebuild that writes the spec logs the omitted server once per process.
+A self-managed app (`resources: "app"`) gets no gateway registration, so under
+`require_signature` its Python stdio servers stay omitted and the log line says
+so; its HTTP servers and non-Python commands are unaffected.
+
+Activation of a self-managed registry app verifies its publisher checkout under
+`app-sources/<name>`, not its metadata-only `apps/<name>` directory. Registry
+installation records `sourceSubdirectory` with the existing source provenance;
+activation resolves that contained clone-relative directory without consulting a
+new registry row. Gateway-managed apps still verify the installed copy. No
+resource-ownership or source field grants a signature exemption: the selected
+publisher tree must match the signed manifest's file inventory. Unavailable or
+unsafe source paths refuse activation without persisting a signature disable.
+Hook enable, boot and reconcile treat root-resolution failures as per-app
+refusals, never as permission to execute from metadata. Boot skips that app's
+hooks, removes its routes and disarms only its crons while healthy apps continue.
+Cron registration returns no definitions and cron restore disarms the affected
+owner. MCP re-registration and backend-URL scrubbing remove that app's entries
+and report an unavailable source for retry; direct stdio registration also
+refuses before provisioning. None of these paths persists disabled state.
+
+Publisher-root verification also covers lifecycle scripts and executable
+registrations. Signed self-managed lifecycle cwd, resource roots and hook roots
+use that checkout; app data remains in the installed metadata directory. The
+publisher manifest must match the signed installed snapshot. Metadata files do
+not become authenticated executable content merely because the checkout is valid.
+
 ## 1. App MCP servers land in Kiro Crew's agent config, never the shared kiro file
 
 An app's `mcpServers` are written into Kiro Crew's own agent config
@@ -1304,6 +1409,48 @@ spec and preserves the original `tools` and `allowedTools` grants; requesting
 one tool never becomes a grant to the whole server. A server whose `spec_gate` is
 closed (`kirocrew-computer` while computer use is off) is not copied, as on the
 host agent.
+
+### Rebuild admission for normalized app MCP names
+
+Key normalization strips the `{app}:` prefix from a slashed server name
+(`probe:@playwright/mcp` becomes `playwright-mcp`, or `playwright-mcp-<n>` on a
+collision), so the rebuild records the owner on the entry instead: every entry it
+collects from an app carries `x-kirocrew-app` with the app name
+(`mcp_provenance.APP_KEY`). Dedup ignores the record, kiro-cli ignores unknown
+keys, the ACP element omits it, and a copy into a user scope drops it. A scope
+entry that carries it has it stripped on merge, so it never makes an app own a
+user's server.
+
+The default-spec writer's locked merge gates a slash-free key by where its entry
+came from, never by its name alone (`mcp_sources.app_mcp_gate_owners`):
+
+- A key mounted from a scope's own `command` or `url`, according to the
+  normalization's source map, is not app-gated. Managed servers and card
+  additions are also exempt. Empty and modifier-only scope declarations do not
+  vouch for a carried transport; attribution continues below.
+- An entry carrying the record is gated by that app.
+- An unmarked entry that an `{app}:...` source mounted is gated by that app.
+- Any other unmarked key whose name or collision base an installed manifest claims,
+  in the current census or at the start of the rebuild, is gated by every claimant.
+  A claim with no readable owner fails closed.
+
+Gated means the app is enabled and passes the same execution-trust, fleet and
+signed-content decision as registration. A refused or unreadable app's entry is
+deleted, the on-disk copy cannot put it back, and the final reference reconcile
+removes its mount and auto-approval references. A scope that supplies a transport
+for the exact key a carried-over marked app entry holds replaces that entry whole. For an
+unmarked entry attributed to an app by the census or the start-of-rebuild claim,
+a scope supplying its own transport replaces the transport unit, including
+arguments, environment and URL headers, before command resolution. The app's
+transport is not retained as a fallback, and unrelated entry modifiers survive.
+The colon-key path,
+managed names, a trusted app without an admission policy and a genuine installed
+builtin keep their existing behavior.
+
+The URL-only shortcut skips the installed-content comparison, so the collector
+and the locked merge take it only when the manifest and every entry they would
+emit for that app are URL-only. A live or carried-over entry that still holds a
+command sends the app through the full comparison.
 
 ## 2. Auto-approve is intersected with the governance ceiling
 
@@ -2397,9 +2544,9 @@ behind it.
 **Compatibility rule: every value the old bare `int()` accepted still installs,
 and parses to the same `int`.** `SetupConfig.from_dict` keeps `int(raw)` unclamped
 (an int, a numeric string such as `"60"`, a float truncated, `int(True)` = 1),
-because `setup` is part of `AppManifest.signing_payload`: clamping there would
-change the signed bytes of a manifest published with, say, `600`, and its
-signature would stop verifying. Only a value `int()` raised on (a non-numeric
+so the installed record keeps what the publisher wrote (the signature covers the
+document as written either way) and a manifest published with, say, `600` still
+installs. Only a value `int()` raised on (a non-numeric
 string, `null`, a list or object, NaN or infinity), which already made the install
 fail, is recorded by `SetupConfig.from_dict` and refused with an error naming the
 field: by `AppManifest.validate` on install and update, by the registry
@@ -5883,6 +6030,10 @@ so `bmod._processes.clear()` empties the table every owner reads and replacing i
 through the facade reaches every holder. The one flag rebound with `global` has one
 holder: `_warned_unconfined_cache` in `backend.py`. Every owner logs through the `kiro_crew.apps.backend` logger, and
 `importlib.reload(backend)` reloads each owner in layer order.
+The facade's `TYPE_CHECKING` imports declare every forwarded name at its first
+owner, including startup's signature-refusal classifier, disable helper and
+resource-revocation helper. Concurrency-only boot tests supply admitted virtual
+apps; an installed `origin` field never grants shipped builtin provenance.
 `mock.patch(..., create=True)` on a forwarded name is the one spelling the facade
 cannot undo, and a guard refuses it. The lock order is unchanged: `_health_reconcile_lock`
 first, then `_lock` or bridges' `_mcp_lock`.
@@ -7988,8 +8139,8 @@ widening, and no path outside the app's data directory.
 control character or lone surrogate (a filesystem call cannot encode one, so it would
 raise in the alias pass), and no segment that starts or ends with a space or ends with a dot
 (Windows drops both, so `a.` would name `a`). At most 32 entries. `AppManifest.validate`
-refuses a manifest with a bad entry, `signing_payload` covers a non-empty declaration
-(sorted; absent when empty, so an older signature still verifies), and `to_dict` and the
+refuses a manifest with a bad entry, the signature covers the declaration as written
+(`signing_payload` signs the whole document), and `to_dict` and the
 built-in snapshot (`discovery._manifest_to_builtin_dict`) keep it.
 
 **Where it is read.** Per spawn, cached on each manifest's device, inode, size and mtime:

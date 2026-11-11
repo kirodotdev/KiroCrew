@@ -28,9 +28,12 @@ import os
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.apps.admission import installed_content_refusal as _installed_content_refusal
+from kiro_crew.apps.admission import signed_execution_root as _signed_execution_root
 from kiro_crew.apps.execution import app_execution_denied
 from kiro_crew.apps.manager import apps_dir
 from kiro_crew.apps.registry import NATIVE_WINDOWS_HOOK_REFUSAL, minimal_env
+from kiro_crew.apps.signed_imports import pycache_prefix_env as _pycache_prefix_env
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -66,10 +69,24 @@ async def run_lifecycle_script(
         app_root=app_root,
         caller="dashboard",
     )
+    if not denied:
+        # The script text is the signed manifest's, but it runs in the installed
+        # tree and may call any file there: the tree must still be the signed one.
+        denied = await asyncio.to_thread(
+            _installed_content_refusal, app_name, app_root, None, script
+        )
     if denied:
         logger.warning("Refusing app %s lifecycle action %s: %s", app_name, action, denied)
         return {"output": denied, "failed": True, "denied": True}
 
+    try:
+        app_root = await asyncio.to_thread(_signed_execution_root, app_name, app_root)
+    except (OSError, ValueError, RuntimeError):
+        return {
+            "output": "signed publisher directory is unavailable",
+            "failed": True,
+            "denied": True,
+        }
     if not app_root.is_dir():
         return {"output": f"app directory not found: {app_root}", "failed": True}
 
@@ -97,11 +114,18 @@ async def run_lifecycle_script(
     safe_script = f"set -euo pipefail\n{script}"
     base_cmd = ["/bin/bash", "-c", safe_script]
     sandboxed_cmd, cleanup = await wrap_argv_async(base_cmd, mode="standard", _prepare=wrap_argv)
-    sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
-    env = minimal_env(NONINTERACTIVE="1")
-    if extra_env:
-        env.update(extra_env)
     try:
+        sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
+        env = minimal_env(NONINTERACTIVE="1")
+        if extra_env:
+            env.update(extra_env)
+        # Preparation must return the same failure result as a refused spawn so
+        # enable can roll back and uninstall can still remove the app's runtime.
+        try:
+            env.update(await asyncio.to_thread(_pycache_prefix_env, app_name, app_root))
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("App %s lifecycle action %s cache preparation failed", app_name, action)
+            return {"output": f"script cache preparation failed: {exc}", "failed": True}
         # Process-group isolation for timeout tree-kill. Pass both flags explicitly
         # (NOT **dict unpack — breaks mypy's Popen overload resolution on the build
         # fleet): start_new_session=True is a no-op on Windows, creationflags is 0

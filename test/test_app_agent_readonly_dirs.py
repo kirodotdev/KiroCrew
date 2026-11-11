@@ -90,11 +90,15 @@ class TestTheManifestField:
         assert manifest.agentReadOnlyDirs == ["notes", "trust"]
         assert manifest.to_dict()["agentReadOnlyDirs"] == ["notes", "trust"]
         assert "agentReadOnlyDirs" not in manifest.extra
-        assert json.loads(manifest.signing_payload())["agentReadOnlyDirs"] == ["notes", "trust"]
+        signed = json.loads(manifest.signing_payload())["manifest"]
+        assert signed["agentReadOnlyDirs"] == ["notes", "trust"]
         plain = AppManifest.from_dict({"name": "demo", "version": "1.0.0"})
         assert b"agentReadOnlyDirs" not in plain.signing_payload()
-        empty = AppManifest.from_dict({"name": "demo", "version": "1.0.0", "agentReadOnlyDirs": []})
-        assert empty.signing_payload() == plain.signing_payload()
+        # Scheme 2 signs the document as written: changing the list changes the payload.
+        fewer = AppManifest.from_dict(
+            {"name": "demo", "version": "1.0.0", "agentReadOnlyDirs": ["notes"]}
+        )
+        assert fewer.signing_payload() != manifest.signing_payload()
 
     @pytest.mark.parametrize(
         "entry", ["../other/data/x", "/etc", "a/../../b", "", ".", "a\\b", "c:x", "a/./b"]

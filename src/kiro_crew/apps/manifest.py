@@ -11,6 +11,7 @@ app-specific fields.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import posixpath
@@ -434,8 +435,32 @@ _KNOWN_FIELDS = frozenset(
         "agentTools",
         "credentialMasks",
         "agentReadOnlyDirs",
+        "fileDigests",
     }
 )
+
+#: Domain tag of the bytes an App Kit signature covers. A signature made over any
+#: other payload (including scheme 1, which covered a fixed projection of the
+#: manifest and no file) does not verify.
+APP_SIGNATURE_SCHEME = "kiro-crew-app/2"
+
+#: Manifest keys a signature leaves out: the signature itself, and the per-locale
+#: listing copy, which is content rather than authority (translating an app must
+#: not invalidate its signature; see L10nConfig).
+_UNSIGNED_KEYS = frozenset({"signature", "l10n"})
+
+
+def _file_digests(value: object) -> dict[str, str]:
+    """``fileDigests`` as a str-to-str dict; any other shape reads as absent.
+
+    Only shape is read here. Whether the paths are well formed and match the tree
+    is ``apps.signed_content.inventory_mismatch``'s question, asked by admission
+    when a signature is required, so a malformed value never refuses an install
+    under a policy that does not look at it.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 def _optional_text(value: Any) -> str:
@@ -467,6 +492,8 @@ class AppManifest:
     minKiroCrewVersion: str = ""  # noqa: N815
     signer: str = ""  # publisher/signer id, keyed into the fleet admission trust_keys
     signature: str = ""  # detached signature over signing_payload() (verified by admission)
+    # Packaged-file path -> SHA-256 hex (apps.signed_content), signed with the rest.
+    fileDigests: dict[str, str] = field(default_factory=dict)  # noqa: N815
 
     # --- Agent resources ---
     agents: list[str] = field(default_factory=list)  # paths to agent JSON files
@@ -536,6 +563,11 @@ class AppManifest:
 
     # --- Forward compatibility ---
     extra: dict[str, Any] = field(default_factory=dict)
+
+    # The app.json document as parsed, before any normalization: what
+    # ``signing_payload`` signs, so a key a reader takes from the raw document is
+    # covered exactly as written.
+    source_document: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     # -----------------------------------------------------------------
     # Validation
@@ -864,214 +896,23 @@ class AppManifest:
         return errors
 
     def signing_payload(self) -> bytes:
-        """Canonical bytes an admission signature covers (manifest minus the
-        signature). Dict keys are sorted for determinism; note the channels
-        list keeps its manifest order, so reordering channel declarations is
-        a signature-relevant change (intentional -- the signed bytes track
-        the manifest as written)."""
-        body: dict[str, Any] = {
-            "name": self.name,
-            "version": self.version,
-            "signer": self.signer,
-            "permissions": self.permissions.to_dict(),
-        }
-        if self.config_keys:
-            body["config_keys"] = sorted(self.config_keys)
-        if self.credentialMasks:
-            # Dropping an entry unmasks one of the app's credential files, so tampering
-            # must invalidate the signature. Only when non-empty, so a manifest signed
-            # before this key existed keeps producing the identical payload.
-            body["credentialMasks"] = sorted(self.credentialMasks)
-        if self.agentReadOnlyDirs:
-            # Dropping an entry lets agents write a directory the app fences, so tampering
-            # must invalidate the signature. Only when non-empty, like the masks above.
-            body["agentReadOnlyDirs"] = sorted(self.agentReadOnlyDirs)
-        if self.notifications.channels:
-            # Channel declarations gate what an app may push and at which
-            # default priority -- tampering must invalidate the signature.
-            # Included only when non-empty so manifests signed before
-            # notifications existed keep producing the identical payload.
-            body["notifications"] = self.notifications.to_dict()
-        if self.crons:
-            # Cron declarations can carry `command`/`script` -- a direct
-            # code-execution surface. Tampering with a signed app's cron
-            # definitions (e.g. swapping the shell command) must invalidate
-            # the signature: vetting bounds the SYNTAX of what runs, but only
-            # the signature authenticates PUBLISHER INTENT. Each entry's
-            # canonical to_dict() (list order preserved -- reordering is a
-            # signature-relevant change) covers name/schedule/agent/message/
-            # command/script/env. Included only when non-empty so manifests
-            # signed before crons existed keep producing the identical payload.
-            body["crons"] = [c.to_dict() for c in self.crons]
-        if (
-            self.contributes.commands
-            or self.contributes.sessionControls
-            or self.contributes.panelTabs
-            or self.contributes.fileMenuItems
-            # A link-preview `entry` is an ESM module the dashboard imports and runs
-            # in its own origin, like a panel tab's: same reason to sign it.
-            or self.contributes.linkPreviews
-            # A message action's roles and format decide which text the app is handed.
-            or self.contributes.messageActions
-            # A link-open `entry` is the same kind of module, and `hosts` decides which
-            # clicked links the app is handed.
-            or self.contributes.linkOpen
-            or self.contributes.composerActions
-            or self.contributes.selectionActions
-        ):
-            # A contributed command's `prompt` is sent to an agent with tools as if
-            # the reader typed it, and `autoSend` fires it without a further
-            # keystroke -- the same class of surface as a cron's `command`/`script`
-            # one clause up, and for the same reason: vetting bounds the SHAPE of a
-            # contribution, but only the signature authenticates PUBLISHER INTENT.
-            # Left out, a signed app's rows would be the one part of it an attacker
-            # could rewrite with the signature still verifying, and the reader's
-            # trust in the signature is precisely what would carry the tampered
-            # prompt into a session.
-            #
-            # `argument` rides along inside each entry's canonical to_dict(), which
-            # matters as much as the prompt: widening a matcher (`kind: url` with a
-            # host allowlist -> `text`) does not change a single visible character of
-            # the row, and it is what decides whether the value spliced into that
-            # prompt was checked at all.
-            #
-            # List order preserved, so reordering is a signature-relevant change.
-            # Included only when non-empty, so manifests signed before contributions
-            # existed keep producing the identical payload -- and an app contributing
-            # only commands produces the same bytes it did before panel tabs and file
-            # menus existed.
-            #
-            # `panelTabs` is in the guard for a sharper version of the same reason: a
-            # tab's `entry` names an ESM module the AppHost imports and RUNS in the
-            # dashboard's own origin. Guarding on commands/sessionControls alone left a
-            # panelTabs-ONLY manifest out of the payload entirely, so its `entry` was
-            # the one part of a signed app an attacker could repoint with the signature
-            # still verifying.
-            #
-            # A contributed file-menu row is covered for the same reason at one remove:
-            # its `endpoint` is where the host POSTs the path of a file the reader picked,
-            # so rewriting it on a signed app redirects that dispatch while every visible
-            # character of the row, and the signature, stay exactly as published.
-            body["contributes"] = self.contributes.to_dict()
-        setup_d = self.setup.to_dict()
-        if setup_d:
-            # `onInstall`/`onUpdate`/`onUninstall`/`onEnable`/`onDisable` are shell
-            # text `run_lifecycle_script` hands to `/bin/bash -c`. The string IS the
-            # program -- no file in the package has to exist for it to run -- so a
-            # manifest-only rewrite of a published app buys execution outright. Same
-            # reason `crons` is covered one clause up: vetting bounds the SYNTAX of
-            # what runs, only the signature authenticates PUBLISHER INTENT.
-            # Included only when non-empty so manifests signed before setup was
-            # covered keep producing the identical payload.
-            body["setup"] = setup_d
-        if self.mcpServers:
-            # Each entry's `command`/`args`/`env` is written into the agent config
-            # kiro-cli reads and SPAWNS (`bridges._register_mcp_servers`). Like
-            # `setup`, the executed argv lives in the manifest itself, so this is the
-            # one part of a signed app whose program an attacker could swap with the
-            # signature still verifying.
-            # Included only when non-empty so manifests signed before mcpServers was
-            # covered keep producing the identical payload.
-            body["mcpServers"] = dict(self.mcpServers)
-        backend_d = self.backend.to_dict()
-        if backend_d:
-            # `hooks.*` names a module:callable `module_loader.load_app_module`
-            # imports INTO THE GATEWAY PROCESS, and `entryPoint` + `type` select the
-            # file and interpreter `_start_app_backend_body` spawns. These are
-            # selectors rather than literal argv, so repointing one at a module that
-            # already sits in an otherwise untouched package is enough -- and a
-            # manifest-only tamper is precisely what the signature is the sole
-            # detector for.
-            # The whole canonical dict, not the executed keys alone: cherry-picking
-            # leaves `port`/`healthCheck`/`routes` as residue an attacker may still
-            # move, and one guard is smaller than four.
-            # Included only when non-empty so manifests signed before backend was
-            # covered keep producing the identical payload.
-            body["backend"] = backend_d
-        ui_d = self.ui.to_dict()
-        if ui_d:
-            # `entry` and every `pages[].entryPoint` name an ESM module the dashboard
-            # builds `/apps/<name>/ui/<path>` from and dynamic-`import()`s in its OWN
-            # origin (`website/src/components/AppHost.tsx`) -- the same surface
-            # `contributes.panelTabs[].entry` is covered for one clause up. Outside the
-            # payload, the derivative is signed and the original is not.
-            # The whole canonical dict, not the two executed keys alone: a
-            # `pages[].route` decides which URL serves that bundle, and a page's
-            # `label`/`icon` plus `sidebar` are the whole of what the reader sees
-            # before clicking it -- so cherry-picking the entry paths leaves the
-            # routing and the presentation of an attacker-chosen bundle as residue.
-            # Included only when non-empty so manifests signed before ui was covered
-            # keep producing the identical payload.
-            body["ui"] = ui_d
-        if self.agents:
-            # Each path names a JSON agent spec `bridges._register_agents` writes into
-            # the user's agents dir, carrying its own `tools`/`allowedTools`/`model`/
-            # `prompt`. APPENDING one entry is enough to get an attacker-authored agent
-            # materialized, and the same guard covers that: the payload is recomputed
-            # from the manifest as received, so a package that GAINS an `agents` key
-            # gains it in the signed bytes too and the signature stops matching.
-            # Included only when non-empty so manifests signed before agents was
-            # covered keep producing the identical payload. List order preserved.
-            body["agents"] = list(self.agents)
-        if self.skills:
-            # `bridges._register_skills` symlinks each directory into the skills root,
-            # both namespaced and flat, so a repointed entry puts attacker-authored
-            # skill instructions where an agent reads them as its own.
-            # Included only when non-empty so manifests signed before skills was
-            # covered keep producing the identical payload. List order preserved.
-            body["skills"] = list(self.skills)
-        if self.sops:
-            # Same shape as `skills` one clause up: the file's text becomes procedure an
-            # agent follows, and only the signature authenticates whose text it is.
-            # Included only when non-empty so manifests signed before sops was covered
-            # keep producing the identical payload. List order preserved.
-            body["sops"] = list(self.sops)
-        dependencies_d = self.dependencies.to_dict()
-        if dependencies_d:
-            # `capabilities.mcp` is an id `dependencies.resolve_dependencies` hands to
-            # `CapabilityManager.install_mcp` AT INSTALL TIME, so a swapped id installs
-            # an attacker's MCP server -- whose command an agent then spawns -- under
-            # the publisher's signature.
-            # The whole canonical dict, not `capabilities` alone: `managedBy` is the
-            # switch deciding whether the gateway installs the capability at all, and
-            # `commands`/`optionalCommands` name host executables the install chain
-            # probes and reports as missing.
-            # Included only when non-empty so manifests signed before dependencies was
-            # covered keep producing the identical payload.
-            body["dependencies"] = dependencies_d
-        platform_d = self.platform.to_dict()
-        if platform_d:
-            # `clientInstall.shell` is a one-liner the App Store hands the reader to
-            # PASTE INTO A TERMINAL -- `install_from_registry` returns the whole `clientInstall`
-            # dict with `needsClientInstall: True`, under a signature-verified publisher badge.
-            # No file in the package has to exist for it to run, which is the property
-            # that put `setup` in the payload.
-            # The whole canonical dict, not `clientInstall` alone: `installMode:
-            # "client"` is what makes that block reach the reader at all, so signing the
-            # one-liner without the switch that surfaces it is the cherry-pick this
-            # method avoids everywhere else.
-            # Included only when non-empty so manifests signed before platform was
-            # covered keep producing the identical payload.
-            body["platform"] = platform_d
-        desktop_d = self.desktop.to_dict()
-        if desktop_d:
-            # Each window's `entry` is an ESM module run in the dashboard's origin, and
-            # each shortcut claims a system-wide chord, so both are publisher intent.
-            # Included only when non-empty so earlier manifests keep their payload.
-            body["desktop"] = desktop_d
-        publish_provider_d = self.publishProvider.to_dict()
-        if publish_provider_d:
-            # `endpoint` is where the artifact page POSTs the reader's artifact, like the
-            # signed `contributes.fileMenuItems[].endpoint`. Non-empty only, so manifests
-            # that never declared it keep producing the identical payload.
-            body["publishProvider"] = publish_provider_d
-        agent_tools_d = self.agentTools.to_dict()
-        if agent_tools_d:
-            # A tool's description is text every agent reads as an instruction, and
-            # `route` decides which of the app's routes its calls reach. Non-empty only,
-            # so manifests that never declared tools keep producing the identical payload.
-            body["agentTools"] = agent_tools_d
-        return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        """Canonical bytes an admission signature covers (scheme 2).
+
+        The whole manifest document as published, minus ``_UNSIGNED_KEYS``, under
+        the ``APP_SIGNATURE_SCHEME`` tag: sorted keys, compact separators, UTF-8.
+        Every key is in, known or not, so a field added later is covered without a
+        change here, and ``fileDigests`` binds the bytes of every packaged file
+        (``apps.signed_content``). The document is the one ``from_dict`` received;
+        a manifest built in code signs its ``to_dict()``.
+
+        Raises ``TypeError``/``ValueError`` when the document is not JSON data.
+        """
+        document = self.source_document or self.to_dict()
+        body = {k: v for k, v in document.items() if k not in _UNSIGNED_KEYS}
+        payload = {"scheme": APP_SIGNATURE_SCHEME, "manifest": body}
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+            "utf-8"
+        )
 
     # -----------------------------------------------------------------
     # Serialization
@@ -1095,6 +936,8 @@ class AppManifest:
             d["signer"] = self.signer
         if self.signature:
             d["signature"] = self.signature
+        if self.fileDigests:
+            d["fileDigests"] = dict(self.fileDigests)
         if self.agents:
             d["agents"] = self.agents
         if self.skills:
@@ -1278,6 +1121,7 @@ class AppManifest:
             minKiroCrewVersion=str(data.get("minKiroCrewVersion", "")),  # noqa: N815
             signer=str(data.get("signer", "")),
             signature=str(data.get("signature", "")),
+            fileDigests=_file_digests(data.get("fileDigests")),  # noqa: N815
             agents=[
                 str(a)
                 for a in (data["agents"] if isinstance(data.get("agents"), list) else [])
@@ -1332,6 +1176,7 @@ class AppManifest:
                 if j
             ],
             extra=extra,
+            source_document=copy.deepcopy(data),
         )
 
     @classmethod

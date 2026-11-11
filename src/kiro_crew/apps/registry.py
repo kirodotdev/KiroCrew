@@ -302,7 +302,11 @@ async def _run_app_build(
         log_lines.append("No build step detected — using source as-is")
         return {"ok": True}
 
+    from kiro_crew.apps.signed_imports import registry_pycache_prefix_env
+
     for cmd in build_cmds:
+        build_env = minimal_env()
+        build_env.update(await asyncio.to_thread(registry_pycache_prefix_env, app_name, build_dir))
         log_lines.append(f"Running {' '.join(cmd)} in {build_dir}...")
         sandboxed_cmd, _cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
@@ -313,7 +317,7 @@ async def _run_app_build(
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=platform_compat.IS_POSIX,
             creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-            env=minimal_env(),
+            env=build_env,
         )
         assert proc.stdout is not None
 

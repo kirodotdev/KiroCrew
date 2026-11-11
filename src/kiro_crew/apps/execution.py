@@ -437,6 +437,41 @@ def is_builtin_app(*, app_root: Path | None = None, app_name: str | None = None)
     return shipped_root is not None and resolved.is_relative_to(shipped_root)
 
 
+def is_installed_builtin_app(app_name: str) -> bool:
+    """Whether the active install owns shipped code, including its backend target.
+
+    Ownership can only narrow shipped provenance. A forged builtin record must
+    not exempt a file backend that actually executes from the installed tree.
+    """
+    from kiro_crew.apps.manager import app_dir, builtin_owns_installed, get_app_manifest
+    from kiro_crew.apps.manifest import AppManifest, is_module_style_entry_point
+
+    shipped = shipped_builtin_app_root(app_name)
+    if shipped is None or not builtin_owns_installed(app_name):
+        return False
+    manifest = get_app_manifest(app_name)
+    if manifest is None:
+        return False
+    try:
+        shipped_entry = AppManifest.from_json_file(shipped / "app.json").backend.entryPoint
+    except (OSError, TypeError, ValueError):
+        return False
+    entry = manifest.backend.entryPoint
+    # The installed manifest is mutable: it must declare the shipped backend
+    # (or the shipped absence of one) before the shipped exemption applies.
+    if entry != shipped_entry:
+        return False
+    if not entry:
+        return True
+    root = app_dir(app_name)
+    executed = (
+        shipped_builtin_module_path(app_name, entry)
+        if is_module_style_entry_point(entry, root)
+        else root / entry
+    )
+    return is_builtin_app(app_name=app_name, app_root=executed)
+
+
 def third_party_execution_allowed() -> bool:
     """Return the operator's explicit third-party execution decision.
 

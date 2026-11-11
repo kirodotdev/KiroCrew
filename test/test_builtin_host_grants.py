@@ -152,11 +152,12 @@ def test_the_boot_wave_spawns_every_app_together(monkeypatch) -> None:
     monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
     monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
     monkeypatch.setattr(bmod, "get_app_manifest", lambda name: None)
+    monkeypatch.setattr(bmod, "app_execution_denied", lambda *args, **kwargs: None)
     apps = [
         {
             "name": n,
             "enabled": True,
-            "origin": "builtin",
+            "origin": "local",
             "manifest": {"backend": {"entryPoint": "s.py"}},
         }
         for n in ("app-a", "app-b", "app-c")

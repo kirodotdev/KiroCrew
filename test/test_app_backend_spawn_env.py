@@ -26,8 +26,8 @@ class TestBootAdmissionRevet:
     """start_enabled_app_backends re-vets admission at boot (Kiro Crew parity).
 
     An app enabled before a policy tightened (banned / now-unsigned) must NOT
-    keep running across restarts, but builtins (origin == "builtin") are exempt
-    so trusted first-party apps still boot under require_signature.
+    keep running across restarts. A shipped package root, not the installed
+    record's origin claim, proves which builtins stay exempt under require_signature.
     """
 
     def _boot_env(self, monkeypatch):
@@ -88,13 +88,21 @@ class TestBootAdmissionRevet:
             }
         ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        # Shipped provenance (execution.is_installed_builtin_app, covered with real
+        # installs in test_app_signed_round4.py) is what exempts a builtin here.
+        monkeypatch.setattr(bmod, "_is_installed_builtin_app", lambda name: name == "core-builtin")
         monkeypatch.setattr(
             bmod,
             "_read_installed",
             lambda _name: SimpleNamespace(origin="builtin"),
         )
+        monkeypatch.setattr(
+            bmod,
+            "shipped_builtin_app_root",
+            lambda name: tmp_path if name == "core-builtin" else None,
+        )
         bmod.start_enabled_app_backends()
-        # Builtin is exempt from the gate — start_app_backend was invoked for it.
+        # Shipped provenance admits the unsigned backend at both boot gates.
         assert "core-builtin" in started
 
     def test_backends_spawn_in_one_wave_with_the_bound_port_set(

@@ -47,6 +47,12 @@ There is no second rendered agent file: Kiro Crew's provider is ACP-only, and
 non-kiro ACP harnesses consume projected configuration rather than another Kiro
 agent file.
 
+App-contributed Python stdio entries under a signature policy select their fresh
+bytecode cache using a final interpreter `-X pycache_prefix=...` option as well as
+the environment. Authored cache selections in the interpreter prefix are removed;
+isolation flags stay intact, and arguments after the launch target are never
+rewritten. Other commands and the no-policy path retain their argv.
+
 ### Provider-global scopes come from the platform seam, not the core
 
 A provider-specific global (Claude Code's `~/.claude.json`, for example) is

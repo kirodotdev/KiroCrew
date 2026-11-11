@@ -1175,6 +1175,19 @@ Examples:
             "app's install directory (e.g. a ui/ symlinked to your source tree)"
         ),
     )
+    app_sign = app_sub.add_parser(
+        "sign",
+        help="Sign an app directory for a fleet whose admission policy requires signatures",
+    )
+    app_sign.add_argument("source", help="Path to the app directory containing app.json")
+    app_sign.add_argument(
+        "--signer", required=True, help="Publisher id the fleet's trust_keys entry names"
+    )
+    app_sign.add_argument(
+        "--key-file",
+        required=True,
+        help="File holding the shared signing secret (the secret never goes on the command line)",
+    )
     app_init = app_sub.add_parser("init", help="Scaffold a new app")
     app_init.add_argument("name", help="App name (kebab-case)")
     app_init.add_argument("--dir", default=".", help="Output directory (default: current)")

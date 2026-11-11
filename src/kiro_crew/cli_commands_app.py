@@ -618,6 +618,31 @@ def _print_pointer_cleanup(name: str, cleanup: SessionPointerCleanup) -> None:
         )
 
 
+def _handle_app_sign(args: argparse.Namespace) -> None:
+    """``kirocrew app sign``: write ``signer``, ``fileDigests`` and ``signature``."""
+    from kiro_crew.apps.signed_content import sign_app_dir  # only this command signs
+
+    try:
+        secret = Path(args.key_file).expanduser().read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"❌ cannot read the key file: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not secret:
+        print("❌ the key file is empty", file=sys.stderr)
+        sys.exit(1)
+    try:
+        document = sign_app_dir(Path(args.source).expanduser(), signer=args.signer, secret=secret)
+    except (OSError, ValueError) as exc:
+        print(f"❌ cannot sign {args.source}: {exc}", file=sys.stderr)
+        sys.exit(1)
+    files = len(document.get("fileDigests") or {})
+    print(f"✅ Signed {document.get('name', '?')} as {args.signer!r} ({files} packaged files).")
+    print(
+        "   Install it exactly as signed: any later change to a packaged file, "
+        "including one an install-time build makes, fails admission."
+    )
+
+
 def _handle_app(args: argparse.Namespace) -> None:
     """Dispatch app subcommands: install, list, enable, disable, uninstall, info."""
     action = getattr(args, "app_action", None)
@@ -631,6 +656,10 @@ def _handle_app(args: argparse.Namespace) -> None:
 
     if action == "import":
         _handle_app_import(args)
+        return
+
+    if action == "sign":
+        _handle_app_sign(args)
         return
 
     if action == "install":

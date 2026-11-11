@@ -114,9 +114,8 @@ class CronEntry:
             d["skip_dates"] = self.skip_dates
         if self.folder:
             d["folder"] = self.folder
-        # Present only when set, like the calendar fields: signing_payload
-        # folds to_dict() into the signed body, so an unset value must not
-        # change an already-signed manifest's payload.
+        # Present only when set, like the calendar fields, so a round trip
+        # writes back exactly what the manifest declared.
         if self.timeout:
             d["timeout"] = self.timeout
         if self.timeout_secs:
@@ -743,9 +742,9 @@ def lifecycle_timeout_seconds(value: Any, *, app_name: str = "", field_name: str
     """:func:`clamp_lifecycle_timeout` where a script is about to run, logging a clamp.
 
     This is the only place the bound is applied. ``SetupConfig`` keeps the value as
-    ``int()`` read it, because ``setup`` is part of ``AppManifest.signing_payload``:
-    clamping it there would change the signed bytes of a manifest published with,
-    say, ``600``, and its signature would stop verifying. The enable route and the
+    ``int()`` read it, so the installed record carries what the publisher wrote (a
+    manifest published with, say, ``600`` still installs), and the bound applies only
+    where the script runs. The enable route and the
     disable teardown call this once per script run, so the warning is not repeated
     by listings. ``None`` (the key is absent) is the default with no warning.
     """
@@ -786,10 +785,9 @@ class SetupConfig:
     # unsupported-platform reason before any spawn. (`onInstall` runs in the
     # separate install transaction and is not covered by that refusal.) See
     # docs/app-kit/manifest-reference.md ("setup — Lifecycle Scripts").
-    # Seconds as `int()` reads the manifest value, NOT clamped: `setup` is signed
-    # (AppManifest.signing_payload), so the parsed value must stay what the publisher
-    # signed. lifecycle_timeout_seconds clamps it to 1..LIFECYCLE_SCRIPT_TIMEOUT_MAX
-    # where the script runs.
+    # Seconds as `int()` reads the manifest value, NOT clamped, so the record keeps
+    # what the publisher wrote. lifecycle_timeout_seconds clamps it to
+    # 1..LIFECYCLE_SCRIPT_TIMEOUT_MAX where the script runs.
     onEnableTimeout: int = LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT  # noqa: N815
     onDisableTimeout: int = LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT  # noqa: N815
     configSchema: dict[str, Any] = field(default_factory=dict)  # noqa: N815

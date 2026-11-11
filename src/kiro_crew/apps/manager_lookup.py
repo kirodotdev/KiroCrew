@@ -709,13 +709,15 @@ def set_app_provenance(
     registry: str = "",
     commit: str = "",
     signer: str = "",
+    subdirectory: str = "",
 ) -> bool:
     """Record the full install provenance of a registry-installed app.
 
     Superset of :func:`set_app_source`: alongside the bare ``registry:<name>``
     marker it persists WHICH source the app actually came from (*url* plus the
     originating external *registry* id, empty for the bundled catalog), the
-    *commit* resolved in that source clone, and the verified *signer* if the
+    clone-relative *subdirectory*, the *commit* resolved in that source clone,
+    and the verified *signer* if the
     admission layer verified one.  Updates resolve from these fields instead of
     re-looking-up the bare name, so a same-named entry published by a different
     registry source cannot capture an installed app's updates.
@@ -736,6 +738,7 @@ def set_app_provenance(
             source=source,
             sourceUrl=url,
             sourceRegistry=registry,
+            sourceSubdirectory=subdirectory,
             sourceCommit=commit,
             sourceSigner=signer,
         ),

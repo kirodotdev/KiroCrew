@@ -44,17 +44,21 @@ def _connections() -> dict[str, dict]:
         _load_mcp_json_by_source,
         _scope_priority,
     )
+    from kiro_crew.mcp_provenance import APP_KEY
     from kiro_crew.mcp_utils import kiro_oauth_wire_entry
 
     # Select one whole configured definition. Do not reconstruct a transport
     # from display metadata, which omits timeout and native OAuth options.
+    # The rendered spec's app-provenance record is not part of a transport.
     sources = _load_mcp_json_by_source()
     result = dict(_load_agent_config().get("mcpServers", {}))
     for scope in _scope_priority(sources):
         for name, spec in sources.get(scope, {}).items():
             result.setdefault(name, spec)
     return {
-        name: kiro_oauth_wire_entry(spec, store_entry=None, server=name)
+        name: kiro_oauth_wire_entry(
+            {k: v for k, v in spec.items() if k != APP_KEY}, store_entry=None, server=name
+        )
         for name, spec in result.items()
         if isinstance(spec, dict)
     }

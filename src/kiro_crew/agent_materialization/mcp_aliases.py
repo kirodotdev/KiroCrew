@@ -20,7 +20,7 @@ from typing import Any
 from kiro_crew import agent as agent_mod
 from kiro_crew import user_json
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
-from kiro_crew.mcp_provenance import DERIVED_KEY
+from kiro_crew.mcp_provenance import APP_KEY, DERIVED_KEY
 from kiro_crew.mcp_utils import mcp_server_alias
 
 
@@ -43,6 +43,24 @@ def _norm_mcp_spec(spec: Any) -> Any:
     return {
         k: v for k, v in spec.items() if k != DERIVED_KEY and not (k in ("env", "args") and not v)
     }
+
+
+def _same_server(spec: Any, other: Any) -> bool:
+    """Whether two ``mcpServers`` entries launch the same server, for dedup.
+
+    :func:`_norm_mcp_spec` plus :data:`~kiro_crew.mcp_provenance.APP_KEY`, which
+    records which app the rebuild collected an entry from, not how it launches. It
+    is compared away but kept on the stored entry, so the final merge can still put
+    the entry through its app's admission after this pass strips the prefix.
+    """
+
+    def _launch(value: Any) -> Any:
+        value = _norm_mcp_spec(value)
+        return (
+            {k: v for k, v in value.items() if k != APP_KEY} if isinstance(value, dict) else value
+        )
+
+    return bool(_launch(spec) == _launch(other))
 
 
 def _alias_family_base(key: str) -> str:
@@ -387,7 +405,7 @@ def _normalize_mcp_server_keys(
         # any already-suffixed sibling — instead of minting a new suffix, so
         # repeated re-merges converge rather than accumulate.
         alias = next(
-            (k for k in servers if _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec),
+            (k for k in servers if _is_family(k, base) and _same_server(servers[k], spec)),
             None,
         )
         if alias is None:
@@ -409,7 +427,7 @@ def _normalize_mcp_server_keys(
         for dup in [
             k
             for k in list(servers)
-            if k != alias and _is_family(k, base) and _norm_mcp_spec(servers[k]) == spec
+            if k != alias and _is_family(k, base) and _same_server(servers[k], spec)
         ]:
             del servers[dup]
             for source, target in renames.items():

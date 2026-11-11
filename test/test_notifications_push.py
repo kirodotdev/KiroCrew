@@ -678,8 +678,8 @@ class TestSigningPayloadCoversNotifications:
         assert tampered.signing_payload() != signed.signing_payload()
 
     def test_no_channels_keeps_pre_phase2_payload_shape(self):
-        # Manifests signed before notifications existed must keep producing
-        # the identical payload (no key present when channels are empty).
+        # The signed bytes are the document as written, so a manifest that
+        # declares no channels carries no notifications key in them.
         m = AppManifest(name="a", version="1.0.0")
         assert b"notifications" not in m.signing_payload()
 

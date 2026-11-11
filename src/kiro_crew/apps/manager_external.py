@@ -378,6 +378,7 @@ def register_external_app(
                 meta.source = source
             meta.sourceUrl = requested_repository
             meta.sourceRegistry = ""
+            meta.sourceSubdirectory = ""
             meta.sourceCommit = ""
             meta.sourceSigner = ""
             meta.origin = origin

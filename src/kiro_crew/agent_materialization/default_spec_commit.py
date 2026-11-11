@@ -11,7 +11,9 @@ atomic write and committed after it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any, Callable
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.agent_materialization import auto_approve, mcp_aliases, mcp_sources
@@ -96,6 +98,39 @@ def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> di
     return apply_preregistered_oauth_client(entry, resolved)
 
 
+def _app_mcp_key_admitted(
+    key: str,
+    cache: dict[str, bool],
+    is_app_enabled: Callable[[str], Any],
+    get_app_manifest: Callable[[str], Any],
+    entries: Mapping[str, Iterable[Any]] | None = None,
+) -> bool:
+    """Whether app-namespaced MCP *key* may stay in the final locked merge.
+
+    Enabled is not enough: the same MCP registration decision the collector applies
+    (execution trust, fleet admission, signed content) decides, so a copy already on
+    disk cannot bring back what the collector refused. *entries* maps each app to
+    every entry this merge attributes to it, so the URL-only shortcut holds only
+    when none of them carries a command. A malformed installed.json or any other
+    error makes the app unverifiable, so its entries are dropped (fail closed);
+    they are re-derived from the manifest on the next clean rebuild. An app with
+    no readable name (:data:`mcp_sources.UNKNOWN_APP_OWNER`) is never admitted.
+    """
+    app = key.split(":", 1)[0]
+    if app not in cache:
+        try:
+            cache[app] = (
+                app != mcp_sources.UNKNOWN_APP_OWNER
+                and bool(is_app_enabled(app))
+                and not mcp_sources._app_mcp_admission_denied(
+                    app, get_app_manifest(app), (entries or {}).get(app, ())
+                )
+            )
+        except Exception:  # noqa: BLE001 — cannot verify → fail closed
+            cache[app] = False
+    return cache[app]
+
+
 def write_default_spec(
     path: Path,
     config: dict,
@@ -105,8 +140,13 @@ def write_default_spec(
     sources: mcp_sources.McpSources,
     resolved: mcp_sources.ResolvedServers,
     app_owned_at_start: dict[str, bool],
+    mounted_aliases: Mapping[str, str] | None = None,
 ) -> None:
-    """Write the default spec: the locked app re-merge, the final reconcile, the commit."""
+    """Write the default spec: the locked app re-merge, the final reconcile, the commit.
+
+    *mounted_aliases* is the key normalization's source key -> mounted key map, the
+    record of which source each slash-free key came from.
+    """
     kirocrew_mcp = sources.kirocrew
     shared_mcp = sources.kiro_global
     extra_shared_mcp = sources.provider_global
@@ -427,19 +467,31 @@ def write_default_spec(
                 # vanish. So drop an app server ONLY when its app is confirmed no
                 # longer enabled (a concurrent deregister), which is what actually
                 # resurrects a dead entry; keep it otherwise.
+                # Slash-free keys gated by app, by provenance (see
+                # mcp_sources.app_mcp_gate_owners), and every entry this merge
+                # attributes to each app, for that app's URL-only test.
+                _gate_owners: dict[str, frozenset[str]] = {}
+                _app_entries: dict[str, list[Any]] = {}
                 try:
-                    from kiro_crew.apps.manager import is_app_enabled
+                    from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+
+                    _app_admitted: dict[str, bool] = {}
 
                     def _app_of_key_enabled(_key: str) -> bool:
-                        try:
-                            return bool(is_app_enabled(_key.split(":", 1)[0]))
-                        except Exception:  # noqa: BLE001 — cannot verify → fail closed
-                            # A malformed installed.json makes enablement
-                            # unverifiable. Keeping the entry would leave a
-                            # deregistered/unknown app's MCP tools callable with no
-                            # way to confirm they should be — so drop it. It is
-                            # re-derived from the manifest on the next clean rebuild.
-                            return False
+                        if ":" in _key:
+                            return _app_mcp_key_admitted(
+                                _key, _app_admitted, is_app_enabled, get_app_manifest, _app_entries
+                            )
+                        return all(
+                            _app_mcp_key_admitted(
+                                f"{app}:",
+                                _app_admitted,
+                                is_app_enabled,
+                                get_app_manifest,
+                                _app_entries,
+                            )
+                            for app in _gate_owners[_key]
+                        )
 
                 except Exception:  # noqa: BLE001 — apps subsystem unavailable
 
@@ -465,15 +517,59 @@ def write_default_spec(
                     and ":" in _n
                     and mcp_server_alias(_n) not in _app_claimed
                 }
+                # A slashed composite loses its app prefix during normalization, so
+                # a slash-free key is attributed by where its entry came from: the
+                # normalization's source map and the entry's app record, never its
+                # name alone. The rebuild's own entry decides a key it holds; the
+                # on-disk copy decides only a key the rebuild does not hold.
+                _declared = (
+                    mcp_sources.declared_mcp_sources(
+                        (extra_shared_mcp, shared_mcp, kirocrew_mcp), _app_claimed
+                    )
+                    | managed_names
+                )
+                _sources_by_target: dict[str, list[str]] = {}
+                for _src, _target in (mounted_aliases or {}).items():
+                    _sources_by_target.setdefault(_target, []).append(_src)
+                _census = mcp_sources._app_mcp_alias_owners()
+                for _k, _entry in [
+                    *((k, v) for k, v in on_disk.items() if k not in servers),
+                    *servers.items(),
+                ]:
+                    if ":" in _k or _k in managed_names:
+                        continue
+                    _owners = mcp_sources.app_mcp_gate_owners(
+                        _k,
+                        _entry,
+                        sources_by_target=_sources_by_target,
+                        declared=_declared,
+                        census=_census,
+                        claimed_at_start=app_owned_at_start,
+                    )
+                    if _owners is not None:
+                        _gate_owners[_k] = _owners
                 on_disk_app = {
                     _k
                     for _k in on_disk
                     if ":" in _k and _k not in managed_names and _k not in _user_keys
                 }
+                for _src_map in (servers, on_disk):
+                    for _k, _entry in _src_map.items():
+                        if _k in managed_names or _k in _user_keys:
+                            continue
+                        _apps = (
+                            {_k.split(":", 1)[0]}
+                            if ":" in _k
+                            else _gate_owners.get(_k, frozenset())
+                        )
+                        for _app in _apps:
+                            _app_entries.setdefault(_app, []).append(_entry)
                 for _k in [
                     k
                     for k in servers
-                    if ":" in k and k not in managed_names and k not in _user_keys
+                    if (":" in k or k in _gate_owners)
+                    and k not in managed_names
+                    and k not in _user_keys
                 ]:
                     if not _app_of_key_enabled(_k):
                         del servers[_k]
@@ -482,8 +578,34 @@ def write_default_spec(
                     # for app servers, so a concurrent re-registration on a new
                     # port (same key, new URL) must OVERWRITE our stale snapshot —
                     # otherwise the dead pre-rebuild URL is persisted.
-                    if _k in on_disk_app:
+                    if _k in on_disk_app and _app_of_key_enabled(_k):
                         servers[_k] = _v
+                    # A slash-free app key is only ever written by a rebuild, so
+                    # its on-disk copy only fills a key this rebuild does not hold.
+                    elif _k in _gate_owners and _k not in servers and _app_of_key_enabled(_k):
+                        servers[_k] = _v
+                # A carried launch must retain a valid cache pin even when the
+                # locked read restored it; validation never allocates a cache.
+                for _k in list(servers):
+                    if _k in managed_names or _k in _user_keys:
+                        continue
+                    _launch_owners = (
+                        {_k.split(":", 1)[0]} if ":" in _k else _gate_owners.get(_k, frozenset())
+                    )
+                    try:
+                        from kiro_crew.apps.signed_mcp import app_mcp_launch_allowed
+
+                        if not all(
+                            app_mcp_launch_allowed(_app, servers[_k]) for _app in _launch_owners
+                        ):
+                            del servers[_k]
+                    except Exception:  # noqa: BLE001 -- no unpinned signed launch may escape
+                        del servers[_k]
+                        agent_mod.logger.warning(
+                            "Skipping app MCP server %s (launch validation failed)",
+                            _k,
+                            exc_info=True,
+                        )
             _finalize_and_write()
     else:
         _finalize_and_write()

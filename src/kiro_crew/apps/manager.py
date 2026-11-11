@@ -246,6 +246,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _validate_source_path,
         copy_app_tree_as_installed,
         gateway_data_dir_obstruction,
+        is_uncopied_name,
         preserved_data_awaits,
     )
     from kiro_crew.apps.manager_uninstall import (  # noqa: F401
@@ -329,6 +330,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.execution import (  # noqa: F401
         APP_NAME_RE,
         app_execution_denied,
+    )
+    from kiro_crew.apps.execution import (  # noqa: F401
+        is_installed_builtin_app as _is_installed_builtin_app,
+    )
+    from kiro_crew.apps.execution import (  # noqa: F401
         repository_bound_grant_denied,
         shipped_builtin_app_root,
     )

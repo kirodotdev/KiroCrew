@@ -1122,6 +1122,49 @@ def test_existing_connection_preserves_secret_transport_fields(editor):
     assert spec_for(home, specs)["mcpServers"]["search"] == parent["mcpServers"]["search"]
 
 
+def test_an_app_connection_from_the_rendered_spec_attaches_without_its_provenance(
+    editor, monkeypatch
+):
+    """The default spec stamps app entries with their app; that record is not a
+    transport field, so selecting the connection must still save."""
+    from kiro_crew import mcp_discovery
+    from kiro_crew.dashboard.handlers import agent_capabilities as handler
+    from kiro_crew.mcp_provenance import APP_KEY
+
+    _, home, specs, _ = editor
+    remote = {"url": "http://127.0.0.1:9100/mcp", "timeout": 30}
+    monkeypatch.setattr(
+        mcp_discovery,
+        "_load_agent_config",
+        lambda: {"mcpServers": {"playwright-mcp": {**remote, APP_KEY: "probe"}}},
+    )
+    monkeypatch.setattr(mcp_discovery, "_load_mcp_json_by_source", lambda: {})
+    connections = handler._connections()
+    assert APP_KEY not in connections["playwright-mcp"]
+    service = CapabilityService(connections=lambda: connections)
+    save(
+        service,
+        [
+            {
+                "section": "mcpServers",
+                "id": "playwright-mcp",
+                "action": "set",
+                "connection_id": "playwright-mcp",
+            }
+        ],
+        enroll=True,
+    )
+    assert spec_for(home, specs)["mcpServers"]["playwright-mcp"] == remote
+
+
+def test_editor_rows_omit_the_app_provenance_record():
+    from kiro_crew.agent_capabilities import _rows
+    from kiro_crew.mcp_provenance import APP_KEY
+
+    rows = _rows({"mcpServers": {"tools": {"url": "http://127.0.0.1:1/mcp", APP_KEY: "probe"}}}, {})
+    assert rows["mcpServers"]["tools"] == {"url": "http://127.0.0.1:1/mcp"}
+
+
 @pytest.mark.parametrize("failed_step", ["spec", "receipt"])
 def test_failed_reconciliation_recovers_on_retry(editor, monkeypatch, failed_step):
     import kiro_crew.agent_capabilities as capabilities

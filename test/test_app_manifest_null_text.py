@@ -4,10 +4,10 @@
 through ``str()``; a ``null`` must not reach it, or ``"author": null`` reads as
 the author "None" on the app's detail page.
 
-``permissions.memory`` keeps its ``str()`` form here on purpose: the admission
-signature covers ``permissions.to_dict()``, so changing what a ``false`` stores
-would invalidate apps signed before. The page reads "False"/"None" as no
-request instead (``memoryAccessLabel.memoryRequested``).
+``permissions.memory`` keeps its ``str()`` form here: the page reads
+"False"/"None" as no request (``memoryAccessLabel.memoryRequested``). The
+admission signature covers the app.json document as written, so neither
+normalization changes what a signature covers.
 """
 
 from __future__ import annotations
@@ -31,11 +31,14 @@ def test_a_present_optional_text_field_is_kept(field: str) -> None:
     assert getattr(m, field) == "Acme"
 
 
-def test_a_null_author_or_licence_does_not_change_the_signed_bytes() -> None:
-    # Neither field is in the signing payload, so a signature made before still verifies.
+def test_the_signed_bytes_cover_author_and_licence_as_written() -> None:
+    # The signature covers the document, so author and licence are signed, and a
+    # null is signed as null rather than as the empty value the page shows.
     with_null = AppManifest.from_dict(_valid_manifest(author=None, license=None))
-    without = AppManifest.from_dict(_valid_manifest(author="Acme", license="MIT"))
-    assert with_null.signing_payload() == without.signing_payload()
+    with_text = AppManifest.from_dict(_valid_manifest(author="Acme", license="MIT"))
+    assert with_null.signing_payload() != with_text.signing_payload()
+    assert b'"author":null' in with_null.signing_payload()
+    assert b'"license":null' in with_null.signing_payload()
 
 
 @pytest.mark.parametrize("value", [False, None])

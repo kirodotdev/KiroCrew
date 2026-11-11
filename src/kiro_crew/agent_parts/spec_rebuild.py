@@ -722,7 +722,7 @@ def rebuild_agent_config(
     # See docs/architecture/mcp.md. CC global is kept only as a gap-filler so
     # the Claude Code provider can be re-enabled later without rework; it must
     # not shadow a Kiro-global entry.
-    sources = mcp_sources.merge_mcp_sources(config)
+    sources = mcp_sources.merge_mcp_sources(config, app_owned_at_start=_app_owned_at_start)
 
     # Resolve MCP commands to absolute paths and validate.
     #
@@ -869,6 +869,7 @@ def rebuild_agent_config(
                 sources=sources,
                 resolved=resolved,
                 app_owned_at_start=_app_owned_at_start,
+                mounted_aliases=mounted,
             )
             from kiro_crew import mcp_dropped_servers
             from kiro_crew.mcp_utils import mcp_server_alias

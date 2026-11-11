@@ -21,6 +21,7 @@ from kiro_crew.apps.module_loader import (
     cached_http_app_grant,
     load_app_module,
     resolve_loaded_callable,
+    verify_hook_source,
 )
 from kiro_crew.sel import sel
 
@@ -62,6 +63,18 @@ _DETACHED_HOOK_TASKS: dict[str, set[asyncio.Task[Any]]] = {}
 # Destructive lifecycle operations therefore fail closed instead of withdrawing
 # trust or replacing files while that worker may still hold AppContext powers.
 _DETACHED_HOOK_RESIDUALS: set[str] = set()
+
+
+def _hook_root(app_name: str):
+    """The root an installed app's hook code loads from.
+
+    The same root its routes use: under a signature policy a signed
+    self-managed app runs from its publisher checkout, not the metadata-only
+    ``apps/<name>`` directory. Blocking (one stat).
+    """
+    from kiro_crew.apps.admission import signed_execution_root
+
+    return signed_execution_root(app_name, app_dir(app_name))
 
 
 def app_has_retained_startup(app_name: str) -> bool:
@@ -400,7 +413,7 @@ class LifecycleDispatcher:
                     f"module {shipped_root.name}.{dotted} (app={app_name})"
                 )
             return func
-        return load_app_module(app_name, app_dir(app_name), hook_path)
+        return load_app_module(app_name, _hook_root(app_name), hook_path)
 
     async def _prepare_context(self, app_info: dict[str, Any], *, phase: str) -> AppContext:
         """Create the app's data dir off the loop, then build its context on it.
@@ -530,6 +543,12 @@ class LifecycleDispatcher:
             if phase == "shutdown":
                 func = resolve_loaded_callable(app_name, hook_path)
             if func is None:
+                # The signed-content check hashes the tree: off the loop, first.
+                # The load that follows on this task takes the prepared verdict.
+                if shipped_builtin_app_root(app_name) is None:
+                    await asyncio.to_thread(
+                        verify_hook_source, app_name, _hook_root(app_name), hook_path
+                    )
                 func = self._resolve_hook(app_name, hook_path)
             if func is None:
                 raise ImportError(f"hook {hook_path!r} did not resolve for app {app_name!r}")

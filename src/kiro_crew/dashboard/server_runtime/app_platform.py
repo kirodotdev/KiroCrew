@@ -124,7 +124,10 @@ async def _start_app_backends(app: web.Application, state: DashboardState) -> No
     )
     if started_apps:
         logger.info("Started %d app backend(s): %s", len(started_apps), ", ".join(started_apps))
+    # The boot pass ran off the loop; its signature refusals reach the bell from here.
+    from kiro_crew.apps.boot_refusal_notice import deliver_boot_refusal_notes
 
+    deliver_boot_refusal_notes(state)
     # Both adapters are shared with the enable path (apps/routes_enable.py) so the two
     # entry points cannot drift into giving an app different capabilities.
     from kiro_crew.apps.event_bus import build_broadcast_fn

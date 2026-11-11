@@ -470,11 +470,15 @@ async def _clone_build_app_locked(
     if setup_errors:
         denied = f"invalid app.json: {'; '.join(setup_errors)}"
     else:
+        # The checkout as fetched, before anything in it runs: under
+        # require_signature it must be exactly the signed tree.
         denied = await asyncio.to_thread(
             app_admission_denied,
             app_name,
             manifest=cloned_app_manifest,
             action="install_from_registry",
+            app_root=app_source,
+            fresh_checkout=not checkout_preexisted,
         )
     if denied:
         log_lines.append(_refusal_line(verb, f"blocked by admission policy: {denied}"))

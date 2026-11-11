@@ -930,11 +930,14 @@ async def install_from_registry(
         # install_app/update_app will actually register, and a build step can
         # rewrite app.json; a manifest that does not satisfy the admission
         # policy (e.g. signature required but absent) must not install.
+        # With the tree too: under require_signature the build may not add,
+        # remove or change a packaged file before `onInstall` runs from it.
         denied = await asyncio.to_thread(
             app_admission_denied,
             name,
             manifest=AppManifest.from_dict(manifest_data),
             action="install_from_registry",
+            app_root=app_source,
         )
         if denied:
             log_lines.append(_refusal_line(verb, f"blocked by admission policy: {denied}"))
@@ -1036,12 +1039,18 @@ async def install_from_registry(
                 base_cmd, mode="standard", _prepare=wrap_argv
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
+            from kiro_crew.apps.signed_imports import registry_pycache_prefix_env
+
+            script_env = minimal_env(NONINTERACTIVE="1")
+            script_env.update(
+                await asyncio.to_thread(registry_pycache_prefix_env, name, app_source)
+            )
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 cwd=str(app_source),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                env=minimal_env(NONINTERACTIVE="1"),
+                env=script_env,
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
@@ -1203,6 +1212,7 @@ async def install_from_registry(
                 name,
                 manifest=AppManifest.from_dict(manifest_data),
                 action="install_from_registry",
+                app_root=app_source,
             )
             if denied:
                 log_lines.append(_refusal_line(verb, f"blocked by admission policy: {denied}"))
@@ -1478,6 +1488,7 @@ async def install_from_registry(
                 registry=source_registry,
                 commit=source_commit,
                 signer=source_signer,
+                subdirectory=subdirectory,
             )
             # The registration wrote a manifest that can declare config_keys;
             # republish the snapshot config validation reads, as install_app
@@ -1557,6 +1568,7 @@ async def install_from_registry(
                 registry=source_registry,
                 commit=source_commit,
                 signer=source_signer,
+                subdirectory=subdirectory,
             )
             # Retained moved-aside checkouts are reported by the `finally`-owned
             # reporter (durable_success is True, filter_restorable=False), so a

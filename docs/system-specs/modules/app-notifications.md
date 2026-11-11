@@ -63,7 +63,7 @@ An app reads and acknowledges the notes it pushed, and nothing else, so its page
 }
 ```
 
-`apps.manifest.NotificationsConfig.validate` requires unique kebab-case ids, names, and enum priorities; `test_notifications_push.py::TestNotificationsManifest::test_channel_cap_enforced` pins the channel-count bound. `AppManifest.signing_payload` includes non-empty channel declarations, so signed declarations and their defaults are tamper-evident. `test_no_channels_keeps_pre_phase2_payload_shape` pins the empty-channel payload shape.
+`apps.manifest.NotificationsConfig.validate` requires unique kebab-case ids, names, and enum priorities; `test_notifications_push.py::TestNotificationsManifest::test_channel_cap_enforced` pins the channel-count bound. `AppManifest.signing_payload` signs the manifest document as written, channel declarations included, so signed declarations and their defaults are tamper-evident. An absent `notifications` key stays absent in the signed bytes. A present `"notifications": {"channels": []}` is included, even though it declares no channels.
 
 ## Authorization
 

@@ -101,6 +101,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _changed_manifest_keys,
         _clip,
         _cron_defs_from_manifest,
+        _cron_restore_denied,
         _deregister_crons,
         _field_digest,
         _join_stamp,
@@ -145,6 +146,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _scrub_legacy_shared_mcp,
         _strip_deps_pythonpath,
         _targets_gateway_module,
+        _url_only_mcp_servers,
         _warn_unresolvable_stdio_command,
         _warn_unresolved_secret_refs,
         _zip_has_main,
@@ -188,6 +190,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.bridges_sources import (  # noqa: F401
         KIRO_AGENTS_DIR,
         SKILLS_DIR_NAME,
+        _activation_admission_denied,
         _app_resource_root,
         _kiro_agents_dir,
         _namespace,
@@ -243,6 +246,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         skill_live_loaders,
     )
     from kiro_crew.apps import deps_boot as _deps_boot_module  # noqa: F401
+    from kiro_crew.apps.admission import (  # noqa: F401
+        installed_content_refusal as _installed_content_refusal,
+    )
+    from kiro_crew.apps.admission import (  # noqa: F401
+        signed_execution_root as _signed_execution_root,
+    )
     from kiro_crew.apps.agent_template_values import (  # noqa: F401
         HOST_PLACEHOLDERS,
         host_placeholder_values,
@@ -276,6 +285,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         has_stdio_mcp_server,
         is_module_style_entry_point,
         screen_app_path,
+    )
+    from kiro_crew.apps.signed_imports import (  # noqa: F401
+        pycache_prefix_env as _pycache_prefix_env,
+    )
+    from kiro_crew.apps.signed_mcp import (  # noqa: F401
+        with_python_cache_prefix as _with_python_cache_prefix,
     )
     from kiro_crew.atomic_write import (  # noqa: F401
         atomic_write,

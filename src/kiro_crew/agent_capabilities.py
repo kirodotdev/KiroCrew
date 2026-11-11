@@ -47,6 +47,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import mate_agents_dir, project_agents_dir
+from kiro_crew.mcp_provenance import APP_KEY
 from kiro_crew.platform import redact_via_context
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.platform.governance_profiles import governance_answer_generation
@@ -187,7 +188,10 @@ def _rows(spec: dict, catalog: dict[str, str]) -> dict[str, dict]:
         if not agent_state.capability_transport_fields_valid(transport):
             raise CapabilityError("invalid_spec")
         rows["mcpServers"][name] = {
-            k: copy.deepcopy(v) for k, v in transport.items() if k != "autoApprove"
+            k: copy.deepcopy(v)
+            for k, v in transport.items()
+            # The rendered spec's app-provenance record is not an editable field.
+            if k not in ("autoApprove", APP_KEY)
         }
         for tool in transport.get("autoApprove", []):
             if not isinstance(tool, str):

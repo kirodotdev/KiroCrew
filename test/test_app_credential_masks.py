@@ -147,12 +147,15 @@ class TestManifest:
         assert any("credentialMasks[0]" in error for error in manifest.validate())
         assert manifest.credentialMasks == []
 
-    def test_the_signature_covers_a_declaration_and_no_other_manifest_changes(self):
+    def test_the_signature_covers_a_declaration_as_written(self):
         bare = self._manifest()
         declared = self._manifest(credentialMasks=["b.json", "a.json"])
         assert b"credentialMasks" not in bare.signing_payload()
-        assert json.loads(declared.signing_payload())["credentialMasks"] == ["a.json", "b.json"]
-        assert self._manifest(credentialMasks=[]).signing_payload() == bare.signing_payload()
+        signed = json.loads(declared.signing_payload())["manifest"]["credentialMasks"]
+        assert signed == ["b.json", "a.json"]
+        assert self._manifest(credentialMasks=["b.json"]).signing_payload() != (
+            declared.signing_payload()
+        )
 
 
 class TestWhereDeclarationsAreRead:

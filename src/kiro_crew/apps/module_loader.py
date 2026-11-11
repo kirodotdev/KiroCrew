@@ -11,10 +11,13 @@ import importlib.util
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew.apps import seams
+from kiro_crew.apps import signed_imports as _signed_imports
+from kiro_crew.apps.admission import verified_installed_manifest as _verified_installed_manifest
 from kiro_crew.apps.execution import app_execution_denied, is_builtin_app
 from kiro_crew.sel import sel
 
@@ -374,8 +377,58 @@ def _rollback_app_modules(app_name: str, keep: dict[str, Any]) -> None:
                 setattr(parent, leaf_name, original)
 
 
-def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[..., Any]:
+def _prepare_signed_hook(app_name: str, app_dir: Path, file_path: Path) -> tuple[Any, Any]:
+    """Verify signed source and remove caches before any hook code can execute."""
+    refusal, manifest = _verified_installed_manifest(app_name, file_path)
+    if refusal is None and manifest is not None:
+        try:
+            _signed_imports.clear_app_bytecode(app_dir)
+        except OSError as exc:
+            return f"app {app_name!r} bytecode cleanup failed: {exc}", None
+    return refusal, manifest
+
+
+def verify_hook_source(app_name: str, app_dir: Path, module_path: str) -> tuple[Any, Any]:
+    """The signed-content verdict for a hook, computed ahead of the load.
+
+    ``(refusal, verified manifest)`` from ``admission.verified_installed_manifest``
+    for the hook's file, or ``(None, None)`` when no signature check applies. An
+    async caller runs this in a worker thread, so hashing and removal of every
+    in-tree bytecode cache happen off the event loop. The result includes cleanup
+    failure and is handed to :func:`load_app_module` as *verified*. Blocking.
+    """
+    dotted_path = module_path.rsplit(":", 1)[0] if ":" in module_path else module_path
+    file_path = app_dir / (dotted_path.replace(".", "/") + ".py")
+    if _is_builtin_app(app_name, app_dir.resolve()):
+        return None, None
+    verdict = _prepare_signed_hook(app_name, app_dir, file_path)
+    with _prepared_lock:
+        _prepared_verdicts[(app_name, module_path)] = verdict
+    return verdict
+
+
+#: The latest :func:`verify_hook_source` verdict per (app, hook), taken by the next
+#: :func:`load_app_module` of that hook, so a caller that cannot pass *verified*
+#: still loads without hashing the tree on the event loop.
+_prepared_verdicts: dict[tuple[str, str], tuple[Any, Any]] = {}
+_prepared_lock = threading.Lock()
+
+
+def load_app_module(
+    app_name: str,
+    app_dir: Path,
+    module_path: str,
+    *,
+    verified: tuple[Any, Any] | None = None,
+) -> Callable[..., Any]:
     """Load an app module and return the specified callable.
+
+    Under a policy that requires signatures, a third-party hook is compiled from
+    source bytes that match their signed digest, as are normal imports from
+    registered app roots (``apps.signed_imports``). In-tree caches are cleared
+    before each signed load for hooks that use direct file loaders. *verified* is a
+    :func:`verify_hook_source` result computed earlier; without it the check runs
+    here.
 
     Uses importlib.util.spec_from_file_location to load directly from
     the file path, avoiding sys.path manipulation entirely.
@@ -434,6 +487,7 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
     # CSE SEC-012: third-party Python runs in-process. Use the same central
     # decision as every other execution surface before emitting the trust warning.
     third_party = not _is_builtin_app(app_name, app_resolved)
+    signed_manifest: Any = None
     if third_party:
         denied = app_execution_denied(
             app_name,
@@ -441,6 +495,14 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
             app_root=app_resolved,
             caller="gateway",
         )
+        with _prepared_lock:
+            prepared = _prepared_verdicts.pop((app_name, module_path), None)
+        content_refusal, signed_manifest = (
+            (None, None)
+            if denied
+            else verified or prepared or _prepare_signed_hook(app_name, app_dir, file_path)
+        )
+        denied = denied or content_refusal
         if denied:
             raise ImportError(
                 f"Refusing to load third-party app {app_name!r} module "
@@ -452,7 +514,15 @@ def load_app_module(app_name: str, app_dir: Path, module_path: str) -> Callable[
         # name and then raises still leaves modules the next unload must find.
         _record_app_source_root(app_name, app_dir, app_resolved)
 
-    spec = importlib.util.spec_from_file_location(unique_name, str(file_path))
+    loader = None
+    if third_party and signed_manifest is not None:
+        document = signed_manifest.source_document or {}
+        digests = document.get("fileDigests", signed_manifest.fileDigests)
+        loader = _signed_imports.trust_app_sources(
+            app_name, app_resolved, digests if isinstance(digests, dict) else {},
+            unique_name, file_path,
+        )
+    spec = importlib.util.spec_from_file_location(unique_name, str(file_path), loader=loader)
     if spec is None or spec.loader is None:
         raise ImportError(f"Failed to create module spec for {file_path}")
 
@@ -567,6 +637,7 @@ def unload_app_modules(app_name: str) -> int:
 
     Returns the number of sys.modules entries removed.
     """
+    _signed_imports.forget_app_sources(app_name)
     synthetic = _app_module_keys(app_name)
     real_name = _app_real_name_keys(app_name)
     for k in synthetic:

@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from kiro_crew.apps.admission import installed_content_refusal as _installed_content_refusal
+from kiro_crew.apps.admission import signed_execution_root as _signed_execution_root
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
 from kiro_crew.apps.manager import app_dir, get_app_manifest
 from kiro_crew.apps.manifest import AppManifest
@@ -61,7 +63,8 @@ def _app_resource_root(app_name: str) -> Path:
     from a directory listing rather than from the input. Same resolution the
     lifecycle hook loader uses, so the two cannot disagree about where an app is.
     """
-    return shipped_builtin_app_root(app_name) or app_dir(app_name)
+    shipped = shipped_builtin_app_root(app_name)
+    return shipped or _signed_execution_root(app_name, app_dir(app_name))
 
 
 def _skills_dir() -> Path:
@@ -123,7 +126,37 @@ def _registration_source(app_name: str) -> tuple[AppManifest | None, Path]:
                 exc,
             )
             return None, shipped_root
-    return get_app_manifest(app_name), app_dir(app_name)
+    return get_app_manifest(app_name), _signed_execution_root(app_name, app_dir(app_name))
+
+
+def _activation_admission_denied(app_name: str, *, action: str, caller: str) -> str | None:
+    """Re-vet installed admission without changing the app's persisted enablement.
+
+    Later startup readers cannot rely on the backend pass's in-memory refusal.
+    Only the active shipped install is exempt, not a user app shadowing its name.
+    """
+    from kiro_crew.apps.admission import app_admission_denied
+    from kiro_crew.apps.execution import is_installed_builtin_app
+    from kiro_crew.sel import sel
+
+    try:
+        if is_installed_builtin_app(app_name):
+            return None
+        denied = app_admission_denied(app_name, manifest=get_app_manifest(app_name), action="boot")
+    except Exception as exc:  # noqa: BLE001 - one unavailable app must not abort startup
+        denied = f"app {app_name!r} admission is unavailable ({type(exc).__name__})"
+    if denied:
+        try:
+            sel().log_api_access(
+                caller=caller,
+                operation="app_execution_admission",
+                outcome="denied",
+                resources=f"app={app_name} action={action}",
+                error=denied,
+            )
+        except Exception:  # noqa: BLE001 - audit failure must not admit the app
+            logger.debug("app activation admission audit failed", exc_info=True)
+    return denied
 
 
 def _registration_denied(
@@ -131,13 +164,27 @@ def _registration_denied(
     *,
     action: str,
     app_root: Path,
+    manifest: AppManifest | None = None,
+    declarative: bool = False,
 ) -> str | None:
-    """Apply the shared execution decision to an executable-resource bridge."""
-    denied = app_execution_denied(
-        app_name,
-        action=action,
-        app_root=app_root,
-        caller="app_bridge",
+    """Apply the shared execution decision to an executable-resource bridge.
+
+    Then, for a tree in the installed app, the signed-content check: the agents,
+    skills, crons and MCP commands registered from it are the publisher's only
+    while the tree is the signed one. *manifest* is the object the caller registers
+    from, so its own signature is the one verified. *declarative* is set only by a
+    caller whose registration executes and reads nothing from the tree (message or
+    agent crons, URL-only MCP servers); see ``admission.verified_installed_manifest``.
+    """
+    denied = (
+        app_execution_denied(
+            app_name,
+            action=action,
+            app_root=app_root,
+            caller="app_bridge",
+        )
+        or _installed_content_refusal(app_name, app_root, manifest, declarative=declarative)
+        or _activation_admission_denied(app_name, action=action, caller="app_bridge")
     )
     if denied:
         logger.warning(

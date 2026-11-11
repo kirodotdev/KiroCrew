@@ -666,6 +666,15 @@ class TestRebuildPreservesTheLiveMcpSpec:
     app's tools until the next reregister.
     """
 
+    @pytest.fixture(autouse=True)
+    def _admit_third_party(self, _floor_monkeypatch):
+        # "someapp" is third-party: admit it the way an operator does, so the
+        # rebuild's MCP admission gate passes and these tests keep pinning source
+        # selection (test_app_signed_mcp_materialization covers refusal).
+        _floor_monkeypatch.setattr(
+            "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
+        )
+
     def test_live_registered_spec_wins_over_the_manifest(self, monkeypatch):
         from kiro_crew import agent
 
@@ -1099,7 +1108,11 @@ class TestUnreadableManifestIsNotASilentRegistration:
         import kiro_crew.apps.bridges as brmod
 
         monkeypatch.setattr(brmod, "_registration_source", lambda n: (None, brmod.Path(".")))
-        monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: None)
+        monkeypatch.setattr(
+            brmod,
+            "_registration_denied",
+            lambda name, action, app_root, manifest=None, declarative=False: None,
+        )
 
         collected: list[str] = []
         assert brmod.reregister_app_mcp_servers("app", io_failures=collected) == []
@@ -1114,7 +1127,11 @@ class TestUnreadableManifestIsNotASilentRegistration:
             "_registration_source",
             lambda n: (SimpleNamespace(mcpServers={}, agents=[]), brmod.Path(".")),
         )
-        monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: None)
+        monkeypatch.setattr(
+            brmod,
+            "_registration_denied",
+            lambda name, action, app_root, manifest=None, declarative=False: None,
+        )
 
         collected: list[str] = []
         assert brmod.reregister_app_mcp_servers("app", io_failures=collected) == []
@@ -1133,7 +1150,11 @@ class TestScrubDoesNotRematerializeAgents:
 
         manifest = SimpleNamespace(mcpServers={"srv": {"command": "x"}}, agents=["a.json"])
         monkeypatch.setattr(brmod, "_registration_source", lambda n: (manifest, brmod.Path(".")))
-        monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: None)
+        monkeypatch.setattr(
+            brmod,
+            "_registration_denied",
+            lambda name, action, app_root, manifest=None, declarative=False: None,
+        )
         monkeypatch.setattr(
             brmod,
             "_register_mcp_servers",
@@ -1154,7 +1175,11 @@ class TestScrubDoesNotRematerializeAgents:
 
         manifest = SimpleNamespace(mcpServers={"srv": {"command": "x"}}, agents=[])
         monkeypatch.setattr(brmod, "_registration_source", lambda n: (manifest, brmod.Path(".")))
-        monkeypatch.setattr(brmod, "_registration_denied", lambda name, action, app_root: "revoked")
+        monkeypatch.setattr(
+            brmod,
+            "_registration_denied",
+            lambda name, action, app_root, manifest=None, declarative=False: "revoked",
+        )
         removed: list[str] = []
         monkeypatch.setattr(brmod, "_deregister_mcp_servers", lambda n: (removed.append(n), 1)[1])
         monkeypatch.setattr(

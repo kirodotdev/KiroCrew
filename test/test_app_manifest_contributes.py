@@ -273,14 +273,14 @@ class TestContributedCommands:
         widened = self._manifest(self._command(argument_over={"kind": "text", "hosts": []}))
         assert AppManifest.from_dict(widened).signing_payload() != m.signing_payload()
 
-    def test_a_manifest_without_contributions_signs_identically(self):
-        # Backward compatibility: the key is emitted only when non-empty, so every
-        # signature issued before contributions existed keeps verifying.
+    def test_even_an_empty_contributions_block_is_signed_as_written(self):
+        # The signature covers the manifest document, so adding the key at all is a
+        # change the publisher's signature does not cover.
         data = {"name": "plain", "version": "1.0.0", "displayName": "Plain"}
         before = AppManifest.from_dict(data).signing_payload()
         assert b"contributes" not in before
         with_empty = dict(data, contributes={"commands": []})
-        assert AppManifest.from_dict(with_empty).signing_payload() == before
+        assert AppManifest.from_dict(with_empty).signing_payload() != before
 
     @pytest.mark.parametrize(
         "value,field",

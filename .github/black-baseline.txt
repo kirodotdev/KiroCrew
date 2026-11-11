@@ -9,7 +9,6 @@
 #   python3 scripts/check_black_formatting.py --update-baseline
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/app_storage.py
-src/kiro_crew/apps/backend.py
 src/kiro_crew/apps/builtins/auto_improvement/spine/gate.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_data_home_isolation.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py

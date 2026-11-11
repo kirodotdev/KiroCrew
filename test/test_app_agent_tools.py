@@ -233,11 +233,11 @@ def test_the_block_is_validated_signed_and_carried_through_every_round_trip():
     assert manifest.validate() == []
     assert manifest.to_dict()["agentTools"] == raw["agentTools"]
     assert _manifest_to_builtin_dict(manifest)["agentTools"] == raw["agentTools"]
-    assert json.loads(manifest.signing_payload())["agentTools"] == raw["agentTools"]
+    assert json.loads(manifest.signing_payload())["manifest"]["agentTools"] == raw["agentTools"]
     bad = AppManifest.from_dict({**raw, "agentTools": _block(_tool(name="x_note"))})
     assert any("namespace" in e for e in bad.validate())
     plain = AppManifest.from_dict({k: v for k, v in raw.items() if k != "agentTools"})
-    assert "agentTools" not in json.loads(plain.signing_payload())
+    assert "agentTools" not in json.loads(plain.signing_payload())["manifest"]
 
 
 # ── The reader ───────────────────────────────────────────────────────────────

@@ -1239,23 +1239,9 @@ class TestAppAdmission:
         assert _read_installed("ext-unsigned") is None
 
     def test_signature_required_admits_valid_signature(self, tmp_path, app_home):
-        import hashlib
-        import hmac
-
-        from kiro_crew.apps.manifest import AppManifest
+        from kiro_crew.apps.signed_content import sign_app_dir
 
         secret = "s3cr3t"
-        m = AppManifest.from_dict(
-            {
-                "name": "signed-app",
-                "version": "1.0.0",
-                "displayName": "Signed",
-                "description": "signed app",
-                "author": "tester",
-                "signer": "acme",
-            }
-        )
-        sig = hmac.new(secret.encode(), m.signing_payload(), hashlib.sha256).hexdigest()
         self._write_policy(
             app_home,
             {
@@ -1265,14 +1251,27 @@ class TestAppAdmission:
                 "trust_keys": {"acme": secret},
             },
         )
-        src = _make_app_source(
-            tmp_path,
-            name="signed-app",
-            signer="acme",
-            signature=sig,
-        )
+        src = _make_app_source(tmp_path, name="signed-app")
+        sign_app_dir(src, signer="acme", secret=secret)
         result = install_app(src)
         assert result.ok
+
+    def test_signature_required_denies_a_file_changed_after_signing(self, tmp_path, app_home):
+        from kiro_crew.apps.signed_content import sign_app_dir
+
+        secret = "s3cr3t"
+        self._write_policy(
+            app_home,
+            {"mode": "enforce", "require_signature": True, "trust_keys": {"acme": secret}},
+        )
+        src = _make_app_source(tmp_path, name="signed-app")
+        (src / "backend.py").write_text("print('published')\n")
+        sign_app_dir(src, signer="acme", secret=secret)
+        (src / "backend.py").write_text("print('tampered')\n")
+        result = install_app(src)
+        assert not result.ok
+        assert "files do not match its signature: backend.py" in result.error
+        assert _read_installed("signed-app") is None
 
     def test_signature_required_denies_missing_signature(self, tmp_path, app_home):
         self._write_policy(
@@ -1289,10 +1288,8 @@ class TestAppAdmission:
         assert not result.ok
         assert "blocked by admission policy" in result.error
 
-    def test_enable_builtin_exempt_under_require_signature(self, tmp_path, app_home):
-        # Builtins ship unsigned with defaultEnabled=False; a require_signature
-        # policy must NOT strand them (they are trusted first-party code). The
-        # admission gate governs third-party enable, not builtins.
+    def test_an_installed_record_cannot_grant_builtin_signature_exemption(self, tmp_path, app_home):
+        # A record inside an app tree cannot prove shipped package provenance.
         from kiro_crew.apps.manager import _write_installed
 
         src = _make_app_source(tmp_path, name="builtin-app")
@@ -1311,10 +1308,11 @@ class TestAppAdmission:
             },
         )
         result = enable_app("builtin-app")
-        assert result.ok
+        assert not result.ok
+        assert "blocked by admission policy" in result.error
         enabled_meta = _read_installed("builtin-app")
         assert enabled_meta is not None
-        assert enabled_meta.enabled is True
+        assert enabled_meta.enabled is False
 
     def test_enable_third_party_still_denied_under_require_signature(self, tmp_path, app_home):
         # A non-builtin (unsigned) app is still denied under require_signature.

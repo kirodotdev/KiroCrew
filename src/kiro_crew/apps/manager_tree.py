@@ -166,6 +166,16 @@ def _is_generated_deps_artifact_name(n: str) -> bool:
     )
 
 
+def is_uncopied_name(n: str) -> bool:
+    """True for a basename the app-tree copy drops at every depth.
+
+    The one predicate behind :func:`_copy_app_tree`'s ``ignore``, shared with the
+    signed-content inventory (``apps.signed_content``) so the files a signature
+    covers are exactly the files an install carries.
+    """
+    return n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
+
+
 class InstalledTreeRefused(Exception):
     """The tree a copy produced is one the install turns away.
 
@@ -304,9 +314,7 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
         # but the match is the STRICT generated pattern, never a bare
         # prefix: an app-owned name that merely shares the prefix (e.g.
         # ".kirocrew-deps-staging-assets") is the app's data and must copy.
-        skip = {
-            n for n in names if n in _COPY_IGNORE or _DEPS_STAGING_SWEEP_RE.fullmatch(n) is not None
-        }
+        skip = {n for n in names if is_uncopied_name(n)}
         for n in names:
             if n in skip:
                 continue

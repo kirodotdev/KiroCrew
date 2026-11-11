@@ -1371,11 +1371,13 @@ _NATIVE_ELEMENT_KEYS: frozenset[str] = _agent_mod._MANAGED_MCP_ENTRY_KEYS - {"ti
 # with a message telling the user to remove it. The session-label opt-in
 # (acp.session_label) is the same kind of key: Crew reads it, kiro-cli never does,
 # and so is the mount-only record's stamp (template_mcp_additions.MERGED_MARK),
-# which the managed refresh keeps on an opt-in entry the record mounted.
+# which the managed refresh keeps on an opt-in entry the record mounted, and so
+# is the rebuild's owner-app record (mcp_provenance.APP_KEY).
 _NATIVE_INERT_KEYS = frozenset(
     {
         mcp_provenance.MARKER_KEY,
         mcp_provenance.DERIVED_KEY,
+        mcp_provenance.APP_KEY,
         SESSION_LABEL_MARKER,
         MERGED_MARK,
     }

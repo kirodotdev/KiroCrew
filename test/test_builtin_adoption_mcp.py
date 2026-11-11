@@ -296,3 +296,19 @@ async def test_an_adopted_record_registers_its_server_from_the_adopted_tree(tmp_
     assert after["command"] == before["command"], "the gateway's own interpreter, as before"
     assert after.get("autoApprove") == before.get("autoApprove")
     assert after.get("env") == before.get("env")
+
+    # An adopted record is an external app, not a built-in, and its
+    # repository-bound grant admits every activation path the signature gates.
+    from kiro_crew import agent
+    from kiro_crew.agent_materialization import mcp_sources
+    from kiro_crew.apps import bridges_sources
+    from kiro_crew.apps.execution import is_installed_builtin_app
+
+    assert not is_installed_builtin_app(NAME)
+    adopted = manager.get_app_manifest(NAME)
+    assert not mcp_sources._app_mcp_admission_denied(NAME, adopted, [after])
+    assert key in agent._collect_app_mcp_servers(audit=False)
+    for action in ("hook_boot", "cron_register"):
+        assert (
+            bridges_sources._activation_admission_denied(NAME, action=action, caller="test") is None
+        )

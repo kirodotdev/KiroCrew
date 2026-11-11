@@ -66,7 +66,7 @@ def test_a_valid_block_round_trips_and_is_signed() -> None:
     assert m.to_dict()["desktop"] == expected
     assert "desktop" not in m.extra
     assert AppManifest.from_dict(m.to_dict()).desktop == m.desktop
-    assert json.loads(m.signing_payload())["desktop"] == expected
+    assert json.loads(m.signing_payload())["manifest"]["desktop"] == expected
 
 
 def test_a_panel_gets_its_defaults_spelled_out() -> None:
@@ -104,7 +104,7 @@ def test_a_spanning_overlay_a_background_window_and_a_gutter_round_trip() -> Non
     m = _manifest(desktop)
     assert m.validate() == []
     assert m.to_dict()["desktop"] == desktop
-    assert json.loads(m.signing_payload())["desktop"] == desktop
+    assert json.loads(m.signing_payload())["manifest"]["desktop"] == desktop
     # The defaults are left out, so a manifest that predates them signs the same.
     plain = _manifest({"windows": [{"id": "w", "entry": "w.mjs", "kind": "overlay"}]})
     assert plain.to_dict()["desktop"] == {
@@ -116,7 +116,7 @@ def test_an_absent_block_changes_nothing() -> None:
     m = AppManifest.from_dict(dict(_BASE))
     assert m.desktop == DesktopConfig()
     assert "desktop" not in m.to_dict()
-    assert "desktop" not in json.loads(m.signing_payload())
+    assert "desktop" not in json.loads(m.signing_payload())["manifest"]
 
 
 def test_retargeting_a_shortcut_changes_the_signed_payload() -> None:

@@ -664,14 +664,26 @@ def _admitted_app_cron_defs(app_name: str) -> tuple[list[dict[str, Any]], Path]:
     can hand all of it to a worker thread in one hop. No definitions when the
     app is denied, has no manifest, or declares no crons.
     """
-    manifest, app_root = _registration_source(app_name)
+    from kiro_crew.apps.admission import signature_required  # admission imports the family
+
+    try:
+        manifest, app_root = _registration_source(app_name)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("App %s: cron source is unavailable: %s", app_name, exc)
+        return [], app_dir(app_name)
     if _registration_denied(
         app_name,
         action="cron_register",
         app_root=app_root,
+        manifest=manifest,
+        # Declarative only when no job runs a script or command from the tree.
+        declarative=manifest is not None
+        and all(not c.script and not c.command for c in manifest.crons),
     ):
         return [], app_root
-    if shipped_builtin_app_root(app_name) is not None:
+    # Under a signature policy the jobs come from the manifest just verified, never
+    # from the cron record beside it, which nothing signs.
+    if shipped_builtin_app_root(app_name) is not None or signature_required():
         if manifest is None:
             return [], app_root
         defs, _ = _cron_defs_from_manifest(app_name, manifest)
@@ -1117,6 +1129,26 @@ async def disarm_app_crons_for_execution(
     return len(removed)
 
 
+def _cron_restore_denied(app_name: str) -> bool:
+    """Whether *app_name*'s restored crons must be disarmed at boot. Blocking."""
+    try:
+        manifest, app_root = _registration_source(app_name)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("App %s: cron restore source is unavailable: %s", app_name, exc)
+        return True
+    return bool(
+        _registration_denied(
+            app_name,
+            action="cron_boot_restore",
+            app_root=app_root,
+            manifest=manifest,
+            # Same rule as registration: no job runs a script or command.
+            declarative=manifest is not None
+            and all(not c.script and not c.command for c in manifest.crons),
+        )
+    )
+
+
 async def reconcile_app_crons_for_execution(cron_service: Any) -> list[str]:
     """Disarm persisted app jobs before the gateway starts cron timers.
 
@@ -1141,9 +1173,9 @@ async def reconcile_app_crons_for_execution(cron_service: Any) -> list[str]:
 
     def _restore_denied(name: str) -> bool:
         # Source resolution enumerates shipped app directories and reads manifests,
-        # so the whole admission decision runs off the event loop.
-        _, root = _registration_source(name)
-        return bool(_registration_denied(name, action="cron_boot_restore", app_root=root))
+        # and under a signature policy the check hashes the tree, so the whole
+        # admission decision runs off the event loop.
+        return _cron_restore_denied(name)
 
     def _record_unreadable(name: str) -> bool:
         from kiro_crew.apps.manager import app_enabled_state

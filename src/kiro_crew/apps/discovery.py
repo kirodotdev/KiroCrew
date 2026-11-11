@@ -125,6 +125,8 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
         d["signer"] = manifest.signer
     if manifest.signature:
         d["signature"] = manifest.signature
+    if manifest.fileDigests:
+        d["fileDigests"] = dict(manifest.fileDigests)
 
     return d
 

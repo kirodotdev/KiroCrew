@@ -88,6 +88,14 @@ DERIVED_KEY = "x-kirocrew-derived"
 # routing switch must not read it as the user turning the server off.
 WITHHELD_KEY = "x-kirocrew-withheld"
 
+# A FOURTH reserved key, holding the app name on an entry the rebuild collected
+# from that app's manifest. Key normalization strips the ``{app}:`` prefix from a
+# slashed server name, so this record is what still names the owner afterwards and
+# lets the final merge put the entry through that app's admission. It belongs only
+# in the rendered agent spec: a scope file entry carrying it is stripped on merge,
+# so a hand-written copy can never make an app own a user's server.
+APP_KEY = "x-kirocrew-app"
+
 
 def is_withheld_mute(entry: Any) -> bool:
     """True when *entry*'s mute is the rebuild's :data:`WITHHELD_KEY` mute."""

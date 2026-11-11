@@ -236,6 +236,7 @@ class InstalledApp:
     # catalog rather than a configured external registry).
     sourceUrl: str = ""  # noqa: N815  — git URL this app was installed from
     sourceRegistry: str = ""  # noqa: N815  — external registry id; "" = bundled catalog
+    sourceSubdirectory: str = ""  # noqa: N815 — app root relative to the source clone
     sourceCommit: str = ""  # noqa: N815  — commit SHA resolved in the source clone
     sourceSigner: str = ""  # noqa: N815  — verified signer id; "" = no verified signature
     # True while a newly declared session-control grant still needs a user
@@ -303,6 +304,7 @@ class InstalledApp:
             defaultOnBackfilled=bool(data.get("defaultOnBackfilled", False)),
             sourceUrl=str(data.get("sourceUrl", "")),
             sourceRegistry=str(data.get("sourceRegistry", "")),
+            sourceSubdirectory=str(data.get("sourceSubdirectory", "")),
             sourceCommit=str(data.get("sourceCommit", "")),
             sourceSigner=str(data.get("sourceSigner", "")),
             sessionApprovalConsentPending=bool(data.get("sessionApprovalConsentPending", False)),

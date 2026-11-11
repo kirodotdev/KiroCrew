@@ -22,8 +22,10 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps import protected_app_state
+from kiro_crew.apps.admission import signed_execution_root as _signed_execution_root
 from kiro_crew.apps.backend import spawned_backend_names, stop_app_backend
 from kiro_crew.apps.bridges import (
+    _activation_admission_denied,
     deregister_app_crons_reporting_failures,
     disarm_app_crons_for_execution,
     pending_reload_cron_rollback,
@@ -252,12 +254,17 @@ def hook_enable_denied(app_name: str) -> str | None:
     trust was revoked. Returning the reason here keeps that resurrection from
     happening.
     """
+    app_root = _app_hook_root(app_name)
+    if app_root is None:
+        return f"app {app_name!r} publisher tree is unavailable"
+    return _hook_registration_denied(app_name, app_root, action="hook_reconcile_register")
+
+
+def _hook_registration_denied(app_name: str, app_root: Path, *, action: str) -> str | None:
+    """Keep hook boot, enable and reconciliation on the same admission decision."""
     return app_execution_denied(
-        app_name,
-        action="hook_reconcile_register",
-        app_root=_app_hook_root(app_name),
-        caller="gateway",
-    )
+        app_name, action=action, app_root=app_root, caller="gateway"
+    ) or _activation_admission_denied(app_name, action=action, caller="gateway")
 
 
 def _publish_hook_health(app_name: str, ctx: AppContext) -> dict[str, Any] | None:
@@ -338,9 +345,14 @@ async def stop_retained_startup_hooks(app_name: str, *, bounded: bool) -> bool:
         return False
 
 
-def _app_hook_root(app_name: str) -> Path:
-    """Return the immutable shipped root when one owns this app name."""
-    return shipped_builtin_app_root(app_name) or app_dir(app_name)
+def _app_hook_root(app_name: str) -> Path | None:
+    """Resolve the executable root, never substitute metadata for an unavailable source."""
+    try:
+        shipped = shipped_builtin_app_root(app_name)
+        return shipped or _signed_execution_root(app_name, app_dir(app_name))
+    except (OSError, ValueError, RuntimeError) as exc:
+        logger.warning("App %s: hook source is unavailable: %s", app_name, exc)
+        return None
 
 
 def _build_app_context_from_info(
@@ -431,13 +443,14 @@ async def on_app_enable(
     Returns dict with hook results to include in the enable response.
     """
     result: dict[str, Any] = {}
-    denied = app_execution_denied(
-        app_name,
-        action="hook_enable_register",
-        app_root=_app_hook_root(app_name),
-        caller="gateway",
-    )
-    if denied:
+    app_root = _app_hook_root(app_name)
+    if app_root is None:
+        denied: str | None = f"app {app_name!r} publisher tree is unavailable"
+    else:
+        denied = await asyncio.to_thread(
+            _hook_registration_denied, app_name, app_root, action="hook_enable_register"
+        )
+    if denied or app_root is None:
         logger.warning(
             "App %s: skipping enable-time hooks and crons: %s",
             app_name,
@@ -521,7 +534,6 @@ async def on_app_enable(
     routes_hook = hooks.get("routes", "")
     wiring_ok = True
     if routes_hook and _route_registry:
-        app_root = _app_hook_root(app_name)
         registered = await _route_registry.register_app_routes(app_name, app_root, routes_hook, ctx)
         if registered:
             result["hooks_routes"] = registered
@@ -864,13 +876,14 @@ async def on_gateway_startup(
     # route handlers (and vice versa), matching the on_app_enable approach.
     for app_info in sorted(enabled, key=lambda a: a.get("name", "")):
         name = app_info.get("name", "")
-        denied = app_execution_denied(
-            name,
-            action="hook_boot_register",
-            app_root=_app_hook_root(name),
-            caller="gateway",
-        )
-        if denied:
+        app_root = _app_hook_root(name)
+        if app_root is None:
+            denied: str | None = f"app {name!r} publisher tree is unavailable"
+        else:
+            denied = await asyncio.to_thread(
+                _hook_registration_denied, name, app_root, action="hook_boot_register"
+            )
+        if denied or app_root is None:
             logger.warning(
                 "Startup: skipping hooks and crons for denied app %s: %s",
                 name,
@@ -941,7 +954,7 @@ async def on_gateway_startup(
         routes_hook = hooks.get("routes", "")
         boot_wiring_ok = True
         if routes_hook and _route_registry:
-            await _route_registry.register_app_routes(name, _app_hook_root(name), routes_hook, ctx)
+            await _route_registry.register_app_routes(name, app_root, routes_hook, ctx)
             boot_wiring_ok = ctx.health.status == "healthy"
 
         # Invoke on_startup hook (if declared)

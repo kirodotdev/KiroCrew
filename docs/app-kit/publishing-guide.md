@@ -608,6 +608,35 @@ The store's Install button (`POST /api/apps/registry/install`, or the SSE varian
    the cloned manifest so the app appears immediately, and let the app finish its
    own registration on next launch.
 
+**Signed apps.** When the fleet requires signatures, the checkout must be exactly
+the tree you signed with `kirocrew app sign` before the build, after it and after
+`onInstall` (see [Admission metadata](manifest-reference.md#admission-metadata)).
+A step that adds, removes or rewrites a packaged file is refused: a lockfile that
+`npm install` creates or rewrites, a `dist/` that `npm run build` writes, and the
+in-tree `build/` and `*.egg-info` that `pip install .` leaves all count. Run the
+build yourself, commit its output and the final lockfile, and sign that tree. The
+repository may not commit `node_modules`, `.venv`, `__pycache__`, `installed.json`,
+`approved-grants.json` or the gateway's generated dependency names at any depth,
+or `data/`, `.app_secret` or `app-crons.json` at the root: a fresh clone holding
+one is refused before the build. Root `data`, `.app_secret` and `app-crons.json`
+are also refused at the pre-build, post-build and post-`onInstall` checks on reused
+checkouts. Reused checkouts also refuse publisher-tracked files under any
+inventory-excluded name. Generated, untracked dependency directories remain
+permitted. A `resources: "app"` app gets no gateway MCP registration, so under a
+signature policy Kiro Crew does not launch its Python stdio MCP servers: serve
+them over HTTP, or publish the app as `resources: "gateway"`. Local install and update
+sources refuse root `data` and `app-crons.json`; a local `.app_secret` is removed
+before use and replaced by the gateway's generated or preserved secret. These
+source rules never reject installed runtime data: it stays preserved across updates.
+Without a signature policy, source data seeding keeps its existing behavior.
+Signed Node apps ship their final lockfile.
+Under the signature policy, backend npm provisioning installs from a shipped
+`package-lock.json` or `npm-shrinkwrap.json` with `npm ci` and never writes a
+lockfile. After provisioning, including a failed or interrupted npm run, the gateway
+re-reads the installed manifest and verifies the packaged tree before starting Node.
+An npm lifecycle script that changes either makes the backend refuse to start.
+Dependency directories remain outside the signed inventory.
+
 Requirements: the repo must be git-accessible, `app.json` must sit at the repo
 root or at `subdirectory`, and the install script must be non-interactive and
 finish inside its timeout.

@@ -924,6 +924,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _deregister_or_report,
         _handle_app,
         _handle_app_import,
+        _handle_app_sign,
         _install_app_through_gateway,
         _print_file_only_app_result,
         _print_git_update_hint,

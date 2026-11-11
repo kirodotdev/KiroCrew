@@ -17,7 +17,7 @@ import functools
 import itertools
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, NamedTuple
@@ -42,6 +42,7 @@ from kiro_crew.mcp_cleanup import (
 )
 from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
 from kiro_crew.mcp_provenance import (
+    APP_KEY,
     DERIVED_KEY,
     WITHHELD_KEY,
     command_is_ours,
@@ -72,6 +73,78 @@ def _extra_mcp_scope_globals() -> list[Path]:
     return [s.global_json for s in scopes]
 
 
+def _app_mcp_admission_denied(
+    name: str, manifest: Any, entries: Iterable[Any] | None = None
+) -> bool:
+    """Whether the bridges' MCP registration decision refuses *name*'s servers.
+
+    The same ``bridges._registration_denied(action="mcp_register")`` call the live
+    registration makes, against the same resource root, so a rebuild cannot emit
+    what registration refused: an unsigned stdio command under the installed tree,
+    a fleet-banned app, or an untrusted third-party app. *manifest* is the one the
+    caller emits from, so its own signature is the one verified.
+
+    *entries* are the entries the caller would actually emit for the app. The
+    declarative (URL-only) shortcut skips the installed-content comparison, so it
+    holds only when the manifest AND every one of those entries is URL-only: a live
+    or carried-over entry can still hold a stdio command into the app's tree after
+    the manifest moved to a URL. Fails closed: any error while deciding refuses
+    the app.
+    """
+    try:
+        # Lazy for the same import cycle as the callers.
+        from kiro_crew.apps import bridges
+
+        candidates = dict(enumerate(entries or ()))
+        return bool(
+            bridges._registration_denied(
+                name,
+                action="mcp_register",
+                app_root=bridges._app_resource_root(name),
+                manifest=manifest,
+                declarative=bridges._url_only_mcp_servers(manifest.mcpServers)
+                and bridges._url_only_mcp_servers(candidates),
+            )
+        )
+    except Exception:  # noqa: BLE001 — undecidable admission emits nothing
+        agent_mod.logger.warning(
+            "Skipping MCP servers for app %s (admission check failed)", name, exc_info=True
+        )
+        return True
+
+
+#: Refs already named by :func:`_warn_unpinned_launch` in this process: a rebuild
+#: runs often, and one line per server is enough to find the cause.
+_UNPINNED_WARNED: set[str] = set()
+
+
+def _warn_unpinned_launch(ref: str, *, self_managed: bool) -> None:
+    """Name a Python stdio server the signature policy keeps out of the spec, and why.
+
+    Its launch is admitted only with a bytecode cache outside the signed tree, which
+    gateway registration prepares. A self-managed app (``resources: "app"``) gets no
+    gateway registration, so its server stays out until it ships another way.
+    """
+    if ref in _UNPINNED_WARNED:
+        return
+    _UNPINNED_WARNED.add(ref)
+    if self_managed:
+        agent_mod.logger.warning(
+            "App MCP server %s not added: the fleet requires signed apps, a Python stdio "
+            "server from a signed tree runs only with a cache Kiro Crew registration "
+            "prepares, and this app manages its own resources (resources: app). Ask its "
+            "publisher for a gateway-managed release or an HTTP server.",
+            ref,
+        )
+    else:
+        agent_mod.logger.warning(
+            "App MCP server %s not added yet: the fleet requires signed apps, and its "
+            "Python launch has no prepared cache. Registration prepares it when the app "
+            "is enabled or its backend starts.",
+            ref,
+        )
+
+
 def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
     """MCP servers contributed by ENABLED apps, keyed ``{app}:{server}``.
 
@@ -93,6 +166,7 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
         # module-level import here would close a cycle.
         from kiro_crew.apps.bridges import registered_app_mcp_servers
         from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, list_apps
+        from kiro_crew.apps.signed_mcp import app_mcp_launch_allowed
     except Exception:  # noqa: BLE001 — apps subsystem unavailable
         return servers
 
@@ -118,6 +192,7 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
             manifest = get_app_manifest(name)
             if not manifest or not manifest.mcpServers:
                 continue
+            chosen_by_ref: dict[str, dict] = {}
             for server_name, spec in manifest.mcpServers.items():
                 if not isinstance(spec, dict):
                     continue
@@ -134,10 +209,21 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
                     # so its manifest URL is authoritative and kept.
                     if manifest.backend.entryPoint:
                         continue
-                    chosen = dict(spec)
+                    chosen = dict(spec)  # stdio/command: nothing to resolve
                 else:
                     chosen = dict(spec)  # stdio/command: nothing to resolve
-                servers[ref] = auto_approve._ceiling_filtered_spec(ref, chosen, audit=audit)
+                chosen_by_ref[ref] = chosen
+            # Admission before any entry is emitted, live or manifest: a denied
+            # app's stale registered entry must not survive the rebuild either.
+            # Decided over the entries actually chosen, not the manifest alone.
+            if _app_mcp_admission_denied(name, manifest, chosen_by_ref.values()):
+                continue
+            for ref, chosen in chosen_by_ref.items():
+                if app_mcp_launch_allowed(name, chosen):
+                    servers[ref] = auto_approve._ceiling_filtered_spec(ref, chosen, audit=audit)
+                    _UNPINNED_WARNED.discard(ref)  # a later omission is named again
+                elif audit:
+                    _warn_unpinned_launch(ref, self_managed=app.get("resources") == "app")
         except Exception:  # noqa: BLE001 — one bad app must not poison the rest
             agent_mod.logger.warning("Skipping MCP servers for app %s (manifest error)", name)
             continue
@@ -219,6 +305,126 @@ def _app_owned_mcp_keys() -> dict[str, bool]:
             # the family is on only while every claiming app is (deny, not grant).
             owned[_alias] = enabled and owned.get(_alias, True)
     return owned
+
+
+def _app_mcp_alias_owners() -> dict[str, frozenset[str]]:
+    """Installed manifests' slashed MCP aliases mapped to every claiming app.
+
+    Use the same manifest census and composite alias as ``_app_owned_mcp_keys``,
+    but keep identities rather than enablement. Disabled or unreadable enablement
+    must not erase an owner: the locked merge needs its admission decision.
+    Never raises; one unreadable manifest does not hide the other owners.
+    """
+    owners: dict[str, set[str]] = {}
+    try:
+        from kiro_crew.apps.manager import get_app_manifest, list_apps
+
+        apps = list_apps()
+        for app in apps:
+            name = app.get("name") if isinstance(app, dict) else None
+            if not isinstance(name, str) or not name:
+                continue
+            try:
+                manifest = get_app_manifest(name)
+                if manifest is None:
+                    continue
+                for server_name in manifest.mcpServers or {}:
+                    composite = f"{name}:{server_name}"
+                    alias = mcp_server_alias(composite)
+                    if alias != composite:
+                        owners.setdefault(alias, set()).add(name)
+            except Exception:  # noqa: BLE001 -- one unreadable app claims nothing knowable
+                continue
+    except Exception:  # noqa: BLE001 -- an unavailable census must not fail the rebuild
+        pass
+    return {alias: frozenset(names) for alias, names in owners.items()}
+
+
+def _without_app_key(spec: dict) -> dict:
+    """Copy of a scope entry without :data:`APP_KEY`: only a rebuild names an owner app."""
+    return {k: v for k, v in spec.items() if k != APP_KEY}
+
+
+def entry_app(entry: Any) -> str | None:
+    """The app :data:`APP_KEY` names on a rendered entry, or None."""
+    owner = entry.get(APP_KEY) if isinstance(entry, dict) else None
+    return owner if isinstance(owner, str) and owner else None
+
+
+def _is_carried_app_entry(entry: Any, name: str, stale: Collection[str]) -> bool:
+    """Whether *entry* is an app entry a previous rebuild left that no app re-emitted now."""
+    return name in stale and entry_app(entry) is not None
+
+
+def _declares_transport(spec: Mapping[str, Any]) -> bool:
+    """Only a scope's own launch or endpoint can vouch for an app-like name."""
+    return any(isinstance(spec.get(key), str) and spec[key] for key in ("command", "url"))
+
+
+def declared_mcp_sources(
+    scopes: Iterable[Mapping[str, Any]], app_claimed: Collection[str]
+) -> frozenset[str]:
+    """The source keys a readable scope declares as the user's own.
+
+    A colon key an installed app mints is not the user's, the same rule the
+    locked merge's colon path applies.
+    """
+    return frozenset(
+        _n
+        for scope in scopes
+        for _n, _decl in scope.items()
+        if isinstance(_decl, dict)
+        and _declares_transport(_decl)
+        and (":" not in _n or mcp_server_alias(_n) not in app_claimed)
+    )
+
+
+#: Owner placeholder for a name an app claimed at the start of the rebuild that no
+#: current read attributes: nothing can admit it, so its entry is dropped.
+UNKNOWN_APP_OWNER = ""
+
+
+def app_mcp_gate_owners(
+    key: str,
+    entry: Any,
+    *,
+    sources_by_target: Mapping[str, Collection[str]],
+    declared: Collection[str],
+    census: Mapping[str, frozenset[str]],
+    claimed_at_start: Collection[str],
+) -> frozenset[str] | None:
+    """The apps that must all admit slash-free *key*, or None when no app gates it.
+
+    Decided by where the entry came from, never by its name alone:
+
+    * a key a non-app source mounted (a scope declaration, a managed server) is
+      not app-gated, and neither is a card addition (``MERGED_MARK``);
+    * an entry carrying :data:`APP_KEY` is gated by that app;
+    * an unmarked entry an ``{app}:...`` source mounted is gated by that app;
+    * any other unmarked entry whose name or collision family base an installed
+      manifest claims, now or when the rebuild started, is gated by every claimant.
+      A claim seen only at the start has no readable owner, so it fails closed.
+    """
+    from kiro_crew.template_mcp_additions import MERGED_MARK
+
+    sources = sources_by_target.get(key, ())
+    if any(_s in declared for _s in sources):
+        return None
+    owner = entry_app(entry)
+    if owner is not None:
+        return frozenset({owner})
+    if isinstance(entry, dict) and entry.get(MERGED_MARK) is True:
+        return None
+    from_apps = frozenset(_s.split(":", 1)[0] for _s in sources if ":" in _s)
+    if from_apps:
+        return from_apps
+    base = mcp_aliases._alias_family_base(key)
+    claimants = census.get(key, frozenset()) | census.get(base, frozenset())
+    if claimants:
+        return claimants
+    if key in claimed_at_start or base in claimed_at_start:
+        return frozenset({UNKNOWN_APP_OWNER})
+    return None
 
 
 # Keys a scope global AUTHORS that are also TRANSPORT-INDEPENDENT, so one the
@@ -310,11 +516,21 @@ def _merge_source_owned(
     """
     existing = mcps.get(name)
     if not isinstance(existing, dict):
-        mcps[name] = without_marker(spec)
+        mcps[name] = _without_app_key(without_marker(spec))
         return
     if name not in stale:
         return
     stale.discard(name)
+    if (
+        not edition_owned
+        and (":" in name or _declares_transport(spec))
+        and _is_carried_app_entry(existing, name, {name})
+    ):
+        # A scope declaring the name a carried-over app entry holds replaces it
+        # whole: reconciling onto it would keep the app's command under the
+        # user's name, outside that app's admission.
+        mcps[name] = _without_app_key(without_marker(spec))
+        return
     for key in _SOURCE_OWNED_MCP_KEYS:
         if key in spec:
             existing[key] = spec[key]
@@ -386,7 +602,7 @@ class ResolvedServers(NamedTuple):
         return {mcp_server_alias(_n) for _n in self.unresolved}
 
 
-def merge_mcp_sources(config: dict) -> McpSources:
+def merge_mcp_sources(config: dict, *, app_owned_at_start: Collection[str] = ()) -> McpSources:
     """Merge the app, Kiro-global, provider-global and store MCP servers into *config*.
 
     Returns the scope maps as read, so the later passes resolve against the same
@@ -417,6 +633,10 @@ def merge_mcp_sources(config: dict) -> McpSources:
     _replaced: dict[str, dict] = {}
     for _app_srv, _app_spec in _collect_app_mcp_servers().items():
         if _app_srv not in managed_names:
+            # Stamped with its app, because key normalization strips the
+            # ``{app}:`` prefix from a slashed name and the final locked merge
+            # still has to put the entry through that app's admission.
+            _app_spec = {**_app_spec, APP_KEY: _app_srv.split(":", 1)[0]}
             config.setdefault("mcpServers", {})[_app_srv] = _app_spec
             # The manifest just spoke, so a same-named shared-file leftover must
             # not reconcile onto it -- this is how the app entry keeps outranking.
@@ -430,6 +650,44 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # @ref if it ever lands there.
             config.setdefault("tools", []).append(f"@{_app_srv}")
 
+    # Keep app attribution separate from scope priority: a modifier retires a
+    # global's stale key but does not make its app transport the store's own.
+    _census = _app_mcp_alias_owners()
+    _carried_app_keys = {
+        name
+        for name in _stale
+        if ":" not in name
+        and name not in managed_names | edition_names
+        and app_mcp_gate_owners(
+            name,
+            config["mcpServers"][name],
+            sources_by_target={},
+            declared=(),
+            census=_census,
+            claimed_at_start=app_owned_at_start,
+        )
+        is not None
+    }
+
+    def replace_app_transport(name: str, spec: dict) -> None:
+        if name not in _carried_app_keys or not _declares_transport(spec):
+            return
+        existing = config["mcpServers"][name]
+        if not isinstance(existing, dict):
+            return
+        if entry_app(existing) is not None:
+            config["mcpServers"][name] = _without_app_key(without_marker(spec))
+        elif isinstance(existing.get("command"), str) and existing["command"]:
+            # An unmarked entry is replaced only when it still holds a launch: a
+            # user transport must not inherit app argv, environment or headers,
+            # nor leave an app command available as a resolution fallback. An
+            # unmarked URL entry is not an app launch, so its headers stay.
+            for key in ("command", "args", "env", "url", "headers"):
+                existing.pop(key, None)
+                if key in spec:
+                    existing[key] = spec[key]
+        _carried_app_keys.discard(name)
+
     shared_mcp = user_json.load_mcp_servers(agent_mod._KIRO_MCP_JSON)
     for name, spec in shared_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
@@ -440,6 +698,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
             # SHARED file and has no meaning in a spec we render ourselves, so
             # keeping it would put a key in front of the runtime that says nothing
             # to it.
+            replace_app_transport(name, spec)
             _merge_source_owned(
                 config.setdefault("mcpServers", {}),
                 name,
@@ -464,6 +723,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
             if name not in managed_names:
                 # Copy (see note above) so the source dict stays pristine for
                 # the fallback-candidate lookup.
+                replace_app_transport(name, spec)
                 _merge_source_owned(
                     config.setdefault("mcpServers", {}),
                     name,
@@ -481,7 +741,18 @@ def merge_mcp_sources(config: dict) -> McpSources:
     kirocrew_mcp = user_json.load_mcp_servers(agent_mod._user_dir() / "mcp.json")
     for name, spec in kirocrew_mcp.items():
         if isinstance(spec, dict) and name not in managed_names:
+            spec = _without_app_key(spec)
+            replace_app_transport(name, spec)
             mcps = config.setdefault("mcpServers", {})
+            if (":" in name or _declares_transport(spec)) and _is_carried_app_entry(
+                mcps.get(name), name, _stale
+            ):
+                # The store names a server a refused or removed app's carried-over
+                # entry still holds: the store's declaration replaces it whole, so
+                # none of the app's command unit survives under the user's name.
+                _stale.discard(name)
+                mcps[name] = dict(spec)
+                continue
             if "command" in spec and name in _replaced:
                 # The store's command outranks the program a scope global just
                 # switched to, so the entry gets back the args/env it ran with.

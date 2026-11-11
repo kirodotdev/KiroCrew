@@ -36,6 +36,7 @@ from kiro_crew import md_notebook_state as _md_notebook_state
 from kiro_crew import platform_compat
 from kiro_crew.apps import builtin_host_grants as _host_grants
 from kiro_crew.apps import deps_boot as _deps_boot_module
+from kiro_crew.apps.admission import installed_content_refusal as _installed_content_refusal
 from kiro_crew.apps.execution import (
     app_execution_denied,
     is_builtin_app,
@@ -46,6 +47,7 @@ from kiro_crew.apps.interpreter import app_deps_dir, path_command_is_abi_matched
 from kiro_crew.apps.manager import app_dir, get_app_manifest
 from kiro_crew.apps.manifest import file_entry_point_refusal, is_module_style_entry_point
 from kiro_crew.apps.registry import minimal_env
+from kiro_crew.apps.signed_imports import pycache_prefix_env as _pycache_prefix_env
 from kiro_crew.config.loader import config_dir
 from kiro_crew.constants import (
     KIROCREW_SPAWN_INSTANCE_ENV,
@@ -149,6 +151,7 @@ _BACKEND_LOG_MAX_BYTES = 1_048_576  # 1 MiB
 # ---------------------------------------------------------------------------
 # Node.js binary resolution
 # ---------------------------------------------------------------------------
+
 
 def _resolve_nvm_path(binary_name: str) -> str | None:
     """Resolve a binary via nvm, returning its full path or None.
@@ -525,6 +528,17 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # the record so a later ceiling re-check never re-resolves a path the app owns.
     _admitted_builtin = is_builtin_app(app_name=app_name, app_root=execution_path)
 
+    # A file backend runs from the installed tree: under a signature policy that
+    # tree must still be the signed one at the moment it is spawned.
+    content_refusal = (
+        None
+        if _admitted_builtin
+        else _installed_content_refusal(app_name, execution_path or root, manifest)
+    )
+    if content_refusal:
+        logger.warning("Refusing to spawn app %s backend: %s", app_name, content_refusal)
+        return None
+
     # Whether this spawn executes the SHIPPED md-notebook backend — provenance on the
     # executed path the admission gate above vetted. Only the isolated-startup branch
     # below reads it: that is the one spawn whose namespace holds an unmasked PAT, so
@@ -565,7 +579,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             if not (_MIN_PORT <= port <= _MAX_PORT):
                 logger.error(
                     "App %s: port %d outside allowed range %d-%d",
-                    app_name, port, _MIN_PORT, _MAX_PORT,
+                    app_name,
+                    port,
+                    _MIN_PORT,
+                    _MAX_PORT,
                 )
                 return None
             # Claim it immediately so a concurrently-starting auto-port app cannot
@@ -603,8 +620,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             if healthy:
                 try:
                     sel().log_api_access(
-                        caller="gateway", operation="app_backend_adopt",
-                        outcome="adopted", resources=f"{app_name} port={port}",
+                        caller="gateway",
+                        operation="app_backend_adopt",
+                        outcome="adopted",
+                        resources=f"{app_name} port={port}",
                     )
                 except Exception as exc:
                     logger.debug("SEL audit failed for app %s backend adopt: %s", app_name, exc)
@@ -623,10 +642,20 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 if adopted is None:
                     return None
                 adopted_pids, adopted_start_times = adopted
-                logger.info("App %s: healthy instance already on port %d — adopting (pids=%s)", app_name, port, adopted_pids)
+                logger.info(
+                    "App %s: healthy instance already on port %d — adopting (pids=%s)",
+                    app_name,
+                    port,
+                    adopted_pids,
+                )
                 ap = AppProcess(
-                    app_name=app_name, port=port, pid=0, proc=None,
-                    healthy=True, started_at=time.time(), log_path=str(log_path),
+                    app_name=app_name,
+                    port=port,
+                    pid=0,
+                    proc=None,
+                    healthy=True,
+                    started_at=time.time(),
+                    log_path=str(log_path),
                     adopted_pids=adopted_pids,
                     adopted_start_times=adopted_start_times,
                     gateway_started=True,
@@ -653,10 +682,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                 # would kill a healthy service we would immediately re-adopt. stop's
                 # adopted path kills only the re-validated PIDs for this reason.
                 with _lock:
-                    if (
-                        _spawn_owner is not None
-                        and _processes.get(app_name) is not _spawn_owner
-                    ):
+                    if _spawn_owner is not None and _processes.get(app_name) is not _spawn_owner:
                         return None
                     _processes[app_name] = ap
                     _allocated_ports[app_name] = port
@@ -672,7 +698,8 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             else:
                 try:
                     sel().log_api_access(
-                        caller="gateway", operation="app_backend_spawn",
+                        caller="gateway",
+                        operation="app_backend_spawn",
                         outcome="rejected_port_unhealthy",
                         resources=f"{app_name} port={port}",
                     )
@@ -680,7 +707,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
                     logger.debug("SEL audit failed for app %s port rejection: %s", app_name, exc)
                 logger.warning(
                     "App %s: port %d occupied by unhealthy process — "
-                    "kill it manually then retry", app_name, port,
+                    "kill it manually then retry",
+                    app_name,
+                    port,
                 )
                 return None
         except OSError:
@@ -697,7 +726,25 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # the PYTHONPATH/shim transports below) on a real file entry point.
     provision_error = ""
     if entry is not None:
+        # Captured before pip: pip and its build hooks run with the app root as
+        # cwd and can change publisher files, requirements.txt included, so
+        # what is left on disk afterwards cannot decide whether to check again.
+        had_requirements = os.path.lexists(req_file)
         provision_error = provision_app_deps(app_name, root)
+        if not _admitted_builtin and had_requirements:
+            # The signed tree is checked again before the backend runs.
+            try:
+                content_refusal = _installed_content_refusal(app_name, entry)
+            except Exception as exc:
+                logger.warning("App %s post-pip verification failed: %s", app_name, exc)
+                return None
+            if content_refusal:
+                logger.warning(
+                    "Refusing app %s backend after Python provisioning: %s",
+                    app_name,
+                    content_refusal,
+                )
+                return None
 
     # Spawn process — use manifest backend type if available, fall back to heuristic
     # Pass the gateway's resolved config home explicitly: under pods or any
@@ -804,7 +851,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     _grant_env_names = _host_grants.backend_env_names()
     _grant_env_prefixes = _host_grants.backend_env_prefixes()
     for _k, _v in os.environ.items():
-        if (_k in _grant_env_names and _v) or (_grant_env_prefixes and _k.startswith(_grant_env_prefixes)):
+        if (_k in _grant_env_names and _v) or (
+            _grant_env_prefixes and _k.startswith(_grant_env_prefixes)
+        ):
             _platform_extra[_k] = _v
     env = minimal_env(
         PORT=str(port),
@@ -812,6 +861,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         KIROCREW_HOME=str(config_dir()),
         **_platform_extra,
     )
+    if not _admitted_builtin:
+        # A signed app's Python never reads bytecode from its own tree.
+        env.update(_pycache_prefix_env(app_name, execution_path or root))
     # Identity this backend's whole tree carries, so the startup stale-reap can
     # still find it once the LEADER is gone. The backend is spawned with
     # start_new_session=True, so its group outlives it: when the gateway is
@@ -952,6 +1004,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         # every candidate inside the app root.
         real_root = root.resolve()
         pkg_dirs = [d for d in entry.resolve().parents if d == real_root or real_root in d.parents]
+        npm_attempted = False
         for pkg_dir in reversed(pkg_dirs):
             if not (pkg_dir / "package.json").is_file() or (pkg_dir / "node_modules").is_dir():
                 continue
@@ -961,20 +1014,36 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             logger.info("Installing npm deps for app %s in %s", app_name, pkg_dir)
             try:
                 sel().log_api_access(
-                    caller="gateway", operation="app_backend_npm_install",
-                    outcome="started", resources=f"{app_name}",
+                    caller="gateway",
+                    operation="app_backend_npm_install",
+                    outcome="started",
+                    resources=f"{app_name}",
                 )
             except Exception as exc:
                 logger.debug("SEL audit failed for npm install %s: %s", app_name, exc)
             try:
-                sandboxed_npm, _ = wrap_argv(
-                    [npm_bin, "install", "--production", "--no-audit", "--no-fund"],
-                    mode="standard",
-                )
+                from kiro_crew.apps.admission import signed_tree_applies
+
+                npm_cmd = [npm_bin, "install", "--production", "--no-audit", "--no-fund"]
+                if signed_tree_applies(app_name, entry):
+                    # Provisioning preserves signed files. A publisher lockfile is
+                    # honoured with ``npm ci``, which installs its exact pins and
+                    # integrity and fails rather than rewrite it; without one the
+                    # install still runs, but records no lockfile of its own.
+                    locks = ("npm-shrinkwrap.json", "package-lock.json")
+                    if any((pkg_dir / n).is_file() for n in locks):
+                        npm_cmd[1] = "ci"
+                    else:
+                        npm_cmd.append("--no-package-lock")
+                sandboxed_npm, _ = wrap_argv(npm_cmd, mode="standard")
                 sandboxed_npm = cgroup_scope_argv(sandboxed_npm)  # cgroup DoS ceiling
+                npm_attempted = True
                 npm_run = run_limited(
                     sandboxed_npm,
-                    cwd=str(pkg_dir), env=env, capture_output=True, timeout=120,
+                    cwd=str(pkg_dir),
+                    env=env,
+                    capture_output=True,
+                    timeout=120,
                 )
             except Exception as exc:
                 logger.warning(
@@ -984,8 +1053,24 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             if npm_run.returncode != 0:
                 logger.warning(
                     "Failed to install npm deps for app %s in %s: npm exited %s",
-                    app_name, pkg_dir, npm_run.returncode,
+                    app_name,
+                    pkg_dir,
+                    npm_run.returncode,
                 )
+
+        if npm_attempted and not _admitted_builtin:
+            # npm lifecycle scripts can change publisher files even on failure.
+            # Read app.json again too; the pre-provision manifest is only a snapshot.
+            try:
+                content_refusal = _installed_content_refusal(app_name, entry)
+            except Exception as exc:
+                logger.warning("App %s post-npm verification failed: %s", app_name, exc)
+                return None
+            if content_refusal:
+                logger.warning(
+                    "Refusing app %s backend after npm provisioning: %s", app_name, content_refusal
+                )
+                return None
 
     # --- Module-style Python builtin (e.g. kiro_crew.apps.builtins.<name>) ---
     # Module-style entries have no file path — the module runs under the gateway's own
@@ -1054,9 +1139,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         cwd = str(root)
 
     # --- ASGI (Python) backend ---
-    elif backend_type == "asgi" or (
-        not backend_type and _is_asgi_entry(entry)
-    ):
+    elif backend_type == "asgi" or (not backend_type and _is_asgi_entry(entry)):
         # Prefer the app's venv interpreter, else the gateway's own (sys.executable) —
         # never a bare "python3": a bare name relies on PATH, which isn't guaranteed
         # (e.g. some build environments ship only a versioned interpreter, so
@@ -1289,13 +1372,13 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             )
     sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
 
-    logger.info(
-        "Spawning app %s backend: %s", app_name, " ".join(sandboxed_cmd),
-    )
+    logger.info("Spawning app %s backend on port %s", app_name, port)
     try:
         sel().log_api_access(
-            caller="gateway", operation="app_backend_spawn",
-            outcome="started", resources=f"{app_name} port={port}",
+            caller="gateway",
+            operation="app_backend_spawn",
+            outcome="started",
+            resources=f"{app_name} port={port}",
         )
     except Exception as exc:
         logger.debug("SEL audit failed for app %s backend spawn: %s", app_name, exc)
@@ -1400,7 +1483,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         collided = "address already in use" in tail.lower() or "errno 98" in tail.lower()
         logger.error(
             "App %s backend exited immediately (rc=%s) on port %d%s — %s",
-            app_name, proc.returncode, port,
+            app_name,
+            proc.returncode,
+            port,
             " [PORT COLLISION]" if collided else "",
             tail or "(no output)",
         )
@@ -1726,7 +1811,12 @@ if _typing.TYPE_CHECKING:
     )
     from kiro_crew.apps.backend_runtime.startup import (  # noqa: F401
         _BOOT_SPAWN_MAX_WORKERS,
+        _disable_denied_app,
+        _is_installed_builtin_app,
+        _is_signature_refusal,
         _preclaim_fixed_ports,
+        _record_boot_refusal,
+        _revoke_denied_app_resources,
         _start_backends_concurrently,
         concurrent,
         list_apps,
