@@ -12867,6 +12867,16 @@
         "state_finished": "已完成",
         "state_queued": "排队中"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "{{ready}} / {{total}} 个 MCP 服务器已就绪",
+        "still_connecting": "MCP 服务器仍在连接。每个服务器连接后，其工具即可使用。",
+        "state_connecting": "连接中",
+        "state_disabled": "已关闭",
+        "state_registry_dropped": "因策略未加载",
+        "not_counted": "未计入：{{n}}",
+        "untracked": "部分服务器未跟踪",
+        "list_label": "本会话的 MCP 服务器"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "所有任务已完成",
         "aria_collapse_task_list": "已完成 {{done}}/{{total}} 个任务。折叠任务列表",

@@ -5897,6 +5897,16 @@
         "chip_stalled_one": "{{count}} agent possibly stalled",
         "chip_stalled_other": "{{count}} agents possibly stalled"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "{{ready}} of {{total}} MCP servers ready",
+        "still_connecting": "MCP servers are still connecting. Their tools appear as each one connects.",
+        "state_connecting": "Connecting",
+        "state_disabled": "Switched off",
+        "state_registry_dropped": "Left out by policy",
+        "not_counted": "Not counted: {{n}}",
+        "untracked": "Some servers are not tracked",
+        "list_label": "MCP servers in this session"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "All tasks complete",
         "current_task": "Current task",

@@ -160,11 +160,21 @@ class TestNotReady:
 
         assert report.not_ready() == {"connecting": ("s000",)}
 
-    def test_the_payload_does_not_carry_the_states(self):
-        """Nothing reads them off the payload yet; a turn and the wait tool read ``not_ready``."""
-        report = _report(declared=("github",))
+    def test_the_payload_carries_the_states_and_what_the_report_left_out(self):
+        """``states`` is ``not_ready()`` as lists; ``states_omitted`` is ``left_out``,
+        not zero once the report is partial."""
+        report = _report("bridge", declared=("github", "jira"))
 
-        assert "states" not in report.payload()
+        payload = report.payload()
+
+        assert payload["states"] == {"connecting": ["github", "jira", "bridge"]}
+        assert payload["states_omitted"] == 0
+        report.fold_frame(_msg(_status(github="connected", jira="failed")))
+        assert report.payload()["states"] == {"failed": ["jira"], "connecting": ["bridge"]}
+
+        names = {f"s{i:03d}": {"command": "x"} for i in range(CAP + 2)}
+        report.record_declared({"mcpServers": names})
+        assert report.payload()["states_omitted"] == 2
 
     def test_ready_servers_do_not_crowd_a_connecting_one_out(self):
         """64 declared servers that all connected leave room for the bridge still loading."""

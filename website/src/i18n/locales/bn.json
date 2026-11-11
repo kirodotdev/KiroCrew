@@ -13175,6 +13175,16 @@
         "state_finished": "সম্পন্ন",
         "state_queued": "সারিতে"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "{{total}}টির মধ্যে {{ready}}টি MCP সার্ভার প্রস্তুত",
+        "still_connecting": "MCP সার্ভারগুলো এখনও সংযুক্ত হচ্ছে। প্রতিটি সার্ভার সংযুক্ত হলে তার টুলগুলো দেখা যায়।",
+        "state_connecting": "সংযুক্ত হচ্ছে",
+        "state_disabled": "বন্ধ করা আছে",
+        "state_registry_dropped": "নীতির কারণে বাদ পড়েছে",
+        "not_counted": "গণনার বাইরে: {{n}}",
+        "untracked": "কিছু সার্ভার ট্র্যাক করা হয়নি",
+        "list_label": "এই সেশনের MCP সার্ভার"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "সব টাস্ক সম্পূর্ণ",
         "aria_collapse_task_list": "{{total}}টির মধ্যে {{done}}টি টাস্ক সম্পূর্ণ। টাস্ক তালিকা সংকুচিত করো",

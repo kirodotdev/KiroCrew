@@ -62,6 +62,7 @@ import FollowUpCard, { type FollowupStartMode } from '../../../components/Follow
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
 import FlyingQuote from '../../../components/FlyingQuote'
 import QueueStack, { SubagentDeliveryProgress } from '../../../components/QueueStack'
+import McpLoadingBar from '../McpLoadingBar'
 import SubagentProgressBar from '../SubagentProgressBar'
 import TaskProgressBar from '../TaskProgressBar'
 import type { ChatConfig } from '../ChatSettings'
@@ -426,6 +427,10 @@ export default function ComposerDockView({
                   still fuses. Layout-neutral when the queue is empty: the pair
                   cancels. */}
               <div ref={composerBandRef} className="max-h-[50svh] overflow-y-auto overscroll-contain pb-[11px] mb-[-11px] dock-inert" data-testid="composer-status-stack">
+              {/* Topmost, furthest from the composer: it is about the session's
+                  setup, not about the work in hand, and is gone once every MCP
+                  server has connected. */}
+              <McpLoadingBar slot={activeSlot} />
               {/* Not gated on activityOpen (unlike the two bars below): the
                   activity sidebar has no TODO view, so hiding it there would
                   lose the information rather than de-duplicate it. */}

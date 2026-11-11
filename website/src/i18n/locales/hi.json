@@ -13175,6 +13175,16 @@
         "state_finished": "पूरा हुआ",
         "state_queued": "कतार में"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "{{total}} में से {{ready}} MCP सर्वर तैयार",
+        "still_connecting": "MCP सर्वर अभी कनेक्ट हो रहे हैं। हर सर्वर के कनेक्ट होते ही उसके टूल उपलब्ध हो जाते हैं।",
+        "state_connecting": "कनेक्ट हो रहा है",
+        "state_disabled": "बंद किया गया",
+        "state_registry_dropped": "नीति के कारण छोड़ा गया",
+        "not_counted": "गिनती में शामिल नहीं: {{n}}",
+        "untracked": "कुछ सर्वर ट्रैक नहीं किए गए",
+        "list_label": "इस सत्र के MCP सर्वर"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "सभी टास्क पूर्ण",
         "aria_collapse_task_list": "{{total}} में से {{done}} टास्क पूर्ण। टास्क सूची समेटें",

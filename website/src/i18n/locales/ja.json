@@ -12867,6 +12867,16 @@
         "state_finished": "完了",
         "state_queued": "待機中"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "MCP サーバー {{total}} 件中 {{ready}} 件が準備完了",
+        "still_connecting": "MCP サーバーはまだ接続中です。各サーバーのツールは接続が完了すると使えるようになります。",
+        "state_connecting": "接続中",
+        "state_disabled": "オフ",
+        "state_registry_dropped": "ポリシーにより除外",
+        "not_counted": "カウント対象外: {{n}}",
+        "untracked": "一部のサーバーは追跡されていません",
+        "list_label": "このセッションの MCP サーバー"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "すべてのタスクが完了しました",
         "aria_collapse_task_list": "{{total}} 件中 {{done}} 件のタスクが完了。タスク一覧を折りたたむ",
