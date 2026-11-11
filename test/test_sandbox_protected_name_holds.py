@@ -484,7 +484,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #: next start, which the boot-time apply installs on. Sealed read-only so an agent
     #: cannot arm one. It sits at the data-home root beside writable siblings and is
     #: published by a rename, so leaf-only is the only hold, as for ``computer_use.json``.
-    EXPECTED: dict[str, int] = {"standard": 330, "cc": 337, "strict": 338}
+    #: One more root-level directory, three entries per tier: ``computer-use`` -- the
+    #: desktop driver the gateway executes, its install record and private home, and
+    #: the setup progress file (``computer_use.driver_runtime.install.RUNTIME_LEAF``).
+    #: Sealed read-only and no-follow like ``browser-harness`` so an agent cannot
+    #: choose the driver the gateway runs or forge a passed setup check. Every write
+    #: is a create or rename INSIDE it, so its own inode stays the same; at the
+    #: data-home root, so leaf-only is the only hold.
+    EXPECTED: dict[str, int] = {"standard": 333, "cc": 340, "strict": 341}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -300,6 +300,7 @@ class _Snap:
         self.has_secure = has_secure
         self.truncated = truncated
         self.depth_truncated = depth_truncated
+        self.elements = ()
 
         class _App:
             pass
@@ -908,8 +909,10 @@ class TestCaptureSnapshotImageEndToEnd:
         monkeypatch.setattr(C, "_gdi_libraries", lambda: (object(), object(), _DisposeSpy()))
         # The relay spawns a POST thread, so it is always replaced — a real one would
         # reach the network from a unit test.
+        from kiro_crew.computer_use import screencast
+
         monkeypatch.setattr(
-            C.screencast,
+            screencast,
             "emit_snapshot_frame",
             lambda snap: (relayed.append(snap) if relayed is not None else True),
         )
@@ -923,33 +926,15 @@ class TestCaptureSnapshotImageEndToEnd:
         assert (out.image_width, out.image_height) == (64, 32)
         assert out.image_path == "/tmp/s.jpeg"
 
-    def test_the_frame_is_MIRRORED_to_the_live_view(self, monkeypatch) -> None:
-        """Without this call the dashboard's live-view panel is permanently blank on
-        Windows, while working on macOS — the relay itself is platform-agnostic.
-
-        The ENCODED snapshot is relayed, not the bare one: the mirror shows these exact
-        already-downscaled bytes rather than capturing the window a second time.
-        """
+    def test_the_capture_layer_does_not_relay_the_frame_itself(self, monkeypatch) -> None:
+        """The live-view mirror moved above the seam (``service.snapshot`` through
+        ``floors.emit_live_frame``) so every backend gets it from one place; a relay
+        from here as well would mirror each Windows frame twice."""
         relayed: list = []
         self._plumbing(monkeypatch, relayed=relayed)
         out = C.capture_snapshot_image(self._snap())
-        assert len(relayed) == 1, "the live-view relay was never called"
-        assert relayed[0] is out
-        assert relayed[0].image_jpeg == b"JPEG"
-
-    def test_a_RAISING_relay_does_not_lose_the_capture(self, monkeypatch) -> None:
-        """A decorative mirror must never turn a successful observation into a failure.
-
-        The relay is itself contracted never to raise; this pins the outer guard that
-        holds if that inner contract is ever broken.
-        """
-
-        def boom(snap):
-            raise RuntimeError("the relay broke its contract")
-
-        self._plumbing(monkeypatch)
-        monkeypatch.setattr(C.screencast, "emit_snapshot_frame", boom)
-        assert C.capture_snapshot_image(self._snap()).image_jpeg == b"JPEG"
+        assert out.image_jpeg == b"JPEG"
+        assert relayed == []
 
     def test_a_SUPPRESSED_capture_is_never_relayed(self, monkeypatch) -> None:
         """The secure floor returns before the relay exists to be called.

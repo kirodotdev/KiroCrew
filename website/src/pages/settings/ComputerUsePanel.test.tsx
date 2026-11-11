@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
+import { useLocation } from 'react-router-dom'
 import type { ComputerUseConfigData } from '../../api/client'
 
 /* ── api client mock ───────────────────────────────────────────────────────
@@ -11,16 +12,14 @@ vi.mock('../../api/client', () => ({
   api: {
     getComputerUseConfig: vi.fn(),
     saveComputerUseConfig: vi.fn(),
+    getComputerUseSetup: vi.fn(),
+    runComputerUseSetupAction: vi.fn(),
   },
 }))
 
 import { api } from '../../api/client'
-import {
-  ComputerUsePanel,
-  commitNumericDraft,
-  openSystemSettings,
-  permissionPollInterval,
-} from './ComputerUsePanel'
+import { ComputerUsePanel, commitNumericDraft } from './ComputerUsePanel'
+import { setupDoc } from '../../test/computerUseSetupFixtures'
 
 const ENABLE_LABEL = /enable computer use/i
 
@@ -45,11 +44,12 @@ function snapshot(overrides: Partial<ComputerUseConfigData> = {}): ComputerUseCo
 }
 
 /** Render with the config query pre-resolved and hydrated. */
-async function renderPanel(data: ComputerUseConfigData = snapshot()) {
+async function renderPanel(data: ComputerUseConfigData = snapshot(), route = '/settings/computer-use') {
   ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(data)
   ;(api.saveComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(data)
-  const utils = renderWithProviders(<ComputerUsePanel />)
-  await screen.findByText('Computer Use')
+  ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(setupDoc('disabled'))
+  const utils = renderWithProviders(<ComputerUsePanel />, { route })
+  await screen.findAllByText('Computer Use')
   return utils
 }
 
@@ -146,86 +146,51 @@ describe('ComputerUsePanel', () => {
     )
   })
 
-  it('shows a warn badge and a grant shortcut when Accessibility is missing', async () => {
-    await renderPanel(
-      snapshot({
-        permissions: {
-          accessibility: 'missing',
-          screen_recording: 'granted',
-          responsible_hint: 'Grant them to Terminal',
-        },
-      }),
-    )
-    // The badge shows the HUMAN label, not the backend's wire token: `missing`
-    // reads as jargon in a status chip, and an operator seeing it cannot tell
-    // whether something is broken or simply not granted yet.
-    expect(await screen.findByText('Not detected')).toBeInTheDocument()
-    expect(screen.queryByText('missing')).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: /open system settings for accessibility/i }),
-    ).toBeInTheDocument()
-    expect(screen.getByText('Grant them to Terminal')).toBeInTheDocument()
+  it('reads the setup card again after the enable switch changes', async () => {
+    await renderPanel()
+    const card = await screen.findByTestId('cu-setup-status')
+    expect(card).toHaveAttribute('data-state', 'disabled')
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(setupDoc('not_configured'))
+    fireEvent.click(await screen.findByRole('switch', { name: ENABLE_LABEL }))
+    await waitFor(() => expect(screen.getByTestId('cu-setup-status')).toHaveAttribute('data-state', 'not_configured'))
   })
 
-  /* ── the grant shortcut's delivery mechanism ──────────────────────────────
-   * Pinned deliberately, because the failure is invisible in a browser tab: the
-   * dashboard renders inside an instance <iframe>, where a FRAME navigation is
-   * governed by CSP `frame-src` (a loopback/cloudfront allowlist that names no
-   * custom scheme), so
-   * `window.location.href = 'x-apple.systempreferences:…'` is refused with
-   * ERR_BLOCKED_BY_CSP and the button does nothing in the packaged desktop app.
-   * `window.open` is a new top-level request, which the OS/Electron main process
-   * handles. A regression back to `location.href` must fail here rather than
-   * ship as a dead button. */
-  it('hands the grant shortcut to the OS via window.open, never a frame navigation', async () => {
-    const open = vi.spyOn(window, 'open').mockReturnValue(null)
-    try {
-      await renderPanel(
-        snapshot({
-          permissions: {
-            accessibility: 'missing',
-            screen_recording: 'missing',
-            responsible_hint: '',
-          },
-        }),
-      )
-      fireEvent.click(
-        await screen.findByRole('button', { name: /open system settings for accessibility/i }),
-      )
-      expect(open).toHaveBeenCalledWith(
-        'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
-        '_blank',
-        expect.stringContaining('noopener'),
-      )
+  it('shows the setup status card from the setup document', async () => {
+    await renderPanel()
+    const card = await screen.findByTestId('cu-setup-status')
+    expect(card).toHaveAttribute('data-state', 'disabled')
+    expect(within(card).getByText('Off')).toBeInTheDocument()
+    // The old advisory permission rows are gone; the setup card owns them now.
+    expect(screen.queryByRole('button', { name: /open system settings for/i })).not.toBeInTheDocument()
+  })
 
-      fireEvent.click(
-        screen.getByRole('button', { name: /open system settings for screen recording/i }),
-      )
-      expect(open).toHaveBeenLastCalledWith(
-        'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
-        '_blank',
-        expect.stringContaining('noopener'),
-      )
+  it('opens the setup dialog from the status card', async () => {
+    await renderPanel()
+    fireEvent.click(await screen.findByTestId('cu-open-setup'))
+    expect(await screen.findByTestId('cu-setup-dialog')).toHaveAttribute('data-view', 'intro')
+  })
 
-    } finally {
-      open.mockRestore()
+  it('opens the setup dialog once when arriving with ?setup=1', async () => {
+    ;(api.getComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(snapshot())
+    ;(api.getComputerUseSetup as ReturnType<typeof vi.fn>).mockResolvedValue(setupDoc('disabled'))
+    function Search() {
+      return <span data-testid="route-search">{useLocation().search}</span>
     }
-  })
-
-  describe('openSystemSettings', () => {
-    it('opens the pane in a new top-level context with noopener', () => {
-      const open = vi.spyOn(window, 'open').mockReturnValue(null)
-      try {
-        openSystemSettings('x-apple.systempreferences:com.apple.preference.sound')
-        expect(open).toHaveBeenCalledWith(
-          'x-apple.systempreferences:com.apple.preference.sound',
-          '_blank',
-          'noopener,noreferrer',
-        )
-      } finally {
-        open.mockRestore()
-      }
-    })
+    const tree = (
+      <>
+        <ComputerUsePanel />
+        <Search />
+      </>
+    )
+    const { rerender } = renderWithProviders(tree, { route: '/settings/computer-use?setup=1' })
+    expect(await screen.findByTestId('cu-setup-dialog')).toBeInTheDocument()
+    // The parameter is consumed as the dialog opens.
+    await waitFor(() => expect(screen.getByTestId('route-search')).toHaveTextContent(''))
+    fireEvent.click(await screen.findByRole('button', { name: /not now/i }))
+    await waitFor(() => expect(screen.queryByTestId('cu-setup-dialog')).not.toBeInTheDocument())
+    // An explicit re-render with the parameter gone does not pop it open again.
+    rerender(tree)
+    expect(screen.queryByTestId('cu-setup-dialog')).not.toBeInTheDocument()
   })
 
   it('tags the section macOS only on a macOS host', async () => {
@@ -352,42 +317,6 @@ describe('ComputerUsePanel', () => {
     expect(api.saveComputerUseConfig).toHaveBeenCalledTimes(1)
     expect(api.saveComputerUseConfig).toHaveBeenCalledWith({ max_tree_nodes: 900 })
   })
-
-  /* ── permission poll bound ──────────────────────────────────────────────── */
-
-  describe('permissionPollInterval', () => {
-    const t0 = 1_000_000
-
-    it('stops for every state the backend documents as terminal', () => {
-      // The panel must stop polling on the shapes the backend itself returns as
-      // normal: `unknown` (the probe could not run) and `unsupported` (no TCC on
-      // this platform). Re-polling while accessibility !== 'granted' never
-      // terminates on those. Each tick spawns a permission-probe child process.
-      expect(permissionPollInterval('granted', t0, t0)).toBe(false)
-      expect(permissionPollInterval('unknown', t0, t0)).toBe(false)
-      expect(permissionPollInterval('unsupported', t0, t0)).toBe(false)
-      // No data yet: the initial fetch is in flight, nothing to schedule against.
-      expect(permissionPollInterval(undefined, t0, t0)).toBe(false)
-    })
-
-    it('polls while a grant is genuinely outstanding', () => {
-      // Granting in System Settings flips the row without a reload.
-      expect(permissionPollInterval('missing', t0, t0)).toBe(5000)
-      expect(permissionPollInterval('missing', t0, t0 + 60_000)).toBe(5000)
-    })
-
-    it('stops once the bound elapses, even while still missing', () => {
-      expect(permissionPollInterval('missing', t0, t0 + 180_000)).toBe(false)
-      expect(permissionPollInterval('missing', t0, t0 + 600_000)).toBe(false)
-    })
-
-    it('treats a zero start time as "no deadline yet" rather than expired', () => {
-      // `now - 0` is an enormous elapsed time, so without the guard an unset start
-      // would read as already past the bound and kill the poll the row needs.
-      expect(permissionPollInterval('missing', 0, t0)).toBe(5000)
-    })
-  })
-  /* ── a malformed keystone ────────────────────────────────────────────────── */
 
   it('warns when the keystone app lists could not be read', async () => {
     // The backend deliberately still returns 200 for a hand-edited keystone: a 500

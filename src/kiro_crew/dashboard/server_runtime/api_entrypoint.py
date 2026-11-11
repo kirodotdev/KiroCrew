@@ -385,6 +385,10 @@ async def start_api_server(
     # The headless gateway serves the ``browser`` tool too, so its browser plane
     # stops with it and a stray daemon is reclaimed at its start, as on the dashboard.
     _register_browser_harness_lifecycle(app, state)
+    # The computer-use driver child stops with the gateway and before a restart.
+    from kiro_crew.computer_use.driver_runtime import lifecycle as _cu_driver_lifecycle
+
+    _cu_driver_lifecycle.register(app)
     _register_connections_warm_lifecycle(app, state)
     _register_workflow_lifecycle(app, state)
 

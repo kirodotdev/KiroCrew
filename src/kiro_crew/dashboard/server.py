@@ -1255,6 +1255,10 @@ async def start_dashboard(
         app.on_cleanup.append(_stop_remote_puller)
         _register_instances_hooks(app, state, _dashboard_sock.getsockname()[1])
         _register_browser_harness_lifecycle(app, state)
+        # The computer-use driver child stops with the gateway and before a restart.
+        from kiro_crew.computer_use.driver_runtime import lifecycle as _cu_driver_lifecycle
+
+        _cu_driver_lifecycle.register(app)
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
         _register_crewmate_prune_gate(app, state)

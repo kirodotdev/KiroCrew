@@ -550,13 +550,16 @@ there is deliberate; see [config.md](config.md).
 
 ## HTTP surface
 
-Four routes in `dashboard/handlers/computer_use.py`, and the split in their auth
-models is the point.
+Four routes in `dashboard/handlers/computer_use.py` and two in
+`dashboard/handlers/computer_use_setup.py`, and the split in their auth models is
+the point.
 
 | Route | Auth | Caller |
 |---|---|---|
 | `GET /api/computer-use/config` | cookie (browser) | Settings panel |
 | `PUT /api/computer-use/config` | cookie (browser), owner only | Settings panel |
+| `GET /api/computer-use/setup` | cookie (browser), owner only | Settings setup card and dialog |
+| `POST /api/computer-use/setup` | cookie (browser), owner only, CSRF | Settings setup dialog |
 | `POST /api/computer-use/invoke` | loopback + `X-Internal-Secret` | the stdio shim ONLY |
 | `POST /api/computer-use/frame` | loopback + `X-Internal-Secret` | this gateway's own capture thread ONLY |
 
@@ -1910,14 +1913,89 @@ values.**
 
 | Platform | State |
 |---|---|
-| macOS | Supported. ApplicationServices AX + CoreGraphics + ImageIO via ctypes. |
-| Windows | **Full tool set.** UIAutomationCore over raw ctypes COM (no `comtypes`) + `PrintWindow`/GDI+. Element-addressed actions go through UIA control patterns and move neither the pointer nor focus; the pointer and keyboard routes exist but are opt-in by name, because Windows has no per-process input delivery. See [The Windows driver](#the-windows-driver). |
-| Linux | `LinuxBackend(UnsupportedBackend)` — typed refusal. The plan is AT-SPI over D-Bus; Wayland has no unprivileged window capture (it needs xdg-desktop-portal), so a first cut may be tree-only, which `SnapshotRequest.want_image` already accommodates. |
+| macOS | Supported. ApplicationServices AX + CoreGraphics + ImageIO via ctypes. The upstream driver is selectable with `driver: upstream` (its TCC owner is `CuaDriver.app`); `auto` stays native. |
+| Windows | **Full tool set.** UIAutomationCore over raw ctypes COM (no `comtypes`) + `PrintWindow`/GDI+. Element-addressed actions go through UIA control patterns and move neither the pointer nor focus; the pointer and keyboard routes exist but are opt-in by name, because Windows has no per-process input delivery. See [The Windows driver](#the-windows-driver). With the upstream driver installed, `auto` selects it ([The upstream driver](#the-upstream-driver)): background delivery by default, `global` for foreground. |
+| Linux | **Upstream driver** (`driver_runtime.backend.CuaBackend`, see [The upstream driver](#the-upstream-driver)). X11, or apps under XWayland on a Wayland desktop; a Wayland session with no X server refuses. Element actions run over AT-SPI in the background; raw background keys and coordinate gestures need a writable `/dev/uinput`, otherwise they refuse with `background_unavailable` and `global` delivers them in the foreground. `LinuxBackend(UnsupportedBackend)` remains only for `driver: native`. |
 
 Every unimplemented path **refuses rather than raises**, mirroring how
 `dashboard/handlers/terminal.py` handles the Windows PTY, and names what is
 missing so a user learns something and a maintainer finds the next step. When
 `supported` is false the Settings panel renders the reason and no toggle.
+
+### The upstream driver
+
+`computer_use/driver_runtime/` runs the open-source `cua-driver` (MIT, Cua AI, Inc.)
+behind the same seam. No upstream code ships in the wheel.
+
+- **Pin** (`pin.py`): one release (`0.47.8`), and for each (os, arch) the archive
+  name, byte size, archive sha256 and the sha256 of the driver binary inside it.
+  Linux and Windows use the `-binary` archives; macOS uses
+  `darwin-universal.tar.gz` (the signed, notarized `CuaDriver.app`).
+- **Install** (`install.py`), from the setup action only: HTTPS download whose
+  redirects must stay HTTPS, a streaming size cap, size and sha256 checked before
+  extraction, extraction that refuses absolute paths, `..`, devices, zip symlinks and
+  links leaving the tree, the extracted binary checked against its pinned hash,
+  macOS `codesign --verify --strict` + team `YCK386LBJ7` + bundle id
+  `com.trycua.driver`, Windows Authenticode Valid with CN `Cua AI, Inc.`, then
+  `--version`. Atomic rename into `<data-home>/computer-use/driver/<version>/`,
+  read-only, record written last. Every start re-hashes the binary against the PIN
+  (not the record) before executing it. Upstream's own installers, `update`,
+  `connect`, `mcp-config`, `skills`, `autostart` and install telemetry never run.
+- **Environment** (`env.py`): built from an allowlist (display, session bus, locale,
+  Windows system dirs, toolkit a11y switches). Telemetry and the update check are
+  forced off, the permission mode is pinned to `standard`, and both upstream homes
+  point at `<data-home>/computer-use/home`.
+- **Supervisor** (`supervisor.py`): one `cua-driver mcp` stdio child per gateway, a
+  closed allowlist of 13 upstream tools (network, installer, script, browser,
+  clipboard, recording and launch tools are unreachable), one call at a time, a
+  per-call deadline that kills the process group on a stall, capped-backoff restart
+  with `initialize` + `tools/list`, a crash-loop latch, and **no replay** of a call
+  whose outcome is unknown (only pure reads retry once). A pid file pinned to the
+  process start time lets the next gateway reclaim a stray child;
+  `driver_runtime/lifecycle.py` stops the child on cleanup and before an in-place
+  restart.
+- **Backend** (`backend.py`): element tokens kept per window for the latest walk and
+  scoped to the driver generation; coordinate gestures are grounded in a screenshot
+  read and converted to window-local pixels; background delivery by default,
+  `global` → `delivery_mode: "foreground"`, `sky_click` refused by name;
+  `background_unavailable` → a typed refusal naming the alternative; an effect other
+  than `confirmed` is reported as unverified and `none` as not done. Launch uses Kiro
+  Crew's own catalogs through `run_launch` (Linux: `driver_runtime/linux_apps.py`,
+  root-owned `.desktop` entries in system directories only), never upstream's
+  `launch_app`.
+- **Secure fields**: Linux `password text`, or a text entry offering no copy/cut
+  action (a GTK 4 password entry reports a plain `text box`); macOS
+  `AXSecureTextField`; Windows treats every `Edit` as secure unless Kiro Crew's own
+  UIA walk proves the window has no password field, because the upstream tree does
+  not carry `IsPassword`.
+- **macOS location**: upstream's `mcp` on macOS starts the app daemon only from
+  `/Applications/CuaDriver.app`, so the owner's `install` action places the verified
+  bundle there (assembled under a private name, verified, renamed into place) and
+  records `applications_app` with `owned` and the binary hash. An existing copy is
+  used only when it passes every check (`check_app_copy`: no link, codesign strict,
+  team, bundle id, pinned binary hash, then `--version`); otherwise the install
+  fails `install_failed` naming it, and it is never replaced, moved or deleted. A
+  non-writable `/Applications` is reported, never escalated. Every start re-runs
+  `check_app_copy` on that copy. `reset` removes the copy only when Kiro Crew placed
+  it and its hash is unchanged. Upstream runs one shared daemon per user there,
+  which another tool using the same driver also reaches; the supervisor stops only
+  the `mcp` child it started. The macOS upstream path is a preview: `auto` stays
+  native.
+- **Install dir protection**: `<data-home>/computer-use/` is a READONLY crew-home
+  leaf and a protected path, like the keystone and the Browser Harness prefix, so a
+  sandboxed process cannot replace the driver, rewrite its record or edit setup
+  progress.
+- **Selection** (`backend.select_default_backend`): the keystone's `driver` key
+  (`auto` / `native` / `upstream`). Linux `auto` is upstream; Windows `auto` is
+  upstream once it is installed and native until then; macOS `auto` stays native.
+
+The floors that used to live in driver files now run in `computer_use/floors.py`
+from `service.py` for every backend: screenshot suppression (secure element,
+truncated walk, unknown window), secure values dropped, the live-view frame emitted
+once after the spool, pointer confinement to the window bounds (fail closed when
+unknown; native drivers keep their own hit test via `confines_points_natively`),
+keystrokes only to an addressed element, the self-window title preference and
+name-only launch queries.
 
 ### The Windows driver
 
@@ -2348,6 +2426,72 @@ the title tier the already-running check never fires (the model opens a second c
 the post-launch poll burns its whole timeout reporting "no window appeared" for a window
 that is on screen.
 
+### Setup: the setup document and the first-use dialog
+
+`GET /api/computer-use/setup` returns the setup document; `POST` with
+`{"action": "install" | "request_permissions" | "recheck" | "verify" |
+"restart_driver" | "reset"}` runs one step and returns the document that step
+left behind. The work is `kiro_crew.computer_use.setup`
+(`get_setup_status()`, `run_setup_action(action)`); the handler owns only three
+things:
+
+- **Who.** An app token is refused `403 dashboard_user_required` before anything
+  else (the PUT's order), then a non-owner gets the shared `owner_only` refusal.
+  The POST is a mutating method, so the dashboard CSRF barrier applies to it like
+  every other one; it is not in `CSRF_EXEMPT_EXACT_METHODS`.
+- **How long.** Each call runs on the bounded subprocess pool under a deadline
+  (`STATUS_TIMEOUT_SECS`, `ACTION_TIMEOUT_SECS`). Past an action's deadline the
+  response is the current status (an install that outlasts its 30 s reads
+  `installing`, and the dialog polls from there). A pool thread cannot be
+  cancelled, so the handler keeps the running action in one slot and a second
+  POST while it runs reads status instead of starting another install. A wedged
+  status read becomes `temporarily_unavailable`.
+- **What leaves.** `shape_document` keeps only the documented keys, maps every
+  enumeration outside its vocabulary to a neutral value (an invented `state`
+  becomes `error`), whitespace-collapses and caps every string, and keeps a step
+  action only when it is an `open_pane` on one of the two panes or a `post` of a
+  known action. A raised exception, including a missing setup module, becomes a
+  shaped `error` document whose sentence is the handler's own, never the
+  exception text.
+
+None of the actions turns the feature on. The intro's Continue is the existing
+keystone PUT (`{"enabled": true}`), and `ready` is the setup module's verdict,
+which requires both the keystone and a passed verify.
+
+The UI is three pieces under `website/src/pages/settings/`:
+
+- `computerUseSetup.ts`, pure: `viewFor(doc)` maps every contract state to one
+  view (Session 0 and a missing Windows or Linux desktop get their own views
+  rather than a generic "unsupported"), `stepsFor` falls back to the platform's
+  walk (macOS: install, accessibility, screen recording, verify, ready; Windows
+  and Linux: install, session, verify, ready, never a permission step),
+  `setupPollInterval` / `waitExpired` bound every wait, and
+  `openSystemSettings` is the only opener of the two panes.
+- `ComputerUseSetupDialog.tsx`: the progressive dialog. Progress is the server's
+  document, so closing it loses nothing and reopening lands on the same step.
+  Rules, each pinned in `ComputerUseSetupDialog.test.tsx`: a moving state
+  (`installing`, `validating`, `waiting_for_system_settings`) polls every 2 s for
+  at most 2 minutes (5 for install), then shows "taking longer than expected"
+  with Check again, so no spinner runs forever; a grant screen polls only after
+  the user clicked its Open … Settings button, inside the same bound; System
+  Settings opens once per click and never from a state change, a poll or a
+  reopen; the Ready view renders only for `state == "ready"`. The app to enable
+  is named exactly as `permissions.owner_name` says. Focus moves to the new
+  view's heading on every view change, and the step rail marks the current step
+  with `aria-current="step"`.
+- `ComputerUseSetupStatus.tsx`: the Settings card. Readiness, OS support, driver,
+  the two permissions (macOS), the desktop session (Windows, Linux), the
+  backend's limitations, one primary action (Set up / Continue setup), Restart
+  driver, and a folded diagnostics list of wire values.
+
+The chat entry point is `pages/chat/ComputerUseSetupLink.tsx`: a finished
+`computer_*` row (identified by the trusted `mcp_server` / `tool_name` fields,
+never the title) whose output starts with `Error:` and names
+`Settings -> Computer Use` gets a Set up Computer Use button that routes to
+`/settings/computer-use?setup=1`; the panel opens the dialog for that parameter
+once and drops it with a replace navigation. A backend refusal that setup can
+clear therefore has to name that page, as `REFUSAL_DISABLED` does.
+
 ### Permission probes are ADVISORY, never a gate
 
 `AXIsProcessTrusted()` + `CGPreflightScreenCaptureAccess()` only. Never
@@ -2364,12 +2508,12 @@ permanently broke the reference bundle's Accessibility 3/3 times — so
 
 ### The grant shortcuts MUST use `window.open`, not `location.href`
 
-Each non-granted permission row offers an **Open System Settings** button that
+Each macOS permission step of the setup dialog offers an **Open … Settings** button that
 targets a macOS System Settings deep link (`SETTINGS_URL_*` in `permissions.py`;
 the frontend mirrors the two constants). It must be handed off with
-`window.open(pane, '_blank', 'noopener,noreferrer')` —
-`openSystemSettings()` in `ComputerUsePanel.tsx` — never by assigning
-`window.location.href`.
+`window.open(pane, '_blank', 'noopener,noreferrer')`, through
+`openSystemSettings()` in `pages/settings/computerUseSetup.ts`, never by
+assigning `window.location.href`.
 
 The reason is CSP, and it is invisible in a browser tab: the dashboard renders
 inside an **instance `<iframe>`** (`InstancesViewport`), and a *frame* navigation
@@ -2407,8 +2551,8 @@ class: the verdict is computed from `new URL(...)` (WHATWG lowercases the scheme
 strips tabs/newlines inside it, resolves `..`) while the **raw** string is what
 `shell.openExternal` re-parses with NSURL/CFURL; requiring raw equality means the
 validated and forwarded values cannot diverge. Because it is exact-match, the
-constant must stay byte-identical to `permissions.py` and the panel's `PANE_*`
-mirrors — `external-scheme.test.js` reads both real files and asserts agreement,
+constant must stay byte-identical to `permissions.py` and the `PANE_URL`
+mirror in `computerUseSetup.ts` — `external-scheme.test.js` reads both real files and asserts agreement,
 since a drift is a silent dead button.
 
 `file:` is excluded by construction (handing an arbitrary local path to the OS is
@@ -2434,7 +2578,7 @@ never appear in the external allowlist, so `blob:` can never reach
 asserting that every pre-existing URL shape keeps its old verdict and that the
 System Settings deep link is the *only* changed one.
 
-Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
+Both halves are pinned by tests (`ComputerUseSetupDialog.test.tsx`,
 `electron/test/external-scheme.test.js`) because the failure mode is a silent
 dead button that only reproduces in a packaged build.
 
@@ -2755,7 +2899,17 @@ computer use.
 | `computer_use/capture_windows.py` | `PW_RENDERFULLCONTENT` into a 32bpp DIB sized to what the window renders + GDI+ JPEG encode, with pixel validation because a blank capture reports success. No `BitBlt` fallback: it reads the screen |
 | `computer_use/launch_windows.py` | `computer_launch_app`'s Windows resolver: the `App Paths` catalog (read including the writable hive) verified against protected install roots + a basename match, the shell-target refusal, and the no-arguments spawn |
 | `computer_use/launch_macos.py` | The macOS resolver: `.app` bundles under the conventional roots, handed to `/usr/bin/open -a` (pinned absolute) with no document and no arguments |
-| `computer_use/linux_driver.py` | Typed refusal + the implementation plan |
+| `computer_use/linux_driver.py` | Typed refusal for `driver: native` on Linux |
+| `computer_use/floors.py` | The always-on floors, platform-free, applied by `service.py` to every backend |
+| `computer_use/setup.py` | The setup state machine: `get_setup_status()` / `run_setup_action()` over install, session, permissions and the non-destructive check |
+| `computer_use/driver_runtime/pin.py` | The upstream driver pin: version, archive and binary digests per (os, arch) |
+| `computer_use/driver_runtime/install.py` | Download, verify, safe extraction, signature checks, install record, start-time verification |
+| `computer_use/driver_runtime/env.py` | The driver's allowlisted environment with telemetry and update checks forced off |
+| `computer_use/driver_runtime/supervisor.py` | The one stdio driver child: allowlist, serialization, deadlines, restart, no replay, stray reclaim |
+| `computer_use/driver_runtime/backend.py` | `CuaBackend`: the `computer_*` verbs on the upstream driver |
+| `computer_use/driver_runtime/session.py` | Desktop session detection (X11, Wayland compositors, Windows Session 0, macOS console) and honest capabilities |
+| `computer_use/driver_runtime/linux_apps.py` | The Linux launch catalog: root-owned system desktop entries only |
+| `computer_use/driver_runtime/lifecycle.py` | Stops the driver child on gateway cleanup and before an in-place restart |
 | `computer_use/macos_skylight.py` | The quarantined private SkyLight ABI behind `click_method: "sky_click"` (a click on a window behind others, without raising it or moving the pointer); the only module allowed to touch undocumented Apple ABI, never reached from `auto`, and reported unavailable (`available()`) when a symbol is missing |
 | `computer_use/macos_ffi.py` | The in-gateway macOS ctypes surface's import path and patch surface (a `_facade_mirror` facade over the four owners below), and key/scroll/mouse event synthesis |
 | `computer_use/macos_ffi_bind.py` | ABI constants, structs, `_FN_SPECS` and the one bind pass, the cached framework handles, type ids and private event source |
@@ -2776,7 +2930,12 @@ computer use.
 | `mcp_computer.py` | The thin stdio shim (`kirocrew mcp-computer`) |
 | `testing/fake_computer_use.py` | `FakeComputerUseBackend`, shipped in the wheel |
 | `dashboard/handlers/computer_use.py` | `/api/computer-use/{config,invoke,frame}` |
+| `dashboard/handlers/computer_use_setup.py` | `/api/computer-use/setup` (GET, POST): gate, deadline, document shaping |
 | `website/src/pages/settings/ComputerUsePanel.tsx` | Settings → Computer Use |
+| `website/src/pages/settings/ComputerUseSetupStatus.tsx` | the Setup card on that page |
+| `website/src/pages/settings/ComputerUseSetupDialog.tsx` | the first-use setup dialog |
+| `website/src/pages/settings/computerUseSetup.ts` | state → view, step walk, bounded poll, the System Settings opener |
+| `website/src/pages/chat/ComputerUseSetupLink.tsx` | the chat's Set up Computer Use button under a refused call |
 | `website/src/components/ComputerUseLiveView.tsx` | The floating live view (PiP) panel |
 | `website/src/hooks/useComputerUseFrame.ts` | Frame-stream subscription + session-title lookup |
 | `src/kiro_crew/builtin_skills/computer-use/SKILL.md` | The agent-facing workflow. **Bundled**, not in the top-level `skills/` dir: `kirocrew-computer`'s MCP instructions (`mcp_instructions.COMPUTER`) and the agent prompt's closed-gate pointer (`context_assembly/sections.py::computer_use_block`) tell the model to read it by name, so per AGENTS.md it is load-bearing and must reach every pip/DMG install |
