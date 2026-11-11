@@ -32,7 +32,9 @@ test patches through `kiro_crew.cli`. `bench`, `perf` and `desktop` keep their
 registrars in `cli_bench.py`, `cli_perf.py` and `cli_desktop.py`, beside their
 handlers. The owner-only log file handlers that the slim `mcp-*` entry
 (`kiro_crew.mcp_entry`) shares stay in `cli_log_files.py`; the wiring that attaches them
-for a command goes in `cli_logging.py`.
+for a command goes in `cli_logging.py`. That entry also answers a server's `initialize`
+and `tools/list` once the platform has booted and before it imports the server's tool
+handlers (mcp.md, "A server lists its tools before it loads its handlers").
 
 `kiro_crew.cli` is a mirror facade (`kiro_crew._facade_mirror`) over the last four
 modules, its owners. Every name `cli.py` held before the split still resolves as

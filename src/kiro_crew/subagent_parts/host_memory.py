@@ -3,30 +3,34 @@
 ``/proc/meminfo`` and the native macOS and Windows readers, the cgroup v1/v2 headroom of
 the container and of the agents slice, process-subtree sampling for the reaper, and the
 auto or explicit ceiling ``resolve_max_subagents`` derives from them.
+
+This module also works on its own, before ``kiro_crew.subagent`` is loaded: it imports for
+real every name its functions read, from the module that defines each. A stdio MCP server
+names the ceiling in a tool description it writes before it has loaded the code that runs
+its tools (``kiro_crew.subagent_standalone``), and that code is where the facade loads.
+Once the facade is loaded these same functions run on its globals, like every owner's.
 """
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 import threading
-from typing import TYPE_CHECKING
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Optional
 
-from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB
+from kiro_crew import platform_compat
+from kiro_crew.constants import DEFAULT_SPAWN_MIN_MEMORY_GB, DEFAULT_SUBAGENT_COST_GB
+from kiro_crew.mcp_gateway import STUB_MODULE
+from kiro_crew.sandbox_slice import _agents_slice_cgroup_dir
+from kiro_crew.subagent_cost import read_cap_costs
 
 if TYPE_CHECKING:
-    from kiro_crew.subagent import (
-        DEFAULT_SUBAGENT_COST_GB,
-        STUB_MODULE,
-        KiroCrewConfig,
-        Optional,
-        Path,
-        PurePosixPath,
-        _agents_slice_cgroup_dir,
-        logger,
-        math,
-        platform_compat,
-        read_cap_costs,
-    )
+    from kiro_crew.subagent import KiroCrewConfig
+
+#: The facade's logger: a function here logs under one name whichever globals it runs on.
+logger = logging.getLogger("kiro_crew.subagent")
 
 
 #: Cause recorded when a finite cgroup memory limit is set but that level's

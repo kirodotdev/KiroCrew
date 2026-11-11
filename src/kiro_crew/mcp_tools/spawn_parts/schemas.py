@@ -10,6 +10,12 @@ The handlers that run these tools are the other half:
 This module is an owner of :mod:`kiro_crew.mcp_tools.spawn`, which serves every name here
 and stays the import path and the patch seam: a patch through it reaches this module too
 (:mod:`kiro_crew._facade_mirror`). It never imports the facade.
+
+A stdio server builds these descriptors before it has loaded its tool handlers, so nothing
+here imports ``kiro_crew.mcp_core``, ``kiro_crew.subagent`` or the facade, the modules that
+load them. A name one of those binds is read with ``catalog.loaded_binding``: from that
+module once it is loaded, where a test patches it, and until then from the module that
+defines it (the sub-agent readers: :mod:`kiro_crew.subagent_standalone`).
 """
 
 from __future__ import annotations
@@ -17,24 +23,34 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from kiro_crew import mcp_core
 from kiro_crew import resource_status as host_status
+from kiro_crew import subagent_standalone
+from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.execution_context import read_session_execution
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key
+from kiro_crew.mcp_tools.catalog import loaded_binding
 from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS
-from kiro_crew.subagent import (
-    agent_matches_allowlist,
-    is_internal_agent_spec,
-    parent_spawn_allowlists,
-    resolve_max_subagents,
-    visible_agent_names,
-)
 
 # Roster carried in the spawn_run parameter descriptions. Kept small on purpose:
 # a tool description is always-on context in every session, so this buys
 # self-correction for a few dozen characters, not a full agent listing.
 _MAX_ROSTER_NAMES = 8
+
+#: The import path and patch surface of the identity resolver and the agent scan. Importing
+#: it loads every tool handler, so the two names are read from it only once it is loaded.
+_CORE = "kiro_crew.mcp_core"
+
+#: This family's facade, which binds the sub-agent readers as ``kiro_crew.subagent`` holds
+#: them and is where a test patches them. It loads with the handlers, like ``_CORE``.
+_SPAWN = "kiro_crew.mcp_tools.spawn"
+
+
+def _subagent_reader(name: str) -> Any:
+    """The sub-agent reader *name*: the facade's binding once the handlers are loaded,
+    and until then the one that works without them (``kiro_crew.subagent_standalone``)."""
+    return loaded_binding(_SPAWN, name, getattr(subagent_standalone, name))
 
 
 def _parent_template_for_roster() -> str:
@@ -49,7 +65,7 @@ def _parent_template_for_roster() -> str:
     advertising names that gate would refuse.
     """
     try:
-        session_key = mcp_core._resolve_session_key()
+        session_key = loaded_binding(_CORE, "_resolve_session_key", _resolve_session_key)()
         if not session_key:
             return ""
         execution = read_session_execution(session_key)
@@ -70,10 +86,11 @@ def _parent_allowlist_filter(names: Iterable[str]) -> tuple[list[str], bool]:
     applied here: this process has no verified app identity, and the roster
     lists installed names as the gate will see them.
     """
-    allowlists = parent_spawn_allowlists(_parent_template_for_roster())
+    allowlists = _subagent_reader("parent_spawn_allowlists")(_parent_template_for_roster())
     if not allowlists:
         return list(names), False
-    return [n for n in names if all(agent_matches_allowlist(n, al) for al in allowlists)], True
+    matches = _subagent_reader("agent_matches_allowlist")
+    return [n for n in names if all(matches(n, al) for al in allowlists)], True
 
 
 def _agent_roster_hint() -> str:
@@ -110,10 +127,12 @@ def _agent_roster_hint() -> str:
         # generated specs (``is_internal_agent_spec``), which the gate refuses.
         names, restricted = _parent_allowlist_filter(
             sorted(
-                a.name for a in mcp_core.list_agents() if a.name and not is_internal_agent_spec(a)
+                a.name
+                for a in loaded_binding(_CORE, "list_agents", list_agents)()
+                if a.name and not is_internal_agent_spec(a)
             )
         )
-        shown, withheld = visible_agent_names(names, limit=_MAX_ROSTER_NAMES)
+        shown, withheld = _subagent_reader("visible_agent_names")(names, limit=_MAX_ROSTER_NAMES)
     except Exception:
         return ""  # never let a directory read break the tool advertisement
     if not shown:
@@ -186,7 +205,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             )
         else:
             try:
-                _max_sub = resolve_max_subagents(KiroCrewConfig.load())
+                _max_sub = _subagent_reader("resolve_max_subagents")(KiroCrewConfig.load())
             except Exception:
                 _max_sub = 0
             _cap_hint = (

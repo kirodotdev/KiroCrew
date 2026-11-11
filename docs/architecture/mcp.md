@@ -3366,8 +3366,12 @@ Each tool is declared twice in the same per-domain module under
 nothing at runtime notices when only one half lands:
 
 - Its **descriptor** — name, model-facing description, JSON Schema — is returned
-  by that module's `schemas()`. `build_tool_list()` concatenates every domain's,
-  and `mcp_core._list_tools` answers `tools/list` from it. A domain may narrow
+  by that module's `schemas()`, which is defined in the module of the same name
+  under `mcp_tools/catalog/` and re-exported by the domain module, so the
+  descriptors can be built without importing a handler
+  ([below](#a-server-lists-its-tools-before-it-loads-its-handlers)).
+  `build_tool_list()` concatenates every domain's, and
+  `mcp_core_tool_list._list_tools` answers `tools/list` from it. A domain may narrow
   what it ADVERTISES with an `advertised()` function, which `build_tool_list()`
   reads in place of `schemas()` on the full build when it exists; `schemas()`
   stays the full declaration, and `advertised()` may only omit a declared
@@ -3514,7 +3518,7 @@ test code than moving the handlers did.
 
 `mcp_shared.py`, the stdio plumbing every managed server shares, keeps the server's entry
 -- `run_mcp_stdio_loop`, the process identity it declares (`set_internal_caller`) and its
-hard-exit signal handlers -- and is a mirror facade (`kiro_crew._facade_mirror`) over four
+hard-exit signal handlers -- and is a mirror facade (`kiro_crew._facade_mirror`) over five
 owners, so every name they define still reads and patches as `mcp_shared.<name>`. New work
 goes to the owner of its responsibility:
 
@@ -3523,6 +3527,7 @@ goes to the owner of its responsibility:
 | `mcp_shared_wire` | the JSON-RPC wire: the framing the first frame decides, the private stdout fd, `respond` and `notify`, the frame size limits, the Windows stdin pump |
 | `mcp_shared_calls` | a tool call's life: the queued, parked and cancelled-call bounds, `DeferredTool` with `drive_deferred` and `map_deferred`, the step pool, `ToolCancelled`, and the audited `call_tool_with_logging` |
 | `mcp_shared_policy` | which tools a session may list and call: `_resolve_tool_policy` with its cache and failure backoff, `_UNRESOLVED_REFUSES_CALL`, `ToolPolicy`, the identity notes, `serves_managed_tools` |
+| `mcp_shared_listing` | what a server says before it can run a tool: `initialize_result` and `listable_tools`, the one builder of each answer; `StdioServer`, a server's declaration; `serve_before_handlers` and the frames it hands the loop |
 | `mcp_shared_dispatch` | `_run_stdio_dispatch_loop`, the loop `run_mcp_stdio_loop` runs, with its worker, wake pipe and tunables |
 
 A global the family rebinds at run time (the framing, the stdout fd, the policy's failure
@@ -3532,6 +3537,66 @@ log as `kiro_crew.mcp_shared`. `test/test_mcp_shared_facade.py` pins the contrac
 Descriptors carry no per-caller state and are rebuilt per call, not cached: some
 quote a live value (the concurrent sub-agent cap), and a cache would pin the
 first reading for the life of the server process.
+
+### A server lists its tools before it loads its handlers
+
+An agent engine starts every MCP server of a session when the session starts, and
+holds the first prompt until each has answered `initialize` and `tools/list`.
+Whatever a server imports before those two answers is paid on every session
+start, once per server. So `kirocrew-core`, `kirocrew-cron`, `kirocrew-guide` and
+`kirocrew-mate` answer both before they import the code that runs their tools.
+There is one listing path, for every launch mode:
+
+- **One builder per answer.** `mcp_shared_listing.initialize_result` builds the
+  `initialize` result and `mcp_shared_listing.listable_tools` the filtered tool
+  list. The dispatch loop answers from them, and so does
+  `serve_before_handlers`; nothing else builds either, so a client cannot tell
+  which of the two wrote an answer.
+- **One declaration per server.** A server declares itself as a `StdioServer`
+  (`SERVER`) in a module that imports no handler: `mcp_core_tool_list`,
+  `mcp_cron_tool_list`, `mcp_guide_tool_list`, `mcp_mate_tool_list`. It names the
+  server, its tool-list builder and its loop options, and the server's `run`
+  passes the same values to `run_mcp_stdio_loop` (`**SERVER.loop_options()`).
+- **The entry answers, then loads.** `mcp_entry.slim_server` runs every start-up
+  step it always ran (the root-run refusal, the data home, logging, the platform
+  boot, which fails closed), then calls `serve_before_handlers` for a server in
+  `mcp_entry.EARLY_ANSWERS`, and only then imports the server module. The early
+  answers stop at the first frame they do not serve and leave it unanswered; the
+  loop reads those frames before it reads stdin, so each frame is handled once,
+  in the order it arrived. A `tools/call` that arrives while the handlers load
+  waits in the pipe and is answered when they have. A client that stays silent
+  after `initialize` holds the handler import back by at most
+  `EARLY_FRAME_WAIT_SECS`.
+- **A handler that cannot load ends the process, as before.** The import runs
+  where it always ran, so a missing dependency still heals and retries
+  (`_bootstrap._load_healing`; the retry answers nothing twice), and any other
+  failure still prints its reason on stderr and exits non-zero. The difference
+  is when: the client already holds the tool list, so it sees a server that
+  listed its tools and then closed its pipe, which an MCP client reports as a
+  server that stopped, the same state as a server that crashed mid-session.
+- **What a listing may import is bounded.** `test/test_mcp_listing_import_budget.py`
+  runs each server's real entry in a fresh interpreter, feeds it the two
+  requests, and holds the modules loaded at that moment to a named denylist
+  (the HTTP and cloud stacks, the agent client, the CLI, the sandbox, the
+  gateway manager, the conversation store, `mcp_core`, `kiro_crew.subagent`)
+  and to a count of package modules per server.
+
+A descriptor builder therefore imports nothing a tool call needs and a listing
+does not. Two kinds of name need care:
+
+- **A name a test patches on a module that loads handlers** (`mcp_core`, a
+  domain's handler module, `mcp_tools.spawn`) is read with
+  `mcp_tools.catalog.loaded_binding(module, name, owner)`: from that module
+  once it is loaded, and until then from the module that defines the name. The
+  two are one object unless a test patched it, so the original path stays the
+  patch seam.
+- **The two live values in the spawn descriptions** (the sub-agent ceiling, and
+  the agents the calling parent may spawn) are read through
+  `kiro_crew.subagent_standalone`, which reaches the two `subagent_parts` owners
+  that work before `kiro_crew.subagent` is loaded (subagent.md, Composition),
+  and through `execution_context.read_session_execution`, which reads the
+  session's record without loading the conversation store when the store is
+  not loaded (`history_metadata_line`).
 
 ### A `kirocrew-dashboard` tool is one row
 

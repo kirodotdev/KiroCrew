@@ -116,8 +116,7 @@ use:
 - `history_projection.py` owns locked metadata updates and permanent deletion
   (`SessionMetadataProjection`) and is a mirrored facade
   (`kiro_crew._facade_mirror`) over two sibling owners, lowest layer first:
-  `history_projection_contract.py` (the metadata-line states,
-  `DISPLAY_ONLY_ROLES`, the chained page and revision types, the bounded
+  `history_projection_contract.py` (`DISPLAY_ONLY_ROLES`, the chained page and revision types, the bounded
   readers' tuning and chunked line splitter, `drop_persisted_tail_prefix`, and
   the `kiro_crew.history` logger the projections share) and
   `history_projection_reads.py` (`TranscriptReadProjection`: bounded transcript
@@ -131,6 +130,19 @@ use:
   new read family gets an owner of its own; a name both projections need goes
   to `history_projection_contract.py`. `test/test_history_projection_facade.py`
   pins the owners, the exception's module, the logger and the patch reach.
+  `history_metadata_line.py`, outside the facade and importing nothing of the
+  store, defines the metadata-line states (`METADATA_LINE_*`, which the facade
+  serves), `parse_metadata_line`, the one rule for turning a transcript's first
+  line into a record and a state, and `read_metadata_state`, one uncached read
+  with the store's bounded retries of the first transcript that exists among a
+  session's stems (`history_files.transcript_stems`, canonical first, the file
+  `ConversationLog._path` resolves). The cached reader in
+  `history_projection_reads.py` parses with the same function. A process that
+  has not loaded the store reads one session's record through it
+  (`execution_context.read_session_execution`): a stdio tool server does, for a
+  tool description it writes before it loads its handlers. Once
+  `kiro_crew.history` is loaded the same call goes through `ConversationLog`.
+  `test/test_history_metadata_line.py` pins that both readers agree.
   `history_page_index.py` is such an owner, outside the facade: it keeps the
   bounded-page index base on disk and carries it across first-line rewrites
   (see "Bounded transcript pages"), and the reads owner imports it inside the

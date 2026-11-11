@@ -442,7 +442,6 @@ from kiro_crew.constants import (  # noqa: F401 - loader namespace compatibility
     SUBAGENT_TIMEOUT_SECS,
 )
 from kiro_crew.effort import is_valid_effort, model_supports_effort  # noqa: F401
-from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_path  # noqa: F401
 
 # The memory-store shape rule, applied to store NAMES at load. Leaf module:
 # stdlib only at module scope (it imports this one lazily), so no cycle.
@@ -689,6 +688,18 @@ _OWNERS = (
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
 
+#: The MCP gateway's two path defaults, which this module has always served. Read on
+#: first use (:func:`__getattr__`) instead of imported: the rewriter that owns them loads
+#: the gateway manager and the sandbox, which a process that only reads config never uses.
+_GATEWAY_PATH_DEFAULTS = frozenset({"default_overlay_dir", "default_socket_path"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _GATEWAY_PATH_DEFAULTS:
+        return getattr(_importlib.import_module("kiro_crew.mcp_gateway.rewriter"), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 #: Owner-bound name this module does not bind -> the owner that answers a read of it.
 _EXPORTS: dict[str, str] = {}
 _EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=()).served)
@@ -701,6 +712,11 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 # public name of the family, as it was when the family was one module.
 __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
 
+if TYPE_CHECKING:  # the names ``__getattr__`` reads on first use, for type checkers
+    from kiro_crew.mcp_gateway.rewriter import (  # noqa: F401
+        default_overlay_dir,
+        default_socket_path,
+    )
 if TYPE_CHECKING:  # every owner-defined name this module forwards, for type checkers
     from kiro_crew.config.loader_agents import (  # noqa: F401
         _crew_autocompact_pct,

@@ -145,7 +145,7 @@ def test_no_sentence_of_a_piece_is_left_as_a_literal(rel: str) -> None:
 
 #: The server modules whose tools only a crewmate is given.
 _CREWMATE_SERVERS: tuple[str, ...] = (
-    "mcp_mate.py",
+    "mcp_mate_tool_list.py",
     "mcp_panel.py",
     "mcp_crew_log.py",
     "mcp_work.py",

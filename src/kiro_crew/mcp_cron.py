@@ -64,7 +64,7 @@ from kiro_crew.mcp_cron_list_render import (
     _render_cron_list_full,
     _render_cron_list_json,
 )
-from kiro_crew.mcp_cron_tool_list import _list_tools
+from kiro_crew.mcp_cron_tool_list import SERVER, _list_tools
 from kiro_crew.mcp_cron_vet import (
     _command_cron_platform_refusal,
     _log_cron_denial,
@@ -73,7 +73,6 @@ from kiro_crew.mcp_cron_vet import (
     _vet_script_file,
     _vet_shell_command,
 )
-from kiro_crew.mcp_instructions import CRON as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -1444,19 +1443,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 #: readable without executing :func:`run_mcp_server`, and so
 #: ``test/test_mcp_managed_caller_identity.py`` can assert it against the argument
 #: actually handed to the shim.
-ADVERTISE_CALLER_IDENTITY = True
+ADVERTISE_CALLER_IDENTITY = SERVER.advertise_caller_identity
 
 
 def run_mcp_server() -> None:
     """Run MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
     run_mcp_stdio_loop(
-        "kirocrew-cron",
-        "1.0.0",
-        _list_tools,
-        _call_tool,
-        advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
-        error_prefix_is_error=True,
-        instructions=_INSTRUCTIONS,
+        SERVER.name, SERVER.version, _list_tools, _call_tool, **SERVER.loop_options()
     )
 
 
@@ -1585,6 +1578,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.loopback_http import (  # noqa: F401
         loopback_urlopen,
+    )
+    from kiro_crew.mcp_instructions import CRON as _INSTRUCTIONS  # noqa: F401
+    from kiro_crew.mcp_shared_listing import (  # noqa: F401
+        StdioServer,
     )
     from kiro_crew.mcp_tool_titles import (  # noqa: F401
         with_titles,

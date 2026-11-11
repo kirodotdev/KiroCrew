@@ -86,6 +86,7 @@ from kiro_crew.mcp_core_parts.gateway import (
 )
 from kiro_crew.mcp_core_parts.governance import _deny_channel_agent_dispatch
 from kiro_crew.mcp_core_parts.identity import _resolve_session_key
+from kiro_crew.mcp_core_tool_list import SERVER, _list_tool_names, _list_tools  # noqa: F401
 from kiro_crew.mcp_shared import (  # noqa: F401
     DeferredTool,
     call_tool_with_logging,
@@ -96,8 +97,8 @@ from kiro_crew.mcp_shared import (  # noqa: F401
     run_mcp_stdio_loop,
     spawned_without_gateway_identity,
 )
-from kiro_crew.mcp_tool_titles import with_titles
-from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch
+from kiro_crew.mcp_tool_titles import with_titles  # noqa: F401
+from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch  # noqa: F401
 from kiro_crew.members import record_activity  # noqa: F401
 from kiro_crew.memory_stores import UnknownMemoryStore  # noqa: F401
 from kiro_crew.messaging.link import is_legacy_slack_key, legacy_key  # noqa: F401
@@ -165,30 +166,6 @@ WAIT_STALENESS_PING_SECS = 60.0
 # lower. 32 KiB (~8k tokens) covers essentially every real SKILL.md while
 # keeping one fetch from dominating the window.
 _SKILL_FETCH_MAX_CHARS = 32 * 1024
-
-
-def _list_tools() -> list[dict[str, Any]]:
-    """Tool descriptors served for ``tools/list``.
-
-    Declared per domain under :mod:`kiro_crew.mcp_tools`; this stays the
-    entry point kiro-cli and in-process discovery both read.
-    """
-    return with_titles(CORE_MCP_SERVER, build_tool_list())
-
-
-def _list_tool_names() -> list[str]:
-    """Tool NAMES only, without assembling descriptions.
-
-    The names-only read path ``mcp_discovery._managed_tools_in_process`` prefers
-    when it keeps only names. It returns exactly the names ``_list_tools`` would,
-    in the same order, but ``build_tool_names`` takes the ``names_only`` path so
-    the two descriptions that reach for a live value (the sub-agent cap and
-    agents-directory scan in ``mcp_tools.spawn``, the config reads in
-    ``mcp_tools.control``) are never performed. ``with_titles`` is intentionally
-    not applied: it only decorates descriptions, which a names-only caller
-    discards.
-    """
-    return build_tool_names()
 
 
 # ── Knowledge-search store/embedder cache ──
@@ -970,7 +947,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
 #: sandbox never confines. It answers from ``_MANAGED_SERVERS_CALLER_AWARE`` in
 #: ``mcp_discovery`` instead, and ``test/test_mcp_managed_caller_identity.py``
 #: keeps the two from drifting by comparing them in the test process.
-ADVERTISE_CALLER_IDENTITY = True
+ADVERTISE_CALLER_IDENTITY = SERVER.advertise_caller_identity
 
 
 def run_mcp_core_server() -> None:
@@ -981,30 +958,19 @@ def run_mcp_core_server() -> None:
     from kiro_crew.mcp_tools.sessions import gateway_cjk_words
 
     register_cjk_segmenter(gateway_cjk_words)
-    # Before the first request: an enforced harness's element carries a one-time
-    # pickup in place of the secret it withholds (agent_ipc_client).
-    from kiro_crew.agent_ipc_client import redeem_at_startup
-    from kiro_crew.mcp_core_parts import gateway as _gateway_part
-
-    redeem_at_startup(_gateway_part._api_port)
+    # Before the first request (a no-op when the server already answered its first
+    # two before importing this module): see ``mcp_core_tool_list._redeem_pickup``.
+    if SERVER.before_first_request is not None:
+        SERVER.before_first_request()
     run_mcp_stdio_loop(
-        "kirocrew-core",
-        "1.0.0",
+        SERVER.name,
+        SERVER.version,
         _list_tools,
         # Deferrable: a waiting tool hands the loop a DeferredTool instead of
         # holding the worker (see mcp_shared.DeferredTool).
         _call_tool_deferrable,
-        # Pooled-operation opt-in: kirocrew-core consumes the per-call
-        # ``kirocrew.caller`` identity (see _resolve_session_key*), so it is
-        # safe to share one backend across sessions. All four managed servers
-        # advertise, and what advertising buys is the injected block, not
-        # co-tenancy: a backend that does NOT advertise is
-        # pooled all the same (nothing declines to pool one; see
-        # ``rewriter.UNPOOLABLE_SERVERS``) and simply never receives an identity.
-        advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
-        # The only server that parks DeferredTools, so the only one whose
-        # gateway needs the in-flight report (see run_mcp_stdio_loop).
-        reports_inflight=True,
+        # What the server advertises, and why, is on its declaration.
+        **SERVER.loop_options(),
     )
 
 
