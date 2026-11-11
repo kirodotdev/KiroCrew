@@ -21,7 +21,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew import context_omissions
+from kiro_crew import context_omissions, injection_receipts
+from kiro_crew import memory_rule_authority as _rule_authority
+from kiro_crew.config.memory_sections import rule_authority_order_mode_from
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
@@ -887,6 +889,7 @@ def get_lessons_context(
     hard_cap: int = 0,
     directive_budget: int = 0,
     experience_budget: int = 0,
+    authority_order: str = "off",
 ) -> str:
     """Format lessons for prompt injection, most relevant first.
 
@@ -895,7 +898,8 @@ def get_lessons_context(
     query has a vector, and on that overlap alone when it has none (see
     ``rank_lessons``), then emitted until *cap* characters are used. Ranking is
     relevance-only — neither ``source`` nor ``confidence`` contributes — so an
-    unrelated user-taught rule cannot displace a relevant inferred one.
+    unrelated user-taught rule cannot displace a relevant inferred one, unless
+    *authority_order* is ``enforce``.
 
     Args:
         query_text: Request to rank against. Empty keeps recency order for
@@ -919,6 +923,12 @@ def get_lessons_context(
             ceiling (unbounded).
         project_dir: The session's active project, used only by the
             ``repo_scope`` gate. Omitting it withholds every scoped lesson.
+        authority_order: ``memory.rule_authority_order`` for a background
+            read (:mod:`kiro_crew.memory_rule_authority`). ``off`` keeps the
+            rule block's order; ``shadow`` keeps it and records in the
+            injection receipt which ids the authority order would add or drop;
+            ``enforce`` orders the rule block by authority level, keeping the
+            authored-before-untagged split and request relevance inside a level.
     """
     # Scope is applied BEFORE the counts are taken, so a lesson withheld as
     # out-of-scope is not reported as "omitted" -- omitted means "did not fit
@@ -982,7 +992,14 @@ def get_lessons_context(
                 untagged.append(entry)
             else:
                 authored.append(entry)
+        order_mode = rule_authority_order_mode_from(authority_order)
+        # ``enforce`` puts the authority level ahead of the authored-first split,
+        # which still holds inside a level, as does request relevance. Same rows,
+        # so the room below is the same under every mode.
         directives = authored + untagged
+        by_level = _rule_authority.by_authority(directives)
+        if order_mode == _rule_authority.MODE_ENFORCE:
+            directives = by_level
         unclassified = len(untagged)
         # The model-safety ceiling bounds the two blocks TOGETHER, and the
         # directive block is served first: when room is short, a past finding
@@ -1016,6 +1033,14 @@ def get_lessons_context(
                 0
                 if not hard_cap or len(whole) <= hard_cap
                 else tighter_lesson_budget(cap, hard_cap)
+            )
+        if order_mode == _rule_authority.MODE_SHADOW:
+            _record_authority_shadow(directives, by_level, directive_room, directive_tier)
+        elif order_mode == _rule_authority.MODE_ENFORCE:
+            injection_receipts.record_stage(
+                injection_receipts.RULE_AUTHORITY_ORDER,
+                mode=order_mode,
+                policy=_rule_authority.POLICY_VERSION,
             )
         directive_block, directive_omitted = render_lesson_tier(
             directives,
@@ -1140,6 +1165,33 @@ def get_lessons_context(
         # for a caller that needs the block to fit.
         selected = ranked[:1]
     return render(selected)
+
+
+def _record_authority_shadow(
+    current: list[tuple[dict, str]],
+    by_level: list[tuple[dict, str]],
+    room: int,
+    tier: dict[str, str],
+) -> None:
+    """Record which rule ids the authority order would add to or drop from the block.
+
+    Both orders are fitted to the same *room* inside private collections, so the
+    probe leaves no omission record and no receipt of its own.
+    """
+    kept: list[set[str]] = []
+    for rows in (current, by_level):
+        with context_omissions.collect(), injection_receipts.collect() as probe:
+            render_lesson_tier(rows, room, omission_kind=context_omissions.LESSON_RULES, **tier)
+        entry = probe.get(injection_receipts.LESSONS) or {}
+        kept.append(set(entry.get("ids") or ()))
+    shown, ordered = kept
+    injection_receipts.record_stage(
+        injection_receipts.RULE_AUTHORITY_ORDER,
+        mode=_rule_authority.MODE_SHADOW,
+        policy=_rule_authority.POLICY_VERSION,
+        would_add=sorted(ordered - shown),
+        would_drop=sorted(shown - ordered),
+    )
 
 
 def _renderable_entries(
