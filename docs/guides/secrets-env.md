@@ -77,6 +77,26 @@ To change a login without retyping its password, send the fields you change and
 leave `password` and `notes` out: each keeps its stored value. Send `notes`
 as `""` to clear it; `password` is required and cannot be cleared.
 
+### Items from 1Password
+
+With the Secrets vault preview on, Settings > Secrets can connect one 1Password
+vault with a service account token, read-only. A `secret://NAME` reference looks
+in the local vault first and asks 1Password only for a name the local vault does
+not hold; `#username`, `#url` and the rest work the same. Anything 1Password
+cannot answer fails the spawn closed.
+
+The connection needs 1Password's Python SDK, the optional `1password` extra:
+
+- the desktop app ships it;
+- from a source checkout, run `install.sh` (or `minimal_install.sh`,
+  `cloud-install.sh`) with `--1password`;
+- on any other install, the 1Password pane shows the `pip install` command for
+  the gateway's own Python.
+
+Where 1Password publishes no build of the SDK (musl Linux, glibc older than
+2.32, Windows on ARM, Python 3.14+), the pane says 1Password cannot be connected
+on this system. Details: [Secrets vault](../../src/kiro_crew/docs/secrets-vault.md#reading-items-from-1password).
+
 ### Route the server through the gateway
 
 The gateway is the only place a reference is resolved, so **route the server

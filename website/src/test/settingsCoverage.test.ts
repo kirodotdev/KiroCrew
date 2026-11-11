@@ -90,6 +90,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'PeopleCrew.tsx': 'the People share card, People list and the name-and-picture dialog; display-only edits and one-shot actions with their own routes, no setting and no control writes a config path',
   'PeopleModes.tsx': 'the per-mode pieces PeoplePanel mounts (invalid state, read-only Team Access, adapter notes); no setting and no control writes a config path',
   'PeopleAdvanced.tsx': 'the owner-only Advanced section of the People tab, which shows only under the Shared Crew preview; its controls write dashboard.shared_crew.* paths, but a search hit would deep-link to a tab that is hidden unless the preview is on, so they stay out of settings search',
+  'SecretsBackendPane.tsx': "one password manager's pane under Secrets: its connect form, drawn from fields the gateway declares, and Disconnect; one-shot actions with their own routes, no setting and no control writes a config path",
   'SecretUsage.tsx': "the Secrets item pane's read-only Used by card and the delete confirmation's in-use line; it lists where an item is used and holds no setting",
   'SharedAccessSetup.tsx': 'the People empty state shown while no shared-access path is configured; guidance and links to existing guides, no setting and no control writes a config path',
   'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row under Invites: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
@@ -319,6 +320,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason:
       'add/edit form for one vault item (name, value, login fields, a website to add, note text) ' +
       '— transient CRUD, not persistent knobs',
+  },
+  'SecretsBackendPane.tsx': {
+    counts: { Input: 1 },
+    reason:
+      'the connect form of one password manager, one Input per field the gateway declares ' +
+      '(token, vault) -- a one-shot connect, not persistent knobs',
   },
   'SecretsPanelLegacy.tsx': {
     counts: { Input: 2 },

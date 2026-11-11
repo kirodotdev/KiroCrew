@@ -68,6 +68,55 @@ typed into the page, the login is saved as a new entry named after the site
 (`github.com`, or `github.com (2)` if that name is taken); an existing entry is
 never replaced.
 
+## Reading items from 1Password
+
+With the same preview on, the list also has a **Password managers** group with
+one row, **1Password**. Connecting it lets a `secret://NAME` reference read an
+item from one 1Password vault. Kiro Crew only reads: it never creates, changes or
+deletes anything in 1Password, and nothing from 1Password is copied into the
+local vault.
+
+You need a 1Password [service account](https://developer.1password.com/docs/service-accounts/get-started/)
+with read access to the vault you want.
+
+Kiro Crew talks to 1Password through 1Password's own Python SDK, the optional
+`1password` extra. The desktop app ships it. From a source checkout, pass
+`--1password` to the installer. On any other install, the 1Password pane shows the
+command that adds it to the gateway's Python, the same way a missing voice
+package is shown. Where 1Password publishes no build of the SDK (musl Linux,
+glibc older than 2.32, Windows on ARM, Python 3.14 or newer), the pane says
+1Password cannot be connected on this system, and your own items work as before.
+
+Paste the service account token, and the vault's name or ID, then **Connect**.
+You may leave the vault empty only when the token can read exactly one vault.
+When it can read several, connecting fails and names the vaults to choose from.
+The token is stored in the local vault, used only inside the gateway when it
+asks 1Password, and never shown again, logged or given to the agent.
+
+If an update leaves the gateway without the SDK, the connection is kept and
+shows as unavailable, and references through it fail closed. Add the package
+again and it works with the token you already pasted.
+
+The vault's items then appear under **1Password · VAULT**, beside your own. A
+login lists its username and websites; nothing else. These items cannot be
+edited or deleted here: change them in 1Password. Supported item kinds are
+Login, Password, API Credential and Secure Note.
+
+A reference looks in the local vault first. Only a name the local vault does
+not hold is read from 1Password, so a local item wins over a 1Password item of
+the same name; such a 1Password row says **Not used: the name is taken**. So
+does a 1Password item named like an entry Kiro Crew keeps for itself (the
+WakaTime sign-in tokens, a Connections OAuth entry): those names are only ever
+read from the local vault. Two 1Password items with one name show as one row
+that says **Not used: more than one item has this name**; give each its own
+name in 1Password. When 1Password cannot be reached, does not answer in
+time, is limiting requests, refuses the token, or a name matches more than one
+1Password item, the MCP server does not start, and its error says why. A
+reference never falls back to another item. Your own items keep working
+whatever state 1Password is in.
+
+**Disconnect** forgets the token. Nothing in 1Password changes.
+
 ## Moving credentials out of `.env`
 
 `kirocrew secrets import` migrates plaintext credentials from `.env` into the
