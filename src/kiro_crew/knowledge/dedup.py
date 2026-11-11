@@ -33,7 +33,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import MINYEAR, date, datetime
 from difflib import SequenceMatcher
 
 from kiro_crew.sel import sel
@@ -290,6 +290,11 @@ def _date_distance_days(d1: tuple[int | None, int, int | None],
         ry1 = 2000
     if ry2 is None:
         ry2 = 2000
+    # A four-digit run read as an ISO date can name year 0000 (a zero-padded
+    # counter such as "Scan_00000105"), which `date()` refuses; clamp so the
+    # distance still compares month and day instead of failing the whole sweep.
+    ry1 = max(ry1, MINYEAR)
+    ry2 = max(ry2, MINYEAR)
     day1 = min(dd1 or 15, 28)
     day2 = min(dd2 or 15, 28)
     return abs((date(ry1, m1, day1) - date(ry2, m2, day2)).days)
