@@ -536,7 +536,26 @@ class TestUpdateGitPath:
         out = capsys.readouterr().out
         assert str(log_path) in out
         assert "vite: build failed" in out
+        assert "see the log above" in out
         assert "Kiro Crew updated!" not in out
+
+    def test_frontend_build_failure_without_a_log_points_at_no_log(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """Where no log was opened (Windows) nothing was printed for "the log above" to name."""
+        from kiro_crew.platform import release_apply
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.setattr(
+            cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("failed")
+        )
+        monkeypatch.setattr(release_apply, "apply_release", lambda *a, **k: 0)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Do not restart the gateway until the dashboard builds" in out
+        assert "see the log above" not in out
 
     def test_frontend_build_sees_the_node_ensure_node_recorded(
         self, monkeypatch, git_checkout, tmp_path

@@ -480,10 +480,15 @@ class FrontendBuildResult:
     tail: str = ""
 
     def failure_message(self) -> str:
-        """One message naming the failure, the log file and its last lines."""
+        """One message: the failure, its log file and last lines, or that no log was written."""
         message = "Frontend build did not complete — the dashboard still serves the previous bundle"
         if self.log_path is not None:
             message += f". Build output: {self.log_path}"
+        else:
+            message += (
+                ". No build log was written; run `npm ci` and `npm run build` in website/"
+                " to see the npm output"
+            )
         if self.tail:
             message += f"\n{self.tail}"
         return message
@@ -1251,7 +1256,8 @@ def build_frontend_sync(
     edition rather than staging a stock bundle over it.
 
     Returns a :class:`FrontendBuildResult`; the install and build output is
-    written to ``<data home>/logs/frontend-build.log``, which it names.
+    written to ``<data home>/logs/frontend-build.log``, which it names. Where no
+    pinned walk exists (Windows) no log is opened and the output is discarded.
     """
     website_dir = proj_path / _DIR_NAME
     if not website_dir.is_dir():
