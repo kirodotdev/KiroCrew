@@ -5892,9 +5892,14 @@ digest closes without the stuck-wave sweep.
 The loop registers it
 and, from its own 100 ms tick, runs the deferred's short `step()` whenever its
 `due_at()` has passed; the call is answered by the step that returns text. A
-`step` is one loopback round-trip (a keepalive POST, one poll pass, one wait
-slice), never a sleep, and runs with the call's caller identity installed as the
-worker had it. An ask step's wait slice is the server's fixed
+`step` is one loopback round-trip (a keepalive POST, one pass over a wave's
+children, one wait slice), never a sleep, and runs with the call's caller
+identity installed as the worker had it. A `spawn_sub_agents` pass asks the
+gateway to hold its status reads until the child ends, for at most 2s per pass,
+and at most half of the pool's threads sit in such a read at once
+(`spawn_parts/wave.py` `_HELD_READS`); a wave past that bound reads without
+holding and is stepped again on its 2s interval, so held reads never take the
+threads the quick steps and the ask slices run on. An ask step's wait slice is the server's fixed
 `validation.ASK_WAIT_SLICE_SECS` (5s; the wait route reads no body, so a caller
 cannot choose it): a step holds a pool thread for one slice, so the admitted-card
 queue budget `ceil(DEFERRED_PARKED_MAX / DEFERRED_STEP_WORKERS) * 5` = 40s stays
