@@ -575,3 +575,31 @@ async def test_an_infinite_blob_size_reads_as_over_the_bundle_ceiling():
     sizes = dict(blobs)
     assert sizes["SKILL.md"] == 10
     assert sizes["huge.bin"] > gh._MAX_BUNDLE_BYTES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_size", [float("nan"), -5], ids=["nan", "negative"])
+async def test_a_nan_or_negative_blob_size_reads_as_over_the_bundle_ceiling(bad_size):
+    """A NaN or negative tree size is listed as too large to import, never as zero."""
+    from kiro_crew.skill_providers import github as gh
+
+    tree = {
+        "sha": "c" * 40,
+        "truncated": False,
+        "tree": [
+            {"path": "SKILL.md", "type": "blob", "size": 10},
+            {"path": "odd.bin", "type": "blob", "size": bad_size},
+        ],
+    }
+
+    async def _fake_fetch_json(url):
+        return tree
+
+    with patch.object(gh, "_fetch_json", _fake_fetch_json):
+        blobs = await gh.GitHubRepoProvider()._list_blobs(
+            gh.RepoSpec(owner="acme", repo="widgets"), "c" * 40
+        )
+
+    sizes = dict(blobs)
+    assert sizes["SKILL.md"] == 10
+    assert sizes["odd.bin"] > gh._MAX_BUNDLE_BYTES
