@@ -12,6 +12,7 @@ import type { ComposerPasteSlice } from '../../../chat-core/composer/composerPas
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { QuoteFlight } from '../../../chat-core/composer/selectionActions'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
+import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import AgentDropdownList, { isCrewmateChat, DefaultAgentRow, defaultWriteKind, ManageAgentsFooter, type DefaultWriteFailure } from '../../../components/AgentDropdownList'
 import type { KiroCrewAgent } from '../../../components/AgentSelector'
 import { MemoryModeChip, type MemoryMode } from '../../../components/MemoryModeChip'
@@ -154,6 +155,8 @@ interface ComposerDockViewProps {
   anchorModelBtn: (rect: DOMRect, trigger?: HTMLElement | null) => void
   modelBtnRect: DOMRect | null
   messageQuote: UseMessageQuote
+  /** The sent quote card's jump, so the staged card in the composer jumps the same way. */
+  onJumpToQuote: (quote: MessageQuote) => void
   applyAutomationChange: ReturnType<typeof useSessionAutomation>['applyAutomationChange']
   automation: ReturnType<typeof useSessionAutomation>['automation']
   automationCreationReady: boolean
@@ -330,7 +333,7 @@ export default function ComposerDockView({
   pendingQuestion, projectLocked, restoredQuestionNotice, sentMessages, slotRunning, slotStopping, composerDraft, historySuggestions, showHistorySuggestions, chatConfig, agentDropdown,
   agentDropdownRef, agentFilter, agentInputRef, defaultAgent, defaultAgentFailed, effectiveAgents, filteredAgents, installedAgents, setAgentDropdown, setAgentFilter, toggleDefaultAgent,
   codexPairModels, filteredModels, hiddenModelsQ, ownModelsFailed, ownModelsFetching, retryOwnModels, modelsBackend, jevRouteOn, modelDropdown, modelDropdownRef, modelFilter, modelInputRef, modelPickerConfigured, modelPickerReturnsFocusRef, setModelDropdown,
-  setModelFilter, onAgentListKeyDown, onModelListKeyDown, anchorModelBtn, modelBtnRect, messageQuote, applyAutomationChange, automation, automationCreationReady, automationOpen,
+  setModelFilter, onAgentListKeyDown, onModelListKeyDown, anchorModelBtn, modelBtnRect, messageQuote, onJumpToQuote, applyAutomationChange, automation, automationCreationReady, automationOpen,
   automationSnapshotFailed, setAutomationOpen, prefillHint, setPrefillHint, pasteSlice, pendingFiles, pendingSessions, resizedInfo, unstageSessionRef, uploading, agentBtnRect, anchorAgentBtn,
   projectPickerOpen, setProjectPickerOpen, anchorProjectBtn, projectBtnRect, pendingDirs, composerRef, composerVoiceOptions, isMac, cancelUpload, composerUploadFiles, dropTargetProps, handleCapture,
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
@@ -673,6 +676,7 @@ export default function ComposerDockView({
               pendingSessions={pendingSessions}
               pendingQuote={messageQuote.pendingQuote}
               onRemoveQuote={messageQuote.clearQuote}
+              onJumpToQuote={onJumpToQuote}
               onRemoveSessionRef={unstageSessionRef}
               onFileSelect={selectPickedFile}
               onFileOpen={handleFileOpen}
