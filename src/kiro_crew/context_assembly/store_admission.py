@@ -728,12 +728,16 @@ def _lessons_renderer(
     # means the JSONL store is still the authority, rows-but-none-in-scope
     # means this store already answered.
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import memory_lesson_fold as _lesson_fold
     from kiro_crew import memory_rule_authority as _rule_authority
 
     # Read once per renderer: a refit after the protected ceiling renders again
-    # under the same order. ``off`` passes nothing, so the call is today's.
+    # under the same order and fold. ``off`` passes nothing, so the call is today's.
     mode = _rule_authority.configured_mode()
     order: dict[str, Any] = {} if mode == _rule_authority.MODE_OFF else {"authority_order": mode}
+    fold_mode = _lesson_fold.configured_mode()
+    if fold_mode != _lesson_fold.MODE_OFF:
+        order["lesson_fold"] = fold_mode
     if member_vectors is not None:
         member_store = member_vectors
 

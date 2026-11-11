@@ -33,6 +33,9 @@ LESSON_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
 
 #: ``memory.lesson_tier_policy`` values; :mod:`kiro_crew.memory_tier_policy` says what each does.
 LESSON_TIER_POLICY_MODES = ("off", "shadow", "enforce")
+#: ``memory.lesson_fold`` values; :mod:`kiro_crew.memory_lesson_fold` says what each does.
+LESSON_FOLD_MODES = ("off", "shadow", "enforce")
+
 #: ``memory.rule_authority_order`` values; :mod:`kiro_crew.memory_rule_authority` says what each does.
 RULE_AUTHORITY_ORDER_MODES = ("off", "shadow", "enforce")
 
@@ -445,6 +448,21 @@ class MemoryConfig:
             enum=list(LESSON_TIER_POLICY_MODES),
         ),
     )
+    lesson_fold: str = field(
+        default="off",
+        metadata=_meta(
+            "Lesson Fold",
+            "Whether the session-start rule block leaves out near-duplicate rules "
+            "(same scope and tier, and the same text or stored vectors at cosine "
+            "0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps "
+            "today's block and only records, in the injection receipt and within "
+            "fixed size caps, which rule ids would fold into which. 'enforce' keeps "
+            "the first copy of each rule (yours first, then newest) and says how many "
+            "were folded; learn_list still shows all. Rules you taught are never "
+            "folded and no stored lesson is changed.",
+            enum=list(LESSON_FOLD_MODES),
+        ),
+    )
     rule_authority_order: str = field(
         default="off",
         metadata=_meta(
@@ -577,6 +595,13 @@ def lesson_tier_policy_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in LESSON_TIER_POLICY_MODES:
         return raw
     return str(field_default(MemoryConfig, "lesson_tier_policy"))
+
+
+def lesson_fold_mode_from(raw: object) -> str:
+    """A stored ``memory.lesson_fold``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in LESSON_FOLD_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "lesson_fold"))
 
 
 def rule_authority_order_mode_from(raw: object) -> str:

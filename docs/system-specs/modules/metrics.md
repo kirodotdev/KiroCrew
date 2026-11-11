@@ -1376,8 +1376,9 @@ rows have no key: a kept one is not named, and a cut one still counts in `*_omit
 text is never written. Purpose: scoring which lessons change behaviour (#20446).
 
 A memory stage running under `shadow` or `enforce` adds one more field, named by
-its kind in `injection_receipts.STAGE_KINDS` (today `rule_authority_order`):
-`{mode, policy, would_add, would_drop}`, ids only. A line with no stage record keeps
+its kind in `injection_receipts.STAGE_KINDS` (today `rule_authority_order` and
+`lesson_fold`): `{mode, policy, would_add, would_drop}`, ids only; `lesson_fold`
+adds `pairs`, a list of `[leader, folded]` ids. A line with no stage record keeps
 the bytes above exactly. Stage fields are capped with the kind-routing constants in
 `<data home>/usage/injections/stage-log.json`: a per-UTC-day counter by kind and mode
 (`lines`, `would_add`, `would_drop`), pruned past `COUNTER_DAYS_KEPT` days, counts

@@ -22,8 +22,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import context_omissions, injection_receipts
+from kiro_crew import memory_lesson_fold as _lesson_fold
 from kiro_crew import memory_rule_authority as _rule_authority
-from kiro_crew.config.memory_sections import rule_authority_order_mode_from
+from kiro_crew.config.memory_sections import lesson_fold_mode_from, rule_authority_order_mode_from
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
@@ -890,6 +891,7 @@ def get_lessons_context(
     directive_budget: int = 0,
     experience_budget: int = 0,
     authority_order: str = "off",
+    lesson_fold: str = "off",
 ) -> str:
     """Format lessons for prompt injection, most relevant first.
 
@@ -929,6 +931,11 @@ def get_lessons_context(
             injection receipt which ids the authority order would add or drop;
             ``enforce`` orders the rule block by authority level, keeping the
             authored-before-untagged split and request relevance inside a level.
+        lesson_fold: ``memory.lesson_fold`` for a background read
+            (:mod:`kiro_crew.memory_lesson_fold`). ``off`` keeps the rule block;
+            ``shadow`` keeps it and records in the injection receipt which ids
+            would fold into which; ``enforce`` leaves folded rows out of the rule
+            block and says how many.
     """
     # Scope is applied BEFORE the counts are taken, so a lesson withheld as
     # out-of-scope is not reported as "omitted" -- omitted means "did not fit
@@ -946,6 +953,10 @@ def get_lessons_context(
             # against the stale vector. Explicit recall retries in ``recall``.
             recall_query = _RecallQuery(None, None, None)
         lesson_rows = store._eligible_rows(store.get_lessons(), "directive")
+        fold_mode = lesson_fold_mode_from(lesson_fold) if background else _lesson_fold.MODE_OFF
+        # Read with the rows, under the same lock, so the vectors and the space
+        # they are compared in come from one snapshot.
+        fold_space = _lesson_fold.store_space(store) if fold_mode != _lesson_fold.MODE_OFF else None
     entries = _renderable_entries(lesson_rows, project_dir)
     if not entries:
         return ""
@@ -1000,6 +1011,25 @@ def get_lessons_context(
         by_level = _rule_authority.by_authority(directives)
         if order_mode == _rule_authority.MODE_ENFORCE:
             directives = by_level
+        fold_header = ""
+        if fold_space is not None:
+            # The kept copy is chosen by authority, then recency, not by request
+            # relevance, so under a tight budget it can rank below the copy it
+            # replaced; both say the same rule.
+            space, dim = fold_space
+            pairs = _lesson_fold.fold_pairs(directives, entries, space=space, dim=dim)
+            folded = {key for _, key in pairs}
+            if fold_mode == _lesson_fold.MODE_ENFORCE and folded:
+                directives = [e for e in directives if e[0].get("key") not in folded]
+                by_level = [e for e in by_level if e[0].get("key") not in folded]
+                fold_header = "\n" + _lesson_fold.FOLD_NOTICE.format(count=len(folded))
+            injection_receipts.record_stage(
+                injection_receipts.LESSON_FOLD,
+                mode=fold_mode,
+                policy=_lesson_fold.POLICY_VERSION,
+                would_drop=sorted(folded),
+                pairs=pairs,
+            )
         unclassified = len(untagged)
         # The model-safety ceiling bounds the two blocks TOGETHER, and the
         # directive block is served first: when room is short, a past finding
@@ -1008,7 +1038,7 @@ def get_lessons_context(
             "header": (
                 "[Learned corrections — retained rules from past mistakes.\n"
                 "Follow explicit user rules; stored inferences do not override "
-                "the current user.]"
+                "the current user.]" + fold_header
             ),
             "footer": "[End of learned corrections]",
             "omission": (

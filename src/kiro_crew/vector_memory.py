@@ -1454,6 +1454,7 @@ class VectorMemoryStore:
         directive_budget: int = 0,
         experience_budget: int = 0,
         authority_order: str = "off",
+        lesson_fold: str = "off",
     ) -> str:
         """Format lessons for prompt injection, most relevant first."""
         from kiro_crew import recall_pool as _recall_pool  # circular import at module level
@@ -1470,6 +1471,7 @@ class VectorMemoryStore:
                 directive_budget,
                 experience_budget,
                 authority_order,
+                lesson_fold,
             )
             pooled = _recall_pool.offload(self, "lessons", job_args)
             if pooled is not None:
@@ -1485,6 +1487,7 @@ class VectorMemoryStore:
             directive_budget=directive_budget,
             experience_budget=experience_budget,
             authority_order=authority_order,
+            lesson_fold=lesson_fold,
         )
 
     def turn_lessons(

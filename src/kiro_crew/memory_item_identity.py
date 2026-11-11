@@ -55,22 +55,30 @@ def unit_vector(blob: object, dim: int) -> Any:
     """A stored float32 blob of width *dim* as a unit vector, or ``None`` when unusable.
 
     ``None`` for a missing blob, a width other than *dim*, a non-finite value or a
-    zero vector. The vector is a numpy array when numpy is installed, so a fold
-    over a few hundred rows stays well under a second; a tuple otherwise.
+    zero vector. With numpy installed the vector is a float64 numpy array computed
+    without a Python loop per value, since a session-start render converts every
+    stored rule vector; a tuple otherwise.
     """
     if not isinstance(blob, (bytes, bytearray, memoryview)) or dim <= 0:
         return None
     raw = bytes(blob)
     if len(raw) != dim * 4:
         return None
+    if _np is not None:
+        array = _np.frombuffer(raw, dtype=_np.float32).astype(_np.float64)
+        if not _np.isfinite(array).all():
+            return None
+        length = float(_np.sqrt(array @ array))
+        if length == 0.0:
+            return None
+        return array / length
     values = struct.unpack(f"{dim}f", raw)
     if not all(math.isfinite(v) for v in values):
         return None
     norm = math.sqrt(math.fsum(v * v for v in values))
     if norm == 0.0:
         return None
-    unit = tuple(v / norm for v in values)
-    return _np.asarray(unit, dtype=_np.float64) if _np is not None else unit
+    return tuple(v / norm for v in values)
 
 
 @dataclass(frozen=True, eq=False)

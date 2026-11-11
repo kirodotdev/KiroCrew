@@ -2731,6 +2731,7 @@
         "kind_routing": "off",
         "lesson_origin_gate": "off",
         "lesson_tier_policy": "off",
+        "lesson_fold": "off",
         "rule_authority_order": "off",
         "member_lesson_dedup": "off",
         "inject_memory": true,
@@ -3343,6 +3344,24 @@
       "tags": [],
       "label": "Lesson Tier Policy",
       "help": "Which tier a new lesson from consolidation gets. 'off' (default) keeps today's prompt and writes. 'shadow' writes every lesson as before and only counts, within fixed size caps, which new lessons the policy would store as on_topic findings, and how often you later teach one of them again. 'enforce' asks the model for your own words behind each 'always' lesson and stores a lesson as an on_topic finding unless those words are found in one of your messages. Your own learn_add and dashboard writes, and stored lessons, are never changed.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "shadow",
+        "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.lesson_fold",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Lesson Fold",
+      "help": "Whether the session-start rule block leaves out near-duplicate rules (same scope and tier, and the same text or stored vectors at cosine 0.95 or more). 'off' (default) keeps today's block. 'shadow' keeps today's block and only records, in the injection receipt and within fixed size caps, which rule ids would fold into which. 'enforce' keeps the first copy of each rule (yours first, then newest) and says how many were folded; learn_list still shows all. Rules you taught are never folded and no stored lesson is changed.",
       "hasChildren": false,
       "enumValues": [
         "off",
