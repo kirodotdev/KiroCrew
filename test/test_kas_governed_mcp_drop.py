@@ -215,6 +215,15 @@ class TestGovernedStart:
         await handle.wait_mcp_ready(("kirocrew-core",), 30.0, governed=True)
         assert handle._mcp_report._failed == ["kirocrew-core"]
 
+    def test_a_drop_on_a_host_that_sent_nothing_calls_no_other_server_starting(self):
+        """The drop is Kiro Crew's own finding. It is not the host reporting."""
+        report = McpSessionReport(folded_on_arrival=True)
+        report.begin_session([{"name": "github"}])
+
+        session_handle_mcp._record_drops(report, ("kirocrew-core",))
+
+        assert report.not_ready() == {"failed": ("kirocrew-core",)}
+
     @pytest.mark.asyncio
     async def test_a_named_server_keeps_the_full_budget_past_the_settle(self, monkeypatch):
         # A cold server the host named before the settle is not cut short.

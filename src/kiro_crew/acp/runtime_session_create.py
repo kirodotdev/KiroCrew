@@ -573,6 +573,7 @@ async def create_session(
             request_identity=request_identity,
             launch_snapshots=launch_snapshots,
             withheld_notice=withheld_notice,
+            start_priority=start_priority,
         )
     except BaseException:
         if session_id in self._unclaimed_new_sessions:
@@ -771,6 +772,7 @@ async def _finish_create_session(
     request_identity: str = "",
     launch_snapshots: list[str] | None = None,
     withheld_notice: str = "",
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> AcpSessionHandle:
     """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -1005,6 +1007,7 @@ async def _finish_create_session(
             active_agent,
             budget,
             staged_before_switch if mode_switched else 0,
+            start_priority,
         )
     elif self._expect_mcp_reports:
         await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)

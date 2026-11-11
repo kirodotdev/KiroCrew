@@ -33,10 +33,10 @@ from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
-    mounted_servers,
     required_managed_servers,
     roster_names,
 )
+from kiro_crew.acp.mcp_start_wait import first_prompt_brief_wait, left_to_first_turn
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
@@ -61,6 +61,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
+from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
@@ -80,6 +81,7 @@ async def load_session(
     session_key: str = "",
     channel_id: str = "",
     require_replay: bool = False,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> AcpSessionHandle:
     """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -595,6 +597,7 @@ async def load_session(
             active_agent,
             budget,
             staged_before_switch if mode_switched else 0,
+            start_priority,
         )
     elif self._expect_mcp_reports:
         await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)
@@ -649,6 +652,7 @@ async def _wait_managed_mcp(
     agent: str,
     timeout: float,
     stale_report_frames: int,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> None:
     # *params* carries the batch as sent, so its entry is keyed by the wire id.
     wire_agent = kas_wire_agent_id(agent)
@@ -682,11 +686,18 @@ async def _wait_managed_mcp(
                 stale_report_frames=stale_report_frames,
                 no_report_ceiling=None if self._expect_mcp_reports else 0.0,
             )
-        # Best effort, never required: Connections and user servers also belong
-        # in turn 1's catalog, but a slow or dead one must not block the start.
-        rest = tuple(n for n in mounted_servers(params, wire_agent) if n not in required)
-        if rest:
-            await handle.wait_mounted_mcp(rest, MOUNTED_MCP_WAIT_SECS)
+        # Best effort, never required: a slow or dead one must not block the start.
+        # Which servers, and why not the user's own when a person is waiting:
+        # ``first_prompt_brief_wait``.
+        brief = first_prompt_brief_wait(params, wire_agent, required, start_priority)
+        if brief:
+            await handle.wait_mounted_mcp(brief, MOUNTED_MCP_WAIT_SECS)
+        # The agent's own servers a person-waited start skipped: its first turn
+        # is told of them, or holds its prompt for them (same rule).
+        left, more = left_to_first_turn(params, wire_agent, required, start_priority)
+        if left:
+            report = handle.mcp_session_report()
+            report.left_to_turn, report.left_omitted = left, more
     except BaseException:
         # No handle escapes on failure. A fresh session/new has no history
         # to preserve, so evict it from the host and reap its MCP children.

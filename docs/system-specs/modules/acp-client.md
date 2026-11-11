@@ -2506,22 +2506,59 @@ session, in the chat's MCP panel and for every other reader.
   caps bound them too.
 - **One vocabulary for a server's state.** `not_ready()` sorts every server the
   session cannot use into exactly one of `disabled`, `registry_dropped`,
-  `needs_sign_in`, `failed`, `connecting` (`NOT_READY_STATES`, tested in that
-  order); `ready` is the connected list. `connecting` is every server the session
-  expects and has not heard a settled state from: one the spec declares, one Kiro
-  Crew sent on the wire (a Connection's bridge, a routed stub), or one the host's
-  latest snapshot lists as not settled. A status frame is the host's whole list,
+  `needs_sign_in`, `failed`, `connecting` (tested in that order); `ready` is
+  the connected list. `connecting` is every server the session
+  expects and has not heard a settled state from (`still_starting`): one the spec
+  declares, one Kiro Crew sent on the wire (a Connection's bridge, a routed
+  stub), one the start left to its first turn, or one the host's latest snapshot
+  lists as not settled. It is claimed only once the HOST has
+  reported something (a status snapshot, or any server's start), never from
+  what Kiro Crew records itself (a server it pruned, a mount-check finding): a
+  host that never reports its servers, such as a cloud sandbox or a harness
+  with no status frames, would otherwise have every server read as starting
+  for ever. A status frame is the host's whole list,
   so what the host calls disabled or pending is replaced by each snapshot, never
-  added to. The sources are joined whole and a name is placed by what is true of
-  it before any list is cut, so servers that are ready never crowd a connecting
-  one out. `payload()` carries the reading as `states` (empty states left out,
-  each list at most the bucket cap) and `states_omitted`: the names cut from
-  those lists plus the names each source's own cap cut (declared servers past
-  the ones kept by name, muted servers, registry-dropped servers, not-connected
-  snapshot entries past the ones read). It is exact while every source fits its
-  cap; past the caps a server two sources both cut is counted by each, so it is
-  an upper bound and never an under-count. Names only: a failure reason stays in
-  `failures`.
+  added to. The sources are each bounded, so they are joined whole and a name
+  is placed by what is true of it; `not_ready()` cuts nothing, so servers that
+  are ready never crowd a connecting one out and no server leaves every state
+  without a word. Empty states are left out. Each source holds at most
+  `MCP_STATUS_CAP`, 256 names (one name for the bound, in
+  `agent_sdk/mcp_problems.py`, read by the report as `STATUS_CAP` and by the
+  block's still-starting row): the `ready`, `failed` and `awaiting_auth`
+  buckets, a snapshot read, the wire roster, and the declared, muted and
+  registry-dropped lists. It is four times the largest set measured, so a
+  session with 64 of the user's servers beside Kiro Crew's own is described
+  whole.
+- **One cut, always counted.** Every list of the report is cut by one helper,
+  `mcp_report_bound.keep`, which answers what the list keeps and how many names
+  it left out, and holds nothing past the bound. No list is sliced anywhere
+  else (`test_mcp_report_bound.py` reads the syntax tree for a slice, a length
+  or bound comparison and a counted or early-ending loop, and runs every
+  bounded list under, at and over its bound). A host status snapshot is read in
+  one place too, `mcp_report_bound.read_status_snapshot`, which hands the report
+  only bounded fields of an entry (a cleaned name, a status, a cleaned error),
+  one row a server: its last entry, wherever in the list that is, so a server
+  it reads never keeps a state the host replaced further on.
+  The report records each list's count (`_keep`), the latest snapshot's, and
+  each report a full bucket refused or pushed out; `left_out` is their sum. A
+  list of findings about servers (no tools, header and env references) keeps
+  its own count instead (`no_tools_omitted` and the like).
+- **A report that left a name out is partial, and says so.** While `left_out`
+  is not zero: `connecting` is only what the host's latest snapshot lists as
+  not settled, never a server that merely has no report (it may be one the
+  report left out, and a report a full bucket refused takes the host's earlier
+  "starting" for that server with it); such a server is in no state, and
+  `mcp_server_wait` answers at once that it cannot tell, with the count
+  (`mcp_reports_left_out`), not as if the host reported nothing; no first
+  prompt counts as told, so it holds as any untold prompt does; the `[MCP
+  SERVERS]` block says once how many servers are not tracked; each status
+  snapshot past the bound logs its count, and the change is announced
+  (`on_change`). A report that became partial stays partial until its
+  session starts again: a later value of a list that fits does not bring back
+  the report that was left out.
+- **Readers.** A turn's `[MCP SERVERS]` block and `mcp_server_wait`;
+  `payload()` does not carry it (no dashboard reads it yet). Names only: a
+  failure reason stays in `failures`.
 - **A change is announced, not polled for.** `fold_frame` calls the report's
   `on_change` when the fold changed it, and `forget_reported` when it dropped
   something. A reader sets it through
@@ -2550,6 +2587,112 @@ session, in the chat's MCP panel and for every other reader.
 
 Pinned by `test_mcp_report_arrival_fold.py` and, against a real engine stub,
 `test_kas_session_start_queue.py::test_a_late_server_reaches_the_report_with_nothing_reading_the_session`.
+
+### Which servers the first prompt waits for (`acp/mcp_start_wait.py`)
+
+One rule, stated in `first_prompt_brief_wait` and applied where a session start
+ends (`runtime_session_load._wait_managed_mcp`, for `session/new` and
+`session/load` alike):
+
+| Servers | A person is waiting (`StartPriority.FOREGROUND`) | Nobody is waiting (`BACKGROUND`) |
+|---|---|---|
+| Kiro Crew's own managed servers | required: the whole start budget, the start fails without them | the same |
+| Sent on the session by Kiro Crew (a Connection's bridge, a routed stub) | best effort, at most `MOUNTED_MCP_WAIT_SECS` (5 s) | the same |
+| The agent's own (the user's), which stay in the agent's block | not waited for by the start; left to the first turn (below) | best effort, at most 5 s |
+
+A person is waiting when `kiro_crew.start_priority` says so: the claim the
+session manager puts on the provider it starts, threaded from `create_session`
+and `_load_session_with_retry`. A caller that passes none starts as `BACKGROUND`:
+a sub-agent child, an unattended run (which also holds its first prompt up to
+`UNATTENDED_MCP_WAIT_SECS` for its declared servers), a warm start, a late
+collected start, and a re-sent server set (`session_provider_mcp_reinject`), so
+each waits exactly as before.
+
+Kiro CLI does not wait for a user's servers either. Not waiting is safe because
+the host reads its server list when a tool is loaded, so a server that connects
+during the turn serves it; the session's report follows the server (above), the
+turn is told which servers are still starting (`[MCP SERVERS]`,
+`context_assembly/mcp_servers.py`), and the model can wait for the one it needs
+(`mcp_server_wait`).
+
+**The first turn of a start that skipped them.** Being told is what makes not
+waiting safe, and not every turn is told. So the start records the servers it
+skipped on the session's report (`left_to_turn`, from `left_to_first_turn`), and
+what the first turn does turns on one fact, never on the start priority alone:
+whether the prompt being sent carries a block that spells out every one of
+those servers that has not reported. Each block hands the session the names its
+still-starting row spells out, under its own mark (the block's fence opener,
+whose nonce is made per block), through the reader the gateway installs on its
+context builder (`agent_sdk.mcp_problems.TurnMcpStatesReader.told`). The report
+keeps the last block's mark and names (`turn_told`) and decides nothing then.
+The decision is made once, when the prompt is about to go out
+(`session_handle_mcp.turn_is_told`): the prompt holds that mark, and those names
+cover every server the start skipped that is still starting at that moment.
+
+**One function answers "still starting".** `McpSessionReport.still_starting(names)`
+keeps the names in no settled state: not connected, failed or waiting for a
+sign-in, and not switched off, disabled by the host or dropped by the host's
+registry. `not_ready()` makes its `connecting` row with it (over everything the
+session expects, which includes `left_to_turn`), and
+`session_handle_mcp.still_waited_for` is the same function over `left_to_turn`.
+The block's still-starting row, the decision and the hold all read it, so there
+is no second list and no second bound: a settled server never holds a prompt,
+and one still starting is in the row or the prompt holds. The row is only made
+on a host that has reported; on one that has reported nothing the row claims
+nothing and every skipped server is still waited for, as the start waited
+before. A partial report (`left_out`, above) tells no turn at all: nothing can
+say its block names every server still starting, so the prompt holds. Pinned
+over every state, for a server the start skipped and for one it did not, by
+`test_mcp_start_wait.py::TestOneAnswerForEveryState`.
+
+A server that
+went back to connecting after the block was built is not covered. Reading the
+report records nothing. A row does not spell a server out when it leaves it out
+or prints it changed: a name screened as an instruction, one that held a context
+marker, one past the row's cap.
+
+One bound holds here too. The still-starting row spells out as many names as the
+report keeps a status for (`STATUS_CAP`, 256; a settled row spells out twelve and
+counts the rest), and `left_to_turn` holds as many, so a person with 100 servers
+still starting is told of each and the first prompt goes out. An agent with more
+servers of its own than that has the surplus counted (`left_omitted`): nothing
+can say those are named or have reported, so no turn of it is told and its first
+prompt holds to the cap, as its start did before. The block costs a turn, in the
+engine's count of four characters a token and with 13-character names, 413
+tokens at 64 servers still starting, 548 at 100 and 1,133 at 256, and only
+while they are starting.
+
+- **Told**: it goes out at once.
+- **Not told**: the prompt holds for those servers as the start did before, at
+  most `MOUNTED_MCP_WAIT_SECS` (`session_handle_mcp.hold_untold_first_turn`,
+  called by `prompt` and `stream_command` before any turn state is touched). It
+  never fails the turn, and a cancelled hold keeps the names, so the next turn
+  holds. It takes NO frame off the session's queue: what sits there between
+  turns (a command's awaited response, a stranded permission request, the
+  runtime's death notice) is the turn's own drain to keep, answer or drop. The
+  report is folded where a frame arrives, so the hold waits on the report's own
+  signal (`moved`).
+
+No entry declares which kind it is: a prompt without the block for any reason
+(a new entry, a minimal context, a prompt built before its session existed, a
+command, a block that was built for a turn that was then stopped) holds. What
+the entries that claim a person is waiting
+(§ Session-start gate) do today:
+
+| Entry | First turn carries `[MCP SERVERS]` | First prompt holds for the user's servers |
+|---|---|---|
+| A dashboard chat turn (typed, Resume or Continue, the requeue of a failed turn), also the first one after an eager spawn | yes: `chat_turn/prompt_assembly.py` builds with the gateway's builder | no |
+| A message a person sent on a messaging channel | yes: the dispatchers build with the same builder | no |
+| `kirocrew chat`, interactive | no: KAS is sent the typed text, and the CLI's own builder has no reader | yes, at most 5 s |
+| `kirocrew chat -m` | no, likewise; it has one turn only | yes, at most 5 s |
+| Side Chat and Bot reply threads | no: `build_side_message` and `build_thread_message` build their own prompt | yes, at most 5 s |
+| Task Runner Refine and Plan, workflow authoring | only when the build reads the report of the session the step runs on | yes, unless it did |
+| The one-shots (composer optimizer, Issue Radar's AI routes, member export, STT endpointing, the poisoned-conversation canary, a Connection's mint) | no | yes, at most 5 s, when the agent they run declares servers of its own |
+
+Pinned by `test_mcp_start_wait.py` (the rule, the start, the first turn),
+`test_kas_session_start_queue.py::TestTheFirstPromptOfAStartAPersonWaitedOn`
+(a real prompt against the engine stub), `test_mcp_servers_block.py::TestATurnThatIsTold`
+(which blocks are recorded) and `test_cli_chat_context.py` (both CLI rows).
 
 ### KAS managed MCP readiness
 
@@ -2974,7 +3117,7 @@ Two `initialize` flags under `agentCapabilities._meta.kiro` are read; only `mcpR
 
 A remote OAuth MCP server that KAS cannot reach without a token reports a `failed` status entry with `failedAuthorization: true`. Its `authorizationUrl` comes from a passive connect whose loopback callback listener is already closed, so Crew never renders it. A sign-in that can complete is started by the client: `_kiro/mcp/resetServer` with `{sessionId, serverName, startOAuth: true}` makes the engine keep its callback listener open for the whole connect attempt (the server's connect timeout: KAS's default is 60 s, and a block server KAS reaches by url with no `timeout` of its own is sent 300 s, `kas_settings_mcp.KAS_REMOTE_MCP_TIMEOUT_MS`, the engine's own lazy sign-in wait, so the user has time to consent) and send the consent URL as a `_kiro/openExternalUrl` request. The engine sends that request only because `KAS_CLIENT_CAPABILITIES` declares `_meta.kiro.openExternalUrl`.
 
-The session handle tracks, from its own status snapshots, which servers need a sign-in: added on `failedAuthorization`, removed once the server connects, is disabled, or leaves the snapshot. A timed-out attempt reports `failedAuthorization: false` with a timeout error, so the server stays tracked. The tracker reads at most the report's `BUCKET_CAP` entries and skips a name over `NAME_CAP`.
+The session handle tracks, from its own status snapshots, which servers need a sign-in: added on `failedAuthorization`, removed once the server connects, is disabled, or leaves the snapshot. A timed-out attempt reports `failedAuthorization: false` with a timeout error, so the server stays tracked. The tracker reads at most the report's `STATUS_CAP` entries, as far into a snapshot as the report itself reads, and skips a name over `NAME_CAP`.
 
 Needing a sign-in never starts one. An unsigned KAS server's tools are invisible to the model (exposure needs the catalog of a `connected` entry, above), so the agent can never call one, and a tool call cannot be the trigger. The trigger is the user's own message: before each user turn, the dashboard runner hands what the person asked (`user_typed_message`: captured before `@prompt`/`$skill` expansion, with no cancelled-turn preamble, sub-agent failure text or app context, any of which could name a server the message did not; only a turn with `_directive_user_origin` from a person's dashboard/channel send or human app-chat hands text over; a generated app dispatch, an OpenAI-compatible request (its prompt is the flattened conversation), a Spec Builder decision answer (composed from the agent's title and options), or a Regenerate replay of a stored row, all `_message_is_typed=False`, a turn restored from the on-disk queue (`_turn_provenance_restored`), synthetic turn, self-wake, slash command, `/prompts get` re-entry, or turn with a `_turn_actor` hands nothing) to the provider's declared `LLMProvider.note_user_message` (a no-op by default; the direct kiro-cli client has no trigger). `AcpProvider.note_user_message` holds the text only until that provider's next `stream()` or `stream_command()`, which takes and clears it at entry before anything can fail; `stream_command()` discards it. For `stream()`, the text then travels as an argument into that one attempt's handle `prompt`/`_run_turn`, after any pending MCP re-injection, so it never outlives the attempt or reaches a later automated turn. After the pre-turn drain, `_run_turn` calls `want_mcp_sign_in_named` with that attempt's text to mark each tracked server it names as wanted. The handle holds the text for that one turn and matches it on each mid-turn status snapshot, each server at most once, so a server whose `failedAuthorization` status was still queued or arrives mid-turn is found; the turn's end clears it, so a later cron or sub-agent turn never matches an old message. A server is named by its configured name or an obvious alias (`mcp_server_aliases`: the words split at separators, the part after a `namespace:` prefix (a one-word part only when it repeats the namespace), a Kiro Power's name without its `power-` prefix with repeated words collapsed (`power-figma-figma` gives `figma`, but a multi-word name's last word alone, such as `search` from `power-aws-docs-search`, never counts), each without a trailing `mcp` or `server` word, repeated words collapsed, derived aliases under three characters or only `mcp`/`server` dropped, while the configured name itself always counts, so a server named `gh` or `mcp` can still be named), or by a registry provider's `sign_in_words` when its slug is the server name (`atlassian`: `jira`, `confluence`), case-insensitive and as whole words only. So a chat that never names an unsigned server shows no Authorize card for it, at session start or later. An accepted start removes the server from the wanted set, so one ask starts at most one sign-in. A message that names a server whose sign-in this session already holds in the runtime asks for nothing, which keeps one live card per server. Once an attempt ends (signed in, timed out, or left by the user), only a later message naming the server offers it again; unrelated messages and status snapshots never do.
 
@@ -3361,7 +3504,7 @@ While a turn is dispatching, both ACP transports run a watchdog over a turn gone
 
 For a shell call, and for a call no class covers, the watchdogs are **verdict-driven, not timeout-driven**, which avoids the failure mode of a pure timeout death detector: killing healthy-but-slow work (a silent 30-min redirected build `long-build > build.log 2>&1` at exactly the blanket window; healthy long non-streamed reasoning at 90s, where the destructive `session/cancel` probe would be acked by the LIVE turn and surfaced as "Turn cancelled by user").
 
-Once a turn is idle past `watchdog.check_after_secs` (60s), the per-session `LivenessOracle` (`acp/liveness.py`) returns a verdict with evidence: **WORKING** (a live cmdline-matched shell child, a kirocrew-core `wait` call inside its declared duration (at most `WAIT_TOOL_MAX_SECS`, the tool's own 1800s maximum) + slack, selected by the provenance-verified adapter identity (`ToolCallState.is_trusted_wait`) and never by the model-authored title, moving CPU/IO counters, backend socket bytes flowing) is never acted on at any elapsed time, with these exceptions: an opaque MCP tool's `mcp subtree active` reading (CPU/IO movement in the tool's own MCP server subtree when that server can be found, else anywhere in the runtime's tree, which the engine itself and a warm sibling MCP server also move, so it cannot tell a live call from one whose result frame was lost) is bounded by `watchdog.tool_stall_hard_cap_secs` on the session's own frame clock and then gets the same session-scoped tool-stall cancel as an UNKNOWN past the cap, and a model wait's `backend activity` reading (CPU or IO movement under the runtime, which a busy MCP server also makes) is bounded by the same cap on the stale clock and then gets the stale probe; both metric points carry `window=working_cap` (the Windows shell-tool reading below is capped the same way); the kirocrew-core `spawn_sub_agents`, which pings `/api/session-keepalive` for its whole run (matched by `ToolCallState.is_trusted_keepalive_tool` on the adapter identity) keeps the unbounded deferral (logged at most once per 10 min — at INFO below the escalation mark, which is the lower of 30 min and a quarter of this turn's deadline, and at WARNING past it so a deferral able to hold the turn to its ceiling is visible at the default `agent.log_level`); **DEAD** (tracked shell child exited without a result frame past a 15s grace; model-wait with flat counters and NO established backend socket — the done-but-lost-frame wedge signature) acts immediately, so recovery lands seconds after actual death instead of at a blanket window; **STUCK_INPUT** (matched subtree flat across samples with a process blocked reading a tty/stdin pipe) acts immediately with a cause the recovery nudge names; **UNKNOWN** is the only timeout-governed class — stale probe at `watchdog.stale_window_secs` (600s; extended to `watchdog.model_silent_probe_secs` = 1800s when the evidence is `established_flat`, i.e. probably a non-streamed server-side think), tool cancel at `watchdog.tool_stall_suspect_secs` (5400s / 90 min — clears every shipped budget a single tool call can legitimately spend silent, such as the task runner's 90-minute test command), hard-capped at `watchdog.tool_stall_hard_cap_secs` (7200s / 2h, UNKNOWN and the tree-wide WORKING readings; also bounds the per-agent overrides).
+Once a turn is idle past `watchdog.check_after_secs` (60s), the per-session `LivenessOracle` (`acp/liveness.py`) returns a verdict with evidence: **WORKING** (a live cmdline-matched shell child, a kirocrew-core `wait` call inside its declared duration (at most `WAIT_TOOL_MAX_SECS`, the tool's own 1800s maximum) + slack, selected by the provenance-verified adapter identity (`ToolCallState.is_trusted_wait`) and never by the model-authored title, moving CPU/IO counters, backend socket bytes flowing) is never acted on at any elapsed time, with these exceptions: an opaque MCP tool's `mcp subtree active` reading (CPU/IO movement in the tool's own MCP server subtree when that server can be found, else anywhere in the runtime's tree, which the engine itself and a warm sibling MCP server also move, so it cannot tell a live call from one whose result frame was lost) is bounded by `watchdog.tool_stall_hard_cap_secs` on the session's own frame clock and then gets the same session-scoped tool-stall cancel as an UNKNOWN past the cap, and a model wait's `backend activity` reading (CPU or IO movement under the runtime, which a busy MCP server also makes) is bounded by the same cap on the stale clock and then gets the stale probe; both metric points carry `window=working_cap` (the Windows shell-tool reading below is capped the same way); the kirocrew-core `spawn_sub_agents` and `mcp_server_wait`, which ping `/api/session-keepalive` for their whole run (matched by `ToolCallState.is_trusted_keepalive_tool` on the adapter identity; `mcp_server_wait` ends itself after `MCP_SERVER_WAIT_SECS`), keep the unbounded deferral (logged at most once per 10 min — at INFO below the escalation mark, which is the lower of 30 min and a quarter of this turn's deadline, and at WARNING past it so a deferral able to hold the turn to its ceiling is visible at the default `agent.log_level`); **DEAD** (tracked shell child exited without a result frame past a 15s grace; model-wait with flat counters and NO established backend socket — the done-but-lost-frame wedge signature) acts immediately, so recovery lands seconds after actual death instead of at a blanket window; **STUCK_INPUT** (matched subtree flat across samples with a process blocked reading a tty/stdin pipe) acts immediately with a cause the recovery nudge names; **UNKNOWN** is the only timeout-governed class — stale probe at `watchdog.stale_window_secs` (600s; extended to `watchdog.model_silent_probe_secs` = 1800s when the evidence is `established_flat`, i.e. probably a non-streamed server-side think), tool cancel at `watchdog.tool_stall_suspect_secs` (5400s / 90 min — clears every shipped budget a single tool call can legitimately spend silent, such as the task runner's 90-minute test command), hard-capped at `watchdog.tool_stall_hard_cap_secs` (7200s / 2h, UNKNOWN and the tree-wide WORKING readings; also bounds the per-agent overrides).
 
 The oracle's evidence is Linux `/proc` where it exists; on macOS (no procfs) it selects an in-process **libproc backend** once per oracle instance (`select_darwin_backend`, injectable for tests): `proc_listchildpids` enumerates the runtime's descendants, `PROC_PIDTBSDINFO` supplies ppid / zombie state / start time, `proc_pidpath` and `sysctl KERN_PROCARGS2` supply the executable and argv for the same cmdline match the `/proc` walk performs, and `PROC_PIDTASKINFO` supplies per-process CPU time summed over the subtree (evidence labelled `darwin cpu-only`, since IO bytes are not readable there). That counter is in Mach ticks, scaled to nanoseconds by `hw.tbfrequency` (the two differ on Apple Silicon; the sysctl is read rather than `mach_timebase_info`, which Rosetta 2 answers 1/1 for an x86_64 process), and a growing sum counts as movement only from one 10 ms Linux tick per sample (`_DARWIN_CPU_FLOOR_NANOS`), so the idle timers of the runtime's MCP servers read flat, as `/proc`'s whole ticks read them. So a shell command is WORKING/DEAD/`shell_child_absent` on macOS by the same rules as Linux, and an active MCP subtree reads WORKING instead of running out the suspect window; evidence only `/proc` carries — the `established_flat` socket tag, the `blocked_read_fd` STUCK_INPUT check, `wchan` — is never invented on macOS: a flat model wait is UNKNOWN tagged `platform_limited` (never `DEAD`), which the dispatch loop gives the same `model_silent_probe_secs` window as `established_flat`, since without socket evidence a non-streamed think and a wedge are one state, and a live tracked shell child whose subtree is flat is UNKNOWN tagged `platform_limited` — bounded by the standard no-progress budget — rather than WORKING, because without stdin-block evidence a stuck child and a quiet one are one state and "alive" must not buy an indefinite deferral (see "Platform evidence matrix" below).
 
@@ -3388,7 +3531,7 @@ watchdog inspecting a surviving call.
 
 **Both idle clocks measure BACKEND silence, so consumer time is subtracted from them.** `_dispatch_events` is an async generator: it is suspended at its `yield` for the whole of a consumer-side await (a tool approval, an IM send, a hook), and `last_data_ts` does not advance while suspended. Charging that interval to the runtime lets the arm cancel a turn moments *after* a human approves a tool — and at that instant the tool has not started, so the oracle draws `UNKNOWN` or `DEAD`, and `DEAD` acts immediately regardless of the window. `prompt()` therefore times each park around its single re-yield (`_parked_since` → `_parked_total`, cleared in a `finally` so an abandoned generator does not read as parked forever), and the timeout arm subtracts the park accumulated since `last_data_ts` was taken. The tool clock is exact; the stale clock can key off the newer stderr/keepalive activity, in which case part of the correction predates its reference point and is subtracted twice — which only makes that branch more patient, never quicker to probe.
 
-**On the shared runtime the tool clock is also SESSION-SCOPED.** `AcpRuntime._reader_loop` marks a frame `fanout_no_owner` when it fans an ownerless frame (no `sessionId`) out to more than one registered session — a lone session is the sole owner and stays unmarked, so a single-session runtime behaves exactly as before. The dispatch loop advances a session-attributable twin of the pair, `last_own_data_ts` / `parked_at_own_data`, only for an unmarked frame, and both the **tool-idle clock** and the **post-compaction-failure budget** read that twin: a co-tenant's roster broadcast (`_kiro.dev/subagent/list_update`) does not defer either on traffic this session never produced. The tool-idle clock also takes the session's own keepalive stamp, `AcpSessionHandle.note_keepalive()`, which `AcpSessionProvider.touch_activity()` sets from `/api/session-keepalive` — the ping `wait` and `spawn_sub_agents` send while they block, since a blocking tool emits no frame. A co-tenant's keepalive stamps only its own handle, so it never defers this session. The stamp records the consumer park accumulated up to the touch, an open park included, so the clock subtracts only park time after it and stays exact. The **stale** clock deliberately keeps reading `last_data_ts`, because it already folds in the runtime-wide `_last_activity` (bumped on every stdout line), so runtime-global traffic is inside its contract by construction. Provenance, not the frame's method, is the discriminator — the same notification kind can arrive routed (this session's own progress) or fanned out (a co-tenant's), and only the runtime knows which. The events a marked frame yields carry that provenance to the consumer as `AcpEvent.runtime_global` — the roster, the compaction, clear and agent-switch notices, the steer echoes, and (by the stricter must-name-this-session test) the MCP registration notifications — so a consumer that measures this session's own activity or its startup can tell a co-tenant's frame from its own. A `session/update` names its session by protocol and is routed, so its events leave the flag clear. The one remaining over-count is deliberate and bounded per frame: a frame that arrives *during* the tool branch's oracle await voids that consult's verdict whoever owns it, because a frame still queued has no known owner until it is dequeued. Only the stale clock advances there. The tool clock moves only for a frame proven to be this session's own: one a concurrent `_wait_for_response` buffered is counted in `_own_ingress_seq` when it is not marked `fanout_no_owner`, and one still queued is dequeued next, where the ownership check above decides. A co-tenant frame landing in the await therefore costs one tick and keeps the idle measured so far, so the next consult that no frame interrupts acts on the whole window; it never restarts the window. A keepalive that lands during the await voids the verdict the same way; it is attributed to this session, so it moves only the tool clock, to the touch's stamp.
+**On the shared runtime the tool clock is also SESSION-SCOPED.** `AcpRuntime._reader_loop` marks a frame `fanout_no_owner` when it fans an ownerless frame (no `sessionId`) out to more than one registered session — a lone session is the sole owner and stays unmarked, so a single-session runtime behaves exactly as before. The dispatch loop advances a session-attributable twin of the pair, `last_own_data_ts` / `parked_at_own_data`, only for an unmarked frame, and both the **tool-idle clock** and the **post-compaction-failure budget** read that twin: a co-tenant's roster broadcast (`_kiro.dev/subagent/list_update`) does not defer either on traffic this session never produced. The tool-idle clock also takes the session's own keepalive stamp, `AcpSessionHandle.note_keepalive()`, which `AcpSessionProvider.touch_activity()` sets from `/api/session-keepalive` — the ping `wait`, `spawn_sub_agents` and `mcp_server_wait` send while they block, since a blocking tool emits no frame. A co-tenant's keepalive stamps only its own handle, so it never defers this session. The stamp records the consumer park accumulated up to the touch, an open park included, so the clock subtracts only park time after it and stays exact. The **stale** clock deliberately keeps reading `last_data_ts`, because it already folds in the runtime-wide `_last_activity` (bumped on every stdout line), so runtime-global traffic is inside its contract by construction. Provenance, not the frame's method, is the discriminator — the same notification kind can arrive routed (this session's own progress) or fanned out (a co-tenant's), and only the runtime knows which. The events a marked frame yields carry that provenance to the consumer as `AcpEvent.runtime_global` — the roster, the compaction, clear and agent-switch notices, the steer echoes, and (by the stricter must-name-this-session test) the MCP registration notifications — so a consumer that measures this session's own activity or its startup can tell a co-tenant's frame from its own. A `session/update` names its session by protocol and is routed, so its events leave the flag clear. The one remaining over-count is deliberate and bounded per frame: a frame that arrives *during* the tool branch's oracle await voids that consult's verdict whoever owns it, because a frame still queued has no known owner until it is dequeued. Only the stale clock advances there. The tool clock moves only for a frame proven to be this session's own: one a concurrent `_wait_for_response` buffered is counted in `_own_ingress_seq` when it is not marked `fanout_no_owner`, and one still queued is dequeued next, where the ownership check above decides. A co-tenant frame landing in the await therefore costs one tick and keeps the idle measured so far, so the next consult that no frame interrupts acts on the whole window; it never restarts the window. A keepalive that lands during the await voids the verdict the same way; it is attributed to this session, so it moves only the tool clock, to the touch's stamp.
 
 **The turn's park is readable from outside the turn.** `parked_for_secs()`, `parked_since`, and `awaiting_permission` exist because this arm cannot report on itself: it only advances when a consumer pulls the generator, so a consumer-side await freezes it and it never executes again for that turn. `session.md`'s `stuck_turn` hook reads those accessors from a loop with its own timer. Answering a permission calls `_end_human_wait()`, which banks the human's thinking time into `_parked_total` and restarts `_parked_since`, so the in-band correction stays exact while the external reading counts only what the consumer itself has spent since the answer.
 

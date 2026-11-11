@@ -993,6 +993,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "mcp_tools/app_tools.py",
         "mcp_tools/artifacts.py",
         "mcp_tools/control.py",
+        "mcp_tools/control_parts/mcp_wait.py",
         "mcp_tools/control_parts/monitor.py",
         "mcp_tools/knowledge.py",
         "mcp_tools/messaging.py",

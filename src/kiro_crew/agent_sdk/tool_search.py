@@ -258,18 +258,25 @@ def kas_never_defer_ids(
     return sorted(ids)
 
 
+#: Waiting for one of the session's own MCP servers that is still starting. Every
+#: shipped agent's turn is told to call it when a request needs such a server
+#: (``context_assembly/mcp_servers.py``), and a load in front of it would spend a model round
+#: trip on a wait whose point is to spend none.
+_MCP_LOADING = ("kirocrew-core::mcp_server_wait",)
 #: Fanning work out to sub-agents, and the status read every fan-out makes.
 _SUB_AGENTS = (
     "kirocrew-core::spawn_run",
     "kirocrew-core::spawn_status",
     "kirocrew-core::spawn_sub_agents",
+    *_MCP_LOADING,
 )
 #: A dispatched worker's two calls: read its item, report on it.
-_WORK_ITEM = ("kirocrew-work::work_brief", "kirocrew-work::work_report")
+_WORK_ITEM = ("kirocrew-work::work_brief", "kirocrew-work::work_report", *_MCP_LOADING)
 #: Dispatching items to worker sessions, waiting on them, patrolling and closing them.
 _DISPATCH = (
     "kirocrew-core::monitor_start",
     "kirocrew-core::wait",
+    *_MCP_LOADING,
     "kirocrew-dashboard::session_close",
     "kirocrew-dashboard::session_create",
     "kirocrew-dashboard::session_read_message",

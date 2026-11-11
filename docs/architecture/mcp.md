@@ -3041,6 +3041,9 @@ answers `tools/list` from):
 
 - **Subagents:** `spawn_status`, `spawn_continue`, `spawn_steer`,
   `spawn_release`, `spawn_sub_agents`, `wait`
+- **The session's own MCP servers:** `mcp_server_wait` (one parked call that
+  returns when a named server of the calling session has connected, or says why
+  it will not; see "A server that is still starting" below)
 - **Messaging and notification:** `send_message`, `send_notification`,
   `dismiss_notification`,
   `delete_message`, `update_message`, `file_send`, `read_slack_profile`,
@@ -3420,6 +3423,7 @@ of its responsibility:
 | `control_parts/schemas.py` | every control descriptor, and the structured-arming and runtime-ceiling reads that shape one |
 | `control_parts/directive.py` | `_emit_directive`, and the tools whose effect is one directive: `nothing_to_do`, `set_project`, `reset_conversation`, `chat_tag`, `suggest_followup` |
 | `control_parts/monitor.py` | `monitor_start`, `monitor_watch`, `monitor_inspect`, `monitor_update`, `monitor_stop`, `autonudge_stop`, and their context and preflight refusals |
+| `control_parts/mcp_wait.py` | `mcp_server_wait` with its deferred step, and the text the model is given for each state a server can be in |
 | `spawn.py` | `spawn_run` with its deferred step and receipt, `spawn_continue`, `spawn_steer`, `spawn_release`, `resource_status`, `HANDLERS` |
 | `spawn_parts/schemas.py` | every spawn descriptor, the agent roster hint and the parent allowlist filter |
 | `spawn_parts/listing.py` | `spawn_list`, `spawn_status` and the queued-wait wording |
@@ -4733,10 +4737,49 @@ the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
 
 | Agents | Job tools | Budget (schema tokens per request, as the engine counts them) |
 |---|---|---:|
-| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status` | 3,300 |
-| `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report` | 1,200 |
-| `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start`, `wait` | 7,600 |
-| `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the ten above and `work_brief` | 7,800 |
+| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status`, `mcp_server_wait` | 3,300 |
+| `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report`, `mcp_server_wait` | 1,200 |
+| `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start`, `wait`, `mcp_server_wait` | 7,700 |
+| `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the eleven above and `work_brief` | 7,850 |
+
+`mcp_server_wait` is in every row because every shipped agent's turn can be told a
+server is still starting (the `[MCP SERVERS]` block), and a load in front of the
+wait would spend the model round trip the wait exists to save. Its descriptor is
+kept to 63 schema tokens. The default agent's and the workers' rows fit the
+budgets they had. The pipeline and security conductors' row measures 7,653 with
+it, so its budget is 7,700; the goal conductor's, ledger conductor's and team
+lead's row measures 7,808, so its budget is 7,850.
+
+#### A server that is still starting
+
+A session's start does not wait for the agent's own MCP servers when a person
+is waiting on it (`acp/mcp_start_wait.py`), so a turn can begin while some of
+them are still connecting. Such a server is not in the model's tool list yet, and
+the host's tool loader answers a request for one of its tools as though it did
+not exist. Two parts keep the model from repeating that to the user. Both reach
+only a turn whose prompt carries the block (the gateway's context builder builds
+it: a dashboard or channel turn). A first turn whose prompt does not, such as
+`kirocrew chat` or a side question, holds its prompt for those servers instead,
+at most five seconds, as the start did before
+([acp-client](../system-specs/modules/acp-client.md), *Which servers the first prompt waits for*):
+
+- The turn's `[MCP SERVERS]` block (`context_assembly/mcp_servers.py`) names each
+  server the session cannot use by its state and says what to do.
+- `mcp_server_wait(server)` on `kirocrew-core` (`mcp_tools/control_parts/mcp_wait.py`).
+  It resolves the caller's STRICT session key, parks as a `DeferredTool`, and once
+  a second asks the gateway what is true of that server through the route every
+  parked tool already pings, `POST /api/session-keepalive` with
+  `{"mcp_server": name}` (reply `mcp_server_state`; the route reads only the
+  report of the session the key names, `agent_sdk.mcp_problems.mcp_server_state`).
+  It answers the moment the server is connected, at once for a state that will
+  not change by waiting (failed, needs a sign-in, switched off, left out by a
+  registry), at once for a name no report holds, and after
+  `MCP_SERVER_WAIT_SECS` (90 s) otherwise. A name no report holds is never
+  called missing: some hosts report none of their servers, so the answer sends
+  the model to its tool list. The
+  ping doubles as the keepalive, the liveness watchdog knows the tool as one that
+  pings (`_KEEPALIVE_TOOL_NAMES`), and a Stop drops the parked call like any
+  other deferred tool. No new listener, route or credential.
 
 The rules the table is held to (`test/test_job_tools.py`):
 

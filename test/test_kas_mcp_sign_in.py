@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kiro_crew.acp.mcp_session_report import STATUS_CAP
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.session_handle import BUCKET_CAP, AcpRuntimeDead, AcpSessionHandle
 from kiro_crew.acp.types import (
@@ -617,13 +618,26 @@ def test_an_oversized_server_name_is_not_tracked():
 def test_entries_past_the_cap_are_counted_and_logged_once(caplog):
     begun: list = []
     handle = _handle(begun, accept=False)
-    servers = [{"name": f"s{i}", "status": "connected"} for i in range(66)]
+    servers = [{"name": f"s{i}", "status": "connected"} for i in range(STATUS_CAP + 2)]
     with caplog.at_level("WARNING", logger="kiro_crew.acp.session_handle"):
         handle._note_mcp_sign_in_status(_status(*servers), offer=True)
         handle._note_mcp_sign_in_status(_status(*servers), offer=True)
     warnings = [r for r in caplog.records if "skipped 2 status entries" in r.getMessage()]
     assert len(warnings) == 1
     assert handle._mcp_sign_in_dropped == 2
+
+
+def test_a_server_the_host_lists_after_64_others_is_still_tracked_for_its_sign_in():
+    """The session's report reads this far into a snapshot, so the tracker must too."""
+    begun: list = []
+    handle = _handle(begun, accept=False)
+    ahead = [{"name": f"many-{i:02d}", "status": "connected"} for i in range(1, 65)]
+    locked = {"name": "remote", "status": "failed", "failedAuthorization": True}
+
+    handle._note_mcp_sign_in_status(_status(*ahead, locked), offer=False)
+
+    assert handle._mcp_sign_in_needed == {"remote"}
+    assert handle._mcp_sign_in_dropped == 0
 
 
 def test_a_completion_past_the_cap_is_dropped_and_counted(caplog):

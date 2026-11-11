@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import inclusion as _inclusion
 from kiro_crew.context_assembly import markers as _markers
+from kiro_crew.context_assembly import mcp_servers as _mcp_servers
 from kiro_crew.context_assembly import member as _member
 from kiro_crew.context_assembly import sections as _sections
 from kiro_crew.context_assembly import turn as _turn
@@ -736,6 +737,14 @@ def build_message(
             request_prefix_context=request_prefix_context,
         )
     )
+    # The MCP servers this session cannot use yet, so the model says a server is
+    # still starting (and waits for it) instead of saying it does not exist.
+    if not minimal_context and (
+        _mcp_block := _mcp_servers.turn_block(
+            self, session_key, rebuilt=is_new_session or needs_reinjection
+        )
+    ):
+        parts.append(_mcp_block)
 
     # Reset the per-session skill-body record on any turn that owns the one-shot
     # window-rebuild flag (fresh session or first turn after a compaction), match

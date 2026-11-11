@@ -226,6 +226,11 @@ WAIT_SCHEMA = ToolSchema(
     ],
 )
 
+MCP_SERVER_WAIT_SCHEMA = ToolSchema(
+    tool_name="mcp_server_wait",
+    fields=[FieldSpec("server", str, required=True, max_len=MAX_SHORT_STRING)],
+)
+
 REGISTER_HOOK_SCHEMA = ToolSchema(
     tool_name="register_hook",
     fields=[

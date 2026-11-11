@@ -48,6 +48,7 @@ the two have different caps for that reason.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -55,6 +56,7 @@ from typing import Any
 
 from kiro_crew.acp._dispatch import classify_notification
 from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure
+from kiro_crew.acp.mcp_report_bound import keep, read_status_snapshot
 from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
@@ -63,6 +65,7 @@ from kiro_crew.acp.types import (
     METHOD_KAS_TOOLS_CHANGED,
     JsonRpcMessage,
 )
+from kiro_crew.agent_sdk.mcp_problems import MCP_STATUS_CAP
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
 from kiro_crew.agent_sdk.tool_search import TOOL_SEARCH_LOADER_TOOL
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
@@ -89,13 +92,15 @@ ERROR_CAP = _ERROR_CAP
 # Servers per bucket. A stock install runs well under ten; the cap exists so a
 # misconfigured host cannot push an unbounded list into every slots snapshot.
 _BUCKET_CAP = 64
-# Declared server names kept past ``_BUCKET_CAP`` so the not-ready reading can
-# place them. shortcut: a spec declaring more than the two caps together has the
-# rest counted without being compared with the other sources; raise it if a real
-# spec gets there.
-_DECLARED_OVERFLOW_CAP = 4 * _BUCKET_CAP
-# Shared with the session's sign-in tracker, which reads the same status
-# snapshots and must bound them the same way.
+# Servers whose status a session keeps by name: ``MCP_STATUS_CAP``, the one bound
+# for EVERY list of names the not-ready reading joins and for the session's
+# sign-in tracker, which reads the same status snapshots. Two bounds would sort
+# one roster into two classes by list position.
+# shortcut: a report past it is counted, not kept (``left_out``), and a server
+# whose newest report was left out keeps the settled state an earlier one gave
+# it; raise the bound if a session gets there.
+_STATUS_CAP = MCP_STATUS_CAP
+STATUS_CAP = _STATUS_CAP
 BUCKET_CAP = _BUCKET_CAP
 # Names a one-line summary spells out before it counts the tail. A log line is
 # read at a glance, so the bound is far below ``_BUCKET_CAP``: the point is
@@ -107,12 +112,6 @@ _SUMMARY_NAME_CAP = 8
 #: "Failed to start in this session:", so it carries only the next step, and no
 #: colon of its own.
 NOT_MOUNTED_REASON = "check the server's command, then start a new session"
-
-#: The states :meth:`McpSessionReport.not_ready` sorts an unusable server into,
-#: in the order it tests them. With ``connected`` (the ``ready`` list) this is
-#: the whole vocabulary a session uses for one server's state, so a dashboard and
-#: the model are told the same thing in the same words.
-NOT_READY_STATES = ("disabled", "registry_dropped", "needs_sign_in", "failed", "connecting")
 
 _ACTION_INITIALIZED = "mcp_server_initialized"
 _ACTION_INIT_FAILURE = "mcp_server_init_failure"
@@ -162,21 +161,21 @@ def server_name_of(msg: JsonRpcMessage) -> str:
     return sanitize_sink_text(str(raw), _NAME_CAP)
 
 
-def roster_names(servers: Any) -> tuple[str, ...]:
+def roster_names(servers: Any, cap: int = _BUCKET_CAP) -> tuple[str, ...]:
     """Sanitized server names from a ``session/new`` ``mcpServers`` array.
 
     Accepts the wire shape directly (a list of dicts with a ``name``) and
     tolerates anything else by returning empty, so a caller can hand over
-    whatever it sent without pre-validating it.
+    whatever it sent without pre-validating it. At most *cap* names.
     """
-    out: list[str] = []
-    for entry in servers if isinstance(servers, list) else []:
-        if not isinstance(entry, dict):
-            continue
-        name = sanitize_sink_text(str(entry.get("name") or ""), _NAME_CAP)
-        if name and name not in out:
-            out.append(name)
-    return tuple(out[:_BUCKET_CAP])
+    return keep(_roster(servers), cap)[0]
+
+
+def _roster(servers: Any) -> Iterable[str]:
+    """The sanitized names of a ``mcpServers`` wire array; none for any other shape."""
+    for entry in servers if isinstance(servers, list) else ():
+        if isinstance(entry, dict):
+            yield from _clean([str(entry.get("name") or "")])
 
 
 def active_custom_agent(params: dict[str, Any], agent: str) -> dict[str, Any] | None:
@@ -186,14 +185,6 @@ def active_custom_agent(params: dict[str, Any], agent: str) -> dict[str, Any] | 
         if entry.get("id") == agent:
             return entry
     return None
-
-
-def mounted_servers(params: dict[str, Any], agent: str) -> tuple[str, ...]:
-    """Every server sent for the ACTIVE agent and session, named as frames name them."""
-    active = active_custom_agent(params, agent) or {}
-    block = [{"name": name} for name in active.get("mcpServers", {})]
-    servers = params.get("mcpServers")
-    return roster_names([*(servers if isinstance(servers, list) else []), *block])
 
 
 def required_managed_servers(params: dict[str, Any], agent: str) -> tuple[str, ...]:
@@ -668,43 +659,28 @@ def _joined(names: list[str]) -> str:
     here: a composite like ``name (error)`` would otherwise be re-truncated to a
     name's length and lose the reason.
     """
-    head = names[:_SUMMARY_NAME_CAP]
-    rest = len(names) - len(head)
+    head, rest = keep(names, _SUMMARY_NAME_CAP)
     joined = ", ".join(head)
     return f"{joined} (+{rest} more)" if rest > 0 else joined
 
 
-def _capped_names(raw: Iterable[Any], cap: int | None = _BUCKET_CAP) -> tuple[str, ...]:
-    """*raw* sanitized like a frame's server names, in order, without repeats, capped.
-
-    ``cap=None`` keeps every name: only for a caller whose inputs are each
-    bounded already and who cuts the result after filtering it.
-    """
-    seen: dict[str, None] = {}
+def _clean(raw: Iterable[Any], cap: int = _NAME_CAP) -> Iterable[str]:
+    """The strings of *raw*, each sanitized and bounded at *cap* like a frame's
+    server name. Anything else, and a string left empty, is left out. How many
+    are kept is the caller's cut (``mcp_report_bound.keep``)."""
     for item in raw:
-        name = sanitize_sink_text(item, _NAME_CAP) if isinstance(item, str) else ""
-        if name:
-            seen[name] = None
-    return tuple(seen)[:cap]
+        text = sanitize_sink_text(item, cap) if isinstance(item, str) else ""
+        if text:
+            yield text
 
 
-def _capped_with_count(raw: Iterable[Any]) -> tuple[tuple[str, ...], int]:
-    """:func:`_capped_names`, and how many distinct names the cap cut."""
-    names = _capped_names(raw, None)
-    return names[:_BUCKET_CAP], max(0, len(names) - _BUCKET_CAP)
+def _listed(raw: Any) -> Iterable[Any]:
+    """*raw* when it is a list or a tuple, else nothing: a caller hands over what it got."""
+    return raw if isinstance(raw, (list, tuple)) else ()
 
 
-def _guard_entries(entries: Any) -> tuple[str, ...]:
-    """A guard's ``server (...)`` entries as a bucket: strings only, each sanitized
-    and bounded at :data:`_ERROR_CAP`, de-duplicated, capped at :data:`_BUCKET_CAP`."""
-    seen: list[str] = []
-    for raw in entries if isinstance(entries, (list, tuple)) else ():
-        if not isinstance(raw, str):
-            continue
-        entry = sanitize_sink_text(raw, _ERROR_CAP)
-        if entry and entry not in seen:
-            seen.append(entry)
-    return tuple(seen[:_BUCKET_CAP])
+#: No block was built: no mark, no server spelled out.
+_UNTOLD: tuple[str, frozenset[str]] = ("", frozenset())
 
 
 @dataclass
@@ -760,17 +736,13 @@ class McpSessionReport:
     #: that the report has moved on to another and write nothing.
     generation: int = 0
     #: The enabled ``mcpServers`` names of the agent spec this session runs, set
-    #: by :meth:`record_declared`. Only an unattended run reads it: it waits for
-    #: each of these to report before its first prompt (see
-    #: :meth:`declared_unreported`) and names the ones that never became ready.
+    #: by :meth:`record_declared`. An unattended run waits for each of these to
+    #: report before its first prompt (see :meth:`declared_unreported`) and names
+    #: the ones that never became ready; :meth:`not_ready` expects them.
     declared: tuple[str, ...] = ()
     #: How many more enabled servers the spec declares than :attr:`declared`
     #: keeps. Counted, and named as not ready, rather than dropped.
     declared_omitted: int = 0
-    #: The first of those names, kept only so :meth:`not_ready` can tell one
-    #: another source also names (the wire, the host's snapshot) from one
-    #: nothing tracks, and count each once.
-    _declared_overflow: tuple[str, ...] = ()
     #: Servers the spec declares and its owner switched off (a muted entry), set by
     #: :meth:`record_switched_off`, plus the ones the host itself reports
     #: ``disabled``. Only :meth:`not_ready` reads it, so a switched-off server is
@@ -799,12 +771,30 @@ class McpSessionReport:
     _reported: dict[str, int] = field(default_factory=dict)
     #: The count of the latest status snapshot read (:meth:`forget_reported`).
     _snapshot_at: int = 0
-    #: Names a source's own cap cut, kept as counts: muted servers, servers the
-    #: latest snapshot lists as registry-dropped, and its not-connected entries
-    #: past the ones the fold reads. :meth:`payload` adds them to ``states_omitted``.
-    _switched_off_omitted: int = 0
-    _registry_dropped_omitted: int = 0
-    _host_omitted: int = 0
+    #: True once the HOST reported a server of this session (a frame, or a turn
+    #: event made from one). Never set by what Kiro Crew records itself (a pruned
+    #: server, a mount-check finding): on a host that reports nothing those would
+    #: make every other server read as still starting.
+    _heard: bool = False
+    #: The agent's own servers this session's start did not wait for, because a
+    #: person was waiting on it (``mcp_start_wait.left_to_first_turn``), and how
+    #: many more of them there are than this report keeps a status for. Read
+    #: before the first turn (``session_handle_mcp.hold_untold_first_turn``).
+    left_to_turn: tuple[str, ...] = ()
+    left_omitted: int = 0
+    #: How many names each list of server states left out at its bound, by list
+    #: (:meth:`_keep`); ``"snapshot"`` is the latest status snapshot's entries
+    #: past it, ``"reports"`` every report a full bucket refused or pushed out.
+    #: Summed by :attr:`left_out`.
+    _cut: dict[str, int] = field(default_factory=dict)
+    #: The last built ``[MCP SERVERS]`` block: its mark and the servers it spells
+    #: out as still starting (:meth:`note_turn_told`). Read when a prompt is sent
+    #: (``session_handle_mcp.turn_is_told``). One value, so a reader never sees
+    #: half of it.
+    turn_told: tuple[str, frozenset[str]] = _UNTOLD
+    #: Set each time a folded frame changed this report, for a waiter that must
+    #: read no queue (``session_handle_mcp.hold_untold_first_turn`` makes it).
+    moved: asyncio.Event | None = None
     #: True on a report whose transport folds each owned frame as it arrives
     #: (the shared runtime). A reader of that transport's turn events must not
     #: write them here as well: the frame behind each one is already in, and a
@@ -841,7 +831,8 @@ class McpSessionReport:
         is a session-establishment point, which is why the clear belongs here and
         not at any one of them.
         """
-        self.configured = roster_names(servers)
+        self._cut.clear()
+        self.configured, _ = self._keep("configured", _roster(servers))
         self.unresolved_refs = ()
         self.header_secret_refs = ()
         self.header_secret_refs_omitted = 0
@@ -853,11 +844,12 @@ class McpSessionReport:
         self.generation += 1
         self.declared = ()
         self.declared_omitted = 0
-        self._declared_overflow = ()
         self.switched_off = ()
         self.registry_dropped = ()
         self._snapshot_at = 0
-        self._switched_off_omitted = self._registry_dropped_omitted = self._host_omitted = 0
+        self._heard = False
+        self.left_to_turn, self.left_omitted = (), 0
+        self.turn_told = _UNTOLD
         self._reported.clear()
         self._host_disabled.clear()
         self._host_pending.clear()
@@ -868,13 +860,42 @@ class McpSessionReport:
         self._failures.clear()
         self._reattempting = frozenset()
 
+    @property
+    def left_out(self) -> int:
+        """How many servers this report does not track because a list was full.
+
+        Not zero makes the report partial: a server with no report may be one
+        it left out, so having none does not mean still starting
+        (:meth:`not_ready`), and no first prompt counts as told. It stays so
+        until the session starts again (:meth:`begin_session`).
+        """
+        return sum(self._cut.values())
+
+    def _keep(
+        self, what: str, items: Iterable[str], cap: int = _STATUS_CAP
+    ) -> tuple[tuple[str, ...], int]:
+        """What the list *what* keeps of *items*, and how many it left out, recorded.
+
+        THE cut for a list of server states (``mcp_report_bound.keep``). The
+        recorded count never goes down before the session starts again: a later
+        value of the list that fits does not bring back the name left out.
+        """
+        kept, more = keep(items, cap)
+        if more > self._cut.get(what, 0):
+            self._cut[what] = more
+        return kept, more
+
     def set_reattempting(self, names: set[str] | frozenset[str]) -> None:
         """Record which failed servers the session still re-attempts itself."""
         self._reattempting = frozenset(names)
 
     def include_configured(self, names: tuple[str, ...]) -> None:
         """Add active-agent declarations without restarting this session's report."""
-        self.configured = roster_names([{"name": name} for name in (*self.configured, *names)])
+        left_out = self._cut.get("configured", 0)
+        self.configured, more = self._keep("configured", (*self.configured, *_clean(names)))
+        if left_out:
+            # The names the roster left out before are still left out.
+            self._cut["configured"] = left_out + more
         self._started = True
 
     def record_unresolved_refs(self, refs: Any) -> None:
@@ -896,14 +917,7 @@ class McpSessionReport:
         non-string would put a row reading ``None`` or ``7`` in front of a user as
         though the spec had asked for a server by that name.
         """
-        seen: list[str] = []
-        for raw in refs if isinstance(refs, (list, tuple)) else ():
-            if not isinstance(raw, str):
-                continue
-            ref = sanitize_sink_text(raw, _NAME_CAP)
-            if ref and ref not in seen:
-                seen.append(ref)
-        self.unresolved_refs = tuple(seen[:_BUCKET_CAP])
+        self.unresolved_refs, _ = self._keep("unresolved_refs", _clean(_listed(refs)), _BUCKET_CAP)
 
     def record_declared(self, spec: Any, mcp_json: Iterable[str] = ()) -> None:
         """Record the servers the agent spec *spec* declares and leaves enabled.
@@ -924,18 +938,7 @@ class McpSessionReport:
             for raw, entry in (servers.items() if isinstance(servers, dict) else ())
             if not mcp_entry_is_muted(entry)
         ]
-        names += [raw for raw in mcp_json if isinstance(raw, str)]
-        # Called on the event loop: an insertion-ordered dict dedupes in linear
-        # time, where a list scan per name grows with the square of the count.
-        seen: dict[str, None] = {}
-        for raw in names:
-            name = sanitize_sink_text(raw, _NAME_CAP)
-            if name:
-                seen[name] = None
-        clean = tuple(seen)
-        self.declared = clean[:_BUCKET_CAP]
-        self._declared_overflow = clean[_BUCKET_CAP : _BUCKET_CAP + _DECLARED_OVERFLOW_CAP]
-        self.declared_omitted = max(0, len(clean) - _BUCKET_CAP)
+        self.declared, self.declared_omitted = self._keep("declared", _clean((*names, *mcp_json)))
 
     def record_switched_off(self, spec: Any) -> None:
         """Record the servers the agent spec *spec* declares and its owner muted.
@@ -945,11 +948,12 @@ class McpSessionReport:
         sent does not name it. Set, not accumulated.
         """
         servers = spec.get("mcpServers") if isinstance(spec, dict) else None
-        self.switched_off, self._switched_off_omitted = _capped_with_count(
+        muted = (
             raw
             for raw, entry in (servers.items() if isinstance(servers, dict) else ())
             if mcp_entry_is_muted(entry)
         )
+        self.switched_off, _ = self._keep("switched_off", _clean(muted))
 
     def declared_unreported(self) -> tuple[str, ...]:
         """Declared servers that have not reported at all yet, in spec order."""
@@ -986,13 +990,11 @@ class McpSessionReport:
     def not_ready(self) -> dict[str, tuple[str, ...]]:
         """The servers this session cannot use right now, by what is true of each.
 
-        THE reading of "is this server usable, and if not, why": ``states`` in
-        :meth:`payload` is this dict, so every reader names a server's state in
-        the same words. Names only, never a failure reason: a reason is the
-        server's own output (see :meth:`problem_summary`).
+        THE reading of "is this server usable, and if not, why", so every reader
+        names a server's state in the same words. Names only, never a failure
+        reason: a reason is the server's own output (see :meth:`problem_summary`).
 
-        Each name is in exactly one state, tested in this order
-        (:data:`NOT_READY_STATES`):
+        Each name is in exactly one state, tested in this order:
 
         * ``disabled``: its owner switched it off, or the host reports it disabled.
         * ``registry_dropped``: the host's registry dropped it; it will not start.
@@ -1001,50 +1003,48 @@ class McpSessionReport:
           unstartable is one of these).
         * ``connecting``: the session expects it (the spec declares it, Kiro
           Crew sent it on the wire, or the host's latest snapshot lists it as
-          not settled) and it has not reported a settled state.
+          not settled) and it has not reported a settled state. Only on a host
+          that has reported something: one that never reports claims nothing.
+          Once the bound kept a report out (:attr:`left_out`), only the ones
+          the host lists as not settled: the rest may be the report left out.
 
         Empty states are left out, so a session whose servers are all usable
-        answers ``{}``. Each state lists at most :data:`BUCKET_CAP` names;
-        :meth:`payload` counts the rest in ``states_omitted``, with the names
-        each source's own cap cut. That count is exact while every source fits
-        its cap; a server two sources both cut is counted by each, so past the
-        caps it is an upper bound and never an under-count.
+        answers ``{}``. The sources are each bounded already (:data:`STATUS_CAP`
+        names), so they are joined whole and a name is placed by what is true of
+        it. No list is cut here: a cut would leave a server out of every state
+        without a word, and one made before placing would let servers that are
+        ready crowd a connecting one out of the answer.
         """
-        return self._not_ready()[0]
-
-    def _not_ready(self) -> tuple[dict[str, tuple[str, ...]], int]:
-        """:meth:`not_ready`, and how many names its lists leave out.
-
-        The sources are each bounded already, so they are joined whole, a name
-        is placed by what is true of it, and only then is each list cut: cutting
-        the joined sources first would let servers that are ready crowd a
-        connecting one out of the answer without a count.
-        """
-        off = _capped_names((*self.switched_off, *sorted(self._host_disabled)), None)
+        off = tuple(dict.fromkeys((*self.switched_off, *sorted(self._host_disabled))))
         settled = {*off, *self.registry_dropped}
-        expected = _capped_names(
-            (
-                *self.declared,
-                *self._declared_overflow,
-                *self.configured,
-                *sorted(self._host_pending),
-            ),
-            None,
-        )
+        # With a report left out, a server that has none may be the one left out.
+        own = () if self.left_out else (*self.declared, *self.configured, *self.left_to_turn)
+        expected = tuple(dict.fromkeys((*own, *sorted(self._host_pending))))
+        # A host that has reported nothing may be one that never reports: nothing is claimed.
+        heard = self._heard
         states = {
             "disabled": off,
             "registry_dropped": tuple(n for n in self.registry_dropped if n not in off),
             "needs_sign_in": tuple(n for n in self._awaiting_auth if n not in settled),
             "failed": tuple(n for n in self._failed if n not in settled),
-            "connecting": tuple(n for n in self.unreported(expected) if n not in settled),
+            "connecting": self.still_starting(expected) if heard else (),
         }
-        omitted = sum(max(0, len(names) - _BUCKET_CAP) for names in states.values())
-        kept = {state: names[:_BUCKET_CAP] for state, names in states.items() if names}
-        # A declared name past the cap that is kept by name was placed above
-        # like any other; only the names a source kept as a bare count are added.
-        uncounted = self.declared_omitted - len(self._declared_overflow)
-        uncounted += self._switched_off_omitted + self._registry_dropped_omitted
-        return kept, omitted + uncounted + self._host_omitted
+        return {state: names for state, names in states.items() if names}
+
+    def still_starting(self, names: Iterable[str]) -> tuple[str, ...]:
+        """Those of *names* that have reached no settled state, in their order.
+
+        THE test for "still starting". :meth:`not_ready` reads it for its
+        ``connecting`` row, and the first-turn hold and its decision read it for
+        the servers a start left to its turn (``session_handle_mcp``): one
+        function, so what is named and what is waited for cannot disagree.
+        """
+        settled = {*self.switched_off, *self._host_disabled, *self.registry_dropped}
+        return tuple(n for n in self.unreported(tuple(names)) if n not in settled)
+
+    def note_turn_told(self, mark: str, named: Iterable[str]) -> None:
+        """A block marked *mark* spells out the servers *named* as still starting."""
+        self.turn_told = (mark, frozenset(named))
 
     def fold_frame(self, msg: JsonRpcMessage) -> bool:
         """Fold in one frame this session OWNS, as it arrives. True when the report changed.
@@ -1061,6 +1061,8 @@ class McpSessionReport:
 
     def _announce(self) -> None:
         """Tell :attr:`on_change` the report moved. Never fails its caller."""
+        if self.moved is not None:
+            self.moved.set()
         if self.on_change is None:
             return
         try:
@@ -1085,8 +1087,7 @@ class McpSessionReport:
         direction. A change is announced through :attr:`on_change`.
         """
         stale = {name for name, at in self._reported.items() if at <= before}
-        counted = self._registry_dropped_omitted or self._host_omitted
-        dropped_stale = self._snapshot_at <= before and bool(self.registry_dropped or counted)
+        dropped_stale = self._snapshot_at <= before and bool(self.registry_dropped)
         if not stale and not dropped_stale:
             return
         for bucket in (self._ready, self._failed, self._awaiting_auth):
@@ -1098,7 +1099,6 @@ class McpSessionReport:
         self._host_pending -= stale
         if dropped_stale:
             self.registry_dropped = ()
-            self._registry_dropped_omitted = self._host_omitted = 0
         self._announce()
 
     def _tracked(self) -> set[str]:
@@ -1128,48 +1128,6 @@ class McpSessionReport:
         """
         successor.on_change, self.on_change = self.on_change, None
         successor._announce()
-
-    def _note_host_states(self, servers: list[Any]) -> bool:
-        """Set which servers the host's latest snapshot calls disabled or pending.
-
-        A status frame is the host's whole list, so both sets are replaced by
-        what this one says: a server absent from it is not the host's to wait
-        for. Only the entries the fold reads are kept by name; a
-        not-connected entry past them is counted. True when anything changed.
-        """
-        disabled: set[str] = set()
-        pending: set[str] = set()
-        for server in servers[:_BUCKET_CAP]:
-            name = (
-                sanitize_sink_text(str(server.get("name") or ""), _NAME_CAP)
-                if isinstance(server, dict)
-                else ""
-            )
-            if name and server.get("status") == "disabled":
-                disabled.add(name)
-            elif name and server.get("status") not in ("connected", "failed"):
-                pending.add(name)
-        omitted = sum(
-            1
-            for server in servers[_BUCKET_CAP:]
-            if isinstance(server, dict) and server.get("status") != "connected"
-        )
-        before = (self._host_disabled, self._host_pending, self._host_omitted)
-        self._host_disabled, self._host_pending, self._host_omitted = disabled, pending, omitted
-        return before != (disabled, pending, omitted)
-
-    def _record_registry_dropped(self, params: dict[str, Any]) -> bool:
-        """Keep the names one status snapshot lists as dropped by the host's registry."""
-        listed: list[Any] = []
-        for key in REGISTRY_FILTER_FIELDS:
-            items = params.get(key)
-            for item in items if isinstance(items, list) else ():
-                listed.append(item.get("name") if isinstance(item, dict) else item)
-        dropped, omitted = _capped_with_count(listed)
-        self._snapshot_at = self._folds
-        before = (self.registry_dropped, self._registry_dropped_omitted)
-        self.registry_dropped, self._registry_dropped_omitted = dropped, omitted
-        return before != (dropped, omitted)
 
     def record_pruned(self, name: Any, reason: Any) -> bool:
         """Record a server Crew left out of this session's array before sending it.
@@ -1233,8 +1191,10 @@ class McpSessionReport:
         bounded at :data:`_ERROR_CAP`. *omitted* is the guard's own count of
         servers it did not list; the guard caps its entries below the bucket.
         """
-        self.header_secret_refs = _guard_entries(entries)
-        self.header_secret_refs_omitted = omitted if isinstance(omitted, int) and omitted > 0 else 0
+        self.header_secret_refs, more = keep(_clean(_listed(entries), _ERROR_CAP), _BUCKET_CAP)
+        self.header_secret_refs_omitted = more + (
+            omitted if isinstance(omitted, int) and omitted > 0 else 0
+        )
 
     def record_env_placeholder_refs(self, entries: Any, omitted: int = 0) -> None:
         """Record the stdio servers whose ``env`` references an unset variable.
@@ -1242,8 +1202,8 @@ class McpSessionReport:
         The twin of :meth:`record_header_secret_refs`, for
         ``mcp_ref_guard.warn_unset_env_placeholders``.
         """
-        self.env_placeholder_refs = _guard_entries(entries)
-        self.env_placeholder_refs_omitted = (
+        self.env_placeholder_refs, more = keep(_clean(_listed(entries), _ERROR_CAP), _BUCKET_CAP)
+        self.env_placeholder_refs_omitted = more + (
             omitted if isinstance(omitted, int) and omitted > 0 else 0
         )
 
@@ -1255,16 +1215,8 @@ class McpSessionReport:
         size; names past the cap are counted in :attr:`no_tools_omitted`.
         Returns True when the answer changed.
         """
-        seen: list[str] = []
-        for raw in names if isinstance(names, (list, tuple)) else ():
-            if not isinstance(raw, str):
-                continue
-            name = sanitize_sink_text(raw, _NAME_CAP)
-            if name and name not in seen:
-                seen.append(name)
         before = (self.no_tools, self.no_tools_omitted)
-        self.no_tools = tuple(seen[:_BUCKET_CAP])
-        self.no_tools_omitted = max(0, len(seen) - _BUCKET_CAP)
+        self.no_tools, self.no_tools_omitted = keep(_clean(_listed(names)), _BUCKET_CAP)
         return (self.no_tools, self.no_tools_omitted) != before
 
     def record_frame(self, msg: JsonRpcMessage, *, owned: bool) -> bool:
@@ -1291,20 +1243,27 @@ class McpSessionReport:
             return False
         self._folds += 1
         if msg.is_method(METHOD_KAS_MCP_STATUS):
-            params = msg.params if isinstance(msg.params, dict) else {}
-            servers = params.get("servers")
-            if not isinstance(servers, list):
+            snapshot = read_status_snapshot(
+                msg.params,
+                cap=_STATUS_CAP,
+                dropped_fields=REGISTRY_FILTER_FIELDS,
+                clean_name=lambda text: sanitize_sink_text(text, _NAME_CAP),
+                clean_error=lambda text: sanitize_sink_text(text, _ERROR_CAP),
+            )
+            if snapshot is None:
                 return False
-            changed = self._record_registry_dropped(params)
-            changed = self._note_host_states(servers) or changed
-            for server in servers[:_BUCKET_CAP]:
-                if not isinstance(server, dict):
-                    continue
-                name = sanitize_sink_text(str(server.get("name") or ""), _NAME_CAP)
-                if not name:
-                    continue
-                status = server.get("status")
-                if server.get("failedAuthorization") is True:
+            self._heard = True
+            self._snapshot_at = self._folds
+            whole, refused = not self._cut, self._cut.get("reports", 0)
+            # A status frame is the host's whole list, so what it calls dropped,
+            # disabled or pending replaces what the last one said.
+            said = (snapshot.dropped, snapshot.disabled, snapshot.pending)
+            changed = said != (self.registry_dropped, self._host_disabled, self._host_pending)
+            self.registry_dropped, self._host_disabled, self._host_pending = said
+            if snapshot.omitted > self._cut.get("snapshot", 0):
+                self._cut["snapshot"] = snapshot.omitted
+            for name, status, needs_sign_in, error in snapshot.servers:
+                if needs_sign_in:
                     action = _ACTION_OAUTH
                 elif status in ("failed", "disabled"):
                     action = _ACTION_INIT_FAILURE
@@ -1320,14 +1279,21 @@ class McpSessionReport:
                     changed = self._failures.pop(name, None) is not None or changed
                     self._mark_reported(name)
                     continue
-                error = sanitize_sink_text(str(server.get("errorMessage") or ""), _ERROR_CAP)
                 changed = self._record(action, name, error) or changed
                 self._mark_reported(name)
             # A name the snapshot dropped from the host's sets keeps no mark.
             tracked = self._tracked()
             for name in [name for name in self._reported if name not in tracked]:
                 del self._reported[name]
-            return changed
+            more = snapshot.omitted + self._cut.get("reports", 0) - refused
+            if more:
+                logger.warning(
+                    "MCP status snapshot: %d server report(s) left out, past the %d a "
+                    "session's report keeps",
+                    more,
+                    _STATUS_CAP,
+                )
+            return changed or whole != (not self._cut)
         action = classify_notification(msg)
         if action not in REPORT_ACTIONS:
             return False
@@ -1340,6 +1306,7 @@ class McpSessionReport:
         if action == _ACTION_INIT_FAILURE:
             params = msg.params if isinstance(msg.params, dict) else {}
             error = sanitize_sink_text(str(params.get("error") or ""), _ERROR_CAP)
+        self._heard = True
         changed = self._record(action, name, error)
         self._mark_reported(name)
         return changed
@@ -1351,6 +1318,7 @@ class McpSessionReport:
         error: str = "",
         *,
         fanout_no_owner: bool = False,
+        from_host: bool = True,
     ) -> bool:
         """Fold in a registration signal that arrived as an ``AcpEvent``.
 
@@ -1361,7 +1329,9 @@ class McpSessionReport:
         init capture has to sit in each transport's own drain.
 
         ``fanout_no_owner`` carries the same provenance ``record_frame`` reads off
-        the frame: set it from ``AcpEvent.runtime_global``.
+        the frame: set it from ``AcpEvent.runtime_global``. ``from_host=False`` is
+        for a record Kiro Crew makes itself (a governed drop): it is no evidence
+        that the host reports its servers (:attr:`_heard`).
         """
         action = _EVENT_ACTIONS.get(kind)
         if action is None:
@@ -1377,7 +1347,19 @@ class McpSessionReport:
         name = sanitize_sink_text(str(server_name or ""), _NAME_CAP)
         if not name:
             return False
+        self._heard = self._heard or from_host
         return self._record(action, name, sanitize_sink_text(str(error or ""), _ERROR_CAP))
+
+    def _refuse_report(self, name: str) -> bool:
+        """Count a report of *name* that a full bucket kept out. True when it made the report partial.
+
+        What a snapshot said of *name* before it settled is stale, so *name* is
+        left in no state: the report does not track it.
+        """
+        whole = not self._cut
+        self._cut["reports"] = self._cut.get("reports", 0) + 1
+        self._host_pending.discard(name)
+        return whole
 
     def _record(self, action: str, name: str, error: str = "") -> bool:
         """Move ``name`` into the bucket ``action`` implies, evicting the others."""
@@ -1399,14 +1381,15 @@ class McpSessionReport:
         # instead; the evicted server degrades to "no report", which is an
         # absent claim rather than the wrong one.
         tracked = any(name in bucket for bucket in (self._ready, self._failed, self._awaiting_auth))
-        if not tracked and name not in target and len(target) >= _BUCKET_CAP:
-            return False
+        if not tracked and name not in target and len(target) >= _STATUS_CAP:
+            return self._refuse_report(name)
         for bucket in (self._ready, self._failed, self._awaiting_auth):
             if bucket is not target and name in bucket:
                 bucket.remove(name)
         if name not in target:
-            if len(target) >= _BUCKET_CAP:
+            if len(target) >= _STATUS_CAP:
                 evicted = target.pop(0)
+                self._refuse_report(evicted)
                 self._failures.pop(evicted, None)
                 if evicted not in self._host_disabled and evicted not in self._host_pending:
                     self._reported.pop(evicted, None)
@@ -1583,7 +1566,6 @@ class McpSessionReport:
         """
         if self.empty and not self._started:
             return None
-        states, states_omitted = self._not_ready()
         return {
             "configured": list(self.configured),
             "unresolved_refs": list(self.unresolved_refs),
@@ -1593,8 +1575,6 @@ class McpSessionReport:
             "ready": list(self._ready),
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),
-            "states": {state: list(names) for state, names in states.items()},
-            "states_omitted": states_omitted,
             "failures": dict(self._failures),
             "restart_to_load": self.restart_to_load(),
         }

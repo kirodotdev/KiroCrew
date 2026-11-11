@@ -109,7 +109,8 @@ class SessionMcpReport(Protocol):
 
     #: The servers this session cannot use right now, by state (``connecting``,
     #: ``failed``, ``needs_sign_in``, ``disabled``, ``registry_dropped``); empty
-    #: when all are usable. ``payload()["states"]`` is this reading.
+    #: when all are usable. A turn's ``[MCP SERVERS]`` block and ``mcp_server_wait``
+    #: read it.
     def not_ready(self) -> dict[str, tuple[str, ...]]: ...
 
     #: Called, with no argument, each time a frame changed the report. Set
