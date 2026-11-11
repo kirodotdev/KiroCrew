@@ -1969,6 +1969,13 @@ item. Three refusals had to move for that, and one deliberately did not:
   so that slot reads as the job's and never as the user's own tab, and the chat
   routes apply the same fence: a `cron:` caller that names another creator's
   slot, live or persisted, is refused with `not_creator`.
+  `POST /api/chat/slots/{slot}/reset-conversation` admits one more slot: the
+  session named by the job's gateway-only `cron-session-bindings/` record when
+  it agrees with the current `session_key` (`cron_bound_session_key`).
+  `CronService` records the binding after a successful add or adopt and clears
+  it on release or removal. Every sandbox masks the binding directory, so a
+  script can rewrite its sandbox-visible `crons.json` without changing this
+  admission record.
 - **The global switch still gates a cron.** Unlike a member, a cron gets no
   bypass: the switch is the user's statement that agents may open and drive
   sessions at all, and a job running while they are asleep is the last caller
