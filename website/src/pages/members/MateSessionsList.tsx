@@ -190,7 +190,7 @@ function MateSessionRow({ root, worker, open, onToggle }: { root: string; worker
         </span>
       </button>
       {open && (
-        <div id={regionId} role="region" aria-label={title} className="px-3.5 pb-3">
+        <div id={regionId} role="region" aria-label={title} className="px-3.5 pt-2 pb-3">
           <MateSessionRecap root={root} worker={worker.key} rowTitle={title} />
         </div>
       )}
@@ -241,8 +241,11 @@ export function RecapBody({ recap, rowTitle }: { recap: CrewWorkerRecap; rowTitl
   const where = t('pages.membersPage.recap_answer_where')
   if (recap.open_approvals > 0) lines.push([t('pages.membersPage.recap_open_approvals'), `${recap.open_approvals} · ${where}`])
   if (recap.open_questions > 0) lines.push([t('pages.membersPage.recap_open_questions'), `${recap.open_questions} · ${where}`])
+  // Plain text behind a thin left rule, no fill or box: the toggle just above takes
+  // --bg-hover on hover, and a filled box under it read as one shape with it,
+  // while the rule still marks the text as this opened row's recap.
   return (
-    <div className="rounded-xl bg-bg-hover px-3 py-2.5 text-[12.5px] leading-relaxed" data-testid="mate-recap">
+    <div className="border-l-2 border-border pl-3 text-[12.5px] leading-relaxed" data-testid="mate-recap">
       {recap.title && recap.title !== rowTitle && <p className="m-0 mb-1 font-semibold" data-testid="mate-recap-title">{recap.title}</p>}
       {!hasReport && <p className="m-0 text-muted" data-testid="mate-recap-empty">{t('pages.membersPage.recap_no_report')}</p>}
       {lines.length > 0 && (
