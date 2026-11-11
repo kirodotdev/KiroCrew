@@ -461,11 +461,11 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.relay_archive import is_relay_archive  # noqa: F401
     from kiro_crew.dashboard.slot_color import write_slot_color  # noqa: F401
     from kiro_crew.dashboard.state import MAX_LIVE_SLOTS  # noqa: F401
-    from kiro_crew.dashboard.state import MAX_SLOTS_PER_CREATOR  # noqa: F401
     from kiro_crew.dashboard.state import SlotOrigin  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.dashboard.state import _safe_folder_tree  # noqa: F401
     from kiro_crew.dashboard.state import append_and_surface  # noqa: F401
+    from kiro_crew.dashboard.state import creator_slot_cap_refusal  # noqa: F401
     from kiro_crew.dashboard.state import load_window_off_loop  # noqa: F401
     from kiro_crew.dashboard.stop_retry import allow_escalation  # noqa: F401
     from kiro_crew.effort import EFFORT_LEVELS  # noqa: F401

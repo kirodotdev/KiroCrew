@@ -302,6 +302,15 @@ _SECURITY_BOUNDED_FIELDS: tuple[tuple[str, str, int, int], ...] = (
     # dashboard's write gate. The floor is 0 because 0 is this field's OFF value, so
     # a negative clamps toward observe-only rather than toward killing.
     ("session", "reconcile_max_kills", 0, _sections.RECONCILE_MAX_KILLS_MAX),
+    # How many live sessions one creator may hold. The value bounds what one
+    # automated creator can take from the shared live-session ceiling, and a
+    # hand-edited config.json never passes the dashboard's write gate.
+    (
+        "session",
+        "max_per_creator",
+        _sections.MAX_PER_CREATOR_MIN,
+        _sections.MAX_PER_CREATOR_MAX,
+    ),
 )
 
 
@@ -1191,6 +1200,15 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         # non-int values, so a numeric STRING passes it and coerces here.
         reconcile_max_kills=section.read(
             "reconcile_max_kills", _safe_int, 0, _sections.RECONCILE_MAX_KILLS_MAX
+        ),
+        # Clamped here as well as in the sweep, as ``reconcile_max_kills`` is: a
+        # numeric string passes the sweep and coerces here, and a value that is
+        # not a number loads as the default.
+        max_per_creator=section.read(
+            "max_per_creator",
+            _safe_int,
+            _sections.MAX_PER_CREATOR_MIN,
+            _sections.MAX_PER_CREATOR_MAX,
         ),
     )
 

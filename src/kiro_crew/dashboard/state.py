@@ -249,7 +249,9 @@ from kiro_crew.dashboard.state_parts.slot_directory import (  # noqa: E402,F401 
     _SLOT_KEY_HASH_CHARS,
     _SLOT_KEY_KEEP_CHARS,
     _SLOT_KEY_MAX_CHARS,
+    CREATOR_CAP_RESERVE,
     MAX_LIVE_SLOTS,
+    MAX_PER_CREATOR_SETTING,
     MAX_SLOTS_PER_CREATOR,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
     NATIVE_SUBAGENT_DONE_TRUNC_MARKER,
@@ -263,6 +265,8 @@ from kiro_crew.dashboard.state_parts.slot_directory import (  # noqa: E402,F401 
     _mint_slot_key,
     _normalize_slot_key,
     _slot_index_from_key,
+    creator_slot_cap_refusal,
+    max_slots_per_creator,
     native_subagent_output_tail,
     request_slot_origin,
 )

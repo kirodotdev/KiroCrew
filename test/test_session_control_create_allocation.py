@@ -24,6 +24,7 @@ from session_control_helpers import (  # noqa: F401 -- the autouse fixtures regi
 
 from kiro_crew.config import loader
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.dashboard.state import MAX_SLOTS_PER_CREATOR
 
 
 def test_an_agent_name_that_does_not_resolve_is_refused(tmp_path, monkeypatch):
@@ -402,7 +403,7 @@ def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
     _agent_resolves(monkeypatch, "default")
 
     # Exactly what create_session writes, without paying for 50 real creates.
-    for i in range(sc.MAX_SLOTS_PER_CREATOR):
+    for i in range(MAX_SLOTS_PER_CREATOR):
         _slot(state, f"held-{i}")._created_by = hog.key
 
     with pytest.raises(sc.SessionControlError) as err:

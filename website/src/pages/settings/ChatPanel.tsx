@@ -31,6 +31,7 @@ import { AppModelsSection } from './AppModelsSection'
 import { FollowDefaultModelAction } from './FollowDefaultModelAction'
 import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { DefaultSessionFolderSetting } from './DefaultSessionFolderSetting'
+import { SessionsPerCreatorSetting } from './SessionsPerCreatorSetting'
 import { FeatureTipsList } from './FeatureTipsList'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
@@ -1160,6 +1161,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             configKey="dashboard.session_folder_root"
           />
           <DefaultSessionFolderSetting disabled={dashDisabled} />
+          <SessionsPerCreatorSetting />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.tail_only_fork')} description={i18nT('pages.settings.chatPanel.fork_keeps_only_the_messages_after_the_chosen_po')} checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.restore_sessions')} hint={i18nT('pages.settings.chatPanel.re_open_recently_active_sessions_on_startup')} checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
           {dashCfg.restore_sessions && (

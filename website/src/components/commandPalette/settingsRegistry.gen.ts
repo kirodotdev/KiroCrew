@@ -1708,6 +1708,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.sessions-per-creator",
+    "label": "Sessions per creator",
+    "labelKey": "pages.settings.chatPanel.sessions_per_creator",
+    "description": "The most sessions one Bot or agent can keep open at once. 10 to 450. Default 50.",
+    "hint": "A creator is a Bot, or any chat whose agent opens other sessions. A creator at this limit cannot open another session until it closes one. Chats you open yourself do not count. All sessions together still stop at 500. Applies from the next new session.",
+    "tab": "chat",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "session.max_per_creator"
+  },
+  {
     "id": "chat.show-context-percentage",
     "label": "Show Context Percentage",
     "labelKey": "pages.settings.chatPanel.show_context_percentage",

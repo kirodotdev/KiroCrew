@@ -2105,7 +2105,8 @@
         "watchdog_rss_max_mb": 4096,
         "watchdog_end_leftovers_mid_turn": false,
         "harness_background_hold_secs": 3600,
-        "reconcile_max_kills": 5
+        "reconcile_max_kills": 5,
+        "max_per_creator": 50
       }
     },
     {
@@ -2416,6 +2417,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 5
+    },
+    {
+      "path": "session.max_per_creator",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sessions per Creator",
+      "help": "How many live sessions one creator may hold: a Bot's own chat, a conductor, or any session that opens other sessions (10-450). A creator that holds this many cannot open another until it closes one. The chats you open yourself do not count. All sessions together still stop at 500. Read at each session create, so a change needs no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
     },
     {
       "path": "taskrunner",

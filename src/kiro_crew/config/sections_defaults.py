@@ -174,3 +174,7 @@ DEFAULT_RECONCILE_MAX_KILLS = 5
 # capped in bytes, so the count bounds per-search I/O, not memory; this default
 # keeps the default window of ordinary sessions inside the fold budget.
 DEFAULT_SEARCH_SCAN_WINDOW = 2000
+# session.max_per_creator -- how many live sessions one creator (a conductor, a
+# Bot's own chat) may hold. What an install that never sets the key runs with, and
+# what an unreadable value falls back to. Bounds: ``sections_limits``.
+DEFAULT_MAX_PER_CREATOR = 50
