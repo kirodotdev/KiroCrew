@@ -997,6 +997,16 @@ async def _consolidate(
             )
             return _CONSOLIDATION_STALE
 
+        # The lesson origin gate, once on the shared result before it branches to
+        # the V1 and V2 write paths, over the rows the model read.
+        from kiro_crew.memory_origin_gate import configured_mode as _origin_mode
+        from kiro_crew.memory_origin_gate import gate_consolidation_lessons
+
+        origin = gate_consolidation_lessons(
+            result, _prompt_rows(chunk), _origin_mode(), session_key=key
+        )
+        result = origin.result
+
         if member_memory:
             stage = "member memory"
             if vector_store is None:
@@ -1233,6 +1243,20 @@ async def _consolidate(
                 key=key,
                 commit_state=commit_state,
             )
+
+        # The origin gate's log, once the lessons it read reached a writer, under
+        # the same hold as every other write of this pass.
+        if origin.loggable and vector_store is not None and not _lesson_extraction_disabled():
+            from kiro_crew.memory_origin_gate import record_origin_gate
+
+            origin_store = vector_store
+
+            def _record_origin() -> None:
+                with self._publication_hold_checked(key, commit_state) as publication:
+                    if record_origin_gate(origin_store, origin):
+                        publication.mark_committed()
+
+            await _run_in_memory_background_pool(_record_origin)
 
         # Auto skill detection — a SEPARATE LLM pass over the full-session
         # window (see _run_skill_detection), not the incremental tail. Runs

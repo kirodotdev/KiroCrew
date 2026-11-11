@@ -23,7 +23,10 @@ from kiro_crew.service.common import (
     headless_auth_warning,
     system_restart_command_hint,
 )
-from kiro_crew.service.inherited_env import dropped_host_env_warning
+from kiro_crew.service.inherited_env import (
+    dropped_host_env_warning,
+    missing_launcher_dirs_warning,
+)
 
 #: First line of the post-install hints. A service never opens a browser, so this
 #: is the only place a new user learns how to reach the dashboard. It names the
@@ -60,15 +63,17 @@ def _print_dropped_host_env_warning(plat: Platform) -> None:
 
     The AWS container credential endpoint, the AWS region and (under systemd) the
     ssh-agent socket of the installing shell, which MCP servers, cron scripts and
-    agent sessions under the service would otherwise go without. Printed and
+    agent sessions under the service would otherwise go without; then the
+    configured MCP launcher dirs the service PATH lacks. Printed and
     non-fatal for the same reasons as :func:`_print_headless_auth_warning`.
     """
-    try:
-        warning = dropped_host_env_warning(plat=plat)
-    except Exception:  # noqa: BLE001 - diagnostic must never fail the install
-        return
-    if warning:
-        print(warning)
+    for build in (dropped_host_env_warning, missing_launcher_dirs_warning):
+        try:
+            warning = build(plat=plat)
+        except Exception:  # noqa: BLE001 - diagnostic must never fail the install
+            continue
+        if warning:
+            print(warning)
 
 
 def installed_unit_path() -> "Path | None":

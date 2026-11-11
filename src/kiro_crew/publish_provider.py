@@ -282,7 +282,8 @@ class PublishResult:
     # Non-empty when the publish SUCCEEDED but the link is not usable yet -- the content
     # is stored at the destination and this result's handle is valid, so the publication
     # must be recorded, but something the user needs to know stands between them and a
-    # working link (e.g. a CDN rollout that has not finished). Raising instead would be
+    # working link (e.g. a CDN rollout that has not finished, or a selected origin that
+    # may serve different bytes). Raising instead would be
     # lossy: the caller stores the publication only on success, so an abort after the
     # content is already uploaded strands it with no withdrawal handle. Recorded as the
     # publication's ``notice`` -- NOT ``last_error``, because ``last_error`` is read as
@@ -293,7 +294,8 @@ class PublishResult:
     # copy instead of printing one fixed "still rolling out" string for every notice.
     # Exactly one of the allowed values -- ``"rolling_out"`` (a fresh CDN deploy that will
     # resolve shortly), ``"distribution_disabled"`` (the delivery network is off, whose
-    # remedy is to re-enable it in the provider console, NOT to wait), ``"unknown"`` (a
+    # remedy is to re-enable it in the provider console, NOT to wait), ``"origin_mismatch"``
+    # (the selected origin may serve bytes other than the uploaded object), ``"unknown"`` (a
     # notice with no recognised discriminator) -- or ``""`` when there is no notice. It
     # always moves with ``notice``: a result carrying ``notice`` text carries a code, and
     # an empty ``notice`` carries an empty code.
@@ -407,8 +409,14 @@ class PublishProvider(ABC):
     @abstractmethod
     async def update_sharing(
         self, *, external_id: str, visibility: str, shared_with: list[str]
-    ) -> None:
-        """Change visibility / shared-with. Raises ``PublishError`` on failure."""
+    ) -> tuple[str, str] | None:
+        """Change visibility or shared-with.
+
+        Raises ``PublishError`` on failure. A successful change may return a
+        ``(notice_text, notice_code)`` pair when the destination completed the change but
+        cannot promise the resulting link serves the uploaded bytes. ``None`` means the
+        change completed without a new notice.
+        """
 
     @abstractmethod
     async def unpublish(self, *, external_id: str) -> None:

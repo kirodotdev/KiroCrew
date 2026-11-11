@@ -297,6 +297,32 @@ describe('UpdateModal', () => {
       expect(screen.queryByTestId('update-modal-gateway-stop-command')).not.toBeInTheDocument()
     })
 
+    it('closing the ready dialog does not hide a later install takeover or its failure', async () => {
+      const { push } = await mount(downloaded)
+      expect(await screen.findByRole('dialog')).toBeInTheDocument()
+      fireEvent.click(byName('components.updateModal.later'))
+      expect(dialog()).not.toBeInTheDocument()
+      // The install is then started from Settings > About.
+      await push(installing)
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      await push({ state: 'error', phase: 'install', version: '9.9.9' })
+      expect(await screen.findByTestId('update-modal-install-failed')).toBeInTheDocument()
+    })
+
+    it('a retry after Back to dashboard shows the takeover again', async () => {
+      const { push } = await mount(installing)
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      await push({ state: 'error', phase: 'install', version: '9.9.9' })
+      fireEvent.click(
+        await screen.findByRole('button', { name: i18nT('components.updateModal.back_to_dashboard') }),
+      )
+      expect(overlay()).not.toBeInTheDocument()
+      await push(installing)
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      await push({ state: 'error', phase: 'install', version: '9.9.9' })
+      expect(await screen.findByTestId('update-modal-install-failed')).toBeInTheDocument()
+    })
+
     it('a non-install error does not hijack the screen with the failure overlay', async () => {
       const { container } = await mount({ state: 'error', phase: 'check', version: '9.9.9' })
       expect(container.firstChild).toBeNull()

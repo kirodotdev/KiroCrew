@@ -1,6 +1,7 @@
 /**
  * The desktop app's relay Crew list as the Crew switcher's Team Crews group:
- * hidden unless the desktop bridge exists and the crews route answers, offline
+ * hidden unless the desktop bridge exists, the crews route answers and it lists
+ * a Crew or a refusal (sign-in and load failures stay on screen), offline
  * Crews shown greyed (not hidden), each typed refusal shown as its plain text,
  * and Open handing the shell the endpoint ID only.
  */
@@ -101,6 +102,29 @@ describe('TeamCrewsGroup', () => {
     expect(screen.queryByText('This computer')).toBeNull()
     expect(screen.queryByText('My Crews')).toBeNull()
     expect(screen.queryByTestId('team-crews-group')).toBeNull()
+  })
+
+  it('leaves the bar as today when the viewer lists no Team Crews and there are no SSH Crews', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [] })
+    const client = mount()
+    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('success'))
+    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: /Switch crew/i })).toBeNull()
+  })
+
+  it('with no Team Crews listed, a menu of Local and SSH Crews has no group names and no Team Crews', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [] })
+    const client = mount([sshCrew({ was_connected: true })])
+    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('success'))
+    const u = userEvent.setup()
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await screen.findByRole('menuitemradio', { name: /Cloud One/ })
+    expect(screen.queryByText('This computer')).toBeNull()
+    expect(screen.queryByText('My Crews')).toBeNull()
+    expect(screen.queryByTestId('team-crews-group')).toBeNull()
+    expect(screen.queryByText('No remote Crews to open.')).toBeNull()
   })
 
   it('shows the bar with no SSH Crews once the viewer lists Team Crews, under group names', async () => {

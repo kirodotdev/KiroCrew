@@ -873,6 +873,37 @@ class TestDoctorKas:
         assert "engine support unknown" not in out
         assert any("no --agent-engine flag" in i for i in issues)
 
+    def test_a_v3_kiro_cli_that_refuses_the_engine_is_a_failed_engine_row(
+        self, monkeypatch, capsys
+    ) -> None:
+        """Help listing v3 is not the answer: kiro-cli refusing the start is the gap."""
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        self._patch_cfg(monkeypatch, "kas")
+        monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: "/x/kiro-cli")
+        self._patch_vault(monkeypatch)
+        monkeypatch.setattr(
+            cli_doctor,
+            "_kas_relay_help",
+            lambda _binary: "--agent-engine <ENGINE>  v1, v2 (default), or v3",
+        )
+        started: list[str | None] = []
+
+        def _refused(binary=None):
+            started.append(binary)
+            return False, KAS_ENGINE_REFUSED_REASON
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_start_verdict", _refused)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "✅ v3 supported" not in out
+        assert f"engine:      ❌ {KAS_ENGINE_REFUSED_REASON}" in out
+        assert "switch agent.acp_backend to kiro" in out
+        assert issues == [f"kiro-cli cannot serve the KAS engine: {KAS_ENGINE_REFUSED_REASON}"]
+        # The start ran on the binary the help row read, never another one.
+        assert started == ["/x/kiro-cli"]
+
     def test_engine_verdict_comes_from_the_shared_classifier(self, monkeypatch, capsys) -> None:
         """The doctor and the boot floor read ``acp --help`` through ONE function."""
         self._patch_cfg(monkeypatch, "kas")
@@ -1151,6 +1182,8 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
         )
         mp.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
         mp.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
+        # The v3 start that follows a help verdict naming v3 answers without a refusal.
+        mp.setattr("kiro_crew.agent_sdk.kas_engine_start_verdict", lambda binary=None: (True, None))
 
     def test_a_kiro_cli_pick_is_told_to_update_kiro_cli(self, monkeypatch, capsys):
         """The doctor never probes-and-confirms, so the pick loads as Kiro CLI here."""
@@ -1214,6 +1247,31 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
         assert "engine:      ✅ v3 supported\n" in out
         assert "Kiro CLI selection" not in out
 
+    def test_a_kiro_cli_pick_on_a_refusing_kiro_cli_names_the_refusal(self, monkeypatch, capsys):
+        """Help lists v3 and the start is refused: the issue says cannot run, not too old."""
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: True)
+        monkeypatch.setattr(
+            cli_doctor,
+            "_kas_relay_help",
+            lambda _binary: "--agent-engine <ENGINE>  v1, v2 (default), or v3",
+        )
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: (True, None))
+        monkeypatch.setattr(
+            "kiro_crew.agent_sdk.kas_engine_start_verdict",
+            lambda binary=None: (False, KAS_ENGINE_REFUSED_REASON),
+        )
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert (
+            f"engine:      ❌ {KAS_ENGINE_REFUSED_REASON}; your Kiro CLI selection stays on"
+            " kiro-cli's v2 engine"
+        ) in out
+        assert "switch agent.acp_backend to kiro" not in out
+        assert issues == [f"kiro-cli cannot run its v3 (KAS) engine: {KAS_ENGINE_REFUSED_REASON}"]
+
     def test_a_kas_pick_keeps_its_own_remedy(self, monkeypatch, capsys):
         monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: False)
         issues: list[str] = []
@@ -1248,6 +1306,24 @@ class TestDoctorKiroCliPickOnAnOldKiroCli:
         cli_doctor._doctor_kas([])
         capsys.readouterr()
         assert ran == (["perm", "vocab"] if expected else [])
+
+    def test_a_pick_whose_v3_start_is_refused_gets_no_kas_rows(self, monkeypatch, capsys):
+        """The gateway keeps that pick on v2, so the KAS-only rows stay out too."""
+        ran: list[str] = []
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_selected", lambda: True)
+        monkeypatch.setattr("kiro_crew.agent_sdk.kas_engine_verdict", lambda: (True, None))
+        monkeypatch.setattr(
+            "kiro_crew.agent_sdk.kas_engine_start_verdict", lambda binary=None: (False, "refused")
+        )
+        monkeypatch.setattr(
+            cli_doctor, "_report_kas_spec_permissions", lambda issues: ran.append("perm")
+        )
+        monkeypatch.setattr(
+            cli_doctor, "_report_kas_tool_vocabulary", lambda issues: ran.append("vocab")
+        )
+        cli_doctor._doctor_kas([])
+        capsys.readouterr()
+        assert ran == []
 
     def test_a_kiro_cli_pick_on_the_bundle_route_gets_no_kas_block(self, monkeypatch, capsys):
         """The bundle route keeps a Kiro CLI pick on kiro-cli, so no KAS rows print."""

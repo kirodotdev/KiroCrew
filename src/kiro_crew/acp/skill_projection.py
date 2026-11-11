@@ -130,7 +130,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _pinned_source,
         _projection_enabled,
         _relaunch_reserved_servers,
+        _skill_view_census,
         _warn_ceiling_fallback_once,
+        next_spawn_projects_skill_view,
         prepare_native_skill_projection,
         project_agent_view,
     )

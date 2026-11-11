@@ -3,7 +3,8 @@ import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
-import { fetchSlots, sseStatus, setEnabledAppIds, type OfflineCause } from '../store/dashboardSlice'
+import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
+import { offlineReason } from '../utils/offlineReason'
 import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
@@ -129,14 +130,6 @@ const APP_NAV_MAX_RETRIES = 4
 const APP_NAV_RETRY_BASE_MS = 500
 /** One return to the tab fires focus and visibilitychange; read the app list once. */
 const APP_LIST_RETURN_FLOOR_MS = 2000
-
-/** The offline wording: the Kiro relay's reason when it gave one (a Crew opened
- *  through Kiro Mobile or the desktop app), otherwise the generic reconnecting. */
-export function offlineReason(cause: OfflineCause | null): string {
-  if (cause === 'session_ended') return i18nT('app.relay_session_ended')
-  if (cause === 'refused') return i18nT('app.relay_access_refused')
-  return i18nT('app.gateway_offline_reconnecting')
-}
 
 /**
  * The dashboard shell's state and effects: the routing context, the boot reads,

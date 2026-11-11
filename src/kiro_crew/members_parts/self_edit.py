@@ -348,6 +348,9 @@ def undo_member_self(
     they are written back as given, with only the uniqueness check a display
     name always gets: another crewmate may have taken the old name in between,
     and then the undo is refused (``name_taken``).
+
+    Returns ``{"member", "name", "changed": [...], "after": {...}}``, where
+    ``name`` is the name the crewmate goes by once the undo is applied.
     """
     if not isinstance(before, Mapping) or not before:
         raise SelfUpdateError("no_fields", "nothing to undo")
@@ -397,6 +400,11 @@ def undo_member_self(
         ) from None
     return {
         "member": member,
+        # The name the crewmate goes by now the change is back, the same shape
+        # :func:`update_member_self` answers with (its key when it has none):
+        # the caller renames the home folder from it, so both directions of one
+        # change leave the sidebar reading what every other surface reads.
+        "name": agent.display_name or member,
         "changed": changed,
         "after": {k: _copy_value(getattr(agent, k)) for k in values},
     }

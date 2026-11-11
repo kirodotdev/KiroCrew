@@ -701,14 +701,16 @@ class HarnessAdapter(LaunchAdapter):
     ) -> tuple[dict[str, Any], str | None]:
         """The ``session/new`` / ``session/load`` params to send, and the agent to activate.
 
-        Asked after the runtime built the request and before it goes out. Every host
-        the backend table serves sends what the runtime built and activates the agent
-        the caller asked for, so this answer returns BOTH of the caller's objects
-        unchanged, and the request stays byte-identical to one built without this
-        seam. A host that places the session where Kiro Crew's agent does not exist
-        (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`) reshapes
-        the request and activates nothing. Raising ``AcpRuntimeError`` here refuses
-        the start before anything is sent.
+        Asked after the runtime built the request and before it goes out. This
+        default sends what the runtime built and activates the agent the caller asked
+        for, so it returns BOTH of the caller's objects unchanged, and the request
+        stays byte-identical to one built without this seam. KAS
+        (:class:`~kiro_crew.acp.harness.kas.KasHarness`) also names its injected
+        agent as the mode a ``session/new`` starts in, and still activates the
+        caller's agent. A host that places the session where Kiro Crew's agent does
+        not exist (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`)
+        reshapes the request and activates nothing. Raising ``AcpRuntimeError`` here
+        refuses the start before anything is sent.
         """
         return params, agent
 

@@ -166,6 +166,7 @@ class FakeClient:
         reply_to_message_id: Any = None,
         message_thread_id: Any = None,
         disable_notification: bool = False,
+        err_out: Any = None,
     ) -> int:
         # flake-ok: pre-existing zero-length yield standing in for a network await, moved verbatim; tracked for a de-flake pass
         await asyncio.sleep(0)  # yield like a real network await (exposes races)

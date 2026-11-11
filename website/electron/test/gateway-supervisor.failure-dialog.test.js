@@ -938,7 +938,7 @@ test("installing dialog retries exactly once when the probe reports complete", a
   // mouse, and the keyboard has to honour the same guard.
   const html = decodeURIComponent(dialog.loaded[0]);
   assert.match(html, /var primaryAct = "act\('retry'\)";/, "Enter's primary is Retry here");
-  assert.match(html, /if \(e\.key === 'Enter'\) \{\s*for \(const b of document\.querySelectorAll\('button'\)\) \{\s*if \(b\.getAttribute\('onclick'\) !== primaryAct\) continue;\s*if \(!b\.disabled\) b\.click\(\);/,
+  assert.match(html, /if \(e\.key === 'Enter' && e\.target\.tagName !== 'SUMMARY'\) \{\s*for \(const b of document\.querySelectorAll\('button'\)\) \{\s*if \(b\.getAttribute\('onclick'\) !== primaryAct\) continue;\s*if \(!b\.disabled\) b\.click\(\);/,
     "Enter presses the primary button and respects its disabled state");
   assert.ok(!/if \(e\.key === 'Enter'\) act\(/.test(html), "Enter never calls act() directly");
   assert.strictEqual(dialog.destroyed, false, "the dialog lingers on the completion line");
@@ -1166,4 +1166,77 @@ test("the failure dialog leaves the splash's Close window usable on Windows and 
     windows[0].click("quit");
     await connected;
   }
+});
+
+// The launch log carries internal identifiers and boot diagnostics (#34693): a
+// first-time user's error view shows the title, the message and the actions,
+// and the log opens only on a deliberate click, or through Reveal Log.
+test("the launch log opens folded, and unfolding it grows the window", async () => {
+  const { createFailureDialog } = require("../runtime/gateway/failure-dialog");
+  const { windows, FakeBrowserWindow } = fakeDialogWindows();
+  const { showGatewayErrorDialog } = createFailureDialog({
+    app: {},
+    BrowserWindow: FakeBrowserWindow,
+    nativeTheme: { shouldUseDarkColors: false },
+    shell: {},
+    fs: {},
+    isMac: false,
+    log: () => {},
+    gatewayLogPath: () => "/virtual/logs/gateway-launch.log",
+    mainWindow: () => null,
+    quitting: () => false,
+    quitApp: () => {},
+    cancelTrayHide: () => {},
+    getInstallingUpdate: () => false,
+  });
+  const action = showGatewayErrorDialog(null, {
+    title: "Kiro Crew — gateway failed to start",
+    message: "The gateway exited before it was ready.",
+    logTail: "Generated new staging user ID: 00000000-0000-0000-0000-000000000000\n"
+      + "crash collector armed",
+    logPath: "/virtual/logs/gateway-launch.log",
+  });
+  const [dialog] = windows;
+  const shown = decodeURIComponent(dialog.loaded[0]);
+  const folded = shown.slice(shown.indexOf("<details"), shown.indexOf("</details>"));
+  assert.ok(shown.includes("<details"), "the log sits in a disclosure");
+  assert.ok(folded.includes("<summary>Show launch log</summary>"), "named for what it opens");
+  assert.ok(folded.includes("Generated new staging user ID"), "the log is still one click away");
+  assert.ok(!folded.startsWith("<details open"), "and starts folded");
+  assert.ok(shown.includes("onclick=\"act('reveal')\""), "Reveal Log stays in the row");
+  const foldedHeight = dialog.options.height;
+  assert.ok(foldedHeight < 460, "a folded log does not open a mostly empty window");
+  const resized = [];
+  dialog.getContentSize = () => [dialog.options.width, foldedHeight];
+  dialog.setContentSize = (width, height) => resized.push([width, height]);
+  let titleKept = 0;
+  dialog.emit("page-title-updated", { preventDefault: () => { titleKept += 1; } }, "mc-log:open");
+  assert.deepStrictEqual(resized, [[dialog.options.width, 460]], "unfolding makes room for the log");
+  dialog.emit("page-title-updated", { preventDefault: () => { titleKept += 1; } }, "mc-log:closed");
+  assert.strictEqual(titleKept, 2, "the fold signal never becomes the window's title");
+  assert.strictEqual(resized.length, 1, "folding again leaves the size alone");
+
+  // Enter on the focused toggle unfolds the log; it must not also press the
+  // primary button (Retry here, Force-stop & Retry on a port conflict).
+  // The page's inline code runs from act() to the closing tag before </body>.
+  const inline = shown.slice(shown.indexOf("function act("), shown.indexOf("</body>"));
+  const script = inline.slice(0, inline.lastIndexOf("</"));
+  const clicked = [];
+  const listeners = {};
+  const buttons = [{ getAttribute: () => "act('retry')", disabled: false, click: () => clicked.push("retry") }];
+  const page = {
+    document: {
+      title: "",
+      querySelectorAll: () => buttons,
+      addEventListener: (type, fn) => { listeners[type] = fn; },
+    },
+    window: { close() {} },
+  };
+  require("node:vm").runInNewContext(script, page);
+  listeners.keydown({ key: "Enter", target: { tagName: "SUMMARY" } });
+  assert.deepStrictEqual(clicked, [], "Enter on Show launch log presses nothing else");
+  listeners.keydown({ key: "Enter", target: { tagName: "BODY" } });
+  assert.deepStrictEqual(clicked, ["retry"], "Enter elsewhere still presses the primary");
+  dialog.click("quit");
+  assert.strictEqual(await action, "quit");
 });

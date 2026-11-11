@@ -177,6 +177,11 @@ class LiveSession:
     #: and at the turn's start and end, so a note goes to the agent only while an
     #: op is there to take it.
     parked: bool = False
+    #: A supervisor state (:meth:`LiveHub.set_state`) reported while the person held
+    #: the browser, or ``""``. The card stays ``in_control`` until the hand-back,
+    #: which publishes this instead of ``live``: only a lock release leaves
+    #: ``in_control``.
+    queued_state: str = ""
     #: The hand-back choices the agent's parked op offered, or ``[]``: the card then
     #: shows its own defaults (:meth:`LiveHub.set_handback_options`).
     handback_options: list[str] = field(default_factory=list)
@@ -515,6 +520,8 @@ class LiveHub:
         sess.handback = None
         sess.parked = False
         sess.handback_options = []
+        # A state queued for the hand-back belongs to the turn that reported it.
+        sess.queued_state = ""
         sess.started_at = self._clock()
         sess.ended_at = 0.0
         sess.started_ms = int(time.time() * 1000)
@@ -582,6 +589,7 @@ class LiveHub:
         sess.released.set()
         sess.ended_at = self._clock()
         sess.ended_ms = int(time.time() * 1000)
+        sess.queued_state = ""
         sess.state = STATE_DONE
         stream, sess.stream = sess.stream, None
         if stream is not None:
@@ -858,7 +866,11 @@ class LiveHub:
         sess = self._session(session_key)
         if state == STATE_IN_CONTROL and not sess.lock.held():
             state = STATE_LIVE
-        sess.state = state
+        if sess.lock.held() and state != STATE_IN_CONTROL:
+            # The person holds the browser: the state waits for the hand-back.
+            sess.queued_state = state
+        else:
+            sess.state = state
         self._update_page(sess, url=url, title=title, browser=browser, headless=headless)
         self._emit(sess)
 
@@ -936,6 +948,7 @@ class LiveHub:
         if sess.lock.held():
             await stream.set_takeover(True)
         sess.rung = stream.rung
+        sess.queued_state = ""
         sess.state = STATE_IN_CONTROL if sess.lock.held() else STATE_LIVE
         self._emit(sess)
         return stream
@@ -1018,6 +1031,9 @@ class LiveHub:
             pass
         if not sess.lock.held():
             return True
+        if sess.state not in ("", STATE_LIVE, STATE_IN_CONTROL):
+            # Kept for the hand-back, as a state reported during the takeover is.
+            sess.queued_state = sess.state
         sess.state = STATE_IN_CONTROL
         if sess.stream is not None:
             await sess.stream.set_takeover(True)
@@ -1079,8 +1095,9 @@ class LiveHub:
             _open()
         if sess.stream is not None:
             await sess.stream.set_takeover(False)
+        queued, sess.queued_state = sess.queued_state, ""
         if sess.state == STATE_IN_CONTROL:
-            sess.state = STATE_LIVE
+            sess.state = queued or STATE_LIVE
         if was_held:
             await self._emit_now(sess)
         return delivered

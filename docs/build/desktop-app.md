@@ -1152,6 +1152,12 @@ disabling it, so that window's **Close window** still works while the dialog
 waits (`runtime/gateway/failure-dialog.js`). On macOS it is a sheet on that
 window, which blocks the window until the dialog is answered.
 
+Where the dialog shows the launch log, the tail opens folded under **Show
+launch log**, and **Reveal Log** still opens the file. The tail
+carries internal identifiers and boot diagnostics, so the first view is the
+title, the message and the actions. Unfolding it grows the window to fit the
+log pane, and never shrinks a window the user made taller.
+
 The dialog also explains the refusals that start nothing:
 
 - **`crew-configured`**: the local gateway is on, but a recorded crew owns this

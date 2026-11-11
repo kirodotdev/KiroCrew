@@ -646,8 +646,11 @@ describe('the KAS signed-out row', () => {
     expect(resolveGatewayNotice(launcher, [launcher], 0)).toBeNull()
   })
 
-  it('recognises the current "send your message again" ending on a token-less row, as the side panel writes it', () => {
-    const tail = 'Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again.'
+  it.each([
+    'Settings → Agent Harness → Kiro Agent → Kiro sign-in',
+    'Settings → Agent Harness → Kiro sign-in',
+  ])('recognises the current "send your message again" ending on a token-less row naming %s, as the side panel writes it', card => {
+    const tail = `Not signed in to Kiro. Sign in from ${card}, then send your message again.`
     const bare = msg('error', { content: tail })
     const relay = msg('error', { content: `KAS runs through kiro-cli's relay. ${tail}` })
     const bundle = msg('error', { content: `KAS runs on Kiro Crew's own engine because kiro-cli is not installed. ${tail}` })

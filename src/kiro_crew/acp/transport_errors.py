@@ -28,6 +28,7 @@ from kiro_crew.acp.compaction_errors import (  # noqa: F401 - re-exported via th
     compaction_failure_detail,
     compaction_failure_is_transient,
 )
+from kiro_crew.acp.error_frames import raw_error_detail
 from kiro_crew.acp.image_dimension_wedge import (
     format_many_image_dimension_message,
     is_many_image_dimension,
@@ -193,6 +194,8 @@ class AcpError(Exception):
         # The AWS exception name of a credential rejection (``ExpiredTokenException``),
         # set by :func:`_raise_acp_error` from the raw frame, so a caller compares a code.
         self.auth_error_code: str = ""
+        # Redacted harness frame behind curated wording; see error_frames.raw_error_detail.
+        self.raw_detail: str = ""
 
 
 class AcpTimeoutError(AcpError):
@@ -1875,8 +1878,12 @@ def _raise_acp_error(
     raw_data = ""
     if isinstance(error, dict):
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
+    # Curated wording hides the provider's text; keep the frame for the log.
+    raw_detail = raw_error_detail(error) if worded else ""
     if _PROMPT_BUSY_RE.search(raw_data):
-        raise AcpPromptBusy(formatted, user_worded=worded)
+        busy = AcpPromptBusy(formatted, user_worded=worded)
+        busy.raw_detail = raw_detail
+        raise busy
     # A binding mismatch changes only the exception TYPE and its retry verdict;
     # it is built here, not raised early, so the tags below still read the frame.
     err: AcpError
@@ -1888,6 +1895,7 @@ def _raise_acp_error(
             transient=_is_transient_raw_error(error, available_models),
             user_worded=worded,
         )
+    err.raw_detail = raw_detail
     # Tag a network-path drop so the interactive retry ladder can wait out a
     # short outage instead of spending the fixed provider-error budget. Only a
     # transient verdict qualifies, so a terminal frame never becomes waitable.

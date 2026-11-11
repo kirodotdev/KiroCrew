@@ -58,8 +58,11 @@ six shared primitives:
 Every change in this RFC is one primitive applied at one stage. Default and
 private stores run the same functions.
 
-**Rollout.** Six flagged stages (R1 to R6), each default off and shadow first,
-after a flagless receipt stage (R0). Only R1 is signed so far. The first
+**Rollout.** Seven flagged stages (R0a, R1 to R6), each default off and shadow
+first, after a flagless receipt stage (R0). Only R1 is signed so far. R0a
+records which session wrote each default-store lesson and keeps lessons from
+spans no person spoke in out of the rule tier; on the measured stores 63%
+(default) and 85% (private) of traceable rule-tier rows came from such spans. The first
 real change orders the rule block by authority, which lifts user-taught rules
 on a greeting from 1 of 93 to 81 of 93 on the default store, and to all 53 on the
 private store, with no row rewritten.
@@ -148,7 +151,14 @@ Write-side facts that matter for later sections:
   `vector_memory_runtime/embedding_repair.py`) fills it later at `PRIORITY_BULK`
   (`embeddings_settings.py`).
 - Private consolidation rows record their source session (502 of 502). Default
-  ones mostly do not (91 of 663).
+  ones mostly do not (91 of 663): `_save_lessons` writes the bare source
+  `consolidation`. Stage R0a adds the session as record metadata.
+- Consolidation renders every transcript row it reads as the user's, including
+  `session_send` relays, auto-nudges and other automatic turns. Only `notice`
+  and `card` rows are skipped (`DISPLAY_ONLY_ROLES`,
+  `history_projection_contract.py`). The markers that tell them apart already
+  exist (`meta.relay`, the `session_send` envelope, the role, `meta.author`, the
+  prefixes in `session_summary.py`); consolidation does not read them.
 
 ### 2.3 Selection at session start
 
@@ -200,11 +210,29 @@ Each symptom traced to the mechanism and the implementation cause.
 | C5 | S3 -> near-copies take rule room -> **no shared "same item"**: default dedups at cosine > 0.85, private consolidation by exact key, and nothing at render; 92 private rule rows fold at 0.95 | secondary |
 | C6 | S1 -> unrelated findings and facts admitted -> **no shared relevance matcher**: the findings gate counts any word, even "a" (196 of 268 rows); V1 facts have no floor | secondary |
 
-Part of C2 may be agent-relayed text: a worker's "user" turns are often another
-agent's instructions. Only the private store can check this, because its
-consolidation rows record their source session; 572 of the default store's 663
-consolidation rows record none. R3's shadow counts quote-check passes and
-failures, which answers the question for both stores going forward.
+Part of C2 is agent-sent text: a worker's "user" turns are often another
+agent's instructions or automatic turns. A read-only measurement on one
+developer host (2026-11-09, both stores, aggregate counts only) traced each
+consolidation rule-tier row to the session that wrote it and classified that
+session's input rows by the markers in section 2.2:
+
+| Measure | Default | Private |
+|---|---|---|
+| Rule-tier consolidation rows with a traceable session | 298 of 398 | 439 of 439 |
+| ...from sessions with no person-sent turn | 188 (63%) | 372 (85%) |
+| ...from sessions with both | 64 (21%) | 61 (14%) |
+| ...from sessions with only person-sent turns | 46 (15%) | 6 (1.4%) |
+| `learn_add` calls found whose previous input was not the person's | 19 of 44 | 54 of 54 |
+| Rule-block characters on the latest session start from agent-only sources | at least 45.9% | 88.6% |
+
+The default store's 100 untraceable rows are the ones its bare
+`consolidation` source leaves without a session; with them, the agent share
+there lies between 47% and 88%. In a hand-checked sample of 50 rules, 20 had
+no source message at all (the agent summarised its own work), 28 traced to a
+relay or an automatic turn, 2 to the person, and none was an agent passing on
+the person's decision. So filtering relayed rows alone is not enough: the unit
+is the span. Stage R0a (section 6) adds the missing provenance and gates the
+span.
 
 Why truncation picks by accident: C2 and C3 make the pool 4.4 to 4.7 times the cap, C1
 gives the cut no notion of value, and C6 means request overlap, the only signal
@@ -237,8 +265,22 @@ prompt and the P2 tier rule. Maintain applies it to the backlog.
 | L2 user-quoted | consolidation row with a verified `user_quote` | `always` allowed | second | never; approval only |
 | L3 agent-inferred | every other consolidation row, including untagged legacy rows | `on_topic` for new rows | third | render fold; Maintain proposals |
 
-`learn_add` is called by the agent, usually because the person asked. This RFC
-takes `user_explicit` at its word. Tightening that is open question Q4.
+**Origin.** Authority needs a person behind the row. An agent-sent turn
+(a `session_send` relay, an auto-nudge, a cron, heartbeat or work-ledger turn,
+an `inject`, `subagent` or `system` row) never makes a row L1 or L2:
+
+- a consolidation span with no person-sent turn yields no rule-tier row; its
+  lessons are stored `on_topic` (L3 findings), never dropped;
+- a `learn_add` whose triggering turn is not the person's is stored
+  `on_topic` under its own source, not `user_explicit`.
+
+The turn class comes only from markers the gateway writes (section 2.2), never
+from wording: a turn is the person's only when it carries the person's marker.
+A steer the person typed carries that marker; an app's steer does not. Stage R0a ships this.
+
+Otherwise `learn_add` is called by the agent, usually because the person
+asked, and this RFC takes `user_explicit` at its word. Tightening that further
+is open question Q4.
 
 The `user_quote` check, in code: the quote, after NFKC normalization, case
 folding and whitespace collapse, must be a substring of one turn whose role is
@@ -282,6 +324,9 @@ standing rule applies whatever the topic.
 - Receipt caps copy kind routing (`SAMPLES_PER_DAY` and its siblings, `memory_kind_routing.py`): 150 sampled
   rows a day, 2,000 rows total, 1 MB, 14-day sample window, counters kept 400
   days, reset on a policy-version change. New receipt kinds join `KINDS`.
+- A write-side decision that runs outside a turn (consolidation, R0a's gate)
+  has no session-start receipt to join. It logs like kind routing does: in the
+  store's `memory_meta` table, under the same caps, ids and counts only.
 - Rollback is the flag set to `off`. No stage except Maintain rewrites an
   existing row, so no rollback needs a data migration.
 - A flag is retired when its `enforce` has been the default for 30 days with no
@@ -294,12 +339,15 @@ standing rule applies whatever the topic.
 
 | Change | Primitive | Applies to |
 |---|---|---|
+| Default-store consolidation lessons record their session (`source_ref`) | P2 (provenance) | default store; the private store already does |
+| A span with no person-sent turn stores its lessons `on_topic`; an agent-triggered `learn_add` is `on_topic` and not `user_explicit` | P2 (origin) | both stores |
 | New consolidation lesson with no tier is stored `on_topic` | P2 (L3 default) | both stores |
 | `applies: always` from consolidation needs a verified `user_quote`, else `on_topic` | P2 (L2 test) | both stores |
 | Lesson prompt states P1; examples show one finding and one standing rule | P1 | both stores |
 | Kind routing moves to `enforce` for facts | P1 | both stores; its own flag and RFC already exist |
 
-`learn_add` and dashboard writes are unchanged. Existing rows are unchanged.
+A person's own dashboard and CLI writes are unchanged. Existing rows are
+unchanged.
 
 **Identify.**
 
@@ -416,11 +464,12 @@ Each stage is one pull request, independently shippable and abandonable.
 **Signed scope.** A maintainer has signed R1 only (authority order, flag
 `memory.rule_authority_order`, default off, shadow first). R3's quote check and
 tier policy wait for shadow counts of how many would-be demotions the user
-repeats. R2 and R4 to R6 are proposals; each needs its own sign-off.
+repeats. R0a, R2 and R4 to R6 are proposals; each needs its own sign-off.
 
 | # | Stage | Flag (default `off`) | Shadow signal | Pass metric | Rollback |
 |---|---|---|---|---|---|
 | R0 | Receipt fields and caps | none (fields written only under a stage's `shadow`) | n/a | receipts stay under every cap in a test that writes past them; off-mode lines unchanged byte for byte | revert the PR |
+| R0a | Admit: provenance and origin gate | provenance: none (additive metadata, always on); gate: `memory.lesson_origin_gate` | per day: passes, passes with no person-sent turn, lessons read, rule-tier lessons, would-be demotions, for consolidation and `learn_add` apart; shadow also keeps the would-be demoted lesson keys | re-teach rate of demoted rows <= control; zero demotions in a span with a person-sent turn; zero L1 rows from a person's own turn demoted | provenance: revert the PR (old rows stay valid); gate: flag off, rows already written `on_topic` stay findings and stay retrievable |
 | R1 | Select: authority order | `memory.rule_authority_order` | ids that enter and leave the rule block | L1 coverage up; miss rate of dropped L3 rows <= control | flag off |
 | R2 | Select: shared matcher | `memory.relevance_rule` | rows admitted only under the old gate | miss rate <= control | flag off |
 | R3 | Admit: tier policy | `memory.lesson_tier_policy` | new keys that would be stored `on_topic`; quote check pass and fail counts | re-teach rate of would-be `on_topic` rows <= control | flag off; rows already written keep their tier and stay retrievable through findings and recall |
@@ -428,7 +477,53 @@ repeats. R2 and R4 to R6 are proposals; each needs its own sign-off.
 | R5 | Identify: private write and backfill | `memory.member_lesson_dedup` | would-be merges; default store 0.85-0.95 merge count | miss rate <= control; zero L1 merges | flag off; revert retired rows from revisions |
 | R6 | Maintain: Dreaming | `memory.dream: off \| propose` | approval lists, refusals, wake-check results | section 7.9 | flag off; revert any run |
 
-R1 comes first because it fixes S2 on existing stores without rewriting a row.
+R0a runs first because it is the cheapest cut at the pool's growth and its
+shadow answers the C2 agent-text question with live counts. Its rules:
+
+- **Provenance.** A default-store consolidation lesson records
+  `source_ref = consolidation:<session>` in its record metadata
+  (`memory_record_meta`), the form the store's facts already use as their
+  source. Its `source` column stays `consolidation`, so no authority check,
+  dedup rule, dashboard label, audit or export that compares `source` changes.
+  A row written without a session, and every older row, keeps the bare form.
+- **Turn classes.** Human is an allowlist, the rule
+  `HUMAN_TURN_META_KEY` (`history_schema.py`) sets for every reader of human
+  activity. `human`: a `user` row the send paths a person reaches stamp
+  `meta.human` (a steer the person types carries it too). `agent`: an unmarked `user` row with
+  a `meta.relay` record or the `session_send` envelope. `automatic`: every
+  other input row, unmarked `user` rows included (an Issue Radar wake, a cron
+  prompt), so a new machine caller is not a person by default. A `learn_add`'s
+  triggering turn is the chat's latest input row of any role, so no
+  subagent completion, app or cron inject can be walked past (fail-closed).
+  Every lesson from a span no person spoke in, and a demoted `learn_add`, is
+  written without its NOT-clause, so an exact-rule match
+  cannot attach agent text to a standing row.
+- **Consolidation.** The gate reads the rows the model read, once, before the
+  result branches to the two write paths. With no human turn, every rule-tier
+  lesson (`always` or untagged) is stored `on_topic`.
+- **`learn_add`.** Only the agent's own writes (the MCP tool's internal call)
+  are read; a person's dashboard or CLI write is the person. The triggering
+  turn is the latest input row in the caller's chat. When it is not human,
+  `enforce` stores the lesson `on_topic` under source `agent_learn_add`, which
+  ranks below `user_explicit` in every authority check. The same check guards
+  the agent's `learn_update`: under `enforce`, a re-tier into the standing tier
+  from a turn that is not human is refused, so a demoted lesson cannot be moved
+  back to `always`.
+- **Modes.** `off`: nothing is read; prompt and writes are byte-identical.
+  `shadow`: writes as `off` and logs. `enforce`: applies the demotion. No mode
+  changes the prompt or a stored row.
+- **Known gaps.** A mixed span keeps its tiers: tracing one lesson to one turn
+  is not deterministic today, and the L2 quote check (R3) is the precise fix.
+  A `learn_add` from a session with no live chat (a sub-agent, a channel
+  thread) is left as submitted. An auto-nudge counts as automatic even in a
+  loop the person armed. A transcript written before `meta.human` existed
+  reads as automatic. A messaging-channel session (Discord, Telegram, Slack and
+  the rest) is not gated at all: most channel transports write the person's
+  row without `meta.human`, so stamping it there comes first. A person's `learn_add` made after a note the gateway
+  wrote inside the turn is stored as a finding (the fail-closed cost). The JSONL fallback store has no `source` field, so
+  there the gate changes the tier only.
+
+R1 comes next because it fixes S2 on existing stores without rewriting a row.
 R4 needs one test fix first: the golden fixture that gives every topic-less
 row the same vector must give distinct vectors, or it folds everything.
 
@@ -609,6 +704,10 @@ rows never join an automatic class.
 - The code gate refuses any id outside the batch, so model output cannot touch
   rows it was not shown.
 - The `user_quote` check keeps relayed agent text from becoming a standing rule.
+  That check covers consolidation only. R0a covers the span (no person-sent
+  turn, no rule-tier row) and the agent's own `learn_add`, which would otherwise
+  write an L1 row whatever turn asked for it. R0a's log holds lesson keys and
+  counts, never text.
 
 ## 9. Non-goals and open questions
 
@@ -619,7 +718,8 @@ rows never join an automatic class.
 - Write dedup across scopes.
 - Automatic deletion of any row.
 - Single-link clustering, or identity below cosine 0.95.
-- A new shadow log beside injection receipts.
+- A new shadow log beside injection receipts, other than the kind-routing
+  log a write-side stage outside a turn already uses (P6).
 - Changing who may call `learn_add`.
 
 **Open questions for reviewers.**
@@ -629,8 +729,9 @@ rows never join an automatic class.
 2. Q2. What zero-bad-merge record lets Dreaming apply exact L3 copies without
    approval?
 3. Q3. Are 20 new rows or 5 sessions the right Dreaming trigger for a light user?
-4. Q4. `learn_add` is agent-called. Should L1 require the person's own turn to
-   contain the request, as the L2 quote check does?
+4. Q4. `learn_add` is agent-called. R0a already refuses L1 when the
+   triggering turn is not the person's. Should L1 also require the person's
+   own turn to contain the request, as the L2 quote check does?
 5. Q5. When L1 alone overflows the rule block (81 of 93 fit on the default
    store), should Maintain propose merges among L1 rows for the person to
    approve, or should L1 get its own budget line?

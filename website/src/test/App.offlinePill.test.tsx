@@ -17,13 +17,14 @@
  * reconnection when pasting a token is the fix (issue #9692).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
 import { renderWithProviders } from './helpers'
 import { namedCeiling } from './namedCeiling'
 import type { RootState } from '../store'
-import { sseConnected } from '../store/dashboardSlice'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import App from '../App'
+import en from '../i18n/locales/en.manual.json'
 
 // Match the App.test.tsx mock setup. Differ only in `isAuthBannerShown`
 // where each test controls it explicitly.
@@ -226,6 +227,51 @@ describe('App connection indicator — the shape carries the state, not colour a
     expect(glyph.classList.contains('lucide-unplug')).toBe(true)
     expect(glyph.classList.contains('lucide-plug')).toBe(false)
     expect(glyph.classList.contains('motion-reduce:animate-none')).toBe(true)
+    await shellSettled(queryClient)
+  })
+})
+
+describe('App offline notice — visible at desktop width, worded by the cause (#34355)', () => {
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+
+  it.each([
+    [undefined, en.app.gateway_offline_reconnecting],
+    ['session_ended', en.app.relay_session_ended],
+    ['refused', en.app.relay_access_refused],
+  ] as const)('shows the cause %s in words beside the connection dot', async (cause, text) => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    // Explicit transport state: the mount-time status read turns `connected`
+    // on, and whether it lands first is a race.
+    act(() => { store.dispatch(sseDisconnected(cause)) })
+    const notice = screen.getByTestId('topbar-offline-notice')
+    expect(notice).toHaveTextContent(text)
+    // In flow in the actions group, where the collapse ladder makes room for
+    // it, not hanging below the bar where the rail and panes paint over it.
+    expect(notice.closest('.tb-right')).not.toBeNull()
+    expect(notice.querySelector('.tb-offline-notice-msg')).toHaveTextContent(text)
+    // The shared error surface (ErrorNotice, inline), whose icon rung tbr-6
+    // drops by the `.tb-offline-notice` class, with no hand-off: the gateway
+    // it would hand to is the thing that is down.
+    expect(notice).toHaveClass('tb-offline-notice')
+    expect(notice.querySelector(':scope > svg')).not.toBeNull()
+    expect(within(notice).queryByRole('button')).toBeNull()
+    // The dot's sr-only span is the live region; the notice is not a second one.
+    expect(notice).not.toHaveAttribute('role')
+    // The phone strip stays a phone-only element.
+    expect(screen.queryByTestId('mobile-offline-strip')).toBeNull()
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.queryByTestId('topbar-offline-notice')).toBeNull()
+    await shellSettled(queryClient)
+  })
+
+  it('stays hidden while the session-expired banner carries the message', async () => {
+    isAuthBannerShownMock.mockReturnValue(true)
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseDisconnected()) })
+    expect(screen.queryByTestId('topbar-offline-notice')).toBeNull()
     await shellSettled(queryClient)
   })
 })

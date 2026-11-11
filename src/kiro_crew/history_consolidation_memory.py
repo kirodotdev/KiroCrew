@@ -1098,6 +1098,11 @@ def _save_lessons(
                         # own raising check cannot fire on it.
                         applies=self._lesson_tier(item),
                         facets=facets,
+                        # The session this lesson came from, in the same
+                        # ``consolidation:<key>`` form this store's facts carry
+                        # as their source. ``source`` stays bare so the readers
+                        # that compare it are unchanged.
+                        source_ref=f"consolidation:{key}" if key else None,
                     )
                     if ok:
                         publication.mark_committed()

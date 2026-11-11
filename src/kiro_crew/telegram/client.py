@@ -28,6 +28,7 @@ reads it. Which owner takes new work is recorded in
 from __future__ import annotations
 
 import asyncio
+import bisect
 import importlib as _importlib
 import json
 import logging
@@ -287,26 +288,40 @@ def truncate_html_safe(text: str, limit: int = TELEGRAM_MAX_TEXT) -> str:
     "Can't find end tag" 400 this exists to prevent -- so the degenerate answer
     is the empty string, which is always valid.
 
-    Note: ``limit`` counts Python code points while Telegram counts UTF-16 code
-    units, so an astral char (emoji, CJK ext) costs 1 here and 2 there. An
-    emoji-dense message near the cap can still be rejected. That mismatch
-    predates this helper (the plain slice shared it) and is tracked separately.
+    ``limit`` counts UTF-16 code units, the unit of Telegram's cap: an astral
+    character (most emoji) costs 2. Cut points are still code-point indices, so a
+    cut never splits a surrogate pair. Closing tags are ASCII, one unit a char.
     """
-    if len(text) <= limit:
+    units = _utf16_prefix_units(text)
+    if units[-1] <= limit:
         return text
     if limit <= 0:
         return ""
     for lo, hi, closers_len in reversed(_cut_points(text)):
         room = limit - closers_len
-        if room < lo:
+        # Largest code-point index whose prefix fits ``room`` units.
+        fit = bisect.bisect_right(units, room) - 1
+        if fit < lo:
             continue  # even an empty prefix in this run cannot fit its closers
-        cut = _entity_safe_cut(text, min(hi, room), lo)
+        cut = _entity_safe_cut(text, min(hi, fit), lo)
         if cut < lo:
             continue
         closers = _open_tag_closers(text[:cut])
-        if cut + len(closers) <= limit:
+        if units[cut] + len(closers) <= limit:
             return text[:cut] + closers
     return ""
+
+
+def _utf16_prefix_units(text: str) -> list[int]:
+    """``units[i]`` is the UTF-16 length of ``text[:i]``, for ``i`` in ``0..len(text)``.
+
+    Built once per call so each cut probe is a lookup, not a rescan: rescanning per
+    probe is what made an earlier cut search quadratic (see :func:`_cut_points`).
+    """
+    units = [0]
+    for ch in text:
+        units.append(units[-1] + (2 if ord(ch) > 0xFFFF else 1))
+    return units
 
 
 def _open_tag_closers(html_text: str) -> str:
@@ -336,18 +351,24 @@ def _cap_text(text: str, parse_mode: str | None) -> str:
     an oversize rendered message into a hard 400. Reaching the HTML branch means
     the renderer's own budget under-estimated the rendered length, so warn: the
     split, not this backstop, is where the fix belongs.
+
+    Measured in UTF-16 code units, as Telegram counts its cap: a code-point
+    count let emoji-dense text over the real cap through untouched, and Telegram
+    refused it.
     """
-    if len(text) <= TELEGRAM_MAX_TEXT:
+    units = _utf16_prefix_units(text)
+    if units[-1] <= TELEGRAM_MAX_TEXT:
         return text
     if parse_mode and parse_mode.upper() == "HTML":
         logger.warning(
-            "Telegram HTML text is %d chars (> %d); truncating tag-safely. "
+            "Telegram HTML text is %d UTF-16 units (> %d); truncating tag-safely. "
             "The renderer should have split this before sending.",
-            len(text),
+            units[-1],
             TELEGRAM_MAX_TEXT,
         )
         return truncate_html_safe(text, TELEGRAM_MAX_TEXT)
-    return text[:TELEGRAM_MAX_TEXT]
+    # A code-point index, so the slice cannot split a surrogate pair.
+    return text[: bisect.bisect_right(units, TELEGRAM_MAX_TEXT) - 1]
 
 
 class TelegramAuthError(RuntimeError):

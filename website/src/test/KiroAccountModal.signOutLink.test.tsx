@@ -107,6 +107,33 @@ describe('KiroAccountModal sign-out link', () => {
     },
   )
 
+  it.each([true, false])(
+    'on a Kiro CLI harness whose Bots run on KAS, links to the Bots\' sign-in (Crew sign-in held: %s)',
+    async held => {
+      // The popup names kiro-cli's login, which the card does not sign out, so the
+      // label names the sign-in the Bots run as, whatever the card holds.
+      configMock.mockResolvedValue({ agent: { acp_backend: 'kiro' }, kas_in_use: true } as never)
+      crewSignIn(held)
+      const onClose = renderModal(READING)
+      const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+      const link = await within(dialog).findByRole('button', { name: 'Kiro sign-in for bots in Settings' }, QUERY_CHAIN)
+      expect(within(dialog).queryByRole('button', LINK)).toBeNull()
+      expect(within(dialog).queryByRole('button', SWITCH_LINK)).toBeNull()
+      fireEvent.click(link)
+      expect(onClose).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId('loc').textContent).toBe(KIRO_SIGN_IN_PATH)
+    },
+  )
+
+  it('hides the link on a KAS-named harness the gateway says nothing runs on', async () => {
+    configMock.mockResolvedValue({ agent: { acp_backend: 'kas' }, kas_in_use: false } as never)
+    renderModal(READING)
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    await screen.findByText('owner@example.com')
+    await waitFor(() => expect(configMock).toHaveBeenCalled(), QUERY_CHAIN)
+    await waitFor(() => expect(within(dialog).queryByTestId('kiro-account-sign-in-settings')).toBeNull(), QUERY_CHAIN)
+  })
+
   it('says so when the config read fails, instead of dropping the link silently', async () => {
     configMock.mockRejectedValue(new Error('config store unreadable'))
     renderModal(READING)

@@ -148,7 +148,7 @@ export function MicTestStrip({ deviceId, onDevicesMayHaveChanged, askAgent = tru
           card, so SttSettings turns it off while its AWS profile/region fields
           hold an unsaved value. */}
       {state.kind === 'error' ? (
-        <ErrorNotice variant="inline" message={state.message} askAgent={askAgent && state.handOff} />
+        <ErrorNotice variant="inline" message={state.message} askAgent={askAgent && state.handOff} actionPlacement="below-on-phone" />
       ) : (
         <p className="text-[12px] text-muted" aria-live="polite">
           {state.kind === 'live'

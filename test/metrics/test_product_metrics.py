@@ -39,6 +39,7 @@ _DECLARING_MODULES = (
     "kiro_crew.metrics.work",
     "kiro_crew.metrics.crew_mode",
     "kiro_crew.metrics.feature_usage",
+    "kiro_crew.metrics.voice",
     "kiro_crew.metrics.http_metrics",
     "kiro_crew.metrics.db_metrics",
     "kiro_crew.metrics.tool_calls",

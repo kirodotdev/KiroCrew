@@ -239,7 +239,8 @@ export function AppAutoDownloadSwitch({ unreadable, anchor = true, onHandoff }: 
  * row in every state: what changes with the gateway's `update_auto_effect` is
  * whether the switch can be flipped and the note under it
  * (`gatewayAutoUpdateCopy`), so a verdict that arrives while the row is on
- * screen never swaps it for another element. Held at the schema default, on,
+ * screen never swaps it for another element. Where the effect holds it, it
+ * reads off, since nothing installs there. Held at the schema default, on,
  * until the saved value has been read. Where config.local.json sets the key,
  * the switch is held and its note says why (`autoUpdatePinNote`): the policy
  * that keeps it there when an edition owns the entry, else how to remove it.
@@ -281,7 +282,9 @@ export function GatewayAutoUpdateSwitch({ anchor = true, readOnMount = false, on
       <SettingsToggle
         label={i18nT('pages.settings.aboutPanel.automatic_updates')}
         description={i18nT('pages.settings.aboutPanel.gateway_auto_update_description')}
-        checked={gw.checked}
+        // A switch held by the effect cannot install whatever is saved, so it
+        // reads off; the saved value comes back if the effect turns to install.
+        checked={gw.checked && !copy.disabled}
         disabled={copy.disabled || gw.held || gw.overlayPinned}
         onChange={gw.set}
         configKey="auto_update"
@@ -1080,10 +1083,15 @@ export function AboutPanel() {
                       style={{ color: 'var(--ok)', background: 'color-mix(in oklab, var(--ok) 14%, transparent)' }}
                       data-testid="hero-up-to-date">
                     <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ background: 'var(--ok)' }} /> {i18nT('pages.settings.aboutPanel.up_to_date')}</span>
-                  // No verdict yet (never checked, or the check failed). A green
-                  // "Up to date" here is the same half-truth the check contract
-                  // kills: it would sit beside a red "Couldn't check for updates"
-                  // on this very screen. Stay neutral until something is known.
+                  // No verdict yet. A green "Up to date" here is the same
+                  // half-truth the check contract kills: it would sit beside a
+                  // red "Couldn't check for updates" on this very screen. "Not
+                  // checked yet" only while no check has run: the backend stamps
+                  // `update_last_checked_at` on a failed check too, so the card
+                  // below already says "Last checked ..." and the pill must not
+                  // deny it.
+                  : lastCheckedAt
+                  ? null
                   : <span className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold rounded-full px-2 py-0.5 text-muted bg-bg-accent"
                       data-testid="hero-not-checked">
                     <span className="w-1.5 h-1.5 rounded-full inline-block bg-muted" /> {i18nT('pages.settings.aboutPanel.not_checked_yet')}</span>

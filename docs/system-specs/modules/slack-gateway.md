@@ -163,18 +163,28 @@ choice or failed read keeps the selected wording. The floor receives this verdic
 as `kas_defaulted` and does not reread declarations. A main backend that resolved
 to Kiro CLI is armed too; the declaration read releases it at once unless it is
 stored as the Kiro CLI pick (`acp_backend_stored_as_kiro`), which waits for the
-probe like a defaulted role and reaches the floor as `kiro_selected`. A probe that
-ran and names v3 then records `confirm_kiro_cli_offers_kas`, sets the field to KAS and forces one
+probe like a defaulted role and reaches the floor as `kiro_selected`. For that pick
+a help probe that names v3 is followed by one start of the v3 engine
+(`kas_engine_start_verdict`), because kiro-cli lists v3 even where it then refuses
+to run it; the start runs once per kiro-cli install and its verdict is kept in the
+data home (`kas_engine_start.json`). Without a stored pick nothing is started, but a
+refusal on record for this kiro-cli (from that start or from a KAS runtime that met
+it at its own start) is a gap like a help probe without v3, so a defaulted or
+chosen KAS falls back before the first chat. A help probe that names v3 and a start kiro-cli did not refuse then record
+`confirm_kiro_cli_offers_kas`, set the field to KAS and force one
 config-watcher cycle (`_reconcile_live_config_with_kiro_verdict`) before the floor
-task ends, so `SessionManager` rebuilds its provider factory from a fresh load; one that ran without v3 logs a notice that the pick stays on
-kiro-cli's v2 engine and names `kiro-cli update`; an unknown probe or the bundle
-route leaves the pick on kiro-cli. The probe runs the binary a session spawn runs
+task ends, so `SessionManager` rebuilds its provider factory from a fresh load; a probe that ran without v3, or a start kiro-cli refused, logs a notice that the pick stays on
+kiro-cli's v2 engine and names `kiro-cli update`; an unknown probe or start, or the
+bundle route, leaves the pick on kiro-cli. The probe runs the binary a session spawn runs
 (`agent_sdk.drivers.acp.kiro_cli_spawn_binary`, the same `_resolve_kiro_bin` with
 its `PATH` search and executable-trust check), so a kiro-cli reachable only through
 `PATH` is judged like any other. When that binary is the pinned install, the plain
 `kiro_cli.kas_relay_help` probe runs the pinned path itself, never the `PATH` entry
 that matched it, so a symlink flipped after the identity check cannot run
-unsandboxed. Any other binary, which an agent could have planted in a `PATH`
+unsandboxed, and the v3 start runs that pinned path too. A binary reached only
+through `PATH` is never started outside the sandbox: for it only a verdict on record
+is read, so its help verdict stands until a KAS runtime meets the refusal at its
+own start, which the record then keeps for that binary. Any other binary, which an agent could have planted in a `PATH`
 directory, is probed through the prerequisite probe runner
 (`kiro_prerequisite_process._run_process`, same argv and timeout, the operator's
 sandbox tier, the session spawn's `scrub_agent_subprocess_env` environment, which
@@ -185,9 +195,10 @@ whole tree ended on timeout or once the probe exits. A sandboxed probe that does
 not exit cleanly is unknown, not a gap: the launcher can fail before kiro-cli runs.
 A capture at the runner's bound is unknown too. Every caller runs the verdict off
 any event loop (a worker thread or a sync CLI entry). An unknown probe on a Kiro CLI pick logs a WARNING
-(`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`) naming why: no trusted kiro-cli, or an
-`acp --help` that did not run. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
-row reads that same `kas_engine_verdict`, never its own probe, and says which
+(`KAS_CLI_FLOOR_KIRO_UNKNOWN_NOTICE`) naming why: no trusted kiro-cli, an
+`acp --help` that did not run, or a v3 start that did not finish. For a Kiro CLI pick, `kirocrew doctor`'s `engine:`
+row reads that same `kas_engine_verdict` and `kas_engine_start_verdict`, never its
+own probe, and says which
 engine the pick runs on by the floor's own rule: KAS only when v3
 is supported and KAS is selectable, kiro-cli's v2 engine otherwise. After `_init_dashboard`,
 `kiro_on_kas_notice.schedule` waits for the floor task, then posts one bell note
@@ -196,7 +207,10 @@ loads as KAS (`kiro_cli_pick_backend`); an `O_EXCL` marker in the data home make
 install. A defaulted role waits until
 the floor task finishes, including
 failure or cancellation. Every wait shares the deadline set at arm time, bounded
-by the probe timeout; releasing another role does not reset it. Waiter cancellation
+by the help probe's timeout; releasing another role does not reset it. A stored
+pick's v3 start is capped longer than that wait, so on the first boot after a
+kiro-cli install a slow start lets the pick's first sessions take the v2 launch,
+and the forced reload that follows the verdict moves later ones onto KAS. Waiter cancellation
 or timeout never cancels the floor task, and a gate from another event loop is
 ignored. Session allocation, background starts, pooled starts and task-run bootstrap
 await the gate before selecting their provider backend. A caller that builds its

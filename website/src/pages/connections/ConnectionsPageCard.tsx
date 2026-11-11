@@ -917,7 +917,8 @@ function ConnectionCard({
                 connected. */}
             <div className={`flex items-center gap-2 ${crewHeld ? 'justify-end' : 'justify-between'}`}>
               {/* Test runs on Kiro CLI's grant; a Crew-held sign-in has none, and
-                  the gateway refuses it (409 crew_oauth_test_unsupported). */}
+                  the gateway refuses it (409 crew_oauth_test_unsupported, or
+                  kas_sign_in_test_unsupported for a Connect on the KAS engine). */}
               {/* Its own test in flight marks it aria-disabled, not disabled:
                   a disabled button leaves the tab order and drops the focus of
                   the keyboard user who just pressed it. Another action or a

@@ -11,7 +11,7 @@ import { apiErrorCode } from '../../api/apiError'
 export type PreviewOutcome = 'kept' | 'discarded' | 'closed'
 
 /** Why the last Keep or Discard did not go through. */
-type Refusal = 'locked' | 'changed' | 'keep_failed' | 'discard_failed'
+type Refusal = 'changed' | 'keep_failed' | 'discard_failed'
 
 /**
  * The person's Keep and Discard for a crewmate's STAGED dashboard.
@@ -19,8 +19,7 @@ type Refusal = 'locked' | 'changed' | 'keep_failed' | 'discard_failed'
  * Drawn by the HOST, above the sandboxed frame and outside it, so the page being
  * judged has no way to press them. Both name the staged page the frame has mounted
  * and drawn (`stagedMs`), so the gateway acts on that page or refuses
- * `preview_changed` -- never on one staged again after the look. A locked layout is
- * the store's own refusal, said in the tab's badge words.
+ * `preview_changed` -- never on one staged again after the look.
  */
 export default function DashboardPreviewActions({ slug, member, stagedMs, onDone }: {
   slug: string
@@ -42,7 +41,6 @@ export default function DashboardPreviewActions({ slug, member, stagedMs, onDone
     onError: (e) => {
       const code = apiErrorCode(e)
       if (code === 'no_preview') onDone('closed')
-      else if (code === 'dashboard_locked') setRefusal('locked')
       else if (code === 'preview_changed') {
         setRefusal('changed')
         void redraw()
@@ -80,7 +78,7 @@ export default function DashboardPreviewActions({ slug, member, stagedMs, onDone
           written, the live page is unchanged, the newer page is already drawn below
           and the next step is the ordinary Keep. That is `StatusNotice`'s own case
           ("nothing failed and nothing was lost"). A request that really failed --
-          the lock refusal included -- stays an ErrorNotice, with no agent hand-off:
+          stays an ErrorNotice, with no agent hand-off:
           that navigates away from the Members page's unsaved drafts, and pressing
           the button again is the retry. */}
       {refusal === 'changed' && (
@@ -89,11 +87,9 @@ export default function DashboardPreviewActions({ slug, member, stagedMs, onDone
       {refusal && refusal !== 'changed' && (
         <ErrorNotice
           variant="inline"
-          message={refusal === 'locked'
-            ? t('pages.membersPage.dashboard_locked_badge')
-            : refusal === 'keep_failed'
-              ? t('pages.chat.dashboardPreviewPanel.keep_failed')
-              : t('pages.chat.dashboardPreviewPanel.discard_failed')}
+          message={refusal === 'keep_failed'
+            ? t('pages.chat.dashboardPreviewPanel.keep_failed')
+            : t('pages.chat.dashboardPreviewPanel.discard_failed')}
           testId="dashboard-preview-problem"
         />
       )}

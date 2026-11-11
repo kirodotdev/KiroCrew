@@ -25,7 +25,7 @@ from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
-from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
+from kiro_crew.platform_compat import IS_WINDOWS, first_linked_ancestor, is_link_or_junction
 from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,26 @@ _LAUNCH_RECORD_MAX_BYTES = 128_000
 # A resources entry is a URI string this reader may open, or an object whose
 # keys are kiro-cli's schema. The alias records the shape, not those keys.
 ResourceDeclaration = str | dict[str, object]
+
+
+def _file_uri_path(uri: str) -> Path:
+    """The path a ``file://`` declaration names, ``~`` expanded.
+
+    ``Path.as_uri()`` spells a Windows file ``file:///C:/x``. Windows reads the
+    ``/C:/x`` left after the scheme as rooted but drive-less, so there the ``/``
+    before the drive is dropped and the declaration is the absolute ``C:/x``.
+    """
+    text = uri[7:]
+    drive = text[1:2]
+    if (
+        IS_WINDOWS
+        and text[:1] == "/"
+        and drive.isascii()
+        and drive.isalpha()
+        and text[2:4] in (":/", ":\\")
+    ):
+        text = text[1:]
+    return Path(text).expanduser()
 
 
 class MemberEssentialContextError(ValueError):
@@ -1384,7 +1404,7 @@ def documents_for_member(
     # install directory (see is_managed_prompt).
     if prompt and not agent_mod.is_managed_prompt(prompt):
         if prompt.startswith("file://"):
-            path = Path(prompt[7:]).expanduser()
+            path = _file_uri_path(prompt)
             if path.is_absolute():
                 # An absolute persona is also contained by the template_dir
                 # that stood in for a missing project. Declared resources keep
@@ -1556,7 +1576,7 @@ def _resource_paths(
     for resource in resources:
         if not isinstance(resource, str) or not resource.startswith("file://"):
             continue
-        path = Path(resource[7:]).expanduser()
+        path = _file_uri_path(resource)
         root = absolute_root if path.is_absolute() else source_root
         if path.is_absolute():
             pattern = _resource_pattern(path, root)

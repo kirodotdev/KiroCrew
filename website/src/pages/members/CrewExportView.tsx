@@ -7,6 +7,7 @@ import { apiErrorCode } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Toggle } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
+import { effortLabel } from '../../lib/effort'
 import { downloadBlob } from '../../utils/download'
 
 /** Why the server left a part out, worded for the owner. Each code is one literal key. */
@@ -52,6 +53,7 @@ function planSignature(plan: CrewmateExportPreview): string {
     name: plan.name,
     description: plan.description,
     model: plan.model,
+    reasoning_effort: plan.reasoning_effort,
     dashboard: plan.dashboard,
     avatar: plan.avatar,
     avatar_digest: plan.avatar_digest,
@@ -242,6 +244,7 @@ export default function CrewExportView({ slug, member, onDirtyChange }: {
           )) : <p className="mt-1 text-[12px] text-muted">{t('pages.membersPage.export_none')}</p>)}
         </Line>
         <Line label={t('pages.membersPage.export_model')} value={v.model || t('pages.membersPage.export_model_default')} testId="crew-export-model" />
+        <Line label={t('components.reasoningEffortDropdown.reasoning_effort')} value={v.reasoning_effort ? effortLabel(v.reasoning_effort) : t('pages.membersPage.export_model_default')} testId="crew-export-reasoning-effort" />
         {ownSkills.map(s => (
           <Line
             key={s.name}

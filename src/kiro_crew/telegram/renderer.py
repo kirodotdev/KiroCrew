@@ -111,6 +111,7 @@ from kiro_crew.telegram.client import (
     TELEGRAM_MAX_PHOTO_BYTES,
     TELEGRAM_MAX_TOTAL_UPLOAD_BYTES,
     TELEGRAM_RICH_MAX_CHARS,
+    truncate_html_safe,
 )
 from kiro_crew.telegram.renderer_display import (
     _MIN_SPLIT_LIMIT,
@@ -1189,11 +1190,9 @@ class TelegramRenderer(Renderer):
     async def _post_thinking(self) -> None:
         """Post the accumulated reasoning as ONE expandable blockquote.
 
-        ``<blockquote expandable>`` is Telegram's native collapsed-by-default
-        quote, which is the closest thing the channel has to Slack's 💭 thread
-        reply: the reasoning is there for whoever wants it and costs one line for
-        everyone else. Posted after the answer so the answer is what the
-        notification previews.
+        ``<blockquote expandable>`` is Telegram's collapsed quote, its nearest match
+        to Slack's 💭 thread reply: there for whoever wants it, one line for everyone
+        else. Posted after the answer so the answer is what the notification previews.
         """
         if self._thinking_posted:
             return
@@ -1201,25 +1200,26 @@ class TelegramRenderer(Renderer):
         body = "".join(self._thinking).strip()
         if not body:
             return
-        # The reasoning is model output reaching an external surface, so it goes
-        # through the same display sink as the answer: redact against the RENDERED
-        # form, since Telegram's own markup can reassemble a credential the literal
-        # bytes split. Off-loop because a reasoning body is unbounded and the scan
-        # is a full credential/exfil pass.
+        # Model output reaching an external surface: redact against the RENDERED form
+        # like the answer, since Telegram's markup can reassemble a credential the
+        # literal bytes split. Off-loop: the body is unbounded and the scan is a full
+        # credential/exfil pass. Then one message, a tag-safe cut, no half entity.
         safe = await asyncio.to_thread(_display_safe, body)
-        # One message. Reasoning is unbounded and is not the answer, so a
-        # tag-safe truncation beats a burst of continuation bubbles.
-        inner = html.escape(safe)[: self._thinking_budget()]
+        inner = truncate_html_safe(html.escape(safe), self._thinking_budget())
         try:
-            await self._client.send_message(
+            err: dict[str, Any] = {}
+            mid = await self._client.send_message(
                 self._chat_id,
                 f"<blockquote expandable>💭 {inner}</blockquote>",
                 parse_mode="HTML",
                 retry_plain=False,
                 message_thread_id=self._thread_id,
                 disable_notification=True,
+                err_out=err,
             )
-            self._tally_redactions(inner)
+            # Only a refusal (400) proves nothing landed; a timeout may have posted it.
+            if mid is not None or err.get("error_code") != 400:
+                self._tally_redactions(inner)
         except Exception:
             logger.debug("Telegram: thinking post failed", exc_info=True)
 

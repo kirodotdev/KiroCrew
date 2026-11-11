@@ -50,7 +50,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.metrics import destination_filter
 from kiro_crew.metrics import harness as _harness
-from kiro_crew.metrics import otlp_endpoints, otlp_governance
+from kiro_crew.metrics import otlp_endpoints, otlp_governance, otlp_session
 from kiro_crew.metrics.behavioral_metrics import BEHAVIORAL_SCOPE
 
 # The env-var pins live in ``consent_pins`` (this module's line budget); they are
@@ -1520,22 +1520,11 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
             kwargs["headers"] = _OwnHeadersOnly(headers)
         elif headers:
             kwargs["headers"] = headers
-        # Passed only when supplied so the exporter keeps its own defaults (and
-        # its env-var fallbacks) for everything an edition did not set.
-        if dest.session is not None:
-            # An authenticated transport. requests re-evaluates Session.auth per
-            # request, which is what lets a credential that rotates mid-process
-            # keep working where a header frozen at construction would 401. A
-            # destination built in code carries its static headers on
-            # Session.headers.
-            kwargs["session"] = dest.session
-        elif own_only:
-            # A plain session of our own, so the exporter does not load the OTel
-            # credential-provider session either: that variable is process-wide
-            # in the same way the header variables are.
-            import requests
-
-            kwargs["session"] = requests.Session()
+        # A session that follows no redirect, for every destination: the policy
+        # gate and the https rule checked this endpoint only. A destination built
+        # in code gets a copy of its authenticated session (Session.auth is
+        # re-evaluated per request, so a rotating credential keeps working).
+        kwargs["session"] = otlp_session.export_session(dest.session, own_only)
         exporter = OTLPMetricExporter(**kwargs)
         # Every later export is held to the policy in force THEN, so a runtime
         # policy install stops a running reader without waiting for a rebuild.

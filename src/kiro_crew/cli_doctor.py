@@ -44,6 +44,7 @@ import sys
 import tempfile  # noqa: F401
 import textwrap  # noqa: F401
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from types import ModuleType
@@ -414,6 +415,26 @@ _NO_BLANKET_ALLOW_MCPS = frozenset({CU_MCP_SERVER, "kirocrew-guide", "kirocrew-m
 _OOM_KILLER_UNITS = ("systemd-oomd", "earlyoom")
 
 
+def _model_url_failure_text(exc: BaseException, url: str) -> str:
+    """Why the model url probe failed, never quoting a secret-bearing url.
+
+    urllib quotes pieces of a malformed url in its error text (only the tail
+    after the host's last ``:``), so masking the secret by value can miss part
+    of it. A url with a password, query or fragment gets a fixed line instead.
+    """
+    from kiro_crew.asset_downloader import network_failure_cause
+
+    cause = network_failure_cause(exc)
+    if cause:
+        return cause
+    try:
+        parts = urllib.parse.urlsplit(url)
+        carries_secret = bool(parts.password or parts.query or parts.fragment)
+    except ValueError:
+        carries_secret = True
+    return "the model url could not be opened" if carries_secret else str(exc)
+
+
 def _doctor_model_url_reachable(issues: list[str]) -> None:
     """Light HTTPS-reachability probe of the resolved embedding-model URL.
 
@@ -439,7 +460,8 @@ def _doctor_model_url_reachable(issues: list[str]) -> None:
         print("               Fix: set KIROCREW_EMBED_MODEL_URL (or memory.embed_model_url)")
         print("               to a mirror hosting the GGUF; the sha256 pin still verifies it.")
     except Exception as exc:
-        print(f"  model url:   ❌ unreachable ({exc}) {safe}")
+        why = _model_url_failure_text(exc, url)
+        print(f"  model url:   ❌ unreachable ({why}) {safe}")
         print("               Check network connectivity; the background download will")
         print("               keep retrying with backoff on every gateway boot.")
 
@@ -809,6 +831,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     mcp._doctor_mcp_gateway_daemon(issues)
     mcp._doctor_mcp_share_refused(cfg, issues)
     mcp._doctor_unresolved_mcp_refs()
+    mcp._doctor_authored_agent_mcp_refs(cfg)
     mcp._doctor_template_mcp_additions()
     mcp._doctor_backend_ability_cards(cfg)
     mcp._doctor_selected_backend_projection(cfg)

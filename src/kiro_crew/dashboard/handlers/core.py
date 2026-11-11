@@ -771,6 +771,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _changed_paths_need_restart,
         _config_body,
         _hot_apply_after_write,
+        _kas_in_use,
         _mask_agent_free_text,
         _mask_strings,
         _masked_config_dict,

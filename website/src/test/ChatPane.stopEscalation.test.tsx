@@ -388,6 +388,19 @@ describe('ChatPane Stop: parity with the main chat', () => {
     expect(queryByTestId('stop-button-armed')).toBeNull()
   })
 
+  it('a late refusal for a press in turn N is not shown during turn N+1 (#34416)', async () => {
+    // The queue drain hands the floor straight to the next turn, so the pane
+    // never renders idle in between: only the slot's turn identity moves.
+    let settle: (v: unknown) => void = () => {}
+    apiMock.stopChatSlot.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve }))
+    const store = makeStore('streaming', { turn: 4, turn_gen: 'g' })
+    const { getByTestId, queryByTestId } = mount(store)
+    fireEvent.click(getByTestId('stop-button-armed'))
+    act(() => { store.dispatch(sseSlots([slotRow({ running: true, turn: 5, turn_gen: 'g' })])) })
+    await act(async () => { settle({ ok: false, error: 'stop refused' }) })
+    expect(queryByTestId('chat-pane-stop-error')).toBeNull()
+  })
+
   it('a late failure for the slot the pane used to show does not disarm the current slot', async () => {
     // Stop pressed on A; the pane is re-pointed at B and B is soft-stopped;
     // A's refusal then lands late. It must not reset B's arming stamp or

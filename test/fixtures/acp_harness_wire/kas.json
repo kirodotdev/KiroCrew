@@ -8,10 +8,12 @@
           "kiro": {
             "customAgents": [
               {
+                "id": "pinned-agent",
                 "name": "pinned-agent",
                 "prompt": "pinned"
               }
-            ]
+            ],
+            "modeId": "pinned-agent"
           }
         },
         "cwd": "/pinned/work/dir",
@@ -58,6 +60,7 @@
           "kiro": {
             "customAgents": [
               {
+                "id": "pinned-agent",
                 "name": "pinned-agent",
                 "prompt": "pinned"
               }

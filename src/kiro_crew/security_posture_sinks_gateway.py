@@ -919,4 +919,13 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "in the slot's transcript and broadcast to every connected browser, so the "
         "whole error passes `redact_and_truncate` before it is cut to the row's bound.",
     ),
+    (
+        "Worktree create refusals",
+        "dashboard/handlers/worktree.py",
+        "git's own line saying why it cannot open a project as a work tree, returned "
+        "as the `detail` of the 400 a follow-up card's worktree create gets and shown "
+        "under the suggestion. The line can echo a `gitdir:` path from a `.git` file "
+        "whoever can write the folder chose, so it passes `redact_via_context` "
+        "before it leaves the gateway.",
+    ),
 )

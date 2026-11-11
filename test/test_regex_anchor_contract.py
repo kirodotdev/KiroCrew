@@ -42,6 +42,11 @@ import pytest
 
 from kiro_crew import cloud, crew_log, skill_providers
 from kiro_crew.apps.builtins import mochi
+from kiro_crew.apps.builtins.aws_control import backend as aws_control_backend
+from kiro_crew.apps.builtins.aws_control.backend import storage as aws_control_storage
+from kiro_crew.apps.builtins.aws_control.backend.backup_parts import (
+    identity as aws_control_identity,
+)
 from kiro_crew.apps.builtins.design_tweak import backend as design_tweak_backend
 from kiro_crew.apps.builtins.design_tweak.backend import request_state as design_tweak_request_state
 from kiro_crew.apps.builtins.design_tweak.backend import server as design_tweak_server
@@ -77,6 +82,7 @@ _REQUEST_PATH_PACKAGES = (
     meetings_backend,
     design_tweak_backend,
     spec_builder_backend,
+    aws_control_backend,
 )
 
 #: (pattern, canonical valid input) for every request-path validator. The
@@ -146,6 +152,10 @@ _VALIDATORS = (
     ),
     pytest.param(spec_builder_parsers._SLOT_SUFFIX_RE, "0123abcd", id="spec-builder-slot-suffix"),
     pytest.param(spec_builder_parsers._SHA256_RE, "0" * 64, id="spec-builder-sha256"),
+    pytest.param(
+        aws_control_storage._KEY_SEGMENT_RE, "photos 2026", id="aws-control-drive-key-segment"
+    ),
+    pytest.param(aws_control_identity._INSTALL_ID_RE, "0" * 32, id="aws-control-install-id"),
     # The dashboard artifact handler's two raw ``.match`` validators.
     # Behavioral half only: the handlers package is not in
     # ``_REQUEST_PATH_PACKAGES``, since other modules in it still carry the

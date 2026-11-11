@@ -16,6 +16,7 @@ every existing patch site.
 
 from __future__ import annotations
 
+import json
 import time
 import unicodedata
 from collections.abc import Callable
@@ -1243,6 +1244,21 @@ def _confirm_by_line(created_at_epoch: float) -> str:
     )
 
 
+def _scan_block(d: dict) -> dict | None:
+    """The scan-block reply inside a ``/api/deploy/deploy`` result, or None.
+
+    The route answers a scan block with a 409 whose body has no ``error`` key, and
+    the gateway client hands such a body back as its JSON text under ``error``.
+    """
+    if d.get("blocked") is True:
+        return d
+    try:
+        body = json.loads(d.get("error") or "")
+    except (TypeError, ValueError):
+        return None
+    return body if isinstance(body, dict) and body.get("blocked") is True else None
+
+
 def deploy_artifact(name: str, args: dict[str, Any]) -> str:
     has_slug = bool(args.get("artifact_slug"))
     has_dir = bool(args.get("local_dir"))
@@ -1270,6 +1286,7 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
     if args.get("ttl_hours") is not None:
         deploy_body["ttl_hours"] = args["ttl_hours"]
     d = mcp_core._post("/api/deploy/deploy", deploy_body)
+    d = _scan_block(d) or d
     # Everything textual returned to the LLM goes through the
     # canonical credential redaction -- error/scan/message fields can
     # carry file content.
@@ -1288,7 +1305,9 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
             msg = f"{msg}\nCommand: {remedy}"
         return f"Error: {msg}"
     if d.get("blocked"):
-        findings = _deploy_redact(str(d.get("findings", "")))
+        # A staging refusal (a link, an oversized or hook-blocked file) carries
+        # its reason in ``message`` and has no findings list.
+        findings = _deploy_redact(str(d.get("findings") or d.get("message") or ""))
         if d.get("credential"):
             # Credential-class findings are a HARD block — never pending.
             return (f"Deploy BLOCKED by scan ({d.get('count', '?')} finding(s)):\n"

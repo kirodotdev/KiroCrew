@@ -84,7 +84,6 @@ from typing import Any, NamedTuple
 
 from kiro_crew import agent as _agent_mod
 from kiro_crew import hooks as _hooks
-from kiro_crew import kiro_cli as _kiro_cli
 from kiro_crew import mcp_provenance
 from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
@@ -1773,6 +1772,25 @@ def native_mount_withholding(
     return None
 
 
+def registry_withholds_control_plane() -> bool:
+    """Whether the registry ceiling keeps the control plane's identity element off.
+
+    True when the spec writer marks ``kirocrew-core`` for the admin's catalog
+    (``managed_mcp._registry_marker_for``: registry mode declared and governance not
+    known unreachable) and the admin's security policy does not opt Crew's own
+    servers past the registry (:func:`_registry_local_control_plane_permitted`).
+    The mount gate (:func:`kiro_control_plane_servers`) and the native skill
+    projection (``skill_projection_parts.preparation``) both ask this one question,
+    so the projection only promises ``skill_search`` where the shared runtime will
+    mount its element. Each name is read at call time so a test patch of
+    ``_registry_mode`` or the opt-in reaches both callers.
+    """
+    return bool(
+        _agent_mod._registry_marker_for("kirocrew-core", _registry_mode())
+        and not _registry_local_control_plane_permitted()
+    )
+
+
 def kiro_control_plane_servers(
     agent: str | None,
     *,
@@ -1829,11 +1847,7 @@ def kiro_control_plane_servers(
     # registry can govern this sign-in: the spec then carries the control plane
     # unmarked (``managed_mcp._registry_marker_for``), so it gets its element too.
     registry_declared = _registry_mode()
-    if (
-        registry_declared
-        and not _kiro_cli.registry_governance_known_unreachable()
-        and not _registry_local_control_plane_permitted()
-    ):
+    if registry_withholds_control_plane():
         return NativeControlPlaneMount([], {})
     identity_servers: tuple[str, ...] = (
         CONTROL_PLANE_SERVERS if registry_declared else IDENTITY_BOUND_SERVERS

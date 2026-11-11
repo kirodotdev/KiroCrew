@@ -610,6 +610,19 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
   })
 
+  it('a background check that ran without a verdict is not "Not checked yet"', async () => {
+    // The backend stamps `update_last_checked_at` on failure too, so the card
+    // reads "Last checked ..." and the hero must not deny the check ran.
+    stubFetch({})
+    pushStatus({ update_check_status: 'failed', update_last_checked_at: 1_700_000_000 })
+    mountWeb()
+    await screen.findByText(/Last checked/)
+    expect(screen.queryByTestId('hero-not-checked')).toBeNull()
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
+    // Deferred: #34868 -- a failed background check has no notice yet.
+    expect(screen.queryByTestId('check-failed')).toBeNull()
+  })
+
   it('the hero pill goes green once a check reports current', async () => {
     stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
     mountWeb()
@@ -663,6 +676,18 @@ describe('AboutPanel gateway update check', () => {
     expect(autoUpdateRow()).toBe(row)
   })
 
+  it('reads off, not on, where the gateway cannot install (GH #34684)', async () => {
+    // The saved value is still `true` (the schema default), but a notify-only
+    // install never installs on its own: a held switch drawn on says it does.
+    stubFetch({})
+    pushStatus({ update_auto_effect: 'notify', update_can_apply: false })
+    mountWeb()
+
+    await waitFor(held)
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
+    expect(note()).toHaveTextContent(NOTIFY_ONLY)
+  })
+
   it.each([
     ['mandatory', 'pages.settings.aboutPanel.gateway_auto_update_mandatory_note'],
     // A gateway without the field has not said what the switch does.
@@ -690,6 +715,7 @@ describe('AboutPanel gateway update check', () => {
     mountWeb()
 
     await waitFor(held)
+    expect(screen.getByRole('switch', { name: LABEL })).toHaveAttribute('aria-checked', 'false')
     expect(note()).toHaveTextContent(i18nT('pages.settings.aboutPanel.auto_update_notify_manual_apply'))
     expect(note()).not.toHaveTextContent(NOTIFY_ONLY)
   })

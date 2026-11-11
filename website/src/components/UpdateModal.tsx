@@ -84,28 +84,34 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
     staleTime: Infinity,
   })
 
-  const [dismissed, setDismissed] = useState(false)
+  // Which surface the user closed: the "update ready" dialog or the install
+  // takeover. One value names it, so closing the dialog never hides a later
+  // install started from Settings > About.
+  const [dismissed, setDismissed] = useState<'ready' | 'takeover' | null>(null)
   // Re-open on each fresh "downloaded" event (version change resets dismiss).
   // Replayed payloads are excluded from both the reset and the open: a reload
   // must not undo the user's dismissal of this same staged version.
   const [lastVersion, setLastVersion] = useState<string | undefined>(undefined)
   if (update?.state === 'downloaded' && !update.replayed && update.version !== lastVersion) {
     setLastVersion(update.version)
-    setDismissed(false)
+    setDismissed(null)
   }
+  // A new install attempt shows its takeover again, even after the user left
+  // an earlier failure with Back to dashboard.
+  if (update?.state === 'installing' && dismissed === 'takeover') setDismissed(null)
 
   // Install-and-restart, with its one-way latch and the reset for a refused or
   // aborted handoff (see useInstallDispatch).
   const { installMutation, dispatched: installing, dispatchInstall } = useInstallDispatch(update)
 
-  const open = !!update && update.state === 'downloaded' && !update.replayed && !dismissed && !held
+  const open = !!update && update.state === 'downloaded' && !update.replayed && dismissed === null && !held
 
   // Escape dismisses the modal (unless an install is in flight), matching the
   // backdrop-click affordance and keeping the overlay keyboard-accessible.
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !installing) setDismissed(true)
+      if (e.key === 'Escape' && !installing) setDismissed('ready')
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -135,7 +141,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
       <ErrorNotice
         variant="inline"
         askAgent
-        onHandoff={() => setDismissed(true)}
+        onHandoff={() => setDismissed('takeover')}
         message={i18nT('pages.settings.aboutPanel.update_error_gateway_still_running')}
         testId="update-modal-gateway-refusal"
       />
@@ -143,7 +149,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
     </div>
   ) : null
   const showsWindowsInstaller = update?.installHandoff === 'windows-installer'
-  const takeover = (update?.state === 'installing' || installFailed) && !dismissed
+  const takeover = update?.state === 'installing' || (installFailed && dismissed !== 'takeover')
   // The takeover takes focus when it appears. The "update ready" dialog it
   // replaces gives focus back to its opener as it unmounts, and that opener now
   // sits hidden under this screen. This effect runs after that restore.
@@ -172,7 +178,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
                 <ErrorNotice
                   variant="inline"
                   askAgent
-                  onHandoff={() => setDismissed(true)}
+                  onHandoff={() => setDismissed('takeover')}
                   message={i18nT('components.updateModal.install_failed_body')}
                   testId="update-modal-install-failed"
                 />
@@ -181,7 +187,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
             <button
               type="button"
               className="mt-1 px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer"
-              onClick={() => setDismissed(true)}
+              onClick={() => setDismissed('takeover')}
             >
               {i18nT('components.updateModal.back_to_dashboard')}
             </button>
@@ -204,7 +210,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
 
   const version = update!.version || ''
   const notes = (update!.notes || '').trim()
-  const dismiss = () => { if (!installing) setDismissed(true) }
+  const dismiss = () => { if (!installing) setDismissed('ready') }
   // The header is the dialog's status claim, so it follows a rejected request:
   // "Update ready" above a failure notice would leave both standing. Each key
   // stays a literal argument so the i18n key gate can resolve it.
@@ -280,7 +286,7 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
                 variant="inline"
                 message={i18nT('pages.settings.aboutPanel.update_error_install_unknown')}
                 askAgent
-                onHandoff={() => setDismissed(true)}
+                onHandoff={() => setDismissed('ready')}
                 testId="update-modal-install-error"
               />
             </div>

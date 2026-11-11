@@ -575,7 +575,7 @@ export function MembersPageSidePanel({
           onSend={confirmedSlot && active.dashboard_card_send === true
             ? (text: string) => sendCardReply(confirmedSlot, text)
             : undefined}
-          // Badge click opens the Profile tab directly so the person can unlock.
+          // Badge click opens the Profile tab, where the one-click-send switch is.
           // Guard against an unsaved schedule form in the already-open card:
           // openProfile() increments the nonce which re-mounts the panel.
           onOpenProfileTab={() => {

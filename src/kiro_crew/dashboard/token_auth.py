@@ -1145,7 +1145,8 @@ def token_auth_middleware(
             if _link_nonce and session_exp and not _get_revoked_store().is_revoked(_link_nonce):
                 # revoke() does synchronous file I/O (mkdir/write/chmod/replace);
                 # offload so it never blocks the event loop. is_revoked above is
-                # an in-memory check and is cheap enough to run inline.
+                # a dict lookup under a lock the write never holds across its
+                # I/O, so it stays inline even while that write is slow.
                 await asyncio.to_thread(_get_revoked_store().revoke, _link_nonce, session_exp)
             # Bind the SESSION token (what becomes the cookie) to the peer key,
             # not the consumed URL token. ``proxied`` is recorded so Security

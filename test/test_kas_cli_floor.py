@@ -57,6 +57,25 @@ def _restore_registry():
     backend_install.clear_probe_cache()
 
 
+@pytest.fixture(autouse=True)
+def _v3_engine_starts(_floor_monkeypatch):
+    """The one v3 start a Kiro CLI pick's floor runs answers without a refusal.
+
+    No test here spawns a kiro-cli; one that drives a refused start replaces this.
+    """
+    calls = []
+
+    def _fake(binary, argv_tail):
+        calls.append(binary)
+        return ""
+
+    _floor_monkeypatch.setattr(kiro_cli, "kas_relay_start_output", _fake)
+    return calls
+
+
+_REFUSAL = "error: V3 is currently not supported on this system.\n"
+
+
 @pytest.fixture
 def kas_selectable(monkeypatch):
     monkeypatch.setattr(registry, "_baseline", {KIRO, KAS})
@@ -360,13 +379,17 @@ class TestDefaultNoticeWording:
         assert notice.startswith("Kiro CLI is selected and ")
         assert "KAS is selected, but " in notice
 
-    def test_a_v3_kiro_cli_moves_the_pick_onto_kas(self, monkeypatch, pinned_cli, kas_selectable):
+    def test_a_v3_kiro_cli_moves_the_pick_onto_kas(
+        self, monkeypatch, pinned_cli, kas_selectable, _v3_engine_starts
+    ):
         _help(monkeypatch, _NEW_HELP)
         cfg = _cfg(acp_backend=KIRO)
         assert registry.kiro_cli_pick_backend() == KIRO
         assert bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True) is None
         assert cfg.agent.acp_backend == KAS
         assert registry.kiro_cli_pick_backend() == KAS
+        # The move followed one start of the pinned binary's v3 engine.
+        assert _v3_engine_starts == [str(pinned_cli)]
 
     @pytest.mark.parametrize("help_text", [None, _OTHER_ENGINE_HELP])
     def test_no_positive_verdict_keeps_the_pick_on_kiro_cli(
@@ -403,6 +426,68 @@ class TestDefaultNoticeWording:
         notice = bootstrap.apply_kas_cli_floor(_cfg(acp_backend=KIRO), kiro_selected=True)
         assert notice is not None
         assert f"`{pinned_cli} acp --help` did not run" in notice
+
+    def test_a_v3_kiro_cli_that_refuses_the_engine_keeps_the_pick_on_v2(
+        self, monkeypatch, pinned_cli, kas_selectable, caplog
+    ):
+        """Help that lists v3 is not proof: kiro-cli refusing the start is a gap."""
+        from kiro_crew.acp.kas_engine_refusal import KAS_ENGINE_REFUSED_REASON
+
+        _help(monkeypatch, _NEW_HELP)
+        monkeypatch.setattr(kiro_cli, "kas_relay_start_output", lambda binary, argv: _REFUSAL)
+        cfg = _cfg(acp_backend=KIRO)
+        with caplog.at_level(logging.WARNING, logger=bootstrap.logger.name):
+            notice = bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
+        assert cfg.agent.acp_backend == KIRO
+        assert registry.kiro_cli_pick_backend() == KIRO
+        assert not registry.kiro_cli_offers_kas()
+        # A host fact, like any other gap: KAS leaves the selectable set with it.
+        assert KAS not in registry.selectable_backends()
+        assert registry.host_unservable_reason(KAS) == KAS_ENGINE_REFUSED_REASON
+        assert notice is not None
+        assert notice.startswith(f"Kiro CLI is selected and {KAS_ENGINE_REFUSED_REASON}")
+        assert notice in caplog.text
+
+    def test_an_unknown_v3_start_moves_nothing(self, monkeypatch, pinned_cli, kas_selectable):
+        """A start that did not finish is unknown: the pick stays on v2 and says why."""
+        _help(monkeypatch, _NEW_HELP)
+        monkeypatch.setattr(kiro_cli, "kas_relay_start_output", lambda binary, argv: None)
+        cfg = _cfg(acp_backend=KIRO)
+        notice = bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
+        assert cfg.agent.acp_backend == KIRO
+        assert not registry.kiro_cli_offers_kas()
+        assert KAS in registry.selectable_backends()
+        assert notice is not None
+        assert notice.startswith("Kiro CLI is selected, but Kiro Crew could not check ")
+        assert f"`{pinned_cli} acp --agent-engine v3` did not finish" in notice
+
+    def test_without_a_pick_the_help_alone_decides(
+        self, monkeypatch, pinned_cli, kas_selectable, _v3_engine_starts
+    ):
+        """No stored pick at stake: KAS stays on the help verdict and no engine starts."""
+        _help(monkeypatch, _NEW_HELP)
+        cfg = _cfg()
+        assert bootstrap.apply_kas_cli_floor(cfg) is None
+        assert cfg.agent.acp_backend == KAS
+        assert _v3_engine_starts == []
+
+    def test_a_refusal_on_record_moves_a_chosen_kas_without_a_start(
+        self, monkeypatch, pinned_cli, kas_selectable, _v3_engine_starts
+    ):
+        """A kiro-cli a KAS start already refused is a gap at the next boot's floor."""
+        from kiro_crew.acp.kas_engine_refusal import (
+            KAS_ENGINE_REFUSED_REASON,
+            remember_start_verdict,
+        )
+
+        remember_start_verdict(str(pinned_cli), False)
+        _help(monkeypatch, _NEW_HELP)
+        cfg = _cfg()
+        notice = bootstrap.apply_kas_cli_floor(cfg)
+        assert notice == registry.KAS_CLI_FLOOR_NOTICE.format(reason=KAS_ENGINE_REFUSED_REASON)
+        assert cfg.agent.acp_backend == KIRO
+        assert registry.host_unservable_reason(KAS) == KAS_ENGINE_REFUSED_REASON
+        assert _v3_engine_starts == []
 
     def test_the_bundle_route_keeps_the_pick_on_kiro_cli(
         self, monkeypatch, pinned_cli, kas_selectable
@@ -1266,6 +1351,35 @@ class TestTheProbeRunsTheSpawnBinary:
         assert bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True) is None
         assert cfg.agent.acp_backend == KAS
         assert registry.kiro_cli_pick_backend() == KAS
+
+    def test_a_path_only_kiro_cli_is_never_started_unsandboxed(
+        self, path_only_cli, kas_selectable, _v3_engine_starts
+    ):
+        """The v3 start runs outside the sandbox, so only the pinned install gets one."""
+        path_only_cli(_NEW_HELP)
+        cfg = _cfg(acp_backend=KIRO)
+        assert bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True) is None
+        assert cfg.agent.acp_backend == KAS
+        assert _v3_engine_starts == []
+
+    def test_a_refusal_kept_for_a_path_only_kiro_cli_keeps_the_pick_on_v2(
+        self, path_only_cli, kas_selectable, _v3_engine_starts
+    ):
+        """What a KAS runtime on that binary met is the record the next floor reads."""
+        from kiro_crew.acp.kas_engine_refusal import (
+            KAS_ENGINE_REFUSED_REASON,
+            remember_kas_engine_refusal,
+        )
+
+        path_only_cli(_NEW_HELP)
+        remember_kas_engine_refusal()
+        cfg = _cfg(acp_backend=KIRO)
+        notice = bootstrap.apply_kas_cli_floor(cfg, kiro_selected=True)
+        assert cfg.agent.acp_backend == KIRO
+        assert registry.kiro_cli_pick_backend() == KIRO
+        assert notice is not None
+        assert notice.startswith(f"Kiro CLI is selected and {KAS_ENGINE_REFUSED_REASON}")
+        assert _v3_engine_starts == []
 
     def test_a_path_only_kiro_cli_without_v3_keeps_the_pick_on_v2(
         self, path_only_cli, kas_selectable

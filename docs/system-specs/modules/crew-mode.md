@@ -2320,7 +2320,7 @@ open.
 
 The Profile tab holds the Bot's own settings (`CrewProfileSettings`):
 permission (Normal / Reads / Trust), model and effort, the worker pair and the
-dashboard lock. They are changed there, never in the chat. The Profile tab
+preview switches. They are changed there, never in the chat. The Profile tab
 shows ONE **Settings** row, in the Notes row's group, reading the ceiling and
 the model (permission · model; not the worker pick, which beside the Bot's own
 name read as a riddle); nothing else of the settings
@@ -2940,8 +2940,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   builds that page with the dashboard skill (`dashboard_save`, then
   `dashboard_apply`) instead of posting it -- conditioned on having work to
   report, never an order on every turn. Other pictures in a reply (a
-  comparison, a flow, a before/after) are still drawn as widgets. A locked tab gets the lock's refusal
-  instead, and with `agent.crew_panel` off (or unreadable) the block states only
+  comparison, a flow, a before/after) are still drawn as widgets. With `agent.crew_panel` off (or unreadable) the block states only
   where the tab stands (`dashboard_agentic.SUGGESTIONS_STATE`), since there is no
   `dashboard_save` to build with. The member protocol's page item says the same
   (progress on the page; the first report is when the page is built) and names
@@ -2984,9 +2983,7 @@ draft guard, so a veto neither remounts the card nor loses its pushed form.
   records the yes and wakes the Bot once (`page_offer.write_prompt`, through
   `goal_setup._schedule`) to write its page, `dashboard_save` it and
   `dashboard_apply` it with no second card, then post the same one ready
-  message. A locked layout refuses that apply as it does any other, and the
-  Bot says so once and stops; one `dashboard_rollback` brings the template
-  back. A no, or the card expiring, writes nothing. Asked-once is
+  message. One `dashboard_rollback` brings the template back. A no, or the card expiring, writes nothing. Asked-once is
   `crew-panels/<slug>.page-offer.json` (`page_offer.record_path`, beyond the
   Bot's own shell), written when the card is raised, so a yes, a no and an
   expiry all count. The one exception is a yes whose wake never started: the yes
@@ -4653,7 +4650,7 @@ with fields the Bot writes
 gets `worker_report.dashboard_fields`, naming those fields and asking for them
 to be written with `dashboard_write` before the turn ends; a tab still on the
 suggestions page gets `dashboard_agentic.SUGGESTIONS_LINE`; no line with
-`agent.crew_panel` off, under the lock while the tab shows suggestions, or for a
+`agent.crew_panel` off, or for a
 page whose every field is folded. A thread closed (`is_closing`), removed or
 replaced while that read runs gets no wake, and its reports stay pending.
 After a restart or a revive, when the in-memory witness is gone, the crew

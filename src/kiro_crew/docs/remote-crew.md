@@ -296,7 +296,8 @@ shows **offline**, and either may also show when it was last seen. A row that
 isn't online is dimmed, and choosing it does nothing. If the list can't be loaded,
 the group says why, with the request ID as plain text when there is one. The list
 is read again about once a minute while the dashboard is open, and it never
-carries an access token.
+carries an access token. The group appears only once your account has at least
+one Team Crew, or when it has a sign-in or load problem to show.
 
 ### What opening a Crew does
 

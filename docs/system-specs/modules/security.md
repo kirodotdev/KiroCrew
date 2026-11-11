@@ -3069,6 +3069,9 @@ and every other read keep main's answer. A remote
 workspace turns the built-ins into MCP tools these rows do not bind, so
 `_remote_workspace_agents` refuses an agent carrying either allowlist
 (`REMOTE_AGENT_RESTRICTED`), as it refuses one with authored shell or file rules.
+It refuses the session for its own entry only; a sub-agent registered beside it
+(`acp/kas_subagent_targets.py`) that carries either is left out of the batch and
+named in the session-start notice (`REMOTE_SUBAGENTS_RESTRICTED`).
 
 **claude spec allowlists** — claude reads neither `toolsSettings` allowlist, so for
 a backend in `ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS` (claude only; kiro-cli

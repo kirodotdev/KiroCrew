@@ -28,6 +28,9 @@ HISTORY_IDLE_HOURS_MIN = 0.5
 #: ``memory.kind_routing`` values; :mod:`kiro_crew.memory_kind_routing` says what each does.
 KIND_ROUTING_MODES = ("off", "shadow", "enforce")
 
+#: ``memory.lesson_origin_gate`` values; :mod:`kiro_crew.memory_origin_gate` says what each does.
+LESSON_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
+
 #: ``memory.embedding_provider`` values. ``ollama_http`` selects the Ollama server
 #: backend in :mod:`kiro_crew.embeddings_ollama`.
 OLLAMA_HTTP_PROVIDER = "ollama_http"
@@ -405,6 +408,20 @@ class MemoryConfig:
             enum=list(KIND_ROUTING_MODES),
         ),
     )
+    lesson_origin_gate: str = field(
+        default="off",
+        metadata=_meta(
+            "Lesson Origin Gate",
+            "Whether a lesson learned from turns no person sent (another session's "
+            "message, an auto-nudge, a cron or heartbeat run) may become a standing "
+            "rule. 'off' (default) keeps today's prompt and writes. 'shadow' writes "
+            "every lesson as before and only counts, within fixed size caps, what "
+            "the gate would demote. 'enforce' stores such a lesson as an on_topic "
+            "finding instead, and gives an agent-triggered learn_add its own source. "
+            "Stored lessons are never changed.",
+            enum=list(LESSON_ORIGIN_GATE_MODES),
+        ),
+    )
     inject_memory: bool = field(
         default=True,
         metadata=_meta(
@@ -493,6 +510,13 @@ def kind_routing_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in KIND_ROUTING_MODES:
         return raw
     return str(field_default(MemoryConfig, "kind_routing"))
+
+
+def lesson_origin_gate_mode_from(raw: object) -> str:
+    """A stored ``memory.lesson_origin_gate``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in LESSON_ORIGIN_GATE_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "lesson_origin_gate"))
 
 
 def lesson_extraction_enabled(memory: object) -> bool:

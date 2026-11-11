@@ -486,9 +486,11 @@ no second copy of the stop state machine. The host hands in only its transport:
 the scoped API (`POST /api/chat/slots/{slot}/stop[?force=true]`, covered by the
 embed's `/api/chat` grant) in `website/src/app-sdk/embedStopTransport.ts`, which
 maps each reply to an outcome: `ok`, `declined` (compaction), `refused` (a
-definite no), or `lost` (no answer). The embed passes two opt-in extensions
-`ChatPane` does not (`turnScoped` with the turn identity, and the backend's
-`stop_declined` marker), so the main chat's behaviour is the protocol unchanged.
+definite no), or `lost` (no answer). Both hosts pass `turnScoped` with the
+slot's turn identity (`turn_gen:turn`), so a reply to a press made in one turn
+is dropped once that turn is over: a slow refusal never shows its notice on
+the next turn (#34416). Only the embed passes the backend's `stop_declined`
+marker.
 The embed has no WebSocket, so it reads
 the stop phase from the `stop_state` field of `GET /api/chat/slots/{slot}`, and
 it holds its own soft press as an optimistic `soft_pending` until the poll

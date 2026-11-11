@@ -636,6 +636,15 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
         # ``chat _ get-kas-token`` spawn is gone rather than moved.
         "kiro_cli.py::kas_relay_help",
+        # ``<kiro-cli> acp --agent-engine v3`` start probe for the KAS floor and
+        # doctor: fixed argv (the tail is ``acp.kas_transport``'s constants), run on
+        # ``pin_kiro_cli``'s own install, or by the operator's doctor on the binary
+        # its ``acp --help`` row already ran, 30s-capped, no shell, stdin and stdout
+        # ``/dev/null`` so the engine reads EOF and serves nothing. Only its stderr
+        # is read, for kiro-cli's "V3 is currently not supported on this system"
+        # refusal, which ``acp --help`` cannot show; no credential is passed or read
+        # by Kiro Crew.
+        "kiro_cli.py::kas_relay_start_output",
         # ``<kiro-cli> chat --help`` engine probe for the ``/usage`` scrape: fixed
         # argv, 15s-capped, no shell, no agent-influenced arguments, no credential.
         # It reads which ``--agent-engine`` values this kiro-cli accepts, so the

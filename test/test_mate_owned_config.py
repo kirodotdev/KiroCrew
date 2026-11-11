@@ -5,6 +5,8 @@ Covers RFC *mate-owned-agent-config* §5.3/§5.4 where no live pod is needed:
 * resolution reads BOTH ``~/.kiro/agents/`` and ``<kiro home>/mates/agents/``,
   user-level wins a name collision, and the crewmate's prompt anchors to its own
   folder (``resolve_projected_spec``);
+* a crewmate file wins over a checkout spec of the same name only while a live
+  Bot is bound to it, and says so; a file no Bot owns yields to the checkout;
 * the session agent picker (``list_agents``) does NOT see a crewmate file;
 * the eager copy writes a MINIMAL file (empty additions) — nothing is copied
   from the source agent's payload, so the machine's ``mcp.json`` servers never
@@ -96,6 +98,61 @@ def test_a_user_level_agent_wins_a_name_collision_with_a_crewmate(layout):
     # when the user level does not declare the name.
     assert spec["prompt"] == "user prompt"
     assert prompt_dir == paths_mod.kiro_agents_dir()
+
+
+def _live_bots(monkeypatch, *bots: str) -> None:
+    """The config's live Bots: each id bound to its own file (``kiro_agent`` = id)."""
+    from types import SimpleNamespace
+
+    import kiro_crew.mate_capabilities as mc
+
+    cfg = SimpleNamespace(agents={bot: SimpleNamespace(kiro_agent=bot) for bot in bots})
+    monkeypatch.setattr(mc, "KiroCrewConfig", SimpleNamespace(load=lambda: cfg))
+
+
+def test_a_crewmate_file_no_bot_owns_never_shadows_a_checkout_spec(layout, monkeypatch):
+    """A deleted Bot's leftover file must not replace the folder agent of that name."""
+    _user, mates, checkout = layout
+    _live_bots(monkeypatch)  # the Bot was deleted: no binding owns its file
+    _write(mates, "investigator", {"name": "investigator", "prompt": "", "tools": []})
+    _write(
+        checkout / ".kiro" / "agents",
+        "investigator",
+        {"name": "investigator", "prompt": "project prompt", "tools": ["fs_read"]},
+    )
+    notices: list[str] = []
+
+    spec, prompt_dir = resolve_projected_spec(
+        paths_mod.kiro_agents_dir(), "investigator", str(checkout), notices
+    )
+
+    assert spec["prompt"] == "project prompt"
+    assert spec["tools"] == ["fs_read"]
+    assert prompt_dir == paths_mod.project_agents_dir(str(checkout))
+    assert notices == []
+
+
+def test_a_live_bots_file_wins_over_a_checkout_spec_and_says_so(layout, monkeypatch):
+    _user, mates, checkout = layout
+    _live_bots(monkeypatch, "investigator")
+    _write(mates, "investigator", {"name": "investigator", "prompt": "mate prompt", "tools": []})
+    _write(
+        checkout / ".kiro" / "agents",
+        "investigator",
+        {"name": "investigator", "prompt": "project prompt", "tools": ["fs_read"]},
+    )
+    notices: list[str] = []
+
+    spec, prompt_dir = resolve_projected_spec(
+        paths_mod.kiro_agents_dir(), "investigator", str(checkout), notices
+    )
+
+    assert spec["prompt"] == "mate prompt"
+    assert prompt_dir == mates
+    [notice] = notices
+    assert "investigator" in notice
+    assert ".kiro/agents" in notice
+    assert "Bot" in notice
 
 
 def test_an_ordinary_agent_with_no_crewmate_file_still_resolves_user_level(layout):
