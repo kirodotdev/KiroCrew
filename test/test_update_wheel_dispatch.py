@@ -722,6 +722,9 @@ class TestUpdateDivergenceGuard:
                 elif "--verify" in args:
                     # The upstream pin every later judgment and the reset name.
                     result.stdout = "0123456789abcdef0123456789abcdef01234567\n"
+                elif "diff" in args and "--name-status" in args:
+                    # The changed-path listing: BYTES, exit 0.
+                    result.stdout = b""
                 elif "diff" in args:
                     # Non-zero: the upstream has new commits, so the update
                     # proceeds past the up-to-date early return.

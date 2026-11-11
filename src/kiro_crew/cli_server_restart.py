@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, update_next_start
 from kiro_crew.cli_server_peer import (
     _CLI_LOOPBACK,
     _GatewayPeerRefused,
@@ -459,6 +459,14 @@ def _warn_restart_ready_override(raw: str, used: int, problem: str) -> None:
     )
 
 
+def _print_applying_update(wait_secs: float) -> None:
+    print(
+        "⏳ The new gateway is applying an update before it serves; "
+        f"waiting up to {int(wait_secs // 60)} minutes.",
+        flush=True,
+    )
+
+
 def _print_still_starting(elapsed: float) -> None:
     print(f"⏳ Still starting ({int(elapsed)}s elapsed), continuing to wait...", flush=True)
 
@@ -611,6 +619,7 @@ def _wait_gateway_ready(
     deadline = start + timeout
     checkpoint = start + _RESTART_READY_SOFT_CHECKPOINT
     checkpoint_printed = False
+    applying_printed = False
     while True:
         status = proc.poll()
         if status is not None:
@@ -626,6 +635,20 @@ def _wait_gateway_ready(
             status = proc.poll()
             if status is not None:
                 return _READY_DIED, status
+            # A boot-time apply binds nothing, so a long one reads as a hang. While
+            # the replacement itself reports applying, wait out the apply bound
+            # plus the readiness window that follows it.
+            applying = update_next_start.applying_started(proc.pid)
+            if applying is not None:
+                left = max(0.0, update_next_start.APPLY_BOUND_SECS - (time.time() - applying))
+                extended = now + left + timeout
+                if extended > deadline:
+                    if not applying_printed:
+                        _print_applying_update(extended - now)
+                        applying_printed = True
+                    deadline = extended
+                    time.sleep(_RESTART_READY_POLL_INTERVAL)
+                    continue
             return (_READY_UNCONFIRMED if answered else _READY_TIMEOUT), None
         time.sleep(_RESTART_READY_POLL_INTERVAL)
 

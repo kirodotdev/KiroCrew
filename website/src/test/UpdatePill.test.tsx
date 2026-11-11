@@ -3,6 +3,7 @@ import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 
 import { renderWithProviders, createTestStore } from '../test/helpers'
 import { sseStatus, setDesktopUpdateAvailable } from '../store/dashboardSlice'
+import { i18nT } from '../i18n/t'
 import UpdatePill from '../components/UpdatePill'
 import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../components/ui/dropdown-menu'
@@ -44,6 +45,23 @@ describe('UpdatePill', () => {
   it('appears on a gateway update', async () => {
     await mount({ status: { update_available: true } })
     expect(pill()).toBeInTheDocument()
+  })
+
+  it('a gateway that only waits for a restart lights it, even with no newer build on offer', async () => {
+    await mount({ status: { update_available: false, update_restart_ready: true } })
+    expect(pill()).toBeInTheDocument()
+    expect(pill()).toHaveTextContent(i18nT('components.updatePill.update_ready'))
+  })
+
+  it('reads "Update ready" once the update is staged, not "Update available"', async () => {
+    await mount({ status: { update_available: true, update_restart_ready: true } })
+    expect(pill()).toHaveTextContent(i18nT('components.updatePill.update_ready'))
+    expect(pill()).not.toHaveTextContent(i18nT('components.updatePill.update_available'))
+  })
+
+  it('an armed update reads "Update when I restart" and lights the pill with no newer build', async () => {
+    await mount({ status: { update_available: false, update_armed_version: '9.9.9' } })
+    expect(pill()).toHaveTextContent(i18nT('components.updatePill.update_when_i_restart'))
   })
 
   it('appears on a desktop update', async () => {

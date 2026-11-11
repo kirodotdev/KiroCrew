@@ -517,6 +517,43 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     }
   })
 
+  it('shows a staged install as done, not as an update that ended without starting', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const spy = stubFetch()
+      spy.mockImplementation(async (input: unknown, init?: { method?: string }) => {
+        const url = String(input)
+        const reply = (body: unknown) => ({
+          ok: true, status: 200,
+          json: async () => body, text: async () => '',
+          headers: new Headers({ 'content-type': 'application/json' }),
+        })
+        if (url.includes('/api/update/arm') && init?.method === 'POST') {
+          return reply({ ok: true, armed: true, request_id: 'r1', version: '9.9.9', expires_in: 600, approve_command: 'kirocrew update approve' })
+        }
+        if (url.includes('/api/update/arm')) return reply({ armed: false })
+        return reply({})
+      })
+      store.dispatch(sseStatus({ ...ARMABLE_STATUS } as never))
+      mountWeb()
+      fireEvent.click(await screen.findByRole('button', { name: /update to v9\.9\.9/i }))
+      await screen.findByTestId('in-app-update-armed')
+      await vi.advanceTimersByTimeAsync(5100)
+      await waitFor(() => expect(screen.getByTestId('in-app-update-applying')).toBeTruthy())
+      store.dispatch(setUpdateProgress({ step: 'building', detail: 'Building the new environment…' } as never))
+      // The gateway's staged success: the new version is installed beside the
+      // running one and starts at the next restart.
+      store.dispatch(setUpdateProgress({ step: 'done', detail: 'v9.9.9 installed. Restart to use it.' } as never))
+      await waitFor(() => expect(screen.getByTestId('in-app-update-staged')).toBeTruthy())
+      // Past the grace window that used to turn a silent apply into "ended".
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(screen.queryByTestId('arm-ended-note')).toBeNull()
+      expect(screen.getByTestId('in-app-update-staged')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('decides expiry vs approval by the absolute deadline, not the counter', async () => {
     // The wire cannot distinguish a consumed request from a TTL lapse: both
     // answer armed:false. A throttled background tab misses countdown ticks,

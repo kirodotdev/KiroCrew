@@ -130,6 +130,29 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.queryByTestId('up-to-date')).toBeNull()
   })
 
+  it('says so when taking the armed update back fails', async () => {
+    const spy = stubFetch({ check_status: 'succeeded', update_available: false, error_code: null })
+    const base = spy.getMockImplementation()!
+    spy.mockImplementation(async (input: unknown, init?: RequestInit) => {
+      if (new URL(String(input), 'http://x').pathname === '/api/update' && init?.method === 'POST') {
+        return {
+          ok: false, status: 500,
+          json: async () => ({ error: 'disk full', code: 'disarm_failed' }),
+          text: async () => JSON.stringify({ error: 'disk full', code: 'disarm_failed' }),
+          headers: new Headers({ 'content-type': 'application/json' }),
+        } as Response
+      }
+      return base(input, init)
+    })
+    store.dispatch(sseStatus({ ...BLANK_STATUS, update_armed_version: '9.9.9' } as never))
+    mountWeb()
+
+    fireEvent.click(await screen.findByTestId('about-update-cancel-armed'))
+
+    const note = await screen.findByTestId('about-update-cancel-armed-error')
+    expect(note.textContent).toContain(i18nT('components.updateFoundModal.cancel_update_failed'))
+  })
+
   it('an unrecognised error code falls back to the generic reason', async () => {
     // A newer gateway paired with this bundle must still say the check failed.
     stubFetch({ check_status: 'failed', update_available: null, error_code: 'some_future_code' })
@@ -281,7 +304,7 @@ describe('AboutPanel gateway update check', () => {
     const dialog = await screen.findByRole('dialog')
     // Scoped to the dialog: the page's own trigger button behind the backdrop
     // legitimately still exists in the DOM.
-    expect(within(dialog).queryByRole('button', { name: /^Update now$/i })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: /^Update when I restart$/i })).toBeNull()
   })
 
   it('the confirm modal opened from a stale flag disarms once the check says diverged', async () => {
@@ -306,7 +329,7 @@ describe('AboutPanel gateway update check', () => {
 
     const note = await screen.findByTestId('diverged-modal')
     expect(note.textContent?.toLowerCase()).toContain('rebase')
-    expect(screen.queryByRole('button', { name: /^Update now$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update when I restart$/i })).toBeNull()
     const dialog = screen.getByRole('dialog')
     expect(dialog).toBeTruthy()
     fireEvent.click(screen.getByTestId('diverged-modal-close'))
@@ -552,13 +575,13 @@ describe('AboutPanel gateway update check', () => {
     await pressCheck()
 
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_now') })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_when_i_restart') })).toBeTruthy(),
     )
     expect(screen.queryByRole('button', { name: /Update to v0\.13\.0/ })).toBeNull()
     expect(screen.queryByText(/\(v0\.13\.0\)/)).toBeNull()
 
     // The confirm dialog it opens names no version either.
-    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_now') }))
+    fireEvent.click(screen.getByRole('button', { name: i18nT('pages.settings.aboutPanel.update_when_i_restart') }))
     const confirm = await screen.findByRole('dialog', { name: i18nT('pages.settings.aboutPanel.update') })
     expect(within(confirm).queryByText(/v0\.13\.0/)).toBeNull()
   })

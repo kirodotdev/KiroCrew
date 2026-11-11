@@ -17,6 +17,8 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { dirtyWorktreeChanged } from '../../utils/dirtyWorktree'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 import { i18nT } from '../../i18n/t'
+import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useAppSelector } from '../../store'
 import { fmtRelative } from '../../i18n/format'
 import { InAppUpdateFlow, RestartGatewayButton, copyCommand } from './AboutPanelUpdateFlow'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
@@ -144,21 +146,25 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
       adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
     },
   })
+  // Update ARMS the update for the next start (`POST /api/update`): nothing
+  // installs and nothing restarts now. The status frame then carries
+  // `update_armed_version`, which the card below renders.
   const gwApply = useMutation({
     mutationFn: () => api.applyUpdate(),
-    onSuccess: () => setRestarting(true),
+    onSuccess: () => {
+      setApplyError('')
+      setApplyDirty(false)
+      setShowConfirm(false)
+    },
     onError: (e: unknown) => {
-      // A real server rejection (e.g. 409 dirty tree, 400) arrives as ApiError
-      // with a status code — surface it. A bare network failure means the POST's
-      // connection was reset by the gateway restart the update itself triggers;
-      // that is the expected success path, not a failure.
       const changed = dirtyWorktreeChanged(e)
       setApplyDirty(changed !== null)
       if (changed !== null) setApplyError(i18nT('pages.settings.aboutPanel.update_refused_dirty_worktree', { changed }))
-      else if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.update_failed'))
-      else setRestarting(true)
+      else setApplyError(e instanceof ApiError ? (e.message || i18nT('pages.settings.aboutPanel.update_failed')) : i18nT('pages.settings.aboutPanel.update_failed'))
     },
   })
+  // Take the armed update back: the next start applies nothing.
+  const gwCancelArm = useMutation({ mutationFn: () => api.disarmUpdate() })
   // Restart WITHOUT updating: the missing half of the non-self-updatable flow.
   // After the user runs the copied installer command in a terminal, the running
   // gateway is still executing the old code and had no in-app way to reload.
@@ -171,6 +177,8 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
       setApplyDirty(false)
+      // The person declined the "work is running" confirmation: a quiet cancel.
+      if (e instanceof WorkConfirmDeclined) return
       if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
       else setRestarting(true)
     },
@@ -221,7 +229,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient) {
     gwUnavailableReason, gwSelfUpdatable, gwChannel, gwChannelError, gwCommand, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, showConfirm, setShowConfirm,
     applyError, setApplyError, applyDirty, restarting, setRestarting, gwCheck, gwApply, gwRestart,
-    gwChannelMutation,
+    gwChannelMutation, gwCancelArm,
   }
 }
 
@@ -279,8 +287,38 @@ export function AboutPanelGatewayUpdates({
   // A git checkout that is only behind its upstream reports the version it
   // already runs as the target, so the text names no version then.
   const namedTarget = gwTarget && gwTarget !== runningVersion ? gwTarget : ''
+  // The update a person armed (applies at the next start) and the error the last
+  // boot-time apply left, from the status frame.
+  const armedVersion = useAppSelector(s => s.dashboard.status?.update_armed_version) || ''
+  const pendingApplyError = useAppSelector(s => s.dashboard.status?.pending_apply_error) || ''
   return (
     <div className="flex flex-col gap-2.5">
+      {armedVersion && (
+        <p className="text-[13px] text-muted" data-testid="about-update-armed-note">
+          {i18nT('components.updateFoundModal.update_armed_note')}
+          <button
+            type="button"
+            data-testid="about-update-cancel-armed"
+            className="ml-2 underline text-muted hover:text-text bg-transparent border-none p-0 text-[13px] cursor-pointer"
+            onClick={() => gwUpdate.gwCancelArm.mutate()}
+            disabled={gwUpdate.gwCancelArm.isPending}
+          >
+            {i18nT('components.updateFoundModal.cancel_update')}
+          </button>
+        </p>
+      )}
+      <ErrorNotice
+        message={gwUpdate.gwCancelArm.isError ? i18nT('components.updateFoundModal.cancel_update_failed') : null}
+        askAgent
+        testId="about-update-cancel-armed-error"
+      />
+      {pendingApplyError && (
+        <ErrorNotice
+          message={i18nT('components.updateFoundModal.update_apply_failed', { error: pendingApplyError })}
+          askAgent
+          testId="about-update-apply-error"
+        />
+      )}
       {(showUpdate || channelMovePending) ? (
         <>
           {showUpdate && (
@@ -378,7 +416,7 @@ export function AboutPanelGatewayUpdates({
                     does not follow the verb in every language. */}
                 <ArrowUp size={13} className="lucide-inline" /> {namedTarget
                   ? i18nT('pages.settings.aboutPanel.update_to_version', { version: namedTarget })
-                  : i18nT('pages.settings.aboutPanel.update_now')}
+                  : i18nT('pages.settings.aboutPanel.update_when_i_restart')}
               </Btn>
             </div>
           )}
@@ -551,7 +589,7 @@ export function AboutPanelUpdateConfirm({
             offers no apply, so warning about its restart would keep the
             update promise the body just withdrew. */}
         {!gwDiverged && (
-          <p className="text-[12px] text-muted mb-3">{i18nT('pages.settings.aboutPanel.updating_restarts_the_gateway_active_sessions_wi')}</p>
+          <p className="text-[12px] text-muted mb-3">{i18nT('pages.settings.aboutPanel.update_installs_at_next_restart')}</p>
         )}
         {/* askAgent on: the apply's inputs are all server-side (a 409 dirty
             tree, a 400) and this dialog holds no draft. `ErrorNotice` exposes
@@ -563,11 +601,7 @@ export function AboutPanelUpdateConfirm({
             <CopyCommand><code>git stash push -u -m "before kirocrew update"</code></CopyCommand>
           </div>
         )}
-        {restarting ? (
-          <div className="text-[13px] text-accent flex items-center justify-center gap-1.5 py-2" role="status">
-            <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating_gateway_restarting')}
-          </div>
-        ) : gwCheck.isPending ? (
+        {gwCheck.isPending ? (
           /* The pre-apply check is still running: its answer may be
              "diverged", so an enabled apply button here is a race the user
              can win against their own safety check. Hold the action until
@@ -582,7 +616,7 @@ export function AboutPanelUpdateConfirm({
           </Btn>
         ) : (
           <Btn primary className="w-full justify-center" disabled={gwApply.isPending} onClick={() => gwApply.mutate()}>
-            {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating')}</> : i18nT('pages.settings.aboutPanel.update_now')}
+            {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating')}</> : i18nT('pages.settings.aboutPanel.update_when_i_restart')}
           </Btn>
         )}
       </div>

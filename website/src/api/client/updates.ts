@@ -5,15 +5,60 @@
  */
 
 import type { UpdateCheckResult } from '../../types'
+import { askAppConfirm } from '../../lib/appConfirm'
+import { i18nT } from '../../i18n/t'
+import { asWorkInFlight, WorkConfirmDeclined, workInFlightNotice, type WorkInFlight } from '../../utils/workInFlight'
 import type { ClientTransport } from './transport'
 
 export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTransport) {
+  /**
+   * The one confirmation for a restart that would cut running work. Every
+   * caller of `restartGateway` gets it from here: the gateway answers with what
+   * is running, this shows it, and `force: true` goes out only after the person
+   * says yes. A "no" throws `WorkConfirmDeclined`, which callers treat as a quiet
+   * cancel, not an error.
+   */
+  const confirmRestartUnderWork = async (work: WorkInFlight): Promise<void> => {
+    const ok = await askAppConfirm({
+      title: i18nT('components.updateFoundModal.work_running_title'),
+      body: workInFlightNotice(work),
+      confirmLabel: i18nT('components.updateFoundModal.restart_anyway'),
+      layer: 'top',
+    })
+    if (!ok) throw new WorkConfirmDeclined(i18nT('components.updateFoundModal.restart_cancelled'))
+  }
+
+  /**
+   * Restart the gateway without updating. Asked with `force: false` first: while
+   * work is running the gateway answers 409 `work_in_flight` and restarts nothing.
+   * The connection drops as the process image is replaced, so callers must treat
+   * a network failure after a 200 as the expected path rather than an error.
+   */
+  const restartGateway = async () => {
+    const first = await post('/api/restart', { force: false })
+    if (first.status === 409) {
+      const work = asWorkInFlight(await first.clone().json().catch(() => null))
+      if (work) {
+        await confirmRestartUnderWork(work)
+        return post('/api/restart', { force: true }).then(j)
+      }
+    }
+    return j(first)
+  }
+
   const lifecycle = {
     // Update
     checkUpdate: () => fetch('/api/update/check').then(j) as Promise<UpdateCheckResult>,
     changelog: () => fetch('/api/changelog').then(j),
     releases: () => fetch('/api/releases').then(j),
-    applyUpdate: () => post('/api/update').then(j),
+    /**
+     * Update when I restart: ARMS the update. Nothing installs and nothing restarts
+     * now, whatever is running; the gateway applies it at its next start, before it
+     * serves anything. Answers `202 {armed: true, version}`.
+     */
+    applyUpdate: () => post('/api/update', { when: 'next-start' }).then(j) as Promise<{ armed?: boolean; version?: string }>,
+    /** Take the armed update back: the next start applies nothing. */
+    disarmUpdate: () => post('/api/update', { when: 'cancel' }).then(j) as Promise<{ armed?: boolean }>,
     setAutoUpdate: (enabled: boolean) => post('/api/update/auto', { enabled }).then(j),
     /** Whether config.local.json pins `auto_update`, read without running a check. */
     autoUpdatePin: () => fetch('/api/update/auto').then(j) as Promise<{ overlay_override?: unknown }>,
@@ -23,12 +68,7 @@ export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTr
      * re-run check against the NEW channel.
      */
     setUpdateChannel: (channel: string) => post('/api/update/channel', { channel }).then(j) as Promise<UpdateCheckResult>,
-    /**
-     * Restart the gateway without updating. The connection drops as the process
-     * image is replaced, so callers must treat a network failure after a 200 as
-     * the expected path rather than an error.
-     */
-    restartGateway: () => post('/api/restart').then(j),
+    restartGateway,
     // In-app wheel update step-up: arming records the request and returns the
     // host command to run; the approval nonce never reaches this client.
     //

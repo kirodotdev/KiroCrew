@@ -2341,12 +2341,22 @@ no signal and exit 1. Without `--expect-pid` the command is unchanged:
 `kirocrew restart --when-idle [--max-wait SECONDS]` restarts only once nothing
 is in flight (`cli_restart_idle.py`). It asks the gateway's host-only
 `POST /api/restart/when-idle`, sending the local secret only over the
-owner-verified transport `update approve` uses. That route runs the census the
-scheduled update waits on, under its admission pause (see
-[slack-gateway](slack-gateway.md), "The restart idle gate"). While the gateway
-is busy the command prints the counts and asks again every 10s, for up to
-`--max-wait` (default 600s, the gateway's `_MANDATORY_UPDATE_MAX_DEFER_SECS`; `0`
-checks once). On an idle answer, or when the connection is refused and no
+owner-verified transport `update approve` uses. That route READS the quiescence
+census (see [slack-gateway](slack-gateway.md), "The restart idle check is a read,
+until its last ask"). While the gateway is busy the command prints the counts and
+asks again every 10s, for up to `--max-wait` (default 600s; `0` checks once).
+An idle answer is asked a second time at once, before the restart, with `commit`: the
+gateway then pauses and fences new turns like the dashboard restart, so a turn admitted
+after the first answer reads busy on the second and is waited on (or, past `--max-wait`,
+exits busy), and one that would start after it is spooled, not cut. If the restart then
+fails, the command asks the gateway to release the pause. A gateway that predates the
+two-step check answers the `commit` ask with HTTP 400 or 404; the command then releases
+any hold and falls back to the one-step restart on the first idle answer.
+
+`kirocrew restart` (with or without `--when-idle`), Slack `/kirocrew restart` and
+`!restart` are explicit commands a person types, so they are the exception to "no
+path restarts a running gateway": they stay, and an armed update applies at the
+boot after them, like the dashboard and desktop Restart buttons. On an idle answer, or when the connection is refused and no
 kirocrew service is running (or `--port` names the gateway), it runs the
 restart below. Exits that restart nothing: 75 while still busy, with
 `kirocrew-restart-busy {"turns":N,"background":M}` on stderr and as the last stdout
@@ -3114,10 +3124,10 @@ to a checkout hundreds of commits behind `main`, for as long as the next bump
 took.
 
 Both conditions are narrower than "is it behind", because `available` is also
-read by an unattended apply. `GatewayOrchestrator._auto_apply_update` applies
-`git fetch` + `git reset --hard <oid>` with no prompt — `<oid>` being
-`origin/<branch>` resolved once after the fetch, the same pin `kirocrew update`
-takes, so what it floor-checks is what it resets to — so:
+read by an apply. `kirocrew update` applies `git fetch` + `git reset --hard <oid>`
+(run at the next start for an armed update), `<oid>` being
+`origin/<branch>` resolved once after the fetch, so what it floor-checks is what it
+resets to:
 
 - "Behind" alone is true both for a checkout that is purely behind and for a
   DIVERGED one carrying its own commits, and the second would have those commits
@@ -3127,30 +3137,56 @@ takes, so what it floor-checks is what it resets to — so:
   still reads newer than the imported version; without that requirement the
   same reset would drop those commits.
 
-**The unattended apply is triggered by the version, not by commit distance.**
-The check reports `version_newer` beside `available`, and the git branch of the
-`auto_update` path requires both. `available` is what the dashboard shows, and
-on commit distance alone that would mean any upstream commit — resetting a
-source checkout within 12 hours of one, where the version-only verdict only did
-so at a release. Requiring both keeps that path firing no more often than
-before. Commit distance without a version bump lights the dashboard badge, and
-`POST /api/update` is the non-destructive way to apply it.
+(The gateway's loop no longer resets a checkout; see "What `auto_update` does on
+this install is derived once".)
+
+**No update restarts the gateway under running work, and no unattended path
+restarts a running gateway at all** (maintainer decision of 2026-11-10,
+[decision](../../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)).
+A click on Update ("Update when I restart", `POST /api/update`) only ARMS the
+update (`202 {armed: true, version}`; `{"when": "cancel"}` disarms it, a legacy
+`force` is ignored), whatever is running. The apply runs at the next start, before
+the gateway serves or restores anything (`update_boot_apply`): the policy
+`apply_command`, the managed venv or the git route, as `kirocrew update` in a bounded
+child, then a re-exec. Nothing runs at shutdown, and a gateway the desktop app hosts
+skips it. A failure keeps the old version and shows `pending_apply_error`. The
+dashboard and desktop Restart buttons (`POST /api/restart`) are user restarts that
+bring an armed update in: they take the pause, drain and fence, warn first while
+work is running (`kiro_crew.quiescence`: in-flight turns, queued messages, approval
+cards, a chat typed into within 15 minutes; one confirm, `force: true` only after
+"Restart anyway"), and a declined warning is a quiet cancel. The approved-wheel path
+(`POST /api/update/approve`) installs and stages only
+(`kiro_crew.update_restart_ready`). Spec: [slack-gateway](slack-gateway.md) →
+"Update arms, the start applies".
+
+**A git update is applied by a person, and `version_newer` still gates it.**
+The check reports `version_newer` beside `available`. `available` is what the
+dashboard shows, and on commit distance alone that would mean any upstream
+commit. The gateway's loop no longer resets a checkout at all (a reset rewrites
+the tree it serves from), so both only decide what the badge and `POST
+/api/update` offer. Commit distance without a version bump lights the dashboard
+badge, and `POST /api/update` is the non-destructive way to apply it.
 
 **What `auto_update` does on this install is derived once.**
 `update_capability.auto_update_effect()` answers `install` (with the switch on,
-an available update is installed and the gateway restarts), `notify` (the switch
-cannot install here, or policy turns unattended installs off, so it only
-notifies), or `mandatory` (a policy floor this build is below installs it
-whatever the switch says). It is read from install
+an available update is built beside the running install and left for the next
+restart; the gateway is never restarted for it), `notify` (the switch cannot
+install here, policy turns unattended installs off, or the route replaces the
+running tree in place, so it only notifies), or `mandatory` (a policy floor this
+build is below stages it whatever the switch says, on the managed venv; on a
+git checkout or a policy command it keeps its notice and applies nothing). Only
+the managed venv answers `install`: a git reset and a policy `apply_command`
+rewrite the tree the process serves from, so they answer `notify` with the route
+kept (`manual_only`). It is read from install
 shape and policy alone, before any check runs: a policy provider owns the update
 and installs only with an `apply_command` it can run; a git checkout installs only
 past the unattended git apply's static gates (a trusted `git`, a primary branch,
 no repository-named exec driver, tracking `origin/<branch>`, the pinned source);
 a managed venv only past the shadow apply's (POSIX, a trusted `openssl`, the
 managed venv itself, a safe HTTPS CDN, the pinned source); anything else is updated by its own updater. The
-gateway's update loop branches on that answer, and `notify` never reaches
-`_prepare_auto_update_apply`, so admission is not paused for an update the install
-will not apply (a provider with no `apply_command`, a feature-branch checkout).
+gateway's update loop branches on that answer, and `notify` never pauses
+admission, so it is not paused for an update the install will not apply (a
+provider with no `apply_command`, a feature-branch checkout).
 `notify` is also what a source pin produces, and no badge then points at a
 `kirocrew update` the same pin refuses. A policy with
 `updates.unattended_apply: false` turns every remaining `install` into `notify`
@@ -3161,13 +3197,11 @@ its route) says a person's Update still installs. About disables the switch and
 shows its "use Update" note off either, which a managed venv needs: its Update
 is the arm and approve flow, so its `update_can_apply` is false. The loop logs
 that notify at INFO, not WARNING, since the policy chose it. A build below the floor
-still answers `mandatory`. The effect is derived before the check and the wait
-for idle, so each routine install reads the pin again with nothing awaited
-between that read and the change: the provider path before and after its memory
-copy, the last of the git route's refusals before `reset --hard` (they run before
-and after its copy too), and the managed venv before and after the memory copy at
-the swap (`run_wheel_apply`'s `refuse_if_unattended_off`), where a refusal ends
-`deferred` and the next cycle notifies.
+still answers `mandatory`. The effect is derived before the check, so the managed
+venv reads the pin again with nothing awaited between that read and the change:
+before and after the memory copy at the swap (`run_wheel_apply`'s
+`refuse_if_unattended_off`), where a refusal ends `deferred` and the next cycle
+notifies.
 Dynamic conditions stay with the update itself: the git route still requires
 `version_newer`, the managed-venv route a newer build. A voluntary `install` is
 also withheld for a version the user put off: the update prompt's "Remind me
@@ -3177,21 +3211,11 @@ found, so that version notifies instead of being installed and restarted
 unattended. When the snooze runs out the prompt opens again, and the deferral
 holds for one more window (`REPROMPT_WINDOW_SECS`, the snooze's own 24 h) so
 "Later" never becomes a silent install; only a prompt left unanswered for that
-window lets it install. A managed-venv restart already queued (`_pending_update_respawn`)
-reads the same record for `_pending_update_version` on every retry and waits
-while it holds (the git and provider routes leave that field empty: their code
-is already replaced on disk, and the git route reloads `kiro_crew`, so their
-queued restart is never held); a held cycle still runs the update check, so a policy floor
-raised meanwhile or a newer release is applied and replaces the held respawn.
-The record names one version, so a newer release is offered
-again; `mandatory` ignores it. With `auto_update` on, the managed-venv route
-still builds on first detection, before the user has seen a prompt; only its
-restart waits for an answer. The managed-venv route
-does not pause admission before it builds; only its restart does, through
-`_retry_pending_update_restart`, which calls `_prepare_auto_update_apply`.
-`_auto_apply_wheel_update` makes the first attempt, and while
-`_pending_update_respawn` is set every `_run_update_checks` cycle retries that
-restart on the short cadence instead of checking again. The status frame carries the
+window lets it install. The managed-venv route
+does not pause admission and does not restart: it builds, promotes and records
+"update ready, restart to use it" (`update_restart_ready`), and the new version
+starts at the next restart a person chooses. A cycle that finds the staged version
+builds nothing. The scheduler has no restart code. The status frame carries the
 same answer as `update_auto_effect` (with `update_auto_manual_only` from the same
 derivation), re-derived off the loop at most once every
 five minutes once the update loop's first cycle has armed that refresh. A frame
@@ -3211,8 +3235,8 @@ answer to "is this the backend the desktop app bundles and launches"
 (`bundled_by_desktop_app`). It is independent of `update_managed_by`, which reads
 `command` on that same bundle once a policy `updates` provider is configured,
 because the provider is resolved before the desktop deferral. On such a bundle
-`update_auto_effect` reports the provider's answer (`install`, `mandatory`, or
-`notify` without a runnable `apply_command`), since the provider is what the
+`update_auto_effect` reports the provider's answer (`mandatory` below a floor,
+`notify` otherwise), since the provider is what the
 gateway's loop runs; on a bundle with no provider it reports `notify`, the app's
 own updater owning the update.
 

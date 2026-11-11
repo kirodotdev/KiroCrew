@@ -88,6 +88,10 @@ class _GitStub:
             )
         if argv[:2] == ["git", "fetch"]:
             return subprocess.CompletedProcess(argv, self.rc.get("fetch", 0), "", "no remote")
+        if argv[:2] == ["git", "diff"] and "--name-status" in argv:
+            # The changed-path listing: BYTES (NUL-separated), and exit 0 whether
+            # or not the target changes paths, unlike the --quiet probe.
+            return subprocess.CompletedProcess(argv, self.rc.get("name_only", 0), b"", b"")
         if argv[:2] == ["git", "diff"]:
             return subprocess.CompletedProcess(argv, self.rc.get("diff", 1), "", "")
         if argv[:2] == ["git", "rev-list"]:
@@ -856,7 +860,9 @@ class TestUpdateSubprocessHardening:
         proceed to the divergence guard — rather than tracing back or lying
         "up to date"."""
         stub = _GitStub()
-        monkeypatch.setattr(subprocess, "run", self._timeout_on(["git", "diff"], stub))
+        monkeypatch.setattr(
+            subprocess, "run", self._timeout_on(["git", "diff", "--no-textconv"], stub)
+        )
         cli_server._update()
         out = capsys.readouterr().out
         assert "git diff timed out" in out
@@ -1530,6 +1536,39 @@ class TestApproveBusyVsDown:
     refused connection as not running. It carries a single-use nonce, so the
     busy line points at the dashboard, never a retry.
     """
+
+    def test_update_approve_says_an_armed_answer_applies_at_the_next_start(
+        self, monkeypatch, capsys
+    ) -> None:
+        import contextlib
+        import io
+
+        from kiro_crew.platform import update_capability, update_stepup
+
+        monkeypatch.setattr(
+            update_capability,
+            "derive_capability",
+            lambda: types.SimpleNamespace(managed_by="source"),
+        )
+        pending = types.SimpleNamespace(
+            version="1.2.3", channel="stable", expires_in=60, nonce="n" * 64
+        )
+        monkeypatch.setattr(update_stepup, "read_pending", lambda: pending)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _p, **_kw: "")
+        monkeypatch.setattr(
+            cli_server,
+            "_owner_verified_secret_urlopen",
+            lambda *a, **k: contextlib.closing(
+                io.BytesIO(b'{"ok": true, "status": "armed", "version": "1.2.3"}')
+            ),
+        )
+
+        cli_server._update_approve()
+
+        out = capsys.readouterr().out
+        assert "is armed" in out and "next start" in out
+        assert "is applying" not in out
 
     def test_update_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
         from kiro_crew.platform import update_capability, update_stepup

@@ -19,7 +19,7 @@
       "label": "Update the gateway automatically",
       "tab": "about",
       "route": "/settings/about?highlight=key%3Aauto_update",
-      "description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
+      "description": "Updates are downloaded automatically and take effect the next time you restart Kiro Crew. Nothing restarts by itself. When off, it stays on its current version.",
       "configKey": "auto_update"
     },
     {

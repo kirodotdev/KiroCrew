@@ -1654,6 +1654,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.monitoring.models import (  # noqa: F401
         MonitorDispatchResult,
     )
+    from kiro_crew.quiescence import (  # noqa: F401
+        note_user_input,
+    )
     from kiro_crew.safety_override import (  # noqa: F401
         safety_override,
     )
