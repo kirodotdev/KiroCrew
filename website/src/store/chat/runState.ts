@@ -7,7 +7,6 @@ import type { TurnIdentityFields } from '../../types'
 import type { ChatState, EndedTurn, SlotState, SlotStatusDetail } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 import { jsonEqual } from '../../utils/structuralEqual'
-import { finalizeTrailingStreaming } from './transcript'
 import { boundSlotWindow, parkActiveTranscript, setPagingCursor } from './slotCache'
 
 export function pushHistory(history: string[], key: string): string[] {
@@ -376,7 +375,7 @@ export const runStateReducers = {
       // The `_done` this settlement stands in for would also have finalized
       // the trailing streaming row; a reply left as `streaming` hides its
       // final-only rendering and actions (GPT round 3).
-      finalizeTrailingStreaming(state.slotMessages?.[safeKey(slot)] ?? [])
+      finalizeTurnTranscript(state.slotMessages?.[safeKey(slot)] ?? [])
       return
     }
     if (running) {
@@ -423,7 +422,7 @@ export const runStateReducers = {
       state.slotStopping = false
       state.slotState = 'idle'
       state.lastChunkSeq = undefined
-      finalizeTrailingStreaming(state.messages)
+      finalizeTurnTranscript(state.messages)
       return
     }
     const run = state.slotRun?.[safeKey(slot)]
@@ -433,7 +432,7 @@ export const runStateReducers = {
     syncOriginRun(state, slot, 'idle')
     // Stand-in for the `_done` that never came: finalize the trailing
     // streaming row as that frame would have (GPT round 3).
-    finalizeTrailingStreaming(state.slotMessages?.[safeKey(slot)] ?? [])
+    finalizeTurnTranscript(state.slotMessages?.[safeKey(slot)] ?? [])
   },
   setStopPressedAt(state: ChatState, action: PayloadAction<{ slotId: string; ts: number }>) {
     if (isUnsafeKey(action.payload.slotId)) return
