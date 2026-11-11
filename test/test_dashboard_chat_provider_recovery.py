@@ -351,7 +351,7 @@ class TestAcpProcessDiedRecoveryRequeue:
             "the finished answer" in a for a in posted
         ), f"recovery reply never delivered to the linked thread; posted={posted}"
         # The user echo stays withheld: that text is the runner's, not the user's.
-        assert not any("\U0001f4ac" in a for a in posted), f"echoed runner text: {posted}"
+        assert not any("Sent from Kiro Crew:" in a for a in posted), f"echoed runner text: {posted}"
 
     @pytest.mark.asyncio
     async def test_session_reset_propagated(self, tmp_path: Path) -> None:

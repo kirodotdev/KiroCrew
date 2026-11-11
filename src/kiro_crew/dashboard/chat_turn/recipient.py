@@ -24,7 +24,7 @@ from kiro_crew.messaging.outbound_files import (
     iter_local_refs,
     strip_url_syntax,
 )
-from kiro_crew.messaging.renderer import split_options_trailer
+from kiro_crew.messaging.renderer import MIRROR_ECHO_LABEL, split_options_trailer
 from kiro_crew.messaging.upload_gate import uploads_restricted
 from kiro_crew.mirror_admission import admission_required, verify_mirror_admission
 from kiro_crew.platform import redact_via_context
@@ -886,8 +886,11 @@ async def _deliver_cross_surface_user_message(
     The user-message half of the channel-neutral cross-surface leg: before the
     turn's reply is delivered, push what the user typed in the dashboard to the
     linked channel so the remote conversation reads coherently (question then
-    reply), matching Slack's ``💬 _msg_`` echo. Capability-gated and best-effort,
-    mirroring ``_deliver_cross_surface_reply``. Slack is handled by its dedicated
+    reply), matching Slack's labelled echo. The label is the same
+    ``MIRROR_ECHO_LABEL`` in plain text: ``transport.send_message`` takes one
+    string for every channel, and no bold markup renders the same on all of
+    them. Capability-gated and best-effort, mirroring
+    ``_deliver_cross_surface_reply``. Slack is handled by its dedicated
     streaming mirror; the caller guards out slash commands and recovery turns.
     """
     if not user_message:
@@ -904,7 +907,7 @@ async def _deliver_cross_surface_user_message(
     try:
         await transport.send_message(
             link.channel_id,
-            f"💬 {_prepare_mirror_msg(user_message)}",
+            f"{MIRROR_ECHO_LABEL} {_prepare_mirror_msg(user_message)}",
             thread_id=link.thread_id,
         )
         logger.info(
@@ -1027,8 +1030,9 @@ def _prepare_mirror_msg(raw_user_message: str) -> str:
 def _prompt_typed_in_dashboard(turn: Any) -> bool:
     """Whether this turn's prompt is one a person typed in the dashboard.
 
-    The mirror echo (Slack's ``> 💬`` quote and the cross-surface leg) exists to
-    show a remote surface what was asked in the dashboard. It is an ALLOWLIST:
+    The mirror echo (Slack's ``> *Sent from Kiro Crew:*`` quote and the
+    cross-surface leg) exists to show a remote surface what was asked in the
+    dashboard. It is an ALLOWLIST:
     every condition is a positive structural stamp the dispatch set, and each
     defaults to the answer "no", so a producer added later is never echoed
     until it says it is the person. None is read off the message text, which

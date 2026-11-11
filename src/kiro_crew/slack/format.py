@@ -23,7 +23,7 @@ from kiro_crew.messaging.display_safety import (
     strip_ansi,
 )
 from kiro_crew.messaging.markup import flatten_mermaid_body
-from kiro_crew.messaging.renderer import cap_choices, format_overflow
+from kiro_crew.messaging.renderer import MIRROR_ECHO_LABEL, cap_choices, format_overflow
 from kiro_crew.messaging.tables import _MAX_INDENT as _TABLE_MAX_INDENT
 from kiro_crew.messaging.tables import _cells as _table_cells
 from kiro_crew.messaging.tables import (
@@ -766,8 +766,10 @@ def escape_mrkdwn_keep_links(text: str) -> str:
 
 
 def mirror_prompt_echo(text: str) -> str:
-    """Render a mirrored dashboard prompt as a Slack ``> 💬 …`` blockquote.
+    """Render a mirrored dashboard prompt as a Slack blockquote with its label.
 
+    ``> *Sent from Kiro Crew:* …``: the bold label is host-written and comes
+    first, so a prompt that spells the label itself is just quoted text after it.
     *text* is the already redacted, already truncated prompt. A quote rather
     than the old ``_…_`` italic wrapper: an underscore pair splits a link that
     contains one, and italics cannot hold a multi-line prompt. Slack quotes one
@@ -775,7 +777,7 @@ def mirror_prompt_echo(text: str) -> str:
     line with was escaped to ``&gt;`` first and cannot open a nested quote.
     """
     lines = escape_mrkdwn_keep_links(text).split("\n")
-    lines[0] = f"💬 {lines[0]}"
+    lines[0] = f"*{MIRROR_ECHO_LABEL}* {lines[0]}"
     return "\n".join(f"> {line}" for line in lines)
 
 

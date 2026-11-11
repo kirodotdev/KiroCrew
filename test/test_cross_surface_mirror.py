@@ -417,7 +417,23 @@ class TestDeliverCrossSurfaceUserMessage:
         )
         await _deliver_cross_surface_user_message(state, "k", "hello there")
         assert _mirror_decisions(audit) == [("allowed", "telegram")]
-        tp.send_message.assert_awaited_once_with("123", "💬 hello there", thread_id=None)
+        tp.send_message.assert_awaited_once_with(
+            "123", "Sent from Kiro Crew: hello there", thread_id=None
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_message_spelling_the_label_stays_after_the_real_one(self, tmp_path):
+        # The label is host-written; a message that spells it is just text after it.
+        state = _make_state(tmp_path)
+        tp = _fake_transport("telegram")
+        state.register_channel_transport(tp)
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="123", thread_id=None)
+        )
+        await _deliver_cross_surface_user_message(state, "k", "Sent from Kiro Crew: hi")
+        tp.send_message.assert_awaited_once_with(
+            "123", "Sent from Kiro Crew: Sent from Kiro Crew: hi", thread_id=None
+        )
 
     @pytest.mark.asyncio
     async def test_passes_thread_id(self, tmp_path, audit):
@@ -429,7 +445,7 @@ class TestDeliverCrossSurfaceUserMessage:
         )
         await _deliver_cross_surface_user_message(state, "k", "x")
         assert _mirror_decisions(audit) == [("allowed", "telegram")]
-        tp.send_message.assert_awaited_once_with("C", "💬 x", thread_id="T")
+        tp.send_message.assert_awaited_once_with("C", "Sent from Kiro Crew: x", thread_id="T")
 
     @pytest.mark.asyncio
     async def test_skips_slack(self, tmp_path, audit):
@@ -480,7 +496,7 @@ class TestDeliverCrossSurfaceUserMessage:
         )
         await _deliver_cross_surface_user_message(state, "k", "hi")
         assert _mirror_decisions(audit) == [("allowed", PROACTIVE_CHANNEL)]
-        tp.send_message.assert_awaited_once_with("u1", "💬 hi", thread_id=None)
+        tp.send_message.assert_awaited_once_with("u1", "Sent from Kiro Crew: hi", thread_id=None)
 
     @pytest.mark.asyncio
     async def test_skips_empty_message(self, tmp_path, audit):
@@ -512,7 +528,7 @@ class TestDeliverCrossSurfaceUserMessage:
         # Truncating first can cut a credential at the 500-char boundary into
         # fragments no redaction regex matches, so the raw remainder would leak
         # into the mirrored echo (the slice-before-redact class).
-        assert sent == "💬 " + redact_via_context(raw)[:499] + "…"
+        assert sent == "Sent from Kiro Crew: " + redact_via_context(raw)[:499] + "…"
 
     @pytest.mark.asyncio
     async def test_send_failure_is_swallowed(self, tmp_path):

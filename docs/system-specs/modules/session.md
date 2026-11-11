@@ -5362,7 +5362,8 @@ route) and **Slack** (`slack.files.upload_outbound_files`, under
 **iMessage** and **Weixin** have no picture send (`files_outbound=False`), so
 their mirror names every picture.
 
-Both user-message echoes (Slack's `> 💬` quote and the channel-neutral `💬`) send
+Both user-message echoes (Slack's `> *Sent from Kiro Crew:*` quote and the plain
+channel-neutral `Sent from Kiro Crew:` line, one `MIRROR_ECHO_LABEL`) send
 no bytes: a pasted `![image](<path>)` and an `[attached_file N] <path>` marker
 become `🖼 <name>` / `📎 <name>` (`_mirror_echo_text`, reading the turn's own
 `meta.files`), because the dashboard uploads store is not a root any channel
