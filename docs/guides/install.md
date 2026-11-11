@@ -222,6 +222,14 @@ home (`~/.kiro/crew-venv`, override with `KIROCREW_VENV`) and symlinks
 data home, so no whole-home operation can ever delete the live interpreter. The
 selected channel is recorded to `~/.kiro/crew/channel`.
 
+Before it downloads anything, the installer checks free space. It stops, naming
+the directory, when the disk beside the data home (where the managed venv and
+Python go) has less than about 500 MB free or the temp directory has less than
+about 100 MB (set `TMPDIR` to use another). A step that still runs out of space
+says so in plain words, and a failed first install removes the managed venv it
+started. The Python it downloaded to `~/.kiro/crew-python` stays, so a re-run
+does not fetch it again.
+
 Updates to a managed venv (`kirocrew update`, an approved in-app update, and the
 gateway's automatic update) build each new version as its own tree beside it,
 `crew-venv-<version>` (about 350 MiB with its dependencies), and switch the
