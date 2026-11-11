@@ -37,16 +37,24 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
   <tbody>
     <tr>
       <td
-        class="py-[3px] border-b border-border text-text truncate max-w-[110px]"
-        title="kirocrew-worker"
+        class="py-[3px] border-b border-border text-text"
       >
-        kirocrew-worker
+        <span
+          class="truncate block max-w-[110px]"
+          tabindex="0"
+        >
+          kirocrew-worker
+        </span>
       </td>
       <td
-        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
-        title="a-model"
+        class="py-[3px] border-b border-border text-muted"
       >
-        a-model
+        <span
+          class="truncate block max-w-[80px]"
+          tabindex="0"
+        >
+          a-model
+        </span>
       </td>
       <td
         class="py-[3px] border-b border-border"
@@ -70,16 +78,24 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
     </tr>
     <tr>
       <td
-        class="py-[3px] border-b border-border text-text truncate max-w-[110px]"
-        title="kirocrew-worker"
+        class="py-[3px] border-b border-border text-text"
       >
-        kirocrew-worker
+        <span
+          class="truncate block max-w-[110px]"
+          tabindex="0"
+        >
+          kirocrew-worker
+        </span>
       </td>
       <td
-        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
-        title="a-model"
+        class="py-[3px] border-b border-border text-muted"
       >
-        a-model
+        <span
+          class="truncate block max-w-[80px]"
+          tabindex="0"
+        >
+          a-model
+        </span>
       </td>
       <td
         class="py-[3px] border-b border-border"
@@ -179,16 +195,24 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
     </tr>
     <tr>
       <td
-        class="py-[3px] border-b border-border text-text truncate max-w-[110px]"
-        title="kirocrew-knowledge"
+        class="py-[3px] border-b border-border text-text"
       >
-        kirocrew-knowledge
+        <span
+          class="truncate block max-w-[110px]"
+          tabindex="0"
+        >
+          kirocrew-knowledge
+        </span>
       </td>
       <td
-        class="py-[3px] border-b border-border text-muted truncate max-w-[80px]"
-        title="a-model"
+        class="py-[3px] border-b border-border text-muted"
       >
-        a-model
+        <span
+          class="truncate block max-w-[80px]"
+          tabindex="0"
+        >
+          a-model
+        </span>
       </td>
       <td
         class="py-[3px] border-b border-border"
