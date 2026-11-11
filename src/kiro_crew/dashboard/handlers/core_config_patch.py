@@ -337,6 +337,9 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         allowed = list(spec["values_fn"]()) if "values_fn" in spec else spec["values"]
         if value not in allowed:
             return _deny(f"invalid value, must be one of {allowed}", f"{path_key}={value}")
+        # Store the member that matched, not the value sent: ``15.0`` equals the
+        # choice ``15``, but the loader reads only the int and would run the default.
+        value = allowed[allowed.index(value)]
     elif spec["type"] == "int":
         try:
             value = body_int(value)

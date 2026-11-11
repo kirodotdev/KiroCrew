@@ -4898,6 +4898,14 @@ corrupt existing document as described above.
 - An enum value outside its set → that field's default, with a logged line
 - An out-of-range number → clamped (see "Security-Bounded Config Clamp")
 
+### Editable choices (`enum`)
+
+`PATCH /api/config/kirocrew` accepts an `enum` entry of `_EDITABLE_CONFIG` when the value equals
+one of its `values` (or its `values_fn` result), and stores that member rather than the value
+sent. For `browser.live.max_fps` (`[15, 30, 60]`) a JSON `15.0` equals `15`, and the loader reads
+only an int, so storing the float would make the route answer 200 while the live view ran the
+default rate. Pinned by `test/test_config_browser_section.py::TestPatchRoute::test_an_integral_float_frame_rate_is_stored_as_the_choice`.
+
 ### Editable string lists (`str_list`)
 
 `PATCH /api/config/kirocrew` accepts a `str_list` entry of `_EDITABLE_CONFIG` as a JSON list
