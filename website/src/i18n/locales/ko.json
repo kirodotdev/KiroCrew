@@ -208,6 +208,7 @@
     "click_to_hide": "클릭하여 숨기기",
     "close": "닫기",
     "collapse_sidebar": "사이드바 접기",
+    "couldn_t_load_full_changelog": "전체 변경 내역을 불러오지 못했습니다.",
     "cpu": "CPU",
     "cpu_unavailable": "CPU: 사용 불가",
     "credits": "크레딧",

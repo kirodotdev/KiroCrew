@@ -211,6 +211,7 @@
     "builder_id": "Builder ID",
     "check_logs_for_details": "Check logs for details.",
     "collapse_sidebar": "Collapse sidebar",
+    "couldn_t_load_full_changelog": "Couldn't load the full changelog.",
     "cpu_unavailable": "CPU: unavailable",
     "disk_unavailable": "Disk: unavailable",
     "expand_sidebar": "Expand sidebar",
