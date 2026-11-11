@@ -214,6 +214,26 @@ describe('DockMatesSection', () => {
     expect(within(screen.getByTestId('dock-mate-idle')).queryByRole('status')).toBeNull()
   })
 
+  // jsdom computes no layout, so this pins the structure that makes overlap
+  // impossible: an in-flow dot after the truncating name, in one flex line.
+  it('gives the wide row\'s dot its own space after the name, so a long name truncates before it', () => {
+    const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a', display_name: 'Kiro Web Development' })])
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false)])); liveStore.dispatch(markSlotUnread('member-a')) })
+    const dot = within(screen.getByTestId('dock-mate-a')).getByRole('status', { name: 'Unread message' })
+    const name = within(screen.getByTestId('dock-mate-a')).getByText('Kiro Web Development')
+    expect(dot).not.toHaveClass('absolute')
+    expect(dot).toHaveClass('shrink-0')
+    expect(name).toHaveClass('truncate')
+    expect(dot.parentElement).toBe(name.parentElement)
+    expect(name.compareDocumentPosition(dot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('keeps the narrow row\'s dot in the face\'s corner, where no name is drawn', () => {
+    const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a' })], { collapsed: true })
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false)])); liveStore.dispatch(markSlotUnread('member-a')) })
+    expect(within(screen.getByTestId('dock-mate-a')).getByRole('status', { name: 'Unread message' })).toHaveClass('absolute')
+  })
+
   it('ignores overlapping drops until writes and the confirming roster read settle', async () => {
     const initial = ['a', 'b', 'c'].map((n, i) => row(n, { starred: true, star_order: i + 1 }))
     const serverOrder = ['c', 'a', 'b'].map((n, i) => row(n, { starred: true, star_order: i + 1 }))
