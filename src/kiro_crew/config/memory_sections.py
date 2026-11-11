@@ -31,6 +31,9 @@ KIND_ROUTING_MODES = ("off", "shadow", "enforce")
 #: ``memory.lesson_origin_gate`` values; :mod:`kiro_crew.memory_origin_gate` says what each does.
 LESSON_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
 
+#: ``memory.lesson_tier_policy`` values; :mod:`kiro_crew.memory_tier_policy` says what each does.
+LESSON_TIER_POLICY_MODES = ("off", "shadow", "enforce")
+
 #: ``memory.embedding_provider`` values. ``ollama_http`` selects the Ollama server
 #: backend in :mod:`kiro_crew.embeddings_ollama`.
 OLLAMA_HTTP_PROVIDER = "ollama_http"
@@ -422,6 +425,21 @@ class MemoryConfig:
             enum=list(LESSON_ORIGIN_GATE_MODES),
         ),
     )
+    lesson_tier_policy: str = field(
+        default="off",
+        metadata=_meta(
+            "Lesson Tier Policy",
+            "Which tier a new lesson from consolidation gets. 'off' (default) keeps "
+            "today's prompt and writes. 'shadow' writes every lesson as before and only "
+            "counts, within fixed size caps, which new lessons the policy would store "
+            "as on_topic findings, and how often you later teach one of them again. "
+            "'enforce' asks the model for your own words behind each 'always' lesson "
+            "and stores a lesson as an on_topic finding unless those words are found "
+            "in one of your messages. Your own learn_add and dashboard writes, and "
+            "stored lessons, are never changed.",
+            enum=list(LESSON_TIER_POLICY_MODES),
+        ),
+    )
     inject_memory: bool = field(
         default=True,
         metadata=_meta(
@@ -517,6 +535,13 @@ def lesson_origin_gate_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in LESSON_ORIGIN_GATE_MODES:
         return raw
     return str(field_default(MemoryConfig, "lesson_origin_gate"))
+
+
+def lesson_tier_policy_mode_from(raw: object) -> str:
+    """A stored ``memory.lesson_tier_policy``, or the field default for anything unknown."""
+    if isinstance(raw, str) and raw in LESSON_TIER_POLICY_MODES:
+        return raw
+    return str(field_default(MemoryConfig, "lesson_tier_policy"))
 
 
 def lesson_extraction_enabled(memory: object) -> bool:
