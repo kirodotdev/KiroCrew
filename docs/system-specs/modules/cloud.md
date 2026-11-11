@@ -184,7 +184,13 @@ be silently ignored.
 **new** box only, with the same existing-stack rule as `--subnet` (warn
 interactively, hard-fail under `--yes`). `--ami` fills the template's
 `CustomAmiId` (the `HasCustomAmi` condition picks it over the SSM-resolved
-AL2023 image); `--extra-packages` is validated by
+AL2023 image). Once the size is known, before the account confirmation, the
+wizard reads the image's architecture (`ec2.assert_ami_matches_tier`, one
+`describe-images` call) and refuses an image built for another architecture than
+the size runs, naming both and the sizes that fit it, so nothing is created; the
+template would otherwise fail only at the `Instance` resource, after the role
+and instance profile exist. A read that fails is logged and refuses nothing:
+CloudFormation still judges the image. `--extra-packages` is validated by
 `ec2.normalize_extra_packages` (allowlist charset, no leading `-`, at most 256
 chars) and fills `ExtraPackages`, which UserData installs one name
 at a time, skipping one dnf cannot find. Both template parameters carry an
