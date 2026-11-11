@@ -172,7 +172,9 @@ discovery always prefers the default VPC). The explicit path keeps discovery's
 launch-time guarantees: the subnet must exist in the region, its AZ must offer
 the chosen instance type, and it must pass the same `_subnet_egress_kinds`
 egress check (NAT or IGW) — each failing fast with actionable text instead of
-hanging to the `WaitCondition` timeout, and the same NAT→no-public-IP /
+hanging to the `WaitCondition` timeout (the no-egress refusal offers leaving the
+subnet unset or choosing one with a NAT or internet-gateway route before a
+route-table change), and the same NAT→no-public-IP /
 IGW→public-IP parameter wiring applies. `--subnet` applies only to a **new**
 stack; reusing an existing stack warns interactively that its network is fixed,
 and **hard-fails under `--yes`** — a script's explicitly requested pin must not

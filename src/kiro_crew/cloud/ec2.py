@@ -511,8 +511,10 @@ def resolve_explicit_subnet(
         raise aws.AWSError(
             f"subnet {subnet_id} has no verified internet egress route (NAT or "
             "internet gateway). Kiro Crew needs outbound access to install "
-            "packages and reach SSM — add a NAT (or IGW) default route to the "
-            "subnet's route table, then retry.",
+            "packages and reach SSM — leave the subnet unset to let Kiro Crew "
+            "pick one automatically, choose a subnet with a NAT or internet-gateway "
+            "route, or add a NAT (or IGW) default route to this subnet's route table, "
+            "then retry.",
             action="ec2:DescribeRouteTables",
         )
     return vpc_id, subnet_id, egress[subnet_id]
