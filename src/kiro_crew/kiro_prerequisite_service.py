@@ -571,6 +571,10 @@ class KiroPrerequisiteService:
         freshness bound.
         """
 
+        if await _probing._drop_too_old_off_relay(self):
+            # The status still carries the dropped verdict: probe once now, so
+            # this answer already reflects the harness the config switched to.
+            force, coalesce = True, False
         if force and not coalesce:
             # A human Check again is the one probe allowed to retry a spawn-proven
             # too-old verdict; the next session spawn re-latches it if it holds.
