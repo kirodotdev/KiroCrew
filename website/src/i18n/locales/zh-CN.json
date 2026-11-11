@@ -15101,6 +15101,7 @@
         "decisions_provider_sagemaker_invalid_profile": "配置文件名称可以包含字母、数字、下划线、点、加号和连字符。",
         "decisions_provider_sagemaker_unknown_profile": "你的 AWS 配置文件中没有这个名称的 AWS 配置文件。",
         "decisions_no_model_note": "还没有选择决策模型。在下方选一个模型即可开启。",
+        "decisions_hosted_refused": "你所在车队的策略屏蔽了由 TypeSafe 托管的 Jev，因此决策使用内置规则。请在下方选择其他模型。",
         "decisions_provider_quality": "准确率约为 Jev 的 {{percent}}，复杂决策上为 {{hard}}",
         "decisions_provider_memory": "约占用 {{peak}} 内存；建议机器内存不低于 {{total}}",
         "decisions_provider_speed": "在 CPU 上每次决策约 {{p50}}，输入较长时最多 {{p95}}",

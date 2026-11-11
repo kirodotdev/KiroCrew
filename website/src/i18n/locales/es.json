@@ -15893,6 +15893,7 @@
         "decisions_provider_sagemaker_invalid_profile": "Un nombre de perfil puede usar letras, dígitos, guiones bajos, puntos, signos más y guiones.",
         "decisions_provider_sagemaker_unknown_profile": "No hay ningún perfil de AWS con ese nombre en tus archivos de configuración de AWS.",
         "decisions_no_model_note": "No hay ningún modelo de decisión elegido. Elige uno abajo para activarlo.",
+        "decisions_hosted_refused": "La política de tu flota bloquea Jev, alojado por TypeSafe, así que las decisiones usan las reglas integradas. Elige otro modelo abajo.",
         "decisions_provider_quality": "Alrededor del {{percent}} de la precisión de Jev, {{hard}} en decisiones difíciles",
         "decisions_provider_memory": "Usa unos {{peak}} de memoria; recomendado con {{total}} o más",
         "decisions_provider_speed": "Unos {{p50}} por decisión en una CPU, hasta {{p95}} con entradas largas",

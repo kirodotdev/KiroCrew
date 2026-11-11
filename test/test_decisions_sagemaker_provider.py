@@ -104,6 +104,14 @@ def aws_profiles(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-credentials"))
 
 
+@pytest.fixture(autouse=True)
+def fresh_region_cache(_floor_monkeypatch):
+    """The process-wide botocore region cache starts empty in every test."""
+    from kiro_crew.dashboard.handlers import decisions_sagemaker as ds
+
+    _floor_monkeypatch.setattr(ds, "_botocore_regions_cache", None, raising=False)
+
+
 @pytest.fixture
 def not_denied(monkeypatch):
     from kiro_crew.decisions import capability
@@ -377,6 +385,406 @@ class TestSageMakerGet:
         assert resp.status == 200
         payload = json.loads(resp.text)
         assert (payload["active"], payload["sagemaker"]) == ("custom", None)
+
+
+def _ceiling(monkeypatch, *allowed_hosts):
+    """A ceiling whose ``endpoints`` list names *allowed_hosts* (globs); None asks which hosts."""
+    from fnmatch import fnmatchcase
+
+    from kiro_crew.decisions import capability
+    from kiro_crew.platform.governance_parts.matching import url_policy_hosts
+
+    asked: list[str] = []
+
+    def targets(*_a, point=None, model=None, endpoint=None, audit=True):
+        asked.append(endpoint)
+        hosts = url_policy_hosts(endpoint)
+        return not all(any(fnmatchcase(h, g) for g in allowed_hosts) for h in hosts)
+
+    monkeypatch.setattr(capability, "targets_denied", targets)
+    return asked
+
+
+async def _get() -> dict:
+    from kiro_crew.dashboard.handlers.decisions import api_decisions_provider_get
+
+    return json.loads((await api_decisions_provider_get(_request())).text)
+
+
+SAGEMAKER_ONLY = ("runtime.sagemaker.*.amazonaws.com", "127.0.0.1")
+
+
+class TestRefusedOptionIsNotOffered:
+    @pytest.mark.asyncio
+    async def test_no_ceiling_offers_hosted_and_sagemaker(self, audit):
+        payload = await _get()
+        assert (payload["hosted_permitted"], payload["sagemaker_permitted"]) == (True, True)
+
+    @pytest.mark.asyncio
+    async def test_a_ceiling_of_sagemaker_and_loopback_hides_the_hosted_default(
+        self, audit, monkeypatch
+    ):
+        _ceiling(monkeypatch, *SAGEMAKER_ONLY)
+        payload = await _get()
+        assert payload["hosted_permitted"] is False
+        assert payload["sagemaker_permitted"] is True
+        assert payload["local_permitted"] is True
+
+    @pytest.mark.asyncio
+    async def test_one_permitted_region_is_enough_to_offer_sagemaker(self, audit, monkeypatch):
+        asked = _ceiling(monkeypatch, "runtime.sagemaker.eu-west-3.amazonaws.com")
+        assert (await _get())["sagemaker_permitted"] is True
+        assert any("eu-west-3" in url for url in asked)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "allowed",
+        [
+            ("runtime.sagemaker.ca-west-1.amazonaws.com", "127.0.0.1"),
+            ("runtime.sagemaker.*.amazonaws.com",),
+            ("*.amazonaws.com", "127.0.0.1"),
+        ],
+    )
+    async def test_a_region_the_static_list_lacked_still_offers_sagemaker(
+        self, audit, monkeypatch, allowed
+    ):
+        from kiro_crew.dashboard.handlers import decisions_sagemaker as ds
+
+        monkeypatch.setattr(ds, "SAGEMAKER_REGIONS", ("us-east-1",))
+        monkeypatch.setattr(ds, "_botocore_regions", lambda: ("ca-west-1",))
+        _ceiling(monkeypatch, *allowed)
+        assert (await _get())["sagemaker_permitted"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_real_botocore_metadata_covers_ca_west_1(self, audit, monkeypatch):
+        pytest.importorskip("botocore")
+        from kiro_crew.dashboard.handlers import decisions_sagemaker as ds
+
+        monkeypatch.setattr(ds, "SAGEMAKER_REGIONS", ())
+        _ceiling(monkeypatch, "runtime.sagemaker.ca-west-1.amazonaws.com")
+        assert (await _get())["sagemaker_permitted"] is True
+
+    def test_the_static_floor_names_the_newer_commercial_regions(self):
+        from kiro_crew.dashboard.handlers.decisions_sagemaker import SAGEMAKER_REGIONS
+
+        for region in ("ca-west-1", "ap-southeast-5", "ap-southeast-7", "mx-central-1"):
+            assert region in SAGEMAKER_REGIONS
+
+    @pytest.mark.asyncio
+    async def test_no_permitted_sagemaker_host_hides_sagemaker_and_keeps_hosted(
+        self, audit, monkeypatch
+    ):
+        _ceiling(monkeypatch, "api.typesafe.ai", "127.0.0.1")
+        payload = await _get()
+        assert (payload["hosted_permitted"], payload["sagemaker_permitted"]) == (True, False)
+
+    @pytest.mark.asyncio
+    async def test_a_configured_sagemaker_address_the_ceiling_refuses_reads_as_no_model(
+        self, audit, monkeypatch
+    ):
+        from kiro_crew.config.loader import config_path, update_config_locked
+
+        def _seed(data):
+            data["decisions"] = {"provider": {"endpoint": GOOD_ADDRESS}}
+            return data
+
+        update_config_locked(config_path(), mutate=_seed)
+        _ceiling(monkeypatch, "api.typesafe.ai", "127.0.0.1")
+        payload = await _get()
+        assert payload["active"] == "none"
+        assert payload["sagemaker_permitted"] is False
+        assert payload["configured_endpoint"] == GOOD_ADDRESS
+
+    @pytest.mark.asyncio
+    async def test_a_hosted_row_deny_withdraws_both_without_asking_the_list(
+        self, audit, monkeypatch
+    ):
+        from kiro_crew.decisions import capability
+
+        asked = _ceiling(monkeypatch, "*")
+        monkeypatch.setattr(capability, "denied_sides", lambda *a, **k: (True, True))
+        payload = await _get()
+        assert (payload["hosted_permitted"], payload["sagemaker_permitted"]) == (False, False)
+        assert asked == []
+
+    @pytest.mark.asyncio
+    async def test_the_configured_region_is_asked_first(self, audit, monkeypatch):
+        from kiro_crew.config.loader import config_path, update_config_locked
+
+        def _seed(data):
+            data["decisions"] = {"provider": {"endpoint": GOOD_ADDRESS}}
+            return data
+
+        update_config_locked(config_path(), mutate=_seed)
+        asked = _ceiling(monkeypatch, "*")
+        payload = await _get()
+        assert payload["sagemaker"]["region"] == "us-west-2"
+        assert "us-west-2" in asked[-1]
+        # One probe (the configured region answers, so no other region is asked) and
+        # one check of the configured address's own host.
+        assert len([u for u in asked if "sagemaker" in u]) == 2
+        assert all("us-west-2" in u for u in asked if "sagemaker" in u)
+
+    @pytest.mark.asyncio
+    async def test_put_refuses_a_regional_host_the_ceiling_refuses(
+        self, audit, provider_config, monkeypatch
+    ):
+        asked = _ceiling(monkeypatch, "runtime.sagemaker.eu-west-1.amazonaws.com")
+        status, body = await _put(GOOD)
+        assert status == 403 and body["code"] == "decisions_capability_denied"
+        assert provider_config() == {}
+        assert asked == [
+            "https://runtime.sagemaker.us-west-2.amazonaws.com/endpoints/decision-model-a/invocations"
+        ]
+        status, _ = await _put({**GOOD, "region": "eu-west-1"})
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_put_refuses_hosted_jev_where_the_list_refuses_its_host(
+        self, audit, provider_config, monkeypatch
+    ):
+        _ceiling(monkeypatch, *SAGEMAKER_ONLY)
+        status, body = await _put({"preset": "jev"})
+        assert status == 403 and body["code"] == "decisions_capability_denied"
+        assert provider_config() == {}
+        status, _ = await _put({"preset": "none"})
+        assert status == 200
+
+    @pytest.mark.asyncio
+    async def test_a_local_preset_is_never_asked_about_the_endpoints_list(
+        self, audit, provider_config, monkeypatch
+    ):
+        asked = _ceiling(monkeypatch)
+        status, _ = await _put({"preset": "laya"})
+        assert status == 200
+        # The answer's own payload asks about the hosted options; the preset is never asked.
+        assert not any("127.0.0.1" in url for url in asked)
+
+
+def _refusing_ceiling(monkeypatch):
+    """A real ``targets_denied`` over a ceiling that refuses every ``endpoints:`` item.
+
+    Returns the ``governance_decision`` rows written. The decisions rows themselves
+    permit, so only the ``endpoints`` list refuses.
+    """
+    import kiro_crew.sel as sel_mod
+    from kiro_crew.decisions import capability
+    from kiro_crew.platform import governance_profiles
+    from kiro_crew.platform.governance import Decision
+
+    rows: list[dict] = []
+    fake = MagicMock()
+    fake.log_governance_decision = lambda **kw: rows.append(kw)
+    monkeypatch.setattr(sel_mod, "sel", lambda: fake)
+
+    def permits(scope, item, **_kw):
+        return Decision(not item.startswith("endpoints:"), "test ceiling", rule="default")
+
+    monkeypatch.setattr(capability, "governance_permits", permits)
+    monkeypatch.setattr(governance_profiles, "governance_permits", permits)
+    return rows
+
+
+class TestOfferProbeDoesNotAudit:
+    @pytest.mark.asyncio
+    async def test_get_writes_no_endpoints_row_under_a_refusing_ceiling(self, audit, monkeypatch):
+        rows = _refusing_ceiling(monkeypatch)
+        payload = await _get()
+        assert (payload["hosted_permitted"], payload["sagemaker_permitted"]) == (False, False)
+        assert [r for r in rows if r["item"].startswith("endpoints:")] == []
+
+    @pytest.mark.asyncio
+    async def test_the_provider_put_still_writes_its_audit_row(
+        self, audit, provider_config, monkeypatch
+    ):
+        rows = _refusing_ceiling(monkeypatch)
+        status, body = await _put(GOOD)
+        assert status == 403 and body["code"] == "decisions_capability_denied"
+        written = [r for r in rows if r["item"].startswith("endpoints:")]
+        assert written and all(r["outcome"] == "denied" for r in written)
+
+    def test_the_unaudited_answer_is_the_audited_answer(self, monkeypatch):
+        from kiro_crew.decisions import capability
+
+        rows = _refusing_ceiling(monkeypatch)
+        url = "https://runtime.sagemaker.us-west-2.amazonaws.com/endpoints/a/invocations"
+        quiet = capability.targets_denied(point=None, model=None, endpoint=url, audit=False)
+        assert rows == []
+        loud = capability.targets_denied(point=None, model=None, endpoint=url)
+        assert quiet is loud is True
+        assert rows
+
+
+class TestBotocoreRegionsAreComputedOnce:
+    def test_a_second_read_does_not_build_another_session(self, monkeypatch):
+        from kiro_crew.dashboard.handlers import decisions_sagemaker as ds
+
+        calls: list[int] = []
+        monkeypatch.setattr(ds, "_read_botocore_regions", lambda: calls.append(1) or ("ca-west-1",))
+        assert ds._botocore_regions() == ds._botocore_regions() == ("ca-west-1",)
+        assert len(calls) == 1
+
+    def test_a_failed_read_is_not_cached(self, monkeypatch):
+        from kiro_crew.dashboard.handlers import decisions_sagemaker as ds
+
+        answers = iter([(), ("ca-west-1",)])
+        monkeypatch.setattr(ds, "_read_botocore_regions", lambda: next(answers))
+        assert ds._botocore_regions() == ()
+        assert ds._botocore_regions() == ("ca-west-1",)
+
+    @pytest.mark.asyncio
+    async def test_one_settings_read_builds_at_most_one_session(self, audit, monkeypatch):
+        from kiro_crew.dashboard.handlers import decisions_sagemaker as ds
+
+        calls: list[int] = []
+        monkeypatch.setattr(ds, "_read_botocore_regions", lambda: calls.append(1) or ("ca-west-1",))
+        _ceiling(monkeypatch, "*")
+        await _get()
+        await _get()
+        assert len(calls) == 1
+
+
+def _seed_endpoint(endpoint: str) -> None:
+    from kiro_crew.config.loader import config_path, update_config_locked
+
+    def _seed(data):
+        data["decisions"] = {"provider": {"endpoint": endpoint} if endpoint else {}}
+        return data
+
+    update_config_locked(config_path(), mutate=_seed)
+
+
+def _configured(monkeypatch, endpoint: str) -> None:
+    """Pin the endpoint the consent route reads from the live config."""
+    from kiro_crew.decisions import gate
+
+    monkeypatch.setattr(
+        gate, "configured_endpoint", lambda config=None: endpoint or DEFAULT_ENDPOINT
+    )
+
+
+async def _consent(body):
+    from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+    resp = await api_decisions_consent_put(_request(body=body))
+    return resp.status, json.loads(resp.text)
+
+
+class TestConsentAsksTheEndpointsList:
+    @pytest.mark.asyncio
+    async def test_consent_on_is_refused_for_a_refused_hosted_host(
+        self, audit, keystone, monkeypatch
+    ):
+        _ceiling(monkeypatch, *SAGEMAKER_ONLY)
+        _configured(monkeypatch, "")
+        status, body = await _consent({"enabled": True, "endpoint": DEFAULT_ENDPOINT})
+        assert status == 403 and body["code"] == "decisions_capability_denied"
+        assert not keystone.exists()
+        assert audit[-1]["outcome"] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_consent_on_is_refused_for_a_refused_sagemaker_regional_host(
+        self, audit, keystone, monkeypatch
+    ):
+        asked = _ceiling(monkeypatch, "runtime.sagemaker.eu-west-1.amazonaws.com", "127.0.0.1")
+        _configured(monkeypatch, GOOD_ADDRESS)
+        status, body = await _consent({"enabled": True, "endpoint": GOOD_ADDRESS})
+        assert status == 403 and body["code"] == "decisions_capability_denied"
+        assert not keystone.exists()
+        assert asked == [
+            "https://runtime.sagemaker.us-west-2.amazonaws.com/endpoints/decision-model-a/invocations"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_permitted_host_still_consents(self, audit, keystone, monkeypatch):
+        _ceiling(monkeypatch, "runtime.sagemaker.us-west-2.amazonaws.com")
+        _configured(monkeypatch, GOOD_ADDRESS)
+        status, _ = await _consent({"enabled": True, "endpoint": GOOD_ADDRESS})
+        assert status == 200 and keystone.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_local_preset_is_never_checked(self, audit, keystone, monkeypatch):
+        from kiro_crew.decisions import local_models
+
+        asked = _ceiling(monkeypatch)
+        local = local_models.endpoint_for(8104)
+        _configured(monkeypatch, local)
+        status, _ = await _consent({"enabled": True, "endpoint": local})
+        assert status == 200
+        assert asked == []
+
+    @pytest.mark.asyncio
+    async def test_consent_off_is_always_allowed(self, audit, keystone, monkeypatch):
+        asked = _ceiling(monkeypatch)
+        _configured(monkeypatch, "")
+        status, _ = await _consent({"enabled": False})
+        assert status == 200
+        assert asked == []
+
+
+class TestMalformedAddressConsentFailsClosed:
+    @pytest.mark.asyncio
+    async def test_an_underscore_name_gets_the_audited_403_not_a_500(
+        self, audit, keystone, monkeypatch
+    ):
+        bad = "sagemaker://my_endpoint?region=us-east-1"
+        _ceiling(monkeypatch, "*")
+        _configured(monkeypatch, bad)
+        status, body = await _consent({"enabled": True, "endpoint": bad})
+        assert status == 403 and body["code"] == "decisions_capability_denied"
+        assert not keystone.exists()
+        assert audit[-1]["outcome"] == "denied"
+
+
+class TestRefusedDefaultReadsAsNoModel:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", [DEFAULT_ENDPOINT, ""], ids=["hosted-default", "unset"])
+    async def test_get_reports_none_and_leaves_the_config_alone(
+        self, endpoint, audit, provider_config, monkeypatch
+    ):
+        _ceiling(monkeypatch, *SAGEMAKER_ONLY)
+        _seed_endpoint(endpoint)
+        before = provider_config()
+        payload = await _get()
+        assert payload["active"] == "none"
+        assert payload["configured_endpoint"] == DEFAULT_ENDPOINT
+        assert provider_config() == before
+
+    @pytest.mark.asyncio
+    async def test_a_permitted_default_stays_hosted(self, audit, monkeypatch):
+        _seed_endpoint("")
+        assert (await _get())["active"] == "jev"
+
+    @pytest.mark.asyncio
+    async def test_a_sagemaker_address_keeps_its_own_reading(self, audit, monkeypatch):
+        _ceiling(monkeypatch, *SAGEMAKER_ONLY)
+        _seed_endpoint(GOOD_ADDRESS)
+        assert (await _get())["active"] == "sagemaker"
+
+    @pytest.mark.asyncio
+    async def test_a_sagemaker_address_in_a_refused_region_reads_none_though_another_is_permitted(
+        self, audit, provider_config, monkeypatch
+    ):
+        _ceiling(monkeypatch, "runtime.sagemaker.eu-west-1.amazonaws.com")
+        _seed_endpoint(GOOD_ADDRESS)
+        before = provider_config()
+        payload = await _get()
+        assert payload["sagemaker_permitted"] is True
+        assert payload["configured_refused"] is True
+        assert payload["active"] == "none"
+        assert provider_config() == before
+
+    @pytest.mark.asyncio
+    async def test_a_refused_sagemaker_address_reads_none_and_leaves_the_config_alone(
+        self, audit, provider_config, monkeypatch
+    ):
+        _ceiling(monkeypatch, "127.0.0.1")
+        _seed_endpoint(GOOD_ADDRESS)
+        before = provider_config()
+        payload = await _get()
+        assert payload["active"] == "none"
+        assert payload["configured_endpoint"] == GOOD_ADDRESS
+        assert provider_config() == before
 
 
 class TestConnectionTest:
