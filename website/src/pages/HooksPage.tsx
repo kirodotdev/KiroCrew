@@ -1,4 +1,4 @@
-import { compareText, fmtNumber } from '../i18n/format'
+import { compareText, fmtList, fmtNumber } from '../i18n/format'
 import { Fragment, useCallback, useState, useMemo, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { AlertTriangle, Anchor, ChevronDown, Link2, Loader2, Lock, MoreHorizontal, Pencil, Play } from 'lucide-react'
@@ -327,7 +327,7 @@ function HookForm({ hook, onSave, onCancel }: {
           <div className="flex items-start gap-2 text-[13px] text-warn-text bg-warn-subtle border border-warn/30 rounded-lg px-3 py-2">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>
-              {i18nT('pages.hooksPage.skills_inert_warning', { skills: skills.join(', ') })}
+              {i18nT('pages.hooksPage.skills_inert_warning', { skills: fmtList(skills, { style: 'narrow' }) })}
             </span>
           </div>
         )}
