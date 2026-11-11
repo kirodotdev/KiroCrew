@@ -9952,6 +9952,7 @@
       "show_full_command": "Mostrar el comando completo"
     },
     "trustDropdown": {
+      "always_allow_this_tool": "Permitir siempre esta herramienta",
       "trust": "Confiar",
       "trust_all_base": "Confiar en todos los comandos <mono/>",
       "trust_all_base_channel": "Confiar en todos los comandos <mono/> para @{{role}} — hasta que {{productName}} se reinicie",
@@ -17406,6 +17407,14 @@
         "default_crewmate_unknown_reason": "{{name}} ya no aparece en la lista de Bot"
       },
       "mcpTab": {
+        "always_allow": "Permitir siempre",
+        "always_allow_undo": "Desactiva para volver a confirmar cada llamada.",
+        "always_allow_hint": "Dejar de preguntar antes de cada llamada a esta herramienta. Las reglas de seguridad propias de {{productName}} se siguen aplicando.",
+        "always_allow_failed": "No se pudo cambiar Permitir siempre. Inténtalo de nuevo.",
+        "always_allow_refused_asks_every_time": "Tu configuración pregunta antes de cada llamada a las herramientas de este servidor, así que no se pueden permitir siempre.",
+        "always_allow_refused_set_elsewhere": "Permitir siempre lo gestiona un archivo de configuración local en este equipo, así que no se puede cambiar aquí.",
+        "always_allow_refused_crew_owned": "Las herramientas propias de {{productName}} siempre preguntan.",
+        "always_allow_refused_other": "Estas herramientas no se pueden permitir siempre ahora mismo.",
         "share_refused_one": "{{count}} servidor que quieres compartir no se comparte: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
         "share_refused_many": "{{count}} servidores que quieres compartir no se comparten: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",
         "share_refused_other": "{{count}} servidores que quieres compartir no se comparten: {{names}}. Su inicio necesita tu aprobación, así que cada chat inicia su propia copia.",

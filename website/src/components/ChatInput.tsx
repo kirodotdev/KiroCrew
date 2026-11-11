@@ -8,8 +8,8 @@ import QuoteCard from '../pages/chat/QuoteCard'
 import CopyBranchButton from './CopyBranchButton'
 import ProjectAwsProfileStatus from './ProjectAwsProfile'
 import { useSlotRemoteEnvironment } from './sessionEnvironmentHooks'
-import RejectDropdown from './RejectDropdown'
-import DenyOverrideDropdown, { DenyOverrideWarning } from './DenyOverrideDropdown'
+import { ApprovalActions } from './chat-input/ApprovalActions'
+import { DenyOverrideWarning } from './DenyOverrideDropdown'
 import { OverlayPortal } from './overlayRoot'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBranding } from '../hooks/useBranding'
@@ -29,7 +29,6 @@ import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
 import { useComposerArrowKeyHistory } from '../hooks/useComposerArrowKeyHistory'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
-import TrustDropdown, { TrustUnavailable } from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePressActivation } from '../hooks/usePressActivation'
 import { isTouchDevice } from '../utils/isTouchDevice'
@@ -64,7 +63,7 @@ import { LexicalComposerInput, ComposerLoadBoundary, useComposerEngine } from '.
 import { SessionAutomationPopover, SessionEnvironmentChip } from './chat-input/lazyChips'
 import { LIST_HINT_DISMISSED_KEY, useTextareaListContinuation } from './chat-input/listContinuation'
 import { useFollowUpGhost } from './chat-input/followUpGhost'
-import { approvalBtnClass, useSpawnApprovals, useToolApproval } from './chat-input/approval'
+import { useSpawnApprovals, useToolApproval } from './chat-input/approval'
 import { SpawnApprovalCard } from './chat-input/SpawnApprovalCard'
 import { useComposerPickers } from '../chat-core/composer/pickers'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
@@ -374,15 +373,15 @@ function ChatInput({
           : i18nT('components.chatInput.terminal_attachments'))
           : terminalRefusal === 'pending' ? i18nT('components.chatInput.terminal_pending')
             : terminalRefusal === 'empty' ? i18nT('components.chatInput.terminal_empty') : null
+  const approval = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
   const {
-    pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
+    pendingApproval, hasApproval, approvalId, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError, showApprovalStatus,
-    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
-    approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
+    approvalToolInput, approvalIsUnattended,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
-    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction, approvalActionsRef,
-  } = useToolApproval({ slotId, slotApprovalChrome, approvalMode, dispatch })
+    approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat,
+  } = approval
   const activeSlot = slotId
   // Read the composer-spellcheck preference here rather than as a prop, so every
   // render site of this component honours it and none can forget to pass it.
@@ -1177,38 +1176,7 @@ function ChatInput({
                           {i18nT('components.chatInput.show_in_chat')}
                       </button>
                   )}
-                  {/* `data-approval-actions` is the probe `queryPendingApprovalAction`
-                      resolves — a keyboard chord lands on this row's first enabled
-                      control, and the reject chord's event arrives on the row. A `data-`
-                      hook rather than button text because every catalog translates the labels. */}
-                  <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center">
-                      {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} /> : <>
-                      <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {/* One dropdown carries every standing grant (trust-reads is a tier in it), and a card with none
-                          keeps its place disabled: `max-two-buttons-per-row` grandfathers Allow once + Trust + Reject; no fourth. */}
-                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) ? (
-                        <TrustDropdown
-                            fullCommand={approvalFullCommand}
-                            baseCommand={approvalBaseCommand}
-                            isShell={approvalIsShell && approvalTrustBaseGrantable}
-                            hasCommand={approvalTrustCommandGrantable}
-                            trustReadsLabelKey={approvalIsReadOnly ? 'components.chatInput.trust_reads' : undefined}
-                            showTrustAll={approvalTrustAllGrantable || approvalTrustCommandGrantable}
-                            disabled={approvalSubmitting}
-                            className={approvalBtnClass}
-                            timedGrants
-                            onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}
-                        />
-                      ) : <TrustUnavailable className={approvalBtnClass} />}
-                      </>}
-                      {/* Keyed per card row: a typed reason never reaches another card. */}
-                      <RejectDropdown
-                          key={`${activeSlot}:${approvalId}:${approvalMid ?? ''}`}
-                          disabled={approvalSubmitting} takesReason={approvalTakesReason}
-                          className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`}
-                          onAction={(action, reason) => { handleApprovalAction(action, undefined, undefined, reason) }}
-                      />
-                  </div>
+                  <ApprovalActions approval={approval} slotId={slotId} />
               </div>
               {approvalDenyRule && <DenyOverrideWarning rule={approvalDenyRule} family={approvalDenyFamily} detail={approvalDenyDetail} command={approvalDenyCommand} />}
               {/* A1 hint: points at the footer mode picker. Withheld for unattended

@@ -850,3 +850,5 @@ async def test_the_listed_first_keys_are_the_keys_the_settings_card_words() -> N
     }
     assert server == rules
     assert lp._SECURITY_KEYS["config.local.json"] == lp._SECURITY_KEYS["config.json"]
+    # The per-tool "Always allow" grants widen what runs exactly as auto_approve_tools does.
+    assert "hooks.auto_approve_tool_identities" in lp._SECURITY_KEYS["config.json"]

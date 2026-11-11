@@ -102,7 +102,7 @@ const API_KEY_ORDER = [
   'mcpGlobalScopes', 'mcpUnreadableFiles', 'mcpDiscover', 'mcpDiscoverDetail', 'mcpDiscoverInstall',
   'mcpCustomAdd', 'mcpCustomGet', 'mcpCustomUpdate', 'mcpActive',
   'mcpProbe', 'mcpResetProbeFailures', 'mcpSync', 'mcpApply',
-  'mcpToggle', 'mcpToggleTool', 'mcpToggleAll', 'mcpRemove',
+  'mcpToggle', 'mcpToggleTool', 'mcpToolGrants', 'mcpToolGrantSet', 'mcpToggleAll', 'mcpRemove',
   'mcpOAuthRelay', 'connectionsMint', 'connectionsMintState', 'connectionsMintServer',
   'connectionsMintServerState', 'connectionsPremint',
   'connectionsStatus', 'connectionsTest', 'connectionsCancel', 'connectionsDisconnect',

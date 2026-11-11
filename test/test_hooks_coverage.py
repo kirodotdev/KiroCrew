@@ -153,6 +153,14 @@ class TestHooksConfigFromDict:
         # No duplicates even when the operator listed a bundled pattern too.
         assert len(cfg.auto_approve_tools) == len(set(cfg.auto_approve_tools))
 
+    def test_tool_identity_grants_parse_and_round_trip(self):
+        cfg = HooksConfig.from_dict({"auto_approve_tool_identities": ["@notes/lookup", 4]})
+        assert cfg.auto_approve_tool_identities == ["@notes/lookup"]
+        assert "@notes/lookup" not in cfg.auto_approve_tools
+        assert cfg.to_dict()["auto_approve_tool_identities"] == ["@notes/lookup"]
+        junk = HooksConfig.from_dict({"auto_approve_tool_identities": "x"})
+        assert junk.to_dict()["auto_approve_tool_identities"] == []
+
     def test_subagent_flags_fail_safe_on_junk(self):
         cfg = HooksConfig.from_dict(
             {

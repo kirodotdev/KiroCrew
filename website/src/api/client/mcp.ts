@@ -8,6 +8,10 @@
 import type { McpApplyChange } from '../../types'
 import type { ClientTransport } from './transport'
 
+/** GET/POST /api/security/tool-grants: the grants in force, and for the named
+ *  server the code that refuses its grants ('' when they may be given). */
+export interface McpToolGrants { grants: { ref: string }[]; server?: string; refusal?: string }
+
 /** One machine-readable ground for a sharing verdict.
  *
  *  `code` is stable and is what the UI translates. `detail` is verbatim data
@@ -156,6 +160,12 @@ export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientT
       post('/api/mcp/apply', { changes }).then(j),
     mcpToggle: (name: string, enabled: boolean) => post('/api/mcp/toggle', { name, enabled }).then(j),
     mcpToggleTool: (server: string, tool: string, enabled: boolean) => post('/api/mcp/toggle-tool', { server, tool, enabled }).then(j),
+    /** The per-tool "Always allow" grants (`@server/tool`), and with `server`
+     *  the refusal code that keeps that server's toggles off ('' when allowed). */
+    mcpToolGrants: (server: string) =>
+      get(`/api/security/tool-grants?server=${encodeURIComponent(server)}`).then(j) as Promise<McpToolGrants>,
+    mcpToolGrantSet: (ref: string, on: boolean) =>
+      post(on ? '/api/security/tool-grants' : '/api/security/tool-grants/remove', { ref }).then(j) as Promise<McpToolGrants>,
     mcpToggleAll: (enabled: boolean) => post('/api/mcp/toggle-all', { enabled }).then(j),
     mcpRemove: (name: string) => post('/api/mcp/remove', { name }).then(j),
     mcpOAuthRelay: (server: string, redirectUrl: string) =>

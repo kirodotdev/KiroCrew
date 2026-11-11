@@ -9488,6 +9488,7 @@
       "show_full_command": "フルコマンドを表示"
     },
     "trustDropdown": {
+      "always_allow_this_tool": "このツールを常に許可",
       "trust": "信頼",
       "trust_all_base": "<mono/> コマンドをすべて信頼",
       "trust_all_base_channel": "<mono/> コマンドをすべて @{{role}} に対して信頼 — {{productName}} の再起動まで",
@@ -16538,6 +16539,14 @@
         "default_crewmate_unknown_reason": "{{name}} は Bot 一覧にありません"
       },
       "mcpTab": {
+        "always_allow": "常に許可",
+        "always_allow_undo": "オフにすると、呼び出す前に毎回確認します。",
+        "always_allow_hint": "このツールを呼び出す前に確認しなくなります。{{productName}} 自体の安全ルールは引き続き適用されます。",
+        "always_allow_failed": "「常に許可」を変更できませんでした。もう一度お試しください。",
+        "always_allow_refused_asks_every_time": "設定により、このサーバーのツールは呼び出しのたびに確認されるため、常に許可にはできません。",
+        "always_allow_refused_set_elsewhere": "「常に許可」はこのコンピューターのローカル設定ファイルで管理されているため、ここでは変更できません。",
+        "always_allow_refused_crew_owned": "{{productName}} 自体のツールは常に確認されます。",
+        "always_allow_refused_other": "これらのツールは現在、常に許可にできません。",
         "share_refused_other": "共有に設定した {{count}} 個のサーバーが共有されていません: {{names}}。起動には承認が必要なため、チャットごとに個別のコピーが起動します。",
         "share_refused_restart": "MCP サーバー でそれぞれの共有を承認してください。その後、ゲートウェイを再起動すると (設定 → バージョン情報 → ゲートウェイを再起動)、新しいチャットが共有コピーを使います。",
         "share_refused_review": "MCP サーバー で確認",
