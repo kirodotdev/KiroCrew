@@ -1254,7 +1254,12 @@ async def read_context(
         return {"next_run_at": when, "timezone": zone}
     if kind == catalog.KIND_CREWMATE_CAPABILITIES:
         from kiro_crew.agent_capabilities import CapabilityError
+        from kiro_crew.dashboard.handlers.member_capability_catalog import masks_unresolved
 
+        if masks_unresolved(p):
+            raise catalog.CardCatalogError(
+                "redacted_value_not_writable", "capabilities refused: redacted_value_not_writable"
+            )
         body = {"revision": before.get("revision"), **p["draft"]}
 
         def _preview() -> dict[str, Any]:
