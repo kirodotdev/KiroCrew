@@ -316,6 +316,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.point_grants import (  # noqa: F401
         point_grant_families,
     )
+    from kiro_crew.apps.registry_pipeline.checkout import (  # noqa: F401
+        _mkdtemp_settled,
+    )
     from kiro_crew.apps.routes_art import (  # noqa: F401
         _BLOB_FETCH_SEMAPHORE,
         _BLOB_FETCH_TIMEOUT,

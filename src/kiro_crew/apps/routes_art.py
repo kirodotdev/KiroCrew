@@ -39,6 +39,7 @@ from kiro_crew.apps.registry import (
     _git_fetch_branch,
     _git_target_is_unsupported,
     _loggable_git_transport_output,
+    _mkdtemp_settled,
     _owner_designated_repo_target,
     _repo_key_owner_count,
     _sel_credential_grant,
@@ -487,11 +488,9 @@ async def _fetch_git_blob(
         )
         return False
 
-    import tempfile
-
     tmp_root: str | None = None
     try:
-        tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-blob-")
+        tmp_root = await _mkdtemp_settled("kirocrew-blob-")
         # Credential posture for the browse-time icon/blob clone.  By default
         # this is an index-originated automatic clone, so it forces the strict
         # sandbox (~/.ssh hidden) and a credential-free env: a trusted-host repo
