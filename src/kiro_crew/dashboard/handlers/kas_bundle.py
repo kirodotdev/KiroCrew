@@ -3,7 +3,8 @@
 Two routes, both thin over :mod:`kiro_crew.agent_sdk.kas_bundle`:
 
 * ``GET /api/kas-bundle`` -- the pinned version, whether it is installed, whether
-  ``agent.kas_bundle`` is on, and the state of an install this gateway is running.
+  ``agent.kas_bundle`` is on, the state of an install this gateway is running, and
+  why this host cannot run the engine when it cannot.
 * ``POST /api/kas-bundle/install`` -- install this release's pinned engine in the
   background. Owner-only and SEL-audited: it writes the gateway-owned ``engines``
   leaf and fetches ~55 MB, so a non-owner allowed user gets a coded 403.
@@ -84,6 +85,14 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
         # A failed install, this app's own or a spawn's, is reported until the
         # engine is installed; once it is, no earlier failure is current.
         "error": (str(state.get("error") or "") or shared["error"]) if installed is None else "",
+        # Why this host cannot run the engine (glibc, OS or architecture, or no
+        # build for it in the manifest the last install fetched), '' when it can:
+        # every install here is refused, so the panel offers none.
+        "host_unsupported": (
+            kas_bundle.host_unsupported_reason() or shared["host_unsupported"]
+            if installed is None
+            else ""
+        ),
         # The route the last KAS spawn took (``acp/kas_route.py``), so the panel
         # can say when Crew's own engine was chosen because kiro-cli cannot run.
         # ``None`` before the first KAS spawn in this gateway.

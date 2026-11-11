@@ -2,9 +2,9 @@
 
 Handlers run against a faked request, the way ``test_kas_login_api.py`` does: they
 only touch ``request.app`` and the caller identity, so a minimal fake pins the
-contract. What is pinned: status reports the pin, the install, and the switch;
-install is owner-only; one install per gateway at a time; a failure surfaces the
-installer's remedy text.
+contract. What is pinned: status reports the pin, the install, the switch, and why
+this host cannot run the engine; install is owner-only; one install per gateway at
+a time; a failure surfaces the installer's remedy text.
 """
 
 from __future__ import annotations
@@ -53,6 +53,9 @@ def cfg(monkeypatch):
         classmethod(lambda cls: SimpleNamespace(agent=agent)),
     )
     monkeypatch.setattr(handler, "sel", lambda: SimpleNamespace(log_api_access=lambda **k: None))
+    # The machine running the tests is not the host under test: a CI runner or a
+    # dev box on an old glibc must not change what status reports.
+    monkeypatch.setattr(kas_bundle, "require_loadable_host", lambda: None)
     return agent
 
 
@@ -76,8 +79,63 @@ async def test_status_reports_the_pin_and_nothing_installed(cfg, monkeypatch):
         "installing": False,
         "progress": {"done": 0, "total": 0},
         "error": "",
+        "host_unsupported": "",
         "route": None,
     }
+
+
+def _glibc_too_old():
+    raise kas_bundle.KasHostUnsupported(
+        "this host's glibc (2.26) is older than KAS requires (glibc 2.28+). Nothing was installed."
+    )
+
+
+@pytest.mark.asyncio
+async def test_status_names_why_this_host_cannot_run_the_engine(cfg, monkeypatch):
+    """Every install on such a host is refused, so the panel says why up front and
+    the reason offers no retry."""
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(kas_bundle, "require_loadable_host", _glibc_too_old)
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest()))
+    assert body["host_unsupported"] == (
+        "Kiro Crew cannot install its KAS engine: this host's glibc (2.26) is older "
+        "than KAS requires (glibc 2.28+). Nothing was installed."
+    )
+    assert "retry" not in body["host_unsupported"].lower()
+
+
+@pytest.mark.asyncio
+async def test_status_reads_the_same_host_checks_an_install_runs(monkeypatch):
+    """The reason comes from the installer's own glibc check, not a copy of it.
+    No ``cfg`` fixture: it stubs out the host check this test exercises."""
+    from kiro_crew.acp import kas_bundle as owner
+
+    agent = SimpleNamespace(kas_bundle=False, kas_bundle_url="https://h.test")
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.KiroCrewConfig.load",
+        classmethod(lambda cls: SimpleNamespace(agent=agent)),
+    )
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(owner, "_require_loadable_glibc", lambda s, m: _glibc_too_old())
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest()))
+    assert "glibc (2.26)" in body["host_unsupported"]
+
+
+@pytest.mark.asyncio
+async def test_status_skips_the_host_check_once_an_engine_is_installed(cfg, monkeypatch, tmp_path):
+    installed = kas_bundle.InstalledKasBundle(
+        version=KAS_PIN_VERSION,
+        node_version="22.23.3",
+        root=tmp_path,
+        node_bin=tmp_path / "node",
+        acp_server=tmp_path / "acp-server.js",
+    )
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: installed)
+    monkeypatch.setattr(
+        kas_bundle, "require_loadable_host", lambda: pytest.fail("checked an installed host")
+    )
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest()))
+    assert body["host_unsupported"] == ""
 
 
 @pytest.mark.asyncio
@@ -196,6 +254,47 @@ async def test_a_failed_install_surfaces_the_remedy(cfg, monkeypatch):
     assert "KAS 0.66.33 publishes no Node runtime for linux-riscv64" in body["error"]
     assert "`kirocrew kas install`" in body["error"]
     assert body["installing"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_install_the_manifest_refuses_marks_the_host_unsupported(cfg, monkeypatch):
+    """A host that passes the local checks but has no build in the fetched manifest
+    is refused the same way on every retry, so status stops offering one."""
+
+    def no_build(*a, **k):
+        raise kas_bundle.KasHostUnsupported(
+            "KAS 0.66.33 publishes no engine build for win32-arm64 (has: darwin-universal, "
+            "linux-arm64, linux-x64, win32-x64)"
+        )
+
+    monkeypatch.setattr(kas_bundle, "install_pinned", no_build)
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    app = {"state": _FakeState()}
+    before = _body(await handler.api_kas_bundle_status(_FakeRequest(app)))
+    assert before["host_unsupported"] == ""
+    await handler.api_kas_bundle_install(_FakeRequest(app))
+    await app[handler._STATE_KEY]["task"]
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest(app)))
+    assert "win32-arm64" in body["host_unsupported"]
+    assert "retry" not in body["host_unsupported"].lower()
+    assert body["installing"] is False
+
+
+@pytest.mark.asyncio
+async def test_an_offline_install_leaves_the_host_supported(cfg, monkeypatch):
+    """A fetch that fails may work later, so Install and Retry stay offered."""
+
+    def offline(*a, **k):
+        raise kas_bundle.KasBundleError("could not fetch https://h.test/manifest.json")
+
+    monkeypatch.setattr(kas_bundle, "install_pinned", offline)
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    app = {"state": _FakeState()}
+    await handler.api_kas_bundle_install(_FakeRequest(app))
+    await app[handler._STATE_KEY]["task"]
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest(app)))
+    assert "could not fetch" in body["error"]
+    assert body["host_unsupported"] == ""
 
 
 def test_the_routes_are_registered():

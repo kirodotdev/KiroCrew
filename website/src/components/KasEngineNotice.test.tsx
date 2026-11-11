@@ -101,6 +101,15 @@ describe('KasEngineNotice', () => {
     expect(await screen.findByTestId('kas-engine-downloading', {}, CHAINED_QUERY_TIMEOUT)).toBeTruthy()
   })
 
+  it('offers no Retry on a host that cannot run the engine', async () => {
+    const error = "Kiro Crew cannot install its KAS engine: this host's glibc (2.26) is older than KAS requires (glibc 2.28+)."
+    kasBundleStatus.mockResolvedValue(status({ error, host_unsupported: error }))
+    renderWithProviders(<KasEngineNotice />)
+    const notice = await screen.findByTestId('kas-engine-failed', {}, CHAINED_QUERY_TIMEOUT)
+    expect(notice.textContent).toContain('glibc (2.26)')
+    expect(screen.queryByTestId('kas-engine-retry')).toBeNull()
+  })
+
   it('says nothing once the engine is installed', async () => {
     kasBundleStatus.mockResolvedValue(status({
       installed: { version: '0.66.33', node_version: '22.23.3', bundled: false },

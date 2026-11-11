@@ -197,6 +197,15 @@ export function KasBundleCard() {
               </span>
             )}
           </>
+        ) : status.host_unsupported ? (
+          // Every install here is refused, so the reason replaces the button.
+          // Once one has been refused the failure is the ErrorNotice's below,
+          // so the row stays empty rather than say it twice.
+          status.error ? null : (
+            <span className="text-muted" data-testid="kas-bundle-host-unsupported">
+              {status.host_unsupported}
+            </span>
+          )
         ) : (
           <>
             <span className="text-muted">

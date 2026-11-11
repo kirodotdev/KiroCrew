@@ -8,6 +8,7 @@
  * - "Install" starts the gateway's install, and the card shows its progress from
  *   the status the server returns;
  * - an install failure renders the server's remedy text;
+ * - a host that cannot run the engine names why in place of Install, once;
  * - a saved switch is reported as pending a restart, because the setting is
  *   boot-only, and nothing says so before a save;
  * - a status poll that fails while an earlier status is still cached is reported,
@@ -83,6 +84,27 @@ describe('KasBundleCard', () => {
     expect(screen.getByText('KAS engine 0.66.33 is not installed yet.')).toBeInTheDocument()
     expect(toggle()).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByTestId('restart-badge')).toHaveAttribute('data-key', KAS_BUNDLE_CONFIG_KEY)
+  })
+
+  it('names why a host cannot run the engine instead of offering an install it refuses', async () => {
+    const reason = "Kiro Crew cannot install its KAS engine: this host's glibc (2.26) is older than KAS requires (glibc 2.28+)."
+    kasBundleStatus.mockResolvedValue({ ...BASE, host_unsupported: reason })
+    renderWithProviders(<KasBundleCard />)
+    expect(await screen.findByTestId('kas-bundle-host-unsupported')).toHaveTextContent(reason)
+    expect(screen.queryByTestId('kas-bundle-install')).toBeNull()
+    expect(screen.queryByText('KAS engine 0.66.33 is not installed yet.')).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(toggle()).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('reports a refused install on such a host once, as an error, with no Install', async () => {
+    const reason = "Kiro Crew cannot install its KAS engine: this host's glibc (2.26) is older than KAS requires (glibc 2.28+)."
+    kasBundleStatus.mockResolvedValue({ ...BASE, host_unsupported: reason, error: reason })
+    renderWithProviders(<KasBundleCard />)
+    expect(await screen.findByRole('alert')).toHaveTextContent(reason)
+    expect(screen.getAllByText(reason)).toHaveLength(1)
+    expect(screen.queryByTestId('kas-bundle-host-unsupported')).toBeNull()
+    expect(screen.queryByTestId('kas-bundle-install')).toBeNull()
   })
 
   it('lets the switch be turned on once installed, through the config PATCH', async () => {
