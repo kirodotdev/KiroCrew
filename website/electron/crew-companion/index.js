@@ -444,6 +444,7 @@ async function reconcileOnce() {
  *   `fetchGatewayAuth` is the full credential chain main.js passes.
  */
 function initCrewCompanion(deps) {
+  suspended = false;
   backendUrl = (deps && deps.backendUrl) || "";
   if (deps && typeof deps.fetchGatewayAuth === "function") {
     fetchGatewayAuth = deps.fetchGatewayAuth;
@@ -540,6 +541,9 @@ function initCrewCompanion(deps) {
 }
 
 function shutdownCrewCompanion() {
+  // Latch the loop as suspend does: a reconcile already past its awaits would
+  // otherwise reopen the overlay after the quit closed it.
+  suspended = true;
   closePanelWindow();
   closeGalleryWindow();
   if (timer) {
