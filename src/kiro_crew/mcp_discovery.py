@@ -36,6 +36,7 @@ from kiro_crew.mcp_discovery_config import (
 from kiro_crew.mcp_discovery_probe import _drop_temp_refusals, probe_server
 from kiro_crew.mcp_discovery_probe_state import _prune_unresolvable, _sanitize_probe_error
 from kiro_crew.mcp_discovery_server_info import _CC_SIDECAR_SURFACE, SCOPE_KIROCREW, McpServerInfo
+from kiro_crew.mcp_oauth_projection import oauth_withheld
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.user_json import has_json_comments, loads_user_json
 
@@ -548,6 +549,7 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
             headers=spec.get("headers") or {},
             scopes=_spec_scopes(spec),
             client_id=_spec_client_id(spec),
+            oauth_withheld=oauth_withheld(spec.get("oauth")),
             source="discovered",
             source_owned=_declared_source_owned(spec),
         )
