@@ -334,7 +334,8 @@ class _WorkflowSessionWorker:
         Codex) pushes it only at cold start, so without this every reuse after the
         first would run at the backend default. ``change_effort`` answering False means the model takes no
         effort, which a cold start drops the same way; a raise sends the caller down
-        the hard reset, which cold-starts with the override.
+        the hard reset, which cold-starts with the override, except a level kiro-cli
+        refuses, which keeps the conversation as it runs.
         """
         level = self._effort_kwargs.get("reasoning_effort_override")
         change_effort = getattr(self._provider, "change_effort", None)
@@ -345,7 +346,13 @@ class _WorkflowSessionWorker:
         accepts = getattr(self._provider, "accepts_effort_level", None)
         if accepts is not None and not accepts(level):
             return
-        await change_effort(level)
+        try:
+            await change_effort(level)
+        except Exception as exc:
+            if getattr(exc, "command_refused", False) is not True:
+                raise
+            # kiro-cli refused the level: a hard reset would only replay it.
+            logger.warning("workflow pool: %s keeps its effort: %s", self._key, exc)
 
     async def shutdown(self) -> None:
         # A pooled worker owns an ephemeral ``wf-pool:`` session that can never

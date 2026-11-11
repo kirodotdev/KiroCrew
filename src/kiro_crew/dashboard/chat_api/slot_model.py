@@ -204,6 +204,13 @@ async def _reapply_effort_after_live_switch(
         # Through the class: the shared body the provider's own set_model runs.
         return await AcpProvider.reapply_live_effort(provider, slot.reasoning_effort)
     except Exception as exc:
+        if getattr(exc, "command_refused", False) is True:
+            # kiro-cli refused the level for this model and nothing changed; a
+            # reset would cold-start on the same level and lose the live session.
+            logger.warning(
+                "Effort re-apply after live model switch refused for slot %s: %s", name, exc
+            )
+            return True
         logger.warning(
             "Effort re-apply after live model switch failed for slot %s: %s: %s"
             " — falling back to reset",

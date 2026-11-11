@@ -29,6 +29,26 @@ class TestSendCommand:
         assert "42%" in result
 
     @pytest.mark.asyncio
+    async def test_send_command_raises_when_kiro_cli_refuses(self, tmp_path):
+        # kiro-cli 2.34.0 refuses an /effort level with success: false and no
+        # JSON-RPC error; the effort senders warn and roll back only on a raise.
+        from kiro_crew.acp.client import AcpError
+
+        client = AcpClient(work_dir=tmp_path)
+        client._session_id = "s1"
+        client._process = MagicMock()
+        client._process.returncode = None
+        client.ensure_ready = AsyncMock()
+        client._send_request = AsyncMock(return_value=10)
+        client._wait_for_response = AsyncMock(
+            return_value={"success": False, "message": "invalid effort level 'bogus'"}
+        )
+
+        with pytest.raises(AcpError, match="invalid effort level 'bogus'") as refused:
+            await client.send_command("/effort", args={"level": "bogus"})
+        assert refused.value.command_refused is True
+
+    @pytest.mark.asyncio
     async def test_send_command_timeout_returns_empty(self, tmp_path):
         from kiro_crew.acp.client import AcpTimeoutError
 
