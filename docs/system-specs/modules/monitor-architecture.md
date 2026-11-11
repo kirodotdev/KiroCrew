@@ -431,8 +431,11 @@ never holds.
 An unanswered tool approval HOLDS a prompt loop rather than stopping it: it
 stays active, fires nothing and spends neither bound, and it resumes on its own
 once a person answers an approval, types into the dashboard session or presses
-fire (`release_approval_hold`); a Slack or Discord message alone does not
-release it. `monitor_inspect` reports the hold as
+fire, or a new dashboard turn starts in the session, whoever sent it
+(`_turn_open`, unarmed: that turn's end re-arms the loop)
+(`release_approval_hold`). A Slack or Discord message on a channel-bound
+slot does not release it; one sent into a dashboard slot linked to that
+channel runs through `_run_chat`, so its turn does. `monitor_inspect` reports the hold as
 `paused_for_approval` on the loop reading. A held gated loop is not blind: when
 it names one pull request, each held tick reads it (`subject_reads.hold_tick`,
 one `gh pr view`, no model turn) and re-arms one read interval out, so the
