@@ -1023,6 +1023,74 @@ class TestSpawnCliAuth:
         assert "spawn list" in err
         assert "lost connection" not in err
 
+    def _run_until_done(self, monkeypatch, capsys, done_status: dict) -> None:
+        """Drive a blocking ``spawn run`` whose poll returns ``done_status`` once."""
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._time",
+            SimpleNamespace(sleep=lambda _s: None, monotonic=lambda: 0.0),
+        )
+        started = MagicMock()
+        started.read.return_value = b'{"id": "agent-1", "task": "hi"}'
+        started.__enter__ = MagicMock(return_value=started)
+        started.__exit__ = MagicMock(return_value=False)
+        polled = MagicMock()
+        polled.read.return_value = json.dumps(done_status).encode()
+        polled.__enter__ = MagicMock(return_value=polled)
+        polled.__exit__ = MagicMock(return_value=False)
+
+        def fake_send(req: urllib.request.Request, *_a: object) -> MagicMock:
+            return started if req.get_method() == "POST" else polled
+
+        monkeypatch.setattr("kiro_crew.cli_commands._gateway_send", fake_send)
+        from kiro_crew.cli_commands import _spawn_run
+
+        _spawn_run(
+            argparse.Namespace(task="do thing", fire_and_forget=False, port=5476),
+            "http://localhost:5476",
+        )
+
+    def test_spawn_run_stopped_exits_nonzero(self, monkeypatch, capsys):
+        """A user-stopped run (outcome=stopped, empty error) must not read as success."""
+        with pytest.raises(SystemExit) as excinfo:
+            self._run_until_done(
+                monkeypatch,
+                capsys,
+                {"done": True, "outcome": "stopped", "error": "", "result": "partial"},
+            )
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        assert "Stopped" in captured.err
+
+    def test_spawn_run_completed_exits_zero(self, monkeypatch, capsys):
+        """A completed run prints its result and returns (exit 0): back-compat."""
+        self._run_until_done(
+            monkeypatch,
+            capsys,
+            {"done": True, "outcome": "completed", "error": "", "result": "the answer"},
+        )
+        assert "the answer" in capsys.readouterr().out
+
+    def test_spawn_run_no_outcome_no_error_exits_zero(self, monkeypatch, capsys):
+        """An older gateway that sends no outcome and no error still exits 0."""
+        self._run_until_done(
+            monkeypatch,
+            capsys,
+            {"done": True, "result": "the answer"},
+        )
+        assert "the answer" in capsys.readouterr().out
+
+    def test_spawn_run_error_exits_nonzero(self, monkeypatch, capsys):
+        """A run that ended with an error exits 1 and reports the error."""
+        with pytest.raises(SystemExit) as excinfo:
+            self._run_until_done(
+                monkeypatch,
+                capsys,
+                {"done": True, "outcome": "failed", "error": "boom", "result": ""},
+            )
+        assert excinfo.value.code == 1
+        assert "boom" in capsys.readouterr().err
+
     def _list_rows(self, monkeypatch, capsys, payload: dict) -> str:
         """Run ``spawn list`` against a canned gateway answer and return stdout."""
         monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
