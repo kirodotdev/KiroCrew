@@ -1060,6 +1060,14 @@ prompt. `cloud connect` performs the same check and installer prompt before
 opening the dashboard tunnel. If installation is declined or fails, the command
 exits non-zero and tells the user to retry after fixing the local prerequisite.
 
+`kirocrew cloud doctor` is read-only and exits 1 when any line is a failure
+(✗): no usable `aws` CLI, a missing or refused Session Manager plugin, or AWS
+not reachable, the prerequisites launch cannot go on without. A service that
+answers "not reachable" stays a warning (⚠) and leaves the exit code at 0,
+because launch still tries it. A missing plugin's line shows the install
+command for this machine, the same one the dashboard's plugin row shows
+(`ssm.session_manager_plugin_install_command()`), and says to rerun `doctor`.
+
 The cloud wizard's cursor menus (instance size, existing deployments) support
 arrow keys in an interactive terminal (`↑`/`↓`, `j`/`k`, digit shortcuts, Enter
 to select) and fall back to the numbered prompt for non-TTY input. A digit picks
