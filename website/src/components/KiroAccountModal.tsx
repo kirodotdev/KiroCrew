@@ -31,7 +31,8 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
  * and none from the scrape; the pill shows this state only on a Kiro harness,
  * where the Refresh below can fill it), `'failed'` when
  * the fetch itself failed with nothing cached, `'signin-required'`
- * when no live Kiro credential could be read, or `'config-unreadable'` when the
+ * when no live Kiro credential could be read, `'signin-rejected'` when the
+ * usage API refused the one that was, or `'config-unreadable'` when the
  * gateway holds no reading AND the config read that decides whether this is a
  * Kiro harness at all failed -- so nothing can be shown as a fact, and the read
  * is retried from here. `null` is the ONLY value that means "still loading" —
@@ -45,6 +46,7 @@ export type KiroAccountUsage =
   | 'none'
   | 'failed'
   | 'signin-required'
+  | 'signin-rejected'
   | 'config-unreadable'
 
 /** True only for an actual reading, so the sentinels cannot reach a field access. */
@@ -52,13 +54,18 @@ const isUsageReading = (usage: KiroAccountUsage): usage is KiroCreditUsage =>
   typeof usage === 'object' && usage !== null && !isAccountOnly(usage)
 
 /**
- * The no-reading states a refresh can fill. `'signin-required'` is excluded
- * because it takes the sign-in error surface before this is consulted: the
+ * The no-reading states a refresh can fill. `'signin-required'` and
+ * `'signin-rejected'` are excluded
+ * because they take the sign-in error surface before this is consulted: the
  * `/usage` read needs the same sign-in. `null` is still loading, so there is
  * nothing to refresh yet.
  */
 const canRefreshUsage = (usage: KiroAccountUsage): boolean =>
   usage === 'failed' || usage === 'none' || usage === 'config-unreadable'
+
+/** True for both no-usable-sign-in states: none was read, or the one read was refused. */
+const needsSignIn = (usage: KiroAccountUsage): boolean =>
+  usage === 'signin-required' || usage === 'signin-rejected'
 
 /**
  * Why a refresh did not produce a new reading, mapped to one plain sentence
@@ -577,7 +584,7 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   // account with no plan both have nothing pending, so they get the static
   // notice rather than a skeleton that never resolves.
   if (usage === null) return <UsageSkeleton />
-  if (usage === 'signin-required' && mainOnKas) {
+  if (needsSignIn(usage) && mainOnKas) {
     // On KAS the remedy is Crew's own Kiro sign-in, not `kiro-cli login`; the
     // link row below leads to its card. Which notice comes from that sign-in's
     // own read: in flight is still loading, and a failed read is a failure. A
@@ -588,17 +595,24 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
         ? <ErrorNotice message={i18nT('components.kasLogin.sign_in_status_unavailable')} askAgent onHandoff={onClose} />
         : <UsageSkeleton />
     }
-    return signInQuery.data.authenticated ? (
-      <ErrorNotice
-        message={i18nT('components.kiroAccountModal.credit_usage_sign_in_lapsed')}
-        noHandoffReason="on KAS every agent runs as this stored Kiro sign-in, which is what the usage read could not use, so the chat the hand-off would open fails on the same credential"
-      />
-    ) : (
-      <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
-        <Info className="lucide-inline shrink-0" aria-hidden="true" />{' '}
-        {i18nT('components.kiroAccountModal.credit_usage_sign_in_to_see')}
-      </div>
-    )
+    if (signInQuery.data.authenticated) {
+      return (
+        <ErrorNotice
+          message={i18nT('components.kiroAccountModal.credit_usage_sign_in_lapsed')}
+          noHandoffReason="on KAS every agent runs as this stored Kiro sign-in, which is what the usage read could not use, so the chat the hand-off would open fails on the same credential"
+        />
+      )
+    }
+    // With none stored, agents run on kiro-cli's login. A credential the usage
+    // API refused is a failed read, so it takes the error notice below.
+    if (usage === 'signin-required') {
+      return (
+        <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
+          <Info className="lucide-inline shrink-0" aria-hidden="true" />{' '}
+          {i18nT('components.kiroAccountModal.credit_usage_sign_in_to_see')}
+        </div>
+      )
+    }
   }
   // The two FAILURE states take the shared error surface and its agent
   // hand-off: an expired sign-in (the one unreadable state the user can act
@@ -607,10 +621,15 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   // user cannot see reads as a dead button. The remaining states report a
   // configuration the account is in rather than a failure to recover from, so
   // they stay on the passive notice.
-  if (usage === 'signin-required') {
+  if (needsSignIn(usage)) {
     return (
       <ErrorNotice
-        message={i18nT('components.kiroAccountModal.credit_usage_signin_required')}
+        // On KAS a refused credential was read and the usage API was asked, so
+        // it takes the sentence that says the sign-in is no longer valid; the
+        // link below leads to the sign-in. Elsewhere the remedy stays kiro-cli.
+        message={i18nT(usage === 'signin-rejected' && mainOnKas
+          ? 'components.kiroAccountModal.credit_usage_sign_in_lapsed'
+          : 'components.kiroAccountModal.credit_usage_signin_required')}
         askAgent
         onHandoff={onClose}
       />
@@ -820,7 +839,7 @@ function SignInSettingsLink({ onClose, usage }: { onClose: () => void; usage: Ki
     >
       {i18nT(!mainOnKas
         ? 'components.kiroAccountModal.bots_sign_in_in_settings'
-        : usage === 'signin-required'
+        : needsSignIn(usage)
           ? 'components.kiroAccountModal.sign_in_in_settings'
           : crewSignInStored
             ? 'components.kiroAccountModal.sign_out_or_switch'

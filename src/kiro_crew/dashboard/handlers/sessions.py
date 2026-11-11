@@ -534,12 +534,22 @@ def _unavailable_reason(api_result: kiro_usage_api.UsageResult) -> str | None:
     return None
 
 
+def _credential_rejected(api_result: kiro_usage_api.UsageResult) -> bool:
+    """True when the API refused a credential it was shown, not when none was read.
+
+    Rides the ``signin_required`` marker as ``credential_rejected`` so the
+    dashboard can tell a failed sign-in from a missing one.
+    """
+    return api_result.auth_state == kiro_usage_api.AUTH_REJECTED
+
+
 def _cache_without_scrape(
     api_usage: object,
     identity: dict[str, object] | None,
     reason: str | None = None,
     *,
     user_id: str | None = None,
+    rejected: bool = False,
 ) -> None:
     """Cache the best available value when the parked scrape is not going to run.
 
@@ -565,6 +575,7 @@ def _cache_without_scrape(
     that is signed in now. ``None`` (kiro-cli never resolved) proves nothing, so
     nothing is preserved. ``user_id`` is this refresh's IdC userId
     (:attr:`kiro_usage_api.UsageResult.user_id`), compared with the cached one.
+    ``rejected`` is :func:`_credential_rejected`'s verdict for this refresh.
     """
     global _usage_cache, _usage_cache_ts, _usage_cache_user_id
     if (
@@ -586,6 +597,8 @@ def _cache_without_scrape(
         unavailable: dict[str, object] = {**partial, "available": False}
         if reason is not None:
             unavailable["reason"] = reason
+        if rejected:
+            unavailable["credential_rejected"] = True
         _usage_cache = unavailable
     _usage_cache_ts = time.time()
 
@@ -905,19 +918,23 @@ async def _refresh_from_vault() -> None:
     _cache_vault_failure(before, _unavailable_reason(result), stamp=stamp)
 
 
-def _publish_account_unproven(identity: dict[str, object], reason: str) -> None:
+def _publish_account_unproven(
+    identity: dict[str, object], reason: str, *, rejected: bool = False
+) -> None:
     """Publish the no-balance marker for an :func:`_account_type_only` sign-in.
 
     Carries ``identity``'s own public fields (the account type) and nothing of
     an earlier reading: no number this refresh read is published for that shape.
+    ``rejected`` is :func:`_credential_rejected`'s verdict for this refresh.
     """
-    _publish_usage(
-        {
-            **{k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")},
-            "available": False,
-            "reason": reason,
-        }
-    )
+    marker: dict[str, object] = {
+        **{k: _redact_strings(v) for k, v in identity.items() if not k.startswith("_")},
+        "available": False,
+        "reason": reason,
+    }
+    if rejected:
+        marker["credential_rejected"] = True
+    _publish_usage(marker)
 
 
 def _cache_transient_failure(
@@ -925,6 +942,7 @@ def _cache_transient_failure(
     reason: str | None = None,
     *,
     user_id: str | None = None,
+    rejected: bool = False,
 ) -> None:
     """Record a usage-fetch failure without blanking the pill for the same account.
 
@@ -952,7 +970,7 @@ def _cache_transient_failure(
     ended empty (the API's auth-class verdict, see :func:`_unavailable_reason`),
     so the pill can name the remedy instead of hiding. ``user_id`` is this
     refresh's IdC userId, compared with the cached one as in
-    :func:`_cache_without_scrape`.
+    :func:`_cache_without_scrape`, and ``rejected`` is passed on the same way.
     """
     global _usage_cache, _usage_cache_ts, _usage_cache_user_id
     if (
@@ -968,6 +986,8 @@ def _cache_transient_failure(
         _usage_cache = {"available": False}
         if reason is not None:
             _usage_cache["reason"] = reason
+        if rejected:
+            _usage_cache["credential_rejected"] = True
     _usage_cache_ts = time.time()
 
 
@@ -1379,7 +1399,9 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 functools.partial(kiro_usage_api.fetch_usage_limits, expected_arn=None),
             )
             _publish_account_unproven(
-                identity, await _account_type_only_reason(type_only_result.auth_state, kiro_bin)
+                identity,
+                await _account_type_only_reason(type_only_result.auth_state, kiro_bin),
+                rejected=_credential_rejected(type_only_result),
             )
             logger.info(
                 "Kiro usage: the sign-in names a provider and no user; showing the "
@@ -1522,6 +1544,7 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 parked_identity,
                 reason=_unavailable_reason(api_result),
                 user_id=await _adjacent_user_id(),
+                rejected=_credential_rejected(api_result),
             )
             return _SKIPPED_SCRAPE_PARKED
         # The scrape reads whichever account kiro-cli has signed in WHEN IT
@@ -1549,6 +1572,7 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 no_scrape_identity,
                 reason=_unavailable_reason(api_result),
                 user_id=await _adjacent_user_id(),
+                rejected=_credential_rejected(api_result),
             )
             return None
         after = (await _adjacent_identity()) or {}
@@ -1655,7 +1679,10 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
         # marker names that remedy.
         _record_scrape_outcome(False)
         _cache_transient_failure(
-            after, reason=_unavailable_reason(api_result), user_id=after_user_id
+            after,
+            reason=_unavailable_reason(api_result),
+            user_id=after_user_id,
+            rejected=_credential_rejected(api_result),
         )
         return _parked_by_this_attempt()
 

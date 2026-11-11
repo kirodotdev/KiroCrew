@@ -1057,7 +1057,8 @@ class TestExternalIdpRefresh(_ResetUsageGlobals):
             await sessions_mod._fetch_usage_bg()
         fetch.assert_called_once_with(expected_arn=None)
         assert calls == ["whoami"], calls
-        assert sessions_mod._usage_cache == SIGNIN_REQUIRED
+        # The refusal is marked, so the dashboard shows it as a failed read.
+        assert sessions_mod._usage_cache == {**SIGNIN_REQUIRED, "credential_rejected": True}
 
     @pytest.mark.asyncio
     async def test_no_credential_with_a_working_scrape_stays_account_unproven(self):
