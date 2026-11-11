@@ -618,6 +618,11 @@ class MemoryStore:
                     # stale, so make the caller's next read observe the winner.
                     self._invalidate_history_cache()
                     return False
+                from kiro_crew.memory_history_edit import today_part_of_aggregate_edit
+
+                content = today_part_of_aggregate_edit(
+                    content, current, _normalize_newlines(current_today).strip()
+                )
                 self._atomic_write_text(path, content)
                 self._index_file(path, content)
                 wrote = True

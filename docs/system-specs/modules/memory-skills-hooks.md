@@ -3462,7 +3462,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | GET | `/api/memory/projects` | Read the markdown projects document |
 | PUT | `/api/memory/projects` | Overwrite it (gated). The file keeps every byte, but session startup injects only its first `_MEMORY_PROJECTS_CAP` characters (`context_assembly/budget.py`) and marks the cut `…[truncated] (N chars omitted)`; a save past that cap still answers 200 with `warning` and `overflow_chars` beside `ok` (`memory.projects_cap_overflow`), and `MemoryStore.write_projects` logs the same overflow |
 | GET | `/api/memory/history` | Read today's editable V2 document or V1 recent daily summaries |
-| PUT | `/api/memory/history` | Overwrite today's summary file (gated) |
+| PUT | `/api/memory/history` | Overwrite today's summary file (gated). On V1 a document that still ends with the earlier days exactly as the GET showed them writes only the text before them (`memory_history_edit.today_part_of_aggregate_edit`), so a save never copies earlier days into today; any other document is written whole |
 | GET | `/api/memory/semantic` | List all semantic entries |
 | PUT | `/api/memory/semantic` | Create/update (validates key, allowlist, injection; gated) |
 | DELETE | `/api/memory/semantic/{key}` | Tombstone + log event (gated). Optional JSON body for `kirocrew memory forget`: `expect_value_json` (compare-and-delete, 409 `value_changed`) and `superseded_by` (must be live and differ from the key: 409 `superseded_by_absent` / 400 `superseded_by_self`); other fields 400 `invalid_forget_body`. The dashboard sends no body |
