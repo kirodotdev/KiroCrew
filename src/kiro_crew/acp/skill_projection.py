@@ -251,6 +251,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sidecar_answers_for,
         _ViewLedgerWrites,
         is_skill_view_name,
+        owned_view_source,
         remembered_view_source,
         resolve_source_agent,
         source_agent_name,

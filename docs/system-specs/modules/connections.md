@@ -957,12 +957,17 @@ mode where the feature silently never fires and no census-mocking test can see i
 A mirror is only an entry the transaction removes or re-derives from the purged
 default agent (`ownership._is_mirror_spec`): `kirocrew.json` itself, the worker spec
 the rebuild derives from it again (only when its installer would accept the file,
-`_foreign_worker_spec_reason`), and a `kirocrew-skill-view-*` view whose recorded
-source agent is the default one (`agent_sdk.drivers.acp.skill_view_source_agent`),
-which the next session re-projects. Every other spec is an `agent:` sharer, the other
+`_foreign_worker_spec_reason`), and a `kirocrew-skill-view-*.json` view whose ownership
+record binds the file as it is now and names the default agent
+(`agent_sdk.drivers.acp_skill_views.skill_view_owned_source`), which the next session
+re-projects. A view whose record names the worker is a mirror too, but only while
+the worker spec beside it passes the same `_foreign_worker_spec_reason` test; a view
+of a worker spec the user wrote keeps its grant. A record that outlived its view proves nothing about a spec written at
+that name later, so the census never judges a view by its name alone. Every other
+spec is an `agent:` sharer, the other
 `OWNED_KIRO_AGENT_FILES` included: their installers keep an entry from an `agent.json`
 override or a customized copy that the purge never edits. A file that cannot be read,
-a view with no recorded source and a check that raises all read as a sharer, so
+a view no record binds and a check that raises all read as a sharer, so
 damaged state never aborts the Disconnect.
 A hand-written agent spec is the opposite: Kiro Crew never writes it, so its entry
 keeps its own grant and must be able to block a revoke. The exclusion is scoped to

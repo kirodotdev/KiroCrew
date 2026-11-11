@@ -48,6 +48,13 @@ logger = logging.getLogger(__name__)
 
 _MIRROR_PREFIX = "mirror:"
 _DEFAULT_AGENT = Path(AGENT_FILENAME).stem
+_WORKER_AGENT = Path(WORKER_AGENT_FILENAME).stem
+
+
+def _is_crew_worker_spec(path: Path) -> bool:
+    """Whether the worker spec at *path* is one its installer wrote and would rewrite."""
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    return isinstance(spec, dict) and agent_mod._foreign_worker_spec_reason(spec) is None
 
 
 def _is_mirror_spec(path: Path) -> bool:
@@ -61,8 +68,13 @@ def _is_mirror_spec(path: Path) -> bool:
     * the worker spec, which that rebuild derives from the default agent again, and
       only when its installer would accept it (``_foreign_worker_spec_reason``): a
       file at the name that the installer did not write survives untouched;
-    * a ``kirocrew-skill-view-*`` view whose recorded source is the default agent,
-      re-projected from it by the next session.
+    * a ``kirocrew-skill-view-*.json`` view whose ownership record binds the file
+      as it is now and names the default agent, re-projected from it by the next
+      session. A record that outlived its file proves nothing about a spec someone
+      wrote at the same name later, so that spec is a sharer;
+    * such a view whose record names the worker, while the worker spec beside it is
+      one its installer wrote (the same ``_foreign_worker_spec_reason`` test): the
+      worker is re-derived from the default agent, and its view from the worker.
 
     Every other spec is a sharer, the other ``OWNED_KIRO_AGENT_FILES`` included:
     their installers keep an entry from an ``agent.json`` override or a customized
@@ -75,12 +87,14 @@ def _is_mirror_spec(path: Path) -> bool:
         if name == AGENT_FILENAME:
             return True
         if name == WORKER_AGENT_FILENAME:
-            spec = json.loads(path.read_text(encoding="utf-8"))
-            return isinstance(spec, dict) and agent_mod._foreign_worker_spec_reason(spec) is None
+            return _is_crew_worker_spec(path)
         if name.startswith(NATIVE_SKILL_ALIAS_PREFIX):
-            from kiro_crew.agent_sdk.drivers.acp import skill_view_source_agent
+            from kiro_crew.agent_sdk.drivers.acp_skill_views import skill_view_owned_source
 
-            return skill_view_source_agent(path.stem) == _DEFAULT_AGENT
+            source = skill_view_owned_source(path)
+            if source == _WORKER_AGENT:
+                return _is_crew_worker_spec(path.parent / WORKER_AGENT_FILENAME)
+            return source == _DEFAULT_AGENT
     except Exception:
         logger.debug("could not confirm %s is a Kiro Crew render", path, exc_info=True)
     return False
