@@ -1612,6 +1612,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.executors import (  # noqa: F401
         embed_executor,
     )
+    from kiro_crew.memory_history_stamps import (  # noqa: F401
+        is_history_day_header,
+        is_history_stamp,
+    )
     from kiro_crew.platform_compat import (  # noqa: F401
         isolated_python_argv,
         kill_and_reap,
