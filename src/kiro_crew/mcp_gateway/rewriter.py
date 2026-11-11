@@ -1446,6 +1446,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.mcp_gateway.manager import is_credential_env_key  # noqa: F401
     from kiro_crew.mcp_gateway.rewriter_env import (  # noqa: F401
+        _ENV_NAMES_CASE_INSENSITIVE,
         _ENV_VAR_PLACEHOLDER,
         _collision_warn_lock,
         _collision_warned_keys,
@@ -1455,7 +1456,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _must_stay_wrapped,
         _needs_private_backend,
         _normalized_env,
+        _placeholder_key,
         _placeholder_source_env,
+        _placeholder_value,
         _reset_collision_warnings,
         _withheld_env_count,
     )

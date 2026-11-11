@@ -671,6 +671,13 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   the reference as text and reporting the server's correct rejection as a
   failing row. Probe-error redaction keys on the resolved values the probe
   actually sent.
+- On Windows a placeholder name matches its variable in any letter case, as the
+  platform's environment does: `${SystemRoot}`, `${env:Path}` and `${SYSTEMROOT}`
+  all resolve. Every lookup against `_placeholder_source_env()` goes through
+  `rewriter_env._placeholder_value` (the declared-env expander, the remote-probe
+  headers and the session-start unset notice), so they agree. A credential-filtered
+  name is absent from the view in every spelling and still misses, and only that
+  miss is logged as credential-filtered. POSIX names stay case-sensitive.
 - A stdio server's `command`, `args` and `env` values have their home and
   login-name references (`${HOME}`, `${USER}`, `${LOGNAME}`, `${USERPROFILE}`,
   `${USERNAME}`, also as `${env:NAME}`) resolved by `env.expand_spec_args`,
