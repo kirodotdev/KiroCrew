@@ -774,8 +774,9 @@ def _session_tools() -> tuple[Tool, ...]:
                     "acceptance": {
                         "type": "object",
                         "description": (
-                            "The accept_eval.py condition object, stored verbatim, as "
-                            "action=create takes it."
+                            "The condition object, stored verbatim, as "
+                            "work_ledger_record action=create takes it: its "
+                            "acceptance argument lists the object for each kind."
                         ),
                     },
                     "agent": {
