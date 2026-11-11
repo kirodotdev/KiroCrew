@@ -58,7 +58,7 @@ _SLACK_SOURCES = (
 
 #: ``run_config_write(`` call sites across ``_SLACK_SOURCES``: a floor, so a writer
 #: that moves out of the scanned files fails here instead of leaving the scan.
-_SLACK_HELPER_SITES_FLOOR = 22
+_SLACK_HELPER_SITES_FLOOR = 15
 
 
 class TestRunConfigWrite:

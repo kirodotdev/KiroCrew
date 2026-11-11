@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         _dashboard_state,
         _orch_cfg,
         _owner_id,
+        _removes_in_flight,
         _tracking_channels,
         apply_config_duration,
         clear_trusted_sessions,
@@ -275,5 +276,7 @@ def is_open_channel(channel_id: str) -> bool:
 
 
 def is_tracked_channel(channel_id: str) -> bool:
-    """Check if *channel_id* is in the tracking set."""
-    return bool(channel_id and channel_id in _tracking_channels)
+    """Check if *channel_id* is in the tracking set and no remove of it is still saving."""
+    return bool(
+        channel_id and channel_id in _tracking_channels and channel_id not in _removes_in_flight
+    )
