@@ -358,6 +358,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
     _cancel_session_tree_checkpoints,
     _drain_windows_proactor_finalizers,
     _join_install_receipt_workers,
+    _join_node_compile_prewarm,
     _join_test_loop_executor,
     _live_embed_evictors,
     _live_telemetry_consent_workers,
@@ -957,6 +958,7 @@ def pytest_runtest_teardown(item, nextitem):
     # itself call ``get_recorder()`` and schedule a consent re-read, and a worker
     # scheduled by teardown must still be joined under this test's pins.
     wedged_consent_worker = _join_telemetry_consent_worker()
+    wedged_prewarm = _join_node_compile_prewarm(_EXECUTOR_JOIN_SECS)
     resolved_real_home = (
         _resolved_real_default_home() if item.stash.get(_HOME_PIN_ARMED, False) else None
     )
@@ -977,6 +979,8 @@ def pytest_runtest_teardown(item, nextitem):
         raise wedged_eager_fold
     if wedged_consent_worker is not None:
         raise wedged_consent_worker
+    if wedged_prewarm is not None:
+        raise wedged_prewarm
     if refused_network is not None:
         raise refused_network
 

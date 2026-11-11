@@ -37,6 +37,7 @@ from kiro_crew.acp.harness.base import (
     SpawnPlan,
     TeardownPolicy,
 )
+from kiro_crew.acp.node_compile_cache import apply_node_compile_cache
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_CLIENT_CAPABILITIES,
@@ -178,6 +179,7 @@ class KiroHarness(MembershipHarness):
         pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_client_application_env(env)
         apply_child_env_defaults(env)
+        apply_node_compile_cache(env)
 
     @property
     def verifies_agent_activation(self) -> bool:

@@ -76,6 +76,7 @@ from kiro_crew.acp.kas_transport import (
     build_kas_bundle_argv,
 )
 from kiro_crew.acp.kas_withheld_notice import withheld_credentials_notice
+from kiro_crew.acp.node_compile_cache import apply_node_compile_cache, ensure_engine_bundle_cache
 from kiro_crew.acp.session_mcp import (
     project_agent_spec,
     session_mcp_disabled_servers,
@@ -897,8 +898,10 @@ class KasHarness(MembershipHarness):
         self.agent_prompt_notice = ""
         self.agent_prompt_applied = False
         self.bundle_engine_version = bundle.version
+        argv = build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server))
+        await asyncio.to_thread(ensure_engine_bundle_cache, argv)
         return SpawnPlan(
-            argv=build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server)),
+            argv=argv,
             spawn_label=KAS_BUNDLE_SPAWN_LABEL,
             stderr_label=KAS_BUNDLE_SPAWN_LABEL,
             host_auth=True,
@@ -949,12 +952,14 @@ class KasHarness(MembershipHarness):
             inject_kiro_cli_api_key(env)
         else:
             strip_kiro_cli_api_key(env)
-        if _runs_crew_engine_bundle(spawned_binary):
+        engine_bundle = _runs_crew_engine_bundle(spawned_binary)
+        if engine_bundle:
             defer_mandatory_mcps_env(env)
             env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_child_env_defaults(env)
+        apply_node_compile_cache(env, engine_bundle=engine_bundle)
 
     @property
     def verifies_agent_activation(self) -> bool:
