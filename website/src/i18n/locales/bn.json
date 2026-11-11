@@ -14125,7 +14125,7 @@
       "could_not_read_file_reason": "{{path}} পড়া যায়নি ({{reason}})",
       "screenshot_failed_reason": "স্ক্রিনশট ব্যর্থ হয়েছে: {{reason}}",
       "snip_refused_in_embedded_pane": "এই ট্যাবে স্ক্রিন স্নিপ উপলব্ধ নয়। নিজে একটা স্ক্রিনশট নাও আর সেটা সংযুক্ত করো।",
-      "source_hosts_failed_reason": "GitLab ও Jira লিঙ্ক সেটিংস লোড করা ব্যর্থ হয়েছে: {{reason}}",
+      "source_hosts_failed_reason": "সেলফ-হোস্টেড GitLab ও Jira লিঙ্ক এখন পরিবর্তন-এ খোলা যাচ্ছে না: {{reason}}",
       "artifact_reference_failed_reason": "এই চ্যাটে আর্টিফ্যাক্ট যুক্ত করা ব্যর্থ হয়েছে: {{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "সেশনের নাম পরিবর্তন করে “{{title}}” করা যায়নি",
