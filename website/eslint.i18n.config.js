@@ -243,6 +243,10 @@ export default [
       // measurement), no human-facing copy. Same parser-only boundary and same
       // false-negative class as widgetSrcdoc.ts above: keep it parser-only.
       'src/lib/widgetHeightReporter.ts',
+      // The fragment-scroll script injected beside the height reporter: ONE
+      // template literal of in-iframe JS (postMessage + scroll geometry), no
+      // human-facing copy. Same false-negative class: keep it parser-only.
+      'src/lib/widgetFragmentScroll.ts',
       'src/lib/mcpAppSrcdoc.ts',
       // Same parser-only boundary as the srcdoc builders above: this module
       // sanitizes model markup and injects CSP, a DOCTYPE and theme CSS. None
