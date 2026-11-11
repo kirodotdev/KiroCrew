@@ -835,6 +835,32 @@ async def test_rotation_carries_the_boot_binding_onto_both_new_cookies(
 
 
 @pytest.mark.asyncio
+async def test_rotation_carries_the_embed_parent_port_onto_both_new_cookies(
+    state: RefreshStateManager, audit: list
+) -> None:
+    """A framed remote pane keeps its CSP parent after a refresh.
+
+    The embedding dashboard's port is what ``frame-ancestors`` allows; a rotated
+    access token without it answers the pane's next load with bare ``'self'``.
+    """
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_embed_parent_port
+    from kiro_crew.dashboard.token_auth_tokens import token_embed_parent_port
+
+    token, _chain, _jti, _exp = generate_refresh_token("alice", embed_parent_port="5476")
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+
+    cookies = {morsel.key: morsel.value for morsel in response.cookies.values()}
+    assert token_embed_parent_port(cookies[f"mc_token_{PORT}"]) == 5476
+    assert refresh_token_embed_parent_port(cookies[refresh_cookie_name(str(PORT))]) == "5476"
+
+    # A chain opened without the claim stays without it.
+    plain, *_ = generate_refresh_token("alice")
+    assert refresh_token_embed_parent_port(plain) == ""
+    assert refresh_token_embed_parent_port("not-a-token") == ""
+
+
+@pytest.mark.asyncio
 async def test_a_boot_bound_rotation_keeps_its_address_pin(
     state: RefreshStateManager, audit: list
 ) -> None:

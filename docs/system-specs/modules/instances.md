@@ -942,7 +942,10 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
 - **CSP.** `frame-ancestors` is `'self'` plus the exact parent origin carried in
   the minted token's signed `embed_parent_port` claim, never a wildcard and never
   a hardcoded port, so a local page with no validly-signed token can never frame
-  the dashboard.
+  the dashboard. The claim survives the link-to-session exchange and every
+  `/api/auth/refresh` rotation: it rides on the refresh chain the link opens and
+  on each access token a rotation mints, so a pane reloaded after a refresh keeps
+  its parent.
 - **Untrusted ssh stderr.** A proxy banner is ANSI-stripped, credential- and
   exfiltration-redacted, and truncated before it is surfaced in status, and it is
   a secondary detail only: failure *classification* keys on real ssh signals, so
