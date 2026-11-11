@@ -120,7 +120,16 @@ def kas_verified_releases() -> str:
 #: ``invoke_sub_agent`` (capability ``subagent``). Without the row a spec that
 #: lists ``use_subagent`` got no sub-agent tool on KAS, so it could not delegate
 #: to the agents its ``toolsSettings.subagent.availableAgents`` names.
+#:
+#: ``execute_bash`` is a KAS id too, but KAS splits kiro-cli's shell in two: the
+#: command runner and a separate tool that starts, reads and stops a long-running
+#: command (``control_bash_process``, or ``control_pwsh_process`` on a Windows
+#: shell; the fixture's ``process_control`` list). Without the row a spec that
+#: names ``execute_bash`` -- every Bot worker -- could run a command on KAS but
+#: never keep a dev server up while it works. Both ids are listed because the
+#: engine picks one by the session's shell; the gate reads both as the shell.
 KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
+    "execute_bash": ("control_bash_process", "control_pwsh_process"),
     "fs_read": ("read_file", "list_directory"),
     "glob": ("file_search",),
     "grep": ("grep_search",),
@@ -154,13 +163,16 @@ KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
 #: (``permission_requests._is_kas_remote_builtin``), so adding one widens
 #: that check too.
 KIRO_CLI_NAME_BY_KAS_TOOL: dict[str, str] = {
+    # First, so the derived ``execute_bash`` row (``kas_tool_rows``) still leads
+    # with the shell's own id: a PostToolUse call that stated no id falls back to
+    # that row's first entry (``spec_hooks``), and it must stay ``run_command``.
+    "run_command": "execute_bash",
     **{
         kas_id: kiro_cli_name
         for kiro_cli_name, family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.items()
         for kas_id in family
     },
     "delete_file": "fs_write",
-    "run_command": "execute_bash",
 }
 
 #: KAS ids whose policy alias may DENY the call but never ADMIT it.
@@ -174,7 +186,15 @@ KIRO_CLI_NAME_BY_KAS_TOOL: dict[str, str] = {
 #: the same line -- an allow-mode ``tools: ["fs_write"]`` written for kiro-cli
 #: must not become a deletion grant on KAS. A deny under ``fs_write`` still
 #: reaches it, because an operator who denied writes denied deletes.
-POLICY_ALIAS_DENY_ONLY_IDS: frozenset[str] = frozenset({"delete_file"})
+#:
+#: The process-control tools are deny-only for a different reason: they are
+#: mounted beside ``execute_bash``, but their ``start`` runs a command the
+#: shell's command checks (``allowedCommands``, the recovered-command row) do not
+#: read. So a deny under ``execute_bash`` reaches them, and an ``execute_bash``
+#: grant leaves them at the prompt, as it did before they were mounted.
+POLICY_ALIAS_DENY_ONLY_IDS: frozenset[str] = frozenset(
+    {"delete_file", "control_bash_process", "control_pwsh_process"}
+)
 
 #: kiro-cli's short spelling of a built-in -> the name a spec or a rule is written in.
 #:
