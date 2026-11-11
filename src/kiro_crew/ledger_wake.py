@@ -276,6 +276,38 @@ def worker_looping(nudge_service: Any, session_key: str) -> bool:
     return False
 
 
+def worker_loop_held(nudge_service: Any, session_key: str) -> bool:
+    """Whether *session_key*'s session holds an ACTIVE loop that cannot fire.
+
+    Held on an unanswered approval, or past its runtime budget or cycle cap. Such a
+    loop is what a worker's ``progress`` report may lean on ("my loop checks every 20
+    minutes"), yet it wakes nobody, so ``work_ledger.is_stale`` stops honouring that
+    report's ``wake_at``. A stopped loop is no loop: its worker's ``wake_at`` is a
+    plain wait the ``wait_due`` wake ends.
+
+    Anything unreadable answers False, which keeps today's ``wake_at`` deferral.
+    """
+    if nudge_service is None or not session_key:
+        return False
+    getter = getattr(nudge_service, "get_by_slot", None)
+    if not callable(getter):
+        return False
+    try:
+        from kiro_crew.autonudge_service.model import budget_elapsed, cap_reached
+
+        for candidate in _loop_keys(session_key):
+            loop = getter(candidate)
+            if loop is not None and getattr(loop, "active", False) is True:
+                return bool(
+                    getattr(loop, "approval_stalled", False)
+                    or budget_elapsed(loop)
+                    or cap_reached(loop)
+                )
+    except Exception:
+        logger.debug("wake gate: loop hold lookup failed for %s", session_key, exc_info=True)
+    return False
+
+
 def _loop_can_fire(loop: Any) -> bool:
     """Whether *loop* is active, BOUNDED, and has budget left to wake its session again.
 

@@ -368,7 +368,7 @@ def _stall_wake(item: work_ledger.WorkItem) -> bool:
         item,
         **dict(
             zip(
-                ("worker_running", "worker_closed", "worker_looping"),
+                ("worker_running", "worker_closed", "worker_looping", "worker_loop_held"),
                 work_ledger.item_liveness(
                     CONDUCTOR,
                     item,
