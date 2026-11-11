@@ -49,6 +49,23 @@ def _verdict():
     _update_info.update(original)
 
 
+def _install_shape(monkeypatch, managed_by: str, provider: object | None = None) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.platform import update_provider
+
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_capability.derive_capability",
+        lambda **_kw: SimpleNamespace(managed_by=managed_by),
+    )
+    monkeypatch.setattr(update_provider, "resolve_provider", lambda: provider)
+
+
+@pytest.fixture(autouse=True)
+def _git_checkout(_floor_monkeypatch):
+    _install_shape(_floor_monkeypatch, "git")
+
+
 @pytest.fixture
 def spies(monkeypatch):
     """Everything an apply or a restart could call; any call fails the test."""
@@ -151,3 +168,46 @@ async def test_a_stop_in_progress_arms_nothing(tmp_path, monkeypatch, spies) -> 
 
     assert resp.status == 503
     assert update_next_start.read().armed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["kirocrew", "container", "none"])
+async def test_a_step_up_layout_never_arms_from_this_route(
+    tmp_path, monkeypatch, spies, shape
+) -> None:
+    _install_shape(monkeypatch, shape)
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 409
+    assert "Not a git checkout" in json.loads(resp.body)["error"]
+    assert not update_next_start.read().armed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["git", "electron"])
+async def test_a_git_checkout_and_the_desktop_app_arm(tmp_path, monkeypatch, spies, shape) -> None:
+    _install_shape(monkeypatch, shape)
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 202 and update_next_start.read().armed
+
+
+@pytest.mark.asyncio
+async def test_a_policy_provider_arms_whatever_the_layout(tmp_path, monkeypatch, spies) -> None:
+    _install_shape(monkeypatch, "kirocrew", provider=object())
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 202 and update_next_start.read().armed
+
+
+@pytest.mark.asyncio
+async def test_cancel_works_on_any_layout(tmp_path, monkeypatch, spies) -> None:
+    await _post(tmp_path, monkeypatch, {"when": "next-start"})
+    _install_shape(monkeypatch, "kirocrew")
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "cancel"})
+
+    assert resp.status == 200 and not update_next_start.read().armed

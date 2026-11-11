@@ -403,17 +403,21 @@ from kiro_crew.platform.update_capability import (
     AutoUpdateEffect,
     auto_update_effect,
 )
-from kiro_crew.platform.update_governance import (
+from kiro_crew.platform.update_governance import (  # noqa: F401
+    commits_ahead,
     git_command_env,
+    hidden_worktree_edits,
     is_primary_branch,
     loggable_path,
+    repo_exec_config_reason,
     resolve_remote_url,
+    tracks_upstream,
     update_blocked_reason,
 )
 from kiro_crew.pre_exec_stops import run_pre_exec_stops
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override  # noqa: F401
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     create_subprocess_limited,
@@ -430,6 +434,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.sel import flush_audit_queue, flush_audit_queue_before_hard_exit, sel
+from kiro_crew.service.common import restart_command_hint  # noqa: F401
 from kiro_crew.session import (
     HEARTBEAT_KEY,
     SessionBusyError,

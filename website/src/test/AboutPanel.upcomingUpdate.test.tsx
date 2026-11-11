@@ -92,7 +92,7 @@ describe('AboutPanelUpcomingUpdate', () => {
     expect(within(block).queryByRole('button')).toBeNull()
   })
 
-  it('a build the feed offers is not described a second time beside the Update now card', async () => {
+  it('a build the feed offers is not described a second time beside the Update when I restart card', async () => {
     store.dispatch(sseStatus({
       ...BLANK_STATUS,
       update_upcoming: null,
@@ -103,7 +103,7 @@ describe('AboutPanelUpcomingUpdate', () => {
     } as never))
     mount(<AboutPanel />)
     expect(await screen.findByText('Update available')).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: /Update now/ }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: /Update when I restart/ }).length).toBeGreaterThan(0)
     expect(screen.queryByTestId('upcoming-update')).toBeNull()
   })
 

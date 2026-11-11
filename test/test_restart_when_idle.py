@@ -67,7 +67,15 @@ class TestRoute:
         assert resp.status == 200
         body = json.loads(resp.body)
         assert (body["idle"], body["turns"], body["background"]) == (True, 0, 0)
-        probe.assert_called_once_with(quiet_window_secs=quiescence.QUIET_WINDOW_SECS)
+        probe.assert_called_once_with(quiet_window_secs=0.0)
+
+    async def test_a_settle_after_busy_work_does_not_refuse_an_idle_gateway(self):
+        probe = MagicMock(return_value=_census(settle_remaining_secs=45.0))
+
+        resp = await restart_gate.api_restart_when_idle(_request(probe))
+
+        body = json.loads(resp.body)
+        assert (body["idle"], body["turns"], body["background"]) == (True, 0, 0)
 
     async def test_a_busy_gateway_answers_the_counts_with_queued_work_folded_in(self):
         probe = MagicMock(
@@ -129,12 +137,20 @@ class TestRoute:
 
         assert resp.status == 503
 
-    async def test_a_chat_typed_into_recently_is_not_idle(self):
+    async def test_a_recent_chat_with_no_running_work_reads_idle_for_the_explicit_ask(self):
         probe = MagicMock(return_value=_census(since_input_secs=10.0))
 
         resp = await restart_gate.api_restart_when_idle(_request(probe))
 
-        assert json.loads(resp.body)["idle"] is False
+        assert json.loads(resp.body)["idle"] is True
+
+    async def test_running_work_holds_the_ask_even_after_a_long_quiet_spell(self):
+        probe = MagicMock(return_value=_census(turns=1, since_input_secs=3600.0))
+
+        resp = await restart_gate.api_restart_when_idle(_request(probe))
+
+        body = json.loads(resp.body)
+        assert (body["idle"], body["turns"]) == (False, 1)
 
     async def test_a_service_only_ask_is_answered_without_the_census_off_the_service(
         self, monkeypatch

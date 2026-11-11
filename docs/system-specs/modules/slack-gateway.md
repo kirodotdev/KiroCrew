@@ -638,7 +638,8 @@ take the hold in `cli.main` after argument parsing.
   a promotion under it would load the new version's code into the running one.
   When `wheel_apply.relaunch_before_apply` reports that shape, the coordinator
   builds nothing and restarts nothing: it relights the badge, and the update is
-  a person's to apply (the approve route restarts onto the resolved tree first).
+  a person's to apply (the approve route does not promote under it either: it
+  arms the update for the next start, and the boot-time apply promotes).
   Once the gateway has been restarted onto its resolved tree, the next cycle
   builds.
 - **Built beside the served tree, with admission open.** The apply runs on the

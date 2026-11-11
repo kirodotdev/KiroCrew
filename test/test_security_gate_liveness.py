@@ -772,7 +772,10 @@ def _url_payload_command(n: int) -> str:
 #: holdback floor, and drops a unit decided while still running, which does
 #: nothing while the switch is off. The detectors live in a subpackage this
 #: budget does not count. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_533
+#: Raised by one, from 35,533, for the ``update_next_start.json`` entry on the
+#: file-tool write fence: the update armed for the next start, which the sandbox
+#: seals read-only too.
+_PACKAGE_LINE_BUDGET = 35_534
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

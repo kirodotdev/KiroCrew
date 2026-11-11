@@ -29,7 +29,6 @@ from dataclasses import dataclass
 
 from aiohttp import web
 
-from kiro_crew import quiescence
 from kiro_crew.config.loader import launched_as_managed_service
 from kiro_crew.dashboard.handlers.updates_step_up import _loopback_peer
 from kiro_crew.dashboard.state import DashboardState
@@ -145,8 +144,11 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
         census = admission.census or probe(quiet_window_secs=0.0)
         idle = admission.admitted
     else:
-        census = probe(quiet_window_secs=quiescence.QUIET_WINDOW_SECS)
-        idle = census.quiescent
+        # Same judgment as the commit ask and admit_restart: the explicit restart
+        # is a person's act, so only running work refuses it. The typing window
+        # and the settle after busy work gate the unattended paths.
+        census = probe(quiet_window_secs=0.0)
+        idle = census.busy == 0
     turns = census.turns
     background = census.background + census.queued_messages + census.pending_approvals
     logger.info("Restart idle check: idle=%s turns=%d background=%d", bool(idle), turns, background)

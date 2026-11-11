@@ -107,3 +107,30 @@ def test_a_failed_apply_remembers_the_version_it_ran_on(monkeypatch) -> None:
     assert update_next_start.read().error_version == "1.2.3"
     update_next_start.finish()
     assert update_next_start.read().error_version == ""
+
+
+class TestTheArmRecordIsReadOnlyToAgents:
+    """The boot-time apply installs on this record alone, so nothing an agent drives may write it."""
+
+    def test_the_leaf_is_sandbox_readonly_and_in_no_other_disposition(self) -> None:
+        from kiro_crew import sandbox
+
+        leaf = update_next_start.STATE_FILE
+        assert leaf in sandbox._CREW_READONLY_LEAVES
+        assert leaf not in sandbox._CREW_HIDDEN_LEAVES
+        assert leaf not in sandbox._CREW_SANDBOX_VISIBLE_LEAVES
+
+    def test_the_leaf_is_precreated_so_the_seal_holds_before_any_click(self) -> None:
+        from kiro_crew import sandbox_precreate
+
+        assert (
+            update_next_start.STATE_FILE in sandbox_precreate._CREW_PRECREATE_READONLY_FILE_LEAVES
+        )
+
+    def test_a_file_write_to_it_is_refused_but_a_read_is_not(self, _home) -> None:
+        from kiro_crew import security
+
+        path = str(_home / update_next_start.STATE_FILE)
+
+        assert security.is_sensitive_write_path(path) is True
+        assert security.is_sensitive_path(path) is False

@@ -276,6 +276,8 @@ async def test_update_apply_allows_owner(monkeypatch, tmp_path) -> None:
     applied = AsyncMock(return_value=True)
     restarted = AsyncMock()
     monkeypatch.setattr(update_provider, "apply_policy_update", applied)
+    # A policy-defined provider owns the update, so any layout may arm.
+    monkeypatch.setattr(update_provider, "resolve_provider", lambda: object())
     monkeypatch.setattr(updates, "_restart_gateway", restarted)
     app = web.Application(middlewares=[_owner()])
     app["state"] = SimpleNamespace(owner_id=OWNER, push_refresh=lambda _kind: None)

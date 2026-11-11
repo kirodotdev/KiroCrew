@@ -9,6 +9,7 @@ process and the re-exec replaced by recording stand-ins.
 from __future__ import annotations
 
 import asyncio
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -208,32 +209,146 @@ def test_a_failed_exec_is_an_error_and_the_old_version_keeps_starting(calls, mon
     assert "exec format error" in update_next_start.read().pending_apply_error
 
 
-def test_the_apply_child_is_bounded_and_killed_on_timeout() -> None:
+class _Proc:
+    """A child whose ``communicate`` ends only when told to."""
+
+    returncode = None
+    # nosemgrep: kirocrew.mock-pid-allocatable -- process double, never signalled
+    pid = 4242
+
+    def __init__(self, exits_on_interrupt: bool, events: list[str]) -> None:
+        self._exits = exits_on_interrupt
+        self._events = events
+        self._done = asyncio.Event()
+
+    def interrupted(self) -> None:
+        if self._exits:
+            self._done.set()
+
+    async def communicate(self):
+        await self._done.wait()
+        return b"", None
+
+
+def _run_child_with(exits_on_interrupt: bool, events: list[str]) -> tuple[bool, str]:
     async def run() -> tuple[bool, str]:
-        class _Proc:
-            returncode = None
-
-            async def communicate(self):
-                # Never completes: the bound under test is what ends the wait.
-                await asyncio.Event().wait()
-
-        killed: list[object] = []
+        proc = _Proc(exits_on_interrupt, events)
 
         async def fake_spawn(*args, **kwargs):
-            return _Proc()
+            return proc
 
-        async def fake_kill(proc, **kwargs):
-            killed.append(proc)
+        async def fake_kill(p, **kwargs):
+            events.append("kill")
+
+        def fake_signal(pgid, sig):
+            events.append(f"signal:{sig.name if hasattr(sig, 'name') else sig}:{pgid}")
+            proc.interrupted()
+            return True
 
         with (
             patch("asyncio.create_subprocess_exec", fake_spawn),
             patch("kiro_crew.platform_compat.kill_and_reap", fake_kill),
+            patch("kiro_crew.platform_compat.kill_process_group", fake_signal),
+            patch("kiro_crew.platform_compat.IS_POSIX", True),
             patch.object(update_boot_apply, "APPLY_TIMEOUT_SECS", 0.05),
+            patch.object(update_boot_apply, "INTERRUPT_GRACE_SECS", 0.05),
         ):
-            result = await update_boot_apply._run_apply_child()
-        assert len(killed) == 1
-        return result
+            return await update_boot_apply._run_apply_child()
 
-    ok, reason = asyncio.run(run())
+    return asyncio.run(run())
+
+
+def test_the_apply_child_is_interrupted_before_it_is_killed_on_timeout() -> None:
+    events: list[str] = []
+
+    ok, reason = _run_child_with(False, events)
 
     assert ok is False and "did not finish" in reason
+    assert events == ["signal:SIGINT:4242", "kill"]
+
+
+def test_the_interrupt_grace_covers_the_cli_rollback_bound() -> None:
+    from kiro_crew.platform.update_provider import INSTALLER_TIMEOUT_TERM_GRACE_SECS
+
+    assert update_boot_apply.INTERRUPT_GRACE_SECS > INSTALLER_TIMEOUT_TERM_GRACE_SECS
+
+
+def test_an_apply_child_that_unwinds_on_the_interrupt_is_not_killed() -> None:
+    events: list[str] = []
+
+    ok, reason = _run_child_with(True, events)
+
+    assert ok is False and "did not finish" in reason
+    assert events == ["signal:SIGINT:4242"]
+
+
+def test_a_manual_update_that_finishes_clears_a_stale_boot_apply_error(
+    tmp_path, monkeypatch
+) -> None:
+    import sys
+
+    from kiro_crew.cli import main
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    update_next_start.finish(error="the update command failed")
+    ran: list[bool] = []
+    monkeypatch.setattr("kiro_crew.cli_server._update", lambda force=False: ran.append(force))
+    monkeypatch.setattr(sys, "argv", ["kirocrew", "update"])
+
+    main()
+
+    assert ran == [False]
+    assert update_next_start.read().pending_apply_error == ""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="raising SIGTERM in-process ends the process on Windows"
+)
+def test_a_sigterm_during_the_boot_apply_interrupts_the_child_then_exits_with_its_status(
+    calls, monkeypatch
+) -> None:
+    import signal
+
+    events: list[str] = []
+    update_next_start.arm("2.0.0")
+
+    started = asyncio.Event()
+
+    async def child():
+        # The real _run_apply_child leaves through _stop_apply_child on a cancel.
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            events.append("interrupt-then-grace")
+            raise
+
+    monkeypatch.setattr(update_boot_apply, "_run_apply_child", child)
+    monkeypatch.setattr(
+        update_boot_apply, "_exit_with_sigterm_status", lambda: events.append("exit")
+    )
+    monkeypatch.setattr(update_boot_apply.platform_compat, "IS_POSIX", True)
+
+    async def run() -> None:
+        task = asyncio.ensure_future(update_boot_apply.apply_armed_update_at_boot())
+        # The SIGTERM handler is installed before the apply reaches its child.
+        await asyncio.wait_for(started.wait(), timeout=10)
+        signal.raise_signal(signal.SIGTERM)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The previous SIGTERM handling is back once the apply is over.
+        assert asyncio.get_running_loop().remove_signal_handler(signal.SIGTERM) is False
+
+    asyncio.run(run())
+
+    assert events == ["interrupt-then-grace", "exit"]
+
+
+def test_the_sigterm_handler_is_restored_after_a_normal_boot_apply(calls) -> None:
+    import signal
+
+    before = signal.getsignal(signal.SIGTERM)
+
+    _boot()
+
+    assert signal.getsignal(signal.SIGTERM) == before

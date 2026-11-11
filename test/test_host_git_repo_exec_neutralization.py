@@ -708,6 +708,12 @@ class TestDashboardUpdateApply:
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
         monkeypatch.setitem(_update_info, "check_status", "")
         monkeypatch.setitem(_update_info, "latest_version", "9.9.9")
+        # The temp clone is not this install's own checkout, so the shape the
+        # capability derivation reports is pinned to the git lane under test.
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.derive_capability",
+            lambda **_kw: SimpleNamespace(managed_by="git"),
+        )
 
         class _State:
             def push_refresh(self, kind: str) -> None:

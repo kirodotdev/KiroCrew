@@ -125,14 +125,20 @@ def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
 
 
 def _untracked_collisions(proj: str, target: str, env: dict[str, str]) -> list[str] | None:
-    """Paths *target* adds that already exist in the checkout untracked, or ``None`` if unreadable.
+    """Untracked paths a hard reset to *target* would overwrite, or ``None`` if unreadable.
 
-    A path the target adds is absent from HEAD, so an entry on disk there is an
-    untracked (or ignored) file that a hard reset would overwrite.
+    Renames are not detected, so a rename destination lists as the added path it is.
+    A path *target* adds is absent from HEAD, so an entry on disk there is an
+    untracked (or ignored) file. So is a non-directory standing where *target*
+    needs a directory, unless HEAD tracks it: the diff lists that one as deleted,
+    and the reset replaces it like any tracked change. A directory standing where
+    *target* adds a file is a collision only when it holds a file the reset does
+    not delete. A path the reset deletes under another spelling of the same name
+    (a case-only rename) is not one on a filesystem where both spellings are one file.
     """
     try:
-        added = subprocess.run(
-            ["git", "diff", "--name-only", "-z", "--diff-filter=A", "HEAD", target],
+        changed = subprocess.run(
+            ["git", "diff", "--name-status", "-z", "--no-renames", "HEAD", target],
             cwd=proj,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -141,11 +147,60 @@ def _untracked_collisions(proj: str, target: str, env: dict[str, str]) -> list[s
         )
     except subprocess.TimeoutExpired:
         return None
-    if added.returncode != 0:
+    if changed.returncode != 0:
         return None
+    fields = [f.decode("utf-8", "surrogateescape") for f in changed.stdout.split(b"\0") if f]
+    added: list[str] = []
+    removed: set[str] = set()
+    for status, name in zip(fields[0::2], fields[1::2]):
+        if status.startswith("A"):
+            added.append(name)
+        elif status.startswith("D"):
+            removed.add(name)
     root = Path(proj)
-    names = [n.decode("utf-8", "surrogateescape") for n in added.stdout.split(b"\0") if n]
-    return [n for n in names if os.path.lexists(root / n)]
+    by_fold = {n.casefold(): n for n in removed}
+
+    def _removed(path: str) -> bool:
+        """Whether the reset deletes what sits at *path* on disk, under any case."""
+        if path in removed:
+            return True
+        twin = by_fold.get(path.casefold())
+        if twin is None:
+            return False
+        # On a case-insensitive filesystem the two spellings are one file; on a
+        # case-sensitive one they are two, and the added spelling is the untracked one.
+        try:
+            return os.path.samefile(root / path, root / twin)
+        except OSError:
+            return False
+
+    def _all_removed_below(directory: Path) -> bool:
+        """Whether every file under *directory* is one the reset deletes."""
+        for here, _dirs, files in os.walk(directory):
+            for file_name in files:
+                if not _removed(Path(here, file_name).relative_to(root).as_posix()):
+                    return False
+        return True
+
+    found: list[str] = []
+    for name in added:
+        parts = Path(name).parts
+        for end in range(1, len(parts)):
+            ancestor = "/".join(parts[:end])
+            at = root / ancestor
+            if _removed(ancestor):
+                continue
+            if os.path.lexists(at) and (at.is_symlink() or not at.is_dir()):
+                found.append(ancestor)
+                break
+        else:
+            at = root / name
+            if not os.path.lexists(at) or _removed(name):
+                continue
+            if at.is_dir() and not at.is_symlink() and _all_removed_below(at):
+                continue
+            found.append(name)
+    return list(dict.fromkeys(found))
 
 
 def _update(force: bool = False) -> None:

@@ -30,17 +30,26 @@ own quit and before it spawns the gateway.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import signal
 import sys
 
 from kiro_crew import platform_compat, update_next_start
+from kiro_crew.platform.update_provider import INSTALLER_TIMEOUT_TERM_GRACE_SECS
 
 logger = logging.getLogger(__name__)
 
 #: Longest one boot-time apply may run before it counts as failed. A managed venv
 #: build downloads and installs a release, so this is generous, but it is a bound.
 APPLY_TIMEOUT_SECS = update_next_start.APPLY_BOUND_SECS
+
+#: How long the apply child gets to unwind after an interrupt before it is killed:
+#: the rollback bound its own Ctrl-C handler allows the installer, plus a margin.
+#: The installer lives in a session of its own that a group kill never reaches, so
+#: the handler must be allowed to finish restoring the previous install.
+INTERRUPT_GRACE_SECS = INSTALLER_TIMEOUT_TERM_GRACE_SECS + 15.0
 
 #: Longest of the child's output kept for the log and the error.
 _OUTPUT_TAIL_CHARS = 1500
@@ -52,6 +61,20 @@ DESKTOP_HOSTED_ENV = "KIROCREW_DESKTOP_GATEWAY"
 def hosted_by_desktop() -> bool:
     """Whether the desktop app spawned this gateway (and so owns the apply)."""
     return bool(os.environ.get(DESKTOP_HOSTED_ENV))
+
+
+async def _stop_apply_child(proc: asyncio.subprocess.Process) -> None:
+    """Interrupt the apply child, give its cleanup a bounded moment, then kill it."""
+    if platform_compat.IS_POSIX and proc.returncode is None:
+        try:
+            # The child leads its own group (start_new_session), so its pid is its pgid.
+            print("Stopping the update and restoring the previous version...", flush=True)
+            platform_compat.kill_process_group(proc.pid, signal.SIGINT)
+            await asyncio.wait_for(proc.communicate(), timeout=INTERRUPT_GRACE_SECS)
+            return
+        except (asyncio.TimeoutError, OSError, ValueError):
+            pass
+    await platform_compat.kill_and_reap(proc)
 
 
 async def _run_apply_child() -> tuple[bool, str]:
@@ -69,10 +92,10 @@ async def _run_apply_child() -> tuple[bool, str]:
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=APPLY_TIMEOUT_SECS)
     except asyncio.TimeoutError:
-        await platform_compat.kill_and_reap(proc)
+        await _stop_apply_child(proc)
         return False, f"the update did not finish within {int(APPLY_TIMEOUT_SECS)} seconds"
     except asyncio.CancelledError:
-        await platform_compat.kill_and_reap(proc)
+        await _stop_apply_child(proc)
         raise
     text = redact((out or b"").decode("utf-8", "replace")).strip()
     tail = text[-_OUTPUT_TAIL_CHARS:]
@@ -111,6 +134,49 @@ def _reexec(launcher: str | None, exe: str | None) -> None:
 
 
 async def apply_armed_update_at_boot() -> bool:
+    """Apply the armed update, if any, stopping it cleanly on SIGTERM.
+
+    A service manager stops the gateway with SIGTERM. Left at its default that
+    ends the process at once and orphans the apply child, which lives in a session
+    of its own and keeps installing. For the duration of the apply, SIGTERM
+    cancels it instead: the child is interrupted and given its rollback grace
+    (:func:`_stop_apply_child`), then this process ends with the SIGTERM status.
+    The previous handler is restored on every exit.
+    """
+    if not platform_compat.IS_POSIX:
+        return await _apply_armed_update_at_boot()
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    stopped: list[bool] = []
+
+    def _on_term() -> None:
+        stopped.append(True)
+        if task is not None:
+            task.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _on_term)
+    except (NotImplementedError, RuntimeError, ValueError):
+        return await _apply_armed_update_at_boot()
+    try:
+        return await _apply_armed_update_at_boot()
+    except asyncio.CancelledError:
+        if not stopped:
+            raise
+        _exit_with_sigterm_status()
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            loop.remove_signal_handler(signal.SIGTERM)
+
+
+def _exit_with_sigterm_status() -> None:
+    """End this process as a SIGTERM would have, once the apply child has been stopped."""
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+async def _apply_armed_update_at_boot() -> bool:
     """Apply the armed update, if any. ``True`` only when a re-exec was attempted and returned.
 
     Never raises: a failure here must not stop the gateway from starting on the

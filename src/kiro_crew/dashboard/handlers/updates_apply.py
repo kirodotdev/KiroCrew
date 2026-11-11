@@ -377,7 +377,29 @@ async def api_update_apply(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "armed": False, "disarmed": removed})
 
     from kiro_crew.dashboard.handlers.updates_verdict import _update_info
-    from kiro_crew.platform.update_capability import CHECK_SUCCEEDED
+    from kiro_crew.platform import update_provider
+    from kiro_crew.platform.update_capability import (
+        CHECK_SUCCEEDED,
+        MANAGED_BY_ELECTRON,
+        MANAGED_BY_GIT,
+        derive_capability,
+    )
+
+    # A managed venv, wheel or pipx install is approved through the host-local
+    # step-up (nonce, loopback, audit), and an arm here would let the boot apply
+    # install without any of it. Only a git checkout, a policy-defined provider and
+    # the desktop app (whose own updater owns the apply) arm from this route.
+    if update_provider.resolve_provider() is None:
+        capability = await asyncio.to_thread(derive_capability)
+        if capability.managed_by not in (MANAGED_BY_GIT, MANAGED_BY_ELECTRON):
+            return web.json_response(
+                {
+                    "error": "Not a git checkout: update this install with "
+                    "`kirocrew update`, then restart the gateway",
+                    "code": "not_git_checkout",
+                },
+                status=409,
+            )
 
     if _update_info.get("check_status") == CHECK_SUCCEEDED and not _update_info.get(
         "update_available"

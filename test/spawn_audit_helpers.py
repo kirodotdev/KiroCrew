@@ -705,6 +705,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # primary branch refs; stdin=DEVNULL, 60s timeout. Pinned by the
         # `checkout_on_no_branch` tests in test_cli_server_more_coverage.py.
         "cli_server_update.py::_detached_upstream_branch",
+        # The changed-path listing before the reset: `git diff --name-status -z
+        # --no-renames HEAD <pinned commit>`. Literal flags plus the commit pinned
+        # right after the fetch, the same `git` under the same env as the fetch and
+        # reset beside it, cwd the detected install, stdin=DEVNULL, 30s timeout,
+        # read-only. Pinned by test_update_restart_round3_review.py.
+        "cli_server_update.py::_untracked_collisions",
         # The agent-only config refresh extracted from _update: a fixed argv
         # (`<this interpreter> -m kiro_crew setup --agent-only`) built from
         # sys.executable plus literals, cwd from the detected install layout —
