@@ -15077,6 +15077,7 @@
         "decisions_provider_sagemaker_invalid_profile": "프로필 이름에는 영문자, 숫자, 밑줄, 마침표, 더하기 기호, 하이픈을 쓸 수 있습니다.",
         "decisions_provider_sagemaker_unknown_profile": "AWS 구성 파일에 그 이름의 AWS 프로필이 없습니다.",
         "decisions_no_model_note": "결정 모델이 선택되지 않았습니다. 켜려면 아래에서 하나를 선택하세요.",
+        "decisions_hosted_refused": "플릿 정책이 TypeSafe가 호스팅하는 Jev를 차단하므로 결정은 내장 규칙을 사용합니다. 아래에서 다른 모델을 선택하세요.",
         "decisions_provider_quality": "Jev 정확도의 약 {{percent}}, 어려운 결정에서는 {{hard}}",
         "decisions_provider_memory": "메모리를 약 {{peak}} 사용합니다. {{total}} 이상에서 권장",
         "decisions_provider_speed": "CPU에서 결정 한 번에 약 {{p50}}, 긴 입력에서는 최대 {{p95}}",

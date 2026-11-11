@@ -15471,6 +15471,7 @@
         "decisions_provider_sagemaker_invalid_profile": "प्रोफ़ाइल नाम में अक्षर, अंक, अंडरस्कोर, बिंदु, प्लस चिह्न और हाइफ़न हो सकते हैं।",
         "decisions_provider_sagemaker_unknown_profile": "तुम्हारी AWS कॉन्फ़िग फ़ाइलों में उस नाम की कोई AWS प्रोफ़ाइल नहीं है।",
         "decisions_no_model_note": "कोई निर्णय मॉडल नहीं चुना गया है। इसे चालू करने के लिए नीचे एक चुनें।",
+        "decisions_hosted_refused": "तुम्हारे फ़्लीट की नीति TypeSafe द्वारा होस्ट किए गए Jev को ब्लॉक करती है, इसलिए निर्णय अंतर्निहित नियमों का उपयोग करते हैं। नीचे कोई दूसरा मॉडल चुनो।",
         "decisions_provider_quality": "Jev की सटीकता का लगभग {{percent}}, कठिन निर्णयों पर {{hard}}",
         "decisions_provider_memory": "लगभग {{peak}} मेमोरी लेता है; {{total}} या उससे अधिक पर सुझाया जाता है",
         "decisions_provider_speed": "CPU पर प्रति निर्णय लगभग {{p50}}, लंबे इनपुट पर {{p95}} तक",
