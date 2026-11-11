@@ -84,6 +84,11 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     string_field_error,
 )
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write  # noqa: F401
+from kiro_crew.dashboard.handlers.spawn_resume import (  # noqa: F401
+    INVALID_WAIT_CODE,
+    MAX_HOLD_SECS,
+    _wait_secs,
+)
 from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate  # noqa: F401
 from kiro_crew.dashboard.kiro_relay.ingress import refuse_relayed  # noqa: F401
 from kiro_crew.dashboard.kiro_relay.limits import APPS_OFF_FOR_TEAMMATES  # noqa: F401
@@ -366,6 +371,7 @@ from kiro_crew.subagent import (  # noqa: F401
     parent_project_dirs,
     parent_template_allowlists,
     parent_template_spawn_policy,
+    wait_done,
 )
 from kiro_crew.subagent_manager.admission.types import (  # noqa: F401
     QueuedReadUnavailable,

@@ -914,6 +914,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         write_eval_artifacts,
     )
     from kiro_crew.cli_commands_gateway_api import (  # noqa: F401
+        _SPAWN_WAIT_SECS,
         _artifact,
         _client_port,
         _create_cron_folder,

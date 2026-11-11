@@ -430,6 +430,8 @@ from kiro_crew.subagent_parts.run_record import (  # noqa: F401
     _BareStateView,
     _context_groups_field,
     _context_groups_of,
+    _DoneFlag,
+    wait_done,
 )
 from kiro_crew.subagent_parts.start_pricing import (  # noqa: F401
     _SETTLED_PROJECTION_CEILING_GB,

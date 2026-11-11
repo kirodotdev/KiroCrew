@@ -996,7 +996,10 @@ class TestSpawnCliAuth:
     def test_spawn_run_poll_timeout_reports_busy(self, monkeypatch, capsys):
         """A result poll that times out reads as busy, not as a lost gateway."""
         monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
-        monkeypatch.setattr("kiro_crew.cli_commands._time", SimpleNamespace(sleep=lambda _s: None))
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands._time",
+            SimpleNamespace(sleep=lambda _s: None, monotonic=lambda: 0.0),
+        )
         started = MagicMock()
         started.read.return_value = b'{"id": "agent-1", "task": "hi"}'
         started.__enter__ = MagicMock(return_value=started)
