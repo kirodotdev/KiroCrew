@@ -215,7 +215,7 @@ class TestTheHeartbeatKeepsALiveHolder:
         )
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        token = c._acquire_consolidation_lease(KEY)
+        token = await asyncio.to_thread(c._acquire_consolidation_lease, KEY)
         assert token
         beats: list[str] = []
         loop = asyncio.get_running_loop()
@@ -380,8 +380,7 @@ class TestAPassRefusedByTheLeaseCostsNothing:
     async def test_a_held_session_never_reaches_the_provider(self, tmp_path) -> None:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(KEY, _live_lease(token="the-other-process"))
+        await asyncio.to_thread(log.update_metadata, KEY, _live_lease(token="the-other-process"))
         call = AsyncMock(return_value={"history_entry": "e"})
 
         with patch.object(c, "_call_llm", call):
@@ -398,8 +397,7 @@ class TestAPassRefusedByTheLeaseCostsNothing:
         """The loser's finally block must not release a lease it never took."""
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(KEY, _live_lease(token="the-other-process"))
+        await asyncio.to_thread(log.update_metadata, KEY, _live_lease(token="the-other-process"))
 
         with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
             await c._consolidate(KEY, include_history=True)
@@ -417,8 +415,7 @@ class TestAPassRefusedByTheLeaseCostsNothing:
         """
         log = _seed_log(tmp_path, count=40)
         c = _make_consolidator(log)
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(KEY, _live_lease(token="the-other-process"))
+        await asyncio.to_thread(log.update_metadata, KEY, _live_lease(token="the-other-process"))
 
         with patch.object(c, "_call_llm", AsyncMock(return_value={})):
             c.maybe_consolidate(KEY)
@@ -438,7 +435,7 @@ class TestTheLeaseDoesNotOutliveItsPass:
             await c._consolidate(KEY, include_history=True)
 
         assert not _lease_holder_is_live(log.get_metadata(KEY), now=time.monotonic())
-        assert c._acquire_consolidation_lease(KEY)
+        assert await asyncio.to_thread(c._acquire_consolidation_lease, KEY)
 
     @pytest.mark.asyncio
     async def test_a_raising_pass_frees_the_session(self, tmp_path) -> None:
@@ -459,7 +456,7 @@ async def test_transient_renewal_failure_keeps_heartbeat_running(tmp_path, monke
     monkeypatch.setattr("kiro_crew.history_consolidation._CONSOLIDATION_LEASE_RENEW_SECS", 0)
     log = _seed_log(tmp_path)
     c = _make_consolidator(log)
-    token = c._acquire_consolidation_lease(KEY)
+    token = await asyncio.to_thread(c._acquire_consolidation_lease, KEY)
     assert token
     original_read = log._read_metadata_status
     original_write = log._update_metadata_locked
@@ -670,7 +667,7 @@ def test_unknown_reboot_identity_and_future_stamp_retain_holder():
 async def test_busy_pass_does_not_snapshot_or_copy(tmp_path):
     log = _seed_log(tmp_path)
     c = _make_consolidator(log)
-    token = c._acquire_consolidation_lease(KEY)
+    token = await asyncio.to_thread(c._acquire_consolidation_lease, KEY)
     assert token
     with (
         patch.object(log, "snapshot_for_consolidation") as snapshot,
@@ -679,7 +676,7 @@ async def test_busy_pass_does_not_snapshot_or_copy(tmp_path):
         assert await c._consolidate(KEY) is _CONSOLIDATION_BUSY
     snapshot.assert_not_called()
     copy_span.assert_not_called()
-    c._release_consolidation_lease(KEY, token)
+    await asyncio.to_thread(c._release_consolidation_lease, KEY, token)
 
 
 @pytest.mark.asyncio
@@ -926,10 +923,12 @@ async def test_a_lost_lease_refuses_the_charge_and_the_abandon_marker(tmp_path):
     log = _seed_log(tmp_path)
     c = _make_consolidator(log)
     c.on_abandoned = MagicMock()
-    token = c._acquire_consolidation_lease(KEY)
+    token = await asyncio.to_thread(c._acquire_consolidation_lease, KEY)
     assert token
-    ConversationLog(base_dir=tmp_path / "sessions").update_metadata(
-        KEY, _live_lease("replacement-token")
+    await asyncio.to_thread(
+        ConversationLog(base_dir=tmp_path / "sessions").update_metadata,
+        KEY,
+        _live_lease("replacement-token"),
     )
     _, total, generation, _ = log.snapshot_for_consolidation(KEY)
     span = AttemptedSpan(total=total, generation=generation, offset=0, prompted=total)
@@ -953,7 +952,7 @@ async def test_a_held_lease_charges_and_abandons_in_one_hold(tmp_path):
     log = _seed_log(tmp_path)
     c = _make_consolidator(log)
     c.on_abandoned = MagicMock()
-    token = c._acquire_consolidation_lease(KEY)
+    token = await asyncio.to_thread(c._acquire_consolidation_lease, KEY)
     assert token
     _, total, generation, _ = log.snapshot_for_consolidation(KEY)
     span = AttemptedSpan(total=total, generation=generation, offset=0, prompted=total)
