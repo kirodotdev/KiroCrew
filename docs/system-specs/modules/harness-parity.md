@@ -185,15 +185,26 @@ outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`
 own because the worker's limits travel differently from a member chat's: the
 worker spec rewrites every switched-off tool into `excludedTools`, which KAS
 projects, so KAS (the default backend) honours them and is in the set. claude
-honours only their MCP half, so it is in `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`
-(KAS, claude) and not in the whole set: a `disabledTools` entry, an
+honours their MCP half and the native tools its table maps, not all of them, so it
+is in `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS` (KAS, claude) and not in the whole
+set: a `disabledTools` entry, an
 `@server/tool` and a whole `@server` become `permissions.deny` rules derived from
 the worker's own spec, keyed by the session
 (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`, the read its array is
-built from), while a native-tool exclude (`@builtin` included), a wildcard, or a `disabledTools` that is
-not a list of tool names (`mate_worker.uncarried_tool_limits_of`) is still refused. The capture is
-`claude/worker-tool-limits-live.jsonl`: each of the three limits kept its tools out
-of the model's list while their siblings asked and ran. codex is in neither set:
+built from). claude is also in `ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS` (KAS,
+claude): a native-tool exclude its built-in table covers (`shell`, `fs_write`,
+`@builtin/<tool>`, a tag such as `write`;
+`agent_sdk.claude_worker_tools.CLAUDE_WORKER_BUILTINS_BY_KIRO_TOOL`) rides the session's
+`tools` option as an allow-list of the built-ins of the native tools the worker
+keeps (`claude_worker_builtin_tools`, carried on `SessionProjection.builtin_tools`),
+so a built-in the table does not list is withheld too, and no settings file can
+add one back. Any other native entry (`use_aws`, a bare `@builtin`), a wildcard, or a
+`disabledTools` that is not a list of tool names (`mate_worker.uncarried_tool_limits_of`)
+is still refused. The captures are `claude/worker-tool-limits-live.jsonl`, where each of the
+three MCP limits kept its tools out of the model's list while their siblings asked
+and ran, and `claude/worker-native-tool-limits-live.jsonl`, where a worker excluding
+`shell` and `fs_write` was offered no command-running or file-writing built-in, its
+deferred MCP tool still loaded and ran, and a subagent it started had the same tools. codex is in none of the three sets:
 its worker capture shows no single-tool limit held. codex is in the kit set on its own live capture
 (`codex/worker-kit-live.jsonl`): its mirror hands the session key to the
 projection, so the worker's array carried the Bot's server and the worker

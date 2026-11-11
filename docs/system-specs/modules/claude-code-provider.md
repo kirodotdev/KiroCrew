@@ -344,9 +344,16 @@ and effort selection, the full `session/request_permission` flow) works. So
   session, not the base on disk by name
   (`session_mcp_crewmate.crewmate_worker_deny_rules`): each `disabledTools` entry,
   each `@server/tool` in its `excludedTools` and each whole `@server`
-  (`mcp__<server>`); a worker whose crewmate file excludes a native tool (`@builtin` included), or sets a
-  `disabledTools` that is not a list of tool names, is refused before spawn, since
-  no deny here carries it. The seed and the array read that spec in turn, so the
+  (`mcp__<server>`). A native tool its crewmate file excludes is not a deny rule:
+  the worker's `session/new` options carry `tools` listing only the built-ins of the
+  native tools it keeps (`agent_sdk.claude_worker_tools.claude_worker_builtin_tools`,
+  captured in `claude/worker-native-tool-limits-live.jsonl`); like a zero-tool
+  session, it is stopped before its first prompt when the adapter that answered the
+  handshake is below the session-options floor or reports no version
+  (`_pin_claude_starting_mode`). A worker whose file
+  excludes a native entry no built-in covers (`use_aws`, a bare `@builtin`, a glob),
+  or sets a `disabledTools` that is not a list of tool names, is refused before
+  spawn, since nothing here carries it. The seed and the array read that spec in turn, so the
   array is held to the settings the session ships (the inline settings, or the
   `settings.local.json` on disk, read only as Crew's own seed, never through a link): when the spec the array reads asks for a rule
   they lack (the crewmate file was narrowed in between, or a re-seed was

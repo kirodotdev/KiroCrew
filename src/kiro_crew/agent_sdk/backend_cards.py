@@ -565,6 +565,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "error naming the fix, so it never runs wider than its Bot saved; the "
         "single-tool line above already covers a native-tool switch-off"
     ),
+    "ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS": (
+        "whether a Bot worker's native-tool switch-offs, such as no shell or no file "
+        "writes, are honoured. A worker with such limits on a non-member is refused before "
+        "spawn with an error naming the fix, so it never runs wider than its Bot saved; on "
+        "claude such a worker keeps only the built-ins of the native tools it keeps, so a "
+        "built-in Crew has not mapped is left out too"
+    ),
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": (
         "which channel carries the agent spec's own servers to the session, read by the "
         "unresolved-ref detector. The servers arrive either way; a wrong membership is a "
