@@ -1205,7 +1205,7 @@ class TestResourceStatusTool:
         out = self._run("ample", spawn_avail=1.8)
         assert "Subagent spawn floor: 2 GB must stay free after a start" in out
         assert "BLOCKED: new top-level subagents wait in the queue" in out
-        assert "Guidance: new top-level subagents cannot start now — the gate reads 1.8 GB" in out
+        assert "Guidance: new top-level subagents cannot start now — the gate reads 1.80 GB" in out
         assert "at least 2.15 GB" in out
         assert "ample headroom" not in out
         # Said once, as the guidance, not again as a trailing line.
@@ -1233,7 +1233,7 @@ class TestResourceStatusTool:
 
     def test_a_met_floor_keeps_the_ample_guidance(self) -> None:
         out = self._run("ample", spawn_avail=16.0)
-        assert "the gate reads 16.0 GB, a top-level start needs at least 2.15 GB" in out
+        assert "the gate reads 16.00 GB, a top-level start needs at least 2.15 GB" in out
         assert "BLOCKED" not in out
         assert "ample headroom right now" in out
 
