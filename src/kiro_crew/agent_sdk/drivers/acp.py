@@ -197,6 +197,22 @@ def resolve_usable_model(preferred: str, advertised: object, *, backend: str = "
     return _impl(preferred, advertised, backend=backend)  # type: ignore[arg-type]
 
 
+async def apply_configured_model(handle: object, configured_model: str, *, backend: str) -> None:
+    """Put a session that has just started on its configured model.
+
+    Thin delegation to
+    :func:`kiro_crew.acp.session_handle_model_selection.apply_configured_model`, the
+    function a process's own first session goes through, so a sub-agent's session on
+    its parent's process (``subagent_parts/model_choice.py``) reaches it through the
+    SDK surface instead of importing the ACP layer. *handle* is the session the
+    caller already holds; *backend* stays a plain string. Function-local import for
+    the same reason as :func:`resolve_pin_spelling`.
+    """
+    from kiro_crew.acp.session_handle_model_selection import apply_configured_model as _impl
+
+    await _impl(handle, configured_model, backend=backend)  # type: ignore[arg-type]
+
+
 def build_acp_provider(
     *,
     work_dir: "str | Path | None" = None,

@@ -10,6 +10,7 @@ per run. ``POST /api/spawn`` reads that same plan for an additive
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -30,6 +31,7 @@ def _api_spawn(
     would_share: Any = True,
     keep: bool = False,
     selection_kind: str = "template",
+    child_aws_profile: Any = None,
 ) -> tuple[dict, MagicMock]:
     from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
     from kiro_crew.dashboard.handlers.messaging import api_spawn
@@ -47,11 +49,12 @@ def _api_spawn(
         execution_context=SimpleNamespace(selection_kind=selection_kind),
     )
     mgr.spawn.return_value = info
-    if isinstance(plan, Exception):
+    if isinstance(plan, Exception) or inspect.isfunction(plan):
         mgr._sharing_plan.side_effect = plan
     else:
         mgr._sharing_plan.return_value = plan
     mgr._should_use_session_sharing.return_value = would_share
+    mgr._run_events._resolve_child_aws_profile = AsyncMock(return_value=child_aws_profile)
     state = SimpleNamespace(
         _slots={"1": _ChatSlot("1", memory_mode="persistent")},
         _restricted_keys=set(),
@@ -110,6 +113,18 @@ class TestApiSpawnRuntimeNote:
         args, _kwargs = mgr._sharing_plan.call_args
         assert args == (mgr.spawn_info,)
 
+    def test_a_pinned_run_whose_aws_binding_lets_it_share_gets_no_note(self):
+        """The plan is read with the run's own AWS binding, resolved as the run
+        resolves it, so a possible profile split is not blamed on the pin."""
+        binding = object()
+
+        def plan(info: Any, *, cfg: Any = None, child_aws_profile: Any = None) -> _SharingPlan:
+            return _SharingPlan("sonnet-test-model", "", child_aws_profile is binding)
+
+        data, mgr = _api_spawn(_BODY, plan, child_aws_profile=binding)
+        assert "runtime_note" not in data
+        mgr._run_events._resolve_child_aws_profile.assert_awaited_once_with(mgr.spawn_info)
+
     @pytest.mark.parametrize("would_share", [False, None, MagicMock()])
     def test_no_note_where_the_run_could_never_share(self, would_share):
         """A backend outside session sharing, ``session_sharing`` off or an
@@ -129,13 +144,12 @@ class TestApiSpawnRuntimeNote:
         data, _ = _api_spawn(_BODY, _SharingPlan("m", "", False), keep=True)
         assert "runtime_note" not in data
 
-    def test_the_share_question_is_asked_without_the_runs_own_model(self):
-        """The run's own model is what turns sharing off, so the 'would it
-        share otherwise' question drops it -- on a copy, never the run's info."""
+    def test_the_share_question_is_asked_of_the_run_itself(self):
+        """Whether the run could share is answered with its pins aside (they are
+        the plan's), so the run's own info is asked and left as it was."""
         _, mgr = _api_spawn(_BODY, _SharingPlan("sonnet-test-model", "", False))
         (asked,), _ = mgr._should_use_session_sharing.call_args
-        assert asked is not mgr.spawn_info
-        assert asked.model == "" and asked.routed_model == ""
+        assert asked is mgr.spawn_info
         assert mgr.spawn_info.model == "sonnet-test-model"
         assert mgr.spawn_info.routed_model == "r"
 

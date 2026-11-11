@@ -745,6 +745,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
         "model switch either lands or is refused, which its own line already says"
     ),
+    "ACP_BACKENDS_MODEL_PER_SESSION": (
+        "whether a sub-agent started on a model of its own takes a session on its "
+        "parent's process or a process of its own. It runs on that model either "
+        "way; a wrong membership leaves a shared sub-agent off the model it was "
+        "started on, which is a defect, not a feature a harness is picked by"
+    ),
     "ACP_BACKENDS_SPEC_FILE_GRANTS": (
         "whether a start on a crew-bound spec Kiro Crew does not own is refused "
         "while that file's grants exceed the ceiling, because the host reads them. "

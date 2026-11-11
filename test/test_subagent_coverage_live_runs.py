@@ -44,10 +44,7 @@ class TestShouldUseSessionSharing:
         with patch("kiro_crew.subagent.KiroCrewConfig.load", side_effect=RuntimeError):
             assert mgr._should_use_session_sharing(_info(parent_session_key="dash:1")) is False
 
-    @pytest.mark.parametrize(
-        "override",
-        [{"model": "sonnet"}, {"allowed_tools": ["read"]}, {"bare": True}],
-    )
+    @pytest.mark.parametrize("override", [{"allowed_tools": ["read"]}, {"bare": True}])
     def test_cc_specific_spawn_excluded(self, override: dict) -> None:
         mgr = _manager()
         cfg = MagicMock()
@@ -55,6 +52,20 @@ class TestShouldUseSessionSharing:
         info = _info(parent_session_key="dash:1", **override)
         with patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg):
             assert mgr._should_use_session_sharing(info) is False
+
+    @pytest.mark.parametrize("pin", [{"model": "pin-model-x"}, {"routed_model": "pin-model-x"}])
+    def test_a_model_is_the_sharing_plans_question_not_this_one(self, pin: dict) -> None:
+        mgr = _manager()
+        cfg = MagicMock()
+        cfg.agent.session_sharing = True
+        info = _info(parent_session_key="dash:1", **pin)
+        with patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg):
+            assert mgr._should_use_session_sharing(info) is True
+            # The plan owns the pin, and a parent with no capability record refuses it.
+            assert (
+                mgr._sharing_plan(_info(parent_session_key="dash:1", agent="a", **pin)).shared
+                is False
+            )
 
     def test_parentless_spawn_excluded(self) -> None:
         mgr = _manager()

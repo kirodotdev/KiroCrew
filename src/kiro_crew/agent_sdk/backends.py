@@ -185,6 +185,8 @@ with no row here.
      - driver-internal (whether the model is a launch argument, so the startup
        apply sends nothing and a mid-session switch relaunches the process and
        reloads the session)
+   * - ``ACP_BACKENDS_MODEL_PER_SESSION``
+     - semantic question (``SessionCapabilities.takes_model_per_session``)
    * - ``ACP_BACKENDS_EFFORT_AT_LAUNCH``
      - driver-internal (whether the reasoning effort is a launch argument, so a
        change relaunches the process and reloads the session)
@@ -1343,6 +1345,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    ACP_BACKENDS_MODEL_PER_SESSION,
     ACP_BACKENDS_MODEL_SELECT_UNCHECKED,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,

@@ -668,6 +668,22 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
 #: another harness's catalog owns is refused rather than relaunched on.
 ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
 
+#: Backends on which ONE process can run each of its sessions on its own model,
+#: because the model request names the session it is for. A sub-agent given a
+#: session on its parent's process can then be put on its own pin there
+#: (``apply_configured_model``); on a non-member a pin needs a process of its own,
+#: which is what the sub-agent start gives it.
+#:
+#: Opt-in, like every capability set, and a SEPARATE claim from the two channel
+#: sets above: those say which request switches a model, this says the switch
+#: reaches one session of a process that hosts several. kiro-cli is a member on
+#: ``session/set_model`` and codex on ``session/set_config_option``: both requests
+#: carry the ``sessionId`` (``AcpSessionHandle.set_model``), and both harnesses
+#: host a parent and its sub-agents on one process (``ACP_BACKENDS_SESSION_SHARING``).
+#: KAS is not a member: Crew opens one KAS process per session, so a second
+#: session's model on one process is not something a shipped path has run.
+ACP_BACKENDS_MODEL_PER_SESSION: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
+
 #: Backends that take their reasoning effort as a LAUNCH argument, by the same
 #: mechanism: the Strands CLI reads ``--effort`` when it starts, so a level is
 #: applied at spawn and a change relaunches the process and reloads the session. A

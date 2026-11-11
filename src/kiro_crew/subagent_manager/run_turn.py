@@ -328,11 +328,11 @@ async def _run_inner_impl(
     # keep deferring to the provider's configured default, exactly as before.
     # The one sharing decision (``_sharing_plan``), which admission also read
     # to price this start: template execution, not ``keep``, the eligibility
-    # predicate, and no model / reasoning-effort pin.
+    # predicate, no reasoning-effort pin, and a model only where the parent's
+    # runtime takes one per session.
     # An UNPINNED start may take a model from ``model.route``'s derived tiers
     # (``decisions.model_route_derive``, off by default). Decided before the
-    # sharing plan, which reads the routed model as a pin: a routed model
-    # cannot be applied to the parent's already-started runtime.
+    # sharing plan, which reads the routed model as a pin.
     await _route_unpinned_start(info, kind, self._manager._sessions)
     plan = self._manager._sharing_plan(
         info, child_aws_profile=await self._resolve_child_aws_profile(info)
