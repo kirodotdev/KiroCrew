@@ -221,6 +221,15 @@ it allows. `aws.checked`, `find_stack` and the boundary read put their remedy
 ahead of the raw error the same way. The CLI's stderr is kept whole, so the stack
 name in its `describe-stack-events` command is not cut.
 
+With no denied action named, a failed stack event that carries an EC2 account
+refusal puts its plain cause and next step in the same place: a vCPU quota with
+no room for the size (EC2's "current vCPU limit" message) names the size's vCPU
+and asks for a higher Running On-Demand Standard instances quota (L-1216C47A) in
+Service Quotas, or a smaller size when one exists; an account still being
+validated (EC2's "in this region is being validated" message) says to retry once
+AWS confirms. The match is on EC2's message because CloudFormation's resource
+handler drops EC2's error code from the reason. `missing_action` stays unset.
+
 Teardown removes the uploaded source object as part of the contract: after a **confirmed** `delete-stack`, `source.delete_source` returns `{removed, uri, error}`. If the stack delete itself did not confirm, the source object and `last_tag` pointer are preserved and the CLI exits non-zero.
 
 `NoSuchBucket` counts as removed: only a source upload creates the bucket, so a launch from an installed package (no checkout to ship) left nothing behind and destroy says nothing about it. When the object really could not be removed, destroy warns and its last line names only the stack, never "all AWS resources deleted". A stack with no `InstanceId` output (one still being created, or a create that failed) prints `(id unknown)` in `destroy` and `status` where the id would go. `status` then shows the stack status where the instance state would go, and `gone` for an instance EC2 no longer has. `destroy --dry-run` makes the same stack lookup as the real run before it prints the delete command, so a stack that is gone reads `nothing to remove` in both.

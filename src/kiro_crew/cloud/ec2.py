@@ -731,6 +731,31 @@ def _account_of_policy_arn(arn: str) -> str:
     return parts[4]
 
 
+def _account_refusal(failures: list[dict[str, str]], tier: sizes.SizeTier) -> str:
+    """The plain-words cause and next step when EC2 refused the instance on an
+    account limit, else ``""``.
+
+    Matched on EC2's own message: CloudFormation's resource handler drops EC2's
+    error code from the event reason.
+    """
+    reasons = " ".join(f["reason"] for f in failures)
+    if "current vCPU limit" in reasons:
+        smaller = any(t.vcpu < tier.vcpu for t in sizes.all_tiers())
+        return (
+            f"this AWS account's vCPU quota in this Region has no room for the {tier.vcpu} "
+            f"vCPU of the {tier.label} size: request a higher Running On-Demand Standard "
+            "instances quota (L-1216C47A) in Service Quotas"
+            + (", or pick a smaller size," if smaller else "")
+            + " and retry"
+        )
+    if "in this region is being validated" in reasons:
+        return (
+            "this AWS account is still being validated for launches in this Region: AWS "
+            "emails you when it is done (usually within minutes, up to 4 hours), then retry"
+        )
+    return ""
+
+
 def build_deploy_argv(
     *,
     tag: str,
@@ -1031,6 +1056,8 @@ def deploy(
                     missing = aws.map_missing_action(f["reason"])
             if missing:
                 cause = f"grant `{missing}` (see `kirocrew cloud iam-policy`) and retry — {cause}"
+            elif refusal := _account_refusal(failures, tier):
+                cause = f"{refusal} — {cause}"
         _cleanup_uploaded_source()
         raise aws.AWSError(
             f"cloudformation deploy failed: {cause}{detail}",
