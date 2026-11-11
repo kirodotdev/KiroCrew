@@ -1020,6 +1020,54 @@ class TestRmFloorReadsNestedShellPayloads:
         reason = is_denied(command.format("r" + "m -fr ~"))
         assert reason is None or "component=argv-floor" not in reason
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo '{}' | sh",
+            "printf '%s' '{}' | bash",
+            "echo \"bash -c '{}'\" | sh",
+            "bash -c \"echo '{}' | sh\"",
+            "echo '{}' |& sh",
+            "echo '{}' | (sh)",
+            "printf '%s' '{}' |& bash",
+            "printf '%s' '{}' | (bash)",
+            "bash -c \"echo '{}' |& sh\"",
+            "echo '{}' | tee \"$(mktemp)\" | sh",
+        ],
+    )
+    def test_a_script_piped_into_a_shell_is_read(self, command):
+        """What a printer pipes into a stdin shell is read as the script that shell runs."""
+        reason = is_denied(command.replace("{}", "r" + "m -r -f ~"))
+        assert reason is not None and "component=argv-floor" in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "find . -name '*.md' | xargs grep -l '{}'",
+            "grep -rl '{}' docs | xargs wc -l",
+            "echo '{}' | grep -c bash",
+            "echo '{}' | bash ./check.sh",
+            "echo '{}' | bash -n",
+            "echo '{}' | sh < script.sh",
+        ],
+    )
+    def test_a_consumer_that_is_no_stdin_shell_reads_the_text_as_data(self, command):
+        """Only a shell reading its script from the pipe runs the piped text."""
+        reason = is_denied(command.replace("{}", "r" + "m -r -f ~"))
+        assert reason is None or "component=argv-floor" not in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git ls-files --others --exclude-standard --directory | sed 's/^/{}/' | sh",
+            "printf '%s\\n' build dist | sed 's/^/{}/' | sh",
+        ],
+    )
+    def test_a_filter_script_is_not_the_text_the_shell_reads(self, command):
+        """``sed`` prints its input changed: its script's ``/`` is a delimiter, never wiped."""
+        reason = is_denied(command.replace("{}", "r" + "m -rf -- "))
+        assert reason is None or "component=argv-floor" not in reason
+
     @pytest.mark.parametrize("separator", [";", "&&", "&", "\n"])
     def test_a_separator_ends_the_command(self, separator):
         """``echo x <sep> sh`` runs ``sh`` with no input: the printed wipe stays printed."""

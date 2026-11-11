@@ -760,7 +760,10 @@ def _url_payload_command(n: int) -> str:
 #: the self-protection floor, its ssh self-target floor included, walks a carrier's
 #: quoted script that opens with an assignment whole, so the assignment resolves
 #: inside it. Deny-only. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_373
+#: Raised by 38, from 35,373, for ``shell_commands.pipelines`` and the rm floor reading
+#: each pipeline's ``echo`` / ``printf`` stages and shells in ``_command_tokens``. It only
+#: adds refusals. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_411
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
