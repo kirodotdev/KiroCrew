@@ -94,8 +94,10 @@ from kiro_crew.messaging.dispatch_tools import (
     TOOLLESS_TURN_AGENT,
     TOOLLESS_TURN_REFUSAL_NOTE,
     ToollessTurnUnavailable,
+    _guest_spec_repair_count,
     _refuse_before_spawn_unless_toolless,
     _refuse_unless_toolless,
+    _repair_toolless_spec,
     _toolless_spec_before_spawn,
     _toolless_turn_work_dir,
     _without_deny_reason,
@@ -715,12 +717,19 @@ class ChannelTurns:
         session_agent = TOOLLESS_TURN_AGENT if deny_all_tools else agent
         # The tool-less spec's pre-spawn read, before any ``get_or_create`` below can
         # cold-start the harness on it; ``_refuse_unless_toolless`` reads it again
-        # after the start, and both must find it mounts nothing.
+        # after the start, and both must find it mounts nothing. A read that refuses
+        # goes to the repair, whose second read stands in for it. The repair count is
+        # taken first, so a repair started meanwhile leaves the read unconfirmed.
+        repairs_before_spawn = _guest_spec_repair_count()
         toolless_before_spawn = (
             await asyncio.to_thread(_toolless_spec_before_spawn, session_key)
             if deny_all_tools
             else False
         )
+        if deny_all_tools and not toolless_before_spawn:
+            toolless_before_spawn, repairs_before_spawn = await _repair_toolless_spec(
+                sessions, session_key
+            )
         if deny_all_tools and monitor is not None and not toolless_before_spawn:
             # A wake claims its session below, outside the refusal handler, so a
             # spec the read refused ends the wake here, before anything starts.
@@ -949,6 +958,7 @@ class ChannelTurns:
                         session_key,
                         provider,
                         authored_before_spawn=toolless_before_spawn,
+                        repairs_before_spawn=repairs_before_spawn,
                     )
                 # Keep the first acquisition's snapshot across replays: a Stop
                 # during a reset or a hook must not become a new attempt's baseline.
@@ -1609,7 +1619,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _breaker_threshold,
     )
     from kiro_crew.messaging.dispatch_tools import (  # noqa: F401
+        _GUEST_RESET_TIMEOUT_SECS,
+        _guest_resets_failed,
+        _guest_spec_repair_tasks,
+        _guest_spec_repairs_finished,
+        _guest_spec_repairs_started,
         _provider_backend,
+        _restore_guest_spec,
         toolless_turns_supported,
         warn_if_toolless_turns_unservable,
     )
