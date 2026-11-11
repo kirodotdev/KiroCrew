@@ -877,13 +877,11 @@ class TestRenderedTrailerAndTraits:
         lines = render.render_tree(
             _snap(fake, FAKE_FILES_APP), text_limit=DEFAULT_TEXT_LIMIT
         ).splitlines()
-        origin = next(i for i, ln in enumerate(lines) if ln.startswith("Window origin"))
-        assert lines[origin - 1] == ""
+        trailer = ("Window id:", "Window origin", "Focus:", "Selected text:")
+        first = next(i for i, ln in enumerate(lines) if ln.startswith(trailer))
+        assert lines[first - 1] == ""
         # And every element line precedes it.
-        assert all(
-            not ln.startswith(("Window origin", "Focus:", "Selected text:"))
-            for ln in lines[:origin]
-        )
+        assert all(not ln.startswith(trailer) for ln in lines[:first])
 
     def test_a_SECURE_window_renders_no_trailing_selection(self, fake):
         """A selected password is still a password. The login fixture's focused

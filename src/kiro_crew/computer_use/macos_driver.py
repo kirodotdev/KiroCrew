@@ -66,6 +66,9 @@ from kiro_crew.computer_use.types import (
     DEFAULT_DRAG_PATH,
     DEFAULT_DRAG_STEPS,
     ERR_ACTION_FAILED,
+    ERR_PINNED_KEYS_NOT_FRONT,
+    ERR_PINNED_SCROLL_FALLBACK,
+    ERR_POINT_NOT_IN_WINDOW,
     ERR_POINT_NOT_OWNED,
     ERR_POINT_REQUIRED,
     ERR_UNKNOWN_CLICK_METHOD,
@@ -80,6 +83,9 @@ from kiro_crew.computer_use.types import (
     SCROLL_LEFT,
     SCROLL_RIGHT,
     SCROLL_UP,
+    TOOL_GET_STATE,
+    TOOL_PRESS_KEY,
+    TOOL_SET_VALUE,
     AppRef,
     BackendStatus,
     ClickRequest,
@@ -182,6 +188,52 @@ _REASON_SKY_WINDOW_GONE = (
 )
 
 
+def _pinned_id(app: AppRef) -> int:
+    """The window a real-pointer gesture is confined to, or ``0`` for the whole app."""
+    return app.window_id if app.pinned_window else 0
+
+
+def _off_pinned_window(app: AppRef, points) -> "DriverResult | None":
+    """Refusal for an app-scoped gesture whose point is not on the pinned window.
+
+    ``None`` when the window is not pinned (the app picks its own front window, as
+    before) or when every point lies on the pinned window.
+    """
+    if not app.pinned_window:
+        return None
+    for x, y in points:
+        if not apps_macos.pinned_window_tops_point(app.pid, app.window_id, x, y):
+            return DriverResult(
+                ok=False,
+                text=ERR_POINT_NOT_IN_WINDOW.format(
+                    x=x, y=y, window_id=app.window_id, app=app.name, tool=TOOL_GET_STATE
+                ),
+            )
+    return None
+
+
+def _pinned_keys_refusal(app: AppRef) -> "DriverResult | None":
+    """Refusal for a keyboard verb on a pinned window that is not the app's front one.
+
+    ``post_text``/``post_key`` go to the process, which delivers them to its key
+    window. Focusing an element of a background window does not make that window
+    key, so the keystrokes would reach the front sibling, which neither the target
+    policy nor the secure-field check looked at. ``None`` when not pinned, or when
+    the pinned window is the front one.
+    """
+    if not app.pinned_window or apps_macos.pinned_window_is_front(app.pid, app.window_id):
+        return None
+    return DriverResult(
+        ok=False,
+        text=ERR_PINNED_KEYS_NOT_FRONT.format(
+            window_id=app.window_id,
+            app=app.name,
+            set_value_tool=TOOL_SET_VALUE,
+            tool=TOOL_GET_STATE,
+        ),
+    )
+
+
 def _point_not_owned(app: AppRef, x: float, y: float) -> str:
     """Refusal text for a confined ``global`` point outside the authorized app.
 
@@ -254,6 +306,18 @@ class MacOSBackend(ComputerUseBackend):
 
         return _guarded("resolve_app", run)
 
+    def list_windows(self, app: AppRef) -> DriverResult:
+        def run() -> DriverResult:
+            return DriverResult(ok=True, windows=apps_macos.list_windows(app))
+
+        return _guarded("list_windows", run)
+
+    def resolve_window(self, app: AppRef, window_id: int) -> DriverResult:
+        def run() -> DriverResult:
+            return DriverResult(ok=True, app=apps_macos.resolve_window(app, window_id))
+
+        return _guarded("resolve_window", run)
+
     def launch_app(
         self,
         query: str,
@@ -323,7 +387,12 @@ class MacOSBackend(ComputerUseBackend):
                 return DriverResult(ok=False, text=ERR_POINT_REQUIRED.format(method=req.method))
             if req.method == CLICK_METHOD_APP_POST:
                 # App-scoped: the target app sees a click at the point and the
-                # operator's physical cursor does NOT move.
+                # operator's physical cursor does NOT move. The app routes it to
+                # whichever of its windows is on top there, so a pinned window must
+                # be that window.
+                refusal = _off_pinned_window(app, (req.point,))
+                if refusal is not None:
+                    return refusal
                 macos_ffi.post_mouse_click(
                     app.pid,
                     req.point[0],
@@ -359,7 +428,9 @@ class MacOSBackend(ComputerUseBackend):
                 # over a denied one (a terminal, a password manager) would pass the
                 # policy check on app A and click app B. Every other input path is
                 # app-scoped and needs no such check.
-                if not apps_macos.pid_owns_point(app.pid, req.point[0], req.point[1]):
+                if not apps_macos.pid_owns_point(
+                    app.pid, req.point[0], req.point[1], window_id=_pinned_id(app)
+                ):
                     return DriverResult(
                         ok=False,
                         text=_point_not_owned(app, req.point[0], req.point[1]),
@@ -417,7 +488,9 @@ class MacOSBackend(ComputerUseBackend):
                 # travel over the window beside it with the button held. A default
                 # request has no path, so its two endpoints are the whole gesture.
                 for point in points or (req.start, req.end):
-                    if not apps_macos.pid_owns_point(app.pid, point[0], point[1]):
+                    if not apps_macos.pid_owns_point(
+                        app.pid, point[0], point[1], window_id=_pinned_id(app)
+                    ):
                         return DriverResult(
                             ok=False,
                             text=_point_not_owned(app, point[0], point[1]),
@@ -426,6 +499,9 @@ class MacOSBackend(ComputerUseBackend):
                     req.start, req.end, button=req.button, points=points
                 )
             elif req.method == CLICK_METHOD_APP_POST:
+                refusal = _off_pinned_window(app, points or (req.start, req.end))
+                if refusal is not None:
+                    return refusal
                 macos_ffi.post_mouse_drag(
                     app.pid, req.start, req.end, button=req.button, points=points
                 )
@@ -525,6 +601,9 @@ class MacOSBackend(ComputerUseBackend):
 
     def type_text(self, app: AppRef, rec: "ElementRec | None", text: str) -> DriverResult:
         def run() -> DriverResult:
+            refusal = _pinned_keys_refusal(app)
+            if refusal:
+                return refusal
             if rec is not None:
                 with _addressed(app, rec) as element:
                     if element is None:
@@ -560,6 +639,9 @@ class MacOSBackend(ComputerUseBackend):
             # Refusing loudly is right: silently dropping an unrecognised modifier
             # would send a DIFFERENT keystroke than requested into a live app.
             keycode, flags = keymap.parse_key(key)
+            refusal = _pinned_keys_refusal(app)
+            if refusal:
+                return refusal
             if rec is not None:
                 # Focus the addressed element first, same as ``type_text``, and
                 # best-effort for the same reason.
@@ -639,6 +721,20 @@ class MacOSBackend(ComputerUseBackend):
                         "pagedown or end on an element of that window."
                     ),
                     app=app,
+                )
+            # A pinned window is the exception: the event names no window, so the app
+            # can deliver it to another of its own windows while the reply refreshes
+            # the pinned one. Refused instead.
+            if app.pinned_window:
+                return DriverResult(
+                    ok=False,
+                    text=ERR_PINNED_SCROLL_FALLBACK.format(
+                        index=rec.index,
+                        window_id=app.window_id,
+                        app=app.name,
+                        key_tool=TOOL_PRESS_KEY,
+                        tool=TOOL_GET_STATE,
+                    ),
                 )
             # The wheel event is in LINE units — ``CGScrollEventUnit`` has only
             # ``Pixel`` and ``Line``, no page unit — so a requested PAGE has to be

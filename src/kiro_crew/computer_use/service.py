@@ -50,6 +50,7 @@ from kiro_crew.computer_use.types import (
     DEFAULT_SCREENSHOT_JPEG_QUALITY,
     DEFAULT_SCREENSHOT_MAX_PX,
     DEFAULT_TEXT_LIMIT,
+    ERR_OTHER_WINDOW_STATE,
     MAX_SCREENSHOT_MAX_PX,
     MAX_TEXT_LIMIT,
     MAX_TREE_DEPTH_LIMIT,
@@ -59,6 +60,7 @@ from kiro_crew.computer_use.types import (
     SCREENSHOT_FILE_PREFIX,
     SCREENSHOT_FILE_SUFFIX,
     SCREENSHOT_KEEP,
+    TOOL_GET_STATE,
     AppRef,
     BackendStatus,
     ClickRequest,
@@ -71,6 +73,7 @@ from kiro_crew.computer_use.types import (
     Snapshot,
     SnapshotRequest,
     StaleIndex,
+    WindowRef,
 )
 
 logger = logging.getLogger(__name__)
@@ -148,8 +151,13 @@ class ComputerUseService:
         self._require_ok(result)
         return result.apps
 
-    def resolve_app(self, query: str) -> AppRef:
-        """Resolve *query* (display name or bundle id) to one application."""
+    def resolve_app(self, query: str, *, window_id: int = 0) -> AppRef:
+        """Resolve *query* (display name or bundle id) to one application.
+
+        With a nonzero *window_id*, the result is narrowed to that window of the
+        resolved application and marked ``pinned_window``; an id that is not a live
+        window of that application is refused, never substituted.
+        """
         result = self.backend.resolve_app(query)
         self._require_ok(result)
         if result.app is None:
@@ -157,7 +165,21 @@ class ComputerUseService:
             # violation; refuse rather than fabricate an AppRef whose pid would
             # later address the wrong process.
             raise ComputerUseError(f"the driver resolved '{query}' to no application")
-        return result.app
+        if not window_id:
+            return result.app
+        narrowed = self.backend.resolve_window(result.app, window_id)
+        self._require_ok(narrowed)
+        if narrowed.app is None:
+            raise ComputerUseError(
+                f"the driver resolved window {window_id} of '{query}' to no window"
+            )
+        return narrowed.app
+
+    def list_windows(self, app: AppRef) -> "tuple[WindowRef, ...]":
+        """The on-screen windows of *app*, front to back (window list only, no walk)."""
+        result = self.backend.list_windows(app)
+        self._require_ok(result)
+        return result.windows
 
     def launch_app(
         self,
@@ -213,10 +235,29 @@ class ComputerUseService:
         Never lazily re-snapshots. A lazy re-walk here would silently let the
         model act on a tree it was never shown, which is precisely the failure
         element indices exist to make impossible.
+
+        When the session holds no snapshot for THIS window but does for another
+        window of the same app, the refusal names that window's id: the indices
+        the model holds belong there, and the fix is to pass ``window_id``.
         """
-        return self.index.require(
-            app.window_key, app.bundle_id or app.name, session_key=session_key
-        )
+        label = app.bundle_id or app.name
+        # Read BEFORE ``require``: an expired entry is dropped inside it, after which
+        # ``age`` reports -1 as if the window had never been snapshotted, and the
+        # "state is Ns old" refusal would be replaced by a pointer to a sibling
+        # window whose cache the stale indices do not belong to.
+        never_snapshotted = self.index.age(app.window_key, session_key=session_key) < 0
+        try:
+            return self.index.require(app.window_key, label, session_key=session_key)
+        except StaleIndex:
+            if never_snapshotted:
+                sibling = self.index.sibling_window_id(app, session_key=session_key)
+                if sibling:
+                    raise StaleIndex(
+                        ERR_OTHER_WINDOW_STATE.format(
+                            app=label, tool=TOOL_GET_STATE, window_id=sibling
+                        )
+                    ) from None
+            raise
 
     def element(self, snap: Snapshot, element_index: int) -> ElementRec:
         """The record at *element_index* within *snap* (raises :class:`StaleIndex`)."""

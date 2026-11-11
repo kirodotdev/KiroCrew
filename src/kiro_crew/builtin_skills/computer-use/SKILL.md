@@ -117,6 +117,24 @@ not pass a frame straight through); **Focus** names the focused element; and
 A `<secure>` element shows no title, no value, no traits and no frame — only
 that it exists.
 
+**If the app has more than one window, choose one.** The trailer carries a
+`Window id: N.` line, and when the app has several windows the snapshot says so
+(`'Notes' has 2 windows; this is window_id 71 …`). If the tree you got is not the
+window you meant (a tiny helper, a palette, the wrong document), list them and pick:
+
+```
+computer_list_windows(app="Notes")
+  -> - window_id 71 "Window" @ x=10,y=10 66x20
+     - window_id 72 "All on My Mac" @ x=0,y=25 1200x800
+computer_get_state(app="Notes", window_id=72, screenshot=True)
+```
+
+Then pass the **same `window_id` on every action** that uses those indices. An
+action without it goes to the app's default window, and is refused with the
+window_id to pass when your indices belong to another window. A `window_id` that is
+closed or belongs to another process is refused, never swapped for a different
+window.
+
 **3. Act by index.**
 
 | Tool | Use it for |
@@ -344,6 +362,8 @@ These are **answers**, not failures. Relay them and adapt; do not loop.
 | `Screenshot suppressed: the accessibility tree was truncated …` | a cut-off walk cannot prove the window holds no password field, so no pixels were captured. Routine for a browser or an Electron app at the default budget | if you actually need the image, re-snapshot with a higher `max_tree_nodes` / `max_tree_depth`; otherwise work from the tree and do not re-request the screenshot |
 | `no state for 'X'. Call computer_get_state first.` | you acted without a snapshot | snapshot, then act |
 | `state for 'X' is 214s old. Call computer_get_state again.` | the snapshot expired (90s) | snapshot again |
+| `no state for this window of 'X'. Your last computer_get_state of 'X' was window_id N …` | your indices belong to window N, and this call resolved to the default window | repeat the action with `window_id=N` |
+| `window_id N is not an on-screen window of 'X'.` | that window closed, or the id is not one of this app's | call `computer_list_windows` and pick a live one |
 | `element_index 7 changed since the last computer_get_state (was 'AXButton "Save"', now 'AXButton "Delete"')` | the UI moved under you — this refusal is what stopped you clicking the wrong thing | snapshot again and re-locate the element by its label, not its old number |
 | `'…' is a blocked target for computer use (…)` | KiroCrew's own dashboard is permanently refused — driving it would let you change your own security settings | do the task another way; tell the user why |
 | `refusing to type this text into 'X': …` | the text looked like a sensitive command or credential | do not rephrase to get around it; explain and stop |

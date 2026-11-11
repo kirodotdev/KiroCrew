@@ -34,10 +34,13 @@ from kiro_crew.computer_use.types import (
     TREE_INDENT,
     TRUNCATED_NOTE,
     TRUNCATED_WINDOW_NOTE,
+    WINDOW_ID_NOTE,
     WINDOW_ORIGIN_NOTE,
+    WINDOWS_HEADER,
     AppRef,
     ElementRec,
     Snapshot,
+    WindowRef,
 )
 from kiro_crew.imessage.plaintext import _grapheme_boundary
 
@@ -74,6 +77,29 @@ def render_apps(apps: "tuple[AppRef, ...]") -> str:
         line = f"- {parts[0]} [{', '.join(parts[1:])}]"
         if app.window_title:
             line += f' — "{_clip(app.window_title, _APP_FIELD_LIMIT)}"'
+        lines.append(line)
+    return policy.redact_result("\n".join(lines))
+
+
+def render_windows(app: AppRef, windows: "tuple[WindowRef, ...]") -> str:
+    """Render one application's on-screen windows, front to back.
+
+    One line per window: the ``window_id`` to pass back, the title, and the screen
+    rect. The rect is what tells a 66x20 helper from the real document window, so
+    it is shown even though the title usually suffices. Titles are flattened and
+    clipped like the app list's, and the whole listing ends with the redaction
+    pass, for the same reasons.
+    """
+    label = _clip(app.bundle_id or app.name, _APP_FIELD_LIMIT) or "(unnamed)"
+    if not windows:
+        return policy.redact_result(WINDOWS_HEADER.format(count=0, app=label))
+    lines = [WINDOWS_HEADER.format(count=len(windows), app=label)]
+    for win in windows:
+        line = f"- window_id {win.window_id}"
+        title = _clip(win.title, _APP_FIELD_LIMIT)
+        line += f' "{title}"' if title else " (untitled)"
+        if win.bounds is not None:
+            line += " " + _render_frame(win.bounds)
         lines.append(line)
     return policy.redact_result("\n".join(lines))
 
@@ -215,6 +241,8 @@ def _trailer(snap: Snapshot, *, text_limit: int) -> list[str]:
     which is exactly what redaction exists for.
     """
     out: list[str] = []
+    if snap.app.window_id > 0:
+        out.append(WINDOW_ID_NOTE.format(window_id=snap.app.window_id))
     if snap.window_bounds is not None:
         x, y, width, height = snap.window_bounds
         out.append(
