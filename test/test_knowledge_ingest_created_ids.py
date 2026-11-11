@@ -216,6 +216,23 @@ class TestIngestTextPartialFailureRollback:
         ).fetchone()
         assert row["sync_status"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_a_retry_after_a_failure_keeps_the_next_identical_drop_a_no_op(
+        self, pipeline, kstore
+    ):
+        # A failed drop forgets the source's content_hash so the same text can
+        # be retried; the successful retry must record it again, or every later
+        # identical drop re-runs extraction and replaces the items.
+        text = "body text long enough to split into two chunks"
+        real_embed = pipeline._embed_item
+        _fail_second_embed(pipeline)
+        assert await pipeline.ingest_text(text, "Note") is not None
+        pipeline._embed_item = real_embed
+        assert await pipeline.ingest_text(text, "Note") is not None
+
+        assert await pipeline.ingest_text(text, "Note") is None
+        assert pipeline.extractor.extract_batch.await_count == 2
+
 
 class TestArtifactIngestRecordsPipelineIds:
     """Site 3: _set_state records the ids the pipeline reported, non-empty."""

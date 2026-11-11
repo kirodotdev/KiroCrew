@@ -1327,6 +1327,9 @@ class IngestionPipeline:
         # off-loop gate hop below: it materializes the source's whole item-id
         # set, which is seconds of blocking SQLite on a large library.
         resolve_old_group = False
+        # A text dropped with no source of its own is keyed by its hash: the
+        # source's ``content_hash`` is what makes a repeat drop a no-op.
+        hash_keyed_source = source_id is None
         if source_id is None:
             uri = f"{source_type}://{content_hash[:16]}"
             existing = await asyncio.to_thread(self.store.get_source_by_uri, uri)
@@ -1471,8 +1474,15 @@ class IngestionPipeline:
             # write-lock contention.
             if processed == total:
                 self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
-                self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
-                self.store.update_source(source_id, last_synced=now)
+                if hash_keyed_source:
+                    # Restore the hash a failed attempt forgot, or every repeat
+                    # drop re-ingests; a key delta, as in _ingest_file_body.
+                    self.store.merge_source_properties(
+                        source_id, set_keys={'content_hash': content_hash},
+                        sync_status='synced', last_synced=now)
+                else:
+                    self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
+                    self.store.update_source(source_id, last_synced=now)
             elif processed < total:
                 # Partial failure: remove only items created during THIS call so we
                 # never delete another item group sharing this source_id. Taken
