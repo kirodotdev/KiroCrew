@@ -972,6 +972,7 @@ def generate_refresh_token(
     require_peer: bool = False,
     peer_key: str = "",
     owner_mint: bool = False,
+    embed_parent_port: str = "",
 ) -> tuple[str, str, str, float]:
     """Generate a refresh token.
 
@@ -1031,6 +1032,12 @@ def generate_refresh_token(
         # Carried across rotation like ``boot`` so the access token a refresh
         # mints keeps the owner-mint claim (see token_auth_tokens.OWNER_MINT_CLAIM).
         payload_dict["owner_mint"] = "1"
+    if embed_parent_port:
+        # The embedding parent dashboard's port for an Instances pane session.
+        # The access cookie a refresh mints must keep it, or the remote's CSP
+        # falls back to ``frame-ancestors 'self'`` and the framed pane goes blank
+        # on its next document load (see server_runtime.security_headers).
+        payload_dict["embed_parent_port"] = embed_parent_port
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
@@ -1149,6 +1156,28 @@ def refresh_token_owner_minted(token: str) -> bool:
     except Exception:
         return False
     return isinstance(payload, dict) and str(payload.get("owner_mint", "")) == "1"
+
+
+def refresh_token_embed_parent_port(token: str) -> str:
+    """Return a refresh token's ``embed_parent_port`` claim, or ``""``.
+
+    Same read-only, validate-first contract as :func:`refresh_token_boot`. Only
+    a decimal port in range is returned, so a malformed claim is dropped rather
+    than signed into the rotated access token. Losing it is the conservative
+    direction: the remote's CSP then admits no extra frame ancestor.
+    """
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("embed_parent_port", "")
+    if not isinstance(value, str) or not (value.isascii() and value.isdigit()):
+        return ""
+    if not 1 <= int(value) <= 65535:
+        return ""
+    return value
 
 
 def refresh_token_requires_peer(token: str) -> bool:
