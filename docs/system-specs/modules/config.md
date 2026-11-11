@@ -120,7 +120,9 @@ its logical name. `read_config_document` parses `reconcile(leaf, disk_bytes)`, a
 seals these files, both serve the endorsed copy whenever the on-disk bytes differ, PER FILE and
 before the merge, so an unrelated save cannot re-endorse a tampered file. Under enforcement the
 store fails closed: a failed copy write keeps the previous copy and aborts the save before
-publishing, a failed publish restores the prior copy, and an existing but unreadable copy
+publishing, a failed publish restores the prior copy (when that restore fails too, the process
+keeps answering the prior copy while the file still holds the unpublished bytes, so the next
+save is not refused as an outside edit), and an existing but unreadable copy
 raises rather than serving disk bytes. It is whole-file, so every key is covered with no key
 list to maintain. It runs only where
 the per-file bind can detach (`enforcement_active`: a Linux host that can build the namespace
