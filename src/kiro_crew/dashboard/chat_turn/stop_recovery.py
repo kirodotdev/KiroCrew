@@ -444,6 +444,7 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
             ttft_ms=_ttft_visible.ms,
             turn_start_mid=_turn_start_mid,
             retries=sum(slot._turn_retries.values()) if _prompt_depth == 0 else 0,
+            cache_rewrite=turn._turn_cache_rewrite,
         )
         turn._turn_footer_attached = True
         if _prompt_depth == 0 and _stats_attached:

@@ -12555,7 +12555,9 @@
         "fork_other_in_progress": "আরেকটি ফর্ক শুরু হচ্ছে।",
         "copy_failed": "কপি ব্যর্থ হয়েছে",
         "quote_message": "বার্তা উদ্ধৃত করো",
-        "turn_credits": "{{credits}} ক্রেডিট"
+        "turn_credits": "{{credits}} ক্রেডিট",
+        "turn_cache_rewritten": "ক্যাশ নতুন করে লেখা হয়েছে",
+        "turn_cache_rewritten_hint": "এই টার্নে প্রম্পট ক্যাশ নতুন করে তৈরি হয়েছে, তাই এর ইনপুটের বিল ক্যাশ-রাইট হারে হয়েছে।"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "তোমার ব্রাউজার জিজ্ঞেস করছে “রিমোট ডিবাগিং অনুমতি দেবে?”। Allow ক্লিক করো, তাহলে {{productName}} ট্যাবে কাজ করতে পারবে। একবারই জিজ্ঞেস করা হয়; {{productName}} শুধু নিজে খোলা ট্যাবই স্পর্শ করে।",

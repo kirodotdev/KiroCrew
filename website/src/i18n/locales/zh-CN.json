@@ -12286,7 +12286,9 @@
         "fork_other_in_progress": "另一个分叉正在启动。",
         "copy_failed": "复制失败",
         "quote_message": "引用消息",
-        "turn_credits": "{{credits}} 额度"
+        "turn_credits": "{{credits}} 额度",
+        "turn_cache_rewritten": "缓存已重写",
+        "turn_cache_rewritten_hint": "本轮次重建了提示缓存，因此其输入按缓存写入费率计费。"
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "浏览器弹出了“允许远程调试？”。点 允许，{{productName}} 就能在标签里操作。只问一次；{{productName}} 只碰它自己打开的标签。",

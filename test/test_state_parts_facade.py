@@ -431,6 +431,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_batch_rejected_cause": ("value", "''"),
     "_buffers": ("type", "kiro_crew.dashboard.slot_buffers.SlotBufferCoordinator"),
     "_carried_ttft_clock": ("value", "None"),
+    "_prev_turn_ctx_used": ("value", "0"),
+    "_prev_turn_ctx_session": ("value", "''"),
     "_channel_folder_filed": ("value", "False"),
     "_channel_runtime_origin": ("value", "False"),
     "_channel_window_mtime": ("value", "0.0"),

@@ -12824,7 +12824,9 @@
         "fork_other_in_progress": "È in corso un'altra diramazione.",
         "copy_failed": "Copia non riuscita",
         "quote_message": "Cita messaggio",
-        "turn_credits": "{{credits}} crediti"
+        "turn_credits": "{{credits}} crediti",
+        "turn_cache_rewritten": "Cache riscritta",
+        "turn_cache_rewritten_hint": "La cache del prompt è stata ricostruita in questo turno, quindi il suo input è stato fatturato alla tariffa di scrittura della cache."
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Il browser chiede «Consentire il debug remoto?». Fai clic su Consenti e {{productName}} potrà lavorare nella scheda. Lo chiede una sola volta; {{productName}} tocca solo le schede che apre da sé.",
