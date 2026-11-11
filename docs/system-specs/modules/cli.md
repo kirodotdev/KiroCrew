@@ -1165,6 +1165,8 @@ surface, not just a prompt. Every request runs the same ladder, in this order:
 permission_request
   → HookManager.on_tool_call        (sensitive paths, denied commands, ceiling ∩ profile)
       deny → SEL "denied" → reject_tool → stderr notice          [not overridable]
+  → the agent spec's own PreToolUse hooks   (only where Crew runs them: crew_fires_spec_hooks)
+      refuse → SEL "denied" (spec_hook) → reject_tool → stderr notice   [not overridable]
   → may this invocation ask?        (command mode AND both streams a TTY)
       no   → SEL "denied" → reject_tool → stderr notice
   → prompt the human
@@ -1183,6 +1185,21 @@ keying on the title alone lets through. The CLI identifies itself as
 `session_key="cli_chat"` (SEL source `cli`) with the resolved agent, which is
 what lets the gate resolve `ceiling ∩ profile` rather than the ceiling alone.
 No second copy of the sensitive-path or denied-command rules lives in the CLI.
+
+**The agent spec's own `preToolUse` hooks answer before anyone is asked.** On a
+backend whose harness never receives the spec's `hooks` (KAS, goose, opencode,
+strands: `crew_fires_spec_hooks`), the projection sends every call such a hook
+covers to this permission path, so the CLI runs them here (`_spec_hook_refusal`,
+through the agent-channel member's gate, `channel_spec_hooks.pre_tool_refusal`).
+They are the spec of the kiro agent the session runs (a crew member's bound
+agent), read per request. An exit 2 or a policy refusal to run one refuses the
+call with the hook's reason, and a spec that cannot be read refuses it saying so;
+a crash or timeout lets it go on to the prompt, as on kiro-cli. Only the spec's
+hooks run, through an empty store, with the user's standalone
+`~/.kiro/hooks/*.json` files that every KAS turn folds in; the CLI runs none of
+the Hooks page's. kiro-cli runs the field itself, so nothing changes there. The
+spec's other events (`agentSpawn`, `userPromptSubmit`, `postToolUse`, `stop`) do
+not run in `kirocrew chat` yet (#32799).
 
 The hook result is used as a **deny ceiling only**: `TOOL_DENY` rejects, and
 both `TOOL_ALLOW` and `TOOL_AUTO_APPROVE` still ask the human. This consumer

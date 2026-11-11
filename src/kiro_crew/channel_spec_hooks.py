@@ -5,10 +5,11 @@ opencode, strands), Crew fires them itself, and the projection sends every call 
 ``preToolUse`` hook covers to Crew as a permission request so the hook can refuse
 it first. :func:`kiro_crew.channel._stream_task` answers a member's permission
 requests, so it reads the spec once per turn (:func:`turn_spec`) and asks
-:func:`pre_tool_refusal` before any approval tier.
+:func:`pre_tool_refusal` before any approval tier. ``kirocrew chat`` asks it on
+each permission request too, before its y/n prompt (``cli_chat._spec_hook_refusal``).
 
 Only the spec's hooks gate here, through an empty store, so the Hooks page's hooks
-stay out of an agent channel. A spec hook blocks on exit 2 or a policy refusal to
+stay out of an agent channel and the CLI. A spec hook blocks on exit 2 or a policy refusal to
 run it, as on kiro-cli, and a spec that could not be read refuses every request.
 """
 
