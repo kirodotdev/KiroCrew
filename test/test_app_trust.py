@@ -24,11 +24,12 @@ from kiro_crew.apps.manager import (
     uninstall_app,
 )
 from kiro_crew.dashboard import token_auth_app_scope as scope
-from kiro_crew.dashboard.token_auth import validate_app_secret
+from kiro_crew.dashboard.token_auth import read_app_secret, validate_app_secret
 
 
 def _secret(home, name):
-    return (home / "apps" / name / ".app_secret").read_text(encoding="utf-8").strip()
+    del home  # the gateway's own record, never the app's folder
+    return read_app_secret(name)
 
 
 def _plant(home, name, secret="planted-secret", enabled=True):

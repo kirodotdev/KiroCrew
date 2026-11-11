@@ -114,6 +114,7 @@ def test_the_spelled_names_match_their_owners() -> None:
         members.DM_BINDINGS_DIR_NAME,
         protected_app_state.APP_GRANTS_KIND,
         protected_app_state.APP_DISABLED_KIND,
+        protected_app_state.APP_SECRETS_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,

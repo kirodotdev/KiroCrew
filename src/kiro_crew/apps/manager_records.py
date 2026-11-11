@@ -31,7 +31,11 @@ from kiro_crew.apps import credential_masks, protected_app_state
 from kiro_crew.apps.execution import APP_NAME_RE
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manifest import AppManifest, Permissions
-from kiro_crew.apps.point_grants import explicit_only_grant_families, point_grant_families
+from kiro_crew.apps.point_grants import (
+    explicit_only_grant_families,
+    grant_source,
+    point_grant_families,
+)
 from kiro_crew.apps.worker_auto_approve import WORKER_AUTO_APPROVE_GRANT_FAMILIES
 from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.atomic_write import atomic_write
@@ -736,9 +740,15 @@ def _approved_grants_stored(name: str) -> bool:
 
 
 #: The stored form of "approves what the manifest declares": an install from before
-#: approved sets existed, or an external registration that declared nothing yet.
+#: approved sets existed, or an external registration from before
+#: :data:`_AWAITING_MANIFEST_KEY`. The first read fixes it (:func:`_freeze_declared`).
 _APPROVE_DECLARED_KEY = "approveDeclared"
 _APPROVE_DECLARED_TEXT = json.dumps({_APPROVE_DECLARED_KEY: True}) + "\n"
+#: An external registration that sent no manifest: nothing is approved until the
+#: owner's registration route sends the first one, which approves what it declares.
+#: Never fixed from the app's own ``app.json``, which an agent can write.
+_AWAITING_MANIFEST_KEY = "awaitingManifest"
+_AWAITING_MANIFEST_TEXT = json.dumps({_AWAITING_MANIFEST_KEY: True}) + "\n"
 
 
 def _import_app_tree_grants() -> None:
@@ -832,18 +842,21 @@ def _import_app_tree_grants_locked() -> None:
             except (OSError, ValueError, AttributeError, RecursionError):
                 stored = True
             if stored is not True:
-                protected_app_state.write_grants_text(name, _APPROVE_DECLARED_TEXT)
+                protected_app_state.write_grants_text_locked(name, _APPROVE_DECLARED_TEXT)
                 continue
             grants = nothing
-        protected_app_state.write_grants_text(name, _approved_grants_text(grants))
+        protected_app_state.write_grants_text_locked(name, _approved_grants_text(grants))
     protected_app_state.mark_grants_imported()
 
 
 def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
     """Read *name*'s approved set from the protected store, failing closed.
 
-    ``None`` means the stored set approves what the manifest declares. A missing,
-    unreadable or unparsable set approves nothing.
+    Always a set with every family. A missing, unreadable or unparsable set approves
+    nothing. A set stored as "approve what is declared", or one written before a
+    family existed, is fixed once to what the manifest declares at this first read
+    (:func:`_freeze_declared`), so a later write to the agent-writable manifest
+    widens nothing.
     """
     nothing: dict[str, list[str]] = {family: [] for family in STAGED_GRANT_FAMILIES}
     try:
@@ -861,9 +874,58 @@ def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
         raw = json.loads(text)
     except json.JSONDecodeError:
         return nothing
-    if isinstance(raw, dict) and raw.get(_APPROVE_DECLARED_KEY) is True:
-        return None
-    return _parse_approved_grants(raw)
+    if isinstance(raw, dict) and raw.get(_AWAITING_MANIFEST_KEY) is True:
+        return nothing
+    parsed = (
+        None
+        if isinstance(raw, dict) and raw.get(_APPROVE_DECLARED_KEY) is True
+        else _parse_approved_grants(raw)
+    )
+    if parsed is not None and all(family in parsed for family in STAGED_GRANT_FAMILIES):
+        return parsed
+    return _freeze_declared(name, text, parsed)
+
+
+def _freeze_declared(
+    name: str, text: str, parsed: dict[str, list[str]] | None
+) -> dict[str, list[str]]:
+    """Store, once, what a set that defers to the manifest approves right now.
+
+    *parsed* is ``None`` for "approve what is declared" (an install from before
+    approved sets, carried over by the import); otherwise it lacks the families it
+    was written before. Each such family takes what the manifest declares at this
+    read, which is what it granted until now, and the result is stored, so a later
+    write to the agent-writable ``app.json`` is held back like any other widening.
+    Built-ins never get here: they store their shipped set at every start.
+
+    Nothing is stored inside a sandbox, during an update's tree swap, without a
+    readable manifest, or when the stored set changed since *text* was read; each
+    of those reads approves only what the set itself records.
+    """
+    base = dict(parsed or {})
+    recorded = {family: list(base.get(family, ())) for family in STAGED_GRANT_FAMILIES}
+    if member_records._inside_sandbox() or _tree_swap_state(name)[0]:
+        return recorded
+    manifest = get_app_manifest(name)
+    if manifest is None:
+        return recorded
+    declared = _declared_grant_entries(grant_source(manifest))
+    frozen = {
+        family: base[family] if family in base else declared[family]
+        for family in STAGED_GRANT_FAMILIES
+    }
+    try:
+        # The app's write lock, which every write of its set holds (``write_grants_text``),
+        # in any thread or process: nothing an owner stores, and no uninstall's
+        # removal, can land between this comparison and this write.
+        with protected_app_state.grants_write_lock(name):
+            if protected_app_state.read_grants_text(name) != text:
+                return recorded
+            protected_app_state.write_grants_text_locked(name, _approved_grants_text(frozen))
+    except (OSError, ValueError):
+        logger.warning("Could not store an app's approved set; it approves what it records")
+        return recorded
+    return frozen
 
 
 def _effective_approved_grants(name: str, meta: InstalledApp | None) -> dict[str, list[str]] | None:
@@ -901,9 +963,15 @@ def _write_approved_grants(name: str, grants: dict[str, list[str]] | None) -> No
 
 
 def _write_approve_declared(name: str) -> None:
-    """Store "approves what the manifest declares" for *name*."""
+    """Store "approves what the manifest declares" for *name* (the pre-set form)."""
     _import_app_tree_grants()
     protected_app_state.write_grants_text(name, _APPROVE_DECLARED_TEXT)
+
+
+def _write_awaiting_manifest(name: str) -> None:
+    """Store that *name* was registered without a manifest (:data:`_AWAITING_MANIFEST_KEY`)."""
+    _import_app_tree_grants()
+    protected_app_state.write_grants_text(name, _AWAITING_MANIFEST_TEXT)
 
 
 def _approved_grants_snapshot(name: str) -> str | None:

@@ -2536,7 +2536,8 @@ change to the default lesson store, never its text, and no read grant with it
 
 **An app backend subscribes the way its page does.** The gateway hands a backend
 it spawns `KIROCREW_GATEWAY_ORIGIN` and `KIROCREW_PROXY_SECRET`, which is the
-app's `.app_secret`; `POST /api/apps/<name>/token` with that value as
+app's secret (kept in `member-records/app-secrets/<name>`, masked in every sandbox,
+never in the app's folder; `token_auth.read_app_secret`); `POST /api/apps/<name>/token` with that value as
 `X-App-Secret` returns the same app-scoped token the page uses (only while the
 owner-enable marker the gateway sealed is present, see dashboard-token-auth), and
 `/api/ws`
@@ -2875,13 +2876,13 @@ the one-time import first, so the import's lock is the only lock needed.
   the two records that stops halfway, puts it back (uninstall holds `app_record_lock` throughout, so a
   concurrent enable or disable waits and its record is never rolled back)
   (`protected_app_state.snapshot_app` / `restore_app`). A gateway-shipped builtin
-  is stored as `approveDeclared` with its first record (`register_builtin_apps`):
-  it changes with the gateway, not through an update.
+  stores what its SHIPPED manifest declares at every start (`register_builtin_apps`):
+  it changes with the gateway, not through an update, and the `app.json` copy in its
+  agent-writable folder grants nothing.
 - **Import and backfill.** The first read in the gateway carries every app's
   set over once (`_import_app_tree_grants`): an `apps/<name>/approved-grants.json`
   from an older build is copied, a record that never stored a set
-  (`approvedGrantsStored` absent) is stored as `{"approveDeclared": true}` and keeps
-  approving what its manifest declares, so no app loses access on upgrade, and a
+  (`approvedGrantsStored` absent) is stored as `{"approveDeclared": true}`, and a
   record that stored a set and lost the file, or whose file is unreadable or not a
   mapping, is stored with an empty list for every family (a family left out would
   approve what the manifest declares). The marker
@@ -2895,8 +2896,14 @@ the one-time import first, so the import's lock is the only lock needed.
   its default-on promotion, which `backfill_default_on_builtins` turns on. After it, the store alone decides: a missing record approves nothing, and
   neither a file the app writes in its tree nor `approvedGrantsStored` in
   `installed.json` can widen a set. The app row shows an empty `approvedGrants` the
-  owner can approve again. A register with no manifest yet stores
-  `approveDeclared`.
+  owner can approve again. A set stored as `approveDeclared`, and one written before
+  a grant family existed, is fixed at its first gateway read to what the manifest
+  declares then (`_freeze_declared`), which is what it granted until then, so no app
+  loses access on upgrade and a later write to `app.json` is held back like any
+  widening. A register with no manifest yet stores `{"awaitingManifest": true}`:
+  nothing is approved until the owner's registration route sends the first
+  manifest, which approves what it declares; a manifest written into the app's
+  folder meanwhile approves nothing.
 - **Approval.** The detail page lists the held-back entries under "API access"
   and "WebSocket events" (the Permissions card's labels) with a plain-words line
   for each group, and tags them "not approved" on the Permissions card. Its

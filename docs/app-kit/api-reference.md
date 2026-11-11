@@ -905,8 +905,10 @@ The `Returns` column describes the response shape. It is not a TypeScript type:
 no TypeScript client ships, so `SlotInfo`, `GatewayStatus`, `SystemInfo` and
 their siblings are response-shape names rather than importable types.
 
-When `app_name` is set and no explicit auth is provided, the Python client reads
-the app secret from `~/.kiro/crew/apps/{name}/.app_secret`. For a remote Gateway,
+When `app_name` is set and no explicit auth is provided, the Python client uses
+the app secret the Gateway gave its backend at spawn (`KIROCREW_PROXY_SECRET`, when
+`KIROCREW_APP_NAME` names the same app). Only with a Gateway older than that does it
+fall back to `~/.kiro/crew/apps/{name}/.app_secret`. For a remote Gateway,
 call `await client.authenticate()` before the first request; the context manager
 does not exchange the secret automatically. The same exchange refreshes a token
 after a 401/403 response.
@@ -1794,9 +1796,10 @@ KiroCrewClient(
 )
 ```
 
-With `app_name` set and no `token` or `on_auth_expired`, the client reads the
-app secret from `$KIROCREW_HOME/apps/{name}/.app_secret` (`KIROCREW_HOME`
-defaults to `~/.kiro/crew`).
+With `app_name` set and no `token` or `on_auth_expired`, the client takes the
+app secret from `KIROCREW_PROXY_SECRET` when `KIROCREW_APP_NAME` is that app (a
+backend the Gateway started). An older Gateway kept it at
+`$KIROCREW_HOME/apps/{name}/.app_secret`, which the client reads only as a fallback.
 
 For a remote Gateway, pass `token=...` or call `await client.authenticate()`
 after entering the context. Local loopback requests need no token. Setting
@@ -2307,9 +2310,13 @@ Security and lifecycle:
   `KIROCREW_SPAWNED` and this spawn's `KIROCREW_SPAWN_INSTANCE`. A child process
   your backend starts must inherit both and stay in the backend's session group,
   or it is not reaped.
-- The per-app secret lives on disk at `<KIROCREW_HOME>/apps/<name>/.app_secret`, written
-  owner-only `0600` (owner-only DACL on Windows) by the gateway.
-- If no `.app_secret` exists, the gateway injects neither the secret nor anything derived from
+- `KIROCREW_PROXY_SECRET` is the backend's only channel for its secret. The gateway keeps
+  the secret where no sandbox can read it, the backend's own included, and never in the
+  app's folder. An app installed before this keeps working once its secret is handed over
+  again: the old `.app_secret` file is never accepted, the next backend start stores a NEW
+  secret and passes it here, and a self-managed app gets one in the response of its next
+  registration. A backend left running across the upgrade has no secret until it restarts.
+- If the app has no secret, the gateway injects neither the secret nor anything derived from
   it (including the proof); a secret-less backend is otherwise unchanged.
 - `KIROCREW_GATEWAY_ORIGIN` is fail-closed: it is present only when the gateway has real
   evidence of the port it bound. A gateway that has not exported a valid `KIROCREW_BOUND_PORT`
@@ -2322,7 +2329,7 @@ Security and lifecycle:
   origin can be stale. A backend that keeps a long-lived callback base should treat
   persistent push failures as a stale origin and restart to pick up the current one.
 - The proof is a SPAWN-TIME attestation, not a liveness or freshness signal: it says the
-  origin value in your environment was planted by a gateway holding your `.app_secret`
+  origin value in your environment was planted by a gateway holding your app secret
   when your process started. Because the secret persists across gateway generations, a
   stale origin (the adopted case above) still carries a valid proof — verifying the proof
   tells you the origin was not planted by a secret-less spawner, and nothing about whether

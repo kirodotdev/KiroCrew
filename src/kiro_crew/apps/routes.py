@@ -20,6 +20,7 @@ import re
 import stat
 import sys
 import sys as _sys
+import threading
 import time
 from email.utils import formatdate
 from functools import partial
@@ -380,6 +381,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROXY_STRIP_QUERY_PARAMS,
         _PROXY_TIMEOUT,
         _app_secret_cache,
+        _app_secret_generation,
+        _app_secret_lock,
         _end_relay_midbody,
         _forwarded_query,
         _get_app_secret,
