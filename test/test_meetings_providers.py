@@ -1063,6 +1063,58 @@ class TestPinnedResolver:
         resolver.pin(self._target(host="example.test."))
         assert await resolver.resolve("example.test", 443, family=cal.socket.AF_UNSPEC)
 
+    @pytest.mark.asyncio
+    async def test_resolves_on_aiohttp_39_without_resolve_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """setup.cfg allows aiohttp 3.9, which has no `aiohttp.abc.ResolveResult`."""
+        import importlib.util
+        import sys
+
+        import aiohttp.abc
+
+        monkeypatch.delattr(aiohttp.abc, "ResolveResult", raising=False)
+        name = "_calendar_on_aiohttp_39"
+        spec = importlib.util.spec_from_file_location(name, cal.__file__)
+        module = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, name, module)
+        load_error = None
+        try:
+            spec.loader.exec_module(module)
+        except ImportError as exc:
+            load_error = exc
+        assert load_error is None, f"calendar provider does not load on aiohttp 3.9: {load_error}"
+
+        resolver = module._PinnedResolver()
+        resolver.pin(
+            module.VettedTarget(
+                url="https://example.test:443/cal.ics",
+                host="example.test",
+                port=443,
+                addresses=("93.184.216.34", "2606:4700::1111"),
+            )
+        )
+        results = await resolver.resolve("example.test", 443, family=cal.socket.AF_UNSPEC)
+        flags = cal.socket.AI_NUMERICHOST | cal.socket.AI_NUMERICSERV
+        assert results == [
+            {
+                "hostname": "example.test",
+                "host": "93.184.216.34",
+                "port": 443,
+                "family": cal.socket.AF_INET,
+                "proto": cal.socket.IPPROTO_TCP,
+                "flags": flags,
+            },
+            {
+                "hostname": "example.test",
+                "host": "2606:4700::1111",
+                "port": 443,
+                "family": cal.socket.AF_INET6,
+                "proto": cal.socket.IPPROTO_TCP,
+                "flags": flags,
+            },
+        ]
+
 
 class TestCertificateVerificationStaysOn:
     """Pinning must not have been bought by weakening TLS.
