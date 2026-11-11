@@ -9647,7 +9647,8 @@
       "trust_this_command_channel": "<mono/> @{{role}}-এর জন্য বিশ্বাস করো — {{productName}} রিস্টার্ট পর্যন্ত",
       "trust_this_command_hour": "<mono/> এক ঘণ্টার জন্য বিশ্বাস করো ({{time}} পর্যন্ত)",
       "trust_this_command_session": "<mono/> এই সেশনের জন্য বিশ্বাস করো",
-      "trust_this_command_today": "<mono/> মধ্যরাত পর্যন্ত বিশ্বাস করো ({{time}})"
+      "trust_this_command_today": "<mono/> মধ্যরাত পর্যন্ত বিশ্বাস করো ({{time}})",
+      "trust_unavailable": "এই অনুরোধের জন্য বিশ্বাস উপলব্ধ নয়। একবারের জন্য অনুমতি দাও বা প্রত্যাখ্যান করো।"
     },
     "tunnelStatus": {
       "connected": "সংযুক্ত",

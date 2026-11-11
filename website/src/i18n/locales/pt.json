@@ -9873,7 +9873,8 @@
       "trust_this_command_channel": "Confiar em <mono/> para @{{role}} — até {{productName}} reiniciar",
       "trust_this_command_hour": "Confiar em <mono/> por uma hora (até {{time}})",
       "trust_this_command_session": "Confiar em <mono/> nesta sessão",
-      "trust_this_command_today": "Confiar em <mono/> até a meia-noite ({{time}})"
+      "trust_this_command_today": "Confiar em <mono/> até a meia-noite ({{time}})",
+      "trust_unavailable": "Confiar não está disponível para esta solicitação. Permita uma vez ou rejeite."
     },
     "tunnelStatus": {
       "connected": "Conectado",

@@ -10099,7 +10099,8 @@
       "trust_this_command_channel": "Доверять <mono/> для @{{role}} — до перезапуска {{productName}}",
       "trust_this_command_hour": "Доверять <mono/> в течение часа (до {{time}})",
       "trust_this_command_session": "Доверять <mono/> в этом сеансе",
-      "trust_this_command_today": "Доверять <mono/> до полуночи ({{time}})"
+      "trust_this_command_today": "Доверять <mono/> до полуночи ({{time}})",
+      "trust_unavailable": "Доверие недоступно для этого запроса. Разреши его один раз или отклони."
     },
     "tunnelStatus": {
       "connected": "Подключено",

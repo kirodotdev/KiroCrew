@@ -29,7 +29,7 @@ import { useComposerSpellcheck } from '../hooks/useComposerSpellcheck'
 import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
 import { useComposerArrowKeyHistory } from '../hooks/useComposerArrowKeyHistory'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
-import TrustDropdown from './TrustDropdown'
+import TrustDropdown, { TrustUnavailable } from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePressActivation } from '../hooks/usePressActivation'
 import { isTouchDevice } from '../utils/isTouchDevice'
@@ -1184,9 +1184,9 @@ function ChatInput({
                   <div ref={approvalActionsRef} data-approval-actions className="flex gap-1.5 flex-wrap items-center">
                       {approvalDenyRule ? <DenyOverrideDropdown disabled={approvalSubmitting} className={approvalBtnClass} family={approvalDenyFamily} onAction={(action) => { handleApprovalAction(action) }} /> : <>
                       <button disabled={approvalSubmitting} className={approvalBtnClass} onClick={() => handleApprovalAction('approved')}><CheckCircle size={12} className="shrink-0" />{i18nT('components.chatInput.allow_once')}</button>
-                      {/* One dropdown carries every standing grant (trust-reads is a tier in it):
-                          `max-two-buttons-per-row` grandfathers Allow once + Trust + Reject; no fourth. */}
-                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) && (
+                      {/* One dropdown carries every standing grant (trust-reads is a tier in it), and a card with none
+                          keeps its place disabled: `max-two-buttons-per-row` grandfathers Allow once + Trust + Reject; no fourth. */}
+                      {approvalTrustGrantable && (approvalTrustCommandGrantable || approvalTrustAllGrantable || approvalIsReadOnly) ? (
                         <TrustDropdown
                             fullCommand={approvalFullCommand}
                             baseCommand={approvalBaseCommand}
@@ -1199,7 +1199,7 @@ function ChatInput({
                             timedGrants
                             onAction={(action, pattern, ttlSeconds) => { handleApprovalAction(action, pattern, ttlSeconds) }}
                         />
-                      )}
+                      ) : <TrustUnavailable className={approvalBtnClass} />}
                       </>}
                       {/* Keyed per card row: a typed reason never reaches another card. */}
                       <RejectDropdown
