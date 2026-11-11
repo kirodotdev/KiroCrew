@@ -7,6 +7,7 @@ The dashboard is a React SPA at `http://localhost:5476` (or your configured URL)
 - **Local**: open the dashboard URL after authenticating through a dashboard link; loopback requests are not exempt from token authentication.
 - **SSH tunnel**: `ssh -NL 5476:localhost:5476 <host>` then open localhost:5476.
 - **Remote**: type `!dashboard` in Slack to get an HMAC-SHA256-signed, IP-pinned, single-use link. The link is valid for 5 minutes and establishes a session cookie for up to 20 hours.
+- **Link expiry**: a `?token=` link is accepted for 5 minutes. A browser that already holds a valid session cookie stays signed in when it opens an older link, because the cookie is the current credential. A browser with no session gets the session-expired message instead; run `kirocrew token` for a fresh link.
 - **Custom domain**: after `kirocrew setup`, optionally use `http://kirocrew.localhost:5476`.
 - **Custom URL**: set `dashboard.url` in config.json for non-localhost access.
 
