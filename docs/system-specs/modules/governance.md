@@ -1488,7 +1488,10 @@ the rule. Its sibling `availableAgents` travels as a `deny` with the listed name
 `exclude`, which only narrows and so travels whatever the ceiling says.
 
 The projection is built per session, so the translated merge asks
-`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`. The ceiling
+`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`, and so does
+the spec's own sub-agent allow (`use_subagent` in `allowedTools`, a `subagent` allow in its
+`permissions`, `kas_agents._authored_allow_gate`); the spec's other authored allows still
+ask `may_skip_gate_now`. The ceiling
 and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
 resolve for one of that session's calls count
 (`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
