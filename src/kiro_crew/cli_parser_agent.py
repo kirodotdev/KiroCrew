@@ -329,6 +329,47 @@ Examples:
         help='Move the job to this Schedule-page folder, by name or id; "" moves it '
         "out of its folder. A missing name is created through the running gateway.",
     )
+    cron_update.add_argument(
+        "--model",
+        dest="model",
+        default=None,
+        help='New model id for the agent wake; "" clears it, back to the default model',
+    )
+    cron_update.add_argument(
+        "--timezone",
+        dest="timezone",
+        default=None,
+        help="New IANA timezone the job's wall clock is read in (e.g. America/New_York, "
+        "or 'local'); \"\" resets it to the configured timezone, else 'local'",
+    )
+    cron_update.add_argument(
+        "--persistent-session",
+        dest="persistent_session",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Resume one long-lived session across wakes, or start a fresh one each wake",
+    )
+    cron_update.add_argument(
+        "--minimal-context",
+        dest="minimal_context",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Wake with a ~200-token context instead of the full memory/lessons/steering load",
+    )
+    cron_update.add_argument(
+        "--hide-in-chat",
+        dest="hide_in_chat",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Keep the job's wakes out of the chat sidebar, or show them again",
+    )
+    cron_update.add_argument(
+        "--silent",
+        dest="silent",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Suppress auto-delivery (the agent controls notifications), or deliver again",
+    )
     cron_rm = cron_sub.add_parser("remove", help="Remove a cron job")
     cron_rm_target = cron_rm.add_mutually_exclusive_group(required=True)
     cron_rm_target.add_argument("job_id", nargs="?", default=None, help="Job ID to remove")

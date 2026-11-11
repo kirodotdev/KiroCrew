@@ -101,6 +101,25 @@ def _cron_add_bounds(field_name: str) -> tuple[int, int]:
     return int(spec.min_val), int(spec.max_val)
 
 
+def _cron_model(model: str) -> str:
+    """A ``--model`` value as it is stored, or ``ValueError`` naming the format rule.
+
+    ``""`` stays ``""`` (no override). The "auto" inherit sentinel resolves to no
+    pinned provider id and is stored as unset, as the dashboard and ``cron_add`` do.
+    """
+    if not model:
+        return ""
+    if len(model) > MAX_SHORT_STRING:
+        raise ValueError(f"invalid model format (expected at most {MAX_SHORT_STRING} characters)")
+    if not _MODEL_NAME_RE.match(model):
+        # Read here, not at module level: the facade mirrors every module-level
+        # import of its owners, and its import inventory is frozen.
+        from kiro_crew.validation import MODEL_NAME_HINT
+
+        raise ValueError(f"invalid model format ({MODEL_NAME_HINT})")
+    return "" if model_registry.to_provider_id(model, "claude_code") == "" else model
+
+
 def _cron_update_not_found(job_id: str) -> NoReturn:
     """Audit a ``cron update`` of an unknown id, report it on stderr, exit 1."""
     sel().log_api_access(
@@ -359,19 +378,10 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     # ── Fields validated up front so an invalid value never strands a job ──
     if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
         _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
-    if model:
-        if len(model) > MAX_SHORT_STRING:
-            _cron_add_fail(f"invalid model format (expected at most {MAX_SHORT_STRING} characters)")
-        if not _MODEL_NAME_RE.match(model):
-            # Read here, not at module level: the facade mirrors every module-level
-            # import of its owners, and its import inventory is frozen.
-            from kiro_crew.validation import MODEL_NAME_HINT
-
-            _cron_add_fail(f"invalid model format ({MODEL_NAME_HINT})")
-        # Same normalisation as the dashboard and cron_add: the "auto" inherit
-        # sentinel resolves to no pinned provider id and is stored as unset.
-        if model_registry.to_provider_id(model, "claude_code") == "":
-            model = ""
+    try:
+        model = _cron_model(model)
+    except ValueError as e:
+        _cron_add_fail(str(e))
     if script:
         kind = "script"
     elif command:
@@ -771,6 +781,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             "timeout_secs",
             "auto_pause_after_failures",
             "alert_after_failures",
+            "persistent_session",
+            "minimal_context",
+            "hide_in_chat",
+            "silent",
         ):
             val = getattr(args, field, None)
             if val is not None:
@@ -800,6 +814,15 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             kwargs["approval_mode"] = "" if args.approval_mode == "default" else args.approval_mode
         if getattr(args, "project_path", None) is not None:
             kwargs["project_path"] = args.project_path.strip()
+        if getattr(args, "model", None) is not None:
+            try:
+                kwargs["model"] = _cron_model(args.model.strip())
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        # The store validates the zone; "" resets it to the default, as on cron_update.
+        if getattr(args, "timezone", None) is not None:
+            kwargs["timezone"] = args.timezone.strip()
         # ``--every 0`` and a blank ``--cron`` name no schedule, and the store
         # treats an empty schedule value as "unchanged". Say so instead of
         # reporting an update that did not happen; the other fields still apply.
