@@ -400,6 +400,7 @@ class FeishuTransport(MessagingTransport):
                     operation="feishu_transport.receive",
                     outcome="denied_group_not_allowed",
                     source="feishu",
+                    resources=f"chat_id={inbound.chat_id}",
                 )
                 return
             # Addressed-to-the-bot gate (fail closed). An app that holds a
