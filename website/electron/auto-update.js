@@ -50,6 +50,7 @@ const {
 } = require("./bundle-location");
 const { createUpdateReporter } = require("./runtime/update/state-reporter");
 const { createManagedLane } = require("./runtime/update/managed-lane");
+const { runStartupApply: applyArmedUpdateAtStart } = require("./runtime/update/startup-apply");
 const { createFeedLane } = require("./runtime/update/feed-lane");
 
 // The Linux package formats this app ships. A format is BOTH the feed
@@ -1087,6 +1088,13 @@ function initAutoUpdate(deps) {
     // caller (ipc-registrar.js) to a variable the renderer updates via
     // update:notify-policy-governed once the gateway status is known.
     isPolicyGoverned = () => false,
+    // The managed lane's armed-update record (runtime/update/update-arm.js), the
+    // client for the gateway's own record (gateway-arm.js) and a start-time
+    // apply failure to show once. All optional: absent, the lane arms in memory
+    // and tells no gateway.
+    updateArm = undefined,
+    gatewayArm = null,
+    startupApplyError = null,
   } = deps;
 
   // Linux install shape. Resolved once, and BEFORE getInfo() is defined: the
@@ -1170,6 +1178,9 @@ function initAutoUpdate(deps) {
       Notification,
       osPlatform,
       log,
+      ...(updateArm ? { updateArm } : {}),
+      gatewayArm,
+      startupApplyError,
     });
   }
   // Updating requires an installed, signed bundle (macOS code signature
@@ -1293,6 +1304,21 @@ function initAutoUpdate(deps) {
   });
 }
 
+/**
+ * Finish an armed update at app start, in Electron main, before the gateway
+ * spawns and before any window opens (D-c). Only an install whose
+ * EXTERNALLY-MANAGED marker names an updateCommand can have one.
+ */
+function runStartupApply({ app, store, resourcesPath = process.resourcesPath, log, managed = undefined }) {
+  return applyArmedUpdateAtStart({
+    app,
+    store,
+    managed: managed !== undefined ? managed : readExternallyManaged({ resourcesPath }),
+    managedPath,
+    log,
+  });
+}
+
 module.exports = {
   initAutoUpdate,
   channelForFlavor,
@@ -1307,6 +1333,7 @@ module.exports = {
   resolveLinuxInstall,
   resolveMacDistArch,
   readExternallyManaged,
+  runStartupApply,
   canRewriteMarker,
   DEFAULT_FEED_BASE,
   DOWNLOAD_BASE,

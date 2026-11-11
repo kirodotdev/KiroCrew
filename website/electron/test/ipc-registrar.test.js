@@ -68,6 +68,7 @@ const UPDATE_HANDLES = [
   "update:download",
   "update:get-info",
   "update:install",
+  "update:relaunch",
   "update:set-auto-download",
   "update:set-channel",
 ].sort();
@@ -1542,7 +1543,7 @@ test("bind and unregister remain owned by the dedicated hotkey helper", () => {
   assert.equal(h.hotkey.state.current, "");
 });
 
-test("registerUpdater owns six handlers and preserves lazy gateway hooks", async () => {
+test("registerUpdater owns seven handlers and preserves lazy gateway hooks", async () => {
   const updater = updaterHandle({ disabled: "test-disabled" });
   let initCalls = 0;
   let deps;

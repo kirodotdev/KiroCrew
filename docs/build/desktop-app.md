@@ -1804,8 +1804,8 @@ ones the packager never reads). The body is optional JSON:
 ```
 
 `relaunchPath` is for an install whose launch path changes with each version,
-such as a version-pinned payload behind a stable launch link. After a
-successful apply the app normally calls Electron's `app.relaunch()`, which
+such as a version-pinned payload behind a stable launch link. When the app
+relaunches after an apply (the start-time apply, or Restart now) it normally calls Electron's `app.relaunch()`, which
 re-runs the path the app was started as. A macOS app opened from the Dock was
 started as its version's own payload path, so it came back on the version the
 apply had just replaced, and the dashboard kept offering Restart to update
@@ -1839,13 +1839,45 @@ updater off, no metadata and nothing to run. Packagers that want the managed
 commands honored must install the resources directory root-owned.
 
 On the managed path the app treats a `checkCommand` that exits 0 and prints a
-version as an available update. With the app's update switch on, it then runs
-`updateCommand` on the next quit. Windows shutdown, restart and sign-out end the
-app without a quit, so on Windows the app shows a "Kiro Crew update ready"
-notice at session end instead, telling the user to quit from the tray to
-install. It never runs `updateCommand` then: Windows gives the app a few seconds,
-and an apply cut short can leave a half-installed app. The notice appears only
-while the update switch is still on, and not once an install has started.
+version as an available update. **`updateCommand` runs only on the user's quit,
+never while the app runs** (the rulings are in
+[2026-11-10-updates-never-restart-a-running-gateway.md](../decisions/2026-11-10-updates-never-restart-a-running-gateway.md)):
+
+- **A click arms.** `install()` (the Install button, the "Restart to update"
+  pill) records the armed version in the app's store (`update-arm.js`), tells a
+  running gateway with `POST /api/update {"when": "next-start"}` when one is up
+  (best effort, `gateway-arm.js`), registers the quit handler and answers
+  `downloaded` with `armed: true`. It does not stop the gateway, run
+  `updateCommand` or relaunch. An update armed from the dashboard instead (the
+  gateway's own `update_armed_version`) is adopted into the same record while an
+  update is on offer, because the gateway is gone by the time the apply runs.
+- **The quit applies.** With an armed update (or a discovered one while the
+  update switch is on) the `before-quit` handler holds the quit, stops the
+  gateway, waits until it has fully stopped, runs `updateCommand`, and then
+  EXITS without relaunching: the user's next start is the new version. A
+  governed (edition) install is no exception; quit is the sanctioned apply
+  point. If a gateway from this bundle is still running, nothing is applied and
+  the arm stays.
+- **An apply the quit left behind is finished at the next app start.** If the
+  quit-time apply was interrupted or failed, the arm stays. The next start runs
+  it in Electron main (`startup-apply.js`) before the gateway spawns and before
+  any window opens, clears the arm, and relaunches once into the new bundle. If
+  that apply fails too, the arm is cleared, the installed version starts and
+  the error is shown as an install error. The gateway the app hosts
+  (`KIROCREW_DESKTOP_GATEWAY=1`) skips its own boot-time apply, so exactly one
+  side applies and the app and gateway never run different versions. A
+  standalone gateway applies at its next start.
+- **Restart now is a plain relaunch.** `updateAPI.relaunch()` (the
+  `update:relaunch` IPC, local dashboard only) quits and relaunches with no
+  `updateCommand` of its own; an armed update is applied by the quit it
+  triggers, and the relaunch uses `relaunchPath` as above.
+
+Windows shutdown, restart and sign-out end the app without a quit, so on Windows
+the app shows a "Kiro Crew update ready" notice at session end instead, telling
+the user to quit from the tray to install. It never runs `updateCommand` then:
+Windows gives the app a few seconds, and an apply cut short can leave a
+half-installed app. The notice appears only while a quit would apply an update,
+and not once an install has started.
 
 **A package manager's own update pause holds only if the check command honours
 it**: on this managed lane while the app's update switch is on, and on the
@@ -1853,7 +1885,7 @@ gateway's policy `check_command` (below) while `auto_update` is on or a policy
 floor forces the update. Neither lane compares versions after an apply: if the
 check still prints a version and the apply command exits 0 having changed
 nothing, the gateway restarts and checks again at boot, and the app runs
-`updateCommand` and relaunches on every quit, so both loop
+`updateCommand` on every quit, so both loop
 ([#15798](https://github.com/kirodotdev/KiroCrew/issues/15798)).
 
 The commands run with a **constructed environment**, not the app's own. Only an explicit pass-through set reaches them — `USER`, `LOGNAME`, `TZ`, `TMPDIR`, the `LANG`/`LC_*` locale vars, and the proxy vars — plus a narrowed system-only `PATH` and `cwd=/`. `HOME` is deliberately excluded: Python derives its user-site directory from it, so passing it through would let a planted `sitecustomize.py` run on every `python` start. Everything else is absent by construction, because `shell: true` means a shell interprets the command and a shell reads its environment as code: the loader family (`LD_*`/`DYLD_*`), the interpreter family (`PYTHON*`, `NODE_OPTIONS`), the startup files (`BASH_ENV`, `ENV`), the tracing pair (`SHELLOPTS` plus a command-substituting `PS4`), word splitting (`IFS`), and exported shell functions (`BASH_FUNC_*`, which shadow a command name outright). A packager whose updater needs any other variable must set it inside its own command rather than relying on inheritance.
