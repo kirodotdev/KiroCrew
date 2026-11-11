@@ -199,10 +199,14 @@ export function principalName(p: PublicPrincipal | null | undefined): string {
 export function principalInitials(p: PublicPrincipal | null | undefined): string {
   const name = principalName(p)
   if (!name) return '?'
-  const parts = name.split(/[\s@._-]+/).filter(Boolean)
-  const first = Array.from(parts[0] ?? '')[0] ?? '?'
-  const second = parts.length > 1 ? Array.from(parts[1])[0] ?? '' : ''
-  return (first + second).toUpperCase()
+  // A name with spaces keeps its words; an email shows only the part before
+  // the @, so the domain's first letter never stands in for a surname.
+  const label = /\s/.test(name) ? name : name.split('@')[0] || name
+  const parts = label.split(/[\s@._-]+/).filter(Boolean)
+  const first = Array.from(parts[0] ?? '')
+  // One piece (a bare handle) gives its first two letters, not one.
+  const letters = parts.length > 1 ? [first[0], Array.from(parts[1])[0]] : first.slice(0, 2)
+  return letters.join('').toUpperCase() || '?'
 }
 
 /** Read a message row's server-stamped author, or `null` when it carries none. */
