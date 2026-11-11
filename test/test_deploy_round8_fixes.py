@@ -64,7 +64,7 @@ class _NonRestrictedState:
     _slots: dict = {}
 
 
-class _FakeReq:
+class _FakeReq(dict):
     def __init__(self, *, match_info=None):
         self.headers = {"X-Session-Key": "dashboard:ui"}
         self.app = {"state": _NonRestrictedState()}
