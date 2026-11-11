@@ -337,7 +337,11 @@ the one or two commits this repo allows, opening or updating the PR, then pollin
 and the review bots and fixing what they find. An agent that loads it follows the
 same route a maintainer would, which is why the process holds regardless of who or
 what wrote the code. If you are contributing with an agent, point it at that skill
-instead of describing the steps yourself.
+instead of describing the steps yourself. From a fork, `origin` is your fork and the
+skill reads the base from `origin/main`, so bring your fork's `main` level with
+upstream before each run (`gh repo sync <your-username>/KiroCrew`, then
+`git fetch origin`); otherwise its diff, review briefs and squash all measure
+against your fork's older `main`.
 
 One thing the GitHub UI will get wrong for you: if your branch falls behind the
 base while the PR is open, **rebase it, do not merge**. Plain-clicking
