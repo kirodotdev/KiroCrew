@@ -445,7 +445,14 @@ def _normalize_column(
                 # refused as an invalid payload rather than raised as a 500.
                 return None
     if "include_untagged" in raw:
-        cleaned["include_untagged"] = bool(raw.get("include_untagged"))
+        # A spelled "false"/"0"/"no"/"off" means False, as in the folder
+        # route; any other value keeps the truthiness it was always saved with.
+        # Imported here: this module is facade-mirrored and takes no new
+        # top-level name.
+        from kiro_crew.config.fields import _coerce_bool
+
+        include = raw.get("include_untagged")
+        cleaned["include_untagged"] = _coerce_bool(include, bool(include))
     if "source" in raw:
         source = str(raw.get("source") or "tags")
         if source not in _VALID_SOURCES:
