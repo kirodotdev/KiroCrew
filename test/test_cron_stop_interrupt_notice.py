@@ -154,6 +154,87 @@ async def test_the_notice_says_when_the_job_runs_again(schedule: CronSchedule, t
     assert gw._deliver_failure_alert.await_args.kwargs["plain"].endswith(f"{_FINISHED_NOTE}.{tail}")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paused_during_run", [False, True], ids=["paused-first", "paused-mid-run"])
+async def test_a_paused_job_is_not_promised_a_next_run(
+    tmp_path, monkeypatch, paused_during_run: bool
+) -> None:
+    """A paused recurring job can still be run by hand, but the scheduler skips it,
+    so the notice for its cut run says it waits for a resume instead of promising
+    its next scheduled time. A pause stored while the run is going counts too."""
+    gw = _make_gw()
+    gw.slack.post_message = AsyncMock()
+    gw.dashboard_state.last_notification_persist = None
+    monkeypatch.setattr("kiro_crew.slack.gateway.data_home", lambda: tmp_path)
+    with patch("kiro_crew.slack.gateway.sel"):
+        await gw._init_cron(arm=False)
+    svc = gw.cron_svc
+    assert isinstance(svc, CronService)
+    started = asyncio.Event()
+    svc._on_job = _held_run(started)
+    job = await svc.add_job_async("nightly-sync", "hi", cron_expr="0 3 * * *", channel="C123")
+    if not paused_during_run:
+        assert await svc.enable_job_async(job.id, False)
+
+    assert _trigger_run(svc, job.id)
+    await await_until(started, what="the run's callback")
+    if paused_during_run:
+        assert await svc.enable_job_async(job.id, False)
+    await finished(svc.stop(), what="stop()")
+
+    _, _, body = gw.dashboard_state.notify.call_args.args
+    assert body == (
+        f"⏹ {_FINISHED_NOTE}. The job is paused, so it does not run again until you"
+        " resume it in Schedule."
+    )
+    stored = svc.get_job(job.id)
+    assert stored is not None and not stored.enabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "paused_at_start", [False, True], ids=["paused-elsewhere", "resumed-elsewhere"]
+)
+async def test_a_pause_or_resume_from_another_process_is_told_right(
+    tmp_path, monkeypatch, paused_at_start: bool
+) -> None:
+    """A pause or resume another process writes to the store during the run (the
+    CLI or the cron_pause MCP tool, each with its own CronService) decides the
+    notice: the merge's reload replaces the run's own job object, so its stale
+    ``enabled`` must not."""
+    gw = _make_gw()
+    gw.slack.post_message = AsyncMock()
+    gw.dashboard_state.last_notification_persist = None
+    monkeypatch.setattr("kiro_crew.slack.gateway.data_home", lambda: tmp_path)
+    with patch("kiro_crew.slack.gateway.sel"):
+        await gw._init_cron(arm=False)
+    svc = gw.cron_svc
+    assert isinstance(svc, CronService)
+    started = asyncio.Event()
+    svc._on_job = _held_run(started)
+    job = await svc.add_job_async("nightly-sync", "hi", cron_expr="0 3 * * *", channel="C123")
+    if paused_at_start:
+        assert await svc.enable_job_async(job.id, False)
+
+    assert _trigger_run(svc, job.id)
+    await await_until(started, what="the run's callback")
+    other = await CronService.create(base_dir=tmp_path)
+    assert await other.enable_job_async(job.id, paused_at_start)
+    await finished(svc.stop(), what="stop()")
+
+    _, _, body = gw.dashboard_state.notify.call_args.args
+    if paused_at_start:
+        tail = (
+            " The job runs again at its next scheduled time, or at once if Kiro Crew is"
+            " back within the minute this run was due."
+        )
+    else:
+        tail = " The job is paused, so it does not run again until you resume it in Schedule."
+    assert body == f"⏹ {_FINISHED_NOTE}.{tail}"
+    stored = svc.get_job(job.id)
+    assert stored is not None and stored.enabled is paused_at_start
+
+
 #: 03:00:00 UTC, a slot of ``0 3 * * *``.
 _SLOT = 1_700_017_200.0
 
