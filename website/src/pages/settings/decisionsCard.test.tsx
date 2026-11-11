@@ -137,6 +137,30 @@ describe('Decisions (Jev) preview card', () => {
     })
   })
 
+  it.each([false, true])('marks SageMaker in use only with effective consent: permits=%s', async permits => {
+    const endpoint = 'sagemaker://us-west-2/decision-model'
+    stubGateway(consentOf(true, {
+      endpoint: permits ? endpoint : ENDPOINT,
+      configured_endpoint: endpoint,
+      permits,
+      points: pointsOf(permits),
+    }))
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'sagemaker', loopback: false, configured_endpoint: endpoint,
+      sagemaker_available: true,
+      sagemaker: { endpoint_name: 'decision-model', region: 'us-west-2', profile: '' },
+    })
+    renderSection()
+    // The picker is behind the lazy DecisionsProviderPicker boundary.
+    const option = await screen.findByRole('radio', { name: /SageMaker/ }, { timeout: 5000 })
+    await waitFor(() => {
+      expect(option).toBeChecked()
+      expect(decisionsSwitch()).toHaveAttribute('aria-checked', 'true')
+      expect(option.closest('label')?.textContent?.includes('In use')).toBe(permits)
+    })
+  })
+
   it('stays closed to input until the write is reflected in a fresh read', async () => {
     // The window this closes: react-query holds a mutation pending only while
     // `onSettled` has an unresolved promise outstanding. Started-but-not-returned,
@@ -232,6 +256,26 @@ describe('Decisions (Jev) preview card', () => {
     })
     expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
     expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('reads a refused hosted default as no model: no destination line, the choose-first note', async () => {
+    // The gateway reports `active: "none"` for the hosted default a ceiling refuses,
+    // while `configured_endpoint` still names the hosted address. The card must not
+    // present that address as where messages go.
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'system').mockResolvedValue({ mem_total_gb: 16 } as never)
+    vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+      presets: [], active: 'none', loopback: false,
+      configured_endpoint: 'https://api.example/v1/systemone', hosted_permitted: false,
+    } as never)
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/No decision model is chosen\. Pick one below/)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/^Sent to/)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText('https://api.example/v1/systemone')).toBeNull()
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
   })
 
@@ -731,6 +775,24 @@ describe('Decisions (Jev) preview card', () => {
         expect(budgetBox()).toBeInTheDocument()
       })
     }
+
+    it('withholds ceiling edits until consent permits the configured endpoint', async () => {
+      const ceiling = vi.spyOn(api, 'saveDecisionsHistoryBudget')
+      stubGateway(consentOf(true, {
+        configured_endpoint: 'sagemaker://us-west-2/decision-model',
+        permits: false,
+        points: pointsOf(false),
+      }))
+      await openShared()
+      await waitFor(() => {
+        expect(decisionsSwitch()).toHaveAttribute('aria-checked', 'true')
+        expect(decisionsSwitch()).not.toHaveAttribute('aria-disabled', 'true')
+      })
+      expect(budgetBox()).toBeDisabled()
+      fireEvent.change(budgetBox(), { target: { value: '4000' } })
+      fireEvent.blur(budgetBox())
+      expect(ceiling).not.toHaveBeenCalled()
+    })
 
     it('writes the KEYSTONE ceiling, never the config path', async () => {
       // The config value is what the seam asks for and an agent may raise it; the
