@@ -135,11 +135,13 @@ const registry = vi.hoisted(() => ({
   connStatus: { value: undefined as 'connected' | 'reconnecting' | 'disconnected' | undefined },
   manualRetry: { value: false },
   displaced: { value: false },
+  disabledByConfig: { value: false },
   invalidCwd: { value: false },
   wrongMachine: { value: false },
   useTerminalConnStatus: vi.fn<() => 'connected' | 'reconnecting' | 'disconnected' | undefined>(),
   useTerminalManualRetry: vi.fn<() => boolean>(),
   useTerminalDisplaced: vi.fn<() => boolean>(),
+  useTerminalDisabledByConfig: vi.fn<() => boolean>(),
   useTerminalInvalidCwd: vi.fn<() => boolean>(),
   useTerminalWrongMachine: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string, manual?: boolean, cwd?: string) => void>(),
@@ -147,6 +149,7 @@ const registry = vi.hoisted(() => ({
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
 registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.value)
 registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
+registry.useTerminalDisabledByConfig.mockImplementation(() => registry.disabledByConfig.value)
 registry.useTerminalInvalidCwd.mockImplementation(() => registry.invalidCwd.value)
 registry.useTerminalWrongMachine.mockImplementation(() => registry.wrongMachine.value)
 vi.mock('../utils/terminalRegistry', () => registry)
@@ -313,6 +316,7 @@ beforeEach(() => {
   registry.connStatus.value = undefined
   registry.manualRetry.value = false
   registry.displaced.value = false
+  registry.disabledByConfig.value = false
   registry.invalidCwd.value = false
   registry.wrongMachine.value = false
   xt.FakeTerminal.instances = []
@@ -848,6 +852,33 @@ describe('CliPanel disconnected banner', () => {
     mount()
     expect(screen.queryByTestId('cli-panel-displaced-enter-hint')).toBeNull()
     expect(screen.getByRole('button', { name: RECONNECT_LABEL })).not.toHaveAttribute('aria-keyshortcuts')
+  })
+
+  it('T11: names the configuration, not a failure, when the gateway said the terminal is off', async () => {
+    registry.connStatus.value = 'disconnected'
+    registry.disabledByConfig.value = true
+    const first = mount()
+    const notice = screen.getByTestId('cli-panel-disabled-by-config')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice).toHaveTextContent(i18nT('components.cliPanel.terminal_off_message'))
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByTestId('cli-panel-disconnected')).toBeNull()
+    expect(screen.getByRole('link', { name: i18nT('components.terminalOffNotice.open_settings') }))
+      .toHaveAttribute('href', expect.stringContaining('dashboard.terminal.enabled'))
+    expect(screen.getByRole('button', { name: RECONNECT_LABEL })).toBeEnabled()
+
+    // A policy lock, written into the cache by the look, names the policy instead.
+    act(() => { first.queryClient.setQueryData(['terminal-enabled'], { enabled: false, locked_by_policy: true, sessions: [] }) })
+    await waitFor(() => expect(screen.getByTestId('cli-panel-disabled-by-config'))
+      .toHaveTextContent(i18nT('components.cliPanel.terminal_off_policy_message')))
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    // The registry cleared the mark when the flag returned to true and redialled.
+    first.unmount()
+    registry.disabledByConfig.value = false
+    registry.connStatus.value = 'reconnecting'
+    mount()
+    expect(screen.queryByTestId('cli-panel-disabled-by-config')).toBeNull()
   })
 })
 

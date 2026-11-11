@@ -41,6 +41,7 @@ from kiro_crew.dashboard.handlers.core_config_view import (
     _kas_in_use,
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
+from kiro_crew.dashboard.handlers.terminal_session import _policy_refuses_terminal
 from kiro_crew.metrics import provider as _metrics_provider
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
@@ -532,6 +533,21 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 "telemetry is disabled by your administrator's security policy",
                 f"{path_key}={value}",
                 403,
+            )
+
+    # The dashboard's Terminal switch under a security policy that refuses the
+    # terminal: the enable is refused with a code the Settings row turns into its
+    # locked presentation, so the switch cannot store `true` behind a refusal.
+    # Turning it off stays writable, a narrower local choice that composes.
+    if path_key == "dashboard.terminal.enabled" and value is True:
+        if await asyncio.to_thread(_policy_refuses_terminal):
+            _log_sel("denied", f"{path_key}={value}")
+            return web.json_response(
+                {
+                    "error": "the terminal is disabled by your administrator's security policy",
+                    "code": "terminal_locked_by_policy",
+                },
+                status=403,
             )
 
     # Local metric collection is offered as local-only ("Nothing is exported"), and

@@ -543,5 +543,6 @@
   "pages.schedulePage.batchActions.batch_failed_reason",
   "pages.schedulePage.batchActions.changes_n_jobs",
   "pages.schedulePage.batchActions.run_confirm_title",
-  "pages.developer.agentBackendTab.card_summary_safety_notes"
+  "pages.developer.agentBackendTab.card_summary_safety_notes",
+  "pages.settings.displayPanel.terminal_disable_confirm_body"
 ]

@@ -72,7 +72,7 @@ export default function EmbedSettingsPage() {
 
         {/* Panel content */}
         <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
-          <TabsContent value="display"><DisplayPanel /></TabsContent>
+          <TabsContent value="display"><DisplayPanel embed /></TabsContent>
           <TabsContent value="chat"><ChatPanel /></TabsContent>
           <TabsContent value="notifications"><NotificationsPanel /></TabsContent>
         </div>
