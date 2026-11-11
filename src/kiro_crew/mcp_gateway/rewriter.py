@@ -1425,6 +1425,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         include_mcp_json,
         mcp_entry_is_muted,
         mcp_entry_is_registry_governed,
+        mcp_entry_is_remote,
     )
     from kiro_crew.mcp_gateway import STUB_MODULE  # noqa: F401
     from kiro_crew.mcp_gateway.hashing import (  # noqa: F401
