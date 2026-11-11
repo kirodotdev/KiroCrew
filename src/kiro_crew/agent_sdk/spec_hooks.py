@@ -20,10 +20,10 @@ Membership is the whole double-fire guard. A non-member's harness runs the field
 itself, so the turn loop asks :func:`spec_script_hooks` only when the session's
 capabilities say Crew owns the job.
 
-claude is a member of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`` alone. Its
-harness is handed no spec, so Crew fires the events that cannot refuse a call
-(:data:`OBSERVER_HOOK_EVENTS`) and drops ``preToolUse``
-(:func:`observer_spec_hooks`): claude approves some calls without asking, so a
+claude and codex are members of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``
+alone. Neither harness is handed the spec, so Crew fires the events that cannot
+refuse a call (:data:`OBSERVER_HOOK_EVENTS`) and drops ``preToolUse``
+(:func:`observer_spec_hooks`): each approves some calls without asking, so a
 gating hook would be skipped on exactly those. Nothing there gates on the spec, so
 a spec that cannot be read costs its hooks, never a tool call.
 
@@ -481,8 +481,11 @@ def post_tool_hook_tool_id(provider: object, *, harness_tool_id: str, is_shell: 
     command, KAS's shell tool, which :func:`spec_hook_tool_names` reads as
     kiro-cli's ``execute_bash`` -- the one tool kiro-cli runs a command with.
 
-    claude names its shell call the same way: its frames carry no tool id, and a
-    call of kind ``execute`` is its Bash tool.
+    claude names its shell call the same way, as its frames carry no tool id. A codex
+    ``tool_call`` event carries its own id (``codex#exec_command``, ``codex#apply_patch``,
+    :func:`kiro_crew.acp._dispatch_parts.tool_call_identity.codex_tool_name`), so the
+    fallback names only a codex call that event left unnamed; a codex MCP call is
+    kind ``execute`` too, but its MCP marker classifies it not shell.
 
     "" on a backend whose harness runs the spec's hooks itself, and for a call
     nothing names, which keeps the title matching it had.
@@ -1355,9 +1358,9 @@ def spec_hooks_run_nowhere(provider: object) -> bool:
     field and Crew does not fire it (``backend_mcp_ability._broker_only_dispositions``).
     False where the harness runs the field itself (kiro-cli), where Crew fires it
     (``crew_fires_spec_hooks``) or all of it but ``preToolUse``
-    (``crew_fires_spec_observer_hooks``, claude, whose ``preToolUse`` entries get
-    their own notice), and for a backend with no ruling, about which nothing is
-    established.
+    (``crew_fires_spec_observer_hooks``, claude and codex, whose ``preToolUse``
+    entries get their own notice), and for a backend with no ruling, about which
+    nothing is established.
     """
     caps = capabilities_of(provider)
     if caps.crew_fires_spec_hooks or caps.crew_fires_spec_observer_hooks:
@@ -1469,8 +1472,8 @@ def spec_hook_events(agent_id: str, project_dir: str | None = None) -> list[str]
 def _fires_observer_spec_hooks_only(provider: object) -> bool:
     """Whether Crew fires *provider*'s spec hooks on :data:`OBSERVER_HOOK_EVENTS` only.
 
-    True on claude: its harness is handed no spec, and it approves some calls
-    without a permission request, so a ``preToolUse`` hook could not gate them.
+    True on claude and codex: neither is handed the spec, and each approves some
+    calls without a permission request, so a ``preToolUse`` hook could not gate them.
     """
     caps = capabilities_of(provider)
     return caps.crew_fires_spec_observer_hooks and not caps.crew_fires_spec_hooks
@@ -1479,6 +1482,64 @@ def _fires_observer_spec_hooks_only(provider: object) -> bool:
 def observer_spec_hooks(hooks: list[ScriptHook]) -> list[ScriptHook]:
     """*hooks* without the ones on an event that can refuse a tool call."""
     return [hook for hook in hooks if hook.event in OBSERVER_HOOK_EVENTS]
+
+
+def post_tool_matchers_no_builtin_meets(provider: object, hooks: Sequence[ScriptHook]) -> list[str]:
+    """The ``postToolUse`` matchers of *hooks* that no built-in tool on *provider* meets.
+
+    codex only. Its built-in calls are named through its row in
+    ``harness_tool_names.HARNESS_TOOL_TABLES``, so a matcher that names a kiro-cli
+    built-in outside that row (``fs_read``, ``grep``, ``glob``, ``web_fetch``,
+    ``use_subagent``, ``code``), by its key or by the name kiro-cli's stdin gives it
+    (:data:`KIRO_CLI_BUILTIN_HOOK_NAMES`), meets no built-in codex call. It still
+    meets an MCP tool with the same name, because ``hooks.pre_tool_match_names``
+    adds an MCP call's bare tool name, so the notice says the hook runs only there
+    (:func:`unmet_post_tool_matchers_sentence`). A pattern or an MCP matcher is not
+    listed. Empty on every other backend.
+    """
+    # circular import: see spec_hook_tool_names.
+    from kiro_crew.acp.harness_tool_names import CODEX_TOOL_IDS_BY_KIRO_TOOL
+    from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+
+    if capabilities_of(provider).backend == ACP_BACKEND_CODEX:
+        codex_names = {n for ids in CODEX_TOOL_IDS_BY_KIRO_TOOL.values() for n in ids}
+        unmet = {
+            name
+            for kiro_name, (stdin_name, _tags) in KIRO_CLI_BUILTIN_HOOK_NAMES.items()
+            if kiro_name not in CODEX_TOOL_IDS_BY_KIRO_TOOL
+            for name in (kiro_name, stdin_name)
+            if name not in codex_names
+        }
+        matchers = [h.matcher for h in hooks if h.event == HOOK_EVENT_POST_TOOL_USE]
+        return list(dict.fromkeys(m for m in matchers if m in unmet))
+    return []
+
+
+#: The prefix of a :func:`unmet_post_tool_matcher_key`.
+_UNMET_POST_TOOL_KEY_PREFIX = "hooks.postToolUse["
+
+
+def unmet_post_tool_matcher_key(matcher: str) -> str:
+    """The spec key that names a ``postToolUse`` *matcher* no built-in tool meets.
+
+    For :attr:`TurnSpecHooks.lost`, so a subagent, task-runner or cron turn names
+    it in the notice it already gives for such keys (:func:`spec_keys_notice`),
+    which says it with :func:`unmet_post_tool_matchers_sentence`.
+    """
+    return f"{_UNMET_POST_TOOL_KEY_PREFIX}{matcher}]"
+
+
+def unmet_post_tool_matchers_sentence(agent: str, matchers: Sequence[str]) -> str:
+    """The notice sentence for ``postToolUse`` *matchers* no built-in tool meets.
+
+    The hooks are not said to have no effect: an MCP tool with the same name still
+    meets them (:func:`post_tool_matchers_no_builtin_meets`).
+    """
+    return (
+        f"Agent {agent} has postToolUse hooks for {', '.join(matchers)}. No built-in "
+        "tool on this backend has that name, so these hooks run only after a call to "
+        "an MCP tool with the same name."
+    )
 
 
 class TurnSpecHooks(NamedTuple):
@@ -1512,7 +1573,8 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     ``permissions`` block and an ``allow`` it leaves out (``permissions.rules[<i>]``),
     since what they grant keeps asking, and, last, each unreadable ``allowedCommands``
     entry (``<key>.allowedCommands: <entry> (<reason>)``): the other entries apply
-    unless the list is also named whole.
+    unless the list is also named whole. A ``hooks.postToolUse[<matcher>]`` key
+    gets :func:`unmet_post_tool_matchers_sentence` instead of "no effect".
     """
     from kiro_crew.acp.kas_spec_denies import GATE_JUDGED_MARK
     from kiro_crew.agent_sdk.kas_tool_view import allow_exclude_limit
@@ -1539,6 +1601,10 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
     # A deny Crew's gate refuses is not "no effect" either.
     judged = [k.removesuffix(GATE_JUDGED_MARK) for k in keys if k.endswith(GATE_JUDGED_MARK)]
     rest = [k for k in keys if not k.endswith(GATE) and not k.endswith(GATE_JUDGED_MARK)]
+    # A postToolUse matcher no built-in tool meets still runs on an MCP tool with
+    # the same name, so it is not said to have no effect.
+    unmet = [k for k in rest if k.startswith(_UNMET_POST_TOOL_KEY_PREFIX) and k.endswith("]")]
+    rest = [k for k in rest if k not in unmet]
     sentences = []
     if rest:
         sentences.append(
@@ -1560,6 +1626,9 @@ def spec_keys_notice(agent: str, keys: list[str]) -> str:
             "a trailing &, a tab, a ( ) group, or a quote, # or [[ in a chain, so such "
             "a command runs without a refusal."
         )
+    if unmet:
+        matchers = [k[len(_UNMET_POST_TOOL_KEY_PREFIX) : -1] for k in unmet]
+        sentences.append(unmet_post_tool_matchers_sentence(agent, matchers))
     notice = "ℹ️ " + " ".join(sentences)
     servers = oauth_servers_in(keys)
     if servers:
@@ -1622,7 +1691,7 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     resolved through :func:`session_agent`; when none can be named, every
     permission request is refused, since whose hooks apply is unknown.
 
-    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude) the turn
+    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude, codex) the turn
     is not gated: it gets those hooks, and an agent that cannot be named or a
     spec that cannot be read leaves it with none.
     """
@@ -1696,7 +1765,12 @@ async def _observer_turn_spec_hooks(provider: object, agent_id: str) -> TurnSpec
             exc_info=True,
         )
         return _NOT_GATED
-    return TurnSpecHooks(observer_spec_hooks(hooks), work_dir, False, False)
+    observed = observer_spec_hooks(hooks)
+    # A postToolUse matcher no built-in tool on this backend meets is named with
+    # the keys the turn's notice lists (``spec_keys_notice``).
+    unmet = post_tool_matchers_no_builtin_meets(provider, observed)
+    lost = tuple(unmet_post_tool_matcher_key(m) for m in unmet)
+    return TurnSpecHooks(observed, work_dir, False, False, lost)
 
 
 async def hook_projection_stale(provider: object, agent_id: str) -> bool:
