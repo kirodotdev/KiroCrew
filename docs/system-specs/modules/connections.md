@@ -432,7 +432,8 @@ the vault. The session's MCP report places the server:
 | Report | Row |
 |---|---|
 | `ready` at once | `granted`, no URL: the vault already holds a working sign-in, or the server needs none |
-| `failed` | `failed`, `mint_server_failed` |
+| `failed`, no saved tokens for the url | `failed`, `mint_server_failed` |
+| `failed`, saved tokens for the url | as `awaiting_auth`: the engine keeps tokens whose refresh the vendor refused with an error other than `invalid_grant` / `invalid_client` / `unauthorized_client`, reports the server failed and asks for no sign-in, so Connect replaces them (the `startOAuth` reset drops every credential first) |
 | `awaiting_auth` | the engine is sent `_kiro/mcp/resetServer` with `startOAuth`; the consent URL it opens as `_kiro/openExternalUrl` passes the same credential gate (one fresh process before `mint_url_rejected` is final) and the row turns `waiting` |
 
 The process and its PID claim are held while the user consents, because the engine's callback
