@@ -59,7 +59,7 @@
     "send_refused": "此会话未接受这个回答。",
     "send_unknown": "尚无法确认是否送达。回答已保留，请先检查会话再重试，以免重复发送。",
     "updated": "最后检查于 {{time}}",
-    "panel_load_failed": "无法加载仪表板面板。请重新加载页面重试。",
+    "panel_load_failed": "无法加载仪表板面板。请检查与网关的连接，然后重试。",
     "crewMain": {
       "not_recorded": "未记录",
       "unreadable": "无法读取",
@@ -6047,7 +6047,7 @@
       "refreshing_balance": "正在刷新…",
       "remaining_credit_balance": "剩余额度：{{count}}",
       "show_email": "显示邮箱",
-      "usage_scope": "每月 Kiro 额度用量来自 kiro-cli /usage，涵盖聊天、代理、MCP 和子代理。",
+      "usage_scope": "此账户每月的 Kiro 额度用量，涵盖聊天、代理、MCP 和子代理。",
       "used_credits": "已使用：{{used}} / {{total}}",
       "sign_out_or_switch": "在设置中登出或切换账号",
       "sign_out_link_config_unreadable": "无法加载设置，因此无法显示登出链接。",
@@ -6326,8 +6326,12 @@
         "session_approval_heading": "该应用还请求控制你的对话",
         "worker_auto_approve_heading": "该应用还请求自行批准它的后台会话",
         "worker_auto_approve_desc": "它启动并在无人值守时运行的智能体会话可以自行批准工具调用。绝不包括你的对话。每次授权在 24 小时内过期、会被审计、受你的审批模式策略约束，并在你关闭或移除该应用时结束。",
+        "user_session_reach_heading": "该应用还允许你的对话访问它运行的会话",
+        "user_session_reach_read": "你的对话可以读取这些会话。",
+        "user_session_reach_send": "你的对话可以向这些会话发送消息。每条消息都会显示是哪个对话发送的。",
+        "user_session_reach_note": "仅限你自己打开的对话。无痕、临时、定时运行和关联频道的对话不可以，并且任何对话都不能停止或关闭这些会话。",
         "session_approval_desc": "在你的对话中发送消息或选择回复选项，批准或拒绝工具请求，以及切换对话的审批模式。",
-        "session_approval_member_threads": "这也包括你的 Bot 自己的对话。",
+        "session_approval_member_threads": "这也包括你的 Bot 自己的对话。该应用能以你的名义给你的 Bot 发消息。",
         "session_approval_modes": "它可以设置的对话审批模式",
         "revocable": "你可以随时在“设置 → 安全 → 第三方应用”中撤销。撤销后该应用就会停止工作。",
         "source": "发布于",
@@ -6665,6 +6669,7 @@
       "tree_drop_folder_refused": "无法添加此文件夹：其路径包含空格或 @。请改为逐个添加其中的文件。",
       "trust_reads": "信任只读命令",
       "turn_interrupted_press_resume": "上一轮被中断 — 点“恢复”，或直接输入",
+      "turn_interrupted_sign_in_first": "上一轮需要登录 — 按上方消息的提示登录，然后点“恢复”或重新发送你的消息",
       "turn_interrupted_restored_card": "上一轮被中断。“恢复”只会重新运行那一轮。排队消息不会自动发送：请用“立即发送”(⚡)发送。",
       "turn_interrupted_restored_queue_other": "上一轮被中断。“恢复”只会重新运行那一轮。{{count}} 条排队消息不会自动发送：请展开队列（{{count}} 条已排队 ^），再用“立即发送”(⚡)逐条发送。",
       "upload_file": "上传文件",
@@ -8514,6 +8519,7 @@
       "do_not_publish_anything": "不要发布任何你不愿放到公开互联网上的内容。",
       "exposure_window_persistent": "除非你撤回或销毁部署，此链接会一直公开。",
       "exposure_window_persistent_withdrawable": "在已发布的副本被撤回之前，此链接会一直公开。删除该产物会请求撤回。",
+      "exposure_window_provider_expiry_other": "此链接会公开 {{count}} 天，之后由发布目标删除。",
       "exposure_window_ttl_other": "此链接会公开 {{count}} 小时，之后自动删除。",
       "publishing": "正在发布…",
       "title": "即将创建一个可公开访问的网站"
@@ -8566,6 +8572,9 @@
       "visibility": "可见性",
       "visibility_private": "私密（仅你自己）",
       "visibility_public": "公开（任何拥有链接的人）",
+      "expiry": "到期",
+      "expiry_after_days_other": "{{count}} 天后",
+      "expiry_never": "永不",
       "public_exposure_warning": "任何拥有已发布链接的人都可以查看此内容。它通过公共互联网提供，且没有任何身份验证。"
     },
     "pullRequestPanel": {
@@ -11419,7 +11428,7 @@
       "origin_resources_lifecycle": "安装来源：{{origin}} | 资源：{{resources}} | 生命周期：{{lifecycle}}",
       "permissions": "权限",
       "session_approval_desc": "可以在你的对话中发送消息和选择回复选项，批准或拒绝工具请求，并切换对话的审批模式。",
-      "session_approval_member_threads": "这也包括你的 Bot 自己的对话。",
+      "session_approval_member_threads": "这也包括你的 Bot 自己的对话。该应用能以你的名义给你的 Bot 发消息。",
       "session_approval_member_threads_refused": "此应用现在还请求访问你与 Bot 的聊天。请查看后再次启用。",
       "session_approval_modes": "它可以设置的对话审批模式",
       "session_approval_manifest_key": "清单键",
@@ -11472,6 +11481,8 @@
       "grants_reconsent_link_open_full_url": "所打开链接的完整地址：应用还会看到链接中 ? 或 # 之后的部分，其中可能含有登录码。",
       "grants_reconsent_worker_auto_approve": "在它自己的后台会话中批准工具调用，让它们在无人值守时继续工作。",
       "worker_auto_approve_desc": "可以在它自己启动的后台会话中批准工具调用，绝不会在你的对话中。每次授权都会过期、会被审计，并在应用关闭时结束。",
+      "user_session_reach_read": "你的对话可以读取该应用运行的会话。",
+      "user_session_reach_send": "你的对话可以向该应用运行的会话发送消息。",
       "link_open_remembered": "记住的链接选择",
       "link_open_choice_app": "在 {{name}} 中打开",
       "link_open_choice_browser": "在浏览器中打开",
@@ -12009,6 +12020,8 @@
       "workflows_label": "工作流",
       "workflows_description": "创建、编辑和运行可复用的代理工作流",
       "connections_description": "连接官方服务并管理自定义 MCP 服务器",
+      "powers_label": "Kiro Powers",
+      "powers_description": "为 Kiro 安装的 Powers 和 Agent Plugins，仅列出，不加载",
       "connections_label": "连接",
       "crews_description": "一直在线的 AI agent",
       "crews_label": "Bot",
@@ -12197,6 +12210,7 @@
         "workflow_runs_load_failed": "无法加载工作流运行"
       },
       "assistantMessage": {
+        "share_load_failed": "无法加载分享对话框",
         "applied_to_tasks": "已应用到任务",
         "copied": "已复制！",
         "copy": "复制",
@@ -12462,6 +12476,7 @@
         "requires_authentication": "需要认证。",
         "superseded": "的登录已失效——新的请求已将其替换。请使用最新的“授权”按钮登录。",
         "expired": "的登录已失效——启动它的会话已结束。发送一条消息即可获取新的“授权”链接。",
+        "timed_out": "的登录在完成前已超时。在消息中提到此服务器即可获取新的“授权”链接。",
         "failed_next_step": "如需重新登录，请打开 自定义 → 连接 → MCP 服务器。"
       },
       "notificationItem": {
@@ -12800,6 +12815,7 @@
         "retry": "重试"
       },
       "toolCallLine": {
+        "answers_load_failed": "无法加载回答。请检查与网关的连接，然后重试。",
         "diff_truncated": "diff 已截断",
         "edit_count_other": "{{count}} 处编辑",
         "edit_n_of_m": "第 {{n}} 处编辑，共 {{total}} 处",
@@ -13195,6 +13211,7 @@
         "export_failed": "无法生成分享卡片"
       },
       "crewLog": {
+        "tab_load_failed": "无法加载会话记录。请检查与网关的连接，然后重试。",
         "section_status": "状态",
         "section_usage": "用量",
         "section_timeline": "时间线",
@@ -13477,6 +13494,7 @@
         "outcome_undo": "想撤销，就让 {{name}} 恢复之前的仪表板。"
       },
       "browserLiveStage": {
+        "stage_load_failed": "无法加载代理浏览器视图。请检查与网关的连接，然后重试。",
         "bring_back": "收回到聊天",
         "by_you": "你的操作",
         "exit_full_screen": "退出全屏",
@@ -13798,7 +13816,7 @@
       "could_not_read_file_reason": "无法读取 {{path}}（{{reason}}）",
       "screenshot_failed_reason": "截图失败：{{reason}}",
       "snip_refused_in_embedded_pane": "此标签页中无法使用屏幕截取。自行截图并附加即可。",
-      "source_hosts_failed_reason": "加载 GitLab 和 Jira 链接设置失败：{{reason}}",
+      "source_hosts_failed_reason": "自托管 GitLab 和 Jira 链接暂时无法在变更中打开：{{reason}}",
       "artifact_reference_failed_reason": "将工件关联到此聊天失败：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "无法将会话重命名为“{{title}}”",
@@ -15319,6 +15337,7 @@
       "filter_hooks": "筛选钩子…",
       "hook_name": "钩子名称",
       "hooks": "钩子",
+      "matcher_lane_pill_gloss": "状态标签列",
       "hooks_run_shell_commands_on_chat_events_agentspa": "挂钩在聊天事件上运行 shell 命令：AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop。工具挂钩支持按工具名称过滤的模式。标记为 尚未触发 的行由代理支持，但这里目前还没有任何事件触发它；标记为 从不触发 的行完全不受支持。测试现在就能运行两者。",
       "last_run": "上次运行",
       "loading": "正在加载…",
@@ -16094,6 +16113,27 @@
       "unread": "未读"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "读取自 ~/.kiro/powers。{{productName}} 会列出它们，但目前一个都不加载，所以它们的技能和 MCP 服务器不会进入你的会话。",
+        "not_loaded": "未加载",
+        "reason_legacy_power": "旧版 POWER.md Power，不是 Agent Plugin。{{productName}} 不加载 POWER.md Power。",
+        "reason_no_manifest": "此文件夹没有 plugin.json，所以不是 Agent Plugin。",
+        "reason_invalid": "此插件无效，其中任何部分都不能使用：{{reason}}",
+        "reason_valid": "有效的 Agent Plugin。{{productName}} 目前还不加载 Agent Plugins。",
+        "reason_read_failed": "无法读取 {{name}}，其中任何部分都不能使用：{{reason}}",
+        "would_add_skills": "它会添加的技能",
+        "would_add_servers": "它会添加的 MCP 服务器",
+        "problems_found": "发现的问题",
+        "issue_read_failed": "无法读取 {{name}} 的部分内容：{{message}}",
+        "issue_read_failed_entry": "无法读取 {{name}} 中的 {{entry}}：{{message}}",
+        "empty_title": "未安装 Kiro Powers",
+        "empty_subtitle": "在 Kiro IDE 中或用 kiro-cli 安装的 Powers 会列在这里。",
+        "failed_to_load": "无法读取已安装的 Kiro Powers",
+        "index_read_failed": "无法读取已安装的 Kiro Powers 列表，所以无法显示任何项：{{reason}}",
+        "retry": "重试",
+        "owner_only": "只有仪表板所有者可以查看已安装的 Kiro Powers。",
+        "list_label": "已安装的 Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "改编自",
         "create_draft": "创建草稿",
@@ -16337,6 +16377,8 @@
         "sign_in_required_help": "此服务器使用 OAuth，且尚无人登录。<chatLink>前往聊天</chatLink>，启动一个新会话并发送任意消息，聊天中会提示你批准登录。 然后进行探测以刷新此列表。",
         "sign_in_kas_chat_note": "Kiro Agent 上的聊天不会使用在这里完成的登录。请在聊天中通过它的“授权”卡片登录。",
         "sign_in_kas_chat_again_note": "Kiro Agent 上的聊天还不会使用这个登录。请重新登录，为这些聊天保存它。",
+        "sign_in_unsupported_on_kas": "这个服务器暂时无法通过 Kiro Agent 引擎登录。它使用了自己的登录设置，而 Kiro Agent 无法使用这些设置。",
+        "sign_in_unavailable": "无法登录",
         "oauth_not_a_static_token": "此服务器通过 OAuth 登录，因此静态 Authorization 标头无法满足它。请移除此服务器，在不含该标头的情况下重新添加并启用它，然后启动新的聊天会话以登录。",
         "sign_in_required_next": "批准后，使用此表上方的“探测 MCP 服务器”按钮；该行随后会显示“已登录”。",
         "signed_in": "已登录",
@@ -17963,6 +18005,13 @@
         "restart_row_note": "在不更新的情况下重启网关进程。活动会话会短暂断开。",
         "desktop_restart_row_note": "在不更新的情况下，重启此应用在这台电脑上运行的网关。正在进行的回复会停止，网关恢复后应用会重新连接。",
         "desktop_restart_unavailable": "应用暂时无法重启网关。请等待连接完成后再试。",
+        "upcoming_update_title": "即将推出的更新",
+        "upcoming_update_announced": "已预告",
+        "upcoming_update_version": "版本 {{version}}",
+        "upcoming_update_expected_on": "预计 {{date}}",
+        "upcoming_update_highlights": "亮点",
+        "upcoming_update_notes_link": "阅读完整发行说明",
+        "upcoming_update_announced_takes_effect_on_restart": "发布后，将在你下次重启 {{productName}} 时生效。",
         "restarting": "正在重启…",
         "retry": "重试",
         "stable": "稳定版",
@@ -18025,6 +18074,7 @@
         "applying_update": "正在应用更新…",
         "applying_restart_note": "新版本就绪后网关会自动重启，本页面将自动重新连接。",
         "approval_window_expired": "批准窗口已过期且未获批准。准备好后可重新发起更新。",
+        "arm_ended_without_update": "更新请求在更新开始前已结束。请求已被撤销或网关已重启，并非你的操作导致。请按“{{label}}”重试。",
         "try_again": "重试",
         "not_on_channel_yet": "不在 {{channel}} 通道",
         "channel_explainer_gateway_switch_note_version": "切换仅改变检查更新的渠道。{{channel}} 通道当前发布的是 v{{version}}，比你正在运行的版本更旧——请运行下方命令，才会真正将此安装切换过去。",
@@ -18236,6 +18286,8 @@
         "side_panel_pin_summary": "在侧边栏中固定摘要",
         "side_panel_pin_summary_hint": "将摘要显示为侧边栏的第一个标签页，并在打开侧边栏时显示摘要。如果你打开文件或其他项目，仍会显示该项目。需要开启会话摘要。",
         "side_panel_pin_summary_needs_session_summaries": "会话摘要已关闭。在“设置 → 聊天 → 会话”中开启后即可固定摘要。",
+        "project_tags": "项目标签",
+        "project_tags_desc": "在侧边栏为每个新会话打上其项目文件夹名称的标签，例如“my-app”。",
         "topic_tags": "主题标签",
         "topic_tags_desc": "在侧边栏为每个新会话打上最多 2 个主题标签，例如“debugging”。每个新会话调用一次后台模型。",
         "transcript": "对话记录",
@@ -18947,6 +18999,8 @@
         "retry": "重试",
         "ssh_host_alias": "SSH 主机 / 别名",
         "ssh_tunnel": "SSH 隧道",
+        "ssh_tunnel_not_supported_windows": "Windows 上不支持",
+        "ssh_tunnel_not_supported_windows_hint": "{{productName}} 在 Windows 上运行时暂不支持 SSH 隧道：它需要 PATH 中有 OpenSSH 客户端，并且可能无法连接。请改用 AWS SSM Session Manager。",
         "ssm_target_instance_id": "SSM 目标（实例 id）",
         "state_connected": "已连接",
         "state_connecting": "正在连接",
@@ -22124,6 +22178,7 @@
       "startingHeader": "正在准备 {{name}}"
     },
     "remoteFiles": {
+      "panelLoadFailed": "无法加载文件视图。请检查与网关的连接，然后重试。",
       "title": "{{name}} 上的文件",
       "refresh": "刷新",
       "selectHint": "选择文件即可查看。",
@@ -22173,6 +22228,7 @@
       "stoppedHint": "发送下一条消息时工作区会启动。空闲一小时后会自动停止。"
     },
     "remoteGit": {
+      "panelLoadFailed": "无法加载 Git 视图。请检查与网关的连接，然后重试。",
       "title": "{{name}} 上的 Git",
       "notRepo": "工作目录不是 Git 仓库。",
       "changes": "更改",
@@ -22451,6 +22507,7 @@
     "filter_all": "所有会话",
     "page_previous": "返回",
     "people_unnamed_platform_body": "Tailscale 允许列表中的成员可以通过 Tailscale Serve 使用此 Crew，但此操作系统无法证明每个人是谁，因此他们的工作显示为未归属。请改为分享直连 Tailscale 链接以显示他们的名字。不在列表中的人会被拒绝。",
+    "sent_by_an_app": "由应用发出",
     "setup_kiro_login_body": "队友使用所在组织的 Kiro 登录进行登录。",
     "setup_title": "设置团队共享访问",
     "invite_key_label": "Tailscale API 访问密钥",

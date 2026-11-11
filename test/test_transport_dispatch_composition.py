@@ -494,7 +494,7 @@ BASE_MEMBERS: dict[str, tuple[str, bool, str]] = {
         True,
         (
             "(self, request_id: 'str', description: 'str', parent_session_key: 'str') -> "
-            "'bool | None'"
+            "'bool | HostSpawnDecision | None'"
         ),
     ),
     "handle_message": (

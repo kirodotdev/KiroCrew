@@ -212,6 +212,13 @@ class SessionProjection:
     (the harness's built-in Bash/Read/Write, not an MCP server) should be
     callable at all. See ``AcpClient._spec_zero_tools`` for the refusal.
     """
+    builtin_tools: tuple[str, ...] | None = None
+    """The harness built-ins this session keeps, ``None`` for all of them.
+
+    A client obligation the array cannot carry: claude takes it as the session's
+    ``tools`` option. Set only for a crewmate worker whose worker spec (base plus
+    crewmate file) excludes a native tool (``claude_worker_tools.claude_worker_builtin_tools``).
+    """
 
 
 class AgentConfigMirror(ABC):

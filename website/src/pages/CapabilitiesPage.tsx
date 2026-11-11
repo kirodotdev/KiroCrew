@@ -1,7 +1,7 @@
 import { lazy, Suspense, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
-import { Link2, BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, FileCode2 } from 'lucide-react'
+import { Link2, BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, FileCode2, Puzzle } from 'lucide-react'
 import { api } from '../api/client'
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -14,6 +14,7 @@ import HooksPage from './HooksPage'
 import ConnectionsPage from './connections/ConnectionsPage'
 import { SkillsTab, PromptsTab, SteeringTab } from './overview'
 import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
+import KiroPowersTab from './overview/KiroPowersTab'
 import { ContentSkeleton } from '../components/ui'
 
 // The custom-agent editor is a drill-in most sessions never open; its chunk is
@@ -100,6 +101,9 @@ export default function CapabilitiesPage() {
       // tab label. Wording is a follow-up; what matters for the release is that
       // the gallery itself is unreachable.
       { key: 'mcp', label: t('pages.capabilitiesPage.connections_label'), icon: <Link2 size={16} />, description: t('pages.capabilitiesPage.connections_description'), group: groupAgent },
+      // Powers and Agent Plugins installed for Kiro, listed read-only: none is
+      // loaded yet, and each row says why (agent-plugins spec §6).
+      { key: 'powers', label: t('pages.capabilitiesPage.powers_label'), icon: <Puzzle size={16} />, description: t('pages.capabilitiesPage.powers_description'), group: groupAgent },
       // Knowledge lives here rather than on the main rail: its consumer is the
       // agent (retrieval), and the human's intent on this surface is "manage
       // what the agent knows" — the same asset-management intent as Prompts and
@@ -128,6 +132,7 @@ export default function CapabilitiesPage() {
         {tab === 'templates' && <ErrorBoundary><Suspense fallback={<ContentSkeleton rows={6} />}><AgentTemplatesTab /></Suspense></ErrorBoundary>}
         {tab === 'mcp' && <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
         {tab === 'skills' && <SkillsTab />}
+        {tab === 'powers' && <KiroPowersTab />}
         {/* ErrorBoundary preserves the crash isolation the /knowledge route
             used to provide: the page lazy-loads the Graph chunk, and a stale
             chunk after a deploy would otherwise reject through to the root

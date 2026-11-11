@@ -1043,6 +1043,64 @@ def test_a_quiet_progress_item_whose_worker_is_looping_raises_no_stall(monkeypat
     assert item in _briefs(idle)
 
 
+def test_a_wake_at_on_a_held_loop_does_not_hide_a_stall(monkeypatch):
+    """A worker reports ``progress`` with a ``wake_at`` hours out, counting on its own
+    loop, but that loop is held on an unanswered approval and never fires. A
+    held loop voids the ``wake_at``, so the normal window flags the item; a loop that
+    can fire, or no loop at all, keeps the declared wait."""
+    from datetime import datetime, timedelta, timezone
+
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    _open_ledger()
+    item = _create()
+    wake = (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat()
+    work_ledger.apply_worker_report(
+        CONDUCTOR, item, status="progress", summary="my loop checks every 20 min", wake_at=wake
+    )
+    real_list = work_ledger.list_work_items
+    reported = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    def _aged(key):
+        rows = real_list(key)
+        for row in rows:
+            row.last_report_at = reported
+        return rows
+
+    monkeypatch.setattr(work_ledger, "list_work_items", _aged)
+    held = _observe(WorkLedgerProbe(worker_loop_held=lambda _k: True), _ctx())
+    alive = _observe(WorkLedgerProbe(worker_looping=lambda _k: True), _ctx())
+    no_loop = _observe(WorkLedgerProbe(), _ctx())
+    assert "reason=stall" in _briefs(held) and item in _briefs(held)
+    assert "reason=stall" not in _briefs(alive)
+    assert "reason=stall" not in _briefs(no_loop)
+
+
+class TestWorkerLoopHeld:
+    """``ledger_wake.worker_loop_held``: an ACTIVE loop that cannot fire."""
+
+    def test_a_loop_held_on_an_approval_is_held(self):
+        held = _Loop("chat-1", approval_stalled=True)
+        assert lw.worker_loop_held(_Service(held), "dashboard_chat-1") is True
+
+    def test_a_loop_past_its_bound_is_held(self):
+        import time
+
+        spent = _Loop("chat-1", max_runtime_secs=60, created_ts=time.time() - 3600)
+        assert lw.worker_loop_held(_Service(spent), "chat-1") is True
+        capped = _Loop("chat-1", max_cycles=5, cycle_count=5)
+        assert lw.worker_loop_held(_Service(capped), "chat-1") is True
+
+    def test_a_loop_that_can_fire_a_stopped_loop_or_none_is_not_held(self):
+        assert lw.worker_loop_held(_Service(_Loop("chat-1")), "chat-1") is False
+        unbounded = _Loop("chat-1", max_cycles=0, max_runtime_secs=0)
+        assert lw.worker_loop_held(_Service(unbounded), "chat-1") is False
+        stopped = _Loop("chat-1", active=False, approval_stalled=True)
+        assert lw.worker_loop_held(_Service(stopped), "chat-1") is False
+        assert lw.worker_loop_held(_Service(), "chat-1") is False
+        assert lw.worker_loop_held(None, "chat-1") is False
+
+
 class _Loop:
     def __init__(self, slot_key: str, **fields) -> None:
         self.slot_key = slot_key

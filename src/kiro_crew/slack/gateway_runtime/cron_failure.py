@@ -6,7 +6,7 @@ script and denial alert, and the single-agent turn's failure path, which also
 charges the run. Also the notice for a run the cron service's stop cut short, which
 takes the same two legs but is not a failure.
 
-Orchestrator fields read: ``_owner_id``, ``dashboard_state``, ``slack``.
+Orchestrator fields read: ``dashboard_state``, ``slack``.
 Orchestrator fields written: none.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
@@ -165,8 +165,9 @@ async def _deliver_failure_alert(
     if self.slack and not silent and not channel_delivered:
         try:
             channel = job.channel
-            if not channel and (job.created_by or self._owner_id):
-                channel = await self._open_dm_with_retry(job.created_by or self._owner_id, job.name)
+            dm_user = self._cron_dm_user(job)
+            if not channel and dm_user:
+                channel = await self._open_dm_with_retry(dm_user, job.name)
             if channel:
                 await self.slack.post_message(channel, mrkdwn)
                 slack_delivered = True
@@ -391,7 +392,11 @@ async def _alert_cron_interrupted(self: GatewayOrchestrator, job: CronJob, detai
         label, _ = redact_exfiltration_urls(label)
         label, _ = redact_credentials(label)
         text = f"{detail}."
-        if job.schedule.kind != "at":
+        if job.schedule.kind != "at" and not job.enabled:
+            # A paused job can still be run by hand; the scheduler skips it,
+            # so no next scheduled time is coming.
+            text += " The job is paused, so it does not run again until you resume it in Schedule."
+        elif job.schedule.kind != "at":
             text += " The job runs again at its next scheduled time"
             if job.schedule.kind == "cron":
                 text += ", or at once if Kiro Crew is back within the minute this run was due"

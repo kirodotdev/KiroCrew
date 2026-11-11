@@ -140,6 +140,15 @@ def _update_policy_file() -> str:
     return str(_policy_home_path())
 
 
+def last_checked_at() -> float | None:
+    """When the last update check finished (epoch seconds), or None if none has.
+
+    The status frame and the check and channel responses all carry this one
+    stamp, so the dashboard can tell which of two answers is newer.
+    """
+    return _last_update_check or None
+
+
 def status_update_fields() -> dict[str, object]:
     """The update fields ``/api/status`` and the WebSocket push both carry.
 
@@ -182,6 +191,10 @@ def status_update_fields() -> dict[str, object]:
             str(_update_info.get("channel") or ""),
         ),
         "update_channel": str(_update_info.get("channel") or ""),
+        # The About page's "Upcoming update" block: version, date, highlights,
+        # notes link of an announced build. ``None`` when there is no
+        # announcement. Display only.
+        "update_upcoming": _update_info.get("upcoming") or None,
         # Is the running build ahead of everything the FOLLOWED channel
         # publishes? The panel keys its "you must re-run the installer to move
         # onto this lane" copy on this rather than on a comparison of
@@ -204,7 +217,7 @@ def status_update_fields() -> dict[str, object]:
         # manual check. 0/0 everywhere except a successful git-checkout check.
         "update_commits_ahead": ahead if isinstance(ahead, int) else 0,
         "update_commits_behind": behind if isinstance(behind, int) else 0,
-        "update_last_checked_at": _last_update_check or None,
+        "update_last_checked_at": last_checked_at(),
         "update_check_interval_secs": _UPDATE_CHECK_INTERVAL,
         # Mandatory-update verdict (governance pin OR feed floor) plus the floor
         # that triggered it, on the hot path because the proactive update popup
@@ -271,6 +284,8 @@ async def api_update_check(request: web.Request) -> web.Response:
         {
             **_update_info,
             "current_version": _display_local_version(),
+            # The same stamp the status frame carries as `update_last_checked_at`.
+            "last_checked_at": last_checked_at(),
             "update_auto_effect": _status_auto_update_effect(),
             # DISPLAY-ONLY sibling of the raw `latest_version` above (unpacked
             # via `**_update_info`) — folds a promoted stable candidate's
@@ -785,6 +800,37 @@ async def _check_via_provider(provider: CommandProvider) -> None:
     )
 
 
+async def _upcoming_for_feed(
+    url: str,
+    *,
+    channel: str,
+    available: bool,
+) -> dict[str, object] | None:
+    """The About page's "Upcoming update" record, or ``None`` when there is none.
+
+    Display only: nothing here decides whether or when anything installs. The
+    record is an optional ``announce.json`` naming a version newer than this
+    install while the feed does not offer a build yet; once the feed offers one
+    (``available``) the update card already describes it and nothing is added.
+    Reading it costs one more bounded GET per check, through the same fetch,
+    timeout and 12-hour cache as the manifest, and a missing or malformed file
+    leaves no record.
+    """
+    if available:
+        return None
+    # Imported here, not at module level: a module-level name would be served
+    # through the ``updates`` facade, which this display-only helper does not need.
+    from kiro_crew.dashboard.handlers import _update_announce
+
+    announcement = await _update_announce.fetch_announcement(
+        url, _fetch_feed_bytes, channel=channel, max_bytes=_FEED_MAX_BYTES
+    )
+    if announcement is None or _is_newer(announcement["version"], _local_version) is not True:
+        return None
+    version = _display_version(announcement["version"], channel)
+    return dict(_update_announce.compose_upcoming(announcement, version=version))
+
+
 async def _check_release_feed(capability: UpdateCapability) -> None:
     """Compare a feed-checkable install against the release channel it came from.
 
@@ -919,6 +965,11 @@ async def _check_release_feed(capability: UpdateCapability) -> None:
                 )
     elif floor is not None:
         logger.warning("Release feed %s carries an unusable min_version", url)
+    extra["upcoming"] = await _upcoming_for_feed(
+        f"{feed_base}/feed/{channel}/announce.json",
+        channel=channel,
+        available=available,
+    )
     # No ``changes``: the manifest carries no changelog, and the CHANGELOG.md
     # bundled into the wheel describes the version already INSTALLED, not the new
     # one. The dashboard's "view full changelog" disclosure covers the gap

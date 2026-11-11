@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -726,7 +727,101 @@ def validate_token_with_app(
     app_name = data.get("app", "")
     if use_session_exp and not app_name and data.get("kind") != "session":
         return False, "", LINK_NOT_A_SESSION, ""
+    if app_name and not _app_token_live(app_name, _app_issued_at(data)):
+        # Refused exactly like a forged token: the caller learns nothing about
+        # the app's state, and its SDK re-exchanges the secret as it does today.
+        return False, "", "invalid signature", ""
     return valid, user_id, reason, app_name
+
+
+async def validate_token_with_app_off_loop(
+    token: str, *, use_session_exp: bool = False
+) -> tuple[bool, str, str, str]:
+    """:func:`validate_token_with_app`, in a worker thread for a signed app token.
+
+    An app token's check can read the app's install record (a cache miss after an
+    invalidation), so it never runs on the event loop. Any other token reads
+    nothing there and is checked in place.
+    """
+    if token and _signed_app_claim(token):
+        return await asyncio.to_thread(
+            validate_token_with_app, token, use_session_exp=use_session_exp
+        )
+    return validate_token_with_app(token, use_session_exp=use_session_exp)
+
+
+#: The issue time of the app token an app session cookie was exchanged from,
+#: carried by the middleware's exchange (a string: ``extra`` claims are strings).
+APP_IAT_CLAIM = "app_iat"
+
+
+def _app_issued_at(data: dict) -> object:
+    """When the app credential behind *data* was issued: the carried app-token
+    ``iat`` on an exchanged session, else the token's own ``iat``.
+
+    The session is a fresh mint, so its own ``iat`` can postdate a disable the
+    app token it came from predates: a request whose token passed the check just
+    before the owner's disable is exchanged just after it. The cutoff must judge
+    the original. A carried value that is not a number reads as unknown, which
+    refuses unless no cutoff was ever set.
+    """
+    carried = data.get(APP_IAT_CLAIM)
+    if carried is None:
+        return data.get("iat")
+    try:
+        return float(carried)
+    except (TypeError, ValueError):
+        return None
+
+
+def _app_token_live(app_name: str, iat: object) -> bool:
+    """Whether *app_name* is installed and enabled, and the token postdates its cutoff.
+
+    The HMAC key is gateway-wide, so a signature alone outlives a disable or an
+    uninstall. The record is read on every check, so a disable from any process
+    (the CLI included) takes effect on the next request; the async middleware runs
+    this check in a worker thread (:func:`validate_token_with_app_off_loop`), so
+    the read never runs on the event loop. A name that is not a valid app name
+    refuses without a read. Deferred import: ``apps`` imports the dashboard auth
+    modules.
+    """
+    from kiro_crew.apps.manager import APP_NAME_RE, app_token_cutoff
+
+    name = str(app_name)
+    if not APP_NAME_RE.fullmatch(name):
+        return False
+    cutoff = app_token_cutoff(name)
+    if cutoff is None:
+        return False
+    if isinstance(iat, bool) or not isinstance(iat, (int, float)):
+        return cutoff <= 0
+    # Strictly after: a token minted in the same clock tick as the disable is from
+    # before it, and a coarse clock (Windows) can make the two equal.
+    return iat > cutoff
+
+
+def _signed_app_claim(token: str) -> str:
+    """The ``app`` claim of *token* when its signature verifies, else ``""``.
+
+    Signature only, no expiry or revocation: it decides whether the check runs in a
+    worker thread, and the token is fully validated there. A forged token is
+    checked in place and reads nothing.
+    """
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return ""
+    try:
+        payload = _b64url_decode(parts[0])
+    except Exception:
+        return ""
+    if not _ct_eq(parts[1], _sign(payload)):
+        return ""
+    try:
+        data = json.loads(payload)
+    except Exception:
+        return ""
+    app = data.get("app") if isinstance(data, dict) else None
+    return app if isinstance(app, str) else ""
 
 
 def claims_an_app_unverified(token: str) -> bool:
@@ -922,77 +1017,95 @@ def validate_app_secret(app_name: str, provided_secret: str) -> bool:
     gateway writes, on an owner-authenticated enable or first owner registration,
     and every disable and uninstall revokes. Files under the agent-writable
     ``apps/{app_name}/`` (``installed.json``, ``app.json``) are never enough. With the
-    marker present, the secret is compared in constant time against
-    ``apps/{app_name}/.app_secret``.
+    marker present, the secret is compared in constant time against the gateway's
+    own record (:func:`read_app_secret`), which no sandbox can read.
     """
     # circular import: apps.manager imports write_app_secret from token_auth
     from kiro_crew.apps.host_exec_grants import host_exec_granted
-    from kiro_crew.config.loader import config_dir
 
     if not provided_secret or not host_exec_granted(app_name):
         return False
-    secret_path = config_dir() / "apps" / app_name / ".app_secret"
-    try:
-        stored = secret_path.read_text(encoding="utf-8").strip()
-    except (OSError, FileNotFoundError):
-        return False
+    stored = read_app_secret(app_name)
     if not stored:
         return False
     return _ct_eq(stored, provided_secret)
 
 
-def write_app_secret(app_name: str, secret: str) -> None:
-    """Write an app secret to ``~/.kiro/crew/apps/{app_name}/.app_secret``.
+#: Serializes the one-time move of an app's secret out of its folder, so two readers
+#: never store two different secrets for one app.
+_app_secret_move_lock = threading.Lock()
 
-    Creates the directory if needed and sets file mode to 0o600.
-    """
+
+def _legacy_secret_path(app_name: str) -> Path:
     from kiro_crew.config.loader import config_dir
-    from kiro_crew.owner_only_files import mkdirs_owner_only
 
-    secret_dir = config_dir() / "apps" / app_name
-    mkdirs_owner_only(secret_dir)  # apps/ and apps/<name>/ are born 0700
-    secret_path = secret_dir / ".app_secret"
-    # os.O_TRUNC truncates any pre-existing file BEFORE the DACL tightens,
-    # then restrict_to_owner locks it down while it is still empty, then we
-    # write the secret bytes. This ordering matters on Windows because the
-    # lockdown replaces the file's DACL rather than being set at create time —
-    # if we wrote first the secret would sit under the parent-inherited DACL
-    # until that call landed. On failure we unlink the just-created empty file (mirroring
-    # dashboard/server.py:_write_secret_file) so we don't leave a zero-byte
-    # .app_secret under the default DACL that a later successful write
-    # (which does not re-inherit on O_TRUNC) could then populate.
-    # The file is the gateway's own: a link planted at its path is removed, never
-    # written through, and O_NOFOLLOW refuses one planted after that check, so the
-    # unsandboxed gateway cannot be aimed at another file (e.g. a sealed leaf).
-    if secret_path.is_symlink():
-        secret_path.unlink()
-    fd = os.open(
-        str(secret_path),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+    return config_dir() / "apps" / app_name / ".app_secret"
+
+
+def read_app_secret(app_name: str) -> str:
+    """*app_name*'s gateway secret, or ``""`` when it has none. Read-only; gateway only.
+
+    The secret lives in ``member-records/app-secrets/`` (:mod:`apps.protected_app_state`),
+    which every sandbox masks. An ``apps/{app_name}/.app_secret`` an older version left
+    in the agent-readable folder is never read: until a channel that can hand the app a
+    new secret replaces it (:func:`replace_legacy_app_secret`), the app has none.
+    """
+    # circular import: apps.protected_app_state -> member_records -> config
+    from kiro_crew.apps import protected_app_state
+
     try:
-        # restrict_to_owner (fail-loud), NOT fchmod_safe: fchmod_safe swallows
-        # OSError, which would defeat the cleanup-and-reraise below for this
-        # app secret. On POSIX applies chmod 0o600 by path; on
-        # Windows an owner-only DACL (fchmod doesn't exist on
-        # Windows, where an IS_POSIX no-op would let per-app secrets
-        # land readable by other local users).
-        platform_compat.restrict_to_owner(secret_path)
-        with os.fdopen(fd, "w") as f:
-            fd = -1  # fdopen took ownership; skip the redundant close below
-            f.write(secret)
-    except Exception:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        return protected_app_state.read_secret(app_name) or ""
+    except (OSError, UnicodeDecodeError, ValueError):
+        return ""
+
+
+def replace_legacy_app_secret(app_name: str) -> str:
+    """The stored secret, or a NEW one for an app an older version left a folder secret.
+
+    Called only where the new value reaches the app: the backend spawn, which hands it
+    over as ``KIROCREW_PROXY_SECRET``. The old file's bytes are never read, since a
+    sandbox could have read or planted them; the file is removed. An app with neither
+    gets none. Writes to disk, so never call it on the event loop.
+    """
+    # circular import: apps.protected_app_state -> member_records -> config
+    from kiro_crew.apps import protected_app_state
+
+    stored = read_app_secret(app_name)
+    if stored:
+        return stored
+    legacy = _legacy_secret_path(app_name)
+    with _app_secret_move_lock:
         try:
-            secret_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+            stored = protected_app_state.read_secret(app_name) or ""
+            if stored:
+                return stored
+            if not os.path.lexists(legacy):
+                return ""
+            secret = generate_app_secret()
+            protected_app_state.write_secret(app_name, secret)
+        except (OSError, UnicodeDecodeError, ValueError):
+            logger.warning("could not move an app secret out of the app's folder", exc_info=True)
+            return ""
+        with contextlib.suppress(OSError):
+            legacy.unlink()
+    logger.info(
+        "%s: replaced the value its folder held; this start hands over the new one", app_name
+    )
+    return secret
+
+
+def write_app_secret(app_name: str, secret: str) -> None:
+    """Store *app_name*'s secret where only the gateway reads it (:func:`read_app_secret`).
+
+    Any copy an older version left in the app's own folder is removed, so that folder
+    never holds a secret the gateway accepts.
+    """
+    # circular import: apps.protected_app_state -> member_records -> config
+    from kiro_crew.apps import protected_app_state
+
+    protected_app_state.write_secret(app_name, secret)
+    with contextlib.suppress(OSError):
+        _legacy_secret_path(app_name).unlink()
 
 
 def _evict_expired() -> None:

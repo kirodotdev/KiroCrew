@@ -69,6 +69,7 @@ export function useAppActions({
       sessionApproval: installed.manifest.permissions?.sessionApproval === true,
       memberThreads: installed.manifest.permissions?.memberThreads === true,
       workerAutoApprove: installed.manifest.permissions?.workerAutoApprove === true,
+      reachableByUserSessions: installed.manifest.permissions?.reachableByUserSessions,
     }
     if (row) return {
       name: row.name,
@@ -79,6 +80,7 @@ export function useAppActions({
       sessionApproval: row.manifest?.permissions?.sessionApproval === true,
       memberThreads: row.manifest?.permissions?.memberThreads === true,
       workerAutoApprove: row.manifest?.permissions?.workerAutoApprove === true,
+      reachableByUserSessions: row.manifest?.permissions?.reachableByUserSessions,
     }
     return { name }
   }

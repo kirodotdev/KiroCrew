@@ -45,6 +45,13 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   const [showOnboarding, setShowOnboarding] = useState(
     () => locallyImportOnboarded && locallyPrivacyAcked && !localStorage.getItem('mc-onboarded'),
   )
+  // Read by the derive effect without being one of its inputs: closing the
+  // importer must not re-run the derive (its onComplete/onSkipAll already set
+  // the next chapter, and a re-derive would close a tour `/onboarding` asked
+  // for). Mirrored in an effect declared before the derive, so the derive in the
+  // same commit reads the current value.
+  const agentImportOpen = useRef(false)
+  useEffect(() => { agentImportOpen.current = showAgentImport }, [showAgentImport])
   const continueTourAfterImport = useRef(false)
   // Where the mandatory Privacy chapter leads. 'customize' hands off to the
   // onboarding tour (the normal chapter order); 'finish' ends first run right
@@ -126,9 +133,19 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
     // for every case except the one it broke. Same split as the `onboarded`
     // effect above, which only ever closes the tour.
     if (!importOnboarded) setShowAgentImport(true)
-    setShowPrivacy((importOnboarded && !privacyAcked) || notice === 'show')
+    // One chapter at a time. A replayed importer is open while the flags still
+    // say a later chapter is due; deriving that chapter now would stack it on
+    // the importer. The importer's own exits open whatever comes next.
+    if (agentImportOpen.current) return
     setShowOnboarding(importOnboarded && privacyAcked && !onboarded)
-  }, [importOnboarded, privacyAcked, onboarded, themeBootReady, notice])
+  }, [importOnboarded, privacyAcked, onboarded, themeBootReady])
+  // The Privacy half of the derive, kept apart so the changed notice is not a
+  // tour input: Privacy's Continue ends the notice in the same step as it opens
+  // a tour `/onboarding` asked for, and re-deriving the tour then would close it.
+  useEffect(() => {
+    if (!themeBootReady || agentImportOpen.current) return
+    setShowPrivacy((importOnboarded && !privacyAcked) || notice === 'show')
+  }, [importOnboarded, privacyAcked, themeBootReady, notice])
   useEffect(() => {
     const replay = (event: Event) => {
       continueTourAfterImport.current =
@@ -144,9 +161,12 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   }, [])
   // Closing the changed-notice chapter ends it for this page load.
   const finishNotice = useCallback(() => setNotice(prev => (prev === 'show' ? 'done' : prev)), [])
+  // The changed notice came due while the importer was open; the derive left it
+  // for the importer's exits to open.
+  const noticeDue = notice === 'show'
   return {
     showAgentImport, setShowAgentImport, keepEmptyImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
-    continueTourAfterImport, privacyExit, endFirstRun, finishNotice,
+    continueTourAfterImport, privacyExit, endFirstRun, finishNotice, noticeDue,
   }
 }
 
@@ -161,7 +181,7 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
 }) {
   const {
     showAgentImport, setShowAgentImport, keepEmptyImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
-    continueTourAfterImport, privacyExit, endFirstRun, finishNotice,
+    continueTourAfterImport, privacyExit, endFirstRun, finishNotice, noticeDue,
   } = firstRun
   return (
     <>
@@ -187,6 +207,11 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
             setShowPrivacy(true)
             return
           }
+          if (noticeDue) {
+            privacyExit.current = wantsTour ? 'customize' : 'close'
+            setShowPrivacy(true)
+            return
+          }
           if (wantsTour) setShowOnboarding(true)
         }}
         onSkipAll={() => {
@@ -198,6 +223,11 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
           continueTourAfterImport.current = false
           if (!privacyAcked) {
             privacyExit.current = 'finish'
+            setShowPrivacy(true)
+            return
+          }
+          if (noticeDue) {
+            privacyExit.current = 'close'
             setShowPrivacy(true)
             return
           }
@@ -217,9 +247,10 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
           // its error instead of closing on a choice that was never stored.
           await markPrivacyAcked(ack)
           setShowPrivacy(false)
-          if (privacyExit.current === 'close') finishNotice()
-          else if (privacyExit.current === 'finish') markOnboarded()
-          else setShowOnboarding(true)
+          // Passing Privacy by any exit answers a changed notice that is due.
+          finishNotice()
+          if (privacyExit.current === 'finish') markOnboarded()
+          else if (privacyExit.current === 'customize') setShowOnboarding(true)
         }}
         // Hidden, not acknowledged: privacyAcked stays false, so the chapter
         // opens again at the next load.

@@ -953,6 +953,10 @@ async def _run_chat(
     # Stamped by ``api_chat``, carried through a recovery requeue by the entry's
     # ``cardOrigin`` meta, and read by nothing else.
     _card_origin: bool = False,
+    # The prompt is already in the linked channel conversation (``channel_prompt``):
+    # the mirror does not quote it there again. Stamped by ``api_chat`` and carried
+    # through the queue by the entry's ``promptOnChannel`` meta.
+    _prompt_on_channel: bool = False,
     # Who caused this turn, from the dispatch that knows -- a consumed queue
     # entry's enqueue-time ``kind`` tag, or an injector calling this runner
     # directly. Recorded in the session's log, so it must not be derivable from
@@ -1000,6 +1004,7 @@ async def _run_chat(
         _commands_off=_commands_off,
         _recovery_echo_owed=_recovery_echo_owed,
         _card_origin=_card_origin,
+        _prompt_on_channel=_prompt_on_channel,
         _turn_actor=_turn_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,

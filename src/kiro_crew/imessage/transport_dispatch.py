@@ -38,6 +38,7 @@ from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMESSAGE_CAPABILITIES
 from kiro_crew.messaging.commands import (
     COMPACT_ACCOUNT_CHANGED_TEXT,
+    arm_cancelled_turn,
     compact_refusal_plain_text,
     compact_unsupported_backend,
     context_recycle_warning,
@@ -416,6 +417,7 @@ class IMessageDispatcher:
                 else:
                     if outcome in ("acked", "timeout"):
                         ack = _STOPPING
+                        arm_cancelled_turn(self.sessions, session_key, outcome)
                     elif outcome == "no_turn":
                         ack = _NOTHING_RUNNING
                     else:

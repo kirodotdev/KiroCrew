@@ -43,12 +43,15 @@ def _doctor_unresolved_mcp_refs() -> None:
     consumer's knowledge. ``agent_spec_mcp_refs`` reads the mirror seam only, so a
     backend projecting outside ``providers/mirrors/`` (KAS) reads as unprojected;
     ``has_mirror`` tells the two cases apart. kiro-cli resolves its refs against the
-    spec it is handed, so a healthy install prints a clean row there.
+    spec it is handed, so a healthy install prints a clean row there. A mirror leaves
+    Crew's own identity-bound servers out on purpose (``mirror_withheld_crew_refs``),
+    so those refs get a ⏹ "withholds by design" row, never a dropped ref's ⚠.
     """
-    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs
+    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, mirror_withheld_crew_refs
 
     try:
         spec_found, rows = agent_spec_mcp_refs(_MAIN_AGENT_NAME)
+        by_design = mirror_withheld_crew_refs(_MAIN_AGENT_NAME)
     except Exception:
         # Triage must survive an unreadable spec or registry; the rows are advisory.
         return
@@ -56,10 +59,26 @@ def _doctor_unresolved_mcp_refs() -> None:
         print("  mcp tool refs: \u23f9 no default agent spec on disk yet")
         return
 
+    explained = False
     for backend, unresolved, has_mirror in rows:
         label = agents._backend_policy_label(backend)
+        withheld = [ref for ref in unresolved if ref in by_design] if has_mirror else []
+        if withheld:
+            unresolved = [ref for ref in unresolved if ref not in withheld]
+            shown = ", ".join(render._safe_display(ref) for ref in withheld)
+            print(f"  mcp tool refs: \u23f9 {label} withholds by design: {shown}")
+            if not explained:
+                # Once, not per backend: the reason is the same on every such mirror.
+                explained = True
+                render._print_wrapped(
+                    "These are Kiro Crew's own servers that act for one session. These "
+                    "backends cannot hand them the session's identity, so their "
+                    "projections leave them out rather than mount servers that would "
+                    "refuse every call; nothing needs fixing."
+                )
         if not unresolved:
-            print(f"  mcp tool refs: \u2705 {label} \u2014 every @server ref resolves")
+            if not withheld:
+                print(f"  mcp tool refs: \u2705 {label} \u2014 every @server ref resolves")
             continue
         # Read off a hand-editable spec a cloned repo or an installed app can
         # author, so it can carry OSC/ANSI sequences that spoof the lines around

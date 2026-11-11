@@ -15,6 +15,7 @@ from typing import Any
 
 from kiro_crew._sqlite_compat import is_cjk_char
 from kiro_crew.dashboard.handlers._shared import _redact_memory_field
+from kiro_crew.memory_history_stamps import is_history_day_header, is_history_stamp
 
 #: Most semantic rows one graph request reads, in key order with lessons excluded
 #: (they are drawn from ``get_lessons``), through the key index so the read stops
@@ -150,22 +151,13 @@ def _build_memory_graph(
     # --- History (recent days only) ---
     try:
         hist = mem.read_recent_history(days=14) or ""
-        # ``append_history`` writes a ``# YYYY-MM-DD`` file header and a
-        # ``#### HH:MM <%Z>`` header above each entry. They carry no content of
-        # their own, so drawing them only adds empty nodes. ``%Z`` is an
-        # abbreviation ("UTC", "CST"), a numeric offset ("+08") or, on Windows,
-        # a full name ("China Standard Time").
-        timestamp_re = re.compile(
-            r"^#{1,4}\s+\d{1,2}:\d{2}"
-            r"(?:\s+(?:[A-Z]{2,5}|[+-]\d{2}(?::?\d{2})?|(?:[A-Z][a-z]+\s+)+Time))?$"
-        )
-        date_re = re.compile(r"^#{1,4}\s+\d{4}-\d{2}-\d{2}$")
         for line in hist.splitlines():
             stripped = line.strip()
             m = re.match(r"^#{1,4}\s+(.+)", stripped)
             if m:
-                # Skip timestamp and date headers
-                if timestamp_re.match(stripped) or date_re.match(stripped):
+                # ``append_history``'s day header and per-entry time stamp carry
+                # no content of their own, so drawing them only adds empty nodes.
+                if is_history_day_header(stripped) or is_history_stamp(stripped):
                     continue
                 raw = str(_redact_memory_field(m.group(1).strip()))
                 _add("hist", raw[:80], "history", raw)

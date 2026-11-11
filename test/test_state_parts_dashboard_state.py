@@ -616,7 +616,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, approval_id: 'str', source: 'str', tool: 'str', *, tool_input: "
         "'str' = '', tool_purpose: 'str' = '', slot: 'str' = '', is_background: "
-        "'bool' = False, run_task_id: 'str' = '', task_index: 'int | None' = None) -> 'bool'",
+        "'bool' = False, run_task_id: 'str' = '', task_index: 'int | None' = None, "
+        "on_host_decision: 'Callable[[str], object] | None' = None) -> 'bool'",
     ),
     "request_question": (
         "function",
@@ -756,7 +757,8 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "update_available: 'bool | None' = None, update_can_apply: 'bool' = "
         "False, update_check_status: 'str' = 'unchecked', update_command: 'str' = "
         "'', update_latest_version: 'str' = '', update_latest_version_display: "
-        "'str' = '', update_channel: 'str' = '', update_channel_move_pending: "
+        "'str' = '', update_channel: 'str' = '', update_upcoming: "
+        "'dict[str, Any] | None' = None, update_channel_move_pending: "
         "'bool' = False, update_managed_by: 'str' = '', update_policy_file: 'str' "
         "= '', update_commits_ahead: 'int' = 0, update_commits_behind: 'int' = 0, "
         "update_last_checked_at: "

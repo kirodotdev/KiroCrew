@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew import mcp_core
+from kiro_crew import conductor_patrol, mcp_core
 from kiro_crew.mcp_tools import control
 from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.monitoring.limits import runtime_ceiling_secs
@@ -49,6 +49,25 @@ def test_a_work_ledger_patrol_ignores_the_bounds_it_was_given(emitted):
     assert payload["max_cycles"] == 0
     assert payload["max_runtime_secs"] == runtime_ceiling_secs()
     assert "with NO cycle cap" in out
+
+
+@pytest.mark.parametrize("interval", [None, 90, 900])
+def test_a_work_ledger_patrol_arms_at_the_one_patrol_interval(emitted, interval):
+    """A self-armed patrol matches the gateway's default one: the model's interval,
+    or none, arms at ``PATROL_INTERVAL_SECS`` (300 s)."""
+    args: dict[str, Any] = {"message": "Patrol the ledger.", "watch": "work-ledger"}
+    if interval is not None:
+        args["interval_secs"] = interval
+    out = control.monitor_start("monitor_start", args)
+    (payload,) = emitted
+    assert payload["idle_secs"] == conductor_patrol.PATROL_INTERVAL_SECS == 300
+    assert "every 300s" in out
+
+
+def test_a_loop_without_the_ledger_watch_keeps_its_own_interval(emitted):
+    control.monitor_start("monitor_start", {"message": PR, "interval_secs": 90})
+    (payload,) = emitted
+    assert payload["idle_secs"] == 90
 
 
 PR = "Watch https://github.com/acme/widgets/pull/42 for CI."
@@ -109,3 +128,38 @@ async def test_the_applier_drops_a_default_cap_when_the_loop_is_gated_after_all(
             producer_is_channel=False,
         )
     assert authz.await_args.kwargs["max_cycles"] == cap
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "patch_in", "idle"),
+    [
+        pytest.param("", {"watch": "work-ledger", "idle_secs": 1800}, 300, id="adds-the-watch"),
+        pytest.param("work-ledger", {"idle_secs": 900}, 300, id="retimes-a-ledger-loop"),
+        pytest.param("", {"idle_secs": 900}, 900, id="plain-loop-keeps-its-own"),
+    ],
+)
+async def test_monitor_update_holds_a_ledger_patrol_at_the_one_interval(kind, patch_in, idle):
+    """The repair the prompt prescribes, ``monitor_update(watch="work-ledger")``, and a
+    later interval edit on a ledger loop both land at ``PATROL_INTERVAL_SECS``."""
+    from kiro_crew.dashboard import session_directive_apply as sda
+
+    loop = SimpleNamespace(
+        id="loop-1",
+        active=True,
+        gate=True,
+        goal_token="",
+        cycle_count=0,
+        max_cycles=0,
+        monitor=SimpleNamespace(kind=kind) if kind else None,
+    )
+    svc = MagicMock()
+    svc.get_by_slot.return_value = loop
+    authz = AsyncMock(return_value=(loop, None, 200))
+    with (
+        patch.object(sda, "_binding", return_value="chat-9-1"),
+        patch("kiro_crew.autonudge.get_instance", return_value=svc),
+        patch("kiro_crew.autonudge_authz.authorize_and_update_nudge", authz),
+    ):
+        await sda._monitor_update(MagicMock(_slots={}), "chat-9-1", {"patch": dict(patch_in)})
+    assert authz.await_args.kwargs["idle_secs"] == idle

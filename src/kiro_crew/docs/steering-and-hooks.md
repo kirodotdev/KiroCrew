@@ -46,10 +46,12 @@ cannot be globbed skips only itself.
 KAS loads both roots itself and honours `inclusion: manual` and `fileMatch`. So
 on a KAS session the shipped `file://.kiro/steering/**/*.md` entry is not sent
 when KAS already loads every file it names; otherwise those files would load on
-every turn, and twice. The entry is still sent when the workspace tree may hold an
-`inclusion: auto` file, a link, or a file Crew cannot read. The tree is checked
-when the session starts, so such a file added during a session loads from the
-next session (`src/kiro_crew/acp/kas_steering.py`).
+every turn, and twice. When the workspace tree may hold `inclusion: auto` files,
+Crew sends just those files, each by its own path, in the entry's place. The entry
+itself is still sent when the tree holds a link or a folder Crew cannot read, or
+when KAS might read those paths otherwise or not load them all in full. The tree
+is checked when the session starts, so such a file added during a session loads
+from the next session (`src/kiro_crew/acp/kas_steering.py`).
 
 A workspace file therefore needs a project bound to the chat slot. With no
 resolvable project the Steering files tab offers only the global root, and
@@ -481,6 +483,26 @@ a plain exit 1, a crash, a timeout, a command that will not execute — logs a
 warning and the tool runs, as on kiro-cli, so one broken hook cannot stop every
 tool call.
 
+**A policy can let only named hooks run.** The `capabilities.script_hooks` row
+of a policy or profile, such as the one bound to scheduled jobs, takes an inner
+`hooks` list beside `events`:
+
+```json
+{"capabilities": {"script_hooks": {"enabled": true, "scopes": {
+  "hooks": {"mode": "allow", "allow": ["my-agent/PreToolUse/2"]}}}}}
+```
+
+An agent spec's hook is named `<agent>/<Event>/<n>`, where `n` is the `#n` in
+the name the log gives it (`my-agent spec hook (PreToolUse #2)`). A Hooks-page
+hook is named by its name. The refusal prints the exact name to copy. A hook
+the list leaves out is refused, and a refused `preToolUse` hook blocks the
+call. With no `hooks` list every hook runs. The list only decides whether a
+hook runs: a listed hook still meets the blocked-commands list and the sandbox,
+as in a chat. The number is the hook's place in the spec, so reordering the
+spec's hooks changes which one a name means. The list applies where Kiro Crew
+fires the hooks (Kiro Agent, goose, opencode, Strands); on the kiro-cli
+backend kiro-cli runs them itself.
+
 **On kiro-cli's v2 engine a `userPromptSubmit` hook reads the whole prompt.** A
 session runs on that older engine when a Kiro CLI choice meets a kiro-cli without
 its v3 engine (the gateway log then says Kiro Crew "keeps running kiro-cli's v2
@@ -596,6 +618,15 @@ The file name starts with a letter and holds only lowercase letters, digits and
 hyphens. A name some surface already uses as a command (`/help`, `/new`,
 `/review`, a channel's own commands) is not turned into one, so the command
 means the same thing everywhere.
+
+Built-in names win, including ones added after you saved the prompt. When an
+update makes a built-in command of a name you already use, such as `/fork`, the
+file stays where it is but stops answering to that name: its row leaves the `/`
+menu, and typing the name runs the built-in command. `kirocrew doctor` names
+each such file under **Saved prompts**. Rename the file to get the command
+back; `@<name>` still finds it under its old name. The reserved names
+are listed in `_RESERVED_TOKENS` in `src/kiro_crew/quick_prompts.py`, and each
+channel's own commands are on its integration page.
 
 The difference from a steering file is when it applies. A steering document is
 loaded without you asking for it, as far as its mode and backend allow; a

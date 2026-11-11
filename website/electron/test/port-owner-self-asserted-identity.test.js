@@ -24,6 +24,7 @@ const ROOT = path.join(__dirname, "..");
  *  string literal from reading as the start of a line comment. */
 function code(file) {
   return fs.readFileSync(path.join(ROOT, file), "utf8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
     .replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
@@ -91,6 +92,11 @@ const OCCUPANCY_SITES = [
   {
     what: "unresponsive holder: nothing holds the port, so spawn as before",
     code: 'if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";',
+    times: 1,
+  },
+  {
+    what: "client-only launch fallback: open the app's own forward only on a port nothing listens on",
+    code: 'if ((await probeGatewayPortBinding(PORT)) !== "free") return;',
     times: 1,
   },
 ];

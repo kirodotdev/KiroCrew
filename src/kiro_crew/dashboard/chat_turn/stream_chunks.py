@@ -151,6 +151,8 @@ async def _on_text_chunk(turn: _ChatTurn, event, *, released: bool = False) -> N
     if not turn.has_assistant_text:
         _compaction_text_offset = 0
         turn._compaction_text_offset = _compaction_text_offset
+    if not event.control_notice and safe_chunk.strip():
+        slot._turn_wrote_text = True
     turn.append_assistant_text(safe_chunk)
     if event.control_notice:
         # A backend control notice that arrived as assistant text

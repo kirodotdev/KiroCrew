@@ -129,6 +129,10 @@ def write_finished_result(
 _OWED_TOMBSTONES_MAX = 4096
 _OWED_TOMBSTONE_MAX_BYTES = 16_384
 _owed_tombstones: dict[str, dict[str, object]] = {}
+#: Where :func:`clear_tombstone` moves a tombstone it clears. Only
+#: ``tombstone.json`` keeps a folder out of orphan recovery; this file is read
+#: only by the next tombstone write, to carry the run's ending forward.
+_CLEARED_TOMBSTONE = "tombstone.cleared.json"
 #: Held for a whole retry, so two retries never write at once (see
 #: :func:`retry_owed_tombstones`).
 _owed_retry_lock = threading.Lock()
@@ -321,8 +325,13 @@ def _write_tombstone_file(
     # is absent would put synchronous file I/O on sync writers called from a
     # coroutine.
     carried: dict[str, object] = {}
+    from_cleared = False
     if "outcome" not in extra:
-        prior, _present = _read_tombstone_at(d / "tombstone.json")
+        prior, present = _read_tombstone_at(d / "tombstone.json")
+        if not present:
+            # A tombstone the shutdown drain cleared (:func:`clear_tombstone`)
+            # still holds the run's ending, which this write carries the same way.
+            prior, from_cleared = _read_tombstone_at(d / _CLEARED_TOMBSTONE)
         if isinstance(prior, dict):
             if prior.get("outcome"):
                 carried["outcome"] = prior["outcome"]
@@ -366,6 +375,12 @@ def _write_tombstone_file(
         # Retried with the same fields and the same ``died``: the tombstone a
         # retry writes describes this ending, not the moment space came back.
         _owe_tombstone(agent_id, d, cause, recovery_action, {**extra, "died": tombstone["died"]})
+    else:
+        if from_cleared:
+            try:
+                (d / _CLEARED_TOMBSTONE).unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Could not remove %s's cleared tombstone", agent_id, exc_info=True)
     state_sid = cleanup_identity.get("session_id")
     if not live_cleanup_identities and isinstance(state_sid, str) and state_sid:
         # The run folder is agent-writable. Preserve only the retention/exemption
@@ -499,14 +514,19 @@ def clear_tombstone(agent_id: str) -> bool:
     still hand the result to the parent, losing it permanently.
 
     Clearing it re-admits the folder to the next start's reconciliation, which
-    sees ``result.txt`` and re-delivers. Returns True if a tombstone was
-    removed. Best-effort: never raises to the caller.
+    sees ``result.txt`` and re-delivers. The file is renamed to
+    :data:`_CLEARED_TOMBSTONE` rather than deleted, so the tombstone that
+    reconciliation writes still carries the run's ``outcome``, ``died``,
+    ``leaked_process`` and ``taskq_attempt``: without them a stopped run reads as
+    completed and a process its kill left standing is forgotten. Returns True if
+    a tombstone was cleared. Best-effort: never raises to the caller.
     """
     try:
-        p = _agent_dir(agent_id) / "tombstone.json"
-        existed = p.exists()
-        p.unlink(missing_ok=True)
-        return existed
+        d = _agent_dir(agent_id)
+        os.replace(d / "tombstone.json", d / _CLEARED_TOMBSTONE)
+        return True
+    except FileNotFoundError:
+        return False
     except OSError:
         logger.warning("clear_tombstone failed for %s", agent_id, exc_info=True)
         return False

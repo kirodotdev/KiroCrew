@@ -1011,13 +1011,20 @@ class TeamsClient:
 
     # ── Outbound app-credential token ──
 
-    async def _get_app_token(self, *, force: bool = False) -> str:
+    async def _get_app_token(self, *, force: bool = False, rejected: str = "") -> str:
+        """The cached app token, minted when absent, expired or *force*d.
+
+        *rejected* is a token the Connector just answered 401 for. It is replaced
+        only while it is still the cached one, inside the lock, so concurrent
+        callers rejected for the same token wait for ONE mint and then share it.
+        """
         now = time.monotonic()
-        if not force and self._token and now < self._token_expiry:
+        if not force and not rejected and self._token and now < self._token_expiry:
             return self._token
         async with self._token_lock:
             now = time.monotonic()
-            if not force and self._token and now < self._token_expiry:
+            stale = bool(rejected) and self._token == rejected
+            if not force and not stale and self._token and now < self._token_expiry:
                 return self._token
             session = await self._ensure_session()
             url = _TOKEN_URL_TMPL.format(tenant=self._tenant_id)
@@ -1327,6 +1334,12 @@ class TeamsClient:
                     current = urllib.parse.urljoin(current, location)
                     continue
                 if resp.status in (401, 403):
+                    sent = headers.get("Authorization", "")
+                    if resp.status == 401 and sent and sent == f"Bearer {self._token}":
+                        # The cached token can be stale after a host sleep (see
+                        # ``_post_activity``); the next caller mints a fresh one.
+                        # Only while it is still the token this request carried.
+                        self._token_expiry = 0.0
                     raise _AttachmentUnauthorized(f"HTTP {resp.status}")
                 resp.raise_for_status()
                 written = 0
@@ -1446,10 +1459,13 @@ class TeamsClient:
             # request's own serialization of the same object would.
             activity = self._fit_activity(activity)
             session = await self._ensure_session()
+            refreshed = False
+            rejected = ""
             for attempt in range(_SEND_ATTEMPTS):
                 # Re-read the token each attempt: a retry may cross the refresh
                 # boundary, and a 401 on attempt two would otherwise be permanent.
-                token = await self._get_app_token()
+                token = await self._get_app_token(rejected=rejected)
+                rejected = ""
                 async with session.request(
                     method,
                     url,
@@ -1457,6 +1473,15 @@ class TeamsClient:
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=aiohttp.ClientTimeout(total=_CONNECTOR_API_TIMEOUT),
                 ) as resp:
+                    if resp.status == 401 and not refreshed and attempt < _SEND_ATTEMPTS - 1:
+                        # The cached token's expiry is measured on the monotonic
+                        # clock, which stops while the host sleeps, so a token
+                        # Azure AD already expired can still look fresh. Replace
+                        # it once; a second 401 is a real credential fault.
+                        refreshed = True
+                        rejected = token
+                        last_detail = "HTTP 401"
+                        continue
                     if resp.status in _RETRY_STATUSES and attempt < _SEND_ATTEMPTS - 1:
                         await asyncio.sleep(
                             self._retry_delay(resp.headers.get("Retry-After"), attempt)

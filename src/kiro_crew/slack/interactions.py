@@ -1059,6 +1059,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.slack.interactions_modals import _handle_config_submission  # noqa: F401
     from kiro_crew.slack.interactions_modals import _handle_voice_config_submission  # noqa: F401
     from kiro_crew.slack.interactions_settings import _refresh_channels_modal  # noqa: F401
+    from kiro_crew.slack.interactions_settings import _save_then_apply  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PAYLOAD_CAP  # noqa: F401
     from kiro_crew.slack.interactions_options import _ACTION_PREFIX  # noqa: F401
     from kiro_crew.slack.interactions_options import _ALREADY_ANSWERED  # noqa: F401

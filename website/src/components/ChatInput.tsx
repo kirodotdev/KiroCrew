@@ -186,6 +186,7 @@ function ChatInput({
   pendingSessions = [],
   pendingQuote = null,
   onRemoveQuote,
+  onJumpToQuote,
   onRemoveSessionRef,
   isMac = false,
   onDrop,
@@ -224,6 +225,7 @@ function ChatInput({
   onStop,
   continuable = false,
   continueIsRecovery = false,
+  resumeAfterSignIn = false,
   restoredQueueCount = 0,
   onContinue,
   continuing = false,
@@ -615,7 +617,9 @@ function ChatInput({
   const resumeOffered = !!(continuable && onContinue && continueIsRecovery)
   const continuePlaceholder = !resumeOffered ? '' : restoredQueueCount > 1
     ? i18nT('components.chatInput.turn_interrupted_restored_queue', { count: restoredQueueCount })
-    : i18nT(restoredQueueCount === 1 ? 'components.chatInput.turn_interrupted_restored_card' : 'components.chatInput.turn_interrupted_press_resume')
+    : i18nT(restoredQueueCount === 1 ? 'components.chatInput.turn_interrupted_restored_card'
+      : resumeAfterSignIn ? 'components.chatInput.turn_interrupted_sign_in_first'
+      : 'components.chatInput.turn_interrupted_press_resume')
   const continueLabel = i18nT(continueIsRecovery
     ? 'components.chatInput.resume_interrupted_turn'
     : 'components.chatInput.continue_thread')
@@ -1472,7 +1476,7 @@ function ChatInput({
             quoted message is the first thing the reply says, so it is drawn
             where the reply is written rather than in the strips above (those
             are attachments -- things sent ALONG with the text). */}
-        {pendingQuote && <QuoteCard quote={pendingQuote} variant="composer" onRemove={onRemoveQuote} />}
+        {pendingQuote && <QuoteCard quote={pendingQuote} variant="composer" onRemove={onRemoveQuote} onJump={pendingQuote.ts ? onJumpToQuote : undefined} />}
         {lexicalComposer && !lexicalLoadFailed ? (
           <ComposerLoadBoundary onError={() => setLexicalLoadFailed(true)}>
             <Suspense fallback={

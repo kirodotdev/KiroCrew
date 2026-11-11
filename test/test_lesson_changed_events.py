@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from app_token_records import mark_apps_live
 from body_stream_helpers import attach_body
 
 from kiro_crew import lesson_events
@@ -377,6 +378,7 @@ class TestAppTokenReachesTheLessonAndSkillReads:
         )
         app.router.add_get("/api/lessons", reached)
         app.router.add_get("/api/skills", reached)
+        mark_apps_live(monkeypatch, {self.APP})
         credential = token_auth.generate_token(self.APP, app=self.APP)
         async with TestClient(TestServer(app)) as client:
             resp = await client.get(path, params={"token": credential})

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kiro_crew import mcp_discovery
+from kiro_crew import mcp_discovery, mcp_oauth_discovery
 from kiro_crew.dashboard.chat_runner import _mark_mcp_oauth_completed, _on_mcp_oauth_request
 from kiro_crew.dashboard.chat_utils import _expire_dead_child_oauth_meta
 from kiro_crew.dashboard.state import _ChatSlot
@@ -42,6 +42,18 @@ class _Client:
 
     def mcp_session_report(self):
         return None
+
+    def set_mcp_sign_in_ended_hook(self, hook):
+        self.ended_hook = hook
+
+    def mcp_sign_in_ended(self, server_name):
+        return server_name in getattr(self, "ended", ())
+
+    def end_attempt(self, server_name):
+        """What the runtime does: free the sign-in slot, then call the hook."""
+        self.ended = {server_name}
+        if hasattr(self, "ended_hook"):
+            self.ended_hook(server_name)
 
 
 def _turn(slot: _ChatSlot):
@@ -115,6 +127,74 @@ async def test_banner_of_a_dead_child_expires_tagged(tmp_path, monkeypatch):
     assert meta["expired"] is True
     assert "oauth_url" not in meta
     assert meta["card_owned"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_ended_sign_in_attempt_withdraws_its_link_and_the_next_offer_is_live(
+    tmp_path, monkeypatch
+):
+    """A KAS attempt that ends unconnected closes its callback listener, so the link
+    it showed is dead. The hook the arm installs withdraws it, open tabs
+    included, and the next offer for the server draws a live card."""
+    _own(tmp_path, monkeypatch, {})
+    slot = _ChatSlot("s1")
+    turn = _turn(slot)
+    await _on_mcp_oauth_request(turn, _event("figma"))
+    turn.client.ended_hook("figma")
+    ended = slot.messages[0]["meta"]
+    assert (ended["expired"], ended["expired_reason"]) == (True, "attempt_ended")
+    assert "oauth_url" not in ended
+    kind, payload = turn.state.broadcasts[-1]
+    assert (kind, payload["meta"]["oauth_url"]) == ("chat_message_update", "")
+    await _on_mcp_oauth_request(turn, _event("figma"))
+    assert slot.messages[1]["meta"]["oauth_url"] == _event("figma").oauth_url
+    assert "superseded" not in slot.messages[0]["meta"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("window", ["queued", "discovery"])
+async def test_an_attempt_that_ends_before_its_row_exists_still_withdraws_it(
+    tmp_path, monkeypatch, window
+):
+    """The attempt can end before its row exists: while its link waits in the queue
+    behind a prompt the dispatch loop is answering, or while endpoint discovery
+    outlasts a short connect timeout. That row must still arrive withdrawn."""
+    _own(tmp_path, monkeypatch, {})
+    slot = _ChatSlot("s1")
+    turn = _turn(slot)
+    if window == "queued":
+        turn.client.end_attempt("figma")
+    else:
+
+        async def _attempt_ends_during_discovery(server_name, oauth_url):
+            turn.client.end_attempt(server_name)
+            return False
+
+        monkeypatch.setattr(
+            mcp_oauth_discovery,
+            "approve_discovered_oauth_endpoint",
+            _attempt_ends_during_discovery,
+        )
+    await _on_mcp_oauth_request(turn, _event("figma"))
+    ended = slot.messages[0]["meta"]
+    assert (ended["expired"], ended["expired_reason"]) == (True, "attempt_ended")
+    assert "oauth_url" not in ended
+
+
+@pytest.mark.asyncio
+async def test_a_late_success_still_turns_an_ended_attempts_card_green(tmp_path, monkeypatch):
+    """The server connecting after its attempt ended is still a sign-in."""
+    _own(tmp_path, monkeypatch, {})
+    slot = _ChatSlot("s1")
+    turn = _turn(slot)
+    await _on_mcp_oauth_request(turn, _event("figma"))
+    turn.client.ended_hook("figma")
+    _mark_mcp_oauth_completed(turn.state, slot, "figma", success=False, error="late")
+    assert "failed" not in slot.messages[0]["meta"]
+    _mark_mcp_oauth_completed(turn.state, slot, "figma", success=True)
+    meta = slot.messages[0]["meta"]
+    assert meta["completed"] is True
+    assert "expired" not in meta and "expired_reason" not in meta
 
 
 @pytest.mark.asyncio

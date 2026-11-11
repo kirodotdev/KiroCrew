@@ -12,8 +12,9 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_capability_projection_gaps``,
 ``_channel_id``, ``_child_pids``, ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
-``_claude_settings_written``, ``_confirmed_capability_session``, ``_consult_future``,
-``_copilot_mcp_config_path``, ``_crew_bridge_snapshots``,
+``_claude_settings_written``, ``_claude_worker_builtin_tools``,
+``_confirmed_capability_session``, ``_consult_future``, ``_copilot_mcp_config_path``,
+``_crew_bridge_snapshots``,
 ``_fork_request``, ``_kill_sent``, ``_last_activity``, ``_last_stop_reason``,
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
 ``_mcp_ref_spec``,
@@ -678,6 +679,7 @@ def _reset_state(self: AcpClient) -> None:
     self._spec_write_allowlist = None
     self._spec_write_cwd = ""
     self._spec_zero_tools = False
+    self._claude_worker_builtin_tools = None
     self._session_mcp_unhonoured = frozenset()
     self._session_harness_deny_rules = ()
     self._opencode_denies_in_force = None

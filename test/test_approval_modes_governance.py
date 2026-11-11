@@ -3,8 +3,9 @@
 
 Mirrors ``test_agent_backend_governance.py``: a policy is installed as the
 boot-frozen ceiling on the active context, and ``approval_mode_permitted`` reads
-it back through the same ``governance_permits`` chokepoint the app uses at
-runtime — so these tests pin the real enforcement path, not a parallel one.
+it back through the same verdicts the app uses at runtime (``governance_permits``
+for ``yolo``, ``session_mode_permitted`` for ``trust`` and ``trust_reads``) — so
+these tests pin the real enforcement path, not a parallel one.
 
 The parse-time ``normal``-floor rejection is pinned directly on ``parse_policy``:
 denying the interactive floor would leave no selectable approval mode, and the
@@ -22,7 +23,7 @@ from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.context import PlatformCompositionError
-from kiro_crew.platform.governance import parse_policy
+from kiro_crew.platform.governance import Decision, parse_policy
 from kiro_crew.safety_override import approval_mode_permitted
 
 
@@ -97,6 +98,33 @@ class TestTrustModesAreDeniable:
         assert approval_mode_permitted("trust_reads") is True
         assert approval_mode_permitted("normal") is True
 
+    @pytest.mark.parametrize(
+        ("rule", "expected"),
+        [
+            (None, {"trust": True, "trust_reads": True}),
+            (
+                {"mode": "allow", "allow": ["normal", "trust_reads"]},
+                {"trust": False, "trust_reads": True},
+            ),
+        ],
+    )
+    def test_the_two_modes_follow_session_mode_permitted_when_governance_fails_closed(
+        self, monkeypatch, rule, expected
+    ):
+        """One verdict: only the installed rule decides, never a HOST-profile error."""
+        from kiro_crew.approval_mode_policy import session_mode_permitted
+
+        def _failed_closed(*a, **kw):
+            # What ``governance_permits(..., fail_closed=True)`` answers on an
+            # evaluation error.
+            return Decision(False, "profile store unreadable")
+
+        _install(_policy(rule) if rule is not None else None)
+        monkeypatch.setattr(gp, "governance_permits", _failed_closed)
+        for mode, permitted in expected.items():
+            assert session_mode_permitted(mode) is permitted
+            assert approval_mode_permitted(mode) is permitted
+
     def test_an_unknown_mode_id_is_refused(self):
         _install(_policy({"mode": "deny", "deny": ["yolo"]}))
         assert approval_mode_permitted("trust_all") is False
@@ -135,9 +163,6 @@ class TestNonDeniableHoldsAtRuntimeNotJustParseTime:
 
         # ``normal`` never reaches governance, so the error cannot turn into a denial.
         assert approval_mode_permitted("normal") is True
-        # ``trust`` is governed now: it reaches governance, whose caller fails closed.
-        with pytest.raises(RuntimeError):
-            approval_mode_permitted("trust")
 
     def test_the_deniable_mode_still_fails_closed_on_an_evaluation_error(self):
         """The short-circuit must not weaken the mode the scope DOES govern."""

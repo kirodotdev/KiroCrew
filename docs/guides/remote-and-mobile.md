@@ -286,11 +286,14 @@ Works on macOS, Linux, and Windows (OpenSSH ships with Windows 10+; the config
 file is at `%USERPROFILE%\.ssh\config`).
 
 A hand-rolled tunnel dies whenever the laptop sleeps. The desktop app can hold
-it for you instead: tick **Keep an SSH tunnel to this crew open** in the
-**Add/Edit Remote Crew** form the "no gateway is answering" dialog opens, or in
-**Set Remote Host…** on the app's own launch tab (where you can also turn it off
-later), and the app keeps the forward up and rebuilds it after sleep
-(macOS and Linux; see `website/electron/README.md`).
+it for you instead: **Keep an SSH tunnel to this crew open** starts ticked when
+you add a crew in the **Add/Edit Remote Crew** form the "no gateway is answering"
+dialog opens, or in **Set Remote Host…** on the app's own launch tab (where you
+can also turn it off later), and the app keeps the forward up and rebuilds it
+after sleep (macOS and Linux; see `website/electron/README.md`). With the local
+gateway off, the app also opens it for a crew saved unticked when nothing else
+answers or listens on that port at launch, until you quit or save the crew
+unticked again.
 
 If your browser reaches the dashboard on a *different* local port than the
 remote one (`ssh -L 8777:localhost:5476`), the browser sends Origin

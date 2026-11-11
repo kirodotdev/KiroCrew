@@ -719,6 +719,9 @@ export const subagentReducers = {
     const a = upsertSlotSub(state, slot, id)
     if (!a) return
     a.stalled = action.payload.stalled
+    // A card shows one health state at a time: the retry writers clear the
+    // stall, so a stall clears the retry. An un-stall leaves retrying alone.
+    if (action.payload.stalled) a.retrying = false
     // Keep the idle span with the flag it justifies, and clear it on the
     // un-stall frame so a resumed agent cannot keep showing a stale
     // "no activity for Ns" from its previous quiet stretch.
@@ -742,6 +745,7 @@ export const subagentReducers = {
       if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
       if (typeof u.stalled === 'boolean') {
         a.stalled = u.stalled
+        if (u.stalled) a.retrying = false
         // Mirror the per-event frame: the idle span lives and dies with the
         // flag, so a coalesced un-stall cannot leave a stale idle figure.
         a.idleSecs = u.stalled ? u.idle_secs : undefined
@@ -891,7 +895,10 @@ export const subagentReducers = {
     const existing = subs[d.id]
     // Live events can interleave with replay because subscription starts before
     // snapshots are sent. Never let a stale running snapshot demote a terminal card.
+    // A card reconciliation retired for a gone approval is the one `stopped`
+    // card a replay may revive: the replay naming the run proves it launched.
     if (existing?.status === 'done' || existing?.status === 'error') return
+    if (existing?.status === 'stopped' && !isSpawnApprovalRetired(existing)) return
     // For the same reason, a snapshot collected before a live tool frame the
     // card already applied carries a lower tool count. Its tool and progress
     // fields are older than the card's, so it only fills the identity a live
@@ -959,8 +966,9 @@ export const subagentReducers = {
       // until the next live frame. Carry it forward for the same reason the
       // model pill does above: a reconnect must not blank live-only state.
       // A snapshot never turns retrying ON (it has no attempt field); it only
-      // preserves what a live frame already set.
-      retrying: existing?.retrying,
+      // preserves what a live frame already set, and a stalled snapshot drops
+      // it so the card never holds both health states.
+      retrying: existing?.retrying && !stalled,
       approval_id: existing?.approval_id, approval_target: existing?.approval_target, approving: existing?.approving,
     }
     // A reconnect replays every running card. One that repeats what the card

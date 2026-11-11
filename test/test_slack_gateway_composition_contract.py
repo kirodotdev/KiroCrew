@@ -248,6 +248,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "(self, origin_key: 'str', text: 'str', *, actor_key: 'str') -> 'bool'",
         ),
         ("_cron_job_is_silent", "method", "(self, parent_key: 'str') -> 'bool'"),
+        ("_cron_dm_user", "method", "(self, job: 'CronJob') -> 'str'"),
     ),
     "mcp_broker": (
         ("_init_mcp_discovery", "method", "(self) -> 'None'"),
@@ -297,10 +298,14 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_wire_mcp_gateway_dashboard", "method", "(self) -> 'None'"),
     ),
     "memory_lifecycle": (
-        ("_initialize_memory_worker", "method", "(self) -> 'bool'"),
+        ("_initialize_memory_worker", "method", "(self, dashboard_state: 'Any' = None) -> 'bool'"),
         ("_stop_memory_startup", "method", "(self) -> 'None'"),
         ("_start_memory_after_ready", "method", "(self) -> 'None'"),
-        ("_schedule_memory_preparation", "method", "(self) -> \"'asyncio.Task[None] | None'\""),
+        (
+            "_schedule_memory_preparation",
+            "method",
+            "(self, dashboard_state: 'Any' = None) -> \"'asyncio.Task[None] | None'\"",
+        ),
         ("_wait_for_memory_preparation", "async method", "(self) -> 'bool'"),
         ("_repair_member_memory_once", "method", "(self) -> 'None'"),
         ("_repair_member_memory", "async method", "(self) -> 'None'"),
@@ -604,7 +609,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_acquire_with_model_fallback",
             "async method",
-            "(self, job: 'CronJob', cron_execution: 'ExecutionContext', key: 'str', agent_id: 'str | None', cwd: 'str | None' = None, crew_agent: 'str | None' = None, *, execution: 'ExecutionContext | None' = None, replace_execution: 'bool' = False) -> \"'tuple[LLMProvider, bool, bool, bool]'\"",
+            "(self, job: 'CronJob', cron_execution: 'ExecutionContext', key: 'str', agent_id: 'str | None', cwd: 'str | None' = None, crew_agent: 'str | None' = None, *, execution: 'ExecutionContext | None' = None, replace_execution: 'bool' = False) -> \"'tuple[LLMProvider, bool, bool, bool, Any]'\"",
         ),
         (
             "_retained_session_agent_mismatch",

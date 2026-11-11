@@ -3,8 +3,9 @@
 Both history writers (V1 day files in ``memory.py``, V2 member rows in
 ``vector_memory_member.py``) open a day with ``# YYYY-MM-DD`` and put a
 ``#### HH:MM %Z`` stamp above each entry. Neither line names any work, so the
-activity index skips both and lists the entry's own first line instead. A
-titled heading such as ``#### 10:00 deploy chat`` is neither, and stays listed.
+activity index lists the entry's own first line instead and the dashboard
+memory graph draws no node for either. A titled heading such as
+``#### 10:00 deploy chat`` is neither, and stays listed.
 """
 
 from __future__ import annotations
@@ -14,7 +15,10 @@ import time
 _DAY_HEADER_PREFIX = "# "
 _STAMP_PREFIX = "#### "
 _DATE_LENGTH = len("YYYY-MM-DD")
-_CLOCK_LENGTH = len("HH:MM")
+# The writers print a two-digit ``%H``; a one-digit hour is a stamp too, which
+# the dashboard memory graph has always skipped.
+_HOUR_LENGTHS = frozenset({1, 2})
+_MINUTE_LENGTH = len("MM")
 _OFFSET_SIGNS = frozenset("+-")
 _OFFSET_DIGIT_COUNTS = frozenset({2, 4})
 _UTC_PREFIX = "UTC"
@@ -46,15 +50,16 @@ def _stamp_zone(line: str) -> str | None:
     """The text after a ``#### HH:MM`` stamp's clock, or None when ``line`` is no stamp."""
     if not line.startswith(_STAMP_PREFIX):
         return None
-    rest = line[len(_STAMP_PREFIX) :]
-    clock, tail = rest[:_CLOCK_LENGTH], rest[_CLOCK_LENGTH:].rstrip()
-    if len(clock) != _CLOCK_LENGTH or clock[2] != ":" or not _ascii_digits(clock[:2] + clock[3:]):
+    clock, _, zone = line[len(_STAMP_PREFIX) :].rstrip().partition(" ")
+    hour, colon, minute = clock.partition(":")
+    if not (
+        colon
+        and len(hour) in _HOUR_LENGTHS
+        and len(minute) == _MINUTE_LENGTH
+        and _ascii_digits(hour + minute)
+    ):
         return None
-    if not tail:
-        return ""
-    if not tail.startswith(" "):
-        return None
-    return tail[1:]
+    return zone
 
 
 def _is_zone_abbreviation(zone: str) -> bool:

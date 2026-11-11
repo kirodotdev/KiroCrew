@@ -197,7 +197,9 @@ except on claude, not the effort, and a harness that takes effort as a
 per-session config option (KAS, Codex) pushes it only at cold start, so the
 worker pushes its effort again through `provider.change_effort` after each
 cheap reset; a push that raises takes
-the hard-reset fallback, which cold-starts with the override. There is no
+the hard-reset fallback, which cold-starts with the override, except a level
+kiro-cli refuses (`AcpCommandRefused.command_refused`): the worker logs a warning and keeps
+its conversation, because a cold start would only replay the level. There is no
 run-level effort default.
 
 `backend` is the harness the step runs on, named as `spawn_run(backend=)` and a
@@ -454,7 +456,7 @@ untouched. On top of those verbs the port adds only:
 - **A `workflow-opened` sidebar tag** on every session `open_session` opens,
   applied through the auto-tag writer (`chat_auto_tag.apply_label_tag`) without
   claiming the auto-tag once-flag, so the session's first message still gets its
-  project tag.
+  project tag (when `dashboard.project_tags_enabled` is on).
 - **`open_session` and `send_to_session` spend the run's agent cap.** Each call
   increments the run's `AgentCounter` and refuses with `BudgetExceeded` at the
   budget ceiling, exactly as `ctx.agent()` does, so a script cannot loop turns

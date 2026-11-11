@@ -1252,18 +1252,22 @@ async def _build_fleet() -> dict:
         health = None
         has_venv = False
         has_dist = False
-        # Build state is a plain filesystem check (``.venv`` binary present /
-        # ``static/dist`` directory present) and is therefore knowable on EVERY
-        # platform — report it even where pods cannot run, so the Fleet view
-        # still tells the truth about which worktrees are built. That includes
-        # the MAIN checkout: during a cutover the panel is exactly the
-        # surface a human checks, and reporting main as unprovisioned reads as
-        # "the cutover failed". The ``not is_main`` restriction belongs to the
-        # POD-state check below (pods never run on main), not to these probes.
+        # Build state is a filesystem probe gated by the artifact's provenance
+        # (see ``prov.has_venv`` / ``prov.has_dist``) and is therefore knowable
+        # on EVERY platform — report it even where pods cannot run, so the
+        # Fleet view still tells the truth about which worktrees are built.
+        # That includes the MAIN checkout: during a cutover the panel is
+        # exactly the surface a human checks, and reporting main as
+        # unprovisioned reads as "the cutover failed". Main's venv is rebuilt
+        # by Pull + Build, which never writes the provision stamp, so main
+        # gets the presence-only venv probe (``require_stamp=False``); every
+        # other worktree keeps the stamp requirement. The ``not is_main``
+        # restriction on pods belongs to the POD-state check below.
         if runtime._POD_IMPORTED:
             try:
                 has_venv = await loop.run_in_executor(
-                    subprocess_executor(), runtime.prov.has_venv, Path(path)
+                    subprocess_executor(),
+                    functools.partial(runtime.prov.has_venv, Path(path), require_stamp=not is_main),
                 )
                 has_dist = await loop.run_in_executor(
                     subprocess_executor(), runtime.prov.has_dist, Path(path)

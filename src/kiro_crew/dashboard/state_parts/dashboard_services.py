@@ -440,12 +440,14 @@ async def request_approval(
     is_background: bool = False,
     run_task_id: str = "",
     task_index: int | None = None,
+    on_host_decision: Callable[[str], object] | None = None,
 ) -> bool:
     """Request interactive approval and deny on timeout or cancellation.
 
     A task runner gate passes ``run_task_id`` and ``task_index``; the
     record carries them so ``GET /api/approvals`` names the gate's run
-    and task.
+    and task. *on_host_decision* is for a caller that records who decided;
+    see ``ApprovalCoordinator.request``.
     """
     return await _approvals_for(self).request(
         self,
@@ -460,6 +462,7 @@ async def request_approval(
         redact_secret=redact_credentials,
         run_task_id=run_task_id,
         task_index=task_index,
+        on_host_decision=on_host_decision,
     )
 
 
@@ -477,7 +480,14 @@ def linked_session_busy(self: DashboardState, session_key: str) -> bool:
     if not session_key or not callable(is_busy):
         return False
     try:
-        return is_busy(session_key) is True
+        if is_busy(session_key) is True:
+            return True
+        # Mid-reprojection the live session is popped, so ``is_busy`` reads
+        # False; the key is still held in a replay gap and a turn is about to
+        # re-claim it. Read as running so a dashboard Stop routes through
+        # ``stop_turn`` (which records it) instead of returning idle.
+        gap_probe = getattr(sessions, "has_open_replay_gap", None)
+        return bool(callable(gap_probe) and gap_probe(session_key) is True)
     except Exception:
         logger.debug("linked_session_busy: probe failed for %s", session_key, exc_info=True)
         return False

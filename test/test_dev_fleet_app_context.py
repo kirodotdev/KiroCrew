@@ -626,6 +626,45 @@ async def test_main_checkout_build_state_is_probed(tmp_path):
     assert row["port"] is None
 
 
+@pytest.mark.asyncio
+async def test_unstamped_main_venv_reads_built_but_a_worktree_needs_the_stamp(
+    tmp_path, monkeypatch
+):
+    """Regression: Pull + Build rebuilds the MAIN checkout's venv without writing
+    the provision stamp, so a stamp-gated probe reported a freshly synced main
+    as unbuilt. Main gets the presence-only venv probe; a worktree with the same
+    unstamped venv still reads as not built, because provision owns its venv."""
+    from kiro_crew.pod import provision as prov
+
+    def _venv(root):
+        binp = root / ".venv" / ("Scripts" if platform_compat.IS_WINDOWS else "bin")
+        binp.mkdir(parents=True)
+        exe = binp / ("kirocrew.exe" if platform_compat.IS_WINDOWS else "kirocrew")
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+
+    main_co = tmp_path / "repo"
+    wt = tmp_path / "repo-wt-unstamped"
+    _venv(main_co)
+    _venv(wt)
+    # A resolvable build input with no matching stamp: the state of every venv
+    # Pull + Build has just rebuilt.
+    monkeypatch.setattr(prov, "_is_current", lambda checkout, artifact: False)
+
+    fleet = await _fleet_with(
+        [
+            {"path": str(main_co), "branch": "main", "is_main": True},
+            {"path": str(wt), "branch": "feat/x", "is_main": False},
+        ],
+        _POD_AVAILABLE=False,
+        _POD_ERROR="pods require Linux systemd",
+        _load_cfg=lambda: None,
+    )
+    rows = {w["is_main"]: w for w in fleet["worktrees"]}
+    assert rows[True]["has_venv"] is True
+    assert rows[False]["has_venv"] is False
+
+
 # _find_cli must target a RUNNABLE entry point
 def test_find_cli_targets_kiro_crew_package(nonbundled_python_without_user_site):
     """_find_cli must invoke the ``kiro_crew`` package (its __main__), not

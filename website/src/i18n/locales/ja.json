@@ -59,7 +59,7 @@
     "send_refused": "このセッションは回答を受け付けませんでした。",
     "send_unknown": "送信結果が不明です。回答は保持されています。重複送信を避けるため、再試行前にセッションを確認してください。",
     "updated": "最終確認 {{time}}",
-    "panel_load_failed": "ダッシュボードパネルを読み込めませんでした。ページを再読み込みして再試行してください。",
+    "panel_load_failed": "ダッシュボードパネルを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
     "crewMain": {
       "not_recorded": "記録なし",
       "unreadable": "読み取れませんでした",
@@ -6292,8 +6292,12 @@
         "session_approval_heading": "このアプリはチャットの制御も要求しています",
         "worker_auto_approve_heading": "このアプリは自身のバックグラウンドセッションを自動承認する権限も要求しています",
         "worker_auto_approve_desc": "このアプリが開始し、誰も見ていない間に実行するエージェントセッションは、自身のツール呼び出しを承認できます。あなたのチャットは対象外です。各許可は 24 時間以内に期限切れになり、監査され、承認モードのポリシーの範囲内にとどまり、アプリをオフにするか削除すると終了します。",
+        "user_session_reach_heading": "このアプリは、あなたのチャットからこのアプリが実行するセッションへのアクセスも許可します",
+        "user_session_reach_read": "あなたのチャットはそれらのセッションを読み取れます。",
+        "user_session_reach_send": "あなたのチャットはそれらのセッションにメッセージを送信できます。各メッセージには送信したチャットが表示されます。",
+        "user_session_reach_note": "あなた自身が開いたチャットのみです。シークレット、一時、スケジュール実行、チャンネル連携のチャットは対象外で、どのチャットもそれらのセッションを停止したり閉じたりできません。",
         "session_approval_desc": "あなたのチャットでメッセージを送信するか返信オプションを選び、ツール要求を承認または拒否し、チャットの承認モードを切り替えること。",
-        "session_approval_member_threads": "あなたの Bot のチャットも含まれます。",
+        "session_approval_member_threads": "あなたの Bot のチャットも含まれます。このアプリはあなたの名前で Bot にメッセージを送れます。",
         "session_approval_modes": "設定できるチャットの承認モード",
         "revocable": "設定 → セキュリティ → サードパーティアプリで、いつでも取り消せます。取り消すとそのアプリは動作を停止します。",
         "source": "公開元",
@@ -6371,7 +6375,7 @@
       "refreshing_balance": "更新中…",
       "remaining_credit_balance": "残りのクレジット残高: {{count}}",
       "show_email": "メールアドレスを表示",
-      "usage_scope": "kiro-cli /usage による、チャット、エージェント、MCP、サブエージェント全体の月間 Kiro クレジット使用量。",
+      "usage_scope": "このアカウントの、チャット、エージェント、MCP、サブエージェント全体の月間 Kiro クレジット使用量。",
       "used_credits": "使用済み: {{used}} / {{total}}",
       "sign_out_or_switch": "設定でサインアウト・アカウント切り替え",
       "sign_out_link_config_unreadable": "設定を読み込めなかったため、サインアウトのリンクを表示できません。",
@@ -6665,6 +6669,7 @@
       "tree_drop_folder_refused": "このフォルダーは追加できません：パスにスペースまたは @ が含まれています。ファイルを1つずつ追加してください。",
       "trust_reads": "読み取り専用コマンドを信頼",
       "turn_interrupted_press_resume": "前のターンが中断されました — 「再開」を押すか、そのまま入力できます",
+      "turn_interrupted_sign_in_first": "前のターンにはサインインが必要です — 上のメッセージに従ってから、「再開」を押すか、メッセージをもう一度送信してください",
       "turn_interrupted_restored_card": "前のターンが中断されました。「再開」はそのターンだけを再実行します。キュー内のメッセージは自動では送信されません。「今すぐ送信」(⚡) で送信してください。",
       "turn_interrupted_restored_queue_other": "前のターンが中断されました。「再開」はそのターンだけを再実行します。キュー内の {{count}} 件のメッセージは自動では送信されません。キュー（{{count}} 件がキュー内 ^）を開き、「今すぐ送信」(⚡) で 1 件ずつ送信してください。",
       "upload_file": "ファイルをアップロード",
@@ -8514,6 +8519,7 @@
       "do_not_publish_anything": "公開インターネットに置きたくないものは公開しないでください。",
       "exposure_window_persistent": "このリンクは、デプロイを取り下げるか削除するまで公開されたままになります。",
       "exposure_window_persistent_withdrawable": "このリンクは、公開されたコピーが取り下げられるまで公開されたままです。アーティファクトを削除すると、その取り下げが要求されます。",
+      "exposure_window_provider_expiry_other": "このリンクは{{count}}日間公開され、その後公開先によって削除されます。",
       "exposure_window_ttl_other": "このリンクは{{count}}時間公開され、その後自動的に削除されます。",
       "publishing": "公開中…",
       "title": "一般公開されるウェブサイトが作成されます"
@@ -8566,6 +8572,9 @@
       "visibility": "公開範囲",
       "visibility_private": "非公開（自分のみ）",
       "visibility_public": "公開（リンクを知っている全員）",
+      "expiry": "有効期限",
+      "expiry_after_days_other": "{{count}}日後",
+      "expiry_never": "なし",
       "public_exposure_warning": "公開されたリンクを知っている人は誰でもこのコンテンツを閲覧できます。認証なしで公開インターネット上に配信されます。"
     },
     "pullRequestPanel": {
@@ -11419,7 +11428,7 @@
       "origin_resources_lifecycle": "起源: {{origin}} | リソース: {{resources}} | ライフサイクル: {{lifecycle}}",
       "permissions": "権限",
       "session_approval_desc": "あなたのチャットでメッセージを送信して返信オプションを選び、ツール要求を承認または拒否し、チャットの承認モードを切り替えられます。",
-      "session_approval_member_threads": "あなたの Bot のチャットも含まれます。",
+      "session_approval_member_threads": "あなたの Bot のチャットも含まれます。このアプリはあなたの名前で Bot にメッセージを送れます。",
       "session_approval_member_threads_refused": "このアプリは、あなたと Bot のチャットへのアクセスも新たに求めています。内容を確認してから、もう一度有効にしてください。",
       "session_approval_modes": "設定できるチャットの承認モード",
       "session_approval_manifest_key": "マニフェストキー",
@@ -11472,6 +11481,8 @@
       "grants_reconsent_link_open_full_url": "開くリンクの完全なアドレス: アプリはリンクの ? や # 以降の部分も見ます。ここにはサインインコードが含まれることがあります。",
       "grants_reconsent_worker_auto_approve": "自身のバックグラウンドセッションでツール呼び出しを承認し、誰も見ていない間も作業を続けられるようにします。",
       "worker_auto_approve_desc": "自分で開始したバックグラウンドセッションでツール呼び出しを承認できます。あなたのチャットでは承認しません。各許可は期限切れになり、監査され、アプリをオフにすると終了します。",
+      "user_session_reach_read": "あなたのチャットは、このアプリが実行するセッションを読み取れます。",
+      "user_session_reach_send": "あなたのチャットは、このアプリが実行するセッションにメッセージを送信できます。",
       "link_open_remembered": "記憶したリンクの選択",
       "link_open_choice_app": "{{name}} で開く",
       "link_open_choice_browser": "ブラウザーで開く",
@@ -12009,6 +12020,8 @@
       "workflows_label": "ワークフロー",
       "workflows_description": "再利用可能なエージェントワークフローを作成、編集、実行します",
       "connections_description": "公式サービスを接続してカスタム MCP サーバーを管理",
+      "powers_label": "Kiro Powers",
+      "powers_description": "Kiro 用にインストールされた Powers と Agent Plugins の一覧。どれも読み込みません",
       "connections_label": "接続",
       "crews_description": "常に動いている AI エージェント",
       "crews_label": "Bot",
@@ -12197,6 +12210,7 @@
         "workflow_runs_load_failed": "ワークフロー実行を読み込めませんでした"
       },
       "assistantMessage": {
+        "share_load_failed": "共有ダイアログを読み込めませんでした",
         "applied_to_tasks": "タスクに適用済み",
         "copied": "コピーしました！",
         "copy": "コピー",
@@ -12462,6 +12476,7 @@
         "requires_authentication": "には認証が必要です。",
         "superseded": "のサインインは無効になりました。新しいリクエストによって置き換えられました。最新の「認証」ボタンからサインインしてください。",
         "expired": "のサインインは無効になりました。開始したセッションが終了しました。メッセージを送信すると、新しい「認証」リンクが表示されます。",
+        "timed_out": "のサインインは完了前にタイムアウトしました。メッセージでこのサーバー名を挙げると、新しい「認証」リンクが表示されます。",
         "failed_next_step": "再度サインインするには、カスタマイズ → 接続 → MCP サーバー を開いてください。"
       },
       "notificationItem": {
@@ -12800,6 +12815,7 @@
         "retry": "再試行"
       },
       "toolCallLine": {
+        "answers_load_failed": "回答を読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
         "diff_truncated": "diff は切り詰められました",
         "edit_count_other": "{{count}} 件の編集",
         "edit_n_of_m": "編集 {{n}}/{{total}}",
@@ -13195,6 +13211,7 @@
         "export_failed": "共有カードを生成できませんでした"
       },
       "crewLog": {
+        "tab_load_failed": "セッション記録を読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
         "section_status": "状態",
         "section_usage": "使用量",
         "section_timeline": "タイムライン",
@@ -13477,6 +13494,7 @@
         "outcome_undo": "元に戻すには、{{name}} に前のダッシュボードに戻すよう頼んでね。"
       },
       "browserLiveStage": {
+        "stage_load_failed": "エージェントのブラウザー表示を読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
         "bring_back": "チャットに戻す",
         "by_you": "あなたの操作",
         "exit_full_screen": "全画面を終了",
@@ -13798,7 +13816,7 @@
       "could_not_read_file_reason": "{{path}} を読み取れませんでした（{{reason}}）",
       "screenshot_failed_reason": "スクリーンショットに失敗しました：{{reason}}",
       "snip_refused_in_embedded_pane": "このタブでは画面の切り取りを使えません。自分でスクリーンショットを撮って添付してください。",
-      "source_hosts_failed_reason": "GitLab と Jira のリンク設定の読み込みに失敗しました：{{reason}}",
+      "source_hosts_failed_reason": "セルフホストの GitLab と Jira のリンクは、現在変更で開けません：{{reason}}",
       "artifact_reference_failed_reason": "このチャットへのアーティファクトの関連付けに失敗しました：{{reason}}",
       "http_status": "HTTP {{status}}",
       "could_not_rename_session": "セッション名を「{{title}}」に変更できませんでした",
@@ -15319,6 +15337,7 @@
       "filter_hooks": "フックをフィルタ…",
       "hook_name": "フック名",
       "hooks": "フック",
+      "matcher_lane_pill_gloss": "ステータスタグの列",
       "hooks_run_shell_commands_on_chat_events_agentspa": "フックはチャットイベントでシェルコマンドを実行します: AgentSpawn、UserPromptSubmit、PreToolUse、PostToolUse、Stop。ツールフックはツール名で絞り込むパターンに対応します。まだ実行されない と表示された行はエージェントが対応していますが、ここではまだ何も実行しません。自動実行されない と表示された行はまったく対応していません。テストはどちらも今すぐ実行します。",
       "last_run": "最後の実行",
       "loading": "読み込み中…",
@@ -16094,6 +16113,27 @@
       "unread": "未読"
     },
     "overview": {
+      "kiroPowersTab": {
+        "intro": "~/.kiro/powers から読み取っています。{{productName}} はこれらを一覧に表示しますが、まだどれも読み込まないため、スキルや MCP サーバーはセッションに届きません。",
+        "not_loaded": "未読み込み",
+        "reason_legacy_power": "旧形式の POWER.md Power で、Agent Plugin ではありません。{{productName}} は POWER.md Power を読み込みません。",
+        "reason_no_manifest": "このフォルダーには plugin.json がないため、Agent Plugin ではありません。",
+        "reason_invalid": "このプラグインは無効なため、どの部分も使用できません：「{{reason}}」",
+        "reason_valid": "有効な Agent Plugin です。{{productName}} はまだ Agent Plugins を読み込みません。",
+        "reason_read_failed": "{{name}} を読み取れなかったため、どの部分も使用できません：「{{reason}}」",
+        "would_add_skills": "追加されるスキル",
+        "would_add_servers": "追加される MCP サーバー",
+        "problems_found": "見つかった問題",
+        "issue_read_failed": "{{name}} の一部を読み取れませんでした：「{{message}}」",
+        "issue_read_failed_entry": "{{name}} の {{entry}} を読み取れませんでした：「{{message}}」",
+        "empty_title": "Kiro Powers はインストールされていません",
+        "empty_subtitle": "Kiro IDE や kiro-cli でインストールした Powers がここに表示されます。",
+        "failed_to_load": "インストール済みの Kiro Powers を読み取れませんでした",
+        "index_read_failed": "インストール済みの Kiro Powers の一覧を読み取れなかったため、何も表示できません：「{{reason}}」",
+        "retry": "再試行",
+        "owner_only": "インストール済みの Kiro Powers はダッシュボードの所有者だけが表示できます。",
+        "list_label": "インストール済みの Kiro Powers"
+      },
       "workflowLibrary": {
         "adapted_from": "派生元",
         "create_draft": "下書きを作成",
@@ -16337,6 +16377,8 @@
         "sign_in_required_help": "このサーバーは OAuth を使用しており、まだ誰もサインインしていません。<chatLink>チャットに移動し</chatLink>、新しいセッションを開始して任意のメッセージを送信すると、チャットでサインインの承認を求められます。 その後、プローブしてこの一覧を更新します。",
         "sign_in_kas_chat_note": "Kiro Agent のチャットは、ここで行ったサインインを使いません。チャットの「認証」カードからサインインしてください。",
         "sign_in_kas_chat_again_note": "Kiro Agent のチャットは、まだこのサインインを使いません。再度サインインすると、チャット用に保存されます。",
+        "sign_in_unsupported_on_kas": "このサーバーは、まだ Kiro Agent エンジンではサインインできません。独自のサインイン設定で構成されていて、Kiro Agent はその設定を使えません。",
+        "sign_in_unavailable": "サインイン不可",
         "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。このサーバーを削除してヘッダーなしで再追加し、有効にしてから、新しいチャットセッションを開始してサインインしてください。",
         "sign_in_required_next": "承認したら、この表の上にある「MCP サーバーをプローブ」ボタンを使用します。行は「サインイン済み」に変わります。",
         "signed_in": "サインイン済み",
@@ -17963,6 +18005,13 @@
         "restart_row_note": "更新せずにゲートウェイプロセスを再起動します。アクティブなセッションは一時的に切断されます。",
         "desktop_restart_row_note": "更新せずに、このアプリがこのコンピューターで実行しているゲートウェイを再起動します。応答中の処理は停止し、ゲートウェイが戻るとアプリが再接続します。",
         "desktop_restart_unavailable": "アプリは現在ゲートウェイを再起動できません。接続が完了するまで待ってから、もう一度お試しください。",
+        "upcoming_update_title": "予定されているアップデート",
+        "upcoming_update_announced": "予告済み",
+        "upcoming_update_version": "バージョン {{version}}",
+        "upcoming_update_expected_on": "{{date}} 公開予定",
+        "upcoming_update_highlights": "ハイライト",
+        "upcoming_update_notes_link": "リリースノートの全文を読む",
+        "upcoming_update_announced_takes_effect_on_restart": "公開後、次に {{productName}} を再起動したときに反映されます。",
         "restarting": "再起動中…",
         "retry": "再試行",
         "stable": "Stable",
@@ -18025,6 +18074,7 @@
         "applying_update": "更新を適用しています…",
         "applying_restart_note": "新しいバージョンの準備ができるとゲートウェイは自動的に再起動し、このページも自動的に再接続します。",
         "approval_window_expired": "承認されないまま承認ウィンドウの期限が切れました。準備ができたら再度更新を開始してください。",
+        "arm_ended_without_update": "アップデートが始まる前にアップデートのリクエストが終了しました。リクエストが取り消されたか、ゲートウェイが再起動したためで、操作の問題ではありません。もう一度試すには「{{label}}」を押してください。",
         "try_again": "再試行",
         "not_on_channel_yet": "{{channel}} ではありません",
         "channel_explainer_gateway_switch_note_version": "切り替えても変わるのは更新を確認するチャンネルだけです。{{channel}} チャンネルが現在公開しているのは v{{version}} で、実行中のビルドより古いバージョンです。このインストールを実際に移すには下のコマンドを実行してください。",
@@ -18236,6 +18286,8 @@
         "side_panel_pin_summary": "サマリーをサイドパネルに固定",
         "side_panel_pin_summary_hint": "サマリーをサイドパネルの最初のタブとして表示し、パネルを開くとサマリーを表示します。ファイルなど特定の項目を開いた場合は、その項目を表示します。セッションの要約をオンにする必要があります。",
         "side_panel_pin_summary_needs_session_summaries": "セッションの要約がオフになっています。サマリーを固定するには、設定 → チャット → セッションでオンにする必要があります。",
+        "project_tags": "プロジェクトタグ",
+        "project_tags_desc": "新しいセッションごとに、サイドバーで「my-app」のようなプロジェクトフォルダー名のタグを付けます。",
         "topic_tags": "トピックタグ",
         "topic_tags_desc": "新しいセッションごとに、サイドバーで「debugging」のようなトピックタグを最大 2 つ付けます。新しいセッションごとにバックグラウンドのモデル呼び出しを 1 回使います。",
         "transcript": "会話表示",
@@ -18947,6 +18999,8 @@
         "retry": "再試行",
         "ssh_host_alias": "SSH ホスト / エイリアス",
         "ssh_tunnel": "SSH トンネル",
+        "ssh_tunnel_not_supported_windows": "Windows では未対応",
+        "ssh_tunnel_not_supported_windows_hint": "{{productName}} を Windows で実行している場合、SSH トンネルはまだサポートされていません。PATH 上の OpenSSH クライアントが必要で、接続に失敗することがあります。代わりに AWS SSM Session Manager を使用してください。",
         "ssm_target_instance_id": "SSM ターゲット（インスタンス ID）",
         "state_connected": "接続済み",
         "state_connecting": "接続中",
@@ -22124,6 +22178,7 @@
       "startingHeader": "{{name}} を準備中"
     },
     "remoteFiles": {
+      "panelLoadFailed": "ファイルビューを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
       "title": "{{name}} 上のファイル",
       "refresh": "更新",
       "selectHint": "ファイルを選択すると表示されます。",
@@ -22173,6 +22228,7 @@
       "stoppedHint": "次のメッセージを送るとワークスペースが起動します。1 時間アイドル状態が続くと自動で停止します。"
     },
     "remoteGit": {
+      "panelLoadFailed": "Git ビューを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
       "title": "{{name}} の Git",
       "notRepo": "作業ディレクトリは Git リポジトリではありません。",
       "changes": "変更",
@@ -22451,6 +22507,7 @@
     "filter_all": "すべてのセッション",
     "page_previous": "戻る",
     "people_unnamed_platform_body": "Tailscale の許可リストにあるメンバーは Tailscale Serve 経由でこの Crew を使えますが、この OS では各メンバーが誰かを証明できないため、作業は「帰属なし」と表示されます。名前を表示するには、直接の Tailscale リンクを共有してください。リストにない人は拒否されます。",
+    "sent_by_an_app": "アプリが送信",
     "setup_kiro_login_body": "メンバーは所属組織の Kiro ログインでサインインします。",
     "setup_title": "チームの共有アクセスを設定",
     "invite_key_label": "Tailscale API アクセスキー",

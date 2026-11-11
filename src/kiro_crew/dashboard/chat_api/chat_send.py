@@ -284,8 +284,9 @@ async def _settle_send_race(
     None means the claim is granted and stored on the request: the branch that
     records the send commits it, and the claim is given back when the request's
     handler task ends without recording it (``send_race.Claim.owner``). A
-    lost race answers 409 ``send_race`` naming the winner; a retry of a send this
-    principal already won with answers that send and accepts nothing.
+    lost race answers 409 ``send_race`` naming the winner (``send_pending`` with
+    no winner past the settle wait); a retry of a send this principal already
+    won with answers that send and accepts nothing.
     """
     from kiro_crew.shared_crew import admission_entry, send_race
     from kiro_crew.shared_crew.identity import actor_of
@@ -392,7 +393,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     """The send itself; :func:`api_chat` adds the Crew Mode worker steer record."""
     # Imported here because this module's bodies run in the chat_handlers
     # namespace, which carries only the names it re-exports.
-    from kiro_crew.dashboard import card_send
+    from kiro_crew.dashboard import card_send, channel_prompt
 
     _timing_t0 = turn_timing.now()
     state: DashboardState = request.app["state"]
@@ -1036,7 +1037,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     # First submit wins (Shared Crew): settle this send against the session's
     # send revision before any branch can queue, steer or start it. A loser is
-    # refused here with the winner named, and its tab keeps the draft.
+    # refused here with the winner named (none past the settle wait), and its
+    # tab keeps the draft.
     from kiro_crew.shared_crew import send_race as _send_race
 
     _race_answer = await _settle_send_race(request, state, slot, body, message)
@@ -1309,6 +1311,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             author=_author_meta(_queued_actor_of(request)) if _person_send else None,
             queued_work=_queued_admission,
         )
+        channel_prompt.stamp_queued(slot, qid, body)
         _send_race.commit_request(request, message_id=qid)
         # The admission await (a config refresh included, even when admission
         # turns out off) may have outlived the running turn's handoff: the
@@ -1386,7 +1389,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # Same entry-meta contract as the busy-slot branch: the client's `sendId`
         # and attachment lists ride on the queue entry so the drained row
         # carries them.
-        _hold_meta: dict = containment_meta(state, slot)
+        _hold_meta: dict = {**containment_meta(state, slot), **channel_prompt.entry_meta(body)}
         _hold_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
         if _hold_sid:
             _hold_meta["sendId"] = _hold_sid
@@ -1856,6 +1859,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         # resolver's fallback is ``user``, so a site that observes an app and stays
         # silent records a person who never typed anything.
         _turn_kwargs: dict = {"_directive_user_origin": _person_send}
+        _turn_kwargs.update(channel_prompt.turn_kwargs(body))
         # The owner mark rides this dispatch's own call, so a turn that never
         # starts takes it with it (``turn_entry``).
         _turn_kwargs["_directive_owner_origin"] = _owner_sent

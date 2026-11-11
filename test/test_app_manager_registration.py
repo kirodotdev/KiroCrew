@@ -19,6 +19,7 @@ from kiro_crew.apps.manager import (
     _write_installed,
     register_external_app,
 )
+from kiro_crew.dashboard.token_auth import read_app_secret
 
 # --- item #5: cleanup_migrated_builtin matches by name, no migratedTo needed ---
 
@@ -289,7 +290,8 @@ class TestBuiltinSecretForMcpServers:
             "mcpServers": {"mcp-only-app": {"url": "http://127.0.0.1:7778/mcp"}},
         }
         self._register_only(monkeypatch, [mcp_only])
-        assert (app_dir("mcp-only-app") / ".app_secret").is_file()
+        assert read_app_secret("mcp-only-app")
+        assert not (app_dir("mcp-only-app") / ".app_secret").exists()
 
     def test_no_backend_builtin_gets_no_secret(self, tmp_path, app_home, monkeypatch):
         """A builtin with no backend of any kind must NOT get a secret."""
@@ -304,6 +306,7 @@ class TestBuiltinSecretForMcpServers:
             "defaultEnabled": False,
         }
         self._register_only(monkeypatch, [no_backend])
+        assert not read_app_secret("no-backend-app")
         assert not (app_dir("no-backend-app") / ".app_secret").is_file()
 
 
@@ -496,7 +499,7 @@ class TestMalformedMcpUrlIsSkippedNotFatal:
         manager.register_builtin_apps()  # must not raise
 
         # It registers, it just gets no secret — there is no reachable backend.
-        assert not (manager.app_dir("bad-url-app") / ".app_secret").is_file()
+        assert not read_app_secret("bad-url-app")
 
     def test_a_valid_loopback_url_is_unaffected(self):
         from kiro_crew.apps.manager import resolve_mcp_backend_url

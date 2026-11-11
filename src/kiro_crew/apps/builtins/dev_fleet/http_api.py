@@ -26,24 +26,10 @@ def _load_app_secret() -> str:
     global _APP_SECRET
     if _APP_SECRET is not None:
         return _APP_SECRET
-    from kiro_crew.config.loader import config_dir
-
-    secret_path = config_dir() / "apps" / APP_NAME / ".app_secret"
-    if secret_path.is_file():
-        _APP_SECRET = secret_path.read_text().strip()
-    else:
-        # Fallback: try the apps dir from manager
-        try:
-            from kiro_crew.apps.manager import app_dir
-
-            alt = app_dir(APP_NAME) / ".app_secret"
-            if alt.is_file():
-                _APP_SECRET = alt.read_text().strip()
-        except Exception:
-            pass
-    # Do NOT cache emptiness: the secret may be provisioned after this
-    # backend starts (install race) — retry on the next request, matching
-    # the gateway-side _get_app_secret semantics.
+    # The gateway hands its backend the secret at spawn (``apps.backend``); it keeps
+    # no copy in the app's folder. Do NOT cache emptiness, matching the gateway-side
+    # _get_app_secret semantics.
+    _APP_SECRET = os.environ.get("KIROCREW_PROXY_SECRET", "").strip() or None
     return _APP_SECRET or ""
 
 

@@ -226,6 +226,56 @@ def test_a_list_withheld_whole_is_never_said_to_keep_its_other_entries() -> None
     assert "other entries still apply" not in notice
 
 
+def test_an_allowlist_the_gate_enforces_is_never_said_to_have_no_effect() -> None:
+    """An ``ask`` withholds what the allowlists grant, but under
+    ``denyByDefault`` / ``fallbackAction: "deny"`` Crew's gate still refuses what
+    they leave out, so the notice must not say they have no effect."""
+    ask = {"rules": [{"capability": c, "effect": "ask"} for c in ("shell", "fs_write")]}
+    settings = {
+        "shell": {"denyByDefault": True, "allowedCommands": ["mytool [A-Za-z0-9_ ./=-]*"]},
+        "write": {"fallbackAction": "deny", "allowedPaths": ["out/**"]},
+    }
+    lost = kas_agents.spec_keys_without_carrier(
+        _spec(toolsSettings=settings, permissions=ask, toolAliases={"x": "y"}),
+        translates_tools_settings=True,
+    )
+    notice = _spec_keys_notice("probe", lost)
+    allowlists = "toolsSettings.shell.allowedCommands and toolsSettings.write.allowedPaths"
+    assert f"sets {allowlists}, which this backend does not receive. Kiro Crew" in notice
+    assert "refuses what they do not cover" in notice
+    assert notice.count("toolsSettings.shell.allowedCommands") == 1
+    # A key nothing reads keeps its wording.
+    assert "sets toolAliases, which this backend does not receive, so they have no effect" in notice
+
+
+def test_an_over_bound_deny_by_default_list_is_never_said_to_have_no_effect() -> None:
+    """A list cut by the bound is named with no ``ask``; the gate still
+    refuses what it leaves out, so it gets the gate sentence."""
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": [f"c{i}" for i in range(65)]}}
+    notice = _spec_keys_notice(
+        "probe",
+        kas_agents.spec_keys_without_carrier(
+            _spec(toolsSettings=settings), translates_tools_settings=True
+        ),
+    )
+    assert "toolsSettings.shell.allowedCommands" in notice
+    assert "no effect" not in notice and "refuses what they do not cover" in notice
+
+
+def test_a_lifted_deny_by_default_keeps_the_no_effect_wording() -> None:
+    """An ``allowedTools`` that names the shell, with no denies, lifts
+    ``denyByDefault`` at the gate, so nothing is marked as enforced there."""
+    ask = {"rules": [{"capability": "shell", "effect": "ask"}]}
+    settings = {"shell": {"denyByDefault": True, "allowedCommands": ["git status"]}}
+    lost = kas_agents.spec_keys_without_carrier(
+        _spec(toolsSettings=settings, permissions=ask, allowedTools=["execute_bash"]),
+        translates_tools_settings=True,
+    )
+    notice = _spec_keys_notice("probe", lost)
+    assert "toolsSettings.shell.allowedCommands" in notice
+    assert "refuses what they do not cover" not in notice
+
+
 def test_a_repeat_count_rust_cannot_compile_allows_nothing_even_repeated_zero_times() -> None:
     """Rust reads a count as a ``u32`` and refuses ``a{4294967296}``, so kiro-cli
     refuses ``touch marker`` under this spec. An outer ``{0}`` leaves the group out

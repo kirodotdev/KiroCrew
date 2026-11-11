@@ -84,6 +84,11 @@ export interface MessageRenderContext {
   /** Stable React key the list computed for this row. */
   key: string
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  /** Open a directory a reply names in the host's side panel. Absent = a
+   *  folder chip falls back to the OS file manager, which a remote or
+   *  headless host can only answer by copying the path. Capability by
+   *  omission, like `onFileOpen`. */
+  onFolderOpen?: (path: string) => void
   /** Open an artifact (`/artifacts/<slug>` link in a reply) in the host's side
    *  panel, the way the main chat does. Absent = the link stays a plain
    *  `target="_blank"` anchor to the standalone artifact view, which a
@@ -599,6 +604,7 @@ export function renderAssistantBubble(
       showFooter={showFooter}
       slotRunning={ctx.running}
       onFileOpen={ctx.onFileOpen}
+      onFolderOpen={ctx.onFolderOpen}
       onArtifactOpen={ctx.onArtifactOpen}
       onQuote={ctx.onQuote}
       onAsk={ctx.onAsk}
@@ -672,6 +678,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
         key={ctx.key}
         message={m}
         onFileOpen={ctx.onFileOpen}
+        onFolderOpen={ctx.onFolderOpen}
         disclosureKey={ctx.key}
       />,
       true,
@@ -696,7 +703,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           meta={m.meta}
           timestamp={formatTs(m.ts)}
           timestampTitle={fmtMessageTimeFull(m.ts)}
-          renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen })}
+          renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen, onFolderOpen: ctx.onFolderOpen })}
           onReplyInThread={replyInThreadFor(m, ctx)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
         />

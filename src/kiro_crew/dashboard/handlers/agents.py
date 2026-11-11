@@ -328,6 +328,7 @@ from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.agents_cc_model_rows import merge_advertised_rows
 from kiro_crew.dashboard.handlers.agents_effort_levels import api_effort_levels  # noqa: F401
+from kiro_crew.dashboard.handlers.agents_session_commands import menu_with_session_commands
 from kiro_crew.dashboard.handlers.models_kas_bundle import api_models_kas_bundle
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     owner_view_for_request,
@@ -363,7 +364,6 @@ from kiro_crew.memory_stores import (  # noqa: F401
 )
 from kiro_crew.platform.governance import sanitize_agent_config_governance  # noqa: F401
 from kiro_crew.platform_compat import is_link_or_junction, kill_and_reap  # noqa: F401
-from kiro_crew.quick_prompts import user_quick_prompt_menu
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -1549,8 +1549,8 @@ async def api_models(request: web.Request) -> web.Response:
 async def api_slash_commands(request: web.Request) -> web.Response:
     """GET /api/slash-commands — list available slash commands (provider-aware)."""
     cfg = KiroCrewConfig.load()
-    # This global endpoint has no session/member key; the configured default
-    # backend is its capability authority, independent of the provider label.
+    # The configured default backend decides the base list, independent of the
+    # provider label; ``?slot=`` adds only what that chat's live session advertised.
     blocked_commands = _BLOCKED_SLASH_COMMANDS
     if capabilities_for(cfg.agent.acp_backend).supports_native_todos:
         blocked_commands = blocked_commands - {"/todos"}
@@ -1580,7 +1580,9 @@ async def api_slash_commands(request: web.Request) -> web.Response:
                 result.append(
                     {"name": command, "description": SLASH_COMMAND_DESCRIPTIONS.get(command, "")}
                 )
-        return web.json_response(result + await asyncio.to_thread(user_quick_prompt_menu))
+        return web.json_response(
+            await menu_with_session_commands(request, result, blocked_commands)
+        )
 
     # Blocked commands stay in _SLASH_COMMANDS (typing one still gets the
     # explicit "not available in the dashboard" rejection in chat_runner), but
@@ -1592,10 +1594,10 @@ async def api_slash_commands(request: web.Request) -> web.Response:
     # (local_harness_menu, which /help prints too).
     if cfg.agent.acp_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS:
         offered = offered & local_harness_menu(cfg.agent.acp_backend)
-    return web.json_response(
-        [{"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)]
-        + await asyncio.to_thread(user_quick_prompt_menu)  # expanded on every harness
-    )
+    rows = [
+        {"name": c, "description": SLASH_COMMAND_DESCRIPTIONS.get(c, "")} for c in sorted(offered)
+    ]
+    return web.json_response(await menu_with_session_commands(request, rows, blocked_commands))
 
 
 # Windows reserves these basenames (before the first dot, any extension) at the

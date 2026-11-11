@@ -864,6 +864,44 @@ class TestTopicTags:
         assert _names(state, slot) == ["MyRepo"]
         assert slot._auto_tagged is True
 
+    async def test_project_tags_off_creates_and_adds_no_project_tag(
+        self, patch_save_slot, topic_model, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_auto_tag.KiroCrewConfig.load",
+            lambda: SimpleNamespace(
+                dashboard=SimpleNamespace(project_tags_enabled=False, topic_tags_enabled=True)
+            ),
+        )
+        state = _make_state()
+        slot = _topic_slot()
+
+        await maybe_auto_tag(state, slot)
+
+        assert "MyRepo" not in [t["name"] for t in state._tags]
+        assert _names(state, slot) == ["debugging", "code review"]
+
+    async def test_a_rebind_during_the_project_flag_read_writes_no_project_tag(
+        self, patch_save_slot, topic_model, monkeypatch
+    ):
+        keys = {"k": "dashboard:test-slot"}
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_auto_tag.slot_history_key", lambda _slot: keys["k"]
+        )
+
+        async def _rebinding_flag(_name, _default):
+            keys["k"] = "cron:job-1"  # rebound during the config read
+            return True
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag._dashboard_flag", _rebinding_flag)
+        state = _make_state()
+        slot = _topic_slot()
+
+        await maybe_auto_tag(state, slot)
+
+        assert slot.tags == []
+        patch_save_slot.assert_not_awaited()
+
 
 @pytest.mark.asyncio
 class TestTopicTagsUiLanguage:

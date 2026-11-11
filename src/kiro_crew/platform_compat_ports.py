@@ -550,14 +550,30 @@ def probe_port_listeners(
     return listeners, True
 
 
-def _linux_loopback_listener_inodes(port: int, proc_root: Path) -> set[str] | None:
+def _linux_loopback_listener_inodes(
+    port: int, proc_root: Path, *, any_address: bool = False
+) -> set[str] | None:
     """LISTEN socket inodes on *port* that can answer IPv4 loopback.
 
     ``/proc/net/tcp`` stores IPv4 addresses little-endian. ``tcp6`` stores each
     32-bit word little-endian. The browser child is asked to bind 127.0.0.1, but
     wildcard and IPv4-mapped wildcard-compatible rows are included because a
-    successful loopback health probe can reach them too.
+    successful loopback health probe can reach them too. *any_address* keeps
+    every LISTEN socket on *port*, whatever address it is bound to.
     """
+    if proc_root == Path("/proc"):
+        # This process's own table: ask the kernel over netlink, which answers in
+        # a fraction of the ~5 ms a /proc/net/tcp read costs on a busy host. The
+        # same four addresses as the rows below; any failure reads /proc.
+        from kiro_crew import sock_diag
+
+        listeners = sock_diag.listen_sockets(port)
+        if listeners is not None:
+            return {
+                str(inode)
+                for address, inode in listeners
+                if any_address or address in ("0.0.0.0", "127.0.0.1", "::", "::ffff:127.0.0.1")
+            }
     v4_addresses = {"00000000", "0100007F"}
     v6_addresses = {
         "0" * 32,
@@ -580,7 +596,7 @@ def _linux_loopback_listener_inodes(port: int, proc_root: Path) -> set[str] | No
                 bound_port = int(port_hex, 16)
             except (ValueError, IndexError):
                 continue
-            if bound_port == port and address.upper() in accepted_addresses:
+            if bound_port == port and (any_address or address.upper() in accepted_addresses):
                 inode = fields[9]
                 if inode.isdigit() and int(inode) > 0:
                     inodes.add(inode)
@@ -616,8 +632,21 @@ def _windows_loopback_listener_owner_pids(port: int) -> set[int] | None:
     return set(loopback_owner_pids(listeners))
 
 
-def process_owns_loopback_listener(
+def process_owns_port_listener(
     pid: int, port: int, *, proc_root: Path | None = None
+) -> bool | None:
+    """Whether *pid* owns any LISTEN socket on *port*, whatever address it is bound to.
+
+    The per-process form of :func:`find_listening_pids`: same answers as
+    :func:`process_owns_loopback_listener`, without the loopback filter, so a
+    gateway bound to one interface address or to ``::1`` alone still proves it
+    holds its port. Windows answers ``None``.
+    """
+    return process_owns_loopback_listener(pid, port, proc_root=proc_root, any_address=True)
+
+
+def process_owns_loopback_listener(
+    pid: int, port: int, *, proc_root: Path | None = None, any_address: bool = False
 ) -> bool | None:
     """Whether *pid* owns a LISTEN socket that can answer 127.0.0.1:*port*.
 
@@ -630,15 +659,22 @@ def process_owns_loopback_listener(
     with lsof scoped by ``-a -p <pid>``. Windows reads the IPv4 and IPv6 owner-PID
     listener tables in-process with ``GetExtendedTcpTable``; it never needs
     ``netstat`` for this per-process decision.
+
+    *any_address* drops the loopback filter: any LISTEN socket *pid* holds on
+    *port* counts (:func:`process_owns_port_listener`).
     """
     if type(pid) is not int or pid <= 0 or type(port) is not int or not 1 <= port <= 65535:
         return None
     if IS_WINDOWS:
+        if any_address:
+            # shortcut: no any-address owner table on Windows; its only caller,
+            # the gateway port proof, is POSIX-only. Build one if a Windows caller appears.
+            return None
         owners = _windows_loopback_listener_owner_pids(port)
         return None if owners is None else pid in owners
     if IS_LINUX:
         root = proc_root if proc_root is not None else Path("/proc")
-        listener_inodes = _linux_loopback_listener_inodes(port, root)
+        listener_inodes = _linux_loopback_listener_inodes(port, root, any_address=any_address)
         if listener_inodes is None:
             return None
         if not listener_inodes:
@@ -666,6 +702,8 @@ def process_owns_loopback_listener(
     listeners, completed = probe_port_listeners(port, process_pid=pid)
     if not completed:
         return None
+    if any_address:
+        return any(listener.pid == pid for listener in listeners)
     return pid in loopback_owner_pids(listeners)
 
 

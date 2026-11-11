@@ -278,6 +278,23 @@ class TestPatchRoute:
         assert node == value
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [15.0, 30.0])
+    async def test_an_integral_float_frame_rate_is_stored_as_the_choice(
+        self, cfg_home, value
+    ) -> None:
+        """``15.0`` equals the choice ``15``, so the route accepts it; the loader
+        reads only an int, so it must be stored as the choice it matched."""
+        cfg_home.write_text(json.dumps({"dashboard": {}}), encoding="utf-8")
+        async with TestClient(TestServer(_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew", json={"path": "browser.live.max_fps", "value": value}
+            )
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(cfg_home.read_text(encoding="utf-8"))["browser"]["live"]["max_fps"]
+        assert stored == int(value) and type(stored) is int
+        assert KiroCrewConfig.load().browser.live.max_fps == int(value)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("path", "value"),
         [

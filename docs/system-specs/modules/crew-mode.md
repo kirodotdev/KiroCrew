@@ -2433,6 +2433,11 @@ continue" with the gateway's reason; a turn starting retires it. An error card
 with a remedy of its own (a context overflow, a repeated session start, a
 refused feature request, a refused app agent) withholds Resume from the composer
 too, through the one predicate `newestErrorOwnsRecovery` that ChatPage reads. A
+sign-in error (`auth_required`) is not one of them: the press works once the
+sign-in lands, so the composer keeps Resume and only its placeholder changes,
+to "Last turn needs a sign-in -- follow the message above, then press Resume or
+send your message again" (`authRequiredIsNewest`, read by ChatPage, `ChatPane`
+and a crew's window). A
 split-view pane of an ordinary chat is the same `ChatPane` and offers the same
 Resume.
 
@@ -2474,9 +2479,16 @@ treatment with its hover. Notes, Permissions, and Model follow.
 The pencil, Permissions, and Model entries open `CrewEditorModal`;
 the card introduces no configuration writer. Memory is a non-interactive binding
 readout — it never opens the unrelated generated Dashboard. The Workspace tile's
-label is the crew record's `workspace` field shown as-is: that field is the
+label comes from the crew record's `workspace` field: that field is the
 configured workspace's NAME (a key into the workspaces list, `default` for most
-Bots), not a directory, so no folder name is taken off it. Workspace opens
+Bots), not a directory, so no folder name is taken off it. A rename changes only
+the Bot's label, so the workspace made for it keeps its `member-<slug>` name and
+folder; when the field is exactly `member-<slug>` of the Bot's own roster slug,
+the tile reads the Bot's current name instead, and any other value (`default`, a
+named workspace, another Bot's `member-*`, or the Bot's own name shortened past
+40 characters or numbered on a collision) is shown as-is. The tooltip
+is the stored name either way, and the editor's Workspace field and the
+Workspaces list still show the stored name. Workspace opens
 SidePanel Files, and Files / Terminal are rooted in `projectDir` = the live DM
 slot's `project` — the directory the backend resolved that name to when it opened
 the member slot (`default_project_dir`) — never in the name itself, which rooted
@@ -4316,10 +4328,11 @@ parts:
   records none), then per item
   `work_ledger_record action=create`, `session_create`, `work_ledger_record
   action=bind`, `session_send`, binding before the seed. It also teaches the
-  patrol: a self-armed `monitor_start` with `watch="work-ledger"`, `gate` left at
-  its default (never `gate:false`), `interval_secs` within 300..900, no
+  patrol: a self-armed `monitor_start`, only when the bind reply's `patrol=` is
+  not `armed` or `existing (active-work-ledger)`, with `watch="work-ledger"`,
+  `gate` left at its default (never `gate:false`), and no `interval_secs`,
   `max_cycles` or `max_runtime_secs` (a work-ledger patrol takes none from the
-  model), and, when every item is terminal or the user says stop, ONE final
+  model and runs every 300 s), and, when every item is terminal or the user says stop, ONE final
   report to the user before `autonudge_stop` in a later step. Those
   rules, and the verdict and close rules beside them, are not the Bot's
   own text: each is a placeholder filled from the root conductor's shared rules
@@ -4507,8 +4520,11 @@ parts:
   KAS honours the limits as the worker spec's `excludedTools`). claude, in
   `ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`, honours the MCP ones as
   `permissions.deny` rules read from the worker's own spec by its session
-  (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`), so it refuses only a
-  native-tool exclude (`@builtin` included), a wildcard, or a `disabledTools` that is not a list of tool
+  (`acp.session_mcp_crewmate.crewmate_worker_deny_rules`), and, in
+  `ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS`, a native-tool exclude its built-in
+  table covers as a `tools` allow-list of the built-ins the worker keeps
+  (`agent_sdk.claude_worker_tools.claude_worker_builtin_tools`), so it refuses only another
+  native entry (a bare `@builtin`, `use_aws`), a wildcard, or a `disabledTools` that is not a list of tool
   names (`mate_worker.uncarried_tool_limits_of`). The worker's model pin is judged against the same backend
   (`mate_worker.crewmate_worker_backend`).
 
@@ -5080,7 +5096,9 @@ else `agent.acp_backend` (Kiro CLI as KAS), else KAS when Crew bots cannot run o
 that harness, logged and rung in the bell (`crewmate_harness_notice`). One Crew bot
 also runs on KAS on its own when it follows the Settings harness and its own file
 sets something for its workers that harness cannot carry: worker tool limits
-(outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`) or `hooks` / `permissions` /
+(outside `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS`; on claude a native-tool exclude
+counts only when the installed adapter is below the session-options floor,
+`claude_adapter_honours_session_options`, where the start would stop the worker) or `hooks` / `permissions` /
 `toolsSettings` (`mate_spec_policy.applies_spec_policy`), read by
 `mate_worker.kas_only_worker_fields` (`crewmate_harness.worker_spec_forces_kas`). Its
 workers would each be refused. The answer is held in memory, read off the loop at

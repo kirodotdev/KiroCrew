@@ -11,7 +11,11 @@ the flow moves on. A replay of the importer from Settings stays open on the
 "No supported setup found" result, so the click is answered. `/onboarding`
 replays all of first run, and its empty import step still ends by itself. The
 host chooses in `website/src/shell/boot/firstRun.tsx` (`keepEmptyImport`) and
-passes it to `AgentImportFlow` as `keepOpenWhenEmpty`.
+passes it to `AgentImportFlow` as `keepOpenWhenEmpty`. While a replayed
+importer is open, the host does not derive Privacy or the Customize tour from
+the completion flags, so only one first-run chapter is on screen; the
+importer's own exits open the next chapter, including a changed Privacy
+notice that came due while the importer was open.
 
 The module is a **projection**, not a mirror: it reads a foreign layout and
 writes only into Kiro Crew's own containers through Kiro Crew's own APIs. It never

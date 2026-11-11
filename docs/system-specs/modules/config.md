@@ -120,7 +120,9 @@ its logical name. `read_config_document` parses `reconcile(leaf, disk_bytes)`, a
 seals these files, both serve the endorsed copy whenever the on-disk bytes differ, PER FILE and
 before the merge, so an unrelated save cannot re-endorse a tampered file. Under enforcement the
 store fails closed: a failed copy write keeps the previous copy and aborts the save before
-publishing, a failed publish restores the prior copy, and an existing but unreadable copy
+publishing, a failed publish restores the prior copy (when that restore fails too, the process
+keeps answering the prior copy while the file still holds the unpublished bytes, so the next
+save is not refused as an outside edit), and an existing but unreadable copy
 raises rather than serving disk bytes. It is whole-file, so every key is covered with no key
 list to maintain. It runs only where
 the per-file bind can detach (`enforcement_active`: a Linux host that can build the namespace
@@ -2259,11 +2261,12 @@ requested name while the generic default agent answers **with none of the app's
 MCP tools and no error**, leaving the app unusable until a gateway restart happens
 to re-warm the snapshot. `_turn_admit` therefore guards the resolve, strictly behind
 `slot._app and not bindings.requested_resolved` (zero extra work / I/O on the
-common hot path — no `_app`, or already resolved). The first rescan step also
-runs for a named non-app slot that did not resolve while
-`materialized_snapshot_complete()` is False (a scan skipped a spec, or the boot
-scan has not landed); if the re-resolve still misses, that turn fails with
-`memory_unavailable`. A complete snapshot is trusted and costs no rescan:
+common hot path — an agent that resolved). The first rescan step also
+runs for a named non-app slot that did not resolve: the snapshot may lack a spec
+written by hand or by kiro-cli after it warmed, or one a scan could not read. If
+the re-resolve still misses, that turn fails with `memory_unavailable`. The
+refresh's memo makes a miss with nothing new on disk a listing and a stat per
+spec.
 
 1. **Self-heal (two escalating steps).** First, **rescan** the snapshot **off the
    loop** with the same pattern the gateway boot uses (`dashboard/server_runtime/app_platform.py`) —
@@ -2311,6 +2314,14 @@ pick never rescans: members come from the config the handler loaded. The
 refresh's memo makes a miss with nothing moved on disk a listing of the agents
 directories and a stat per spec (a revision it cannot prove scans, as a catalog
 fetch does), and a failed scan leaves the refusal in place.
+
+The paths that run an agent a chat already holds refresh once the same way
+before refusing a name that did not resolve, then resolve again: a thread reply
+(`dashboard/chat_threads.py`) awaits `rescan_before_refusal()`, and kiro-cli's own
+agent switch inside a turn (`session_agent_selection.record_provider_agent_switch`)
+and the Crew Mode migration's target check (`dashboard/crew_mode_migration.py`
+`_usable`) call `refresh_materialized_agents` inline, as both already run off the
+loop.
 
 The eager-spawn pre-warm path mirrors the **self-heal** step (rescan →
 re-register-from-source) only (so the speculative session bakes in the app's own
@@ -4897,6 +4908,14 @@ corrupt existing document as described above.
   above
 - An enum value outside its set → that field's default, with a logged line
 - An out-of-range number → clamped (see "Security-Bounded Config Clamp")
+
+### Editable choices (`enum`)
+
+`PATCH /api/config/kirocrew` accepts an `enum` entry of `_EDITABLE_CONFIG` when the value equals
+one of its `values` (or its `values_fn` result), and stores that member rather than the value
+sent. For `browser.live.max_fps` (`[15, 30, 60]`) a JSON `15.0` equals `15`, and the loader reads
+only an int, so storing the float would make the route answer 200 while the live view ran the
+default rate. Pinned by `test/test_config_browser_section.py::TestPatchRoute::test_an_integral_float_frame_rate_is_stored_as_the_choice`.
 
 ### Editable string lists (`str_list`)
 

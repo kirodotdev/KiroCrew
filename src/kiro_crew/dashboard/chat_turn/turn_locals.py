@@ -98,6 +98,7 @@ class _ChatTurn:
     _commands_off: "bool"
     _recovery_echo_owed: "bool"
     _card_origin: "bool"
+    _prompt_on_channel: "bool"
     _turn_actor: "str"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
@@ -379,6 +380,7 @@ class _ChatTurn:
         _commands_off: "bool",
         _recovery_echo_owed: "bool",
         _card_origin: "bool",
+        _prompt_on_channel: "bool" = False,
         _turn_actor: "str",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
@@ -417,6 +419,7 @@ class _ChatTurn:
         self._commands_off = _commands_off
         self._recovery_echo_owed = _recovery_echo_owed
         self._card_origin = _card_origin
+        self._prompt_on_channel = _prompt_on_channel
         self._turn_actor = _turn_actor
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed

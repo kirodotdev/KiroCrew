@@ -31,6 +31,7 @@ from kiro_crew.apps.proxy_auth import (
     verify_proxy_request_v2,
 )
 from kiro_crew.apps.routes import invalidate_app_secret_cache
+from kiro_crew.dashboard.token_auth import write_app_secret
 
 
 @pytest.mark.parametrize(
@@ -89,7 +90,8 @@ async def test_the_backend_receives_no_token_and_the_signatures_verify(
     home = _setup_env(tmp_path, monkeypatch)
     _install(tmp_path)
     enable_app(APP)
-    (home / "apps" / APP / ".app_secret").write_text("proxy-key", encoding="utf-8")
+    del home
+    write_app_secret(APP, "proxy-key")
     invalidate_app_secret_cache(APP)
 
     seen: dict[str, Any] = {}

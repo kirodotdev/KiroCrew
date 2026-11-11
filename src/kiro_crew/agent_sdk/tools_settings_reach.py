@@ -26,6 +26,10 @@ _SPAWN_GATE_KEY = "availableAgents"
 _SHELL_ALLOWLIST_KEYS = ("denyByDefault", "allowedCommands")
 #: The write keys Crew's gate reads as the ``fallbackAction: "deny"`` allowlist.
 _WRITE_ALLOWLIST_KEYS = ("fallbackAction", "allowedPaths")
+#: Appended to an allowlist key the session does not approve from but Crew's gate
+#: still refuses outside of, under its deny-by-default switch, so the
+#: session-start notice never says it has no effect (``spec_keys_notice``).
+GATE_READ_MARK = " (read by Crew's gate)"
 
 
 def _gate_applied_keys(tools_settings: dict[str, Any]) -> set[tuple[str, str]]:

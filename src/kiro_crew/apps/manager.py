@@ -148,8 +148,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ALWAYS_STORED_FAMILIES,
         _APPROVE_DECLARED_KEY,
         _APPROVE_DECLARED_TEXT,
+        _AWAITING_MANIFEST_KEY,
+        _AWAITING_MANIFEST_TEXT,
+        _EXPLICIT_ONLY_FAMILIES,
         _GRANT_AND_SCOPE_WIDENING,
         _GRANT_WIDENING,
+        _RECORD_READ_CAP,
         _SCOPE_WIDENING,
         _TREE_SWAP_LAST_CAP,
         _VALID_LIFECYCLE,
@@ -176,16 +180,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _disabled_before_upgrade,
         _effective_approved_grants,
         _enabled_on_disk,
+        _freeze_declared,
         _held_back_entries,
         _import_app_tree_grants,
         _import_app_tree_grants_locked,
         _is_sidecar_entry,
+        _next_token_cutoff,
         _now_iso,
         _parse_approved_grants,
         _pending_session_approval_after_manifest_change,
         _read_approved_grants,
         _read_enabled,
         _read_installed,
+        _read_not_before,
+        _read_record_bytes,
         _read_schema_version,
         _record_lock_path,
         _record_lock_state,
@@ -209,10 +217,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UpdateMarker,
         _write_approve_declared,
         _write_approved_grants,
+        _write_awaiting_manifest,
         _write_installed,
         app_data_dir,
         app_dir,
         app_record_lock,
+        app_token_cutoff,
         approved_manifest_permissions,
         apps_dir,
         get_app_manifest,
@@ -257,6 +267,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import ipaddress  # noqa: F401
     import json  # noqa: F401
     import logging  # noqa: F401
+    import math  # noqa: F401
     import os  # noqa: F401
     import re  # noqa: F401
     import shutil  # noqa: F401
@@ -341,6 +352,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         message_action_grant_row,
     )
     from kiro_crew.apps.point_grants import (  # noqa: F401
+        explicit_only_grant_families,
         grant_source,
         point_grant_families,
     )
@@ -349,6 +361,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.apps.selection_action_grants import (  # noqa: F401
         selection_action_grant_row,
+    )
+    from kiro_crew.apps.user_session_reach import (  # noqa: F401
+        user_session_reach_grant_row,
     )
     from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
         WORKER_AUTO_APPROVE_GRANT_FAMILIES,
@@ -368,6 +383,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         read_config_text,
         read_endorsed_config_text,
         update_config_locked,
+    )
+    from kiro_crew.jsonl_util import (  # noqa: F401
+        open_regular_nofollow,
     )
     from kiro_crew.loop_lock import (  # noqa: F401
         LoopBoundLock,

@@ -792,6 +792,13 @@ async def _fire_event_impl(
         frame = extra or {}
         label = {k: v for k, v in frame.items() if k != "queued"} if "reason" in frame else None
         self._manager._published_depths.record(info.parent_session_key, frame.get("queued"), label)
+    # A retry or recovery is the newer health state, so it ends a stall here
+    # as it does on the card: a reconnect snapshot replays `info.stalled` and
+    # must not bring the older stall back over the retry. The suspicion also
+    # restarts, so the reaper needs two fresh sweeps to flag it again.
+    if etype in ("subagent_retrying", "subagent_recovering"):
+        info.stalled = False
+        info._stall_suspect_at = 0.0
     if self._manager._on_event:
         try:
             await self._manager._on_event(etype, info, extra or {})

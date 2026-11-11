@@ -543,6 +543,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_commands_off",
         "_recovery_echo_owed",
         "_card_origin",
+        "_prompt_on_channel",
         "_turn_actor",
         "_agent_started",
         "regenerate_hint",

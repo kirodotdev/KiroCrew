@@ -540,6 +540,14 @@ SESSION_SET_COLOR_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_SET_NOTE_SCHEMA = ToolSchema(
+    tool_name="session_set_note",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("note", str, required=True, max_len=MAX_LONG_STRING),
+    ],
+)
+
 SESSION_CLOSE_SCHEMA = ToolSchema(
     tool_name="session_close",
     fields=[

@@ -816,6 +816,16 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             )
         ),
         apps_allow_third_party=section.read("apps_allow_third_party", _safe_bool),
+        sandbox_readonly_paths=(
+            [p for p in _ro_paths if isinstance(p, str) and p]
+            if isinstance(_ro_paths := section.get("sandbox_readonly_paths"), list)
+            else section.default("sandbox_readonly_paths")
+        ),
+        sandbox_readonly_exceptions=(
+            [p for p in _ro_exceptions if isinstance(p, str) and p]
+            if isinstance(_ro_exceptions := section.get("sandbox_readonly_exceptions"), list)
+            else section.default("sandbox_readonly_exceptions")
+        ),
         apps_trusted=(
             [a for a in _trusted if isinstance(a, str) and a]
             if isinstance(_trusted := section.get("apps_trusted"), list)
@@ -1427,6 +1437,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         milestones_enabled=section.read("milestones_enabled", _safe_bool),
         folder_suggestions_enabled=bool(section.get("folder_suggestions_enabled")),
+        project_tags_enabled=section.read("project_tags_enabled", _safe_bool),
         topic_tags_enabled=section.read("topic_tags_enabled", _safe_bool),
         tips_cadence_hours=section.read("tips_cadence_hours", _safe_float, lo=0.0),
         tips_snooze_hours=section.read("tips_snooze_hours", _safe_float, lo=0.0),

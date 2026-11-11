@@ -189,6 +189,7 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_latest_version",
             "update_latest_version_display",
             "update_channel",
+            "update_upcoming",
             "update_channel_move_pending",
             "update_managed_by",
             "update_policy_file",

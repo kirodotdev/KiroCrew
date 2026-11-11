@@ -347,6 +347,7 @@ class _ChatSlot:
         "_turn_user_sent",
         "_turn_owner_sent",
         "_turn_agent_started",
+        "_turn_wrote_text",
         "_steer_admissions",
         "_steer_decision_strips",
         "_steer_possibly_delivered",
@@ -369,6 +370,11 @@ class _ChatSlot:
         "_embed_question_polled_at",
         "_welcomed_agent",
         "_welcome_preview",
+        # Sidebar-row memos (``dashboard/slot_row_memo.py``); ``None`` means no memo.
+        "_row_summary_memo",
+        "_row_redacted_memo",
+        "_row_links_memo",
+        "_slot_links_memo",
     )
 
     # Initialised by state_parts/source_links.py.
@@ -379,6 +385,11 @@ class _ChatSlot:
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int
     _dismissed_txn_pending: set[str]
+    # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
+    _row_summary_memo: tuple[Any, ...] | None
+    _row_redacted_memo: tuple[Any, ...] | None
+    _row_links_memo: tuple[list[dict], list[dict]] | None
+    _slot_links_memo: tuple[Any, ...] | None
 
     # Initialised by state_parts/slot_sidebar.py.
     _artifact: str
@@ -669,6 +680,9 @@ class _ChatSlot:
     #: The turn running now is one the agent started on its own between prompts
     #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
     _turn_agent_started: bool
+    #: The turn running now has streamed reply text (``chat_turn.stream_chunks``);
+    #: ``POST /api/session-directive`` reports it to the directive tool.
+    _turn_wrote_text: bool
     _steer_admissions: dict[str, dict]
     _steer_decision_strips: dict[str, dict]
     _steer_possibly_delivered: set[str]

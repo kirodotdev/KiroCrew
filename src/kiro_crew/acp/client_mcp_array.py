@@ -8,8 +8,9 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_capability_projection_gaps``, ``_copilot_mcp_config_path``,
-``_crew_bridge_snapshots``, ``_loaded_capability_template``, ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
+Instance fields written: ``_capability_projection_gaps``, ``_claude_worker_builtin_tools``,
+``_copilot_mcp_config_path``, ``_crew_bridge_snapshots``, ``_loaded_capability_template``,
+``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
 ``_mcp_pruned``, ``_mcp_pruned_names``,
 ``_mcp_pruned_omitted``, ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``,
 ``_member_stub_allowlist``, ``_pending_oauth_requests``, ``_pi_mcp_handoff``,
@@ -396,6 +397,7 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     self._session_mcp_unhonoured = projection.unhonoured_servers
     self._session_harness_deny_rules = projection.harness_deny_rules
     self._spec_zero_tools = projection.zero_tools
+    self._claude_worker_builtin_tools = projection.builtin_tools
     # Kept beside the array it describes, so the post-consume check judges the
     # generation these elements were built from and not a later read of the file.
     self._session_mcp_snapshot = projection.derived_spec_snapshot

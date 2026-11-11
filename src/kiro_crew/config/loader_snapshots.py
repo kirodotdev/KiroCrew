@@ -596,8 +596,7 @@ def materialized_snapshot_complete() -> bool:
 
     A pure in-memory read, safe on the event loop. ``False`` before the first
     refresh lands, and after one that skipped a spec it could not read: a name
-    missing then may still have its file on disk, so a caller about to fail a
-    turn on that miss rescans once off the loop first (``_turn_admit``).
+    missing then may still have its file on disk.
     """
     return _MATERIALIZED_COMPLETE
 

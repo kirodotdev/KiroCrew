@@ -592,7 +592,14 @@ rename-safe membership id, tolerant-loaded for legacy meta.json.
 `~/.kiro/crew/artifact_folders.json` — create/rename/reparent (cycle- and
 depth-guarded, `MAX_FOLDER_DEPTH` 20)/reorder/delete, breadcrumb, item counts,
 and id-or-path resolution with mkdir -p semantics (`resolve_path`, all-or-nothing
-rollback). Folder delete is an explicit choice: keep (re-parent direct children
+rollback). `POST /api/artifacts` with a `folder` path and `POST /api/artifact-folders`
+with a `parent` path refuse what their create would refuse before they mkdir -p, so
+a refused field, slug, color or depth leaves no folder behind (a slug that a concurrent
+save claims between the check and the create is refused after it): the save asks
+`ArtifactStore.check_create` first, and the folder create checks the color and
+resolves `parent` with `as_parent=True`, which refuses a missing segment too deep to
+hold the new folder.
+Folder delete is an explicit choice: keep (re-parent direct children
 to the parent) vs cascade (permanently delete the whole subtree, incl.
 descendant artifacts) — never silent. The file is tolerant-loaded: an entry
 with no id, or a list/object id, is dropped, and an `order` that `int()` cannot
@@ -1027,6 +1034,27 @@ declare that it needs authentication; the failure mode of the wrong default is
 a public link with no warning. App-registered rows from
 `GET /api/publish-providers` are the public-web deploy surface and are always
 treated as reachable.
+
+**Expiry on a core destination.** A destination states the lifetimes it can give a
+publication in its sharing model: `expiration_choices_days` (ascending whole days),
+`allows_no_expiration` and `default_expiration_days`, all carried on each
+`GET /api/artifacts/publish-providers` row. `SharingModel` refuses an inconsistent
+declaration when it is built. When the list is non-empty, the Publish panel offers those
+periods (plus "Never" when allowed) on a first publish, preselects the default, repeats
+the choice on the confirm step, and names the period in the public-exposure
+acknowledgment. `POST /api/artifacts/{slug}/publish` takes `expires_in_days` (whole days,
+`null` for no expiry, absent for the destination's default; any other shape is a 400).
+`publish_sync.publish` resolves it against the declaration, refuses an undeclared value
+with a 400 before anything is uploaded, and passes the period to `PublishProvider.publish`
+as `expires_in_days`. It passes the keyword only to a destination that declares choices,
+so a provider written before it keeps its signature; a request naming an expiry for such a
+destination is a 400. The destination fixes the lifetime when the publication is created,
+so a re-publish that names an expiry is a 409: it comes from a panel that saw the artifact
+unpublished, and reporting success would claim a lifetime that was never applied. The
+panel sends no expiry on a re-publish. A core row never shows the deploy surface's TTL
+control, because the core publish carries no `ttl_hours`. `supports_expiration` follows
+`expiration_choices_days` unless a provider sets it; an explicit `False` beside declared
+choices is refused.
 
 ## Widget auto-registration
 
@@ -1959,6 +1987,10 @@ the builtin `artifacts` skill):
 - Resolution stays human-only: the resolve endpoint returns 403 for any
   MCP-originated request (actor inferred from the `X-Internal-Secret`
   header, never from a body flag).
+- An agent cannot undo a resolve either: `artifact_mark_review` on a thread
+  whose status is already `resolved` returns 409 for an MCP-originated
+  request and leaves the thread resolved. The person can still
+  reopen or mark review from the dashboard.
 - Agents may not delete provider-synced comments (403) — provider
   reconciliation (companion edition) would resurrect or desync them; mark
   REVIEW instead.
@@ -2522,7 +2554,11 @@ paths rejected (`is_sensitive_path`); reads go through the inode-pinned
 the iframe) with `default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' data:
 blob:`: no `'unsafe-eval'` (the channel injects no runtime, so nothing needs JS
 eval) but `'wasm-unsafe-eval'` so served `.wasm` can still compile, plus
-`nosniff` and `no-store`. All filesystem work runs off the
+`nosniff` and `no-store`. `'unsafe-inline'` stays because refusing it removes
+no reach: the channel injects nothing and treats the whole tree as untrusted,
+so an inline script gets the same opaque origin and `'self'` fetch limit as a
+served (or `data:`) script, while apps that ship inline scripts or styles
+would break. All filesystem work runs off the
 event loop via `asyncio.to_thread`.
 
 ### Deploy Routes (`/api/deploy/*`)

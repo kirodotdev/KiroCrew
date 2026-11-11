@@ -298,6 +298,10 @@ class McpServerInfo:
     # a client — it only refuses to lose these fields while syncing.
     scopes: list[str] = field(default_factory=list)
     client_id: str = ""
+    # The entry's own ``oauth`` block reaches no KAS engine
+    # (``mcp_oauth_projection.oauth_withheld``: it names a ``clientSecret``, or
+    # keeps nothing Crew sends). A flag only; the block itself never leaves here.
+    oauth_withheld: bool = False
     # unknown | ok | error | probing | outdated | disabled | needs_auth | registry
     # | routed (a secret:// server the running gateway starts; not probed here)
     status: str = "unknown"
@@ -442,6 +446,8 @@ class McpServerInfo:
                 d["scopes"] = list(self.scopes)
             if self.client_id:
                 d["clientId"] = self.client_id
+            if self.oauth_withheld:
+                d["oauthWithheld"] = True
             # Gated on ``auth_challenge`` being set, so an absent key means "this
             # probe learned nothing about authorization" and a present
             # ``authGrantPresent`` is always a real observation. A client that

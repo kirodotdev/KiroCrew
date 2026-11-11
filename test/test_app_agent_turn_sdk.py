@@ -533,3 +533,43 @@ def test_a_session_whose_record_names_no_agent_is_refused_on_every_path(
         ("release", oneshot_key),
         ("destroy", oneshot_key),
     ]
+
+
+def test_a_person_only_directive_the_turn_calls_is_refused_out_loud(monkeypatch, admitted):
+    """No session applier reads an app turn: ``set_project`` is refused and audited."""
+    from kiro_crew import session_directive
+    from kiro_crew.acp.types import EVENT_TOOL_CALL, EVENT_TOOL_RESULT, AcpEvent
+
+    audits: list[dict[str, Any]] = []
+
+    class _SelSpy:
+        def log_tool_invocation(self, **kw: Any) -> None:
+            audits.append(kw)
+
+    async def _stream(provider: Any, message: str, *, on_event: Any = None, **_kw: Any) -> str:
+        if on_event is not None:
+            await on_event(
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="tc-1",
+                    tool_name="set_project",
+                    mcp_server_name=session_directive.CORE_MCP_SERVER,
+                )
+            )
+            await on_event(AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", tool_final=True))
+        return "Project change requested for this session."
+
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: _SelSpy())
+    monkeypatch.setattr(llm_helpers, "stream_and_collect", _stream)
+    key = f"{APP}-n-1"
+
+    reply = asyncio.run(asyncio.wait_for(_sdk(_Manager()).run(key, "a line"), _BOUND))
+
+    assert reply.startswith("Error: set_project only works from a user-facing session"), reply
+    assert f"(this turn is {key!r})" in reply
+    assert reply.endswith("\n\nProject change requested for this session.")
+    assert [
+        (a["session_key"], a["tool_name"], a["outcome"])
+        for a in audits
+        if a.get("source") == "mcp-directive"
+    ] == [(key, "set_project", "denied")]

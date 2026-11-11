@@ -295,13 +295,12 @@ Settings offers no control for it.
 
 **Dispatch means monitor**, default `watch="work-ledger"` (one PR URL only when
 that PR is all you wait on). Every `session_create` and `bind` reply ends
-`patrol=<outcome> (<reason>)`. Anything but `armed` or
-`existing (active-work-ledger)` means nobody reads your ledger until you arm
-the loop below.
+`patrol=<outcome> (<reason>)`. `armed` or `existing (active-work-ledger)` means
+the gateway already runs your patrol: do not arm another. Anything else means
+nobody reads your ledger until you arm the loop below.
 
-After dispatching, arm a loop on your own session with `monitor_start`. Put the
-check AND the exit condition in the message, and pass an explicit
-`interval_secs`.
+Only then, arm a loop on your own session with `monitor_start`. Put the
+check AND the exit condition in the message.
 
 **`watch="work-ledger"` is mandatory.** It gates the loop on the ledger you
 dispatched into: a cycle where no worker reported anything costs no turn, and a
@@ -315,10 +314,10 @@ A loop armed without it is a plain timer that pays a turn every interval. If you
 without it, fix that FIRST, before anything else that cycle, with
 `monitor_update(watch="work-ledger")` rather than re-arming.
 
-**The interval is 300 to 900 seconds** (`interval_secs` in 300..900), never
-outside that band, whatever the round is waiting on. **Pass no `max_cycles` and no `max_runtime_secs`.** A
-`watch="work-ledger"` loop takes no bound from you: the gateway arms it with no
-cycle cap, whatever you pass, and its one bound is the runaway backstop
+**The interval is fixed at 300 seconds.** Pass no `interval_secs`, `max_cycles`
+or `max_runtime_secs`. A
+`watch="work-ledger"` loop takes no bound from you: the gateway arms it every
+300 s with no cycle cap, whatever you pass, and its one bound is the runaway backstop
 `monitoring.max_runtime_secs` (7 days as shipped). It runs until you stop it at
 a stop condition below, or a person stops it.
 

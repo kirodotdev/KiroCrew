@@ -91,6 +91,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_INGEST_ARCHIVE_UNCOMPRESSED,
     )
     from kiro_crew.dashboard.handlers.knowledge_library import _DATE_ORDER  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_library import _HELD_BY_SOURCE  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _NO_SOURCE  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _SCOPED_SEARCH_MAX  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _SCOPED_SEARCH_START  # noqa: F401
@@ -104,6 +105,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.knowledge_library import _item_detail  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _items_page  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _load_items_by_id  # noqa: F401
+    from kiro_crew.dashboard.handlers.knowledge_library import _located_item_ids  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _matches_source  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _namespace_rows  # noqa: F401
     from kiro_crew.dashboard.handlers.knowledge_library import _related_items  # noqa: F401

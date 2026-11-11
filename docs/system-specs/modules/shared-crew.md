@@ -1006,8 +1006,9 @@ coroutine unrun.
 ### Responses
 
 A lost send race is settled before admission and is not an admission refusal:
-it answers 409 `send_race` with the winner (section 5, First submit wins) and
-creates no `AcceptedWork`. The race-versus-queue boundary is open; the POC
+it answers 409 `send_race` with the winner (section 5, First submit wins), or 409
+`send_pending` with no winner when another send was still pending past the settle
+wait, and creates no `AcceptedWork`. The race-versus-queue boundary is open; the POC
 settles races by revision compare-and-set and leaves capacity to admission.
 
 A refusal or conflict answers `admission.error_body`: the dashboard's
@@ -1054,7 +1055,9 @@ stops the child (`_stop_child`), wakes every waiter and logs a warning. The work
 keeps its slot and stays tracked with its last durable record
 (`_Live.unpersisted`); every ticker pass retries the terminal write
 (`admission_settle.persist_pending`) and frees the slot only once the store
-records it, so capacity is never released ahead of the durable transition. A
+records it, so capacity is never released ahead of the durable transition. The
+in-memory end is the one the retry writes: when the durable state cannot reach
+`failed` (a `queued` record), memory and store both say `cancelled`. A
 merged queued message whose settlement write fails is kept the same way. A
 deadline whose `cancelling` write fails still stops the
 child. A caller cancelled before its work starts (a queued chat closed while it
@@ -1389,6 +1392,15 @@ reader's own. Until the viewer read lands, the session's recorded creator stands
 for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
 labelled. A single-operator transcript is unchanged, and a personal Crew, one with
 the preview off or one nobody else has joined shows no bylines at all. An Unknown author reads as Unknown.
+A message an app sent is the exception: in every mode, and on a steered row too,
+it reads "Sent by the <app> app" (`MessageByline.AppSenderByline`, the
+`components.mcpApp.from_app` string), keyed on the gateway's `meta.turnActor:
+"app"`, because an app holding a session grant writes into the owner's own chats
+and its message would otherwise read as the owner's typing. The app is named from
+its `app:<name>` system author, else from `meta.appLabel` (a steered answer), and
+shown by the installed app's display name. A row carrying the mark without either
+(a send that went through the busy-slot queue or the parked hold) reads "Sent by an
+app".
 
 ### Typing lease
 
@@ -1509,7 +1521,8 @@ and before the responsive, steer, busy-queue, sub-agent-hold and new-turn branch
 so a losing send reaches none of them. `SendRaceRegistry.claim` decides, in order:
 
 1. while another claim on the session is pending, wait for it to settle (bounded by
-   `SETTLE_WAIT_SECONDS`; past it the pending sender wins);
+   `SETTLE_WAIT_SECONDS`; past it this send is refused as `send_pending`: no winner
+   and nothing accepted, since the pending send may still be released);
 2. a key this principal already won with is a replay: the admission replay answers
    when it has one, else `{ok, replayed, send_revision, message_id}`; nothing is
    accepted again, so a retry after a lost winner response never runs twice;
@@ -1528,8 +1541,9 @@ the revision by one and records `{revision, principal, message_id, accepted_at}`
 `message_id` is the user row's `mid`, else the queue id, else the client `sendId`.
 
 A loser answers 409 `{"error", "code": "send_race", session_key, current_revision,
-winner: {revision, principal (public), message_id, accepted_at}}`. Nothing was
-accepted: no row, no queue entry, no steer, no turn.
+winner: {revision, principal (public), message_id, accepted_at}}`; a send refused
+past the settle wait answers the same shape with `"code": "send_pending"` and
+`winner: null`. Nothing was accepted: no row, no queue entry, no steer, no turn.
 
 The browser restores a refused `send_race` or `composer_locked` draft to its
 session's draft store. `StableChatInput` subscribes to that store and passes the
@@ -1558,7 +1572,7 @@ that never learned a revision sends none and is not compared.
 | `GET /api/shared-crew/capacity` | `CapacityResponse` for the viewer |
 | `GET /api/shared-crew/work?session_key=` | public `AcceptedWork` list |
 | `POST /api/shared-crew/work/{work_id}/cancel` `{expected_revision}` | the next `AcceptedWork`, or 409 with `current`; a planned task or schedule run is owner only (403 `owner_only`), as on its own cancel route |
-| a chat send | 200 when admitted, 202 with `work` when queued, 429 / 413 / 503 with `error_body` |
+| a chat send | 200 when admitted, 202 with `work` when queued, 429 / 413 / 503 with `error_body`; 409 `send_pending` (`winner: null`) when another send to the session is still pending past the settle wait |
 | an approval or answer, with `response_id` | the `SharedDecision`; 409 `already_resolved` with it on a lost race |
 | `GET /api/shared-crew/presence?session_key=` | the session's `PresenceEntry` list (dashboard users only) |
 | `GET /api/shared-crew/decisions?session_key=` | the session's `SharedDecision` list (dashboard users only) |

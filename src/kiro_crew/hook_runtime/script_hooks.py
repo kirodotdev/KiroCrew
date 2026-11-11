@@ -194,6 +194,11 @@ async def run_script_hook(
 
         # The policy's ``events`` list names the trigger events a hook may fire on.
         gov_denied = await asyncio.to_thread(event_refusal, sk, firing_event)
+    if not gov_denied:
+        from kiro_crew.hook_event_governance import hook_refusal
+
+        # The policy's ``hooks`` list names the hooks that may run.
+        gov_denied = await asyncio.to_thread(hook_refusal, sk, hook)
     if gov_denied:
         hook.last_run = time.time()
         hook.last_status = "blocked"
@@ -1043,6 +1048,10 @@ class ScriptHookStore:
                     from kiro_crew.hook_event_governance import event_refusal
 
                     gov_denied = await asyncio.to_thread(event_refusal, sk, event)
+                if not gov_denied:
+                    from kiro_crew.hook_event_governance import hook_refusal
+
+                    gov_denied = await asyncio.to_thread(hook_refusal, sk, hook)
                 if gov_denied:
                     hook.last_run = time.time()
                     hook.last_status = "blocked"

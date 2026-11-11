@@ -179,8 +179,12 @@ async def _cancel_parent_children(
     agent_ids: "Sequence[str]",
     *,
     verb: str,
+    reason: str = "",
 ) -> None:
     """Stop the snapshotted runs, ahead of reaping the runtime they share.
+
+    *reason*, when given, follows *verb* in the stop origin of each run this
+    teardown is first to stop, so the run's "stopped" report says why.
 
     *key* is passed alongside the snapshot rather than instead of it, so the
     teardown's audit line can name the conversation the ids belonged to.
@@ -233,6 +237,7 @@ async def _cancel_parent_children(
             # stop. Several verbs reach this one helper, and "a parent end cancelled
             # these runs" is not answerable from outside without it.
             verb=verb,
+            **({"reason": reason} if reason else {}),
         )
     )
     self._owner._background_tasks.add(task)

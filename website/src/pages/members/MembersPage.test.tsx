@@ -250,6 +250,14 @@ vi.mock('../../components/ChatPane', async () => {
         <a href="https://elsewhere.example/members?create=1&name=evil" data-testid="chat-link-foreign">foreign</a>
         {/* What the transcript's renderer hands the host for a plain click on either
             staged-dashboard link form (see dashboardPreview.link.test.tsx). */}
+        {/* A folder chip in a reply, and a thread footer's Open: what the
+            transcript hands the host for each click. */}
+        {typeof rest.onFolderOpen === 'function' && (
+          <button data-testid="chat-open-folder" onClick={() => (rest.onFolderOpen as (path: string) => void)('/home/u/work/evidence/')}>folder</button>
+        )}
+        {(rest.threads as { onOpen?: (mid: string) => void } | undefined)?.onOpen && (
+          <button data-testid="chat-open-thread" onClick={() => (rest.threads as { onOpen: (mid: string) => void }).onOpen('m-1')}>thread</button>
+        )}
         {typeof rest.onArtifactOpen === 'function' && (
           <>
             <button data-testid="chat-open-preview-member" onClick={() => (rest.onArtifactOpen as (ref: string) => void)('dashboard-preview:member:oncall')}>preview by name</button>
@@ -357,6 +365,18 @@ describe('MembersPage roster', () => {
     await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
     await waitFor(() => expect(threadsSummary).toHaveBeenCalledWith('member-oncall'))
     await screen.findByTestId('member-threads-error-row', undefined, PANE_READY)
+  })
+
+  it('a folder chip opens the folder tab and closes an open reply thread that would cover it', async () => {
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ dashboard: { crewmate_threads: true } })
+    await renderPage([row()], 'kirocrew', { route: '/members?member=oncall' })
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    fireEvent.click(await screen.findByTestId('chat-open-thread', undefined, PANE_READY))
+    await screen.findByTestId('thread-panel', undefined, PANE_READY)
+    fireEvent.click(screen.getByTestId('chat-open-folder'))
+    // The folder tab is on the strip, and the opaque thread no longer covers it.
+    expect(await screen.findByText('evidence', undefined, PANE_READY)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('thread-panel')).toBeNull())
   })
 
   it('a failed config read is said with a Retry, not rendered as threads off', async () => {

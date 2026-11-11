@@ -11,6 +11,7 @@ from typing import Any, NamedTuple
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
 from kiro_crew.config.loader import (
     ResolvedBindings,
+    refresh_materialized_agents,
     resolve_agent_bindings,
 )
 from kiro_crew.execution_context import (
@@ -225,6 +226,10 @@ def resolve_session_agent_bindings(
 def record_provider_agent_switch(config, session_key, prior_agent, new_agent, project_dir):
     prior = read_session_execution(session_key)
     selected = resolve_agent_bindings(config, new_agent, project_dir, selection_kind="template")
+    if not selected.requested_resolved:
+        # kiro-cli switched to a spec on disk that the snapshot may not hold yet.
+        refresh_materialized_agents()
+        selected = resolve_agent_bindings(config, new_agent, project_dir, selection_kind="template")
     if not selected.requested_resolved:
         raise UnknownMemoryStore("Conversation agent selection is unavailable")
     selected.selection_revision = _revision(prior)

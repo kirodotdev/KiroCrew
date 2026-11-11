@@ -10,7 +10,7 @@ import { Badge, Btn, Card, EmptyState, Input, PanelSectionHeader, Skeleton } fro
 import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
 import SegmentedControl from '../../components/SegmentedControl'
-import { fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtList, fmtNumber } from '../../i18n/format'
 import type { MemoryEditOperation, MemoryEditPreview, MemoryRecord, MemoryRecordQuery, MemoryRecordRevision, MemoryRecordSelection } from '../../types/memoryEditing'
 import { MEMORY_QUERY_PREFIXES, MemoryStoreAvatar, memoryQueryRetry, useMemoryStores } from './MemoryStoreCard'
 import { semanticWriteErrorMessage } from './embeddingStatusText'
@@ -113,7 +113,7 @@ function RecallEvidence({ data }: { data: RecallResult }) {
     <details className="mt-3 text-[13px]">
       <summary className="min-h-11 cursor-pointer py-3 text-muted">{t('memoryV2.provenance')}</summary>
       <ul className="space-y-3">{groups.flatMap(group => group.rows.map((item, index) => <li key={`${group.kind}:${item.id || item.key || index}`} className="space-y-2 border-t border-border pt-3">
-        {item.retrieval?.matched_terms?.length ? <p>{t('memoryV2.matched_terms', { terms: item.retrieval.matched_terms.join(', ') })}</p> : null}
+        {item.retrieval?.matched_terms?.length ? <p>{t('memoryV2.matched_terms', { terms: fmtList(item.retrieval.matched_terms, { style: 'narrow' }) })}</p> : null}
         <RecordProvenance row={item} />
       </li>))}</ul>
       {/* Exact model context, including rules, remains inspectable without becoming the main reading surface. */}

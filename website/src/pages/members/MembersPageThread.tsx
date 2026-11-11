@@ -624,7 +624,7 @@ export function MembersPageThreadColumn({
   const {
     openMemberSideChat, openCrewWorkLog, sessionRoster, retryThreadsFlag, threadsFlagFailed,
     threadsFlagRetrying, threadsOn, threadsQuery, threadHooks, actionError, setActionError, actionInfo,
-    openFileGuarded, openSessionGuarded,
+    openFileGuarded, openFolderGuarded, openSessionGuarded,
   } = sidePanel
   const { headerInset, betweenHeaderH, betweenHeaderRef } = threadView
   const { patrol } = rosterSignals
@@ -1123,6 +1123,7 @@ export function MembersPageThreadColumn({
                         openSideChat={openMemberSideChat}
                         threads={threadHooks}
                         onFileOpen={openFileGuarded}
+                        onFolderOpen={openFolderGuarded}
                         onArtifactOpen={openArtifactInThread}
                         onSessionOpen={openSessionGuarded}
                         sessions={connected && slotsLoaded ? sessionRoster : undefined}

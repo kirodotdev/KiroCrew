@@ -1,7 +1,7 @@
 import { memo, useState, useRef, useEffect, useCallback, useContext, useSyncExternalStore, type ReactNode } from 'react'
 import { ReactReduxContext } from 'react-redux'
 import { parseSessionSeed, seedSender, type SeedRow, type SeedSender } from '../../lib/crewSeed'
-import { MessageByline } from './shared-crew/MessageByline'
+import { AppSenderByline, MessageByline } from './shared-crew/MessageByline'
 import { QueuedSendLabel } from './shared-crew/QueuedSendLabel'
 import { readRelay, withoutRelayEnvelope } from './sessionRelay'
 import SenderAvatar from './SenderAvatar'
@@ -822,6 +822,8 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
           <div className="inline-flex items-center gap-1 text-[12px] leading-5 font-semibold text-accent mb-1 pr-1">
             <Target size={12} className="shrink-0" /> {i18nT('pages.chat.userMessage.steered_into_the_running_turn')}
           </div>
+          {/* WHICH app sent it, when one did: a steered answer is still not the owner's typing. */}
+          <AppSenderByline meta={meta} />
           {/* WHO chose this, when the sender did not. Below the badge that says
               what happened, because the badge is the outcome and this is the
               decision behind it. */}

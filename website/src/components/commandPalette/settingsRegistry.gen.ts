@@ -1562,6 +1562,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.project-tags",
+    "label": "Project tags",
+    "labelKey": "pages.settings.chatPanel.project_tags",
+    "description": "Tags each new session in the sidebar with the name of its project folder, like \"my-app\".",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.project_tags_enabled"
+  },
+  {
     "id": "chat.quick-reply-card-on-hover",
     "label": "Quick Reply Card on Hover",
     "labelKey": "pages.settings.chatPanel.needs_me_hover_card",

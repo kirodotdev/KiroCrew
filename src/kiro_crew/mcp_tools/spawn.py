@@ -249,6 +249,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
     backend = args.get("backend") or ""
     label = normalize_spawn_label(args.get("label"))
     keep = bool(args.get("keep"))
+    silent = args.get("silent") is True
     # Context scope: absent ⇒ true, so a parent that passes nothing gets the
     # same context a normal session would.
     inc_memory = args.get("include_memory", True) is not False
@@ -372,6 +373,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
             body["label"] = t_label
         if keep:
             body["keep"] = True
+        if silent:
+            # Forwarded, not just accepted: a schema field the handler drops
+            # makes the documented flag a silent no-op (the `crew` rule above).
+            body["silent"] = True
         if not inc_memory:
             body["include_memory"] = False
         if not inc_lessons:

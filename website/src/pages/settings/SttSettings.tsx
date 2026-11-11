@@ -826,6 +826,9 @@ export default function SttSettings({ cardIndex }: {
   // Which row the refusal is about, so that row is marked invalid: its box keeps
   // the refused text for correction, and must not read as saved.
   const [customErrField, setCustomErrField] = useState<'path' | 'sha' | ''>('')
+  // Held by identity: the status query keeps an unchanged `download` object across
+  // re-reads, so only a new answer shows the failure row again.
+  const [dismissedDownload, setDismissedDownload] = useState<SttDownload>()
 
   // Microphone input-device picker (browser-local; persisted in localStorage,
   // applied via getUserMedia constraints). Device labels are blank until the
@@ -973,8 +976,13 @@ export default function SttSettings({ cardIndex }: {
     mutationFn: (model: string) => api.sttPrepare(model),
     onMutate: () => setErr(''),
     // The transfer outlives the request, so the response only says it started.
-    // Progress arrives through the polled status query.
-    onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
+    // Progress arrives through the polled status query. A retry can fail the same
+    // way before any poll sees it running, leaving that answer unchanged, so the
+    // dismissal ends once the re-read lands.
+    onSettled: async () => {
+      await qc.invalidateQueries({ queryKey: ['sttStatus'] })
+      setDismissedDownload(undefined)
+    },
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
   const [restarting, setRestarting] = useState(false)
@@ -1499,7 +1507,7 @@ export default function SttSettings({ cardIndex }: {
             ) : null}
             {/* A finished-and-failed transfer (the job's own `error`). Status
                 panel with nothing editable in this block → hand-off on. */}
-            {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
+            {download?.step === DOWNLOAD_STEP_FAILED && download.error && download !== dismissedDownload && (
               <ErrorNotice
                 variant="inline"
                 className="-mt-1 mb-1"
@@ -1508,6 +1516,7 @@ export default function SttSettings({ cardIndex }: {
                   ? download.error
                   : i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
                 askAgent
+                onDismiss={() => setDismissedDownload(download)}
               />
             )}
           </>

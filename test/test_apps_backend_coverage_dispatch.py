@@ -752,7 +752,10 @@ class TestSpawnEnvironment:
         """minimal_env() strips these, so the explicit forwards are the contract."""
 
         (spawn_root / "server.py").write_text("x = 1\n")
-        (spawn_root / ".app_secret").write_text("  s3cr3t  \n")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.replace_legacy_app_secret",
+            lambda name: "s3cr3t" if name == "envapp" else "",
+        )
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", "/checkout")
         monkeypatch.setenv("KIROCREW_EDITION_DIR", "/edition")
         monkeypatch.setenv("KIROCREW_DEVFLEET_REPO", "/opt/kirocrew")

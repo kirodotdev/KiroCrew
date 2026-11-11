@@ -316,6 +316,9 @@ def _archived_target_refusal(
     if str(meta.get("memory_mode") or "persistent") != "persistent":
         return "incognito and temporary sessions are not addressable", "ephemeral_target"
     if meta.get("app"):
+        # Even for an app that lets the owner's chats reach its sessions
+        # (``app_reach``): that opt-in covers reading and sending to a LIVE session.
+        # Reviving puts back a session the app archived and does not track.
         return "app-scoped sessions are not addressable", "app_scoped_target"
     if meta.get("linked_session_key") or meta.get("channel_origin") or linked:
         # Both readings: the metadata line AND the gateway-owned session store,

@@ -25,6 +25,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _audit,
     _err,
+    _is_agent_call,
     _json_response,
     _non_owner_refusal,
     _notify_artifact_update,
@@ -35,6 +36,8 @@ from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
 )
 from kiro_crew.publish_provider import (
     DEFAULT_PROVIDER,
+    PROVIDER_DEFAULT_EXPIRY,
+    ExpiryRequest,
     KindSupport,
     NotPublishedError,
     PublishConflictError,
@@ -76,6 +79,22 @@ def _validate_sharing_body(body: dict[str, Any]) -> tuple[str, list[str]]:
     return visibility, shared_with
 
 
+def _validate_expiry_body(body: Any) -> ExpiryRequest:
+    """``expires_in_days`` from a publish body: whole days, ``null`` for no expiry, or
+    the destination's default when the key is absent. Raises ``ArtifactValidationError``
+    (→ 400) for any other shape; whether the destination offers the value is checked
+    by :func:`publish_sync.publish`.
+    """
+    if not isinstance(body, dict) or "expires_in_days" not in body:
+        return PROVIDER_DEFAULT_EXPIRY
+    value = body["expires_in_days"]
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ArtifactValidationError("expires_in_days must be a positive whole number or null")
+    return value
+
+
 def _sync_error_response(
     tool: str, request: web.Request, slug: str, exc: Exception
 ) -> web.Response:
@@ -108,8 +127,8 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/publish — publish (or re-publish) to a
     registered publish destination.
 
-    Body: ``{visibility, shared_with[]}``. Returns the full serialized artifact
-    (now carrying the ``publication`` block). A side-panel file that isn't yet
+    Body: ``{visibility, shared_with[], provider?, expires_in_days?}``. Returns the full
+    serialized artifact (now carrying the ``publication`` block). A side-panel file that isn't yet
     an artifact is auto-saved first by the frontend (POST /api/artifacts), so
     this endpoint is always slug-based.
     """
@@ -130,6 +149,7 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     try:
         body = await _read_json_body(request)
         visibility, shared_with = _validate_sharing_body(body)
+        expires_in_days = _validate_expiry_body(body)
     except ArtifactValidationError as exc:
         return _err(str(exc))
     # Provider is validated generically (any registered provider); the share
@@ -185,8 +205,7 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
             extra={"slug": slug, "provider": effective_provider},
         )
         return _err(gov_denial, status=403)
-    is_mcp = request.headers.get("X-Internal-Secret") is not None
-    actor = "agent" if is_mcp else "user"
+    actor = "agent" if _is_agent_call(request) else "user"
     try:
         await publish_sync.publish(
             slug,
@@ -194,6 +213,7 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
             shared_with=shared_with,
             actor=actor,
             provider_name=provider_name,
+            expires_in_days=expires_in_days,
         )
         art = await _run_off_loop(lambda: get_default_store().get(slug))
     except Exception as exc:
@@ -645,6 +665,9 @@ def _sharing_model_dict(sm: Any) -> dict[str, Any]:
         "supports_expiration": sm.supports_expiration,
         "programmable": sm.programmable,
         "out_of_band_url": sm.out_of_band_url,
+        "expiration_choices_days": list(sm.expiration_choices_days),
+        "allows_no_expiration": sm.allows_no_expiration,
+        "default_expiration_days": sm.default_expiration_days,
     }
 
 

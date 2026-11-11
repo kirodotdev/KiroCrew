@@ -154,8 +154,8 @@ class TestLifecycle:
         # The refused flip was published as a fresh record, so nothing stays owed.
         assert "s" not in q._receipts
 
-    def test_a_send_that_returns_no_id_records_no_receipt(self) -> None:
-        """No id means no bubble to edit later -- storing one would 404 forever."""
+    def test_a_send_that_returns_no_id_opens_no_live_receipt(self) -> None:
+        """No id means no bubble, so nothing is live to edit -- an edit would 404 forever."""
         q, s = ReceiptQueue(), _Surface(send_id=None)
 
         async def go() -> None:
@@ -164,6 +164,68 @@ class TestLifecycle:
 
         asyncio.run(go())
         assert not q.has_receipt("s")
+
+
+class TestARefusedFirstSendKeepsItsLine:
+    """A refused ``send_receipt`` opens no bubble, but the queued message is still counted."""
+
+    def test_the_next_bubble_lists_the_refused_line_too(self) -> None:
+        """The issue's case: the queue holds 2, so the bubble must say ``Queued (2)``."""
+        q, s = ReceiptQueue(), _Surface(send_id=42, send_fails_after=0)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "first", "alice")
+                s.send_fails_after = None
+                await q.create_or_grow_locked("s", s, "second", "alice")
+
+        asyncio.run(go())
+        assert s.sent[-1] == receipt_text(["first", "second"])
+        assert s.edits == [], "the refused bubble never existed, so nothing is edited"
+
+    def test_a_drain_writes_nothing_and_keeps_what_is_still_queued(self) -> None:
+        """No bubble to flip: the answered line goes, another member's stays listed."""
+        q, s = ReceiptQueue(), _Surface(send_id=42, send_fails_after=0)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "alice asked", "alice")
+                await q.create_or_grow_locked("s", s, "bob asked", "bob")
+                await q.flip_answering_locked("s", s, ["alice asked"], owner="alice")
+                s.send_fails_after = None
+                await q.create_or_grow_locked("s", s, "alice again", "alice")
+
+        asyncio.run(go())
+        assert s.edits == []
+        assert s.sent[-1] == receipt_text(["bob asked", "alice again"])
+
+    def test_a_held_line_is_never_shown_in_another_chat(self) -> None:
+        """Under one session key, Alice's held text must not reach Bob's new bubble."""
+        q = ReceiptQueue()
+        alice, bob = _Surface(address="alice", send_fails_after=0), _Surface(address="bob")
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", alice, "alice asked", "alice")
+                await q.create_or_grow_locked("s", bob, "bob asked", "bob")
+
+        asyncio.run(go())
+        assert bob.sent == [receipt_text(["bob asked"])]
+
+    def test_a_stop_writes_nothing_and_takes_its_lines(self) -> None:
+        q, s = ReceiptQueue(), _Surface(send_id=42, send_fails_after=0)
+
+        async def go() -> None:
+            async with q.lock:
+                await q.create_or_grow_locked("s", s, "first", "alice")
+                await q.finish_cancelled_locked("s", s, "alice")
+                await q.create_or_grow_locked("s", s, "second", "bob")
+                await q.finish_cancelled_locked("s", s)
+
+        asyncio.run(go())
+        assert s.edits == []
+        assert s.sent == [receipt_text(["first"]), receipt_text(["second"])]
+        assert "s" not in q._receipts
 
 
 class TestATransitionIsPublishedOnlyWhenItLands:
@@ -497,8 +559,7 @@ class TestAnAddressKeyNamesOneConversation:
 
         Fail closed: with no key every later write would have to guess which chat this
         entry's ``msg_id`` belongs to, and a wrong guess rewrites a stranger's message.
-        A channel whose inbound omitted its conversation id degrades to no receipt,
-        which is what a refused send already does.
+        A channel whose inbound omitted its conversation id degrades to no receipt.
         """
 
         async def go() -> tuple[ReceiptQueue, _Surface]:
@@ -1026,6 +1087,8 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
         async def go() -> tuple[ReceiptQueue, bool]:
             # One surface throughout, and its sends are spent, so nothing this
             # conversation is offered can land and no fresh bubble hides the release.
+            # The message arriving at the release is still queued, so its refused send
+            # keeps its line on an entry with no bubble and no debt.
             chat = _Surface(edit_refuses=True, send_fails_after=1)
             queue = await self._owing(chat)
             async with queue.lock:
@@ -1039,7 +1102,9 @@ class TestRetentionIsBoundedInLifetimeAndPopulation:
         with caplog.at_level("WARNING", logger="kiro_crew.messaging.queue_receipt"):
             queue, held = asyncio.run(go())
         assert held, "inside the allowance the record is still owed, not discarded"
-        assert "s" not in queue._receipts, "past it the debt is given up and the key freed"
+        left = queue._receipts["s"]
+        assert not left.owes_record, "past it the debt is given up and the key freed"
+        assert (left.msg_id, left.texts) == (None, ["again"]), "only the arriving line is kept"
         assert self.given_up(caplog) == [1], "the record given up is counted, not dropped"
 
     def test_the_ordinary_grow_and_drain_pattern_reaches_the_bound(self, caplog) -> None:
@@ -1522,9 +1587,9 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
     def test_an_unrecorded_earlier_message_does_not_cost_a_queued_one_its_line(self) -> None:
         """The count-mismatch case, which is why the drop counts from the END.
 
-        A queued message does not always open a line: Alice's FIRST had its
-        ``send_receipt`` refused, so the bubble Bob opened lists only Bob's line and
-        Alice's SECOND. A drain that answers Alice's first therefore answers one message
+        A queued message does not always open a line: Alice's FIRST arrived while the
+        entry owed a record, so the bubble Bob opened lists only Bob's line and Alice's
+        SECOND. A drain that answers Alice's first therefore answers one message
         while Alice holds one line -- and that line belongs to a message still on the
         queue. Dropping "as many as were answered" consumes it, and since that line is
         the only handle her still-queued message has, it would lose both its

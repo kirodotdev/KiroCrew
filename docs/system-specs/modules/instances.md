@@ -160,7 +160,7 @@ Module responsibilities:
 | `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
 | `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder, and a headless crew mints nothing whatever its method (§16). An SSM child's stdout is captured and drained alongside stderr, because the close notice that names why a forward ended is printed there. |
-| `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). |
+| `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). A probe that times out kills its ssh child; one whose diagnosis is cancelled (an instance edit, a gateway shutdown) kills and reaps it (`platform_compat.kill_and_reap`) before the cancel propagates. |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane: the registry, connection, remote-update, session-search and session-send routes. It is the import path of its two owners, `handlers_instances_gate.py` (the owner gate `_guard`, the SEL audit, registry access and the chain policy every handler shares) and `handlers_instances_peer.py` (the routes that read a connected peer — capabilities, approval state, versions, live sessions — and the proxy to it). New gate or registry primitives go to the gate owner; a new route that reads the peer goes to the peer owner. |
 
 `ssh_tunnel_manager.py` stays the import path, and `SshTunnelManager`'s behaviour lives in
@@ -235,6 +235,12 @@ origin and mints its own port-scoped cookie.
 **Platform note.** The hub side of this feature assumes a POSIX host with an
 OpenSSH `ssh` client on `PATH`, and run-marker port discovery refuses outright on
 non-POSIX (§12). Treat a Windows hub as unverified.
+On a Windows gateway the ssh transport is not yet supported
+(`docs/guides/windows-install.md`), so the Remote Crew form's connection-method
+list badges "SSH tunnel" as not supported on Windows and its hint points to AWS
+SSM instead (`InstanceFormFields.tsx`, keyed on `useGatewayPlatform()`). The
+option stays selectable: a host whose OpenSSH client is on `PATH` can still
+connect, and a spawn that fails names the platform constraint.
 
 **Frameless-window drag.** Under the desktop app's frameless macOS shell the
 window is dragged solely by `-webkit-app-region: drag` `.host-drag-strip`
@@ -412,7 +418,11 @@ yet its window reaches a remote crew through exactly this kind of forward.
 `instances/tunnel_keeper.py` runs `_SshTunnel` (readiness wait, zombie probe, exit
 classification) and `_recover_backoff_secs` on their own, for one fixed port pair,
 and the desktop app spawns it when a crew's `remoteHosts` entry carries
-`manageTunnel: true`. It deliberately takes none of the manager's registry, token
+`manageTunnel: true`, or, with the local gateway off, when a launch finds nothing
+answering the crew's port and nothing listening on it (so no forward of the user's
+own is taken over). A save of the crew that leaves the option unticked ends that
+launch's forward. The Add/Edit Remote Crew forms open ticked for a crew being
+added. It deliberately takes none of the manager's registry, token
 minting or hop leases: the app fetches its own token over SSH. A connect resets the
 backoff, so a laptop waking from sleep reconnects within seconds, and the app also
 bounces the keeper on the OS resume event. It stops, always, when stdin
@@ -1644,8 +1654,10 @@ graceful shutdown, so a crash or SIGKILL leaves the file behind and an unrelated
 process may since have bound that port. Because client commands send the local
 secret (`X-Local-Secret`) to whatever answers, the consumer must verify the
 listener before trusting a discovered port. `port_resolution._gateway_owns_port()`
-does that in four fail-closed steps: the recorded pid must exist, must be among
-`platform_compat.find_listening_pids(port)`, must be owned by the caller's uid
+does that in four fail-closed steps: the recorded pid must exist, must itself
+hold a listener on the port, on any address
+(`platform_compat.process_owns_port_listener(pid, port)` is `True`), must be
+owned by the caller's uid
 (which closes pid recycling into another user's process), and must look like a
 gateway by argv (defense in depth only, never the sole proof). Discovery is
 skipped outright on non-POSIX hosts, where no owner can be reported and the

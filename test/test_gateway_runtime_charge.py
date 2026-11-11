@@ -247,3 +247,49 @@ async def test_a_failed_cancel_between_attempts_does_not_stop_the_retry(
     assert len(kept.streamed_clients) == 2
     assert ("sleep", 1) in kept.calls
     assert info._report_delivered is True
+
+
+# ── a person-only directive ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_person_only_directive_the_completion_turn_calls_is_refused_out_loud(
+    kept: _Done, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No session applier reads a completion's turn: ``set_project`` is refused and audited."""
+    from kiro_crew import session_directive
+    from kiro_crew.acp.types import EVENT_TOOL_CALL, EVENT_TOOL_RESULT, AcpEvent
+
+    audits: list[dict[str, Any]] = []
+
+    class _SelSpy:
+        def log_tool_invocation(self, **kw: Any) -> None:
+            audits.append(kw)
+
+    async def _stream(client: Any, msg: str, *, on_event: Any = None, **_kw: Any) -> str:
+        if on_event is not None:
+            await on_event(
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="tc-1",
+                    tool_name="set_project",
+                    mcp_server_name=session_directive.CORE_MCP_SERVER,
+                )
+            )
+            await on_event(AcpEvent(kind=EVENT_TOOL_RESULT, tool_call_id="tc-1", tool_final=True))
+        return "Project change requested for this session."
+
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: _SelSpy())
+    monkeypatch.setattr(gw_mod, "stream_and_collect", _stream)
+
+    await kept.done(make_info(parent="cron:j1"))
+
+    delivered = kept.orch._deliver_cron_response.await_args.args[1]
+    assert delivered.startswith("Error: set_project only works from a user-facing session")
+    assert "(this turn is 'cron:j1')" in delivered
+    assert delivered.endswith("\n\nProject change requested for this session.")
+    assert [
+        (a["session_key"], a["tool_name"], a["outcome"])
+        for a in audits
+        if a.get("source") == "mcp-directive"
+    ] == [("cron:j1", "set_project", "denied")]

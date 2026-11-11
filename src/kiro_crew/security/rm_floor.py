@@ -39,6 +39,7 @@ _EXPANDED_HOME = "\2"  # a ``$HOME`` its carrier expands: home whatever quotes t
 #: :func:`_segments` keeps a redirection and its fd prefix in one word (below).
 _HOME_WORDS = frozenset({"~", "$HOME", "${HOME}", _EXPANDED_HOME})
 _LITERAL_SHELLS = _shell._NESTED_SHELL_PROGRAMS - {"busybox"}  # busybox's next word is the applet
+_PRINTERS = frozenset({"echo", "printf"})  # a pipe stage whose own words are what it prints
 _SUBST = _commands.SUBST  # a substitution: may expand to nothing, unlike a literal ``\0``
 #: an unquoted parameter (``$x``, ``${…}``, ``$1``): an unset one expands to nothing
 _PARAM_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9@*#?$!-])")
@@ -227,13 +228,18 @@ def _heredoc_payloads(command: str) -> "list[str]":
     return out
 
 
-def _forwards_stdin(cmd: "_commands.ShellCommand") -> bool:
-    """*cmd* copies its stdin to its stdout (``cat``, ``tee``): only then does a piped
-    shell read its heredoc; ``printf ... <<EOF | bash`` sends printf's output instead."""
+def _program(cmd: "_commands.ShellCommand") -> str:
+    """The program *cmd* runs, wrappers and ``VAR=x`` stepped over (``""`` for none)."""
     from . import argv_rules  # argv_rules imports this module
 
     words = _shell._shell_tokens(" ".join(word.raw for word in cmd.argv))
-    return (argv_rules._program_args(words) or ("",))[0] in ("cat", "tee")
+    return (argv_rules._program_args(words) or ("",))[0]
+
+
+def _forwards_stdin(cmd: "_commands.ShellCommand") -> bool:
+    """*cmd* copies its stdin to its stdout (``cat``, ``tee``): only then does a piped
+    shell read its heredoc; ``printf ... <<EOF | bash`` sends printf's output instead."""
+    return _program(cmd) in ("cat", "tee")
 
 
 def _stdin_body(cmd: "_commands.ShellCommand") -> "list[str]":
@@ -326,22 +332,39 @@ def _literal_shell_script(tokens: "list[str]") -> "str | None":
     return tokens[2]
 
 
-def _command_tokens(text: str) -> "list[list[str]]":
+def _command_tokens(text: str, pipelines: bool = False) -> "list[list[str]]":
     """Dequoted argv of each command the shared reader finds in each line, read every
     way so each reading only adds payloads; a command stopped at ``<<`` runs to the
-    line's end (a herestring is a payload)."""
+    line's end (a herestring is a payload). With *pipelines*, a pipeline whose later stage
+    is a shell reading its script from the pipe is also read as its ``echo`` / ``printf``
+    stages and its shells joined, so the text printed into that shell is a payload
+    (``echo '<script>' | sh``)."""
     out: list[list[str]] = []
     for line in _command_lines(text):
         for part in dict.fromkeys((line, _shell._fold_line_continuations(line))):
             for plain in dict.fromkeys((part, _commands.without_substitutions(part))):
                 for track in (True, False) if "${" in plain or "$[" in plain else (True,):
-                    for cmd in _commands.read_commands(plain, track):
+                    commands = _commands.read_commands(plain, track)
+                    for cmd in commands:
                         words = " ".join(plain[word.start : word.end] for word in cmd.argv)
                         if cmd.separator == "<<":  # the read stops there; the line runs on
                             words = plain[cmd.steps[0].start if cmd.steps else 0 :]
                         out.append(_shell._shell_tokens(words))
                         if "<<<" in plain and (s := cmd.steps):  # its own words, herestring kept
                             out.append(_shell._shell_tokens(plain[s[0].start : s[-1].end]))
+                    groups = _commands.pipelines(commands) if pipelines and "|" in plain else []
+                    if groups:  # a quoted substitution body's commands split no stage
+                        flat = _commands.read_commands(plain, track, nested=False)
+                        groups += _commands.pipelines(flat) if len(flat) < len(commands) else []
+                    for pipe in groups:
+                        if not any(_runs_shell(c) and not _stdin_redirect(c)[0] for c in pipe[1:]):
+                            continue  # no later stage is a shell reading its script from the pipe
+                        # the shell reads what a stage prints: ``echo`` / ``printf`` their own
+                        # words, a filter its input (``sed 's/^/rm -rf -- /'`` wipes no ``/``)
+                        kept = [c for c in pipe if _runs_shell(c) or _program(c) in _PRINTERS]
+                        argvs = [" ".join(plain[w.start : w.end] for w in c.argv) for c in kept]
+                        if len(argvs := [argv for argv in argvs if argv]) > 1:
+                            out.append(_shell._shell_tokens(" | ".join(argvs)))
     return out
 
 
@@ -394,7 +417,7 @@ def _rm_wipe_targets_nested(command: str) -> "set[str]":
                 pending.append(payload)
         views = (source, _ansi_c_newlines(source)) if "$'" in source else (source,)
         readings = dict.fromkeys((*views, *map(_carrier_home, (*views, folded))))
-        for tokens in (t for view in readings for t in _command_tokens(view)):
+        for tokens in (t for view in readings for t in _command_tokens(view, pipelines=True)):
             payloads = _shell._nested_shell_payloads(tokens, allow_join=False)
             if not payloads:
                 continue

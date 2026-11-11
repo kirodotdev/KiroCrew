@@ -433,6 +433,7 @@ def build_job(
         thread_ts=thread_ts,
         enabled=enabled,
         user_paused=not enabled,
+        user_pause_requested=not enabled,
         created_ts=time.time(),
         delete_after_run=delete_after_run,
         created_by=created_by,

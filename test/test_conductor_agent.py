@@ -104,7 +104,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         """
         data = self._install(tmp_path, monkeypatch)
         prompt = " ".join(data["prompt"].split())
-        assert "Arm a loop on your own session with `monitor_start`" in prompt
+        assert "arm a loop on your own session with `monitor_start`" in prompt
         assert "If arming is refused outright" in prompt
         assert "drive that one round with `wait`" in prompt
         assert "autonudge_stop" in prompt
@@ -482,7 +482,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         """A loop without ``watch="work-ledger"`` is a plain timer that pays a turn
         every interval, and a 30-minute interval leaves a worker's report unread
         for half an hour. Both the prompt and the skill must make the watch
-        mandatory and keep the interval inside the 300..900 s band.
+        mandatory and fix the interval at 300 s, the gateway's one patrol interval.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
@@ -490,7 +490,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         assert '`watch="work-ledger"` is mandatory' in body
         for text in (prompt, body):
             assert 'monitor_update(watch="work-ledger")' in text
-            assert "300..900" in text
+            assert "300 seconds" in text
+            assert "300..900" not in text
             assert "interval_secs=1800" not in text
             assert "on a timer today" not in text
 

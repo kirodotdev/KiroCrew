@@ -14,6 +14,10 @@ A channel engine that builds with ``tab_notices`` settles a third on the same
 verdict: the sub-agent notices its build read from the conversation's dashboard
 tab leave the tab's queue only when the turn landed.
 
+The channel engine also reads-and-clears the cancelled-turn flag a Stop sets
+(:meth:`TurnBracket.take_cancelled_turn`), once per message, and gives it back
+when the build never admitted the prompt.
+
 :class:`TurnBracket` holds that bookkeeping for one turn. It consumes per
 attempt (a turn replayed after a failed compaction re-consumes, and settles on
 the latest attempt's value), it re-arms before it rolls back, and it settles
@@ -33,6 +37,7 @@ an ``AttributeError`` on a real inbound message.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Callable
@@ -203,6 +208,45 @@ def rollback_skill_bodies(
         )
 
 
+def _live_session(sessions: Any, session_key: str) -> Any:
+    """The session record *session_key* folds onto, or ``None``. Defensive on every accessor."""
+    getter = getattr(getattr(sessions, "_sessions", None), "get", None)
+    if not callable(getter):
+        return None
+    fold = getattr(sessions, "_fold_key", None)
+    try:
+        return getter(fold(session_key) if callable(fold) else session_key)
+    except Exception:
+        return None
+
+
+def typed_text_span(preamble: str, text: str) -> dict[str, Any]:
+    """``build_message``'s ``user_text_range`` for ``f"{preamble}\\n\\n{text}"``, or ``{}``.
+
+    Only the typed text is the person's: quick prompts, image paths and skill
+    triggers must not read the restored turn put in front of it.
+    """
+    if not preamble:
+        return {}
+    start = len(preamble) + 2
+    return {"user_text_range": (start, start + len(text))}
+
+
+def arm_cancelled_turn(sessions: Any, session_key: str, outcome: Any) -> None:
+    """Set ``prev_turn_cancelled`` when a channel Stop's cancel reached a turn.
+
+    The Stop paths that cancel the provider directly, not through
+    ``SessionManager.stop_turn``, hand over what ``cancel`` returned. Only
+    ``"acked"`` and ``"timeout"`` (written, ack still pending) stopped a turn; a
+    ``"no_turn"`` or ``"error"`` must not label a finished turn as interrupted.
+    """
+    if outcome not in ("acked", "timeout"):
+        return
+    session = _live_session(sessions, session_key)
+    if session is not None:
+        session.prev_turn_cancelled = True
+
+
 class TurnBracket:
     """One turn's re-injection and skill-body bookkeeping, settled once.
 
@@ -234,12 +278,47 @@ class TurnBracket:
         self._landed = False
         self._compacted = False
         self._settled = False
+        self._cancelled_from: Any = None
         #: Passed to ``build_message`` as ``tab_notices``; settled with the turn.
         self.tab_notices: list[Callable[[bool], None]] = []
 
     def take_reinjection(self) -> bool:
         self._consumed = consume_reinjection(self._sessions, self._session_key)
         return self._consumed
+
+    async def take_cancelled_turn(self) -> str:
+        """Read-and-clear ``prev_turn_cancelled``; return the restore to prepend, or ``""``.
+
+        A Stop sets the flag because the backend drops the stopped turn from its own
+        log. The restore re-sends that turn's request and partial reply from the
+        conversation log, which holds only earlier turns while this one is being built.
+        ``is not True`` so a mock session's truthy attribute is not a Stop.
+        """
+        session = _live_session(self._sessions, self._session_key)
+        if session is None or getattr(session, "prev_turn_cancelled", False) is not True:
+            return ""
+        session.prev_turn_cancelled = False
+        self._cancelled_from = session
+        conversation_log = getattr(self._ctx_builder, "conversation_log", None)
+        if not conversation_log:
+            return ""
+        # Deferred: the channel Stop paths import this module through
+        # session_compaction, which must not pay context's import cost.
+        from kiro_crew.context import build_cancelled_turn_preamble
+
+        preamble = await asyncio.to_thread(
+            build_cancelled_turn_preamble,
+            conversation_log,
+            self._session_key,
+            newest_request=True,
+        )
+        return preamble if isinstance(preamble, str) else ""
+
+    def rearm_cancelled_turn(self) -> None:
+        """Give the flag back when nothing reached the model, on the session it came from."""
+        session = self._cancelled_from
+        if session is not None and _live_session(self._sessions, self._session_key) is session:
+            session.prev_turn_cancelled = True
 
     def landed(self, evidence: Any) -> bool:
         if isinstance(evidence, bool):

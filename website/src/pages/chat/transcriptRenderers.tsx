@@ -358,16 +358,32 @@ function capabilityRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
   return capabilityRefusal(messages[idx]) !== undefined
 }
 
-/** True when the newest error row is one of the five above: its card has
+/** True when the newest error row is one of the ones above: its card has
  *  withheld Resume (a retry replays the rejection) and names a remedy of its
  *  own, so the composer must not urge the press beneath it either. The one
  *  place that spells the set for the composer: ChatPage's and every pane's
  *  (`useChatPaneContinue`) both read this, so another remedy card joins the
- *  composer's gate by joining it here. Typing still works. */
+ *  composer's gate by joining it here. Typing still works. A sign-in error
+ *  is not in the set: see `authRequiredIsNewest`. */
 export function newestErrorOwnsRecovery(messages: readonly ChatMessage[]): boolean {
   return featureRequestRefusalIsNewest(messages) || sessionStartRepeatIsNewest(messages)
     || contextOverflowIsNewest(messages) || imageRepairIsNewest(messages) || appAgentRefusalIsNewest(messages)
     || capabilityRefusalIsNewest(messages)
+}
+
+/** True when the newest error row is a sign-in error (`auth_required`) and
+ *  nothing after it opens a new turn. The card withholds its own Continue, but
+ *  the composer keeps Resume: once the sign-in lands, the same press works
+ *  (Continue is not readiness-gated), and it is the one-press way back. So the
+ *  composer only words its hint to name the sign-in first. */
+export function authRequiredIsNewest(messages: readonly ChatMessage[]): boolean {
+  const idx = lastErrorIndex(messages)
+  if (idx < 0) return false
+  for (let j = idx + 1; j < messages.length; j++) {
+    const row = messages[j]
+    if (row.role === 'assistant' || opensTurn(row)) return false
+  }
+  return isAuthRequired(messages[idx])
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -889,6 +905,7 @@ export function createTranscriptRenderers(
                   content: c,
                   meta: mt,
                   onFileOpen: ctx.onFileOpen,
+                  onFolderOpen: ctx.onFolderOpen,
                   onSessionOpen: o.onSessionOpen,
                   sessions: o.sessions,
                   activeSession: o.activeSession,

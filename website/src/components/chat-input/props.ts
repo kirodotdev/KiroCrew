@@ -154,10 +154,14 @@ export interface ChatInputProps {
   /** A whole message staged as the quote of the next send (`messageQuote.ts`).
    *  Drawn INSIDE the text area, above the caret, as a card with a remove
    *  control -- part of what is being written, not a strip of chrome. The host
-   *  owns the state and folds it into the send; ChatInput only shows and
-   *  unstages it. A staged quote counts as a draft for the send button. */
+   *  owns the state and folds it into the send; ChatInput only shows it and
+   *  hands the card's remove and jump clicks back to the host. A staged quote
+   *  counts as a draft for the send button. */
   pendingQuote?: MessageQuote | null
   onRemoveQuote?: () => void
+  /** Scroll the transcript to the staged quote's message, as a sent card's
+   *  click does. Absent: the card is not a jump control. */
+  onJumpToQuote?: (quote: MessageQuote) => void
   /** Show macOS-only buttons (screenshot) */
   isMac?: boolean
   /** Drag-and-drop handler for the entire input bar */
@@ -327,6 +331,9 @@ export interface ChatInputProps {
    * component keeps working, it just gets the neutral wording.
    */
   continueIsRecovery?: boolean
+  /** The newest error row is a sign-in error: Resume stays (it works once the
+   *  sign-in lands), and its placeholder names the sign-in first. */
+  resumeAfterSignIn?: boolean
   /** Queue cards restored from before a gateway restart. Resume runs only the
    *  interrupted turn and leaves them for the user to send, so while Resume is
    *  offered the placeholder says how many wait. */

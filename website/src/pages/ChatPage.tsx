@@ -849,7 +849,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const {
     continuable, interrupted, sendUnconfirmed, continuing, handleContinue,
     openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting,
-    cardOwnsRecovery,
+    cardOwnsRecovery, resumeAfterSignIn,
     freshSession, handleFreshSession,
     repairImages, handleRepairImages,
   } = useTurnRecovery({
@@ -1203,7 +1203,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               modelsBackend={selectionCapabilitiesQ.data?.models_backend} ultracode={selectionCapabilitiesQ.data?.ultracode}
               jevRouteOn={jevRouteOn} modelDropdown={modelDropdown} modelDropdownRef={modelDropdownRef} modelFilter={modelFilter} modelInputRef={modelInputRef}
               modelPickerConfigured={modelPickerConfigured} modelPickerReturnsFocusRef={modelPickerReturnsFocusRef} setModelDropdown={setModelDropdown} setModelFilter={setModelFilter}
-              onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote}
+              onAgentListKeyDown={onAgentListKeyDown} onModelListKeyDown={onModelListKeyDown} anchorModelBtn={anchorModelBtn} modelBtnRect={modelBtnRect} messageQuote={messageQuote} onJumpToQuote={handleJumpToQuote}
               applyAutomationChange={applyAutomationChange} automation={automation} automationCreationReady={automationCreationReady} automationOpen={automationOpen}
               automationSnapshotFailed={automationSnapshotFailed} setAutomationOpen={setAutomationOpen} prefillHint={prefillHint} setPrefillHint={setPrefillHint} pasteSlice={pasteSlice}
               pendingFiles={pendingFiles} pendingSessions={pendingSessions} resizedInfo={resizedInfo} unstageSessionRef={unstageSessionRef} uploading={uploading} agentBtnRect={agentBtnRect}
@@ -1222,7 +1222,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               _modelPinActive={_modelPinActive} _modelPinAgent={_modelPinAgent} _modelPinPinned={_modelPinPinned} _pinShownModel={_pinShownModel} _slotProject={_slotProject}
               defaultEffort={defaultEffort} effectiveEffort={effectiveEffort} effortLevelsOverride={effortLevelsOverride} effortSupported={effortSupported} effortAutoNote={effortAutoNote} modelMarker={modelMarker}
               pinModelToAgentMut={pinModelToAgentMut} projectBranch={projectBranch} projectGit={projectGit} projectGitError={projectGitError} shownModel={shownModel}
-              cardOwnsRecovery={cardOwnsRecovery} continuable={continuable} continuing={continuing} handleContinue={handleContinue} interrupted={interrupted} dockGutter={dockGutter} dockRef={dockRef}
+              cardOwnsRecovery={cardOwnsRecovery} resumeAfterSignIn={resumeAfterSignIn} continuable={continuable} continuing={continuing} handleContinue={handleContinue} interrupted={interrupted} dockGutter={dockGutter} dockRef={dockRef}
               endQuoteFlight={endQuoteFlight} flyingQuote={flyingQuote} inputAreaRef={inputAreaRef} isAtBottom={isAtBottom} answerQuestionCard={answerQuestionCard}
               handleCancelQueued={handleCancelQueued} handleEditQueued={handleEditQueued} handleEditOpenQueued={handleEditOpenQueued} handleInterruptQueued={handleInterruptQueued} handleReorderQueued={handleReorderQueued}
               keepQuestionAnswer={keepQuestionAnswer} queuedMessages={queuedMessages} queuePendingIds={queuePendingIds} steer={steer} stopTurn={stopTurn} systemDeliveryCount={systemDeliveryCount}

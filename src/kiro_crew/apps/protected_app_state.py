@@ -14,9 +14,14 @@ file tools refuse (:mod:`kiro_crew.member_records`):
   read of an app's ``installed.json`` reports the app disabled while it exists, whatever
   the file says; only the owner-authenticated enable and an uninstall remove it.
 
-Inside a sandbox the directory is masked, so a read there finds neither record: an
-approved set reads as empty and no disable is seen. Authorization is decided in the
-gateway, which reads both.
+It also keeps one credential: ``app-secrets/<app>``, the app's gateway secret (the
+app-token exchange and the proxy signature both use it). Only the gateway writes it,
+and an app's backend receives it from the gateway at spawn, so no sandboxed process
+reads it from disk.
+
+Inside a sandbox the directory is masked, so a read there finds no record: an
+approved set reads as empty, no disable is seen and no secret is found. Authorization
+is decided in the gateway, which reads them all.
 
 This module imports nothing from the ``apps.manager`` family, so its lowest owner can
 call it.
@@ -35,9 +40,10 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform_lock_compat import acquire_lock, open_create_or_existing, release_lock
 
-#: Record kinds under ``member-records/``; both are in ``member_records.RECORD_KINDS``.
+#: Record kinds under ``member-records/``; all are in ``member_records.RECORD_KINDS``.
 APP_GRANTS_KIND = "app-grants"
 APP_DISABLED_KIND = "app-disabled"
+APP_SECRETS_KIND = "app-secrets"
 
 #: Written in ``app-grants/`` once every app's set has been carried over from the app
 #: tree. Once it exists a missing record means nothing is approved.
@@ -74,13 +80,10 @@ def mark_grants_imported() -> None:
 
 
 @contextlib.contextmanager
-def grants_import_lock() -> Iterator[None]:
-    """Serialize the one-time import: one importer at a time, in any thread or process."""
-    directory = member_records.records_dir(APP_GRANTS_KIND)
-    mkdirs_owner_only(directory)
-    fd = open_create_or_existing(
-        directory / _GRANTS_IMPORT_LOCK, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
-    )
+def _exclusive_lock(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on the sidecar *path*, in any thread or process."""
+    mkdirs_owner_only(path.parent)
+    fd = open_create_or_existing(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         acquire_lock(fd, exclusive=True)
         try:
@@ -91,8 +94,36 @@ def grants_import_lock() -> Iterator[None]:
         os.close(fd)
 
 
+def grants_import_lock() -> contextlib.AbstractContextManager[None]:
+    """Serialize the one-time import: one importer at a time, in any thread or process."""
+    return _exclusive_lock(member_records.records_dir(APP_GRANTS_KIND) / _GRANTS_IMPORT_LOCK)
+
+
+def grants_write_lock(app_name: str) -> contextlib.AbstractContextManager[None]:
+    """Serialize every write of *app_name*'s set, in any thread or process.
+
+    One lock per app, so a write of one app's set never waits on another app's (an
+    install on the event loop takes a lock only once). Raises ``ValueError`` for an
+    unsafe name.
+    """
+    return _exclusive_lock(_record_path(APP_GRANTS_KIND, app_name, ".lock"))
+
+
 def write_grants_text(app_name: str, text: str | None) -> None:
-    """Store *app_name*'s set as *text*; ``None`` removes it."""
+    """Store *app_name*'s set as *text*; ``None`` removes it.
+
+    Holds :func:`grants_write_lock`, so every write of one app's set is serialized,
+    across threads and processes, with a reader's one-time fix of a legacy set
+    (``manager_records._freeze_declared``). A caller already holding it, or the
+    import (every writer waits for the import to finish first), uses
+    :func:`write_grants_text_locked`.
+    """
+    with grants_write_lock(app_name):
+        write_grants_text_locked(app_name, text)
+
+
+def write_grants_text_locked(app_name: str, text: str | None) -> None:
+    """:func:`write_grants_text` for a caller that holds :func:`grants_write_lock`."""
     path = grants_path(app_name)
     if text is None:
         path.unlink(missing_ok=True)
@@ -161,4 +192,24 @@ def forget_grants(app_name: str) -> None:
     it then), so the app is never re-enabled while its tree is still on disk.
     """
     with contextlib.suppress(ValueError):
-        grants_path(app_name).unlink(missing_ok=True)
+        write_grants_text(app_name, None)
+
+
+def secret_path(app_name: str) -> Path:
+    """Where *app_name*'s gateway secret lives. Raises ``ValueError`` for an unsafe name."""
+    return _record_path(APP_SECRETS_KIND, app_name, "")
+
+
+def read_secret(app_name: str) -> str | None:
+    """The stored secret, or ``None`` when there is none. Other read faults raise."""
+    try:
+        return secret_path(app_name).read_text(encoding="utf-8").strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def write_secret(app_name: str, secret: str) -> None:
+    """Store *app_name*'s secret, owner-only, replacing any earlier one."""
+    path = secret_path(app_name)
+    mkdirs_owner_only(path.parent)
+    atomic_write(path, secret, restrict_to_owner=True)

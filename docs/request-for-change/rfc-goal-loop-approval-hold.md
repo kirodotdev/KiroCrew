@@ -3,10 +3,10 @@ title: Goal loop approval hold -- an unanswered approval pauses a loop, and a wo
 status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-05
-last-audited: 2026-10-05
+last-audited: 2026-11-11
 audited-at: a97659dfc3
 doc-pr: null
-implementation-prs: [16993]
+implementation-prs: [16993, 35016]
 tracking-issues: [16976]
 supersedes: []
 superseded-by: []
@@ -15,6 +15,7 @@ superseded-by: []
 # RFC: Goal loop approval hold
 
 - Status: implemented. The decision was made by the operator who owns the conductor patrol (2026-10-05). The implementation is [#16993](https://github.com/kirodotdev/KiroCrew/pull/16993). That PR's First Principles lane reads an RFC's status off the base branch, so this document lands on its own first, as GOVERNANCE.md asks of an RFC. The implementation then rebased onto it and has since landed on main.
+- Amended 2026-11-11 by the repository owner's ruling in the conductor chat: a new turn in the slot ends the hold, whoever sent it. See [Amendment: 2026-11-11](#amendment-2026-11-11--a-new-turn-in-the-slot-ends-the-hold). The amendment takes effect when this document merges; its implementation is [#35016](https://github.com/kirodotdev/KiroCrew/pull/35016).
 - Amends [rfc-goal-popover-pause-play-controls.md](rfc-goal-popover-pause-play-controls.md) in two places, both named in section 3: how an unanswered approval ends a loop, and whether held time spends the runtime budget. That document's other decisions stand.
 - Related: [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the `work-ledger` watch), [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor), and the goal-conductor skill's `scripts/patrol_budget.py` (agent-side renewal).
 - Measured at `a97659dfc3`.
@@ -36,7 +37,7 @@ The goal-conductor skill can renew its own bounds (`patrol_budget.py renew`). Th
 Goals:
 
 - An unanswered approval **pauses** a prompt loop. The loop stays active, fires no cycle, and spends neither its cycle cap nor its runtime budget.
-- The pause ends with no re-arm by a person. It ends as soon as there is evidence that someone is back in the session.
+- The pause ends with no re-arm by a person. It ends as soon as there is evidence that someone is back in the session, or (amended 2026-11-11) that the session has moved on: a new turn starts in it.
 - A work-ledger watch whose ledger still has an open item is not ended by its cycle cap or runtime budget. It ends on the ledger's terminal settlement, on a user or agent stop, or at a hard runaway backstop.
 - Every one of these transitions is visible: in the goal popover, in `monitor_inspect`, and as a WARNING in the gateway log. The start of a hold also sends one notification.
 
@@ -57,9 +58,10 @@ Non-goals:
 - **Release.** `release_approval_hold` runs when a person is back. It is called from:
   - an approval answered in that session: the dashboard runner's decision closer (only when no host route decided it), the Slack and Discord approval waits, and the shared registry in `messaging/approval.py`;
   - a message a person typed into the dashboard session (`notify_user_input(human=True)`; an app's send does not count);
-  - the goal popover's Play (the fire route releases the hold first, and refuses with `approval_hold_release_failed` if it cannot).
+  - the goal popover's Play (the fire route releases the hold first, and refuses with `approval_hold_release_failed` if it cannot);
+  - a new dashboard turn starting in that session, whoever sent it: a person, an app, a conductor's `session_send`, or a wake (amended 2026-11-11, see the amendment below).
 
-  It writes the cleared hold and waits for that write before it announces anything. Then it re-arms toward the loop's deadline. A failed write restores the hold. An agent's or app's landed turn does **not** release it: the hold waits for someone who can answer the next prompt.
+  It writes the cleared hold and waits for that write before it announces anything. Then it re-arms toward the loop's deadline. A failed write restores the hold. A turn's *landing* does not release it, because the stalled cycle's own turn lands right after its prompt times out. A *later* turn's start does (amended 2026-11-11).
 - **Held time.** On release, the time spent held is added to `created_ts`, the runtime-budget clock. This amends [rfc-goal-popover-pause-play-controls.md](rfc-goal-popover-pause-play-controls.md), which rules out time-spent-paused bookkeeping for a **manual** pause. A manual pause stays as that document says. The hold is different because nobody chose it. Without the credit, a hold longer than the budget left would end the loop on its first tick after release, and the loop could not resume.
 - **Visible.** The goal popover shows a held loop as paused: "Paused · an approval in this chat timed out. Press Play or send a message to resume." Play resumes it. Pause stays live, because it is the one way to stop a held loop from the popover; the stopped-goal Clear stays with stopped loops. `monitor_inspect` reports `paused_for_approval`. The REST row and the `autonudge_state` frame carry `approval_stalled`.
 
@@ -97,14 +99,14 @@ This amends the reading of [rfc-goal-popover-pause-play-controls.md](rfc-goal-po
 
 ## 5. Security
 
-No new authority. The hold only withholds fires, and the release only resumes a loop that was already armed. Release is driven by a person's own action in the session they own. The extension raises bounds only on a loop already armed in the conductor's own session, and only up to the operator's configured ceiling.
+No new authority. The hold only withholds fires, and the release only resumes a loop that was already armed. Release is driven by a person's own action in the session they own, or by a new turn in that session (amended 2026-11-11); neither grants a tool approval, and a cycle that needs one still waits for a person. The extension raises bounds only on a loop already armed in the conductor's own session, and only up to the operator's configured ceiling.
 
 ## 6. Alternatives considered
 
 - **Keep the stop and notify the user.** This is what main does, plus a notification. The patrol still ends, and a person still has to re-arm it. Rejected: the failure this RFC exists for is the patrol ending.
 - **Keep firing through the stall.** Each cycle would wake, hit the same prompt, be declined, and spend a cycle for nothing. Rejected: that is the waste the original stop was built to end.
 - **Release the hold on a Slack or Discord thread reply.** A held channel-bound loop sends no new prompt into its thread, so today it resumes through the dashboard (Play, or a message there) or an answered approval. The hold notification says so. Wiring every channel's inbound message path is new surface, left for a follow-up.
-- **Release the hold on any landed turn.** The stalled cycle's own turn lands right after its prompt times out, so the hold would end at once. Rejected.
+- **Release the hold on any landed turn.** The stalled cycle's own turn lands right after its prompt times out, so the hold would end at once. Rejected. A later turn's *start* is used instead (amended 2026-11-11).
 - **Turn a long hold back into a stop after a bounded wait.** That brings back the overnight failure for a hold that costs nothing. Rejected. The one-time notification is the bound on silence instead.
 - **Rely on `patrol_budget.py renew` alone.** It needs the model to act on a specific cycle, and that call may itself need an approval. Kept as the agent-side path; the server-side extension is the floor under it.
 - **Exempt a typed cap from the extension.** Every conductor patrol is armed with a typed cap, so this would exempt every loop the extension is for. Rejected.
@@ -126,3 +128,22 @@ One implementation PR, [#16993](https://github.com/kirodotdev/KiroCrew/pull/1699
 - A person's answer, a typed dashboard message, or Play releases the hold, and the next cycle fires with no re-arm.
 - A hold or release whose write fails is undone and announces nothing.
 - A work-ledger watch with an open item and a spent bound is extended and logs a WARNING. A finished ledger, a non-ledger loop, a user stop, or a loop past the backstop stops as before.
+
+## Amendment: 2026-11-11 — a new turn in the slot ends the hold
+
+Decided by the repository owner in the conductor chat on 2026-11-11 ("开 PR 修这个暂停卡住的问题"). The implementation is [#35016](https://github.com/kirodotdev/KiroCrew/pull/35016).
+
+**What changed.** Section 3.1 said an agent's or app's turn does not release the hold, so the hold waits for someone who can answer the next prompt. That rule left a worker's monitor silent long after its session had moved on. A new dashboard turn starting in the slot now ends the hold, from any source: a person, an app's send, a conductor's `session_send`, a wake, a `[Cron notification]` or `[Subagent completion event]` injection, or a channel message into a dashboard slot linked to that channel (it runs through `_run_chat` too). The release runs at the turn's start (`_turn_open`, outermost frame only), not at its end. "An app's send does not count" in section 3.1 now holds only for `notify_user_input` itself: the turn that send starts releases the hold through `_turn_open`.
+
+**Why the start and not the end.** A hold is always set mid-turn, while a prompt times out, so it is set after that turn started. The turn that stalled therefore never releases its own hold, which is the objection section 6 raised against "any landed turn". Any *later* turn does release it. A slot whose turn still sits on an open prompt cannot start a new turn, so it keeps its hold.
+
+**Evidence.** Two live holds on 2026-11-10/11, both in conductor-driven workers:
+
+- chat-825, gh-pr loop `6630981e` (watching PR #34353): held from 2026-11-10 17:52Z after a shell approval timed out. At 18:41Z the conductor sent the worker a message. The worker pushed and ended its turn, trusting its monitor. A review lane then went red and nobody woke the worker until the conductor's patrol around 01:10Z.
+- chat-826, loop `919adc0d`: held from 2026-11-10 18:08Z until 02:35Z.
+
+A conductor's message is not a person, so under the old rule neither hold could end until a person happened to come back.
+
+**Cost.** With nobody present, each new turn releases the hold. The loop's next cycle can then hit the same approval, wait 600s, be declined and hold again. That is at most one more declined cycle (600s) and one more "Monitoring loop paused" notice per turn, of any of the kinds above. Section 6 called a cycle that only hits the same prompt waste; the amendment accepts it here because it is bounded by the turns that arrive, while a hold nobody ends cost hours of missed wakes. A turn's release grants no approval: a cycle that needs one still waits for a person.
+
+**Unchanged.** How a hold is set, the hold notice, held-time credit, the person-driven release paths, and channel-bound slots: a Slack or Discord turn on the channel's own runtime does not go through `_turn_open`, so those slots keep the release rules above.

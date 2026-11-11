@@ -27,6 +27,7 @@ class TestDoctorAgentAuth:
         vault_holds=False,
         vault_detail=None,
         vault_import_fails=False,
+        kiro_cli="/opt/kiro/bin/kiro-cli",
     ):
         from kiro_crew import acp_backends
 
@@ -38,6 +39,8 @@ class TestDoctorAgentAuth:
 
         monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: backends)
         monkeypatch.setattr(cli_doctor, "_kiro_cli_signed_in", probe)
+        # Patched so no row depends on whether this host has kiro-cli installed.
+        monkeypatch.setattr(cli_doctor, "resolve_kiro_cli", lambda: kiro_cli)
         # The vault is always patched so no test reads the developer's real
         # sign-in vault -- the host-auth-callback row probes it via a deferred
         # import, and an unpatched probe would make these tests host-dependent.
@@ -86,6 +89,15 @@ class TestDoctorAgentAuth:
         assert probes == 1
         assert "could not check" in out
         assert "not signed in" not in out
+
+    def test_no_kiro_cli_is_not_a_failed_check(self, monkeypatch, capsys) -> None:
+        """With no kiro-cli there is nothing to ask, so the kiro row says so without a
+        warning or a sign-in remedy: the kiro-cli row above already reports the install."""
+        out, _probes = self._run(monkeypatch, capsys, [""], signed_in=None, kiro_cli=None)
+        assert "kiro auth:   ⏭  kiro-cli's own sign-in; kiro-cli not installed" in out
+        assert "could not check" not in out
+        assert "⚠" not in out
+        assert "kiro-cli login" not in out
 
     def test_a_vault_owned_kas_row_names_the_vault(self, monkeypatch, capsys) -> None:
         """When Crew's vault holds a usable identity the KAS spawn is vault-owned,

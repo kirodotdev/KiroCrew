@@ -177,7 +177,7 @@ from kiro_crew.agent_discovery import (
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.spec_hooks import spec_script_hooks, user_hook_files
-from kiro_crew.agent_sdk.tools_settings_reach import tools_settings_unapplied
+from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK, tools_settings_unapplied
 from kiro_crew.agent_spec_format import agent_spec_candidates, is_markdown_spec
 from kiro_crew.agent_spec_pins import pinned_memo_key
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, get_global_hook_store, persisted_hook_store
@@ -191,7 +191,6 @@ from kiro_crew.mcp_oauth_projection import (
     oauth_lost_keys,
     registry_withheld,
     servers_with_discarded_oauth,
-    withhold_oauth,
 )
 from kiro_crew.platform.governance import (
     may_grant_builtin_at_gate_now,
@@ -281,6 +280,7 @@ def spec_keys_without_carrier(
     *,
     translates_tools_settings: bool = False,
     discards_mcp_oauth: bool = False,
+    withholds_oauth_secret: bool = False,
     session_key: str = "",
     governance_app: str | None = None,
 ) -> list[str]:
@@ -300,14 +300,21 @@ def spec_keys_without_carrier(
 
     *discards_mcp_oauth* says this session's backend drops a remote MCP server's
     ``oauth`` block (KAS only); each declared server that sets one is then named
-    as ``mcpServers.<name>.oauth``.
+    as ``mcpServers.<name>.oauth``. *withholds_oauth_secret* says the session is
+    on KAS, whose projection sends nothing from a block that names a
+    ``clientSecret`` or keeps no key it can send
+    (``mcp_oauth_projection.oauth_withheld``); each declared server with such a
+    block is then named the same way, whatever the engine keeps.
     """
     lost = [k for k in SPEC_KEYS_WITHOUT_CARRIER if spec.get(k)]
     lost.extend(projected_resources(spec.get("resources"))[1])
     if user_tool_aliases(spec.get("toolAliases")):
         lost.append("toolAliases")
-    if discards_mcp_oauth:
-        lost.extend(oauth_lost_keys(servers_with_discarded_oauth(spec, _registry_governed)))
+    if discards_mcp_oauth or withholds_oauth_secret:
+        servers = servers_with_discarded_oauth(
+            spec, _registry_governed, withheld_only=not discards_mcp_oauth
+        )
+        lost.extend(oauth_lost_keys(servers))
     raw = spec.get("toolsSettings")
     if not translates_tools_settings:
         lost.extend(tools_settings_unapplied(raw))
@@ -315,7 +322,7 @@ def spec_keys_without_carrier(
     # kiro-cli reads one spelling per alias group; each name is the one the spec wrote.
     tools_settings, dropped = canonical_tools_settings(raw)
     lost.extend(f"toolsSettings.{key}" for key in dropped)
-    _, not_carried = tools_settings_to_permissions(tools_settings)
+    translated, not_carried = tools_settings_to_permissions(tools_settings)
     authored = spec.get("permissions")
     # A `web_fetch.trusted` KAS cannot carry, Crew's gate may (`web_fetch_carried`).
     gate_carried = web_fetch_carried(tools_settings, authored)
@@ -360,7 +367,21 @@ def spec_keys_without_carrier(
                 if isinstance(tools_settings.get(key), dict)
                 and tools_settings[key].get("allowedPaths")
             )
-    return sorted(set(lost))
+    # An allowlist the gate's own readers enforce is marked, so the notice never
+    # says it has no effect.
+    gate_read = set()
+    if isinstance(tools_settings, dict):
+        if spec_shell_allowlist(tools_settings, spec.get("allowedTools"), translated) is not None:
+            gate_read |= {
+                f"toolsSettings.{as_authored(raw, key)}.allowedCommands"
+                for key in ("execute_bash", "shell")
+            }
+        if spec_write_allowlist(tools_settings) is not None:
+            gate_read |= {
+                f"toolsSettings.{as_authored(raw, key)}.allowedPaths"
+                for key in ("fs_write", "write")
+            }
+    return sorted({f"{key}{GATE_READ_MARK}" if key in gate_read else key for key in lost})
 
 
 def _allowed_commands_withheld(
@@ -893,10 +914,9 @@ def _project_mcp_servers(
             # so the entry drops it: left on, it would keep a managed server off
             # the session-level array and so without its session token.
             projected.pop(key, None)
-        if engine.MCP_SERVER_OAUTH in engine_features:
-            engine.carry_oauth(projected, agent_id=agent_id, name=name, logger=logger)
-        else:
-            withhold_oauth(projected, agent_id=agent_id, name=name, logger=logger)
+        # Always, whatever the engine announces: 0.66.104 reads the block, and
+        # older engines drop it without failing the server (kas_engine_features).
+        engine.carry_oauth(projected, agent_id=agent_id, name=name, logger=logger)
         discarded = [k for k in _KAS_DISCARDED_ENTRY_KEYS if projected.get(k)]
         if discarded:
             # Read off the PROJECTED entry, not the spec's: a key this function

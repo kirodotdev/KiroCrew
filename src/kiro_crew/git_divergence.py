@@ -41,6 +41,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 #: Wall-clock ceiling for the count. ``rev-list`` walks local objects only —
@@ -153,6 +154,10 @@ async def count_divergence(
             pass
         await proc.communicate()
         return DivergenceUnreadable(UNREADABLE_TIMEOUT, detail=f"timed out after {timeout:g}s")
+    except asyncio.CancelledError:
+        # A cancelled caller (a gateway shutdown) must not leave git running.
+        await kill_and_reap(proc)
+        raise
     if proc.returncode != 0:
         return DivergenceUnreadable(UNREADABLE_GIT_FAILED)
     text = out.decode(errors="replace")

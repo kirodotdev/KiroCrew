@@ -499,12 +499,13 @@ async def release_approval_hold(
     arm: bool = True,
     admission: _MutationAdmission | None = None,
 ) -> bool:
-    """End *slot_key*'s approval hold, because a person is back. True if one ended.
+    """End *slot_key*'s approval hold, because the slot moved past it. True if one ended.
 
-    Reached only where a person is proven present: an approval answered in the slot
+    Reached where a person is proven present -- an approval answered in the slot
     (via ``autonudge.release_approval_hold_for``), a typed dashboard message
-    (``notify_user_input(human=True)``), or the popover's manual fire. An agent's or
-    app's turn does not count: it proves the session runs, not that anyone can answer.
+    (``notify_user_input(human=True)``), the popover's manual fire -- and where a
+    new dashboard turn starts in the slot for any sender (``_turn_open``): that
+    turn proves no prompt is still open, and one that stalls again re-holds.
 
     The held time is added to ``created_ts`` so the hold spends no runtime budget.
     ``arm`` re-arms toward the (usually passed) deadline, so the next cycle runs within

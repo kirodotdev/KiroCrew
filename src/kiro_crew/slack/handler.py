@@ -718,6 +718,9 @@ _owner_id: str = ""
 
 # Tracked channel IDs for member_joined_channel monitoring.
 _tracking_channels: set[str] = set()
+# Ids with an owner's remove still saving, and how many: ``is_tracked_channel``
+# refuses them and an add that saved first leaves them out (interactions_settings).
+_removes_in_flight: dict[str, int] = {}
 _open_channels: set[str] = set()
 
 # Live reference to the orchestrator's config — set by events.py, reloaded

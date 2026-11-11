@@ -539,7 +539,7 @@ BASE_MEMBERS = {
     "deliver_spawn_approval": (
         "function",
         "(self, request_id: 'str', description: 'str', "
-        "parent_session_key: 'str') -> 'bool | None'",
+        "parent_session_key: 'str') -> 'bool | HostSpawnDecision | None'",
     ),
     "handle_message": (
         "function",

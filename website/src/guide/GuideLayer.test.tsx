@@ -32,7 +32,7 @@ import { NavigationLeaveGuardProvider, useRegisterNavigationLeaveGuard } from '.
 import { applyGuideUpdate, GUIDE_PENDING_QUERY_KEY, type Guide } from '../api/guide'
 import { _resetViewedThreadForTests, setViewedThreadSlot } from '../lib/viewedThread'
 import { i18nT } from '../i18n/t'
-import { GuideProvider, useGuide } from './GuideContext'
+import { GUIDE_CLOSE_ATTEMPTS, GUIDE_CLOSE_DEADLINE_MS, GuideProvider, useGuide } from './GuideContext'
 import GuideLayer, { arrowPlacement, GUIDE_RELAYOUT_MS, isFinalGuideStep, nearbyControlBoxes, pageChromeBoxes, popoverPlacement, clampToViewport, keepClearBoxes, KEEP_CLEAR_REPLY_PX, NEXT_FIELD_PX, openModalDialog } from './GuideLayer'
 import GuideOfferCard from './GuideOfferCard'
 import { GUIDE_ANCHORS, isSensitiveSetting, resolveGuideAction, resolveGuideActions } from './guideActions'
@@ -1256,6 +1256,27 @@ describe('leaving a step and coming back', () => {
     expect((await screen.findAllByText(L('finished_cancelled'))).length).toBeGreaterThan(0)
     expect(screen.queryByTestId('guide-arrow')).toBeNull()
   })
+
+  it('a 409 whose re-read keeps the same revision still retries at the deadline, then gives the buttons back', async () => {
+    const now = await startTracked(<Target anchor={GUIDE_ANCHORS.crewmateCreate} />)
+    await screen.findByTestId('guide-arrow')
+    pending = [now()]
+    server.use(
+      http.post('/api/guide/cancel', async ({ request }) => {
+        calls.push({ path: '/api/guide/cancel', body: (await request.json()) as Record<string, unknown>, headers: request.headers })
+        return HttpResponse.json({ error: 'stale', code: 'stale_revision' }, { status: 409 })
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: L('cancel_guide') }))
+    await waitFor(() => expect(writes('/api/guide/cancel')).toHaveLength(1))
+    // The re-read answers the same revision, so nothing re-renders: only the deadline moves it.
+    for (const n of [2, 3]) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(GUIDE_CLOSE_DEADLINE_MS + 10) })
+      await waitFor(() => expect(writes('/api/guide/cancel')).toHaveLength(n))
+    }
+    await waitFor(() => expect(screen.getByRole('button', { name: L('cancel_guide') })).not.toBeDisabled())
+    expect(writes('/api/guide/cancel')).toHaveLength(GUIDE_CLOSE_ATTEMPTS)
+  }, 10_000)
 
   it('Cancel waits for a report already in flight, then cancels at the revision it left', async () => {
     let api: ReturnType<typeof useGuide> = null

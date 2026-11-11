@@ -344,6 +344,54 @@ class TestPreviewSuppliedSourcePathsAreContained:
         assert root == str(proj)
         assert source_file == ""
 
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [("p1/", "index.html"), ("p1/docs/", "docs/index.html"), ("p1/docs", "docs/index.html")],
+    )
+    def test_folder_url_names_the_entry_html_the_static_server_serves(
+        self, tmp_path, monkeypatch, path, expected
+    ):
+        """A folder URL is served as its entry HTML, so that file is the source."""
+        proj = tmp_path / "site"
+        (proj / "docs").mkdir(parents=True)
+        (proj / "index.html").write_text("<h1>Home</h1>")
+        (proj / "docs" / "index.html").write_text("<h1>Docs</h1>")
+        cfg = {
+            "projects": [{"id": "p1", "path": str(proj), "name": "site"}],
+            "activeId": "p1",
+            "counter": 0,
+        }
+        monkeypatch.setattr(server, "_CFG", cfg)
+        monkeypatch.setattr(server, "_STATIC_SRV", {"p1": {"url": "http://127.0.0.1:43002/"}})
+
+        _pid, _root, source_file = server._resolve_project(
+            {"projectId": "p1", "previewUrl": f"http://127.0.0.1:43002/{path}"}
+        )
+        assert source_file == str(Path(os.path.realpath(proj)) / expected)
+
+    def test_folder_url_without_entry_and_dev_server_url_yield_no_source_file(
+        self, tmp_path, monkeypatch
+    ):
+        """No entry HTML means no served file, and a dev-server route is never a file."""
+        proj = tmp_path / "site"
+        (proj / "empty").mkdir(parents=True)
+        (proj / "index.html").write_text("<h1>Home</h1>")
+        cfg = {
+            "projects": [{"id": "p1", "path": str(proj), "name": "site"}],
+            "activeId": "p1",
+            "counter": 0,
+        }
+        monkeypatch.setattr(server, "_CFG", cfg)
+        monkeypatch.setattr(server, "_STATIC_SRV", {"p1": {"url": "http://127.0.0.1:43002/"}})
+
+        _pid, _root, empty_dir = server._resolve_project(
+            {"projectId": "p1", "previewUrl": "http://127.0.0.1:43002/p1/empty/"}
+        )
+        _pid, _root, dev_route = server._resolve_project(
+            {"projectId": "p1", "previewUrl": "http://127.0.0.1:5173/"}
+        )
+        assert (empty_dir, dev_route) == ("", "")
+
     def test_element_source_escape_is_cleared_and_downgraded(self, tmp_path):
         """A hostile `data-kiro-source` cannot name a file outside the root."""
         proj = tmp_path / "site"

@@ -309,7 +309,7 @@ _STORE_SIGNATURES = {
     "_read_meta": "(self, key: 'str') -> 'str | None'",
     "_recall_once": "(self, query_text: 'str', *, cap: 'int', project_dir: 'str | Path | None', query: '_RecallQuery', keep: 'Callable[[list[dict]], list[dict] | None] | None' = None, conversation_id: 'str' = '', session_affinity: 'float' = 0.0, recency_boost: 'float' = 0.0) -> 'dict'",
     "_reconcile_embedding_space_locked": "(self, signature: 'str', *, clear_when_unknown: 'bool' = False, force: 'bool' = False, rebuild_generation: 'str' = '') -> 'int'",
-    "_record_mutation": "(self, kind: 'str', item_id: 'str', before: 'dict | None', source: 'str', *, metadata: 'dict | None' = None, operation: 'str' = 'update') -> 'dict'",
+    "_record_mutation": "(self, kind: 'str', item_id: 'str', before: 'dict | None', source: 'str', *, metadata: 'dict | None' = None, operation: 'str' = 'update', new_value: 'bool' = False) -> 'dict'",
     "_release_store_use_lock": "(self) -> 'None'",
     "_require_facets": "(self) -> 'None'",
     "_restrict_memory_files": "(self) -> 'None'",

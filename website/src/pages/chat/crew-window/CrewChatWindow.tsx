@@ -43,6 +43,7 @@ import type { ChatMessage, ChatSlot } from '../../../types'
 import { capsRetryInterval, closeCrewWindow, crewVersionMismatchText, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
 import { coverSiblings } from '../../../utils/coverSiblings'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
+import { authRequiredIsNewest } from '../transcriptRenderers'
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
@@ -327,6 +328,9 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     const mid = typeof m.meta?.mid === 'string' ? m.meta.mid : ''
     return { ...m, meta: { ...m.meta, approval_id: JSON.stringify([aid, mid]) } }
   }), [detailQ.data?.messages])
+  // A sign-in error keeps Resume; the composer's hint names the sign-in first.
+  // Memoised: the window re-renders per keystroke.
+  const resumeAfterSignIn = useMemo(() => authRequiredIsNewest(messages), [messages])
   // Sends the peer holds behind its running turn, from the same slot detail,
   // through the hydration and split the local panes use (a sub-agent delivery
   // shows as the progress line, not a user card). Read-only: cancel and edit
@@ -622,6 +626,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             compacting={!!slotQ.data?.compacting}
             continuable={continuable}
             continueIsRecovery
+            resumeAfterSignIn={resumeAfterSignIn}
             continuing={continuing}
             onContinue={() => { if (continuable && !action.isPending) action.mutate({ path: slotPath + '/continue' }) }}
             contextPct={detailQ.data?.context_pct}

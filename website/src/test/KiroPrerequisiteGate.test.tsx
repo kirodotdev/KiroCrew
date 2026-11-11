@@ -1077,6 +1077,32 @@ describe('KiroPrerequisiteGate', () => {
     )
   })
 
+  it('forgets remembered completion when the gateway says setup is not done', async () => {
+    // A reset data home: a later failed read must show the setup error, not the app.
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status())
+
+    renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await waitFor(() =>
+      expect(localStorage.getItem('kirocrew:kiro-setup-complete')).toBeNull(),
+    )
+  })
+
+  it('keeps remembered completion through an LTS lock', async () => {
+    localStorage.setItem('kirocrew:kiro-setup-complete', '1')
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ lts_login_required: true }))
+
+    const view = renderWithProviders(
+      <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+    )
+
+    await waitFor(() => expect(view.queryClient.getQueryState(['kiro-prerequisite'])?.status).toBe('success'))
+    expect(localStorage.getItem('kirocrew:kiro-setup-complete')).toBe('1')
+  })
+
   it('still gates a genuine first run when no prior completion is remembered', async () => {
     // The remembered bit must not become a blanket bypass: a true first-run
     // user (nothing in storage) still gets the full setup gate.
