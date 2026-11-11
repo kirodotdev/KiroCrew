@@ -597,6 +597,41 @@ class TestAppStorageLongKeys:
         storage = AppStorage("test-app", tmp_path)
         assert storage.get(self.OVERLONG) == {"from": "unencoded"}
 
+    def test_a_key_whose_own_name_is_too_long_survives_get_and_delete(
+        self, tmp_path: Path
+    ) -> None:
+        """The own-name fallback of a 300-character key is past the filename limit.
+
+        Probing it raises ENAMETOOLONG; that must read as "no legacy copy".
+        """
+        key = "*" * 300
+        storage = AppStorage("test-app", tmp_path)
+        storage.set(key, {"v": 1})
+        try:
+            assert storage.get(key) == {"v": 1}
+            assert storage.delete(key) is True
+            assert storage.get(key) is None
+            assert storage.delete(key) is False
+        except OSError as exc:
+            pytest.fail(f"probing the own-name location raised: {exc}")
+
+    def test_set_of_a_key_whose_own_file_name_is_too_long_still_raises(
+        self, tmp_path: Path
+    ) -> None:
+        """A filename-safe key keeps its own name, so a too-long one cannot be stored.
+
+        ``set`` must fail loudly for it, as before, rather than store nothing.
+        """
+        key = "a" * 300
+        storage = AppStorage("test-app", tmp_path)
+        with pytest.raises(OSError):
+            storage.set(key, {"v": 1})
+        try:
+            stored = storage.get(key)
+        except OSError as exc:
+            pytest.fail(f"get of a key whose own name is too long crashed: {exc}")
+        assert stored is None
+
     def test_a_digest_file_without_a_key_is_skipped(self, tmp_path: Path) -> None:
         storage = AppStorage("test-app", tmp_path)
         storage.set("real", {"ok": True})
