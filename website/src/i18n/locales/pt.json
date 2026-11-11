@@ -6383,7 +6383,7 @@
       "refreshing_balance": "Atualizando…",
       "remaining_credit_balance": "Saldo de créditos restante: {{count}}",
       "show_email": "Mostrar e-mail",
-      "usage_scope": "Uso mensal de créditos Kiro segundo kiro-cli /usage em chats, agentes, MCP e subagentes.",
+      "usage_scope": "Uso mensal de créditos Kiro desta conta em chats, agentes, MCP e subagentes.",
       "used_credits": "Usados: {{used}} / {{total}}",
       "sign_out_or_switch": "Sair ou trocar de conta nas Configurações",
       "sign_out_link_config_unreadable": "Não foi possível carregar as configurações, então o link para sair não pode ser mostrado.",
