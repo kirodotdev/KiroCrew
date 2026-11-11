@@ -69,6 +69,7 @@ from kiro_crew.runtime_ownership import (
     release_session_lease,
 )
 from kiro_crew.session_allocation_parts import memory_policy as _memory_policy
+from kiro_crew.session_allocation_parts.cold_start_work_dir import recorded_resume_cwd
 from kiro_crew.session_allocation_parts.errors import (
     SessionBusyError,
     SessionClosingError,
@@ -870,9 +871,7 @@ async def _get_or_create_impl(
 
     effective_cwd = cwd
     if not effective_cwd and (resume_sid or native_fork):
-        stored_cwd = owner._session_map.get_cwd(key)
-        if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
-            effective_cwd = stored_cwd
+        effective_cwd = await asyncio.to_thread(recorded_resume_cwd, owner._session_map, key)
     # A caller's own cwd (a dashboard chat's project) can name an earlier process's
     # scratch tree as well: the sandbox hides it from the new process, so every MCP
     # server the session starts there fails to spawn. A resumed cwd is always
