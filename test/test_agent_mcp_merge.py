@@ -40,6 +40,90 @@ def _abs(*parts: str) -> str:
     return host_abs(*parts)
 
 
+class TestSourceFieldOwnership:
+    def test_store_without_disabled_tools_preserves_global_guard(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A higher-priority store omission cannot remove a user-owned guard."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        config_dir = _bundled_defaults(tmp_path)
+        command = _make_exec(tmp_path, "github-mcp")
+        config = _run_install_mcp_merge(
+            tmp_path,
+            config_dir,
+            cc_servers={},
+            kiro_servers={
+                "github": {
+                    "command": command,
+                    "disabledTools": ["delete_repo"],
+                }
+            },
+            kirocrew_servers={
+                "github": {
+                    "command": command,
+                    "env": {"GITHUB_MODE": "restricted"},
+                }
+            },
+        )
+
+        assert config["mcpServers"]["github"]["disabledTools"] == ["delete_repo"]
+
+    def test_raw_store_omission_preserves_global_guard_on_rebuild(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A second rebuild keeps an inherited guard on the rendered alias."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        config_dir = _bundled_defaults(tmp_path)
+        command = _make_exec(tmp_path, "playwright-mcp")
+        kwargs = {
+            "cc_servers": {},
+            "kiro_servers": {
+                "npm:@playwright/mcp": {
+                    "command": command,
+                    "disabledTools": ["browser_install"],
+                }
+            },
+            "kirocrew_servers": {
+                "npm:@playwright/mcp": {
+                    "command": command,
+                }
+            },
+        }
+
+        first = _run_install_mcp_merge(tmp_path, config_dir, **kwargs)
+        rebuilt = _run_install_mcp_merge(tmp_path, config_dir, **kwargs)
+
+        assert first["mcpServers"]["playwright-mcp"]["disabledTools"] == ["browser_install"]
+        assert rebuilt["mcpServers"]["playwright-mcp"]["disabledTools"] == ["browser_install"]
+
+    def test_raw_store_omission_keeps_declared_global_alias_guard(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A raw-only store entry never strips the guard of an alias a global declares."""
+        monkeypatch.setenv("PATH", "/usr/bin")
+        config_dir = _bundled_defaults(tmp_path)
+        command = _make_exec(tmp_path, "playwright-mcp")
+        kwargs = {
+            "cc_servers": {},
+            "kiro_servers": {
+                "playwright-mcp": {
+                    "command": command,
+                    "disabledTools": ["browser_install"],
+                }
+            },
+            "kirocrew_servers": {
+                "npm:@playwright/mcp": {
+                    "command": command,
+                }
+            },
+        }
+
+        _run_install_mcp_merge(tmp_path, config_dir, **kwargs)
+        rebuilt = _run_install_mcp_merge(tmp_path, config_dir, **kwargs)
+
+        assert rebuilt["mcpServers"]["playwright-mcp"]["disabledTools"] == ["browser_install"]
+
+
 class TestSpecEnvPathIsExpandedOnEmit:
     """A spec's ``env.PATH`` is written out as the full effective PATH.
 

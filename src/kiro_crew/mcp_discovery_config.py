@@ -37,7 +37,7 @@ from kiro_crew.mcp_discovery_server_info import (
     _mcp_sources,
     _scope_priority,
 )
-from kiro_crew.mcp_provenance import WITHHELD_KEY, is_withheld_mute
+from kiro_crew.mcp_provenance import WITHHELD_KEY, is_withheld_mute, without_marker
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
 from kiro_crew.user_json import loads_user_jsonc, wide_bom_reason
 
@@ -322,6 +322,40 @@ def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
     )
 
 
+def _alias_renders_raw(
+    alias: str, raw: str, by_source: dict[str, dict[str, Any]], agent_cfg: dict
+) -> bool:
+    """Whether the rebuild mounts the *raw* key's ``disabledTools`` on *alias*.
+
+    Applies the rebuild's own predicate, ``raw_tools_project_onto_alias``, to
+    the spec the rebuild merges for *raw* and the alias entry it rendered into
+    the agent config. The merge mirrors the rebuild: the highest-priority global
+    holding *raw*, then the Kiro Crew store's fields on top. The agent config
+    stores a resolved command, so a command naming the same program as the
+    source's is compared as equal.
+    """
+    from kiro_crew.agent_materialization.mcp_aliases import raw_tools_project_onto_alias
+    from kiro_crew.mcp_discovery import _commands_diverged
+
+    merged: dict[str, Any] = {}
+    for scope in _scope_priority(by_source):
+        spec = by_source.get(scope, {}).get(raw)
+        if scope != SCOPE_KIROCREW and isinstance(spec, dict):
+            merged = without_marker(spec)
+            break
+    store_spec = by_source.get(SCOPE_KIROCREW, {}).get(raw)
+    if isinstance(store_spec, dict):
+        merged.update(store_spec)
+    rendered = agent_cfg.get("mcpServers", {}).get(alias)
+    if isinstance(rendered, dict) and isinstance(merged.get("command"), str):
+        rendered_cmd = rendered.get("command", "")
+        if isinstance(rendered_cmd, str) and not _commands_diverged(
+            merged["command"], rendered_cmd
+        ):
+            rendered = {**rendered, "command": merged["command"]}
+    return raw_tools_project_onto_alias(alias, merged, rendered, by_source.values())
+
+
 def list_servers() -> list[McpServerInfo]:
     """Return all known MCP servers from agent config + mcp.json + CC global.
 
@@ -368,7 +402,8 @@ def list_servers() -> list[McpServerInfo]:
     #    don't overwrite it.  Order = kirocrew-specific > Kiro global >
     #    any seam provider globals, matching rebuild_agent_config.
     by_source = _load_mcp_json_by_source()
-    disabled_tools_claimed: set[str] = set()
+    # Each key whose ``disabledTools`` a scope claimed, mapped to that scope.
+    disabled_tools_claimed: dict[str, str] = {}
     for scope in _scope_priority(by_source):
         for name, spec in by_source.get(scope, {}).items():
             if not isinstance(spec, dict):
@@ -448,7 +483,7 @@ def list_servers() -> list[McpServerInfo]:
             # respected and prevents lower-priority scopes from overwriting.
             if name in servers and "disabledTools" in spec and name not in disabled_tools_claimed:
                 servers[name].disabled_tools = spec.get("disabledTools", [])
-                disabled_tools_claimed.add(name)
+                disabled_tools_claimed[name] = scope
 
     # 3. Compute per-scope presence.
     #
@@ -483,22 +518,45 @@ def list_servers() -> list[McpServerInfo]:
     #     names alias to themselves, so non-scoped servers are unaffected. When
     #     both forms are present, presence flags are unioned and the entry whose
     #     own key is already the canonical alias is kept as the representative.
+    #     The row reports the ``disabledTools`` the rebuild mounts under the
+    #     canonical name. When no scope declares the alias and its rendered
+    #     spec matches the raw key's apart from ``disabledTools``, the alias is
+    #     the rebuild's rendering of the raw key (``_alias_renders_raw``). The
+    #     row then takes the raw key's list. A raw key in the Kiro Crew store
+    #     with no list leaves the row with none, because
+    #     ``reconcile_raw_store_tool_overrides`` removes the alias list. In any
+    #     other layout the alias entry is the canonical mount, the raw key
+    #     mounts as a ``-<n>`` sibling, and the row keeps the alias's own list.
     canonical_servers: dict[str, McpServerInfo] = {}
+    raw_name_of: dict[str, str] = {}
     for name, server in servers.items():
         canon = mcp_server_alias(name)
         rep = canonical_servers.get(canon)
         if rep is None:
             server.name = canon
             canonical_servers[canon] = server
+            raw_name_of[canon] = name
             continue
         union = {
             scope: bool(rep.presence.get(scope)) or bool(server.presence.get(scope))
             for scope in rep.presence
         }
-        chosen = server if name == canon else rep
+        rep_raw = raw_name_of[canon]
+        if name == canon:
+            chosen, chosen_raw, other, other_raw = server, name, rep, rep_raw
+        else:
+            chosen, chosen_raw, other, other_raw = rep, rep_raw, server, name
+        claim_scope = disabled_tools_claimed.get(other_raw)
+        if _alias_renders_raw(chosen_raw, other_raw, by_source, agent_cfg):
+            if claim_scope is not None:
+                chosen.disabled_tools = list(other.disabled_tools)
+                disabled_tools_claimed[chosen_raw] = claim_scope
+            elif other_raw in by_source.get(SCOPE_KIROCREW, {}):
+                chosen.disabled_tools = []
         chosen.name = canon
         chosen.presence = union
         canonical_servers[canon] = chosen
+        raw_name_of[canon] = chosen_raw
     servers = canonical_servers
 
     # 3c. Consent is per SCOPE: a ``disabled: true`` ANYWHERE withholds the

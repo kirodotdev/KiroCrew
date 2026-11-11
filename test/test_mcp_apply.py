@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 from body_stream_helpers import attach_body
 from dashboard_owner_helpers import owner_claims
+from mcp_merge_helpers import bundled_defaults as _bundled_defaults
 
 from kiro_crew.platform.interfaces import McpScope
 from kiro_crew.testing.wait import await_until
@@ -94,6 +95,34 @@ class TestSetKirocrewEntry:
         assert action == "disabled"
         entry = json.loads(mc_path.read_text(encoding="utf-8"))["mcpServers"]["srv"]
         assert entry == {"command": "x", "disabled": True}
+
+
+class TestToolOverrides:
+    def test_reenable_updates_raw_key_for_canonical_row(self, tmp_path, monkeypatch):
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        mc_path = tmp_path / "kirocrew.mcp.json"
+        mc_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "npm:@playwright/mcp": {
+                            "command": "npx",
+                            "disabledTools": ["browser_install"],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", mc_path)
+
+        changed = mcp_mod._set_tool_overrides("playwright-mcp", {"browser_install": True})
+
+        assert changed == ["browser_install"]
+        servers = json.loads(mc_path.read_text(encoding="utf-8"))["mcpServers"]
+        assert "disabledTools" not in servers["npm:@playwright/mcp"]
+        assert "playwright-mcp" not in servers
 
 
 class TestSetScopeEntry:
@@ -183,6 +212,144 @@ class TestLoadJsonOrEmptyUndecodable:
 
 
 class TestApplyEndpoint:
+    @pytest.mark.parametrize(
+        "store_shape,tool_enabled,clean",
+        [
+            pytest.param("raw", False, True, id="raw-disable-clean"),
+            pytest.param("raw", False, False, id="raw-disable-non-clean"),
+            pytest.param("raw", True, True, id="raw-enable-clean"),
+            pytest.param("raw", True, False, id="raw-enable-non-clean"),
+            pytest.param("alias", False, True, id="alias-disable-clean"),
+            pytest.param("alias", False, False, id="alias-disable-non-clean"),
+            pytest.param("alias", True, True, id="alias-enable-clean"),
+            pytest.param("twin", False, True, id="twin-disable-clean"),
+            pytest.param("twin", False, False, id="twin-disable-non-clean"),
+            pytest.param("twin", True, True, id="twin-enable-clean"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_aliased_tool_override_reaches_mounted_server(
+        self, tmp_path, monkeypatch, clean, tool_enabled, store_shape
+    ):
+        from kiro_crew import agent as agent_mod
+        from kiro_crew import kiro_cli
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        raw_name = "npm:@playwright/mcp"
+        alias = "playwright-mcp"
+        tool = "browser_install"
+        initial_disabled = tool_enabled
+        home = tmp_path / "home"
+        home.mkdir()
+        agents_dir = tmp_path / "agents"
+        config_dir = _bundled_defaults(tmp_path)
+        global_path = tmp_path / "global.json"
+        global_path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+        mc_config = tmp_path / "config.json"
+        mc_config.write_text(
+            json.dumps({"agent": {"kiro_hooks_autoimport": False}}), encoding="utf-8"
+        )
+        raw_command = tmp_path / "raw-server"
+        alias_command = tmp_path / "alias-server"
+        for command in (raw_command, alias_command):
+            command.write_text("#!/bin/sh\n", encoding="utf-8")
+            command.chmod(0o755)
+
+        def entry(command: Path, disabled: bool) -> dict:
+            spec = {"command": str(command)}
+            if disabled:
+                spec["disabledTools"] = [tool]
+            return spec
+
+        if store_shape == "raw":
+            stored = {raw_name: entry(raw_command, initial_disabled)}
+        elif store_shape == "alias":
+            stored = {alias: entry(alias_command, initial_disabled)}
+        else:
+            stored = {
+                raw_name: entry(raw_command, initial_disabled),
+                alias: entry(alias_command, initial_disabled),
+            }
+        store_path = home / "mcp.json"
+        store_path.write_text(json.dumps({"mcpServers": stored}), encoding="utf-8")
+
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        monkeypatch.setattr(mcp_mod, "_KIROCREW_MCP_JSON", store_path)
+        monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", global_path)
+        monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", list)
+        monkeypatch.setattr(mcp_mod, "kiro_agents_dir", lambda: agents_dir)
+        monkeypatch.setattr(mcp_mod, "sel", MagicMock)
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents_dir)
+        monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents_dir)
+        monkeypatch.setattr(agent_mod, "_BUNDLED_CFG_DIR", config_dir)
+        monkeypatch.setattr(agent_mod, "_KIRO_MCP_JSON", global_path)
+        monkeypatch.setattr(agent_mod, "_MANAGED_MCP_SERVERS", {})
+        monkeypatch.setattr(agent_mod, "_user_dir", lambda: home)
+        monkeypatch.setattr(agent_mod, "_prompt_path", lambda: config_dir / "prompt.md")
+        monkeypatch.setattr(agent_mod, "_shipped_defaults", lambda: config_dir / "defaults.json")
+        monkeypatch.setattr(agent_mod, "_project_dir", lambda: None)
+        monkeypatch.setattr(agent_mod, "_aim_skill_paths", list)
+        monkeypatch.setattr(agent_mod, "_mc_config_path", lambda: mc_config)
+        monkeypatch.setattr(agent_mod, "_extra_mcp_scope_globals", list)
+        monkeypatch.setattr(
+            kiro_cli,
+            "installed_kiro_cli_version",
+            lambda: kiro_cli.SPEC_PERMISSIONS_MIN_VERSION,
+        )
+
+        class _NoLock:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, *args):
+                return None
+
+        monkeypatch.setattr(mcp_mod, "_get_mcp_lock", _NoLock)
+        if not clean:
+            agent_mod.rebuild_agent_config(clean=True, refresh_forks=False)
+
+        def rebuild_for_apply():
+            wrote: list[bool] = []
+            path = agent_mod.rebuild_agent_config(
+                clean=clean,
+                refresh_forks=False,
+                _wrote_out=wrote,
+            )
+            return path, wrote == [True]
+
+        monkeypatch.setattr(mcp_mod, "rebuild_agent_config_reporting", rebuild_for_apply)
+        request = _make_request(
+            {
+                "changes": [
+                    {
+                        "name": alias,
+                        "kirocrew": True,
+                        "kiroGlobal": False,
+                        "toolOverrides": {tool: tool_enabled},
+                    }
+                ]
+            }
+        )
+
+        response = await mcp_mod.api_mcp_apply(request)
+
+        assert response.status == 200
+        body = json.loads(response.body)
+        assert body["rebuild"]["ok"] is True
+        mounted = json.loads((agents_dir / "kirocrew.json").read_text(encoding="utf-8"))[
+            "mcpServers"
+        ]
+        canonical = mounted[alias]
+        assert (tool in canonical.get("disabledTools", [])) is not tool_enabled
+        if store_shape == "twin":
+            sibling = mounted[f"{alias}-2"]
+            assert canonical["command"] == str(alias_command)
+            assert sibling["command"] == str(raw_command)
+            assert (tool in sibling.get("disabledTools", [])) is initial_disabled
+        else:
+            assert f"{alias}-2" not in mounted
+            assert set(mounted) == {alias}
+
     @pytest.mark.asyncio
     async def test_preservation_kiro_to_kirocrew(self, tmp_path, monkeypatch):
         """Turning Kiro off when server was only in Kiro copies to KiroCrew first."""

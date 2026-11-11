@@ -396,8 +396,10 @@ def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]
 
     ``tool_overrides`` maps tool name → desired enabled state.  Disabled
     tools are added to the entry's ``disabledTools`` list; re-enabling
-    removes them.  Creates the entry if absent (sourcing full spec from
-    any scope so the server keeps loading).
+    removes them. A canonical dashboard row name resolves against the config
+    map before mutation, so an existing raw slash-named entry is updated in
+    place. Creates the entry if absent (sourcing full spec from any scope so
+    the server keeps loading).
 
     Returns a list of tool names whose state changed.
     """
@@ -405,7 +407,11 @@ def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]
         return []
     data = _load_json_or_empty(_kirocrew_mcp_json())
     servers = data.setdefault("mcpServers", {})
-    entry = servers.get(name)
+    try:
+        key = _resolve_key_from_read(servers, name)
+    except AmbiguousServerKey:
+        return []
+    entry = servers.get(key) if key is not None else None
     if not isinstance(entry, dict):
         # Seed from the best-available spec so the server keeps its config.
         base = _find_server_spec_anywhere(name) or {}
