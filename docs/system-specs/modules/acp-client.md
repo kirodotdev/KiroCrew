@@ -2086,17 +2086,33 @@ built-in a later engine adds under a new id fails loudly instead of resurrecting
 the silent substitution. (Guard (B) is the spawn-flag check for a markdown-only spec on a
 JSON-only host, `_spawn_agent_not_loaded_reason`.)
 
-On KAS, `session/new` already names that wire id as `_meta.kiro.modeId`
-(`KasHarness.session_request`, read from the batch's first entry, the session's
-own agent ahead of any sub-agent target, so a session on the runtime default
-gets it too). The session then starts in the Bot's agent
-rather than in the engine's `vibe` mode, which would first start every
-`~/.kiro/settings/mcp.json` server, and `set_mode` is still sent. Guards (A) and
+On KAS, `session/new` already names a mode as `_meta.kiro.modeId`
+(`KasHarness.session_request`). Without one the engine starts the session in its
+`vibe` mode, which would first start every `~/.kiro/settings/mcp.json` server.
+The mode named is the batch's first entry, the session's own agent ahead of any
+sub-agent target (so a session on the runtime default gets it too), unless that
+agent declares MCP servers of its own. Then the request also registers
+`kirocrew-session-start` (`acp/kas_start_agent.py`), an agent with no server, no
+tool and no `mcp.json` reach, and names it instead: the engine queues the running
+agent's servers ahead of the session-level array, so a session that started in
+its own agent would connect Kiro Crew's servers last (see "KAS managed MCP
+readiness" below). The `set_mode` that follows is then a real switch to the
+session's own agent, and it is what queues that agent's servers. Reports staged
+before that switch can only name session-level servers, which the switch leaves
+running, so they still count toward readiness (`start_mode_ran_servers`, a
+harness seam every other host answers `True`); reports staged in any other start
+mode are skipped as before. The start agent
+is left out, and the session starts in its own agent, when that agent mounts the
+engine's sub-agent tool (the tool's roster is the session's registered agents),
+when an entry already carries the id, or when the batch is at the engine's limit
+of 50. `set_mode` is sent either way. Guards (A) and
 (C) therefore judge a session that may already run the named mode, and a refusal
-ends it through `terminate_session` before any prompt. An id the engine cannot
+ends it through `terminate_session` before any prompt, so no prompt runs in the
+start agent. An id the engine cannot
 resolve falls back to `vibe` with a `_kiro/customAgent/not_found` notification
 (measured on the 0.66.33 bundle), so (A) still refuses a dropped entry.
-`session/load` names no mode: a resumed session already has one.
+`session/load` names no mode and registers no start agent: a resumed session
+already has a mode, its own agent, so its servers queue as before.
 
 Step 4 (`set_model`) is **conditional**: only sent when `model` is explicitly
 set (i.e., for the default kirocrew agent).  Custom agents skip this so
@@ -2595,6 +2611,20 @@ reports, or missing tool exposure remain pending until `AcpRequestTimeout`.
 One `failed` entry is re-attempted before it terminates: a required server
 whose start only ran out of time is connected again once, on the same
 deadline (see "KAS managed MCP start re-attempt" below).
+
+KAS queues the running agent's servers ahead of the session-level
+`mcpServers` tier, so in a session that started in its own agent Crew's
+managed servers wait behind every server that agent declares. A new session whose
+agent declares servers therefore starts in the server-less start agent
+(`acp/kas_start_agent.py`, see the mode named on `session/new` under "Session
+Resume via `session/load`" above): only the session-level tier is
+queued by `session/new`, and the `set_mode` switch queues the agent's servers
+behind it. Measured on kiro-cli 3.2.0 with twelve slow agent servers, Crew's
+servers connected 13.5 s after `session/new` in the session's own agent and
+1.3 s after it through the start agent. Crew's servers still wait behind the
+agent's on `session/load` (the engine resumes in the stored mode), in a session
+whose agent mounts the engine's sub-agent tool, and behind any other session's
+servers queued earlier in that process.
 
 While `agent.mcp_registry_mode` is on, the wait has a settle checkpoint (6s,
 the init drain's first-report bound) inside the full start budget. The KAS

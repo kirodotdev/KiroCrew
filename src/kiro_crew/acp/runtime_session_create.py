@@ -925,10 +925,14 @@ async def _finish_create_session(
         # started the session on. If the requested agent differs, those
         # staged registration frames describe the pre-switch roster and
         # must not arm the drain's idle shortcut while the switched-to
-        # agent's own servers may still be booting.
+        # agent's own servers may still be booting. A start mode the host
+        # registered without servers has no roster of its own to go stale
+        # (start_mode_ran_servers), so its staged frames still count.
         _ids, _current, _adv = parse_session_modes(resp)
-        mode_switched = mode_wire != _current and (
-            bool(_current) or self._harness.notification_aliases.mcp_readiness
+        mode_switched = (
+            mode_wire != _current
+            and (bool(_current) or self._harness.notification_aliases.mcp_readiness)
+            and self._harness.start_mode_ran_servers(_current or "")
         )
     elif mode_agent:
         _ids, _current, _adv = parse_session_modes(resp)

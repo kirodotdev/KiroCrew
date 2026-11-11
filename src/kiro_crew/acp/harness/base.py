@@ -681,8 +681,9 @@ class HarnessAdapter(LaunchAdapter):
         default sends what the runtime built and activates the agent the caller asked
         for, so it returns BOTH of the caller's objects unchanged, and the request
         stays byte-identical to one built without this seam. KAS
-        (:class:`~kiro_crew.acp.harness.kas.KasHarness`) also names its injected
-        agent as the mode a ``session/new`` starts in, and still activates the
+        (:class:`~kiro_crew.acp.harness.kas.KasHarness`) also names the mode a
+        ``session/new`` starts in, its injected agent or the start agent it adds
+        beside one that declares MCP servers, and still activates the
         caller's agent. A host may reshape the request or return a different agent
         to activate. Raising ``AcpRuntimeError`` here refuses the start before
         anything is sent.
@@ -701,6 +702,20 @@ class HarnessAdapter(LaunchAdapter):
         returned is the user-facing refusal, ready to raise as-is.
         """
         return None
+
+    def start_mode_ran_servers(self, mode_id: str) -> bool:
+        """Whether the mode a session started in may have started MCP servers of its own.
+
+        Asked after ``set_mode`` switched a new session away from *mode_id*, as a
+        seam rather than a backend test (harness-parity H13). Reports staged
+        before the switch describe that mode's servers, so the start skips them
+        unless the mode had none. This base answer is ``True``: a mode a host
+        chose may run any server. A host that starts a session in an agent it
+        registered without servers answers ``False`` for that agent, and the
+        reports staged under it, which can only name session-level servers,
+        still count.
+        """
+        return True
 
     # ── Seam 4: inbound requests the host answers ──
 
