@@ -375,6 +375,7 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
 # ``print('<name>'); log('<verb>')``, which mints nothing.
 _INTERP_BINDING_RE = re.compile(r"\b([a-z_]\w*)\s*=\s*('[^']*'|\"[^\"]*\")")
 _INTERP_IDENT_RE = re.compile(r"\b[a-z_]\w*\b")
+_INTERP_ROW_NEEDS = "crew"  # every alternative of both rows needs it: without it, no copy is built
 
 
 # ``"<name> %s" % "<verb>"`` -- printf-style formatting is the same evasion as adjacent
@@ -636,9 +637,8 @@ def is_denied(
     # therefore also matched against a copy with those joins collapsed.  Scoped to those
     # two patterns on purpose: collapsing text for all the other rules would change
     # inputs they were never measured against.
-    joined = _inline_interpreter_bindings(
-        _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
-    )
+    collapsed = _collapse_percent_format(_rules._LITERAL_CONCAT_RE.sub("", lower))
+    joined = _inline_interpreter_bindings(collapsed) if _INTERP_ROW_NEEDS in collapsed else lower
     if joined != lower:
         for interpreter_pattern in regex_patterns:
             if interpreter_pattern not in _rules._INTERPRETER_RULE_PATTERNS:
