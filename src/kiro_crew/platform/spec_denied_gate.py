@@ -88,15 +88,27 @@ def _is_write(call: ToolCall, names: tuple[str, ...]) -> bool:
 def spec_denies_refusal(call: ToolCall, names: tuple[str, ...]) -> str | None:
     """Why the ``spec-denies`` row refuses *call*, or ``None``: its spec's checked
     ``deniedCommands`` or write ``deniedPaths`` names it. A ``deny_policy``: the
-    refusal is the spec's state, as for ``spec-shell-allowlist``."""
+    refusal is the spec's state, as for ``spec-shell-allowlist``.
+
+    A chain is judged one command at a time (``allowed_commands.chain_commands``)
+    and refused when a deny names any of them. A command that does not split there
+    (a quote, ``#`` or ``[[`` in a chain, a redirect, ``$(...)``, a backtick)
+    is not refused here."""
     grant = call.spec_denied_grant
     if grant is None or call.mcp_server:
         return None
     prefix = "Blocked by this agent's spec: "
     if grant.denied_commands and call.is_shell and _SHELL_NAMES.intersection(names):
-        if (
-            allowed_commands.denied_match(grant.denied_commands, call.command, word_bounded=True)
-            is True
+        pieces = allowed_commands.chain_commands(call.command) or ()
+        # A ``#`` can start a comment that holds a separator, so a piece after it
+        # may never run; inside a ``[[ ... ]]`` test a separator is part of the
+        # test, not a new command. Such a chain is not split here.
+        command = str(call.command)
+        if len(pieces) > 1 and ("#" in command or "[[" in command):
+            pieces = ()
+        if any(
+            allowed_commands.denied_match(grant.denied_commands, piece, word_bounded=True) is True
+            for piece in pieces
         ):
             return prefix + "the command matches its deniedCommands"
     if grant.denied_write_paths and _is_write(call, names):
