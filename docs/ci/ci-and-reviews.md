@@ -2322,7 +2322,16 @@ Details worth knowing:
     abort skips the cancelled-orphan recovery pass, and recovery is the only
     thing between a cancelled run and the end of its 90-minute window, so
     "the next tick re-lists" is no answer for a run in the final tick-interval of
-    that window while the limit persists. What the abort still buys is the work
+    that window while the limit persists. The one exception is a refusal whose
+    `X-RateLimit-Remaining` header is `0` (judged from the header, never the
+    body): the shared installation quota every workflow spends is drained, so a
+    red tick would name no run and no action. That abort carries
+    `aborted-quota-exhausted` instead, which is not a failed outcome: the tick
+    logs a `::warning::` and its summary names the remaining quota and the
+    `X-RateLimit-Reset` time. A run it classified before the abort keeps its own
+    outcome, so an orphan it saw and could not heal still reds the tick: an
+    orphan whose pre-heal re-read or cancel is refused on a rate limit carries
+    `aborted-rate-limited` rather than a deferral. What the abort still buys is the work
     already done: one exhausted listing page leaves the runs already classified
     acted on rather than lost. Every other status (401, 404, 5xx) and every
     malformed payload still raises. **The schedule is armed**: `WATCHDOG_ARMED` at the top of the
