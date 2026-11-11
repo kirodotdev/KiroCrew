@@ -634,7 +634,8 @@ export default function AppDetailPage() {
       if (result.ok) {
         recordEvent('app_install', { app: app.name, source: 'registry', version: app.version })
         setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
-        await load()
+        // Refresh in place: the loader would unmount the install log being read.
+        await load({ keepView: true })
         window.dispatchEvent(new Event('mc:apps-changed'))
       } else {
         const message = result.error || i18nT('pages.appDetailPage.install_failed')
@@ -688,7 +689,7 @@ export default function AppDetailPage() {
     const result = await api.enableApp(name, consent, undefined, consent && shownMemberThreads)
     recordEvent('app_enable', { app: name, version: app?.installedVersion || app?.version })
     setBackendRefusedMsg(backendRefusedNotice(app ? appDisplayName(app) : name, result))
-    await load()
+    await load({ keepView: true })
     window.dispatchEvent(new Event('mc:apps-changed'))
   }, [app, load])
 
@@ -773,7 +774,7 @@ export default function AppDetailPage() {
       openTrust: trust.open,
       settle: async () => {
         clearError(); setLocalSwitch(null); setShowInstallLog(false)
-        await load()
+        await load({ keepView: true })
         window.dispatchEvent(new Event('mc:apps-changed'))
       },
       setBackendRefusedMsg,
@@ -825,7 +826,6 @@ export default function AppDetailPage() {
           if (!ok) return
         }
         await runEnable(app.name, memberThreads)
-        await load()
         return
       }
       if (action === 'disable') await api.disableApp(app.name)
@@ -833,8 +833,8 @@ export default function AppDetailPage() {
       if (action === 'disable') {
         recordEvent('app_disable', { app: app.name, version: app.installedVersion || app.version })
       }
-      // Sync stays on screen after a refresh, so reload in place and keep its focus.
-      await load(action === 'update' ? { keepView: true } : undefined)
+      // Reload in place: Sync keeps its focus, and the page never drops to the loader.
+      await load({ keepView: true })
       // `load()` clears the error but does not speak to success, and a same-version
       // re-copy changes nothing visible, so say it explicitly. The Sync button that
       // reaches here is not gated on source, and `handle_update_app` re-clones a
@@ -1270,7 +1270,7 @@ export default function AppDetailPage() {
                   })
                   setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
-                  await load()
+                  await load({ keepView: true })
                   window.dispatchEvent(new Event('mc:apps-changed'))
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e))
