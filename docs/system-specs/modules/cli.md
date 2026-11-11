@@ -3224,7 +3224,12 @@ found, so that version notifies instead of being installed and restarted
 unattended. When the snooze runs out the prompt opens again, and the deferral
 holds for one more window (`REPROMPT_WINDOW_SECS`, the snooze's own 24 h) so
 "Later" never becomes a silent install; only a prompt left unanswered for that
-window lets it install. A managed-venv restart already queued (`_pending_update_respawn`)
+window lets it install. The browser writes `snoozed_until` on its own clock, so
+the config PATCH also stamps the record with the gateway's `stored_at`, and the
+hold runs to the later of `snoozed_until` plus the window and `stored_at` plus
+the snooze (`SNOOZE_SECS`) plus the window: a browser clock behind the host
+cannot cut it short. A record with no stamp keeps the `snoozed_until` reading alone.
+A managed-venv restart already queued (`_pending_update_respawn`)
 reads the same record for `_pending_update_version` on every retry and waits
 while it holds (the git and provider routes leave that field empty: their code
 is already replaced on disk, and the git route reloads `kiro_crew`, so their

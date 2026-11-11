@@ -184,7 +184,11 @@ def read_setting_value(target: dict[str, Any]) -> Any:
     """The current value from the same store the card writes."""
     if target["store"] == catalog.STORE_DASHBOARD:
         return _config_value(f"dashboard.{target['key']}")
-    return _config_value(target["key"])
+    value = _config_value(target["key"])
+    if target["key"] == "dashboard.update_nudge":
+        # The PATCH route's own clock stamp: a card neither writes nor restores it.
+        value.pop("stored_at", None)
+    return value
 
 
 def check_target_params(target: dict[str, Any], params: dict[str, Any]) -> None:

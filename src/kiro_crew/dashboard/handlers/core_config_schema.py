@@ -307,7 +307,8 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # with a new version) and a two-client interleave that reassembles a
     # verdict nobody expressed. Persisted in gateway config (not browser
     # storage) so the decision holds across browsers and the desktop app's
-    # embedded dashboard.
+    # embedded dashboard. The route stores a fourth, ``stored_at``, from this
+    # host's clock, in place of any a client sends.
     "dashboard.update_nudge": {
         "type": "dict",
         "keys": {
