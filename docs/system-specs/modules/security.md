@@ -3901,18 +3901,19 @@ runtime's mirrored projection (`acp/runtime_session_setup._mirrored_session_mcp`
 create and resume path of the shared-runtime backends, codex included) and
 `AcpClient._resolve_session_mcp_servers` (opencode, goose and the other client-driven
 backends). It puts a fresh pickup on the
-`kirocrew-core` element only when the session's backend is enforced
+`kirocrew-core` and `kirocrew-cron` elements only when the session's backend is enforced
 (`tool_gate.is_enforced`, the same predicate that applies the credential mask), the
 session holds a stub token, and this process serves an agent socket; every other
-harness's array is unchanged. A broker-stub element of that name gets none
+harness's array is unchanged. A broker-stub element of either name gets none
 (`ipc_pickup._launches_server_directly`: an argv running `-m` `mcp_gateway.STUB_MODULE`,
 or one it cannot read), because a stub never takes the pickup out of its environment,
 so a same-uid process in the session could read it from the stub's
 `/proc/<pid>/environ` and redeem it. The pickup is bound to that stub token and to the
 runtime's own root pid, and the element also carries the gateway's pid
 (`KIROCREW_IPC_GATEWAY_PID`). Both ride the element's `env` only, never the harness
-process environment. `agent_ipc_client.py` takes them out of `os.environ` at
-`kirocrew-core` startup, calls `prctl(PR_SET_DUMPABLE, 0)` on Linux, and redeems the
+process environment. `agent_ipc_client.py` takes them out of `os.environ` at each
+server's startup (`kirocrew-core` and `kirocrew-cron`), calls
+`prctl(PR_SET_DUMPABLE, 0)` on Linux, and redeems the
 pickup. Every connection it makes to the agent socket is checked before a byte is
 written: the listener's kernel peer pid must be that gateway pid, so a sandboxed
 process that renames the socket file and binds its own listener at the path (the
