@@ -7,6 +7,11 @@
     "agent_capabilities": {
       "_meta": {
         "kiro": {
+          "autoCompactionThreshold": {
+            "default": 80,
+            "max": 80,
+            "min": 0
+          },
           "checkpoints": true,
           "executionTargets": [
             "local"
@@ -18,13 +23,28 @@
             "_kiro/memory/create",
             "_kiro/memory/update",
             "_kiro/memory/delete",
+            "_kiro/memory/import",
+            "_kiro/memory/export",
+            "_kiro/memory/getImportPrompt",
+            "_kiro/memory/getSyncStatus",
+            "_kiro/memory/sync",
             "_kiro/codeIntelligence",
+            "_kiro/environment/start_ssh_session",
+            "_kiro/environment/get_network_configuration",
             "_kiro/session/context",
             "_kiro/session/compact",
             "_kiro/session/export",
             "_kiro/session/history",
+            "_kiro/session/delete",
+            "_kiro/session/rename",
+            "_kiro/job/cancel",
+            "_kiro/job/output",
             "_kiro/config/template",
+            "_kiro/permissions/presets/list",
+            "_kiro/permissions/presets/add",
+            "_kiro/permissions/presets/remove",
             "_kiro/configuration/getState",
+            "_kiro/configuration/set",
             "_kiro/workflow/new",
             "_kiro/workflow/invoke",
             "_kiro/workflow/load",
@@ -43,19 +63,19 @@
           "logging": {
             "channels": [
               {
-                "filePath": "~/.kiro/logs/20261024T003905266/kiro.log",
+                "filePath": "~/.kiro/logs/20261110T210941054-1060608/kiro.log",
                 "name": "kiro"
               },
               {
-                "filePath": "~/.kiro/logs/20261024T003905266/mcp.log",
+                "filePath": "~/.kiro/logs/20261110T210941054-1060608/mcp.log",
                 "name": "mcp"
               },
               {
-                "filePath": "~/.kiro/logs/20261024T003905266/powers.log",
+                "filePath": "~/.kiro/logs/20261110T210941054-1060608/powers.log",
                 "name": "powers"
               }
             ],
-            "logDir": "~/.kiro/logs/20261024T003905266"
+            "logDir": "~/.kiro/logs/20261110T210941054-1060608"
           },
           "modelFallbackReporting": true,
           "policyNotifications": true,
@@ -210,6 +230,23 @@
                     "origin": "bundled"
                   }
                 },
+                "source": "bundled",
+                "welcomeMessage": "You are using Default v2, an experimental agent mode."
+              }
+            },
+            "description": "Adaptive agent that plans, delegates, and verifies as the task demands",
+            "name": "Default v2",
+            "value": "default-v2"
+          },
+          {
+            "_meta": {
+              "kiro": {
+                "resource": {
+                  "resourceType": "agent",
+                  "source": {
+                    "origin": "bundled"
+                  }
+                },
                 "source": "bundled"
               }
             },
@@ -236,14 +273,14 @@
               }
             },
             "description": "Models chosen by task for optimal usage and consistent quality",
-            "name": "Auto",
+            "name": "auto",
             "value": "auto"
           }
         ],
         "type": "select"
       },
       {
-        "currentValue": "on",
+        "currentValue": "off",
         "description": "Allow this session to reflect on new memory",
         "id": "memoryReflection",
         "name": "Memory reflection",
@@ -308,6 +345,7 @@
         "bug-fix",
         "plan",
         "autonomous",
+        "default-v2",
         "semantic_reviewer"
       ]
     },
