@@ -6,7 +6,8 @@ the Level-1 ceiling, the session's surface profile (or the unattended deny-all),
 every task-bound profile, and the profile bound to the session's app. A profile
 bound to another surface or another app never judges this session's spawns, so
 it does not withhold the allow here. The projection and the session-start notice
-ask the same question.
+ask the same question. A spec's own sub-agent allow (``use_subagent`` in
+``allowedTools``, a ``subagent`` allow in ``permissions``) meets the same profiles.
 """
 
 from __future__ import annotations
@@ -167,6 +168,36 @@ class TestProjection:
         assert permits("use_subagent")
         monkeypatch.setattr(gp, "session_profiles_govern", boom)
         assert not permits("use_subagent")
+
+
+_AUTHORED = {
+    "allowedTools": {"allowedTools": ["use_subagent"]},
+    "permissions": {"permissions": {"rules": [{"capability": "subagent", "effect": "allow"}]}},
+}
+_AUTHORED_ALLOW = {"capability": "subagent", "effect": "allow"}
+
+
+class TestAuthoredAllow:
+    """A spec's own sub-agent allow meets the same profiles as a ``trustedAgents`` one."""
+
+    @staticmethod
+    def _rules(authored, session_key, app):
+        spec = {"name": "a1", "prompt": "p", "tools": ["*"], "includeMcpJson": False}
+        spec.update(_AUTHORED[authored])
+        out = to_client_custom_agent("a1", spec, "p", session_key=session_key, governance_app=app)
+        return out.get("permissions", {}).get("rules", [])
+
+    @pytest.mark.parametrize("authored", sorted(_AUTHORED))
+    @pytest.mark.parametrize(("session_key", "app"), _PERMITTED)
+    def test_it_travels_where_no_profile_of_the_session_governs(
+        self, profiles, authored, session_key, app
+    ):
+        assert _AUTHORED_ALLOW in self._rules(authored, session_key, app)
+
+    @pytest.mark.parametrize("authored", sorted(_AUTHORED))
+    @pytest.mark.parametrize(("session_key", "app"), _WITHHELD)
+    def test_it_is_withheld_where_one_does(self, profiles, authored, session_key, app):
+        assert _AUTHORED_ALLOW not in self._rules(authored, session_key, app)
 
 
 class TestNotice:

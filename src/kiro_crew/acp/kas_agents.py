@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -571,7 +571,24 @@ def _project_tools(spec: dict[str, Any], agent_id: str) -> str | list[str]:
     return []
 
 
-def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
+def _authored_allow_gate(session_key: str, governance_app: str | None) -> Callable[[str], bool]:
+    """The ceiling predicate for the spec's own allows (``allowedTools``, ``permissions``).
+
+    ``may_skip_gate_now``, except for the sub-agent tool, whose grant meets only the
+    profiles that govern this session (``may_skip_gate_for_session``), as a translated
+    ``trustedAgents`` allow does. Both fail closed.
+    """
+    for_session = may_skip_gate_for_session(session_key, governance_app)
+
+    def permits(ref: str) -> bool:
+        return for_session(ref) if ref == "use_subagent" else may_skip_gate_now(ref)
+
+    return permits
+
+
+def _ceiling_permitted(
+    allowed_tools: Any, agent_id: str, permits: Callable[[str], bool]
+) -> list[str]:
     """``allowedTools`` with every entry the governance ceiling withholds removed.
 
     Every writer of an ``allowedTools`` list already consults the ceiling when
@@ -581,8 +598,8 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
     edited by hand carries grants nobody ever cleared. Re-asking at projection, like
     ``rebuild_agent_config``'s last sanitizer pass over ``mcpServers``, is deliberate.
 
-    Each entry is asked under Crew's name for it (``subagent`` as ``use_subagent``).
-    ``may_skip_gate_now`` fails closed: what is dropped here keeps prompting.
+    Each entry is asked of *permits* under Crew's name for it (``subagent`` as
+    ``use_subagent``). It fails closed: what is dropped here keeps prompting.
     """
     if not isinstance(allowed_tools, list):
         return []
@@ -592,7 +609,7 @@ def _ceiling_permitted(allowed_tools: Any, agent_id: str) -> list[str]:
         if not isinstance(raw, str) or not raw.strip():
             continue
         entry = canonical_kiro_cli_tool_name(raw.strip())
-        if may_skip_gate_now(entry):
+        if permits(entry):
             permitted.append(entry)
         else:
             withheld.append(entry)
@@ -1050,7 +1067,8 @@ def to_client_custom_agent(
     skills its kiro-cli twin loads (:func:`kiro_crew.acp.kas_skill_scope.skill_scope_rules`);
     they join ``permissions`` after every merge. Empty adds nothing.
 
-    A translated ``toolsSettings`` allow meets only the profiles the gate could resolve for
+    A translated ``toolsSettings`` allow, and the spec's own sub-agent allow
+    (:func:`_authored_allow_gate`), meet only the profiles the gate could resolve for
     *session_key* and *governance_app* (``governance.may_skip_gate_for_session``).
     """
     if not agent_id:
@@ -1137,8 +1155,9 @@ def to_client_custom_agent(
     # `permissions` and no `allowedTools` reaches KAS with the field absent, and
     # absent resolves every request to `ask`, so the author's policy becomes a
     # prompt for each of the calls it described.
+    authored_gate = _authored_allow_gate(session_key, governance_app)
     permissions = allowed_tools_to_permissions(
-        _ceiling_permitted(allowed_tools_input, agent_id), agent_id=agent_id
+        _ceiling_permitted(allowed_tools_input, agent_id, authored_gate), agent_id=agent_id
     )
     # The built-ins the projection keeps at ``ask`` that the spec still granted:
     # Crew answers their permission requests itself, after its own checks. Kept
@@ -1155,7 +1174,7 @@ def to_client_custom_agent(
     permissions = merge_user_permissions(
         permissions,
         spec.get("permissions"),
-        ceiling_permits=may_skip_gate_now,
+        ceiling_permits=authored_gate,
         audit_decision=lambda refs, outcome, reason: _audit_permission_decision(
             refs, outcome, reason, agent_id
         ),
