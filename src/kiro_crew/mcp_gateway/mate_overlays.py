@@ -377,8 +377,7 @@ def _write_each(
                 logger.info(
                     "crewmate %r: enabled app %r exports an agent of the same name to "
                     "~/.kiro/agents, so the Bot's chats run that app's agent, not this "
-                    "crewmate file; no overlay for it (disable the app or rename the Bot "
-                    "to use the file)",
+                    "crewmate file; no overlay for it",
                     path.stem,
                     app,
                 )
@@ -454,8 +453,9 @@ def _own_app_export(agents_dir: Path | None, file_id: str) -> str:
     bare ``name``, so that export declares a crewmate id equal to the agent's name by
     design, and a session of that name runs it, not the crewmate file
     (``mate_worker.mate_file_for_member``). It counts only when the first installed
-    app that declares the agent (``owning_app_for_agent``) is enabled, the owner's
-    own disable included (``is_app_enabled``), has that export as a plain file (no
+    app that declares the agent (``owning_app_for_agent``, whose screened read gives
+    its ``enabled``) is enabled and not switched off by the owner
+    (``protected_app_state.owner_disabled``), has that export as a plain file (no
     link) declaring exactly *file_id* when re-read, and no other spec in
     *agents_dir* claims the name, case folded (``agents_dir_competing_claim``). Any
     doubt answers ``""``, which keeps the warning. Blocking.
@@ -465,11 +465,11 @@ def _own_app_export(agents_dir: Path | None, file_id: str) -> str:
     try:
         from kiro_crew.agent_discovery import read_agent_spec_strict
         from kiro_crew.agent_sdk import agents_dir_competing_claim
-        from kiro_crew.apps import bridges
-        from kiro_crew.apps.manager import is_app_enabled, owning_app_for_agent
+        from kiro_crew.apps import bridges, protected_app_state
+        from kiro_crew.apps.manager import owning_app_for_agent
 
         owner = owning_app_for_agent(file_id)
-        if owner is None or not is_app_enabled(owner.app):
+        if owner is None or not owner.enabled or protected_app_state.owner_disabled(owner.app):
             # A disabled app's export is not its live agent, whatever is left on disk.
             return ""
         export = agents_dir / (
