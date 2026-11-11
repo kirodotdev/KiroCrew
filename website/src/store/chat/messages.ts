@@ -388,14 +388,22 @@ export const messageReducers = {
   },
   /** Settle a chat runner's pending rows under *id* in *slot*, for a
    *  resolution that names no row (a frame without a mid). Only the runner's
-   *  own rows: a coordinator row under the same id is never touched. */
+   *  own rows: a coordinator row under the same id is never touched, and a
+   *  decided row is never rewritten. An ACP request id is connection-scoped
+   *  and recurs, and only one request under it is live at a time, so the
+   *  NEWEST pending row takes the decision. An older pending row is an
+   *  earlier request whose own frame this tab missed: it has ended with an
+   *  outcome this tab does not know, so it is retired as 'stale'. */
   resolveNativeApprovalRows(state: ChatState, action: PayloadAction<{ id: string; slot: string; decision: string }>) {
     const { id, slot, decision } = action.payload
     if (!slot || isUnsafeKey(slot)) return
     const messages = slot === state.activeSlot ? state.messages : state.slotMessages[safeKey(slot)]
-    for (const m of messages ?? []) {
+    let newest = true
+    for (let i = (messages?.length ?? 0) - 1; i >= 0; i--) {
+      const m = messages![i]
       if (m.role !== 'permission' || m.meta?.registry === 'coordinator' || m.meta?.approval_id !== id || m.meta.resolved) continue
-      m.meta.resolved = decision
+      m.meta.resolved = newest ? decision : 'stale'
+      newest = false
     }
   },
   /** Settle the MCP elicitation row a resolution names: an
