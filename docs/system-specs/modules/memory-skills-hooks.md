@@ -4565,6 +4565,8 @@ branches run, on the calling thread and on the worker pool, where an uncaught fa
 would otherwise surface at `future.result()` — and, once `skills.max_triggered` is above
 its shipped 0, the trigger matcher `get_triggered_skills` and the two renderers of its
 matches, `split_triggered` and `trigger_hint`, each of which skips the match instead.
+Two more readers take it too: the always-on lister `get_always_skills` and the
+auto-skill dedupe `find_similar`, each leaving that one skill out.
 In the listing a row whose file cannot even be stat'ed (removed after the cached walk)
 gets the same answer rather than a phantom row named after its path. A SKILL.md whose
 body (after front matter) opens with `<!doctype` or `<html` is a saved web page, not a
