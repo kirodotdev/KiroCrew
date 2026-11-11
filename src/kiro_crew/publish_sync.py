@@ -48,6 +48,7 @@ from typing import Any, AsyncIterator, Final
 # boot via the platform CPP seam (PublishRegistry.register_publish_providers),
 # not by module-import side-effect. So this orchestration stays provider-agnostic
 # and imports only the neutral publish_provider registry + result/error types.
+from kiro_crew import dashboard_frame
 from kiro_crew.artifacts import (
     Artifact,
     ArtifactPublication,
@@ -117,7 +118,7 @@ _STANDALONE_THEME_VARS: dict[str, str] = {
 # Monotonically increasing revision counter for the wrap_widget_html envelope.
 # Bump this whenever the wrapper's CSP, scripts, or structural HTML changes so
 # that already-published widgets are detected as stale and re-pushed.
-WRAPPER_REVISION: int = 2
+WRAPPER_REVISION: int = 3
 
 # CSP for the published standalone widget document (wrap_widget_html).
 #
@@ -289,7 +290,9 @@ def wrap_widget_html(inner_html: str) -> str:
         f'<meta http-equiv="Content-Security-Policy" content="{_CSP}">'
         f"{runtime_tag}"
         f"<style>{style}</style>"
-        '</head><body class="light">'
+        # The scheme as an attribute, never a class, as `buildSrcdoc` marks it: a widget's
+        # own `.light` rule must style the widget's elements and not the page's body.
+        f'</head><body {dashboard_frame.MODE_ATTRIBUTE}="light">'
         f"{_WIDGET_BODY_START}{inner_html}{_WIDGET_BODY_END}"
         "</body></html>"
     )

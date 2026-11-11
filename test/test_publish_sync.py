@@ -984,6 +984,10 @@ def test_wrap_widget_html_self_contained():
     assert "cdn.tailwindcss.com" not in html
     # MCP auto-injects <base>; the wrapper must not add it.
     assert "<base" not in html
+    # The scheme is an attribute on the body, as the dashboard's frame marks it, so a
+    # widget's own `.light` rule reaches none of the wrapper's markup.
+    assert '<body data-mode="light">' in html
+    assert re.search(r"<body[^>]*\sclass=", html) is None
 
 
 def _csp_directives(csp: str) -> dict[str, set[str]]:

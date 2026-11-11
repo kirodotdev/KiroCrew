@@ -161,7 +161,7 @@ describe('buildSrcdoc light-canvas fallback', () => {
     expect(out).toContain('--bg:#f3f4f6')
     expect(out).toContain('--text:#111827')
     expect(out).toContain('color-scheme:light')
-    expect(out).toContain('<body class="light">')
+    expect(out).toContain('<body data-mode="light">')
     expect(out).not.toContain('--text:#e5e7eb')
   })
 
@@ -170,7 +170,7 @@ describe('buildSrcdoc light-canvas fallback', () => {
     const out = buildSrcdoc({ html, themeVars: DARK_VARS, mode: 'dark' })
     expect(out).toContain('--text:#e5e7eb')
     expect(out).toContain('color-scheme:dark')
-    expect(out).toContain('<body class="dark">')
+    expect(out).toContain('<body data-mode="dark">')
   })
 
   it('never touches a light dashboard', () => {

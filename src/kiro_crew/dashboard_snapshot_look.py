@@ -57,8 +57,11 @@ ALIASES: Final[dict[str, str]] = {
     "--surface-secondary": "--bg-elevated",
 }
 
-#: The tab's Tailwind v4 directive block (``TAILWIND_V4_DIRECTIVES``).
-TAILWIND_DIRECTIVES: Final[str] = "@custom-variant dark (&:where(.dark, .dark *));"
+#: The tab's Tailwind v4 directive block (``TAILWIND_V4_DIRECTIVES``): the ``dark:`` variant
+#: reads the body's ``data-mode`` marker (``dashboard_frame.MODE_ATTRIBUTE``).
+TAILWIND_DIRECTIVES: Final[str] = (
+    "@custom-variant dark (&:where([data-mode=dark], [data-mode=dark] *));"
+)
 
 NO_RUNTIME: Final[str] = (
     "this installation has no built Tailwind runtime (static/dist/vendor/"
