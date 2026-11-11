@@ -562,7 +562,23 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     )
     if action == "decide" and resp.status == 200:
         resp = await _forward_remote_decide(state, key, cleaned, resp)
+    if action == "close" and resp.status == 200:
+        await _end_remote_trust(key, cleaned, state)
     return resp
+
+
+async def _end_remote_trust(key: str, cleaned: dict[str, Any], state: Any) -> None:
+    """A closed remote item's worker stops following its conductor's Trust now.
+
+    Queued after the write commits, so the end is retried by the puller even when no
+    later ledger read walks this board (``remote_ingest.retry_trust_ends``).
+    """
+    from kiro_crew.dashboard.handlers import remote_ingest
+
+    item = await remote_ingest.settled_item(key, str(cleaned.get("item_id") or ""))
+    if item is not None and item.is_terminal:
+        remote_ingest.queue_trust_end(item)
+        remote_ingest.retry_trust_ends(state)
 
 
 async def _forward_remote_decide(

@@ -169,6 +169,13 @@ def _drop_policy_denied_trust(state: "DashboardState", denied: frozenset[str]) -
             slot._trust = False
             slot._trust_card_scoped = False
             dropped = True
+        if "trust" in denied and str(getattr(slot, "_trust_scope", "") or "").startswith(
+            "remote-dispatch:"
+        ):
+            # A remote worker's stand-in for its conductor's Trust ends with Trust.
+            from kiro_crew.dashboard.handlers.remote_work_item import end_conductor_trust
+
+            end_conductor_trust(slot.key, slot)
         if "trust_reads" in denied and slot._trust_reads_held:
             slot._trust_reads = False
             dropped = True

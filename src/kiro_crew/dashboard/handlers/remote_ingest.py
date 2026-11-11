@@ -35,6 +35,7 @@ import functools
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -95,6 +96,21 @@ _PULLING: set[str] = set()
 #: The create refusal for a peer whose reply did not echo ``work_item_id``.
 CODE_PEER_LACKS_WORK_ITEMS = "crew_peer_lacks_work_items"
 
+#: Seconds between the pulls that slide a worker's conductor-trust grant. Well
+#: under the crew's ``CONDUCTOR_TRUST_TTL_SECS`` (1 h), so a few missed pulls do
+#: not end it; a hub that stops pulling lets it lapse.
+TRUST_RENEW_SECS = 300.0
+
+#: ``(crew, peer slot)`` -> ``(whether the crew said the grant holds, when)``.
+#: In memory: a restarted hub's conductor is back to asking, so the first pull
+#: after it tells every crew to end the grant.
+_TRUST_SENT: dict[tuple[str, str], tuple[bool, float]] = {}
+
+#: ``(crew, peer slot)`` grants whose item closed and whose end the crew has not
+#: yet answered, and the ones being sent right now.
+_TRUST_ENDS: set[tuple[str, str]] = set()
+_TRUST_ENDING: set[tuple[str, str]] = set()
+
 
 def _now() -> str:
     return work_ledger._now_iso()
@@ -102,6 +118,64 @@ def _now() -> str:
 
 def _is_remote_open(item: work_ledger.WorkItem) -> bool:
     return bool(item.worker_instance_id) and not item.is_terminal and bool(item.worker_session_key)
+
+
+def conductor_trusts(state: "DashboardState", board: str) -> bool:
+    """Whether *board*'s conductor works without asking now: Trust, or YOLO reaching it.
+
+    The same posture a local ``session_create`` hands its child (``trust_carries``),
+    so a card-scoped trust hands down nothing here either.
+    """
+    from kiro_crew.dashboard.approval_posture import trust_carries
+
+    slot = state.get_slot(board)
+    if slot is None:
+        return False
+    if trust_carries(slot):
+        return True
+    return bool(state.is_yolo_active() and state.yolo_reaches(slot))
+
+
+async def _send_trust(mgr: Any, crew: str, slot: str, trust: bool) -> bool | None:
+    """Tell *crew* to slide or end its conductor-trust grant on *slot*.
+
+    Whether the grant holds after, or ``None`` when the crew could not be reached
+    (tried again on the next pull). A crew that refuses the field (an older build)
+    holds none.
+    """
+    routes = _routes()
+    try:
+        status, payload = await routes.peer_call(
+            mgr,
+            crew,
+            "PATCH",
+            f"api/chat/slots/{quote(slot, safe='')}/work-item",
+            body={"trust": trust},
+        )
+    except routes.CrewCallError as exc:
+        logger.info("conductor trust on %s/%s not sent (%s)", crew, slot, exc.code)
+        return None
+    return 200 <= status < 300 and isinstance(payload, dict) and payload.get("trust") is True
+
+
+async def _sync_trust(state: "DashboardState", mgr: Any, board: str, crew: str, slot: str) -> None:
+    """Keep the worker's conductor-trust grant in step with its conductor. Never raises.
+
+    Only ever slides or ends what the create granted: a conductor in Trust slides a
+    grant the crew still holds, every few minutes; one that left Trust (or is gone)
+    ends it on the next pull.
+    """
+    key = (crew, slot)
+    sent = _TRUST_SENT.get(key)
+    want = conductor_trusts(state, board)
+    now = time.monotonic()
+    if want and (sent is None or not sent[0] or now - sent[1] < TRUST_RENEW_SECS):
+        return
+    if not want and sent is not None and not sent[0]:
+        return
+    held = await _send_trust(mgr, crew, slot, want)
+    if held is not None:
+        _TRUST_SENT[key] = (held, now)
 
 
 def _routes() -> Any:
@@ -156,6 +230,10 @@ async def create_bound(
         raise err(409, code or "crew_log_off", "this conductor has no crew log unit to record into")
     item = await open_unbound_item(board, item_id)
     body = dict(create)
+    # Read from this hub's own slot, never from the caller's arguments.
+    trust = conductor_trusts(state, board)
+    if trust:
+        body["conductor_trust"] = True
     body["work_item"] = {
         "conductor_key": board,
         "item_id": item.item_id,
@@ -211,6 +289,8 @@ async def create_bound(
     # A decide recorded while the create was in flight found the item unbound and
     # forwarded nothing, so the peer may hold an older decision than the hub. The
     # comparison runs on the SETTLED item, inside the forward's own locks.
+    if trust and payload.get("conductor_trust") is True:
+        _TRUST_SENT[(instance_id, slot)] = (True, time.monotonic())
     outcome = await forward_decide(state, board, item.item_id, unless=item.decision)
     bound = await settled_item(board, item.item_id)
     if not outcome.get("ok") and isinstance(payload, dict):
@@ -417,6 +497,7 @@ async def ingest_board(state: "DashboardState", board: str) -> None:
             await _reset_if_stale(board, item)
     # Wave 8: close each retired peer slot whose crew is back (RFC §5b step 3).
     _schedule_closes(state, board, items)
+    _schedule_trust_ends(state, items)
     # Tried longest ago first, never tried first of all: a read cut off by its
     # deadline then leaves a different tail each time, so a slow crew cannot keep
     # a healthy crew's items from ever being reached.
@@ -597,6 +678,8 @@ async def _ingest_item(
                 record.report_floor, record.report_floor_known = peer_stamp, True
         record.ingested_at = record.attempted_at = _now()
         await asyncio.to_thread(_store, board, item.item_id, record)
+    if status == 200:
+        await _sync_trust(state, mgr, board, crew, slot)
 
 
 #: Seconds before a pull retries a peer stamp whose filing the crew log refused.
@@ -1078,6 +1161,55 @@ def _schedule_closes(
             task = asyncio.ensure_future(_close_retired_slot(state, mgr, board, crew, slot))
             _CLOSE_TASKS.add(task)
             task.add_done_callback(_CLOSE_TASKS.discard)
+
+
+def _schedule_trust_ends(state: "DashboardState", items: list[work_ledger.WorkItem]) -> None:
+    """Queue an end for the conductor-trust grant of each closed item's worker, then
+    send the queue. Never raises."""
+    for item in items:
+        if item.is_terminal:
+            queue_trust_end(item)
+    retry_trust_ends(state)
+
+
+def queue_trust_end(item: work_ledger.WorkItem) -> None:
+    """Queue an end for *item*'s worker grant, if this hub granted one.
+
+    The puller skips a closed item, so nothing would slide its grant again. The end
+    stays queued until the crew answers (:func:`retry_trust_ends`), whatever the
+    board holds; the grant's own TTL is the backstop.
+    """
+    key = (str(item.worker_instance_id or ""), str(item.worker_session_key or ""))
+    sent = _TRUST_SENT.get(key)
+    if sent is not None and sent[0]:
+        _TRUST_ENDS.add(key)
+
+
+def retry_trust_ends(state: "DashboardState") -> None:
+    """Send each queued end to a connected crew, as its own task. Never raises.
+
+    Called after a recorded close and on every puller run, so a close with no
+    later ledger read still reaches the crew.
+    """
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        return
+    for key in sorted(_TRUST_ENDS - _TRUST_ENDING):
+        if _crew_state(mgr, key[0]) != "connected":
+            continue
+        _TRUST_ENDING.add(key)
+
+        async def _end(crew: str = key[0], slot: str = key[1]) -> None:
+            try:
+                if await _send_trust(mgr, crew, slot, False) is not None:
+                    _TRUST_ENDS.discard((crew, slot))
+                    _TRUST_SENT.pop((crew, slot), None)
+            finally:
+                _TRUST_ENDING.discard((crew, slot))
+
+        task = asyncio.ensure_future(_end())
+        _CLOSE_TASKS.add(task)
+        task.add_done_callback(_CLOSE_TASKS.discard)
 
 
 async def _close_retired_slot(

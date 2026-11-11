@@ -254,6 +254,12 @@ def _slot_is_trusted(slot: Any) -> bool:
     scope = str(getattr(slot, "_trust_scope", "") or "")
     if not scope:
         return False
+    from kiro_crew.dashboard.handlers.remote_work_item import conductor_trust_denied
+
+    # A remote worker's grant stands in for its conductor's Trust, so a policy that
+    # denies Trust but permits YOLO ends it too.
+    if conductor_trust_denied(scope):
+        return False
     return bool(safety_override().is_scope_active(scope))
 
 

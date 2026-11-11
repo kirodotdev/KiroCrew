@@ -32,6 +32,7 @@ from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard import chat_handlers, remote_dispatch_headroom
 from kiro_crew.dashboard.handlers import remote_work_item
 from kiro_crew.dashboard.handlers import work_ledger as routes
+from kiro_crew.testing.clock import ManualClock
 
 HUB_CONDUCTOR = "chat-hub-conductor"
 
@@ -948,3 +949,270 @@ async def test_the_bind_refuses_a_slot_this_create_did_not_mint(state, preview, 
     )
     assert status == 400 and body["code"] == "work_item_needs_new_slot"
     assert wl.read_binding(open_slot.key) is None
+
+
+# ── the hub conductor's Trust on its bound worker ────────────────────────
+
+
+def _so():
+    from kiro_crew.safety_override import safety_override
+
+    return safety_override()
+
+
+def _trusted(slot: Any) -> bool:
+    from kiro_crew.dashboard import chat_runner
+
+    return chat_runner._slot_is_trusted(slot)
+
+
+async def _trusted_create(state: Any, **extra: Any) -> tuple[int, dict]:
+    return await _call(
+        state,
+        "POST",
+        "/api/chat/slots",
+        {"work_item": _work_item(), "conductor_trust": True, **extra},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_trusted_create_puts_only_its_bound_worker_under_a_scoped_grant(state, preview):
+    other = state.get_or_create_slot("chat-bystander")
+    status, created = await _trusted_create(state)
+    assert status == 200, created
+    assert created["conductor_trust"] is True
+    slot = state._slots[created["key"]]
+    assert slot._trust_scope == remote_work_item.conductor_trust_scope(slot.key)
+    assert _trusted(slot)
+    # A scoped grant, not the person's own Trust: nothing a subagent reads is cached.
+    assert slot._trust is False
+    assert not _trusted(other)
+
+
+@pytest.mark.asyncio
+async def test_a_create_without_conductor_trust_asks_as_before(state, preview):
+    status, created = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
+    assert status == 200, created
+    assert "conductor_trust" not in created
+    slot = state._slots[created["key"]]
+    assert not slot._trust_scope and not _trusted(slot)
+
+
+@pytest.mark.asyncio
+async def test_conductor_trust_without_a_work_item_grants_nothing(state, preview):
+    status, created = await _call(state, "POST", "/api/chat/slots", {"conductor_trust": True})
+    assert status == 200, created
+    assert "conductor_trust" not in created
+    assert not _trusted(state._slots[created["key"]])
+
+
+@pytest.mark.asyncio
+async def test_preview_off_ignores_conductor_trust(state, preview):
+    preview["on"] = False
+    status, created = await _trusted_create(state)
+    assert status == 200, created
+    assert "conductor_trust" not in created
+    assert not _trusted(state._slots[created["key"]])
+
+
+@pytest.mark.asyncio
+async def test_a_non_owner_cannot_ask_for_conductor_trust(state, preview):
+    before = set(state._slots)
+    status, _ = await _call(
+        state,
+        "POST",
+        "/api/chat/slots",
+        {"work_item": _work_item(), "conductor_trust": True},
+        owner=False,
+    )
+    assert status == 403
+    assert set(state._slots) == before
+
+
+@pytest.mark.asyncio
+async def test_a_conductor_trust_that_is_not_a_boolean_builds_nothing(state, preview):
+    before = set(state._slots)
+    status, body = await _trusted_create(state, conductor_trust="yes")
+    assert status == 400 and body["field"] == "conductor_trust"
+    assert set(state._slots) == before
+
+
+@pytest.mark.asyncio
+async def test_this_crews_policy_can_refuse_the_conductors_trust(state, preview, monkeypatch):
+    from kiro_crew import approval_mode_policy
+
+    monkeypatch.setattr(approval_mode_policy, "session_mode_permitted", lambda mode: False)
+    status, created = await _trusted_create(state)
+    assert status == 200, created
+    assert created["conductor_trust"] is False
+    assert not _trusted(state._slots[created["key"]])
+
+
+@pytest.mark.asyncio
+async def test_the_hub_slides_a_live_grant_and_never_mints_one(state, preview):
+    _, created = await _trusted_create(state)
+    key = created["key"]
+    scope = remote_work_item.conductor_trust_scope(key)
+    status, body = await _call(state, "PATCH", f"/api/chat/slots/{key}/work-item", {"trust": True})
+    assert status == 200 and body["trust"] is True
+    assert _so().scope_remaining_secs(scope) > 0
+
+    # A person on this crew picks Normal: the scope leaves the slot.
+    state._slots[key]._trust_scope = ""
+    _so().deactivate_scope(scope)
+    status, body = await _call(state, "PATCH", f"/api/chat/slots/{key}/work-item", {"trust": True})
+    assert status == 200 and body["trust"] is False
+    assert not _trusted(state._slots[key])
+
+
+@pytest.mark.asyncio
+async def test_the_hub_ends_the_grant_when_its_conductor_leaves_trust(state, preview):
+    _, created = await _trusted_create(state)
+    key = created["key"]
+    status, body = await _call(state, "PATCH", f"/api/chat/slots/{key}/work-item", {"trust": False})
+    assert status == 200 and body["trust"] is False
+    assert state._slots[key]._trust_scope == ""
+    assert not _trusted(state._slots[key])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{"trust": "yes"}, {"trust": True, "decision": "x"}])
+async def test_a_bad_trust_patch_changes_nothing(state, preview, body):
+    _, created = await _trusted_create(state)
+    key = created["key"]
+    status, _ = await _call(state, "PATCH", f"/api/chat/slots/{key}/work-item", body)
+    assert status == 400
+    assert _trusted(state._slots[key])
+
+
+@pytest.mark.asyncio
+async def test_a_non_owner_cannot_change_the_grant(state, preview):
+    _, created = await _trusted_create(state)
+    key = created["key"]
+    status, _ = await _call(
+        state,
+        "PATCH",
+        f"/api/chat/slots/{key}/work-item",
+        {"trust": False},
+        owner=False,
+    )
+    assert status == 403
+    assert _trusted(state._slots[key])
+
+
+@pytest.mark.asyncio
+async def test_a_plain_slot_takes_no_trust_patch(state, preview):
+    _, created = await _call(state, "POST", "/api/chat/slots", {})
+    status, _ = await _call(
+        state, "PATCH", f"/api/chat/slots/{created['key']}/work-item", {"trust": True}
+    )
+    assert status == 404
+
+
+@pytest.mark.asyncio
+async def test_the_grant_lapses_on_its_own(state, preview, monkeypatch):
+    from kiro_crew import safety_override_grant
+
+    clock = ManualClock()
+    clock.install(monkeypatch, safety_override_grant)
+    _, created = await _trusted_create(state)
+    slot = state._slots[created["key"]]
+    clock.advance(remote_work_item.CONDUCTOR_TRUST_TTL_SECS + 1)
+    assert not _trusted(slot)
+
+
+@pytest.mark.asyncio
+async def test_a_lapsed_grant_is_not_brought_back_by_a_renewal(state, preview, monkeypatch):
+    from kiro_crew import safety_override_grant
+
+    clock = ManualClock()
+    clock.install(monkeypatch, safety_override_grant)
+    _, created = await _trusted_create(state)
+    key = created["key"]
+    clock.advance(remote_work_item.CONDUCTOR_TRUST_TTL_SECS + 1)
+    status, body = await _call(state, "PATCH", f"/api/chat/slots/{key}/work-item", {"trust": True})
+    assert status == 200 and body["trust"] is False
+    assert not _trusted(state._slots[key])
+
+
+@pytest.mark.asyncio
+async def test_closing_the_worker_ends_its_grant(state, preview):
+    _, created = await _trusted_create(state)
+    key = created["key"]
+    scope = remote_work_item.conductor_trust_scope(key)
+    await chat_handlers.close_slot(state, state._slots[key], key)
+    assert _so().scope_remaining_secs(scope) == 0
+
+
+def _deny_floor(ctx: Any) -> None:
+    from kiro_crew.hooks import TOOL_DENY, ToolHookResult
+
+    ctx.state.context_builder = MagicMock()
+    ctx.state.context_builder.hooks.on_tool_call = MagicMock(
+        return_value=ToolHookResult(action=TOOL_DENY, reason="Blocked by security policy: rm")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denied", [False, True])
+async def test_a_deny_floor_still_blocks_a_worker_under_the_conductors_trust(denied):
+    from turn_harness import SlotSpec, TurnScript, run_turn
+
+    from kiro_crew.acp.types import (
+        EVENT_COMPLETE,
+        EVENT_PERMISSION_REQUEST,
+        STOP_REASON_END_TURN,
+        AcpEvent,
+    )
+
+    scope = remote_work_item.conductor_trust_scope("chat-1")
+    ttl = remote_work_item.CONDUCTOR_TRUST_TTL_SECS
+    granted = _so().activate_scoped(scope, source="test", ttl=ttl)  # flake-ok: grant lifetime
+    assert granted.active
+    prompt = AcpEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        request_id="r1",
+        title="rm -rf build",
+        tool_name="shell",
+        tool_kind="execute",
+        is_shell=True,
+        tool_input=json.dumps({"command": "rm -rf build"}),
+    )
+    done = AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+    record = await run_turn(
+        TurnScript(events=[prompt, done], user_row=False, setup=_deny_floor if denied else None),
+        slot=SlotSpec(trust_scope=scope),
+    )
+    approved = [call.args for call in record.calls("approve_tool")]
+    # Without the floor the grant approves at once (so it is live); with it, never.
+    assert approved == ([] if denied else [("r1",)])
+
+
+@pytest.mark.asyncio
+async def test_a_trust_denial_ends_the_grant_even_where_yolo_is_permitted(
+    state, preview, monkeypatch
+):
+    from kiro_crew import approval_mode_policy
+
+    _, created = await _trusted_create(state)
+    key = created["key"]
+    slot = state._slots[key]
+    scope = remote_work_item.conductor_trust_scope(key)
+    # The policy now denies Trust; YOLO stays permitted, so the scope check alone passes.
+    monkeypatch.setattr(approval_mode_policy, "session_mode_permitted", lambda m: m != "trust")
+    assert not _trusted(slot)
+    status, body = await _call(state, "PATCH", f"/api/chat/slots/{key}/work-item", {"trust": True})
+    assert status == 200 and body["trust"] is False
+    assert _so().scope_remaining_secs(scope) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_deny_hook_ends_a_remote_workers_grant(state, preview):
+    from kiro_crew.dashboard.server import _drop_policy_denied_trust
+
+    _, created = await _trusted_create(state)
+    key = created["key"]
+    scope = remote_work_item.conductor_trust_scope(key)
+    _drop_policy_denied_trust(state, frozenset({"trust"}))
+    assert state._slots[key]._trust_scope == ""
+    assert _so().scope_remaining_secs(scope) == 0

@@ -260,6 +260,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # None, which is also the answer with the preview off. Imported only for a body
     # that names one, so a plain create and the boot path never load it.
     work_item: MailboxRequest | None = None
+    conductor_trust = False
     if body.get("work_item") is not None:
         from kiro_crew.dashboard.handlers.remote_work_item import work_item_for_create
 
@@ -1200,6 +1201,15 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     },
                     status=503,
                 )
+            if body.get("conductor_trust") is True:
+                # The hub's conductor is in Trust (RFC §4): this one bound worker
+                # follows it under a scoped, expiring grant. Refused quietly by this
+                # crew's own policy, which leaves the worker asking.
+                from kiro_crew.dashboard.handlers.remote_work_item import (
+                    grant_conductor_trust,
+                )
+
+                conductor_trust = grant_conductor_trust(slot)
         if folder_applied:
             # Past the last step that can refuse the create, so the folder's
             # un-hide and claim are written only for a create that stands. A
@@ -1289,6 +1299,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         created["headroom"] = headroom
     if work_item is not None:
         created["work_item_id"] = work_item.item_id
+        if body.get("conductor_trust") is True:
+            created["conductor_trust"] = conductor_trust
     return web.json_response(created)
 
 

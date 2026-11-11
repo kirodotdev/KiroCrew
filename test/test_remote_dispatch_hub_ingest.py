@@ -69,6 +69,8 @@ class StubCrew:
         self.events: list[dict[str, Any]] = []
         self.patch_status = 200
         self.create_echo = True
+        #: Whether this crew grants (and keeps) the conductor's Trust it is sent.
+        self.trust_holds = True
 
     def status(self, instance_id: str):
         return SimpleNamespace(state=SimpleNamespace(value=self.state))
@@ -85,9 +87,13 @@ class StubCrew:
             reply: dict[str, Any] = {"key": PEER_SLOT}
             if self.create_echo:
                 reply["work_item_id"] = body["work_item"]["item_id"]
+            if "conductor_trust" in body:
+                reply["conductor_trust"] = self.trust_holds
             return 200, reply
         if path.endswith("/work-item") and method == "GET":
             return 200, {"work_item": self.work_item, "events": self.events}
+        if path.endswith("/work-item") and method == "PATCH" and set(body) == {"trust"}:
+            return 200, {"ok": True, "trust": body["trust"] and self.trust_holds}
         if path.endswith("/work-item") and method == "PATCH":
             return self.patch_status, {"ok": self.patch_status == 200, "code": "nope"}
         return 200, {"ok": True}
@@ -157,6 +163,7 @@ def _state(peer: StubCrew | None) -> Any:
     state.get_slot = MagicMock(side_effect=lambda key: _SLOTS.get(key))
     state.slot_exists = MagicMock(side_effect=lambda key: key in _SLOTS)
     state.instances_manager = peer
+    state.is_yolo_active = MagicMock(return_value=False)
     return state
 
 
@@ -1310,3 +1317,191 @@ def test_a_discard_that_cannot_delete_the_item_closes_it_instead(monkeypatch):
     # Not half-removed: the copy is closed, and its binding still names it.
     assert item is not None and item.state == "abandoned"
     assert work_ledger.read_binding("chat-74-peer") == (parsed.board, parsed.item_id)
+
+
+# ── the conductor's Trust carried to the bound worker ────────────────────────
+
+
+@pytest.fixture
+def trust_sent(monkeypatch) -> dict:
+    sent: dict = {}
+    monkeypatch.setattr(remote_ingest, "_TRUST_SENT", sent)
+    return sent
+
+
+def _conductor(*, trust: bool, card_scoped: bool = False) -> SimpleNamespace:
+    slot = SimpleNamespace(_trust=trust, _trust_card_scoped=card_scoped)
+    _SLOTS[CONDUCTOR] = slot  # type: ignore[assignment]
+    return slot
+
+
+def _create_body(peer: StubCrew) -> dict[str, Any]:
+    return next(c for c in peer.calls if c["method"] == "POST")["body"]
+
+
+def _trust_patches(peer: StubCrew) -> list[bool]:
+    return [
+        c["body"]["trust"]
+        for c in peer.calls
+        if c["method"] == "PATCH" and set(c["body"] or {}) == {"trust"}
+    ]
+
+
+def test_a_trust_conductor_sends_its_trust_with_the_bound_create(recorded, peer, trust_sent):
+    _conductor(trust=True)
+
+    async def go() -> None:
+        await _remote_item(peer)
+
+    asyncio.run(go())
+    assert _create_body(peer)["conductor_trust"] is True
+    # Outside the item: an older crew refuses an unknown work_item field.
+    assert "conductor_trust" not in _create_body(peer)["work_item"]
+    assert trust_sent[(CREW, PEER_SLOT)][0] is True
+
+
+@pytest.mark.parametrize("card_scoped", [False, True])
+def test_a_conductor_not_in_trust_sends_nothing(recorded, peer, trust_sent, card_scoped):
+    # A card-scoped trust covers the crew member, not the sessions it opens.
+    _conductor(trust=card_scoped, card_scoped=card_scoped)
+
+    async def go() -> None:
+        await _remote_item(peer)
+
+    asyncio.run(go())
+    assert "conductor_trust" not in _create_body(peer)
+    assert (CREW, PEER_SLOT) not in trust_sent
+
+
+def test_the_caller_cannot_ask_for_trust_itself(recorded, peer):
+    async def go() -> None:
+        with pytest.raises(crew_routes.CrewCallError) as exc:
+            await crew_routes._create(
+                _state(peer),
+                peer,
+                CONDUCTOR,
+                CREW,
+                {"conductor_trust": True},
+                board=CONDUCTOR,
+            )
+        assert exc.value.code == "crew_field_unsupported"
+
+    asyncio.run(go())
+    assert peer.calls == []
+
+
+def test_a_pull_slides_the_grant_only_after_the_renew_interval(recorded, peer, trust_sent):
+    _conductor(trust=True)
+
+    async def go() -> None:
+        await _remote_item(peer)
+        await _read(peer)
+        assert _trust_patches(peer) == []
+        held, _at = trust_sent[(CREW, PEER_SLOT)]
+        trust_sent[(CREW, PEER_SLOT)] = (held, _at - remote_ingest.TRUST_RENEW_SECS)
+        await _read(peer)
+        assert _trust_patches(peer) == [True]
+
+    asyncio.run(go())
+
+
+def test_a_conductor_back_on_normal_ends_the_grant_on_the_next_pull(recorded, peer, trust_sent):
+    slot = _conductor(trust=True)
+
+    async def go() -> None:
+        await _remote_item(peer)
+        slot._trust = False
+        await _read(peer)
+        assert _trust_patches(peer) == [False]
+        assert trust_sent[(CREW, PEER_SLOT)][0] is False
+        # Said once: later pulls do not repeat it.
+        await _read(peer)
+        assert _trust_patches(peer) == [False]
+
+    asyncio.run(go())
+
+
+def test_a_restarted_hub_ends_every_grant_it_no_longer_knows(recorded, peer, trust_sent):
+    _conductor(trust=True)
+
+    async def go() -> None:
+        await _remote_item(peer)
+        trust_sent.clear()
+        # A restart returns the conductor to asking, as every slot's Trust does.
+        _conductor(trust=False)
+        await _read(peer)
+        assert _trust_patches(peer) == [False]
+
+    asyncio.run(go())
+
+
+def test_a_grant_the_crew_ended_is_not_slid_again(recorded, peer, trust_sent):
+    _conductor(trust=True)
+
+    async def go() -> None:
+        await _remote_item(peer)
+        peer.trust_holds = False  # a person on that crew picked another mode
+        trust_sent[(CREW, PEER_SLOT)] = (True, 0.0)
+        await _read(peer)
+        assert trust_sent[(CREW, PEER_SLOT)][0] is False
+        trust_sent[(CREW, PEER_SLOT)] = (False, 0.0)
+        await _read(peer)
+        assert _trust_patches(peer) == [True]
+
+    asyncio.run(go())
+
+
+async def _drain_close_tasks() -> None:
+    if remote_ingest._CLOSE_TASKS:
+        await asyncio.gather(*list(remote_ingest._CLOSE_TASKS))
+
+
+@pytest.fixture
+def trust_ends(monkeypatch) -> set:
+    ends: set = set()
+    monkeypatch.setattr(remote_ingest, "_TRUST_ENDS", ends)
+    monkeypatch.setattr(remote_ingest, "_TRUST_ENDING", set())
+    return ends
+
+
+def test_closing_the_item_ends_its_workers_grant_with_no_later_read(
+    recorded, peer, trust_sent, trust_ends
+):
+    _conductor(trust=True)
+
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        status, body = await _record_via(
+            peer, {"action": "close", "item_id": item_id, "state": "abandoned"}
+        )
+        assert status == 200, body
+        await _drain_close_tasks()
+        assert _trust_patches(peer) == [False]
+        assert (CREW, PEER_SLOT) not in trust_sent and not trust_ends
+
+    asyncio.run(go())
+
+
+def test_a_trust_end_the_crew_missed_is_retried_by_the_puller(
+    recorded, peer, trust_sent, trust_ends
+):
+    from kiro_crew.dashboard.handlers import remote_puller
+
+    _conductor(trust=True)
+
+    async def go() -> None:
+        item_id = await _remote_item(peer)
+        peer.state = "disconnected"
+        status, body = await _record_via(
+            peer, {"action": "close", "item_id": item_id, "state": "abandoned"}
+        )
+        assert status == 200, body
+        await _drain_close_tasks()
+        assert _trust_patches(peer) == [] and trust_ends == {(CREW, PEER_SLOT)}
+        peer.state = "connected"
+        # The closed board is no longer listed for a pull; the end still goes out.
+        await remote_puller.run_once(_state(peer))
+        await _drain_close_tasks()
+        assert _trust_patches(peer) == [False] and not trust_ends
+
+    asyncio.run(go())
