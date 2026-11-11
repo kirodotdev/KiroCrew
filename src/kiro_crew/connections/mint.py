@@ -1240,8 +1240,14 @@ async def start_oauth_mint(
     except Exception as exc:  # noqa: BLE001 — background task; record, never raise
         logger.warning("OAuth mint for %r failed: %s", slug, type(exc).__name__)
         await _dispose_mint(holdings)
-        # Coarse code only — never provider- or exception-supplied text.
-        reason = "mint_" + type(exc).__name__.lower()[:32]
+        # Coarse code only — never provider- or exception-supplied text. A missing
+        # kiro-cli is named on its own: this route always runs on kiro-cli, whatever
+        # backend chats use, and a bare ``AcpError`` gives the card nothing to say.
+        reason = (
+            "mint_kiro_cli_missing"
+            if getattr(exc, "kiro_cli_missing", False) is True
+            else "mint_" + type(exc).__name__.lower()[:32]
+        )
         async with _mints_lock:
             entry = _mints.get(slug)
             if entry is not None and entry.get("token") == my_token:

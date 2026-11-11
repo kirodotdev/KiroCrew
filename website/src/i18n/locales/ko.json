@@ -14473,6 +14473,7 @@
       "mcp_servers": "MCP 서버",
       "mint_failure_grant_unproven": "저장된 로그인을 확인할 수 없습니다. 다시 연결해 보세요.",
       "mint_failure_process_gone": "승인이 완료되기 전에 인증 프로세스가 중지되었습니다. 다시 연결해 보세요.",
+      "mint_failure_kiro_cli_missing": "연결하려면 이 컴퓨터에 kiro-cli가 설치되어 있고 로그인되어 있어야 합니다. kiro-cli를 설치하고 kiro-cli login을 실행한 다음 다시 연결해 보세요.",
       "mint_failure_server_absent": "인증을 시작하기 전에 MCP 서버 항목이 사라졌습니다. 다시 연결해 보세요.",
       "mint_failure_sign_in_rejected": "공급자가 로그인을 수락하지 않았습니다. 다시 연결하세요.",
       "mint_failure_sign_in_timed_out": "로그인 시간이 초과되었습니다. 다시 연결하세요.",
