@@ -763,7 +763,57 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 38, from 35,373, for ``shell_commands.pipelines`` and the rm floor reading
 #: each pipeline's ``echo`` / ``printf`` stages and shells in ``_command_tokens``. It only
 #: adds refusals. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_411
+#: Raised by 1,700, from 35,411, for the ``sandbox-escape-git-tar-self`` floor: a new
+#: ``argv_floor_git_tar`` module (the git/tar self-target predicate) with its catalog
+#: row, note, facade manifest, package exports and gate re-entry, the value-scoped
+#: exec/override and config-key checks, the tar option-value and archive-slot tables,
+#: and the literal-self-only remote host check. Re-measured.
+#: Raised by 97, from 37,073, for the ``sandbox-escape-git-tar-self`` fail-open fix:
+#: an old-style tar bundle's ``f`` archive slot reads from the command as submitted
+#: (``_RAW_COMMAND``), so the value-taking uppercase shorts ``F H I K L N V`` each
+#: claim a word and ``cLf 1024 localhost:a.tar`` is refused, with a fail-closed
+#: fallback that checks both readings when a spelling is spliced or shell-expanded.
+#: Covers ``argv_floor_git_tar`` (spellings walk, upper-case value tables, slot set)
+#: and ``deny_gate`` handing the floor the raw command. Deny-only. Re-measured.
+#: Raised by 29, from 37,170, for the ``sandbox-escape-git-tar-self`` fail-open fix:
+#: the git/tar floor binds one level of function-call arguments through the ssh
+#: floor's ``_function_call_binds_self`` (which takes the reader of the bound body as
+#: an argument), and a ``!`` alias body binds ``$1`` / ``${N}`` / ``$@`` / ``$*`` to the
+#: alias operands through the shared ``_bind_positional_parameters``, so
+#: ``f(){ git ls-remote "$1"; }; f localhost:x`` and ``git -c alias.f='!ssh $1' f
+#: localhost`` are refused. Covers ``argv_floor_git_tar``, ``argv_floor_ssh`` and the
+#: facade manifest. Deny-only. Re-measured.
+#: Raised by 19, from 37,199, for the tar short-option exec-value peel: the
+#: git/tar floor now routes a program value glued to a ``-I``/``-F`` short option
+#: (``-I'ssh localhost id'``, or inside a cluster ``-cMF'ssh ...'``) to the same
+#: self-dial command check the separated and ``--opt=value`` spellings get.
+#: Re-measured.
+#: Raised by 85, from 37,256, for the git/tar floor's quote-state framing: git's
+#: sq-quote ``'\''`` is masked only inside an open quote (``_mask_sq_apostrophes``),
+#: so ``echo x'\''abc' ; git clone ssh://localhost/x`` keeps its real ``;``, and a
+#: frame that ends inside a quote is read again through the shell reader's commands
+#: (``_shell_read_views``), refused fail-closed when the shell reader cannot close
+#: the quote either. Covers ``argv_floor_git_tar`` and the facade manifest.
+#: Deny-only. Re-measured.
+#: Raised by 54, from 37,341, for the git/tar floor's fail-closed verb model: only
+#: a verb in ``_GIT_LOCAL_ONLY_VERBS`` skips the transport read, so ``git
+#: request-pull HEAD localhost:x``, ``git maintenance`` with a self-dialing
+#: ``GIT_SSH_COMMAND`` and any unknown verb are read in full, and an inline alias
+#: of a command in ``_GIT_NON_LOCAL_COMMANDS`` is ignored the way git ignores it.
+#: Covers ``argv_floor_git_tar`` and the facade manifest. Deny-only. Re-measured.
+#: Raised by 35, from 37,433, for the git/tar floor's open-quote check: a frame
+#: that ends inside a quote the shell reader cannot close is refused only when a
+#: word in COMMAND POSITION could run git or tar
+#: (``_open_frame_could_run_git_tar``), so prose that only mentions git or tar
+#: (``I can't run git here``) and a bare ``*`` program word stay allowed.
+#: Raised by 62, from 37,468, for the git/tar floor's open-quote self-dial gate
+#: and its bounded alias re-entry: the open-quote backstop refuses a frame only
+#: when the whole string carries a self-dial signal (a literal self host, an
+#: ``ext::`` / ``ssh://`` / ``core.sshCommand`` / ``GIT_SSH`` override shape, or
+#: a ``$`` expansion), so ordinary prose and markdown stay allowed, and a
+#: rebuilt alias carries only the environment entries it can read, not the whole
+#: export.
+_PACKAGE_LINE_BUDGET = 37_530
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

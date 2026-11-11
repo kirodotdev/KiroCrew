@@ -591,14 +591,80 @@ class TestSandboxEscapeSshSelf:
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):
         assert _denied_by(cmd) is None, cmd
 
-    def test_rsync_detached_rsh_floor_allows_plain_ssh(self):
-        # THIS floor must not deny the normal detached remote-shell selector, and
-        # neither does the ``reverse-shell-nc`` catalog row: it is anchored to the
-        # ``nc`` command token, so the letters ``nc -e`` inside ``rsync -e`` are not
-        # a match.  Pinned end-to-end here as well as at the floor.
+    def test_multi_name_exports_feed_rsync_remote_shell(self):
+        for builtin in ("export", "declare -x", "typeset -x"):
+            cmd = f"{builtin} A=1 RSYNC_RSH='ssh localhost'; rsync far:/x ."
+            assert _denied_by(cmd) == self._RULE, cmd
+
+        # The normal detached selector remains allowed when it names no self host,
+        # including through the separate reverse-shell catalog rule.
         cmd = "rsync " + "-e ssh /tmp/f far.example.com:/p"
         assert not security._is_ssh_to_self(cmd)
         assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        ("cmd", "rule"),
+        [
+            # The floors read lower-cased text, so a benign lower-case variable
+            # folds onto the upper-case one the program honors.  Every value
+            # kept under the folded name is checked, in either order and through
+            # ``export``, ``env`` and a nested payload.
+            (f"{cmd} far:/x .", "sandbox-escape-ssh-self")
+            for cmd in (
+                "RSYNC_RSH='ssh localhost' rsync_rsh=ssh rsync",
+                "rsync_rsh=ssh RSYNC_RSH='ssh localhost' rsync",
+                "export RSYNC_RSH='ssh localhost' rsync_rsh=ssh; rsync",
+                "export rsync_rsh=ssh RSYNC_RSH='ssh localhost'; rsync",
+                "RSYNC_RSH='ssh localhost'; rsync_rsh=ssh; export RSYNC_RSH; rsync",
+                "env RSYNC_RSH='ssh localhost' rsync_rsh=ssh rsync",
+                "env rsync_rsh=ssh RSYNC_RSH='ssh localhost' rsync",
+            )
+        ]
+        + [
+            (
+                "RSYNC_RSH='ssh localhost' rsync_rsh=ssh sh -c 'rsync far:/x .'",
+                "sandbox-escape-ssh-self",
+            ),
+            (
+                "rsync_rsh=ssh RSYNC_RSH='ssh localhost' sh -c 'rsync far:/x .'",
+                "sandbox-escape-ssh-self",
+            ),
+        ]
+        + [
+            (f"{cmd} far:x", "sandbox-escape-ssh-self")
+            for cmd in (
+                "GIT_SSH_COMMAND='ssh localhost id #' git_ssh_command=ssh git ls-remote",
+                "git_ssh_command=ssh GIT_SSH_COMMAND='ssh localhost id #' git ls-remote",
+                "export GIT_SSH_COMMAND='ssh localhost id #' git_ssh_command=ssh; git ls-remote",
+                "export git_ssh_command=ssh GIT_SSH_COMMAND='ssh localhost id #'; git ls-remote",
+                "env GIT_SSH_COMMAND='ssh localhost id #' git_ssh_command=ssh git ls-remote",
+                "env git_ssh_command=ssh GIT_SSH_COMMAND='ssh localhost id #' git ls-remote",
+            )
+        ]
+        + [
+            (
+                "GIT_SSH_COMMAND='ssh localhost id #' git_ssh_command=ssh sh -c 'git ls-remote far:x'",
+                "sandbox-escape-ssh-self",
+            ),
+            (
+                "git_ssh_command=ssh GIT_SSH_COMMAND='ssh localhost id #' sh -c 'git ls-remote far:x'",
+                "sandbox-escape-ssh-self",
+            ),
+        ],
+    )
+    def test_case_folded_env_names_keep_every_value(self, cmd, rule):
+        assert _denied_by(cmd) == rule, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "RSYNC_RSH='ssh far-host' rsync_rsh=ssh rsync far:/x .",
+            "rsync_rsh=ssh RSYNC_RSH='ssh far-host' sh -c 'rsync far:/x .'",
+            "GIT_SSH_COMMAND='ssh -i key' git_ssh_command=ssh git ls-remote far:x",
+        ],
+    )
+    def test_case_folded_env_names_with_no_self_value_stay_allowed(self, cmd):
+        assert _denied_by(cmd) is None, cmd
 
     def test_mask_quoted_separators_round_trip(self):
         # The mask rewrites only QUOTED / backslash-escaped ``;``/``|`` to

@@ -150,6 +150,7 @@ _SELF_PROTECTION_FLOOR_RULE_IDS: frozenset[str] = frozenset(
         "self-protection-kill",
         "self-protection-dev-mode-out-of-root-confirm",
         "sandbox-escape-ssh-self",
+        "sandbox-escape-git-tar-self",
     }
 )
 _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
@@ -271,6 +272,25 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "or VM behind `ssh -p 2222 localhost`) is denied like the host, since sshd here "
         "could listen on that port too. Operator recourse for container/VM workflows is "
         "the per-rule toggle in Settings until a port-scoped exemption ships."
+    ),
+    "sandbox-escape-git-tar-self": (
+        "Matched structurally on the command's argv, not by the pattern text above: a git "
+        "or tar command opens an ssh transport to THIS machine or runs a command that dials "
+        "this host in place of the transport, which would re-enter the host outside the agent "
+        "sandbox the way `ssh localhost` does. Refused forms: a scp-like `host:path`, an "
+        "ssh/git+ssh/ssh+git URL, or (tar) a `host:file` whose host is this machine; and, "
+        "whose value dials this host, `git clone ext::<command>`, a `-c core.sshCommand=` "
+        "config or a `GIT_SSH`/`GIT_SSH_COMMAND` environment override, `tar --rsh-command`, "
+        "or an `--upload-pack`/`--receive-pack` program. Only this host's literal names and "
+        "addresses are refused, as a remote or as a host in one of those command values "
+        "(localhost, 127.0.0.0/8, ::1, and this host's own cached names/FQDN; a remote host "
+        "is read as typed, so a glob or refspec such as `*:*` is not a host); there is no "
+        "DNS lookup and no pending refusal, so a dotted remote such as github.com or a "
+        "ProxyJump bastion is never refused by this floor and retrying the same command "
+        "does not change the answer. "
+        "Local use is allowed: git add/commit/status/log/diff, git clone of a local path or "
+        "an http(s) URL, git fetch of a remote that is not this host, and tar of a local "
+        "archive."
     ),
 }
 

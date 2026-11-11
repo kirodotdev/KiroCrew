@@ -380,6 +380,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_is_self_restart",
     "_is_self_skills_authority_retire",
     "_is_self_update",
+    "_is_git_tar_to_self",
     "_is_shell_command_flag",
     "_is_shell_variable_reference",
     "_is_ssh_to_self",
