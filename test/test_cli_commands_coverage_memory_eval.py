@@ -60,7 +60,7 @@ class TestLearnCli:
         with _LearnHarness() as h:
             h.vs.write_lesson.return_value = LessonWriteResult(LessonWriteOutcome.INSERTED)
             cc._learn(_ns(learn_action="add", rule="do x", category="tool", negative="not y"))
-        h.vs.write_lesson.assert_called_once_with("do x", "tool", "not y")
+        h.vs.write_lesson.assert_called_once_with("do x", "tool", "not y", applies=None)
         h.jsonl.save.assert_not_called()
         h.vs.close.assert_called_once()
         assert "Saved: do x (not y) [tool]" in capsys.readouterr().out
