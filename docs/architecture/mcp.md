@@ -4392,7 +4392,9 @@ nothing (no progress, recovery or selection), the step tracker is off, and no
 heartbeat or re-plan goes out. A report already in flight lands first, then
 the cancel is sent at the revision it left; a 409 re-reads the guide and
 retries the cancel at the new revision (`GUIDE_CLOSE_ATTEMPTS`), never
-resuming the guide in between. A real
+resuming the guide in between. A re-read that keeps the old revision changes
+nothing on screen, so a timer retries at `GUIDE_CLOSE_DEADLINE_MS` anyway, and
+the last refused attempt gives the buttons back. A real
 pointer-down, key or wheel outside the guide's panel stops it and nothing is
 restored, so the probe never overrides what the person just did; such input
 is heard from the moment the step starts, so input during the settle wait
