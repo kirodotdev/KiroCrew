@@ -8236,7 +8236,9 @@
         "chat_stopped_unrecovered_body": "채팅이 중지되었고 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요.",
         "chat_stopped_busy_body": "채팅이 계속 사용 중이어서 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요.",
         "chat_stopped_refused_body": "모델이 답변을 거부해 채팅이 중지되었습니다. 채팅을 열어 이유를 확인하세요.",
-        "chat_stopped_stalled_body": "채팅이 멈춘 뒤 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요."
+        "chat_stopped_stalled_body": "채팅이 멈춘 뒤 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요.",
+        "folder_agent_label_title": "폴더의 기본 에이전트 확인",
+        "folder_agent_label_body": "이 폴더들의 기본 에이전트는 Bot과 이름이 같지만, 새 채팅은 그 Bot에서 실행되지 않습니다: {{folders}}. Bot을 사용하려면 폴더 설정에서 기본 에이전트로 선택하세요."
       },
       "notificationBanner": {
         "dismiss_notification": "알림 닫기",

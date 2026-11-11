@@ -8648,7 +8648,9 @@
         "chat_stopped_unrecovered_body": "La chat si è interrotta e non è riuscita a riprendersi. Apri la chat per avviarne una nuova.",
         "chat_stopped_busy_body": "La chat è rimasta occupata e non è riuscita a riprendersi. Apri la chat per avviarne una nuova.",
         "chat_stopped_refused_body": "Il modello ha rifiutato di rispondere e la chat si è interrotta. Apri la chat per vedere perché.",
-        "chat_stopped_stalled_body": "La chat si è bloccata e non è riuscita a riprendersi. Apri la chat per avviarne una nuova."
+        "chat_stopped_stalled_body": "La chat si è bloccata e non è riuscita a riprendersi. Apri la chat per avviarne una nuova.",
+        "folder_agent_label_title": "Controlla l’agente predefinito di una cartella",
+        "folder_agent_label_body": "L’agente predefinito di queste cartelle ha il nome di un Bot, ma le nuove chat al loro interno non vengono eseguite su quel Bot: {{folders}}. Per usare il Bot, sceglilo come agente predefinito nelle impostazioni della cartella."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignora notifica",
