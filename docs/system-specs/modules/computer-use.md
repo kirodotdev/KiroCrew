@@ -550,13 +550,16 @@ there is deliberate; see [config.md](config.md).
 
 ## HTTP surface
 
-Four routes in `dashboard/handlers/computer_use.py`, and the split in their auth
-models is the point.
+Four routes in `dashboard/handlers/computer_use.py` and two in
+`dashboard/handlers/computer_use_setup.py`, and the split in their auth models is
+the point.
 
 | Route | Auth | Caller |
 |---|---|---|
 | `GET /api/computer-use/config` | cookie (browser) | Settings panel |
 | `PUT /api/computer-use/config` | cookie (browser), owner only | Settings panel |
+| `GET /api/computer-use/setup` | cookie (browser), owner only | Settings setup card and dialog |
+| `POST /api/computer-use/setup` | cookie (browser), owner only, CSRF | Settings setup dialog |
 | `POST /api/computer-use/invoke` | loopback + `X-Internal-Secret` | the stdio shim ONLY |
 | `POST /api/computer-use/frame` | loopback + `X-Internal-Secret` | this gateway's own capture thread ONLY |
 
@@ -2341,6 +2344,72 @@ the title tier the already-running check never fires (the model opens a second c
 the post-launch poll burns its whole timeout reporting "no window appeared" for a window
 that is on screen.
 
+### Setup: the setup document and the first-use dialog
+
+`GET /api/computer-use/setup` returns the setup document; `POST` with
+`{"action": "install" | "request_permissions" | "recheck" | "verify" |
+"restart_driver" | "reset"}` runs one step and returns the document that step
+left behind. The work is `kiro_crew.computer_use.setup`
+(`get_setup_status()`, `run_setup_action(action)`); the handler owns only three
+things:
+
+- **Who.** An app token is refused `403 dashboard_user_required` before anything
+  else (the PUT's order), then a non-owner gets the shared `owner_only` refusal.
+  The POST is a mutating method, so the dashboard CSRF barrier applies to it like
+  every other one; it is not in `CSRF_EXEMPT_EXACT_METHODS`.
+- **How long.** Each call runs on the bounded subprocess pool under a deadline
+  (`STATUS_TIMEOUT_SECS`, `ACTION_TIMEOUT_SECS`). Past an action's deadline the
+  response is the current status (an install that outlasts its 30 s reads
+  `installing`, and the dialog polls from there). A pool thread cannot be
+  cancelled, so the handler keeps the running action in one slot and a second
+  POST while it runs reads status instead of starting another install. A wedged
+  status read becomes `temporarily_unavailable`.
+- **What leaves.** `shape_document` keeps only the documented keys, maps every
+  enumeration outside its vocabulary to a neutral value (an invented `state`
+  becomes `error`), whitespace-collapses and caps every string, and keeps a step
+  action only when it is an `open_pane` on one of the two panes or a `post` of a
+  known action. A raised exception, including a missing setup module, becomes a
+  shaped `error` document whose sentence is the handler's own, never the
+  exception text.
+
+None of the actions turns the feature on. The intro's Continue is the existing
+keystone PUT (`{"enabled": true}`), and `ready` is the setup module's verdict,
+which requires both the keystone and a passed verify.
+
+The UI is three pieces under `website/src/pages/settings/`:
+
+- `computerUseSetup.ts`, pure: `viewFor(doc)` maps every contract state to one
+  view (Session 0 and a missing Windows or Linux desktop get their own views
+  rather than a generic "unsupported"), `stepsFor` falls back to the platform's
+  walk (macOS: install, accessibility, screen recording, verify, ready; Windows
+  and Linux: install, session, verify, ready, never a permission step),
+  `setupPollInterval` / `waitExpired` bound every wait, and
+  `openSystemSettings` is the only opener of the two panes.
+- `ComputerUseSetupDialog.tsx`: the progressive dialog. Progress is the server's
+  document, so closing it loses nothing and reopening lands on the same step.
+  Rules, each pinned in `ComputerUseSetupDialog.test.tsx`: a moving state
+  (`installing`, `validating`, `waiting_for_system_settings`) polls every 2 s for
+  at most 2 minutes (5 for install), then shows "taking longer than expected"
+  with Check again, so no spinner runs forever; a grant screen polls only after
+  the user clicked its Open … Settings button, inside the same bound; System
+  Settings opens once per click and never from a state change, a poll or a
+  reopen; the Ready view renders only for `state == "ready"`. The app to enable
+  is named exactly as `permissions.owner_name` says. Focus moves to the new
+  view's heading on every view change, and the step rail marks the current step
+  with `aria-current="step"`.
+- `ComputerUseSetupStatus.tsx`: the Settings card. Readiness, OS support, driver,
+  the two permissions (macOS), the desktop session (Windows, Linux), the
+  backend's limitations, one primary action (Set up / Continue setup), Restart
+  driver, and a folded diagnostics list of wire values.
+
+The chat entry point is `pages/chat/ComputerUseSetupLink.tsx`: a finished
+`computer_*` row (identified by the trusted `mcp_server` / `tool_name` fields,
+never the title) whose output starts with `Error:` and names
+`Settings -> Computer Use` gets a Set up Computer Use button that routes to
+`/settings/computer-use?setup=1`; the panel opens the dialog for that parameter
+once and drops it with a replace navigation. A backend refusal that setup can
+clear therefore has to name that page, as `REFUSAL_DISABLED` does.
+
 ### Permission probes are ADVISORY, never a gate
 
 `AXIsProcessTrusted()` + `CGPreflightScreenCaptureAccess()` only. Never
@@ -2357,12 +2426,12 @@ permanently broke the reference bundle's Accessibility 3/3 times — so
 
 ### The grant shortcuts MUST use `window.open`, not `location.href`
 
-Each non-granted permission row offers an **Open System Settings** button that
+Each macOS permission step of the setup dialog offers an **Open … Settings** button that
 targets a macOS System Settings deep link (`SETTINGS_URL_*` in `permissions.py`;
 the frontend mirrors the two constants). It must be handed off with
-`window.open(pane, '_blank', 'noopener,noreferrer')` —
-`openSystemSettings()` in `ComputerUsePanel.tsx` — never by assigning
-`window.location.href`.
+`window.open(pane, '_blank', 'noopener,noreferrer')`, through
+`openSystemSettings()` in `pages/settings/computerUseSetup.ts`, never by
+assigning `window.location.href`.
 
 The reason is CSP, and it is invisible in a browser tab: the dashboard renders
 inside an **instance `<iframe>`** (`InstancesViewport`), and a *frame* navigation
@@ -2400,8 +2469,8 @@ class: the verdict is computed from `new URL(...)` (WHATWG lowercases the scheme
 strips tabs/newlines inside it, resolves `..`) while the **raw** string is what
 `shell.openExternal` re-parses with NSURL/CFURL; requiring raw equality means the
 validated and forwarded values cannot diverge. Because it is exact-match, the
-constant must stay byte-identical to `permissions.py` and the panel's `PANE_*`
-mirrors — `external-scheme.test.js` reads both real files and asserts agreement,
+constant must stay byte-identical to `permissions.py` and the `PANE_URL`
+mirror in `computerUseSetup.ts` — `external-scheme.test.js` reads both real files and asserts agreement,
 since a drift is a silent dead button.
 
 `file:` is excluded by construction (handing an arbitrary local path to the OS is
@@ -2427,7 +2496,7 @@ never appear in the external allowlist, so `blob:` can never reach
 asserting that every pre-existing URL shape keeps its old verdict and that the
 System Settings deep link is the *only* changed one.
 
-Both halves are pinned by tests (`ComputerUsePanel.test.tsx`,
+Both halves are pinned by tests (`ComputerUseSetupDialog.test.tsx`,
 `electron/test/external-scheme.test.js`) because the failure mode is a silent
 dead button that only reproduces in a packaged build.
 
@@ -2769,7 +2838,12 @@ computer use.
 | `mcp_computer.py` | The thin stdio shim (`kirocrew mcp-computer`) |
 | `testing/fake_computer_use.py` | `FakeComputerUseBackend`, shipped in the wheel |
 | `dashboard/handlers/computer_use.py` | `/api/computer-use/{config,invoke,frame}` |
+| `dashboard/handlers/computer_use_setup.py` | `/api/computer-use/setup` (GET, POST): gate, deadline, document shaping |
 | `website/src/pages/settings/ComputerUsePanel.tsx` | Settings → Computer Use |
+| `website/src/pages/settings/ComputerUseSetupStatus.tsx` | the Setup card on that page |
+| `website/src/pages/settings/ComputerUseSetupDialog.tsx` | the first-use setup dialog |
+| `website/src/pages/settings/computerUseSetup.ts` | state → view, step walk, bounded poll, the System Settings opener |
+| `website/src/pages/chat/ComputerUseSetupLink.tsx` | the chat's Set up Computer Use button under a refused call |
 | `website/src/components/ComputerUseLiveView.tsx` | The floating live view (PiP) panel |
 | `website/src/hooks/useComputerUseFrame.ts` | Frame-stream subscription + session-title lookup |
 | `src/kiro_crew/builtin_skills/computer-use/SKILL.md` | The agent-facing workflow. **Bundled**, not in the top-level `skills/` dir: `kirocrew-computer`'s MCP instructions (`mcp_instructions.COMPUTER`) and the agent prompt's closed-gate pointer (`context_assembly/sections.py::computer_use_block`) tell the model to read it by name, so per AGENTS.md it is load-bearing and must reach every pip/DMG install |
