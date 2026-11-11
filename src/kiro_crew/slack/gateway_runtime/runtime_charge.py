@@ -267,7 +267,17 @@ async def _inject_with_retry(
     baseline there. When ``full_msg`` is set, *msg* is a note that leans on
     backend session ``sent_to_session`` already holding the full report; a
     reload onto any other session has never seen it and is sent ``full_msg``.
+
+    A completion's turn is not a person's, and no session applier reads its
+    stream, so a directive only a person's turn may issue (``set_project``, ...)
+    is refused and audited (``person_only_directive_refuser``, as on a cron
+    turn). Every refusal of the call, a retried attempt's included, leads the
+    reply.
     """
+    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+    refusals: list[str] = []
+    _refuse_person_only = person_only_directive_refuser(parent_key, refusals)
     _snf_reloaded = False
     attempt = 0
     while True:
@@ -280,7 +290,11 @@ async def _inject_with_retry(
 
         try:
             response = await stream_and_collect(
-                client, msg, retry_transient=False, on_complete=_note_complete
+                client,
+                msg,
+                retry_transient=False,
+                on_complete=_note_complete,
+                on_event=_refuse_person_only,
             )
             # The parent's turn consumed the report: the positive
             # acknowledgement an owed expiry report is cleared on.
@@ -291,7 +305,7 @@ async def _inject_with_retry(
             # stream with no completion, and none of those landed.
             if stop_reason_landed(stop["reason"]):
                 note_turn_landed(self.sessions, parent_key)
-            return response
+            return "\n\n".join([*refusals, response])
         except PromptBusyExhaustedError:
             # Provider is dead after exhausting prompt-busy retries.
             # Reset session + notify, same as TimeoutError path.
