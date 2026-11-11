@@ -1439,6 +1439,162 @@ install's key beside a restored store), is not a per-item failure: the listing a
 `500 vault_unreadable` and marks nothing corrupt, because every entry is intact
 and restoring the key is the fix.
 
+**Backends (`secrets/backend.py`, `secrets/onepassword.py`,
+`dashboard/handlers/secret_backends.py`).** The local vault is the root and the
+default; a backend is a third-party password manager a person connects beside
+it, read-only. One reference spelling serves both: `secret://NAME#field`
+reads the local vault first and asks a backend only for a NAME the local vault
+does not hold. A person who connects nothing pays nothing: the resolver asks
+no backend and no provider package is imported until a connection exists.
+
+- **The contract.** A provider subclasses `SecretBackend` and declares, as
+  data: `id` (route segment and stored name, `[a-z0-9][a-z0-9_-]{0,31}`),
+  `display_name` (its brand, shown as is), `capabilities` (`item_types` only:
+  every backend is read-only, and a new capability lands with its first
+  reader), `connect_form` (`FormField`s: name,
+  `label_key`, `secret`, `required`, `placeholder_key`), an optional
+  `fallback_form` with its link's `fallback_label_key` (a second way in, a
+  token), `app_sign_in` (the main form signs in through the provider's desktop
+  app, so it holds no secret field), `help_url` (https) with `help_label_key`,
+  and `extra` (the `setup.cfg` extra that installs its package). It implements
+  `availability()` (why it cannot run on this install, or `None`),
+  `prefers_fallback()` (open on the fallback form here: a cheap check, no
+  provider call), `connect(values) -> Connection(account, data, form)` (the
+  values of exactly one form; `form` is `"main"` or `"fallback"`),
+  `list_items(conn)` (name, type and `items.public_view` fields only) and
+  `get_items_many(conn, names)` (`(item_type, SecretValue)` in the local
+  vault's encoding, `None` when absent, `ambiguous` when two provider items
+  share a name). `disconnect(conn)` is optional. It never sees a request, the
+  vault or another provider.
+- **The registry.** `registered()` is the built-ins (1Password) then every
+  `register_secret_backend(...)` call, in that order, which is also the order a
+  reference asks them. Registration refuses a duplicate or malformed id, a
+  missing name, an empty or duplicated form, a fallback form without its link
+  label, an app sign-in main form holding a secret, a non-Secrets i18n key, a non-https
+  help link, and an item type the vault does not have. A downstream edition registers from its
+  composition root, the same seam `register_source_provider` uses.
+- **What the core does for every provider.** The panel renders the connect
+  form, status and items from the listing's data alone; there is no
+  per-provider route, React component or core branch. The connection is stored
+  as one `note` in the LOCAL vault under `kirocrew#backend:<id>`
+  (`{account, data, form}`). A connect body names its form in `"form"`
+  (default `main`); `backend.form_values` reads only that form's fields. The name holds `#`, which `POST /api/secrets` refuses
+  in a name, so no item a person stored can collide with it and the entry is
+  always one Kiro Crew wrote. The generic `/api/secrets` routes do not list it and
+  refuse to write it (`400 invalid_name`, for the `#`) or delete it
+  (`409 managed_by_backend`), a reference to it
+  resolves to nothing, and a cron grant cannot name it. Its secret fields reach
+  the provider in the gateway process only. Every provider call runs through
+  `backend.call`: on a worker thread, bounded by `CALL_TIMEOUT_SECS` (a connect,
+  Approve again, or a resolve through an app sign-in connection by
+  `CONNECT_TIMEOUT_SECS`, since a person may approve in the provider's app first), with any
+  untyped exception turned into `unreachable` and logged by type name only.
+  A listing keeps only rows of the backend's declared item types, one per
+  name: a name the provider gives several items is one row marked `ambiguous`
+  with no item's fields (a reference to it fails closed), and a name with
+  leading or trailing space is not listed, since a reference cannot spell it.
+  A stored connection that fails to decrypt or does not parse raises
+  `connection_unreadable`: the listing shows that backend alone as
+  unavailable (still connected, so Disconnect is offered), a resolve through it
+  fails closed, and Disconnect deletes the entry without calling the provider.
+- **Degrading.** A provider that fails, times out, rate-limits or lost its
+  package shows as its own row with `status: "unavailable"` and an `error`
+  (`{code, message, message_key?, params?, install_command?}`); the local list
+  and every local reference are unaffected. A kept connection whose package
+  went missing keeps its token, so adding the package back restores it.
+  `install_command` is set for `sdk_missing` only where
+  `extras.pip_install_channel_available` says pip can install into this
+  interpreter. Generic codes (`sdk_missing`, `sdk_unsupported`, `unreachable`,
+  `unauthorized`, `rate_limited`, `timeout`, `invalid_input`, `ambiguous`, and
+  for an app sign-in `app_missing`, `not_approved`, `approval_expired`) are
+  worded by the panel; a provider's own code carries `message_key`. A listing
+  that answers `approval_expired` shows `status: "needs_approval"`, and the
+  panel offers Approve again (`POST /api/secrets/backends/{id}/approve`), which
+  connects once more with the stored connection's own main-form fields
+  (`backend.approve_values`: an app sign-in connection only, never a token). A
+  connect that answers `app_missing` opens the fallback form. A connect or Approve again still waiting on the app when Disconnect runs, or when a newer connect saves (the person gave up on the prompt and pasted a token), does not save: Disconnect and every saved connect bump a per-backend generation, only after their vault write succeeds (a Disconnect whose delete fails answers `500 vault_write_failed` and keeps the connection), and the stale save answers `409 disconnected` or `409 replaced` (`dashboard/handlers/secret_backends.py`); the pane also disables Disconnect, Approve again and the switch to a token while a sign-in waits.
+- **Resolution.** `backend.resolve_missing` asks the connected backends in
+  registry order, each only for the names still unanswered, and never for a
+  protected name (`local_only`: a connection entry, `WAKATIME_OAUTH_TOKENS`,
+  anything `CONNECTIONS_*`), which only the local vault answers. A
+  `NAME#FIELD` reference asks for its whole text first, and a provider item
+  titled with that whole text wins, as a local one does; its NAME part is asked
+  in a second pass only when the whole text missed. The Used by card is not
+  shown for a backend item, because the usage scan matches local names only. A backend that
+  fails raises with the env-var keys, the provider's name, a stable code and a
+  plain cause, never a NAME or value, and never falls back to another item or
+  backend. Values are read on demand; nothing is cached or copied.
+- **Listing.** `GET /api/secrets` adds `backends`, a list in registry order:
+  `{id, name, status, connected, account?, connected_form?, items?, error?,
+  form, fallback_form, fallback_label_key, fallback_first, app_sign_in,
+  capabilities, help_url, help_label_key}`. An item whose name a local item, an earlier
+  backend or a protected name already answers is marked `shadowed`. That
+  includes a title whose part before the first `#` is a local name
+  (`backend.taken_locally`): the local vault reads `secret://AWS#work#username`
+  as its own `AWS`, so a provider `AWS#work` is listed as taken rather than
+  offered as usable.
+- **Audit.** SEL `api_access` rows: `secrets_backend_connect` and
+  `secrets_backend_approve` (`<id>:<account>`, or `<id>:<code>` on failure),
+  `secrets_backend_disconnect` (`<id>`), and one
+  `secrets_backend_resolve` per backend a resolve asked (`<id>:<names>`,
+  outcome, failure code). Never a value.
+
+*1Password.* `OnePasswordBackend` reads every vault a connection can see
+with 1Password's official Python SDK, `onepassword-sdk==0.4.2` (MIT),
+in-process, calling only `vaults.list`, `items.list` and `items.get_all`; a
+title two items share across vaults fails closed. Its main form is the
+account name, signed in through the 1Password desktop app (`DesktopAuth`,
+`app_sign_in`): the connection stores `{account}` only. The app approves a
+process for ten idle minutes and until it locks; the backend keeps that
+process's approved client (`_APPROVED`, one per account name) with the time
+of its last successful use, so a listing reads without asking. A kept client
+idle `APPROVAL_IDLE_SECS` (600 s) or more is treated as lapsed BEFORE the SDK
+is called, because onepassword-sdk 0.4.2's `InnerClient.invoke` answers an
+expired desktop session by re-initialising it, which shows the app's Approve
+prompt: a listing then reads `approval_expired` without calling the SDK, and a
+reference resolving through it asks the app for a fresh approval. Known gap:
+the app locking inside the ten minutes is not seen, so the SDK's re-init can
+still prompt on that next call.
+The SDK's `FileNotFoundError` reads `app_missing` (and `prefers_fallback`
+asks the same `desktop_core.find_1password_lib_path` the SDK does), a
+`RuntimeError` (the app's channel closed: not running, or Integrate with other
+apps off) reads `app_closed`, `DesktopSessionExpiredException` reads
+`approval_expired`, and any other refusal at sign-in reads `not_approved`. The
+fallback form is a Service Account token, for an install without the app and
+for jobs that run while nobody can approve; a service account cannot read the
+built-in Personal or Private vault. The
+SDK is the optional `1password` extra, never an `install_requires` entry, and is
+imported lazily. `availability()` answers `sdk_missing` where a wheel exists
+(`_wheel_platform`: Linux x86_64/aarch64 on glibc 2.32+, macOS, Windows x64,
+CPython below 3.14) and `sdk_unsupported` elsewhere (musl, older glibc, Windows
+arm64, Python 3.14+). The token must start `ops_` with no whitespace, and one
+that reads no vault is refused (`no_vaults`). The SDK's measured refusal text
+(`invalid service account token ...`) reads as `unauthorized` and its
+`RateLimitExceededException` as `rate_limited`. Mapping: Login -> `login`,
+SecureNote -> `note`, Password and ApiCredentials -> `secret`; every other
+category reads as absent. Measured with made-up tokens against the real
+service, the SDK wrote nothing under `HOME` or `TMPDIR` and talks only to the
+sign-in host named inside the token.
+
+*Adding a provider.* (1) Subclass `SecretBackend` in `secrets/<provider>.py`
+and declare the fields above; import its package lazily inside the methods,
+and make `availability()` say why it cannot run. (2) Add its catalog keys
+under `settings.secrets.backend_<short>_*` in all twelve catalogs. (3) If it
+ships an optional package, add the extra to `setup.cfg` and `extras.py`
+exact-pinned, and set `extra`. (4) Register it: append it to `_builtin()` for a
+core provider, or call `register_secret_backend` from a downstream composition
+root. (5) Subclass `SecretBackendContract` (`test/secret_backend_contract.py`)
+with a `Harness` over a stub of the provider's package, the way
+`test/test_secret_onepassword.py` does, and pass it. Nothing in the panel, the
+routes or the resolver changes. A provider that needs a capability
+`Capabilities` does not carry (writing, one-time codes, server-side search or
+paging) adds that field in the same change as its first reader in the core or
+the panel, never ahead of one.
+
+Pinned by `test/test_secret_backends.py` (the core, a fake provider on the
+contract) and `test/test_secret_onepassword.py` (1Password on the contract,
+with a stubbed SDK).
+
 Security properties:
 
 - **Write-only surface.** The vault is stored (`POST /api/secrets`, a plain

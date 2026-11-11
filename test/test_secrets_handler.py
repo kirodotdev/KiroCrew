@@ -135,6 +135,8 @@ class TestApiSecretsList:
                 resp = await client.get("/api/secrets")
                 assert resp.status == 200
                 data = await resp.json()
+                # The password-manager rows ride along; their content is pinned elsewhere.
+                assert isinstance(data.pop("backends"), list)
                 assert data == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
@@ -242,7 +244,9 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {"names": [], "items": [], "managed": []}
+                data = await response.json()
+                assert isinstance(data.pop("backends"), list)
+                assert data == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_single_whitespace_jira_entry_is_ignored(self, tmp_path: Path) -> None:
@@ -264,7 +268,9 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {"names": [], "items": [], "managed": []}
+                data = await response.json()
+                assert isinstance(data.pop("backends"), list)
+                assert data == {"names": [], "items": [], "managed": []}
 
     @pytest.mark.asyncio
     async def test_config_failure_keeps_names_and_reports_managed_error(
@@ -313,7 +319,9 @@ class TestApiSecretsList:
             async with TestClient(TestServer(app)) as client:
                 response = await client.get("/api/secrets")
                 assert response.status == 200
-                assert await response.json() == {
+                data = await response.json()
+                assert isinstance(data.pop("backends"), list)
+                assert data == {
                     "names": [],
                     "items": [],
                     "managed": [],
@@ -705,6 +713,9 @@ class TestApiSecretsOwnerAuthorization:
             ("get", "/api/secrets", None),
             ("post", "/api/secrets", {"name": "EVIL", "value": "x"}),
             ("delete", "/api/secrets/TEST_KEY", None),
+            ("post", "/api/secrets/backends/1password", {"token": "ops_x"}),
+            ("post", "/api/secrets/backends/1password/approve", None),
+            ("delete", "/api/secrets/backends/1password", None),
         ],
     )
     async def test_app_token_is_refused(

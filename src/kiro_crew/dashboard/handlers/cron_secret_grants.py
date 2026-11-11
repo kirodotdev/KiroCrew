@@ -276,7 +276,16 @@ async def _promote_pending_grant(
             },
             status=409,
         )
-    known = set(await asyncio.to_thread(SecretVault(config_dir()).list_names))
+    # A password-manager connection holds a provider token the agent never
+    # gets, so it is never a grantable name. Imported here: every module-level
+    # name of this family is re-exported by the cron facade.
+    from kiro_crew.secrets.backend import is_connection_item
+
+    known = {
+        name
+        for name in await asyncio.to_thread(SecretVault(config_dir()).list_names)
+        if not is_connection_item(name)
+    }
     missing = sorted(set(pending_snapshot.values()) - known)
     if missing:
         # The names are agent-authored (they came in via the pending request),
