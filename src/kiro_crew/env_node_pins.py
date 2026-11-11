@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 from kiro_crew.config.paths import peek_data_home
@@ -46,6 +46,7 @@ def override_bin_dirs(
     env_var: str,
     validate: Callable[[str], str | None],
     has_node: Callable[[Path], bool],
+    env: Mapping[str, str] | None = None,
 ) -> list[str]:
     """The *env_var* dir when it is one absolute dir holding ``node``, else ``[]``.
 
@@ -53,7 +54,7 @@ def override_bin_dirs(
     ``env.node_bin_dirs``'s process-lifetime cache, so a value the data home's
     ``.env`` seeds after boot still counts.
     """
-    value = validate(os.environ.get(env_var, ""))
+    value = validate((os.environ if env is None else env).get(env_var, ""))
     if value is None:
         return []
     value = os.path.normpath(value)
@@ -80,6 +81,7 @@ def data_home_tree_dirs(
     rel_dirs: Iterable[str],
     validate: Callable[[str], str | None],
     has_node: Callable[[Path], bool],
+    env: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Each of *rel_dirs* under the data home that holds ``node``.
 
@@ -87,7 +89,7 @@ def data_home_tree_dirs(
     event-loop path of the MCP probe.
     """
     try:
-        root = peek_data_home()
+        root = peek_data_home(env)
     except (OSError, RuntimeError, ValueError):
         logger.debug("could not resolve the data home for its Node tree", exc_info=True)
         return []

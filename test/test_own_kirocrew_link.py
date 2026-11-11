@@ -47,7 +47,7 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     base = tmp_path / "base"
     base_python = _executable(base / "python")
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(own_mod, "peek_data_home", lambda: crew_home)
+    monkeypatch.setattr(own_mod, "peek_data_home", lambda env=None: crew_home)
     monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: crew_home)
     monkeypatch.setattr(agent_mod, "_resolve_kirocrew_bin", lambda: str(this_install))
     promoted = _executable(tmp_path / "install-next" / "bin" / "kirocrew")
@@ -95,7 +95,7 @@ class TestAnAgentReachesThisInstall:
     def test_python_resolves_exactly_as_without_the_link(self, host, monkeypatch) -> None:
         agent_mod.refresh_own_kirocrew_link()
         with_link = _which("python", host["base"])
-        monkeypatch.setattr(env_mod, "_own_kirocrew_dirs", lambda: [])
+        monkeypatch.setattr(env_mod, "_own_kirocrew_dirs", lambda env=None: [])
         without_link = _which("python", host["base"])
 
         assert with_link == without_link
@@ -197,7 +197,7 @@ class TestTheLinkDirectoryIsListedOnlyWhenItCanBeNamed:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(own_mod.platform_compat, "IS_WINDOWS", True)
-        monkeypatch.setattr(own_mod, "peek_data_home", lambda: tmp_path)
+        monkeypatch.setattr(own_mod, "peek_data_home", lambda env=None: tmp_path)
         (tmp_path / OWN_KIROCREW_DIR).mkdir()
 
         assert own_mod.own_kirocrew_dirs(lambda value: value) == [str(tmp_path / OWN_KIROCREW_DIR)]
@@ -206,7 +206,7 @@ class TestTheLinkDirectoryIsListedOnlyWhenItCanBeNamed:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``islink`` is False for a Windows junction; the listing must still refuse it."""
-        monkeypatch.setattr(own_mod, "peek_data_home", lambda: tmp_path)
+        monkeypatch.setattr(own_mod, "peek_data_home", lambda env=None: tmp_path)
         (tmp_path / OWN_KIROCREW_DIR).mkdir()
         named = str(tmp_path / OWN_KIROCREW_DIR)
         monkeypatch.setattr(
@@ -395,7 +395,7 @@ class TestOnWindowsTheForwarderWinsTheLookup:
         this_install.write_bytes(b"@echo off\r\necho [%~1] [%~2]\r\nexit /b 7\r\n")
         monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setattr(own_mod, "peek_data_home", lambda: crew_home)
+        monkeypatch.setattr(own_mod, "peek_data_home", lambda env=None: crew_home)
         monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: crew_home)
         monkeypatch.setattr(agent_mod, "_resolve_kirocrew_bin", lambda: str(this_install))
         return {
@@ -429,6 +429,6 @@ class TestOnWindowsTheForwarderWinsTheLookup:
         agent_mod.refresh_own_kirocrew_link()
         base = str(win_host["inherited"])
         with_forwarder = shutil.which("python", path=augmented_path(base))
-        monkeypatch.setattr(env_mod, "_own_kirocrew_dirs", lambda: [])
+        monkeypatch.setattr(env_mod, "_own_kirocrew_dirs", lambda env=None: [])
 
         assert shutil.which("python", path=augmented_path(base)) == with_forwarder

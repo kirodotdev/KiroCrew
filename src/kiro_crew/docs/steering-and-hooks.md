@@ -383,6 +383,13 @@ hook because something like `VIRTUAL_ENV`, `PYTHONPATH`, `JAVA_HOME` or
 `AWS_PROFILE` is not forwarded. Set what you need inside the command, or use
 absolute paths.
 
+A hook's `PATH` also gets the user tool directories Crew adds for kiro-cli, such
+as `~/.local/bin` and Homebrew's, after the gateway's own entries. A CLI
+installed there is found even when the desktop app or a service started the
+gateway with a bare system `PATH`. The gateway's own `PATH` keeps its order and
+the added directories come after it, so a bare-name command resolves by that
+order. A guard that must run a specific system binary names it by absolute path.
+
 A hook's fields:
 
 | Field | Means |

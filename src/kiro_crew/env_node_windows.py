@@ -12,6 +12,7 @@ BOTH lists.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 from kiro_crew import platform_compat
 
@@ -27,7 +28,9 @@ MANAGER_DIRS = (
 )
 
 
-def roots(home: str, pinned_home: str | None) -> dict[str, str]:
+def roots(
+    home: str, pinned_home: str | None, env: Mapping[str, str] | None = None
+) -> dict[str, str]:
     """The roots :data:`MANAGER_GLOBS` and :data:`MANAGER_DIRS` format against.
 
     ``APPDATA`` / ``LOCALAPPDATA`` name the account running this process, so a
@@ -37,11 +40,13 @@ def roots(home: str, pinned_home: str | None) -> dict[str, str]:
     entry is skipped rather than formatted into a rootless path.
     """
 
+    source = os.environ if env is None else env
+
     def _base(var: str, *fallback: str) -> str:
-        value = os.environ.get(var, "") if pinned_home is None else ""
+        value = source.get(var, "") if pinned_home is None else ""
         return value if os.path.isabs(value) else os.path.join(home, *fallback)
 
-    program_files = os.environ.get("ProgramFiles", "")
+    program_files = source.get("ProgramFiles", "")
     return {
         "appdata": _base("APPDATA", "AppData", "Roaming"),
         "localappdata": _base("LOCALAPPDATA", "AppData", "Local"),
@@ -49,7 +54,9 @@ def roots(home: str, pinned_home: str | None) -> dict[str, str]:
     }
 
 
-def manager_globs(home: str, pinned_home: str | None = None) -> tuple[str, ...]:
+def manager_globs(
+    home: str, pinned_home: str | None = None, env: Mapping[str, str] | None = None
+) -> tuple[str, ...]:
     """:data:`MANAGER_GLOBS` formatted for this host; empty off Windows.
 
     Braces in the formatted roots are escaped, because
@@ -57,11 +64,13 @@ def manager_globs(home: str, pinned_home: str | None = None) -> tuple[str, ...]:
     """
     if not platform_compat.IS_WINDOWS:
         return ()
-    values = roots(home, pinned_home)
+    values = roots(home, pinned_home, env)
     return tuple(g.format(**values).replace("{", "{{").replace("}", "}}") for g in MANAGER_GLOBS)
 
 
-def manager_dirs(home: str, pinned_home: str | None = None) -> list[str]:
+def manager_dirs(
+    home: str, pinned_home: str | None = None, env: Mapping[str, str] | None = None
+) -> list[str]:
     """:data:`MANAGER_DIRS` formatted and normalized for this host; empty off Windows.
 
     Each entry is one absolute dir. A root carrying ``os.pathsep`` or NUL would
@@ -70,7 +79,7 @@ def manager_dirs(home: str, pinned_home: str | None = None) -> list[str]:
     """
     if not platform_compat.IS_WINDOWS:
         return []
-    values = roots(home, pinned_home)
+    values = roots(home, pinned_home, env)
     out: list[str] = []
     for template in MANAGER_DIRS:
         if any(not v and f"{{{k}}}" in template for k, v in values.items()):
