@@ -14,10 +14,12 @@ nobody watches:
 * ``Stop`` with the reply once the turn landed.
 
 The Hooks page's hooks keep the role they have on a cron turn: none of them
-runs here, and their PreToolUse stays the informational fire on each tool call. A cron turn does not re-project its KAS
-session: when the session's batch is stale for the agent it runs (a PreToolUse
-hook added since covers a call it auto-approves), the turn runs none of the
-spec's hooks, which is what it did before, and its result says so.
+runs here, and their PreToolUse stays the informational fire on each tool call. A cron claim re-projects a stale KAS
+batch (:func:`kiro_crew.agent_sdk.spec_hooks.reproject_unattended_claim`). When
+the session is still stale for the agent it runs (a PreToolUse hook added since
+covers a call it auto-approves: two resets did not cure it, or a mid-turn switch
+moved to such a batch), the turn runs none of the spec's hooks, as before, and
+its result says so; the next claim re-projects it.
 """
 
 from __future__ import annotations

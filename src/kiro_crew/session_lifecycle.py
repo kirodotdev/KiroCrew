@@ -687,6 +687,7 @@ class SessionLifecycleService:
     _stop_bucket = _turn_stop._stop_bucket
     note_stop = _turn_stop.note_stop
     open_replay_gap = _turn_stop.open_replay_gap
+    has_open_replay_gap = _turn_stop.has_open_replay_gap
     close_replay_gap = _turn_stop.close_replay_gap
     _discard_replay_gap = _turn_stop._discard_replay_gap
     _orphan_turn_holder = _turn_stop._orphan_turn_holder

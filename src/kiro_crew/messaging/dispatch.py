@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
+from kiro_crew.agent_sdk.drivers.acp_vocab import STOP_REASON_CANCELLED
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import (
     TURN_BUILD_ADMISSION_TIMEOUT_SECS,
@@ -750,14 +751,31 @@ class ChannelTurns:
         resumed = False
         memory_store: Any = None
         claimed = False
+        # Whether a re-projection left this turn holding the replay gap.
+        _reprojected = False
+        # The claim token (session entry + Stop count) captured at the FIRST
+        # acquisition, before any renderer setup: its Stop count is the baseline
+        # every later gate reads, never the live session, so a hard Stop and a
+        # successor claim landing while the renderer is set up cannot slip past.
+        _claim_token: Any = None
+        # The token from THIS pass's acquisition: the fence reads its entry, so a
+        # compaction replay fences against the session the replay reacquired, not
+        # the first acquisition's entry that an earlier reset already popped.
+        _fence_token: Any = None
         if monitor is not None:
             # A wake claims its session WITHOUT waiting, before anything is built: a
             # conversation already in a turn answers BUSY and the wake retries its
             # durable claim instead of queueing behind it.
+            # The token is minted inside the acquire the instant the claim
+            # returns, BEFORE the renderer setup below (await source(muted)), so a
+            # Stop and a successor claim in that window cannot slip past the fence.
+            from kiro_crew.agent_sdk.spec_hooks import acquire_with_token
+
             try:
                 memory_store = await session_store_for_turn(ctx_builder, session_key)
                 crew_log_store = await self._crew_log_store(asker)
-                provider, is_new, resumed = await sessions.get_or_create(
+                (provider, is_new, resumed), _claim_token = await acquire_with_token(
+                    sessions,
                     session_key,
                     agent=session_agent,
                     channel_id=asker.conversation_id,
@@ -772,6 +790,7 @@ class ChannelTurns:
                 logger.exception("%s monitor session claim failed", channel)
                 return self._outcome(Verdict.FAILED, monitor)
             _acquired = claimed = True
+            _fence_token = _claim_token
             _turn_provider = provider
             if self._opens_crew_log(asker):
                 self._open_crew_log(provider, session_key, agent, resumed, crew_log_store)
@@ -928,7 +947,10 @@ class ChannelTurns:
                     # turn's prompt.
                     memory_store = await session_store_for_turn(ctx_builder, session_key)
                     crew_log_store = await self._crew_log_store(asker)
-                    provider, is_new, resumed = await sessions.get_or_create(
+                    from kiro_crew.agent_sdk.spec_hooks import acquire_with_token
+
+                    (provider, is_new, resumed), _got_token = await acquire_with_token(
+                        sessions,
                         session_key,
                         agent=session_agent,
                         channel_id=asker.conversation_id,
@@ -951,6 +973,11 @@ class ChannelTurns:
                         # on the NEXT turn, by then a warm reuse, so its previous edge
                         # would never be written.
                         self._open_crew_log(provider, session_key, agent, resumed, crew_log_store)
+                    # This pass fences against its own acquisition's entry; the
+                    # FIRST token stays the Stop baseline every later gate reads.
+                    _fence_token = _got_token
+                    if _claim_token is None:
+                        _claim_token = _got_token
                 # The wake's claim serves its first attempt only; a replay reacquires.
                 claimed = False
                 if deny_all_tools:
@@ -963,13 +990,70 @@ class ChannelTurns:
                     )
                 # Keep the first acquisition's snapshot across replays: a Stop
                 # during a reset or a hook must not become a new attempt's baseline.
+                # From the claim token, so a wake's baseline predates its renderer
+                # setup rather than being read after it.
                 if stop_gen_at_entry is None:
-                    stop_gen_at_entry = session_stop_generation(sessions, session_key)
+                    stop_gen_at_entry = (
+                        _claim_token.stop_gen
+                        if _claim_token is not None
+                        else session_stop_generation(sessions, session_key)
+                    )
                 if recovery:
                     if conv_gen_at_entry is None:
                         conv_gen_at_entry = session_conversation_generation(sessions, session_key)
                 if turn_is_new is None:
                     turn_is_new = is_new
+                if not deny_all_tools:
+                    # After the Stop snapshot: a KAS batch that auto-approves what a
+                    # PreToolUse hook now covers is reset and claimed again under the
+                    # replay gap, which the ``finally`` closes after the release.
+                    from kiro_crew.agent_sdk.spec_hooks import (
+                        acquire_with_token,
+                        reproject_unattended_claim,
+                        running_agent,
+                    )
+
+                    _claim_kwargs: dict[str, Any] = (
+                        {"wait_if_busy": False} if monitor is not None and not replaying else extra
+                    )
+
+                    async def _reclaim() -> tuple[tuple[Any, bool, bool], Any]:
+                        nonlocal _turn_provider
+                        got, tok = await acquire_with_token(
+                            sessions,
+                            session_key,
+                            agent=session_agent,
+                            channel_id=asker.conversation_id,
+                            start_priority=asker.start_priority,
+                            **_claim_kwargs,
+                        )
+                        _turn_provider = got[0]
+                        if self._opens_crew_log(asker):
+                            self._open_crew_log(got[0], session_key, agent, got[2], crew_log_store)
+                        # The fresh entry for the next fence, minted by the acquire
+                        # so the helper never reads the live session.
+                        return got, tok.entry
+
+                    reprojection = await reproject_unattended_claim(
+                        sessions,
+                        session_key,
+                        running_agent(provider, session_agent),
+                        (provider, is_new, resumed),
+                        _reclaim,
+                        _fence_token,
+                    )
+                    provider, is_new, resumed = reprojection.claimed
+                    _reprojected = _reprojected or reprojection.reprojected
+                    if reprojection.superseded or (
+                        reprojection.reprojected
+                        and session_stop_generation(sessions, session_key) != stop_gen_at_entry
+                    ):
+                        # A Stop while the session was re-projected: nothing ran.
+                        await renderer.dispatch(
+                            OutputEvent(kind=DONE, stop_reason=STOP_REASON_CANCELLED)
+                        )
+                        verdict = Verdict.ABANDONED
+                        return self._outcome(verdict, monitor, acquired=True)
                 if retry_guard is not None:
                     retry_guard.provider = provider
                 if prepare is not None:
@@ -1536,7 +1620,7 @@ class ChannelTurns:
                 # it closes), so the release cannot wait on the guard above.
                 if _acquired:
                     sessions.release(session_key)
-                if recovery:
+                if recovery or _reprojected:
                     # Closed LAST, after the permit is back: a message that waited
                     # behind the gap then finds an idle successor instead of a
                     # semaphore a later reset could pop from under it. Idempotent, so

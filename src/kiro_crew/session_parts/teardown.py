@@ -340,6 +340,11 @@ def open_replay_gap(self: SessionManager, key: str) -> None:
     self._lifecycle_boundary().open_replay_gap(key)
 
 
+def has_open_replay_gap(self: SessionManager, key: str) -> bool:
+    """Whether *key* is in a reset-to-reacquire window (session popped)."""
+    return self._lifecycle_boundary().has_open_replay_gap(key)
+
+
 def close_replay_gap(self: SessionManager, key: str) -> None:
     """End the window :meth:`open_replay_gap` opened."""
     self._lifecycle_boundary().close_replay_gap(key)

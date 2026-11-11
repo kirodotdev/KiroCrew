@@ -72,6 +72,20 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
 from kiro_crew.agent_sdk.capabilities import capabilities_of
+
+# Re-exported for the modules that import these from spec_hooks; they live in a
+# sibling only to keep this module under its line cap. The sibling imports this
+# module's seams lazily, so the two load in either order.
+from kiro_crew.agent_sdk.spec_hooks_reproject import (  # noqa: E402,F401
+    ClaimToken,
+    UnattendedClaim,
+    acquire_with_token,
+    close_reprojection_gap,
+    live_session_entry,
+    make_claim_token,
+    reproject_claimed_session,
+    reproject_unattended_claim,
+)
 from kiro_crew.hooks import (
     _HOOK_STREAM_CAP_BYTES,
     HOOK_EVENT_AGENT_SPAWN,
@@ -1810,47 +1824,6 @@ async def invalidate_stale_kas_session(sessions: Any, session_key: str, agent_id
         logger.warning("re-projection reset for %s failed", session_key, exc_info=True)
         return PROJECTION_BUSY
     return PROJECTION_RESET if reset else PROJECTION_BUSY
-
-
-async def reproject_claimed_session(
-    sessions: Any,
-    session_key: str,
-    agent_id: str,
-    claimed: tuple[Any, bool, bool],
-    claim: Callable[[], Awaitable[tuple[Any, bool, bool]]],
-) -> tuple[Any, bool, bool]:
-    """The claim to run the turn on, re-projected when the claimed session is stale.
-
-    Called with the lease held, so no other turn can change what the session
-    runs between this check and the tools. A session that went stale while this
-    turn waited for it (the pre-claim reset was declined because another turn
-    held it) is reset here, under the lease, and *claim* registers a fresh batch.
-    Raises :class:`StaleProjectionError` when the session is still stale after
-    :data:`_MAX_REPROJECTIONS` resets, rather than running the turn on a batch
-    that would auto-approve a call a hook covers.
-    """
-    for _ in range(_MAX_REPROJECTIONS):
-        if not await hook_projection_stale(claimed[0], agent_id):
-            return claimed
-        logger.info(
-            "agent %r: the claimed session auto-approves a capability a PreToolUse "
-            "hook now covers; re-projecting it before the turn runs",
-            agent_id,
-        )
-        await sessions.reset(session_key)
-        claimed = await claim()
-        # The reset recorded this task as the holder of the permit it popped; this
-        # claim's permit is the one its release is for (a claim that allocated has
-        # already said so, and saying it again changes nothing).
-        adopt = getattr(sessions, "adopt_turn", None)
-        if callable(adopt):
-            adopt(session_key)
-    if await hook_projection_stale(claimed[0], agent_id):
-        raise StaleProjectionError(
-            f"agent {agent_id!r}: the session could not be re-projected for the "
-            "PreToolUse hooks now in place; the turn was not run"
-        )
-    return claimed
 
 
 async def replace_stale_shared_session(
