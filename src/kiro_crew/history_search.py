@@ -144,6 +144,15 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     split_title_scope,
     tiered_first_hit,
 )
+from kiro_crew.history_search_rank import (  # noqa: F401 - facade re-exports
+    _BM25_B,
+    _BM25_K1,
+    _LENGTH_SMOOTHING_CHARS,
+    UNKNOWN_DF_IDF,
+    WordWeights,
+    inverse_document_frequency,
+    saturated_frequency,
+)
 from kiro_crew.jsonl_util import bounded_records
 
 if TYPE_CHECKING:
@@ -675,34 +684,30 @@ class SessionCatalogProjection:
         Ranking (higher is better)::
 
             score = ((title_hits * _TITLE_BOOST)
-                  + (content_hits / sqrt(1 + doc_chars / 1024))
+                  + content_hits
                   + saturated_hits) * recency
 
-        where ``*_hits`` sum the per-needle weighted counts, plus
-        ``_PHRASE_BOOST`` per occurrence of the exact whole query when it
-        carries more than a single needle. A short ASCII needle (``5``,
-        ``s3``; one or two characters, see ``_SHORT_NEEDLE_MAX_CHARS``)
-        contributes to ``saturated_hits`` instead of
+        where ``content_hits`` sums, per needle, its BM25 term-frequency factor
+        (:func:`~kiro_crew.history_search_rank.saturated_frequency`) times its
+        weight times its idf over the window, and ``title_hits`` sums its title
+        count times the same weight and idf. The idf comes from
+        :class:`~kiro_crew.history_search_rank.WordWeights`: a needle few visible
+        sessions hold counts for more than one most of them hold, and because a
+        needle's content factor levels off, a long transcript repeating a common
+        word cannot outscore a session holding a rarer one. A multi-needle
+        query also earns ``_PHRASE_BOOST`` times the same saturation of the exact
+        whole query's count, and ``_PHRASE_BOOST`` per title occurrence: at
+        comparable term frequency, the session holding the words TOGETHER as
+        typed ranks above one holding them far apart.
+
+        A short ASCII needle (``5``, ``s3``; one or two characters, see
+        ``_SHORT_NEEDLE_MAX_CHARS``) contributes to ``saturated_hits`` instead of
         ``content_hits``: ``log1p`` of its length-normalized body count. As a
-        substring it matches timestamps,
-        ids and hashes far more often than prose about the thing does, and
-        unsaturated a long transcript's thousands of incidental digit hits
-        out-score the session whose title IS the query. Saturating the
-        NORMALIZED count keeps body-only matches in frequency order (a
-        substantive long discussion still beats one stray mention in a short
-        session) without dividing by the length norm a second time. Its title
-        hits and its place in the AND gate are unchanged, and longer terms,
-        digit runs of three or more (``4411``) included,
-        keep raw frequency. The phrase bonus rewards adjacency:
-        at comparable term frequency, the session containing the words TOGETHER
-        as typed ranks above one that merely mentions them far apart.  It is
-        deliberately a bonus and not an override — a session repeating one term
-        far more often still wins on raw term frequency, exactly as it already
-        did for a single-token query.  (Saturating term frequency generally,
-        BM25-style, would change that and re-rank every existing single-token
-        query, so it stays out of scope; only the short needles above
-        are saturated, because for them frequency was measuring digit density,
-        not relevance.)
+        substring it matches timestamps, ids and hashes far more often than prose
+        about the thing does, and its frequency measures digit density rather
+        than relevance. The index cannot look it up, so its idf is never known.
+        Its title hits carry ``UNKNOWN_DF_IDF``, like any needle the index cannot
+        count, and its place in the AND gate is unchanged.
 
         ``recency`` is a bounded multiplicative boost — ``1 +
         _RECENCY_MAX_BOOST / (1 + age_days / _RECENCY_HALF_WEIGHT_DAYS)`` — so
@@ -718,13 +723,9 @@ class SessionCatalogProjection:
         often those words repeat. Every other query sorts by score alone.
 
         Title matches get a strong field boost - titles are short and
-        intentional, so a hit there is strong evidence.  Content matches
-        are normalized by a sqrt length factor so a long session with a
-        casual mention doesn't outrank a short, focused one.  (Simpler
-        than BM25's ``(1-b) + b*(dl/avgdl)`` because we avoid the
-        two-pass scan needed for corpus stats.)  Sessions missing any
-        required needle are dropped.  Ties break by recency (existing
-        ``list_sessions`` order - newest first).  Caps results at *limit*.
+        intentional, so a hit there is strong evidence. Sessions missing any
+        required needle are dropped. Ties break by recency (existing
+        ``list_sessions`` order - newest first). Caps results at *limit*.
         Only the ``session.search_scan_window`` most recent files are scored, so
         I/O stays bounded even with thousands of sessions. The rows come back as
         :class:`SearchRows`, which say when that window left sessions out.
@@ -864,7 +865,7 @@ class SessionCatalogProjection:
         # can overstate them, and a visible session pushed past the window by
         # private ones can go unreported. An accurate count would reveal them.
         searched = min(eligible, scan_window)
-        allowed, rowids = self._index_shortlist(window, needles)
+        allowed, rowids, postings = self._index_shortlist(window, needles)
         if keys is None and title_filter is None:
             # Only an unrestricted search sees every live session's row; one
             # restricted by *keys* or by a title would prune entries other
@@ -872,24 +873,28 @@ class SessionCatalogProjection:
             self._prune_content_memos(rowids)
         needle_keys = gate.needle_keys
         phrase_key = gate.phrase_key
+        # Each needle is weighted by how few visible sessions hold it; see
+        # history_search_rank for why only exactly answered needles are counted.
+        weights = WordWeights(needles, postings, SessionSearchIndex.answers_presence_exactly)
+        # (rank, meta, title_folded, doc_chars, (content, title) hits per needle,
+        #  phrase hits in content)
+        candidates: list[tuple[int, dict, str, int, list[tuple[int, int]], int]] = []
         for rank, meta in enumerate(window):
             key = meta["key"]
+            visible = not is_incognito_transcript(meta.get("memory_mode"))
+            title_folded = (meta.get("title") or "").casefold()
+            vouched = weights.has_postings and key in rowids
             if allowed is not None and key not in allowed:
                 # The index vouches for this session's current text and proved it
                 # cannot satisfy the gate, so it is skipped without the read and
                 # per-line parse that dominate a scan. This is the speedup; every
                 # line below is the unchanged exact evaluation, run on far fewer
                 # sessions.
+                if visible:
+                    weights.add_indexed(key, title_folded, rowids[key].doc_chars)
                 continue
-            title_folded = (meta.get("title") or "").casefold()
             content = _ContentCounts(self, key, rowids, gate, title_folded)
-            doc_chars = content.doc_chars
-            length_norm = math.sqrt(1 + doc_chars / 1024)
-            content_hits = 0.0
-            saturated_hits = 0.0
-            title_hits = 0.0
-            adjacency_hits = 0
-            verbatim_runs = 0
+            hits: list[tuple[int, int]] = []
             disqualified = False
             for needle, needle_key in zip(needles, needle_keys):
                 in_content = content.count(needle, needle_key)
@@ -899,6 +904,34 @@ class SessionCatalogProjection:
                     # session, so stop counting the rest.
                     disqualified = True
                     break
+                hits.append((in_content, in_title))
+            if visible and vouched:
+                weights.add_indexed(key, title_folded, content.doc_chars)
+            elif visible:
+                weights.add_scanned(
+                    title_folded,
+                    content.doc_chars,
+                    lambda pos: (
+                        hits[pos][0]
+                        if pos < len(hits)
+                        else content.count(needles[pos], needle_keys[pos])
+                    ),
+                )
+            if disqualified:
+                continue
+            phrase_hits = content.count_phrase(phrase, phrase_key) if multi else 0
+            candidates.append((rank, meta, title_folded, content.doc_chars, hits, phrase_hits))
+        mean_doc_chars = weights.mean_doc_chars
+        idf = weights.idf()
+        for rank, meta, title_folded, doc_chars, hits, phrase_hits in candidates:
+            length_norm = math.sqrt(1 + doc_chars / 1024)
+            content_hits = 0.0
+            saturated_hits = 0.0
+            title_hits = 0.0
+            adjacency_hits = 0
+            verbatim_runs = 0
+            for pos, (in_content, in_title) in enumerate(hits):
+                needle = needles[pos]
                 if needle.verbatim:
                     # Ranks by the sort key below, not by score: its repeats
                     # already score through the words it is made of.
@@ -917,9 +950,13 @@ class SessionCatalogProjection:
                     # dividing it again would compound the two penalties.
                     saturated_hits += math.log1p(in_content / length_norm) * needle.weight
                 else:
-                    content_hits += in_content * needle.weight
-                title_hits += in_title * needle.weight
-            if disqualified or not (content_hits or saturated_hits or title_hits):
+                    content_hits += (
+                        saturated_frequency(in_content, doc_chars, mean_doc_chars)
+                        * needle.weight
+                        * idf[pos]
+                    )
+                title_hits += in_title * needle.weight * idf[pos]
+            if not (content_hits or saturated_hits or title_hits):
                 continue
             if adjacency_floor and not adjacency_hits:
                 # Adjacency floor: a CJK query whose characters ALL appear but
@@ -938,9 +975,11 @@ class SessionCatalogProjection:
                 continue
             if multi:
                 # Reward the words appearing together, in order, as typed.
-                content_hits += content.count_phrase(phrase, phrase_key) * _PHRASE_BOOST
+                content_hits += (
+                    saturated_frequency(phrase_hits, doc_chars, mean_doc_chars) * _PHRASE_BOOST
+                )
                 title_hits += title_folded.count(phrase) * _PHRASE_BOOST
-            score = title_hits * _TITLE_BOOST + content_hits / length_norm + saturated_hits
+            score = title_hits * _TITLE_BOOST + content_hits + saturated_hits
             # Recency boost: multiplicative and bounded to (1.0, 2.5], so a
             # fresh session with comparable relevance outranks a stale one, but
             # an old session with a decisively better match still wins — the
@@ -1109,14 +1148,16 @@ class SessionCatalogProjection:
 
     def _index_shortlist(
         self, window: list[dict], needles: list[SearchNeedle]
-    ) -> tuple[set[str] | None, "dict[str, IndexRow]"]:
+    ) -> tuple[set[str] | None, "dict[str, IndexRow]", dict[int, set[str]] | None]:
         """Narrow *window* to the sessions that could satisfy the gate.
 
-        Returns ``(allowed, rowids)``. ``allowed`` is ``None`` when the index
-        cannot narrow this query — no needle was long enough to look up, or the
-        index is unavailable — in which case the caller scores every session
+        Returns ``(allowed, rowids, postings)``. ``allowed`` is ``None`` when the
+        index cannot narrow this query — no needle was long enough to look up, or
+        the index is unavailable — in which case the caller scores every session
         exactly as it always did. ``rowids`` addresses the folded text of the
-        sessions the index vouches for.
+        sessions the index vouches for. ``postings`` maps each looked-up needle's
+        position to the indexed sessions whose content holds it, from the same
+        snapshot, or is ``None`` when nothing was looked up.
 
         Three unions make ``allowed`` a provable SUPERSET of the true hit set,
         and all three are load-bearing:
@@ -1133,7 +1174,7 @@ class SessionCatalogProjection:
         """
         index = self.search_index
         if not index.available:
-            return (None, {})
+            return (None, {}, None)
         stats: dict[str, os.stat_result] = {}
         for meta in window:
             try:
@@ -1168,7 +1209,7 @@ class SessionCatalogProjection:
             ):
                 del rowids[key]
         if per_needle is None:
-            return (None, rowids)
+            return (None, rowids, None)
         unvouched = {meta["key"] for meta in window} - set(rowids)
         allowed: set[str] | None = None
         for pos, content_keys in per_needle.items():
@@ -1180,7 +1221,7 @@ class SessionCatalogProjection:
             }
             satisfied = content_keys | in_title | unvouched
             allowed = satisfied if allowed is None else (allowed & satisfied)
-        return (allowed, rowids)
+        return (allowed, rowids, per_needle)
 
     def _stat_key(self, key: str) -> os.stat_result:
         """``self._log._path(key).stat()`` without building a ``Path`` per call.
@@ -1614,6 +1655,8 @@ class SessionCatalogProjection:
 #                               ceilings, the single-flight table, memo-gated counts
 #   ``history_search_listing`` -- one catalog row from one transcript, shared by the
 #                               directory scan and the listing index
+#   ``history_search_rank``  -- how much each query word counts: idf over the window,
+#                               term-frequency saturation
 #
 # ``test/test_history_search_bindings.py`` pins the binding and the reach.
 # --------------------------------------------------------------------------- #
@@ -1622,6 +1665,7 @@ _OWNERS = (
     "kiro_crew.history_search_query",
     "kiro_crew.history_search_memo",
     "kiro_crew.history_search_listing",
+    "kiro_crew.history_search_rank",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)

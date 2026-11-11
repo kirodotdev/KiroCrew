@@ -12,11 +12,13 @@ from __future__ import annotations
 import os
 
 import pytest
+from session_search_rank_helpers import RARE_WORD_QUERY, write_rare_word_corpus
 
 from kiro_crew import history
 from kiro_crew._sqlite_compat import fts5_available, sqlite3
 from kiro_crew.history import ConversationLog
 from kiro_crew.history_index import FOLD_SEPARATOR
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite built without FTS5")
 
@@ -486,3 +488,28 @@ def test_deleted_session_leaves_no_row(tmp_path):
     assert "s-ack" not in log._catalog_projection.search_index.indexed_keys()
     rows = log.search_sessions("contention")
     assert "s-ack" not in {r["key"] for r in rows}
+
+
+@pytest.mark.parametrize("private_sessions", [0, 6])
+def test_word_weights_are_the_same_whether_the_index_or_the_scan_counts_them(
+    tmp_path, private_sessions
+):
+    """The index answers how many sessions hold a word from its postings, without
+    reading the sessions it rules out; the scan counts every one. Both must weigh
+    the words alike, or the index would reorder results."""
+    scan_dir = tmp_path / "scan"
+    index_dir = tmp_path / "indexed"
+    for base in (scan_dir, index_dir):
+        base.mkdir()
+        write_rare_word_corpus(base, private_sessions=private_sessions)
+    scan_log = ConversationLog(base_dir=scan_dir)
+    index_log = ConversationLog(base_dir=index_dir)
+
+    scan_log._catalog_projection.search_index.available = False
+    scan_rows = scan_log.search_sessions(RARE_WORD_QUERY)
+    report = index_log._catalog_projection.backfill_index(budget_secs=FALLBACK_TIMEOUT_SECS)
+    assert report["remaining"] == 0
+    indexed_rows = index_log.search_sessions(RARE_WORD_QUERY)
+
+    assert [r["key"] for r in indexed_rows][:2] == ["focused", "chatty"]
+    assert _strip(indexed_rows) == _strip(scan_rows)
