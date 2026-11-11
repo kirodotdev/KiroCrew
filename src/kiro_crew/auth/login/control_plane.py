@@ -92,6 +92,11 @@ def control_plane_url(region: str) -> str:
     return _CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]
 
 
+def control_plane_urls(region: str) -> list[str]:
+    """Every CPS host sign-in asks for *region*'s profiles, in the order it asks them."""
+    return list(dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()]))
+
+
 def profile_region(profile_arn: str) -> str:
     """The region of a Kiro profile ARN (``arn:<partition>:codewhisperer:<region>:...``).
 
@@ -178,10 +183,9 @@ async def list_available_profiles(
     every host answered and listed none, the empty result names those hosts and the
     pages they took, for the diagnostic log.
     """
-    urls = dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()])
     errors: list[ControlPlaneError] = []
     empty: list[ProfileListing] = []
-    for url in urls:
+    for url in control_plane_urls(region):
         try:
             listing = await _list_profiles_at(url, access_token, session)
         except ControlPlaneError as err:
