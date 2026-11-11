@@ -297,7 +297,12 @@ def run_script_sandboxed(
         "except Report as r:\n"
         "    _envelope = {'status': 'report', 'message': r.message}\n"
         "except Exception as e:\n"
-        "    _envelope = {'status': 'error', 'error': str(e)}\n"
+        # The type names the failure when the text is empty (a bare ``assert``)
+        # or reads as a value (``KeyError`` prints only the missing key).
+        "    _msg = str(e)\n"
+        "    _envelope = {'status': 'error', 'error': (\n"
+        "        type(e).__name__ + ': ' + _msg if _msg else type(e).__name__\n"
+        "    )}\n"
         "finally:\n"
         "    ctx.close()\n"
         # Probe again before any non-error envelope: a sandbox torn down WHILE
