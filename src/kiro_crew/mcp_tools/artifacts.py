@@ -1210,6 +1210,15 @@ def artifact_folder_delete(name: str, args: dict[str, Any]) -> str:
     if cascade:
         n_del = len(d.get("deleted_artifact_slugs", []))
         n_folders = len(d.get("deleted_folder_ids", []))
+        # The route names the artifacts the cascade refused to destroy (still
+        # published, moved in mid-delete, or replaced) in ``notice``; without it
+        # the reply would claim a whole-subtree delete that did not happen.
+        notice = d.get("notice")
+        if notice:
+            return (
+                f"Deleted folder (id={fld_id}) and part of its subtree "
+                f"({n_folders} folders, {n_del} artifacts). {notice}"
+            )
         return (
             f"Deleted folder (id={fld_id}) and its entire subtree "
             f"({n_folders} folders, {n_del} artifacts)."
