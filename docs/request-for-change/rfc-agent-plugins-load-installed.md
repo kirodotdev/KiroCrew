@@ -1,15 +1,15 @@
 ---
 title: First-class loading of installed Agent Plugins / Kiro Powers
-status: draft
+status: superseded
 author: ShreyPurohit
 created: 2026-10-08
-last-audited: 2026-10-11
-audited-at: efb49507
-doc-pr: null
+last-audited: 2026-11-02
+audited-at: ddef7ee860
+doc-pr: 18181
 implementation-prs: []
 tracking-issues: [9212]
 supersedes: []
-superseded-by: []
+superseded-by: [rfc-agent-plugins-standard.md]
 ---
 
 # RFC: First-class loading of installed Agent Plugins / Kiro Powers
