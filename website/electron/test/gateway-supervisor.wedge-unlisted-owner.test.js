@@ -4,7 +4,7 @@
 // held. Recovery shows the loading screen and waits for the port to free: a
 // port that frees in time is respawned into, and one still held when the wait
 // runs out gets the restart-required dialog with no respawn. The bind check
-// runs for real against a real socket; only netstat and the clock are scripted.
+// runs for real against a real socket; only netstat, the stack dump and the clock are scripted.
 
 const net = require("node:net");
 const { test } = require("node:test");
