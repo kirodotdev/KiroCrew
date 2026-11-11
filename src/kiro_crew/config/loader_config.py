@@ -62,9 +62,9 @@ from kiro_crew.config.loader_document import (
     write_config_atomically,
 )
 from kiro_crew.config.loader_locations import (
-    _session_work_dir,
     config_local_path,
     config_path,
+    provider_work_dir,
     read_endorsed_config_text,
 )
 from kiro_crew.config.loader_snapshots import (
@@ -1536,7 +1536,7 @@ class KiroCrewConfig:
             include_memory: bool = True,
             **_kwargs: object,
         ):  # return type inferred from build_acp_provider (SDK boundary: config may not name AcpProvider)
-            wdir = Path(cwd) if cwd else _session_work_dir(session_key)
+            wdir = provider_work_dir(session_key, cwd)
             # Canonical crew identity for the session (keys per-agent watchdog
             # windows on the handle) — one shared resolution rule, see
             # resolve_crew_identity.

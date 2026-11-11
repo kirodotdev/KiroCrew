@@ -7,6 +7,7 @@ import functools  # noqa: F401
 import importlib as _importlib
 import json  # noqa: F401
 import logging
+import os  # noqa: F401
 import sys as _sys
 import time  # noqa: F401
 from collections.abc import AsyncIterator, Callable  # noqa: F401
@@ -14,7 +15,9 @@ from contextlib import aclosing  # noqa: F401
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncContextManager
 
-from kiro_crew import _facade_mirror, model_scope  # noqa: F401
+from kiro_crew import model_scope  # noqa: F401
+from kiro_crew import _facade_mirror
+from kiro_crew import atomic_write as atomic_write_module  # noqa: F401
 from kiro_crew.acp import relaunch_reload as _relaunch_reload
 from kiro_crew.acp.client import (  # noqa: F401
     DEFAULT_MODEL,
@@ -137,6 +140,7 @@ from kiro_crew.trust_patterns import GrantDeadline
 from kiro_crew.workspace_cli_settings import (  # noqa: F401
     CLI_SETTINGS_LOCK_ACTION_TIMEOUT_SECS,
     CLI_SETTINGS_LOCK_TIMEOUT_SECS,
+    locked_workspace_cli_settings,
     workspace_cli_settings_lock,
 )
 
@@ -1467,6 +1471,7 @@ class AcpProvider(LLMProvider):
 
     # The workspace ``cli.json`` overlay a spawn reads: ``kiro_crew.providers.acp_cli_overlay``.
     _apply_effort_overlay = _acp_cli_overlay._apply_effort_overlay
+    effort_overlay_refusal = staticmethod(_acp_cli_overlay.effort_overlay_refusal)
     _recover_effort_overlay = _acp_cli_overlay._recover_effort_overlay
     _apply_tool_search_overlay = _acp_cli_overlay._apply_tool_search_overlay
     # The model and reasoning effort the session runs at: ``kiro_crew.providers.acp_model_effort``.
@@ -1640,6 +1645,8 @@ for _owner in _ACP_PROVIDER_OWNERS:
 _SERVED: frozenset[str] = frozenset(
     {
         "_CLI_JSON_ENCODING",
+        "_CLI_JSON_MAX_BYTES",
+        "_OverlayTooLarge",
         "_RESUME_BACKOFF_BASE_S",
         "_RESUME_MAX_ATTEMPTS",
         "_RESUME_TRANSIENT_LOCK_MARKERS",
@@ -1649,7 +1656,11 @@ _SERVED: frozenset[str] = frozenset(
         "_clamp_min_tokens",
         "_clear_cli_overlay_effort",
         "_is_transient_resume_lock_error",
+        "_publish_cli_overlay",
         "_read_cli_overlay",
+        "_read_cli_overlay_document",
+        "_read_named_cli_json",
+        "_read_pinned_cli_json",
         "_unlink_dead_session_lock",
         "_write_cli_overlay",
         "_write_tool_search_overlay",
@@ -1669,10 +1680,16 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.providers.acp_cli_overlay import (  # noqa: F401
         _CLI_JSON_ENCODING,
+        _CLI_JSON_MAX_BYTES,
         _clamp_min_pct,
         _clamp_min_tokens,
         _clear_cli_overlay_effort,
+        _OverlayTooLarge,
+        _publish_cli_overlay,
         _read_cli_overlay,
+        _read_cli_overlay_document,
+        _read_named_cli_json,
+        _read_pinned_cli_json,
         _write_cli_overlay,
         _write_tool_search_overlay,
     )

@@ -162,12 +162,14 @@ class TestWritersLeaveAnOversizedFileUnchanged:
                 write()
             assert path.read_bytes() == before
 
-    def test_a_malformed_small_file_is_still_replaced(self, tmp_path):
+    def test_a_malformed_small_file_is_left_unchanged(self, tmp_path):
+        # A file that does not parse is the person's, not empty: no writer replaces it.
         path = _overlay(tmp_path)
         path.parent.mkdir(parents=True)
         path.write_text("{ not json", encoding="utf-8")
-        _write_cli_overlay(tmp_path, MODEL, "max")
-        assert _read_cli_overlay(tmp_path) == {MODEL: "max"}
+        with pytest.raises(ValueError):
+            _write_cli_overlay(tmp_path, MODEL, "max")
+        assert path.read_text(encoding="utf-8") == "{ not json"
 
 
 class TestProviderLeavesAnOversizedFileAlone:

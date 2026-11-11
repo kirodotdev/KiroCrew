@@ -1644,6 +1644,7 @@ class SessionAllocationService:
 _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.errors",
     "kiro_crew.session_allocation_parts.companions",
+    "kiro_crew.session_allocation_parts.cold_start_work_dir",
     "kiro_crew.session_allocation_parts.memory_policy",
     "kiro_crew.session_allocation_parts.eviction",
     "kiro_crew.session_allocation_parts.get_or_create",

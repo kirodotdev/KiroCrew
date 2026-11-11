@@ -32,6 +32,7 @@ from kiro_crew.agent_discovery import (  # noqa: F401
 )
 from kiro_crew.agent_sdk.backends import (  # noqa: F401
     ACP_BACKENDS_APPROVE_FOR_ME,
+    ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
 )
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of  # noqa: F401
