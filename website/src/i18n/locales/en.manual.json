@@ -3042,6 +3042,8 @@
       "unlink_from": "Unlink from {{label}}",
       "unlink_outcome": "Removes the connection — {{label}} stops driving this session. Reconnect anytime from the session menu.",
       "unlink_outcome_out": "Removes the connection — replies stop going to {{label}}. Reconnect anytime from the session menu.",
+      "unlink_outcome_here": "Removes the connection: no more messages to or from {{label}}. Connect again from this menu.",
+      "unlink_outcome_out_here": "Removes the connection: replies stop going to {{label}}. Connect again from this menu.",
       "unlink_stale": "The {{label}} connection changed while this menu was open. Nothing was unlinked; the row was refreshed.",
       "held_elsewhere": "{{label}} is in use by another session.",
       "unavailable": "This destination is unavailable.",
