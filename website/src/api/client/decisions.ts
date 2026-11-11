@@ -141,7 +141,7 @@ export interface DecisionsProviderData {
   configured_endpoint: string
   /** The configured address is a literal loopback one, so no Jev key is sent to it. */
   loopback?: boolean
-  /** Fleet policy allows hosted Jev (`capabilities.decisions`). Absent on an older gateway. */
+  /** Fleet policy allows hosted Jev: `capabilities.decisions` and the ceiling's endpoints list. When false the picker hides it. Absent on an older gateway. */
   hosted_permitted?: boolean
   /** Fleet policy allows a local preset (`capabilities.decisions_local`). Absent on an older gateway. */
   local_permitted?: boolean

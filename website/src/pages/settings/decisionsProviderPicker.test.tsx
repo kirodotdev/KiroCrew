@@ -487,7 +487,7 @@ describe('DecisionsProviderPicker', () => {
 })
 
 describe('fleet policy', () => {
-  it('greys out hosted Jev when policy withdraws it and keeps local models choosable', async () => {
+  it('hides hosted Jev when policy withdraws it and keeps local models choosable', async () => {
     vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
       ...providerOf('plumb-4b'),
       hosted_permitted: false,
@@ -502,12 +502,9 @@ describe('fleet policy', () => {
         <DecisionsProviderPicker frozen={false} />
       </QueryClientProvider>,
     )
-    const jev = await screen.findByRole('radio', {
-      name: /Jev, hosted by TypeSafe/i,
-    })
-    expect(jev).toBeDisabled()
-    expect(screen.getByRole('radio', { name: 'Laya' })).not.toBeDisabled()
-    expect(screen.getAllByText(/Turned off by your organization's policy/i)).toHaveLength(1)
+    expect(await screen.findByRole('radio', { name: 'Laya' })).not.toBeDisabled()
+    expect(screen.queryByRole('radio', { name: /Jev, hosted by TypeSafe/i })).toBeNull()
+    expect(screen.queryByText(/Turned off by your organization's policy/i)).toBeNull()
   })
 
   it('keeps "No model" choosable when policy withdraws both sides', async () => {

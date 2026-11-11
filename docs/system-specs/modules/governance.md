@@ -3598,8 +3598,9 @@ started by hand on a preset's port from answering. Both
 chokepoints select the row from the configured provider and the runtime, never from
 the request. `PUT /api/decisions/provider`
 refuses a switch to a withdrawn side with `403 decisions_capability_denied`, and its
-`GET` reports `hosted_permitted` / `local_permitted` so the picker greys that side
-out. `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
+`GET` reports `hosted_permitted` / `local_permitted`; the
+picker hides hosted Jev when it is refused and greys out a refused local preset, and the
+PUT also asks the `endpoints` list for the hosted host (see decisions.md). `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
 only when `capabilities.decisions` is pinned off (which covers both sides) or both
 rows are. A fleet that permits hosted Jev but wants no local model pins this row.
 

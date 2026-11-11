@@ -1072,6 +1072,35 @@ OP_PROVIDER_GET = "decisions_provider_get"
 OP_PROVIDER_PUT = "decisions_provider_put"
 
 
+def endpoint_refused(endpoint: str) -> bool:
+    """Whether the ceiling's ``endpoints`` list refuses the host a request to *endpoint* reaches.
+
+    The same question the send path asks, so an option the answer refuses is one a
+    decision could never use. Blocking: call off the event loop.
+    """
+    from kiro_crew.decisions import capability
+
+    return capability.targets_denied(point=None, model=None, endpoint=endpoint)
+
+
+def hosted_offered(hosted_denied: bool) -> bool:
+    """Whether hosted Jev is offered: the hosted row AND the ``endpoints`` list's answer."""
+    from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
+
+    return not hosted_denied and not endpoint_refused(DECISION_PROVIDER_ENDPOINT_DEFAULT)
+
+
+def switch_refused(endpoint: str, *, local: bool) -> bool:
+    """Whether a switch to the route-built *endpoint* is withheld by the ceiling.
+
+    The row for its side, and for an option that leaves the machine also the
+    ``endpoints`` list, so the PUT refuses what the picker would not offer.
+    """
+    from kiro_crew.decisions.capability import is_decisions_denied
+
+    return is_decisions_denied(local=local) or (not local and endpoint_refused(endpoint))
+
+
 def _provider_payload() -> dict:
     """The presets and the preset the config names now. Filesystem IO."""
     from kiro_crew.config import live
@@ -1090,6 +1119,7 @@ def _provider_payload() -> dict:
     status = runtime.status()
     active = local_models.active_id(endpoint, model)
     hosted_denied, local_denied = denied_sides()
+    hosted_permitted = hosted_offered(hosted_denied)
     return {
         "presets": [
             {**local_models.as_payload(m), "installed": m.id in installed}
@@ -1103,9 +1133,10 @@ def _provider_payload() -> dict:
         # The card needs to say when a hand-written address gets no key; the one
         # predicate the oracle uses decides it, so the two surfaces cannot disagree.
         "loopback": local_models.is_loopback_endpoint(endpoint),
-        # Which side of the picker the fleet allows: hosted Jev by
-        # ``capabilities.decisions``, a local preset by both rows, each audited once.
-        "hosted_permitted": not hosted_denied,
+        # Which options the fleet allows. Hosted Jev: ``capabilities.decisions`` AND
+        # the ceiling's ``endpoints`` list for its host. A local preset: both rows.
+        # A refused hosted option is not offered, so the picker hides it.
+        "hosted_permitted": hosted_permitted,
         "local_permitted": not local_denied,
     }
 
@@ -1244,7 +1275,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
             status=400,
         )
     endpoint, model, timeout_ms = target
-    from kiro_crew.decisions.capability import is_decisions_denied, names_local_preset
+    from kiro_crew.decisions.capability import names_local_preset
 
     # A switch to a side the fleet withdrew would leave a provider nothing may use;
     # refuse it where the owner is looking rather than letting decisions stop quietly.
@@ -1255,7 +1286,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
     # "No model" sends nothing and runs nothing, so no row has anything to withhold:
     # it is the way out on a fleet that denies both, and it is never refused.
     if endpoint != ENDPOINT_NONE and await asyncio.to_thread(
-        is_decisions_denied, local=target_local
+        switch_refused, endpoint, local=target_local
     ):
         await _audit(
             request,

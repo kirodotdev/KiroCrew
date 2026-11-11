@@ -214,12 +214,16 @@ export function DecisionsProviderPicker({
   }
   if (!data) return null
 
-  // Policy decides which side may be chosen; an older gateway reports neither, which
-  // is the permissive answer it always had.
+  // Policy decides which options may be chosen; an older gateway reports none of it,
+  // which is the permissive answer it always had.
   const hostedBlocked = data.hosted_permitted === false
   const localBlocked = data.local_permitted === false
-  // "No model" sends and runs nothing, so no policy withholds it.
-  const blockedId = (id: string) => (id === PRESET_NONE ? false : id === PRESET_JEV ? hostedBlocked : localBlocked)
+  // An option that goes to another service is not offered when policy refuses it,
+  // not greyed out.
+  const jevHidden = hostedBlocked
+  // "No model" sends and runs nothing, so no policy withholds it. A local model is
+  // shown, and greyed out while its own row refuses it.
+  const blockedId = (id: string) => (id === PRESET_NONE || id === PRESET_JEV ? false : localBlocked)
   // The polled status is newer than the provider read while that read still shows
   // the model being prepared. Once a fresh provider read has settled, its own
   // runtime is current and the last poll -- kept by react-query -- is not.
@@ -231,7 +235,7 @@ export function DecisionsProviderPicker({
   const presets = live ? data.presets.map(p => ({ ...p, installed: live.installed.includes(p.id) })) : data.presets
   const totalGb = memQ.data
   const recommended = recommendedPreset(localBlocked ? [] : presets, totalGb)
-  const chosen = selected ?? (data.active === 'custom' ? '' : data.active)
+  const chosen = selected ?? (data.active === 'custom' || (data.active === PRESET_JEV && jevHidden) ? '' : data.active)
   const chosenPreset = presets.find(p => p.id === chosen)
   const runtime = live?.runtime ?? data.runtime
   // The runtime's report applies only to the preset it is running.
@@ -311,13 +315,14 @@ export function DecisionsProviderPicker({
           message={i18nT('pages.developer.featurePreviewsTab.decisions_provider_memory_unavailable')}
         />
       )}
-      {option(
-        PRESET_JEV,
-        i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev'),
-        <span className="text-[12px] text-muted">
-          {i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev_detail')}
-        </span>,
-      )}
+      {!jevHidden &&
+        option(
+          PRESET_JEV,
+          i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev'),
+          <span className="text-[12px] text-muted">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_provider_jev_detail')}
+          </span>,
+        )}
       {presets.map(p =>
         option(
           p.id,
