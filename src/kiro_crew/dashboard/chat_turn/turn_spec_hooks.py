@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.agent_files import is_kirocrew_default_agent
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
-from kiro_crew.agent_sdk.kas_engine import keeps_mcp_oauth
+from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
 from kiro_crew.agent_sdk.spec_hooks import (
     OverlongHookCommand,
     crew_fired_spec_hooks,
@@ -223,9 +223,12 @@ async def _prepare_spec_hooks(
                 spec_project_dir(client),
                 # Only KAS receives `toolsSettings` as `permissions` rules.
                 translates_tools_settings=on_kas,
-                # Only KAS drops a remote MCP server's `oauth` block, and only an
-                # engine that does not announce `mcpServerOAuth`.
-                discards_mcp_oauth=on_kas and not keeps_mcp_oauth(client),
+                # Only a KAS engine Crew knows is older than 0.66.104 drops a
+                # remote MCP server's `oauth` block; the relay's version is unknown.
+                discards_mcp_oauth=on_kas and discards_mcp_oauth(client),
+                # Every KAS engine is sent no block that names a `clientSecret`
+                # or keeps nothing Crew can send (`oauth_withheld`).
+                withholds_oauth_secret=on_kas,
                 **by_session,
             )
         )
