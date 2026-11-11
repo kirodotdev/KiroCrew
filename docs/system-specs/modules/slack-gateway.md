@@ -2061,7 +2061,13 @@ gateway behaves as it does without it.
   A project that is
   not a repository, a missing project, a sensitive path, a filter repo or a host
   with no sandbox get no worktree and no error (`worktree_skipped` says why);
-  worktree decisions are SEL-recorded as `code_channel_worktree`. A record lost
+  worktree decisions are SEL-recorded as `code_channel_worktree`. For a project
+  git will not open, the reason is git's own, read by the follow-up card's
+  classifier (`_toplevel_probe` + `_not_a_repo_refusal`): `not_a_repo` (no
+  repository), `broken_gitfile`, `git_dubious_ownership`,
+  `git_permission_denied` or `git_probe_failed`. Each is a settled skip,
+  audited `denied` with git's line redacted, and `/create-pr` answers with that
+  reason's sentence. A record lost
   across a restart is recovered by adopting the worktree the derived branch holds.
   A `git worktree add` (or the repository probe before it) that times out or
   fails with an OS error is stored and counted like any other git error
