@@ -569,7 +569,11 @@ Static rejections:
   `breakpoint`, `memoryview`, `classmethod`, `staticmethod`, `super`, `type`.
 - **No dunder, private or introspection attribute access, and no dunder name access**
   (`().__class__`, `__builtins__`, `x._y`, `FORBIDDEN_ATTRS` — frame, code and
-  generator internals such as `gi_frame` / `f_globals` / `tb_frame`, and `mro`),
+  generator internals such as `gi_frame` / `f_globals` / `tb_frame`, and `mro`;
+  the coroutine drivers `send` / `throw`, which hand back the pending Future a ctx
+  coroutine suspended on; the `Future` → loop accessor `get_loop`; and the event
+  loop's out-of-sandbox capabilities `subprocess_shell` / `subprocess_exec` /
+  `run_in_executor`),
   nor `.format` / `.format_map`, whose template is interpreted at run time. One
   predicate (`_attr_reason`) judges an attribute node, a format-string field and
   a class-pattern keyword (`MatchClass.kwd_attrs`, a plain string rather than an
