@@ -128,11 +128,14 @@ def stamp_before_append(path: Path | str) -> tuple[int, int, int] | None:
     return stored if stored and now and stored[:2] == now else None
 
 
-def bump_after_append(path: Path | str, before: tuple[int, int, int] | None) -> None:
-    """Store ``count + 1`` for the one row just appended; no-op without a matching *before*."""
+def bump_after_append(path: Path | str, before: tuple[int, int, int] | None, line: str) -> None:
+    """Store the count after appending *line*; no-op without a matching *before*.
+
+    *line* adds one only if :func:`message_row` calls it a message, as a full count would.
+    """
     now = _stamp(path)
     if before is not None and now is not None:
-        _store(Path(path), now, before[2] + 1)
+        _store(Path(path), now, before[2] + (message_row(line) is not None))
 
 
 def forget_count(path: Path | str) -> None:

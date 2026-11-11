@@ -274,3 +274,101 @@ def test_a_rewritten_transcript_is_recounted(tmp_path: Path) -> None:
     assert _unconsolidated_after_restart(base, "k") == 4
     log.rewrite_session("k", [{"role": "user", "content": "only"}])
     assert _unconsolidated_after_restart(base, "k") == 1
+
+
+def _stored(base: Path, key: str) -> int | None:
+    return transcript_count.stored_count(ConversationLog(base_dir=base)._path(key))
+
+
+def _full(base: Path, key: str) -> int:
+    return transcript_count.count_messages(ConversationLog(base_dir=base)._path(key))
+
+
+def _fixture(tmp_path: Path) -> tuple[Path, ConversationLog]:
+    base = tmp_path / "sessions"
+    log = ConversationLog(base_dir=base)
+    log.init()
+    for i in range(6):
+        log.append("k", "user" if i % 2 else "assistant", f"m{i} \u2028 \u00e9")
+    assert _unconsolidated_after_restart(base, "k") == 6  # stores
+    assert _stored(base, "k") == 6
+    return base, log
+
+
+def _same_as_full_count(base: Path) -> None:
+    """The restart answer equals the old full count, whatever was done to the file."""
+    full = _full(base, "k")
+    assert _unconsolidated_after_restart(base, "k") == full
+    assert _stored(base, "k") == full  # and the stored value is now right too
+
+
+def test_stored_count_equals_full_count_after_appends(tmp_path: Path) -> None:
+    base, log = _fixture(tmp_path)
+    for i in range(7):
+        log.append("k", "assistant", f"more {i}")
+        assert _stored(base, "k") == _full(base, "k")
+    _same_as_full_count(base)
+
+
+def test_append_of_a_metadata_shaped_entry_adds_nothing(tmp_path: Path) -> None:
+    base, log = _fixture(tmp_path)
+    log.append("k", "user", "x", entry={"_type": "metadata", "role": "user", "content": "x"})
+    _same_as_full_count(base)
+
+
+@pytest.mark.parametrize("how", ["truncate_rows", "rewrite", "same_size_other_mtime", "grow"])
+def test_a_file_changed_outside_the_append_path_is_recounted(tmp_path: Path, how: str) -> None:
+    base, log = _fixture(tmp_path)
+    path = log._path("k")
+    raw = path.read_bytes()
+    if how == "truncate_rows":
+        path.write_bytes(b"\n".join(raw.split(b"\n")[:3]) + b"\n")
+    elif how == "rewrite":
+        log.rewrite_session("k", [{"role": "user", "content": "only"}])
+    elif how == "same_size_other_mtime":
+        lines = raw.split(b"\n")
+        lines[2] = lines[2].replace(b'"role"', b'"rolf"')  # same size, still a dict row
+        path.write_bytes(b"\n".join(lines))
+        os.utime(path, ns=(1, 1))
+    else:
+        with open(path, "ab") as handle:  # a foreign writer, not the append path
+            handle.write(b'{"role": "user", "content": "foreign"}\n')
+    _same_as_full_count(base)
+
+
+def test_a_torn_last_line(tmp_path: Path) -> None:
+    base, log = _fixture(tmp_path)
+    with open(log._path("k"), "ab") as handle:
+        handle.write(b'{"role": "user", "content": "tor')  # killed mid-write
+    _same_as_full_count(base)
+    log.append("k", "user", "after the tear")  # starts a fresh line
+    assert _stored(base, "k") == _full(base, "k") == 7
+    _same_as_full_count(base)
+
+
+def test_an_empty_file(tmp_path: Path) -> None:
+    base = tmp_path / "sessions"
+    log = ConversationLog(base_dir=base)
+    log.init()
+    log._path("k").write_bytes(b"")
+    _same_as_full_count(base)
+    log.append("k", "user", "first")
+    _same_as_full_count(base)
+
+
+@pytest.mark.parametrize("damage", ["missing", "garbage", "wrong_types", "wrong_count_keys"])
+def test_a_missing_or_corrupt_sidecar_is_recounted_and_stored(tmp_path: Path, damage: str) -> None:
+    base, log = _fixture(tmp_path)
+    sidecar = transcript_count._sidecar(log._path("k"))
+    if damage == "missing":
+        sidecar.unlink()
+    elif damage == "garbage":
+        sidecar.write_bytes(b"\xff\x00{not json")
+    elif damage == "wrong_types":
+        sidecar.write_text('{"size": "1", "mtime_ns": 2.5, "count": null}')
+    else:
+        sidecar.write_text("[]")
+    assert _stored(base, "k") is None
+    _same_as_full_count(base)
+    log.append("k", "user", "next")
+    _same_as_full_count(base)
