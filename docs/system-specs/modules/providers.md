@@ -864,7 +864,8 @@ MCP-free. Every cloud answer comes from that harness through the existing
 seams (`session_extras`, `session_mcp_servers`, `notification_aliases`) and the
 `session_request` seam, which every host the backend table serves answers by
 returning the request and agent unchanged, except that ordinary KAS adds
-`_meta.kiro.modeId` to a `session/new`, naming its first injected agent
+`_meta.kiro.modeId` to a `session/new`, naming its first injected agent or the
+start agent it registers beside one that declares MCP servers
 ([agent-host-contract](agent-host-contract.md) §1, selection row) and the cloud
 harness does not inherit that; `load_session` asks it only inside its KAS
 branch. The ordinary session request shaping is unchanged, and so is the
