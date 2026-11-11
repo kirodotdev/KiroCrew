@@ -440,6 +440,19 @@ left as the user set it.
   again, never as Quit. The dialog reads the gpu-crash-fallback latch for
   "has a dashboard document loaded in this run"; there is one such latch.
   No sandbox switch is ever applied.
+- **AppImage without Chromium's sandbox.** The AppImage's AppRun starts the app
+  with `--no-sandbox` when the host refuses an unprivileged user namespace (an
+  AppImage runs from a FUSE mount, which cannot carry Chromium's setuid sandbox
+  helper). When that switch is on argv, the app shows a native notice as soon
+  as the main window exists, before the gateway boot, saying why. On a host
+  with `kernel.apparmor_restrict_unprivileged_userns=1` it names the bundled
+  CLI's `sandbox install-profile` command by absolute path, which fixes both
+  this and the agent sandbox, with a Copy command button; otherwise it opens
+  the install guide's other-causes section. Both say the AppImage installs no
+  `kirocrew` command and that the one-line install puts one on PATH (the
+  packages add only `kirocrew-desktop`). "Don't show this again" sets
+  `chromiumSandboxNoticeDismissed` in `config.json`
+  (`chromium-sandbox-notice.js`).
 - External links open in your default browser
 - **`kirocrew://` links.** The installer registers the scheme, and `deep-link.js`
   accepts exactly four shapes, refusing everything else with a logged reason:

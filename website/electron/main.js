@@ -49,6 +49,8 @@ const { identityFamily } = require("./instance-guard");
 const { EDITION_LTS, readBakedEdition } = require("./edition");
 const { describeSingletonLock } = require("./singleton-lock");
 const { startLinuxDesktopIntegration } = require("./linux-desktop-integration");
+const { describeChromiumSandboxOff, showChromiumSandboxNotice } = require("./chromium-sandbox-notice");
+const { findKirocrewBin } = require("./find-bin");
 const { resolveLinuxInstall, readExternallyManaged } = require("./auto-update");
 const { reregisterBundleIfManaged } = require("./mac-launch-services");
 const { initNativeLogging } = require("./native-logging");
@@ -774,6 +776,28 @@ app.whenReady().then(async () => {
   ipcRegistrar.registerShell();
   windows.syncTray();
   const mainWindow = windows.createMainWindow();
+
+  // An AppImage whose AppRun added --no-sandbox says why and how to fix it.
+  // Shown before the gateway boot, not awaited, so a gateway that never
+  // answers still leaves the explanation on screen.
+  try {
+    showChromiumSandboxNotice({
+      notice: describeChromiumSandboxOff({
+        platform: process.platform,
+        env: process.env,
+        argv: process.argv,
+        readSysctl: (file) => fs.readFileSync(file, "utf8"),
+        cliBin: findKirocrewBin(fs, os, path, process.resourcesPath, __dirname),
+      }),
+      dialog,
+      clipboard: electron.clipboard,
+      openExternal: (url) => shell.openExternal(url),
+      store,
+      window: mainWindow,
+    }).catch((e) => glog(`chromium-sandbox-notice: failed: ${e && e.message}`));
+  } catch (e) {
+    glog(`chromium-sandbox-notice: skipped: ${e && e.message}`);
+  }
 
   // Linux AppImage desktop integration. It creates the first launcher and then
   // reconciles only files whose hashes still match bytes Kiro Crew wrote. The

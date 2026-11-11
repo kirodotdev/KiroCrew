@@ -1147,7 +1147,10 @@ that need it (`install`, `apparmor_parser`, `aa-exec`) and prompts you for a
 password when it does; running the whole thing as root would execute application
 code with privilege for no reason.
 
-Then restart the app. To check whether the launch you are looking at is covered:
+Then restart the app. The same restriction is why the AppImage starts the app
+with Chromium's sandbox off (`--no-sandbox`); the app shows a notice with this
+command when it does, and the profile turns both sandboxes back on. To check
+whether the launch you are looking at is covered:
 
 ```bash
 kirocrew sandbox status
