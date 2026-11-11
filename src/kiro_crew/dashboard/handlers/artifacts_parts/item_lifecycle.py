@@ -672,13 +672,14 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
         # Blocking store read/write (meta.json + up to 25 MiB current.html) —
         # offload off the event loop.
         await _run_off_loop(lambda: store.get(slug))
-    except ArtifactNotFoundError as exc:
+        await _run_off_loop(lambda: store.relocate(slug, source_path))
+        # Reload the full artifact (with content from the new source_path) so the
+        # response carries the live file bytes rather than content: null.
+        art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:  # also a delete racing the relocate
         return _err(str(exc), status=404)
-
-    await _run_off_loop(lambda: store.relocate(slug, source_path))
-    # Reload the full artifact (with content from the new source_path) so the
-    # response carries the live file bytes rather than content: null.
-    art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactValidationError as exc:  # a malformed slug, or a refused relocate
+        return _err(str(exc))
 
     _audit(
         tool="artifact_relocate",
