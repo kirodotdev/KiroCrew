@@ -942,6 +942,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _try_acquire_state_lock,
     )
     from kiro_crew.subagent_persistence_tombstones import (  # noqa: F401
+        _CLEARED_TOMBSTONE,
         _OWED_TOMBSTONE_MAX_BYTES,
         _OWED_TOMBSTONES_MAX,
         _SLOW_LOG_MAX_BYTES,
