@@ -34,6 +34,7 @@ from kiro_crew.discord.renderer import (
 )
 from kiro_crew.discord.transport_dispatch_commands import _REPLY_COMMANDS
 from kiro_crew.discord.transport_dispatch_model_picker import _MODEL_PICKER_TTL_SECS
+from kiro_crew.messaging.dispatch import inbound_permitted
 from kiro_crew.messaging.identity import channel_inbound_permitted, channel_outbound_permitted
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.sel import sel
@@ -110,9 +111,13 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
     # The order matters and the trade-off is deliberate: a governance check
     # slower than Discord's ~3s callback window makes the command visibly
     # fail, where acking first would have let a policy-denied command run.
-    # Failing visibly is the correct direction for a fail-closed gate.
+    # Failing visibly is the correct direction for a fail-closed gate. `/stop`
+    # claims the pure-cancel exemption, so a halt stays reachable on a denied
+    # channel; it replays as `!stop` through `handle_message`.
     if itx.is_command:
-        if not await channel_inbound_permitted("discord"):
+        if not await inbound_permitted(
+            "discord", text="!stop" if itx.command_name == "stop" else ""
+        ):
             logger.info("discord command dropped: denied by channels governance policy")
             # Named, not silent, for the same reason as the guild refusal
             # above. The wording stays generic: the governance profile is the
