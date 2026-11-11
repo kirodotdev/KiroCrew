@@ -424,3 +424,46 @@ def test_run_chat_names_kas_login_first_when_the_start_is_signed_out(monkeypatch
     assert excinfo.value.code == 1
     assert "Sign in with `kirocrew kas login` (or in the dashboard:" in err
     assert "Traceback" not in err
+
+
+def _kas_engine_fetch_refusal():
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    return AcpRuntimeError(
+        "KAS route: bundle. Could not download the KAS engine from https://127.0.0.1:9/: "
+        "connection refused. Check the network, or set agent.kas_bundle_url."
+    )
+
+
+def _kas_host_unsupported_refusal():
+    from kiro_crew.acp.kas_host_unsupported import AcpKasHostUnsupported
+
+    return AcpKasHostUnsupported("KAS route: bundle. This host cannot run the KAS engine.")
+
+
+@pytest.mark.parametrize("refusal", [_kas_engine_fetch_refusal, _kas_host_unsupported_refusal])
+def test_run_chat_prints_a_runtime_start_refusal_as_one_message(
+    refusal, monkeypatch, tmp_path, capsys
+) -> None:
+    """A backend start refused with an ``AcpRuntimeError``, which is outside the
+    ``AcpError`` hierarchy (a KAS engine install that cannot fetch the engine), exits
+    1 with the refusal's own text on stderr and no traceback, through the real
+    ``_chat`` and its provider teardown."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    exc = refusal()
+    provider = _patch_provider(monkeypatch)
+    provider.start = AsyncMock(side_effect=exc)
+    monkeypatch.setattr(cli_chat, "_build_tool_gate", lambda agent, kiro_agent="": MagicMock())
+    send = AsyncMock()
+    monkeypatch.setattr(cli_chat, "_send_and_print", send)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli_chat._run_chat("hello", None)
+
+    out, err = capsys.readouterr()
+    assert excinfo.value.code == 1
+    assert out == ""
+    assert f"\n❌ {exc}\n" in err
+    assert "Traceback" not in err
+    send.assert_not_awaited()
+    provider.shutdown.assert_awaited_once()
