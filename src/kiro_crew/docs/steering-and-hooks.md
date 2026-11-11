@@ -481,6 +481,26 @@ a plain exit 1, a crash, a timeout, a command that will not execute — logs a
 warning and the tool runs, as on kiro-cli, so one broken hook cannot stop every
 tool call.
 
+**A policy can let only named hooks run.** The `capabilities.script_hooks` row
+of a policy or profile, such as the one bound to scheduled jobs, takes an inner
+`hooks` list beside `events`:
+
+```json
+{"capabilities": {"script_hooks": {"enabled": true, "scopes": {
+  "hooks": {"mode": "allow", "allow": ["my-agent/PreToolUse/2"]}}}}}
+```
+
+An agent spec's hook is named `<agent>/<Event>/<n>`, where `n` is the `#n` in
+the name the log gives it (`my-agent spec hook (PreToolUse #2)`). A Hooks-page
+hook is named by its name. The refusal prints the exact name to copy. A hook
+the list leaves out is refused, and a refused `preToolUse` hook blocks the
+call. With no `hooks` list every hook runs. The list only decides whether a
+hook runs: a listed hook still meets the blocked-commands list and the sandbox,
+as in a chat. The number is the hook's place in the spec, so reordering the
+spec's hooks changes which one a name means. The list applies where Kiro Crew
+fires the hooks (Kiro Agent, goose, opencode, Strands); on the kiro-cli
+backend kiro-cli runs them itself.
+
 **On kiro-cli's v2 engine a `userPromptSubmit` hook reads the whole prompt.** A
 session runs on that older engine when a Kiro CLI choice meets a kiro-cli without
 its v3 engine (the gateway log then says Kiro Crew "keeps running kiro-cli's v2
