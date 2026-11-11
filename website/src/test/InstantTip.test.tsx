@@ -825,6 +825,61 @@ describe('InstantTip', () => {
       expect(tip.className).not.toMatch(/-translate-y-full/)
     })
 
+    it('clamps a tall first-line bubble inside the viewport without flipping below', () => {
+      const savedBubbleHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+      const savedViewportHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 214 })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+      try {
+        render(<FlowHarness />)
+        const a = screen.getByRole('button', { name: 'anchor A' })
+        // The first-line anchor wants an above bubble at 94; its 214px height
+        // would put the top edge at -120 without the measured-height clamp.
+        a.getBoundingClientRect = () => rect(102, 100, 180)
+        fireEvent.focus(a)
+        const tip = screen.getByRole('tooltip')
+        expect(tip).toHaveAttribute('data-placement', 'above')
+        expect(tip.className).toMatch(/-translate-y-full/)
+        const topEdge = parseFloat(tip.style.top) - 214
+        expect(topEdge).toBe(8)
+      } finally {
+        if (savedBubbleHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', savedBubbleHeight)
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+        if (savedViewportHeight) Object.defineProperty(window, 'innerHeight', savedViewportHeight)
+        else delete (window as unknown as Record<string, unknown>).innerHeight
+      }
+    })
+
+    it('clamps a lower-line bubble that flips above inside the viewport', () => {
+      const savedBubbleHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+      const savedViewportHeight = Object.getOwnPropertyDescriptor(window, 'innerHeight')
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 80 })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 })
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [rect(10, 20, 90, 18)],
+      })
+      try {
+        render(<FlowHarness />)
+        screen.getByTestId('flow').getBoundingClientRect = () => rect(10, 0, 600, 60)
+        const b = screen.getByRole('button', { name: 'anchor B' })
+        // This lower-line anchor opens below at 58, but the 80px bubble crosses
+        // the flow floor at 70. Its above candidate at 22 would start at -58.
+        b.getBoundingClientRect = () => rect(30, 100, 180)
+        fireEvent.focus(b)
+        const tip = screen.getByRole('tooltip')
+        expect(tip).toHaveAttribute('data-placement', 'above')
+        expect(tip.className).toMatch(/-translate-y-full/)
+        const topEdge = parseFloat(tip.style.top) - 80
+        expect(topEdge).toBe(8)
+      } finally {
+        if (savedBubbleHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', savedBubbleHeight)
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+        if (savedViewportHeight) Object.defineProperty(window, 'innerHeight', savedViewportHeight)
+        else delete (window as unknown as Record<string, unknown>).innerHeight
+      }
+    })
+
     it('keeps a below bubble inside its flow container, and flips above one that would cross the container\'s bottom (the last line, or one near it)', () => {
       // Below the message's box the bubble would sit on whatever follows the
       // message (in a transcript: the timestamp and action row). The container's
