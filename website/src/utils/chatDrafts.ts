@@ -54,6 +54,20 @@ export function mergeIntoDraft(draft: string | null | undefined, prompt: string)
   return existing.replace(TRAILING_NEWLINES, '') + PARAGRAPH_BREAK + prompt
 }
 
+/** Add a dashboard page's reply to the composer, after anything already there.
+ *
+ *  A person answers several cards on one page in one message, so each reply
+ *  appends as its own paragraph. A reply already present as a whole paragraph is
+ *  not added again: a card shown again after a reload, or reopened with Undo,
+ *  offers the same choice twice. Matched on the whole paragraph only, so a
+ *  reply that merely occurs inside text the person wrote is still added. */
+export function mergeReplyIntoDraft(draft: string | null | undefined, reply: string): string {
+  const existing = draft ?? ''
+  const want = reply.trim()
+  if (want && existing.split(/\r?\n[^\S\n]*\r?\n/).some(p => p.trim() === want)) return existing
+  return mergeIntoDraft(existing, reply)
+}
+
 /** Join text the user typed during a create onto what the new session's
  *  composer already holds (its stored draft, or a launcher prefill).
  *
