@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_slot_reasoning_effort_helpers import _mock_state
 
 from conftest import make_dir_link, requires_o_nofollow, requires_symlinks
 from kiro_crew import pinned_fs
@@ -42,13 +43,7 @@ def _kiro_provider(work_dir: Path) -> AcpProvider:
 
 
 def _state(slot: _ChatSlot, provider: AcpProvider) -> DashboardState:
-    state = MagicMock(spec=DashboardState)
-    state._slots = {slot.key: slot}
-    state.push_slots_update = MagicMock()
-    state.sessions = MagicMock()
-    state.sessions.reset = AsyncMock()
-    state.sessions.get_provider = MagicMock(return_value=provider)
-    return state
+    return _mock_state(slot, provider=provider)
 
 
 async def _post_effort(state: DashboardState, level: str) -> tuple[int, dict]:
@@ -146,7 +141,7 @@ async def test_a_linked_cli_json_refuses_the_pick_on_either_walk(
 async def test_a_busy_lock_still_raises_the_retryable_error(tmp_path):
     provider = _kiro_provider(tmp_path)
     with patch(
-        "kiro_crew.providers.acp_cli_overlay._write_cli_overlay",
+        "kiro_crew.providers.acp._write_cli_overlay",
         side_effect=TimeoutError("lock busy"),
     ):
         with pytest.raises(RuntimeError, match="try again") as raised:

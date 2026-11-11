@@ -19,16 +19,16 @@ Instance fields written: ``_allocation_reservations``, ``_sessions``, ``_startin
 
 Instance fields read: ``_closing``, ``_deps``, ``_lock``, ``_owner``, ``_start_sem``, ``state``.
 
-Through ``state`` it also changes the ending fence's and the capability records in place
-(``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
-``capability_failures``), writes the agent of a cold start in flight (``starting_agents``,
-removed through ``forget_starting_agent`` at registration and at every exit of the start)
-and reads ``ending_keys``. It also adds and removes an eager
-start's announcement (``speculative_starts``), which a real claim joins when it is of
-no higher start priority, and whatever its priority when the start is a resume prefetch
-past its spawn door. A person's claim that finds a resume prefetch short of that door
-marks it superseded (``superseded_speculative_starts``) and starts the session itself;
-the prefetch stands down at the door.
+Through ``state`` it also changes the ending fence's, the cold-start and the capability
+records in place (``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
+``cold_start_reservations``, ``capability_failures``), writes the agent of a cold start in
+flight (``starting_agents``, removed through ``forget_starting_agent`` at registration and at
+every exit of the start) and reads ``ending_keys``. It also adds and removes an eager start's
+announcement (``speculative_starts``), which a real claim joins when it is of no higher start
+priority, and whatever its priority when the start is a resume prefetch past its spawn door. A
+person's claim that finds a resume prefetch short of that door marks it superseded
+(``superseded_speculative_starts``) and starts the session itself; the prefetch stands down at
+the door.
 """
 
 from __future__ import annotations
@@ -69,6 +69,7 @@ from kiro_crew.runtime_ownership import (
     is_shared_chat_runtime,
     release_session_lease,
 )
+from kiro_crew.session_allocation_parts import explicit_effort_default as _explicit_effort_default
 from kiro_crew.session_allocation_parts import memory_policy as _memory_policy
 from kiro_crew.session_allocation_parts.cold_start_work_dir import recorded_resume_cwd
 from kiro_crew.session_allocation_parts.errors import (
@@ -76,6 +77,7 @@ from kiro_crew.session_allocation_parts.errors import (
     SessionClosingError,
     SessionEndingError,
     SpeculativeResumeRefused,
+    _WarmPoolEffortRewriteDiscard,
 )
 from kiro_crew.session_allocation_parts.eviction import _drain_despite_cancellation
 from kiro_crew.session_lifecycle import adopt_parked_queue, allocation_identity
@@ -394,6 +396,7 @@ def _remove_reservation_now(self: SessionAllocationService, key: str, token: obj
     if token in self.state.spawning_reservations and key in self.state.ending_keys:
         self.state.refused_spawns[key] = self.state.refused_spawns.get(key, 0) + 1
     self.state.spawning_reservations.discard(token)
+    self.state.cold_start_reservations.discard(token)
     fence = self.state.ending_keys.get(key)
     if fence is not None:
         fence.discard(token)
@@ -546,6 +549,7 @@ async def get_or_create(
                         del self.state.speculative_starts[reserved_key]
                     self.state.superseded_speculative_starts.discard(token)
                     started.set()
+                self._release_explicit_effort_default(reserved_key)
         except SessionEndingError:
             # The key was fenced while this allocation was in flight: a door
             # of the body refused it -- at registration, with the provider
@@ -557,9 +561,30 @@ async def get_or_create(
             await self._remove_reservation_cancellation_drained(reserved_key, token)
             fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
             continue
+        except _WarmPoolEffortRewriteDiscard as discarded:
+            try:
+                await self._owner._discard_pool_provider(
+                    discarded.provider, "Warm pool effort registration discard"
+                )
+            finally:
+                await self._remove_reservation_cancellation_drained(reserved_key, token)
+            continue
         except BaseException:
             await self._remove_reservation_cancellation_drained(reserved_key, token)
             raise
+        if isinstance(result, asyncio.Event):
+            # Another same-key start holds the pending Default. Drop this token so
+            # the owner is not blocked by it, wait for the owner to register or
+            # fail, then retry: the retry reuses the owner's session or reserves
+            # the Default itself.
+            await self._remove_reservation_cancellation_drained(reserved_key, token)
+            if not wait_if_busy:
+                # A caller that must not wait (an eager start holding the slot's
+                # switch lock) answers busy, as it does for a busy session, so a
+                # typed turn can take that lock and the start over.
+                raise SessionBusyError(reserved_key)
+            await result.wait()
+            continue
         self._remove_reservation_now(reserved_key, token)
         # This task now holds the key's live permit. If it reset its previous
         # session on this key (a replay), the release it will make is for THIS
@@ -736,6 +761,11 @@ async def _get_or_create_impl(
                         joined_start = entry[0]
                     elif entry[2]:
                         self.state.superseded_speculative_starts.add(entry[3])
+                if joined_start is None and _reservation is not None:
+                    # From here this call reads the key's effort basis and
+                    # publishes a session built on it, so an effort pick that
+                    # would change the basis is refused until registration.
+                    self.state.cold_start_reservations.add(_reservation)
     finally:
         if stale_provider is not None:
             if stale_session is not None:
@@ -1006,6 +1036,17 @@ async def _get_or_create_impl(
     provider_switched = False
     plan = None
     memory_withdrawn = False
+    explicit_default = await _explicit_effort_default.explicit_default_for_start(
+        self,
+        key,
+        _reservation,
+        start_priority,
+        extra_factory_kwargs.get("reasoning_effort_override"),
+    )
+    if isinstance(explicit_default, asyncio.Event):
+        # Another same-key start holds the pending Default; the outer loop waits.
+        return cast(Any, explicit_default)
+    explicit_effort_default = explicit_default
     cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
     if not owner._pool_size:
         pool_decision = "disabled"
@@ -1056,6 +1097,8 @@ async def _get_or_create_impl(
         pool_decision = "bypass_backend_override"
     elif _memory_policy.warm_pool_requires_cold_start(owner):
         pool_decision = "bypass_restricted_context"
+    elif explicit_effort_default:
+        pool_decision = "bypass_effort"
     elif await _session_runs_remotely(key):
         # A pooled child is a LOCAL engine: claiming it would run a remote session here.
         pool_decision = "bypass_remote_environment"
@@ -1084,6 +1127,7 @@ async def _get_or_create_impl(
     # the claimed process launched under. Read before any later await, where an
     # apply could replace it.
     claim_cfg, claim_pool_agent = owner._cfg, owner._pool_agent
+    claim_spawn_time = owner._take_claim_spawn_time(pooled) if pooled is not None else None
     if not pool_decision:
         pool_decision = "hit" if pooled is not None else "miss_empty"
     if pooled is None:
@@ -1504,6 +1548,13 @@ async def _get_or_create_impl(
                             "spawn_identity_reader",
                             getattr(owner, "spawn_identity_reader", None),
                         )
+                    # The reservation only serializes starts; a Default revoked since
+                    # it was taken must not authorize a rewrite. No await between this
+                    # read and the arm below.
+                    if explicit_effort_default and not owner.explicit_effort_default_pending(key):
+                        explicit_effort_default = False
+                    if explicit_effort_default:
+                        provider.arm_explicit_effort_default(owner.fence_effort_overlay_rewrite)
                     try:
                         await provider.start()
                     except agent_scratch.SharedScratchJoinError:
@@ -1535,7 +1586,21 @@ async def _get_or_create_impl(
                         provider.focus_resume = focus_resume
                     else:
                         break
+                # Shield the published PID from the orphan sweep before the
+                # Default clear's flush or the stamp read below can suspend.
+                starting_pid = spawn_pid(provider)
+                if starting_pid is not None:
+                    self._starting_pids.add(starting_pid)
+                if explicit_effort_default and provider.explicit_effort_default_applied:
+                    await _explicit_effort_default.save_applied_explicit_effort_default_clear(
+                        self, key
+                    )
             except (asyncio.CancelledError, Exception) as exc:
+                if explicit_effort_default and provider.explicit_effort_default_applied:
+                    # The projection ran before the failure. Keep its clear in
+                    # memory for the deferred map flush; never await here,
+                    # because this path also handles cancellation.
+                    owner.set_explicit_effort_default(key, False)
                 if preparation.revision and not isinstance(exc, SpeculativeResumeRefused):
                     self._remember_capability_failure(key, preparation)
                 # A start cancelled or failed after it took a shared-runtime lease
@@ -1543,16 +1608,9 @@ async def _get_or_create_impl(
                 # and evict its session; a bare hard kill is refused while the lease
                 # is held, leaking the process. Unshared providers are hard-killed.
                 await _end_started_provider(owner, provider)
+                if starting_pid is not None:
+                    self._starting_pids.discard(starting_pid)
                 raise
-            # start() has published the PID, and the stamp read below is a
-            # real suspension point before registry ownership becomes
-            # visible in the lock section further down -- shield the PID
-            # from the periodic orphan sweep for that whole span (on
-            # Windows the sweep has no age grace, so an unshielded child
-            # caught mid-stamp would be killed as an orphan).
-            starting_pid = spawn_pid(provider)
-            if starting_pid is not None:
-                self._starting_pids.add(starting_pid)
             # Record which account the store held as this child spawned
             # (first-stamp-wins, so a warm-pool claim keeps its fill-time
             # stamp). Best-effort: an unstamped child keeps the
@@ -1626,6 +1684,20 @@ async def _get_or_create_impl(
             # duplicate this call shuts down itself -- from here on it is not
             # a start an ending caller must be told about.
             self.state.spawning_reservations.discard(_reservation)
+
+            if (
+                pooled is not None
+                and claim_spawn_time is not None
+                and owner._may_predate_effort_overlay_rewrite(claim_spawn_time)
+            ):
+                # The post-claim rekey and model work await off the loop, so
+                # another session can rewrite cli.json after the first fence
+                # check. Refuse before this provider becomes a live session.
+                self._deps.logger.info(
+                    "Warm pool: explicit effort Default rewrote cli.json after claim, "
+                    "discarding before registration"
+                )
+                raise _WarmPoolEffortRewriteDiscard(provider)
 
             existing = self._sessions.get(key)
             recycling = existing is not None and owner._recycling.get(key) is existing
@@ -1808,6 +1880,8 @@ async def _get_or_create_impl(
                 session.turn_owner = asyncio.current_task()
                 self._deps.inc_session_created()
                 result = (provider, True, resumed)
+    except _WarmPoolEffortRewriteDiscard:
+        raise
     except BaseException:
         if preparation.revision:
             self._remember_capability_failure(key, preparation)
@@ -1845,6 +1919,9 @@ async def _get_or_create_impl(
                     key,
                     exc_info=True,
                 )
+        # A race loser claims the winner's live session, which reads no basis
+        # and can wait a whole turn, so it does not lock the key's effort basis.
+        self.state.cold_start_reservations.discard(_reservation)
         if await owner._reacquire_and_validate(
             key,
             won_race_session,

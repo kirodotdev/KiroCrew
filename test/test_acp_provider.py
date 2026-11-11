@@ -850,8 +850,8 @@ class TestEffortControl:
     async def test_kiro_effort_rollback_follows_the_file_when_the_rewrite_fails(self):
         # The live push failed, so change_effort rolls the prior level back and
         # rewrites the overlay to match. When THAT rewrite also fails the file
-        # keeps the attempted level and construction re-seeds from it, so the map
-        # follows the file instead of reporting an undo the next spawn contradicts.
+        # keeps the attempted level, the level the session was asked to run, so
+        # the map follows the file instead of reporting an undo it does not show.
         from kiro_crew.acp.client import AcpError
 
         provider = self._effort_provider(backend="", model="claude-opus-4.7")
