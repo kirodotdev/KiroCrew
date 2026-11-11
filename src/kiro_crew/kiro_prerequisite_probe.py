@@ -315,6 +315,40 @@ def _binary_stamp(binary: str | None) -> tuple[object, ...]:
     return (path, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
+def _relay_route_configured() -> bool:
+    """Whether config still sends KAS sessions through the kiro-cli relay.
+
+    True while ``agent.acp_backend`` is KAS and ``agent.kas_bundle`` is off: the
+    only route that passes ``--auth-method``. Blocking (reads config); an
+    unreadable config reads as the relay, the default.
+    """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        agent = KiroCrewConfig.load().agent
+    except Exception:  # noqa: BLE001 - the default route is the relay
+        return True
+    return agent.acp_backend == ACP_BACKEND_KAS and not agent.kas_bundle
+
+
+async def _drop_too_old_off_relay(self: KiroPrerequisiteService) -> bool:
+    """Clear the too-old latch when config does not use the relay; True when cleared.
+
+    The latch records that the relay's ``--auth-method`` was rejected. After a
+    switch to the Kiro CLI harness or the bundled engine, with no restart, the
+    card it raises would hide a harness that runs; the next session on the relay
+    latches it again if the CLI is still too old.
+    """
+    if not self._cli_too_old or await asyncio.to_thread(_relay_route_configured):
+        return False
+    self._cli_too_old = False
+    self._cli_too_old_stamp = None
+    self._last_probe_at = 0.0
+    logger.info("Kiro CLI-too-old latch cleared: the configured route no longer uses the relay")
+    return True
+
+
 async def _probe(
     self: KiroPrerequisiteService, *, force: bool = False, login_only: bool = False
 ) -> PrerequisiteStatus:
@@ -589,6 +623,7 @@ async def _probe(
         # A spawn-proven too-old verdict (``mark_cli_too_old``) stays until an
         # update, a human Check again, or a different binary clears it:
         # ``acp --help`` cannot see it.
+        await _drop_too_old_off_relay(self)
         if self._cli_too_old:
             stamp = await asyncio.to_thread(_binary_stamp, self._viable_binary)
             if self._cli_too_old_stamp is None:
