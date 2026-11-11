@@ -18291,6 +18291,8 @@
         "retry": "다시 시도",
         "ssh_host_alias": "SSH 호스트 / 별칭",
         "ssh_tunnel": "SSH 터널",
+        "ssh_tunnel_not_supported_windows": "Windows에서 지원되지 않음",
+        "ssh_tunnel_not_supported_windows_hint": "Windows에서 {{productName}}을(를) 실행하면 SSH 터널은 아직 지원되지 않습니다. PATH에 OpenSSH 클라이언트가 있어야 하며 연결에 실패할 수 있습니다. 대신 AWS SSM Session Manager를 사용하세요.",
         "ssm_target_instance_id": "SSM 대상(인스턴스 ID)",
         "state_connected": "연결됨",
         "state_connecting": "연결 중",

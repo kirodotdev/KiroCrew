@@ -114,11 +114,11 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
   const selectable = (v: string) => options.includes(v) || (v === '' && emptySelectable)
   const label = (opt: string, i: number) => {
     if (opt === '') return clearLabel ?? optionLabels?.[i] ?? '—'
-    if (optionLabels?.[i] !== undefined) return optionLabels[i]
+    const base = optionLabels?.[i] ?? opt
     // A badge cannot render as text, so spell the same fact out for the paths
     // that only take a string: the native list and the collapsed trigger.
     const badge = optionBadges?.[i]
-    return badge ? `${opt} — ${badge.label}` : opt
+    return badge ? `${base} — ${badge.label}` : base
   }
   const selectedIcon = optionIcons?.[options.indexOf(value)]
 
@@ -208,7 +208,7 @@ const SimpleSelect = forwardRef(function SimpleSelect({ options, optionLabels, o
               <SelectItem key={opt} value={toRadix(opt)} textValue={label(opt, i)}>
                 {badge ? (
                   <span className="inline-flex items-center gap-1.5">
-                    {opt}
+                    {optionLabels?.[i] ?? opt}
                     {/* aria-hidden: the option's accessible name must stay the bare
                         template name — the badge text otherwise joins it and breaks
                         exact-name lookups (locators, SR "select kirocrew"). */}

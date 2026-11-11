@@ -18759,6 +18759,8 @@
         "retry": "পুনরায় চেষ্টা করুন",
         "ssh_host_alias": "SSH হোস্ট / অ্যালিয়াস",
         "ssh_tunnel": "SSH টানেল",
+        "ssh_tunnel_not_supported_windows": "Windows-এ সমর্থিত নয়",
+        "ssh_tunnel_not_supported_windows_hint": "{{productName}} Windows-এ চললে SSH টানেল এখনও সমর্থিত নয়: এর জন্য PATH-এ OpenSSH ক্লায়েন্ট লাগে এবং সংযোগ ব্যর্থ হতে পারে। এর বদলে AWS SSM Session Manager ব্যবহার করো।",
         "ssm_target_instance_id": "SSM টার্গেট (ইনস্ট্যান্স id)",
         "state_connected": "সংযুক্ত",
         "state_connecting": "সংযোগ করা হচ্ছে",
