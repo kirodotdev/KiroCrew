@@ -94,6 +94,11 @@ const OCCUPANCY_SITES = [
     code: 'if ((await probeGatewayPortBinding(PORT)) !== "bound") return "spawn";',
     times: 1,
   },
+  {
+    what: "client-only launch fallback: open the app's own forward only on a port nothing listens on",
+    code: 'if ((await probeGatewayPortBinding(PORT)) !== "free") return;',
+    times: 1,
+  },
 ];
 
 // The identity judgements. These MAY rest on the holder's command line -- that

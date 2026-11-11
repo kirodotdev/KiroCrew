@@ -418,7 +418,11 @@ yet its window reaches a remote crew through exactly this kind of forward.
 `instances/tunnel_keeper.py` runs `_SshTunnel` (readiness wait, zombie probe, exit
 classification) and `_recover_backoff_secs` on their own, for one fixed port pair,
 and the desktop app spawns it when a crew's `remoteHosts` entry carries
-`manageTunnel: true`. It deliberately takes none of the manager's registry, token
+`manageTunnel: true`, or, with the local gateway off, when a launch finds nothing
+answering the crew's port and nothing listening on it (so no forward of the user's
+own is taken over). A save of the crew that leaves the option unticked ends that
+launch's forward. The Add/Edit Remote Crew forms open ticked for a crew being
+added. It deliberately takes none of the manager's registry, token
 minting or hop leases: the app fetches its own token over SSH. A connect resets the
 backoff, so a laptop waking from sleep reconnects within seconds, and the app also
 bounces the keeper on the OS resume event. It stops, always, when stdin
