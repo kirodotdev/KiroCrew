@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { defaultScheduler, notifyManager } from '@tanstack/react-query'
 import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
 import { renderWithProviders, createTestStore } from './helpers'
@@ -15,6 +16,7 @@ function connectedStore() {
 import { api } from '../api/client'
 import type { Artifact, ArtifactFolder, SessionDoc } from '../types'
 import { svgShadow } from './svgShadow'
+import { namedCeiling } from './namedCeiling'
 
 vi.mock('../api/client')
 
@@ -132,6 +134,14 @@ afterEach(() => {
 // was previously exercised.
 describe('ArtifactsPage — card previews per kind', () => {
   it('renders a markdown artifact through the markdown renderer', async () => {
+    // React Query hands the resolved data to its observers on its own
+    // scheduler (a setTimeout by default), not inside act(). On a loaded shard
+    // that notification can land after act() returns, so the card is still
+    // empty when the assertion reads it. Deferring every notification here
+    // makes that ordering the fixture instead of an accident of load: an
+    // assertion that reads the DOM synchronously after act() fails every run.
+    notifyManager.setScheduler((cb) => setTimeout(cb, 50))
+    onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
     const arts = [mkArtifact('daily-notes', { kind: 'markdown' })]
     const m = seed({ artifacts: arts })
     let resolveArtifact!: (artifact: Artifact) => void
@@ -155,7 +165,10 @@ describe('ArtifactsPage — card previews per kind', () => {
       resolveArtifact({ ...arts[0], content: '# Heading one\n\nbody text' })
       await pending
     })
-    expect(screen.getByRole('heading', { name: 'Heading one' })).toBeInTheDocument()
+    // The heading and the body come from the same render of the same content.
+    expect(
+      await screen.findByRole('heading', { name: 'Heading one' }, namedCeiling('ARTIFACT_CONTENT_READY', 5000)),
+    ).toBeInTheDocument()
     expect(screen.getByText('body text')).toBeInTheDocument()
   })
 
