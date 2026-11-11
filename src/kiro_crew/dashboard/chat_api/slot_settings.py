@@ -538,7 +538,9 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
         if ci is not None:
             new_hex = None
     if has_ch:
-        new_hex = ch.lower() if isinstance(ch, str) else None
+        # ``$`` also matches before a trailing newline, so the stored value is
+        # cut to the seven characters the pattern checked.
+        new_hex = ch[:7].lower() if isinstance(ch, str) else None
         if ch is not None:
             new_index = None
     write_slot_color(state, slot, color_index=new_index, color_hex=new_hex)

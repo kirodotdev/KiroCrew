@@ -518,6 +518,15 @@ def test_a_member_pin_keeps_the_bindings_agent_and_mode(purpose, tmp_path, monke
     assert (slot.agent, slot.mode) == ("crew-a", "member")
 
 
+@pytest.mark.parametrize("purpose", sorted(codec.PURPOSES))
+def test_a_stored_colour_with_a_trailing_newline_reads_back_without_it(
+    purpose, tmp_path, monkeypatch
+):
+    state = _state(tmp_path, monkeypatch)
+    slot, _, _ = _read_back(state, {"color_hex": "#AABBCC\n"}, purpose)
+    assert slot.color_hex == "#aabbcc"
+
+
 def test_each_purpose_takes_the_title_from_its_own_source(tmp_path, monkeypatch):
     state = _state(tmp_path, monkeypatch)
     untitled = {"title_origin": "auto"}

@@ -382,6 +382,20 @@ class TestSessionColor:
             assert state._slots["s1"].color_hex is None
 
     @pytest.mark.asyncio
+    async def test_a_trailing_newline_is_not_stored_with_the_colour(self, tmp_path, monkeypatch):
+        # ``$`` in the pattern matches before a final newline, so the request is
+        # accepted as before; only the stored value loses the newline.
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.patch("/api/chat/slots/s1/color", json={"color_hex": "#A1B2C3\n"})
+            assert resp.status == 200
+            assert (await resp.json())["color_hex"] == "#a1b2c3"
+            assert state._slots["s1"].color_hex == "#a1b2c3"
+
+    @pytest.mark.asyncio
     async def test_color_hex_and_index_mutually_exclusive(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
