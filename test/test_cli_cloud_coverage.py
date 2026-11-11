@@ -266,14 +266,64 @@ class TestDoctor:
         _floor_monkeypatch.setattr(cli_cloud, "resolve_aws_bin", lambda: "aws")
         _floor_monkeypatch.setattr(shutil, "which", lambda *_a, **_k: "/usr/bin/aws")
 
-    def test_a_missing_plugin_with_no_refusal_gets_the_install_hint(self, monkeypatch, capsys):
-        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+    @pytest.fixture
+    def shown(self, monkeypatch) -> list[tuple[str, str]]:
+        """Every doctor line as ``(kind, text)``, with AWS and every service reachable."""
+        lines: list[tuple[str, str]] = []
+        for kind in ("ok", "warn", "fail", "detail"):
+            monkeypatch.setattr(cli_cloud.ui, kind, lambda msg, k=kind: lines.append((k, msg)))
+        reach = {"reachable": True, "account": "acct-demo", "ec2_reachable": True}
+        reach |= {"cloudformation_reachable": True, "ssm_reachable": True}
+        monkeypatch.setattr(iam, "reachability_check", lambda profile, region: reach)
         monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
-        monkeypatch.setattr(iam, "reachability_check", lambda p, r: {"reachable": False})
-        assert cli_cloud._cloud_doctor(_args()) == 0
-        out = capsys.readouterr().out
-        assert "session-manager-plugin not found — needed to connect over SSM" in out
-        assert ssm.session_manager_plugin_install_hint() in out
+        return lines
+
+    def test_a_missing_plugin_fails_and_shows_this_machines_install_command(
+        self, monkeypatch, shown
+    ):
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "sudo dpkg -i p")
+        assert cli_cloud._cloud_doctor(_args()) == 1
+        assert (
+            "fail",
+            "session-manager-plugin not found — `kirocrew cloud launch` needs it",
+        ) in shown
+        assert ("detail", "Install it with: sudo dpkg -i p") in shown
+        assert ("detail", "Then rerun `kirocrew cloud doctor`.") in shown
+        assert not any("kirocrew cloud connect" in text for _kind, text in shown)
+
+    def test_with_no_install_command_for_this_machine_the_hint_reruns_doctor(
+        self, monkeypatch, shown
+    ):
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_install_command", lambda: "")
+        assert cli_cloud._cloud_doctor(_args()) == 1
+        hint = ssm.session_manager_plugin_install_hint(rerun="kirocrew cloud doctor")
+        assert ("detail", hint) in shown
+        assert "then rerun `kirocrew cloud doctor`:" in hint
+
+    @pytest.mark.parametrize(
+        ("broken", "code"),
+        [
+            ("nothing", 0),
+            ("aws_cli", 1),
+            ("plugin_refused", 1),
+            ("aws_unreachable", 1),
+        ],
+    )
+    def test_the_exit_code_is_one_whenever_a_line_fails(self, monkeypatch, shown, broken, code):
+        plugin_ok = broken != "plugin_refused"
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: plugin_ok)
+        if broken == "aws_cli":
+            monkeypatch.setattr(shutil, "which", lambda *_a, **_k: None)
+            monkeypatch.setattr(ssm, "aws_cli_refusal", lambda: None)
+        if broken == "plugin_refused":
+            refusal = ssm.PluginRefusal(path="/opt/p", reason="owned by bob", remedy_command="")
+            monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+        if broken == "aws_unreachable":
+            monkeypatch.setattr(iam, "reachability_check", lambda p, r: {"reachable": False})
+        assert cli_cloud._cloud_doctor(_args()) == code
+        assert any(kind == "fail" for kind, _text in shown) is bool(code)
 
     def test_a_reachable_account_is_listed_with_each_service_in_order(self, monkeypatch):
         shown: list[tuple[str, str]] = []

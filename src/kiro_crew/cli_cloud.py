@@ -642,6 +642,9 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
 
     profile, region = _resolve(args)
     ui.note(f"{ui.BOLD}KiroCrew cloud — diagnostics{ui.RESET}")
+    # Every ✗ line sets this, so a script can gate on the exit code. A service
+    # that is not reachable stays a ⚠: the launch still tries it.
+    failed = False
     # Client prerequisites. Probe the exact binary resolved spawn sites execute
     # (the shared deploy-engine resolver), so the doctor's verdict agrees with
     # what `kirocrew cloud` commands actually run under a GUI-launched
@@ -651,14 +654,17 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         ui.ok("aws CLI found")
     elif (cli_refusal := ssm.aws_cli_refusal()) is not None:
         # Found but refused: the install link would put the same refused file back.
+        failed = True
         ui.fail(f"aws CLI found at {cli_refusal.path} but refused: {cli_refusal.reason}")
         ui.detail(ssm.REFUSAL_NEXT_STEP.get(cli_refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
+        failed = True
         ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")
     if ssm.session_manager_plugin_installed():
         ui.ok("session-manager-plugin found")
     elif (refusal := ssm.session_manager_plugin_refusal()) is not None:
-        ui.warn(f"session-manager-plugin found at {refusal.path} but refused: {refusal.reason}")
+        failed = True
+        ui.fail(f"session-manager-plugin found at {refusal.path} but refused: {refusal.reason}")
         if refusal.remedy_command:
             # Making the tree root-owned turns whatever binary is in it into an
             # accepted credential receiver, so the user confirms it is AWS's first.
@@ -672,8 +678,13 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         else:
             ui.detail(ssm.REFUSAL_NEXT_STEP.get(refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
-        ui.warn("session-manager-plugin not found — needed to connect over SSM")
-        ui.detail(ssm.session_manager_plugin_install_hint())
+        failed = True
+        ui.fail("session-manager-plugin not found — `kirocrew cloud launch` needs it")
+        if install := ssm.session_manager_plugin_install_command():
+            ui.detail(f"Install it with: {install}")
+            ui.detail("Then rerun `kirocrew cloud doctor`.")
+        else:
+            ui.detail(ssm.session_manager_plugin_install_hint(rerun="kirocrew cloud doctor"))
     # AWS reachability.
     reach = iam.reachability_check(profile, region)
     if reach["reachable"]:
@@ -684,6 +695,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
                 f"{svc}: {'reachable' if reach[key] else 'not reachable'}"
             )
     else:
+        failed = True
         ui.fail("AWS not reachable")
         # With the CLI refused, the profile was never checked: the note's
         # credential or helper advice would send the user to the wrong fix.
@@ -692,7 +704,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
             if cli_refusal is not None
             else reach.get("note", "")
         )
-    return 0
+    return 1 if failed else 0
 
 
 def _ensure_session_manager_plugin() -> bool:

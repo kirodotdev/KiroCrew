@@ -766,7 +766,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert "aws CLI found" in out
         assert resolved in probed
@@ -791,7 +791,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert (
             "found at /usr/local/sessionmanagerplugin/bin/session-manager-plugin but refused" in out
@@ -837,7 +837,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": "Profile did not resolve"},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert "aws CLI found at /opt/homebrew/bin/aws but refused: the check's words" in out
         assert next_step in out
@@ -883,7 +883,7 @@ class TestDoctor:
             lambda profile, region: {"reachable": False, "note": ""},
         )
 
-        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 1
         out = capsys.readouterr().out
         assert next_step in out
         if code == "other_owner":
