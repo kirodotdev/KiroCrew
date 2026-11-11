@@ -576,6 +576,20 @@ class AcpSessionProvider(LLMProvider):
             self._handle.answer_elicitation(request_id, action, content, person=person)
         )
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
+        """See LLMProvider. Installed on the runtime for this provider's current session."""
+        self._runtime.set_mcp_sign_in_ended_hook(self._handle.session_id, hook)
+
+    def mcp_sign_in_ended(self, server_name: str) -> bool:
+        """See LLMProvider. The runtime holds a sign-in's slot until its attempt ends.
+
+        ``reattempts_mcp_servers`` is the live-host test ``begin_mcp_sign_in`` makes:
+        elsewhere Crew starts no sign-in, and a link is the engine's own.
+        """
+        return self._runtime.reattempts_mcp_servers and not self._runtime.mcp_sign_in_holds(
+            self._handle.session_id, server_name
+        )
+
     async def release_runtime_lease(self) -> None:
         """Give up this provider's lease on the runtime, if it holds one.
 

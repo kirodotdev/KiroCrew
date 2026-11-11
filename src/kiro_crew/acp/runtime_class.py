@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew._facade_bindings import own_methods
 from kiro_crew.acp import kas_secret_storage
@@ -237,6 +237,7 @@ class AcpRuntime:
     _answer_host_request = _rt_host._answer_host_request
     mcp_sign_in_holds = _rt_host.mcp_sign_in_holds
     begin_mcp_sign_in = _rt_host.begin_mcp_sign_in
+    set_mcp_sign_in_ended_hook = _rt_host.set_mcp_sign_in_ended_hook
     _run_mcp_sign_in = _rt_host._run_mcp_sign_in
     begin_mcp_reattempt = _rt_host.begin_mcp_reattempt
     _run_mcp_reattempt = _rt_host._run_mcp_reattempt
@@ -379,6 +380,9 @@ class AcpRuntime:
         # server_name): a reset without startOAuth for a server that failed
         # for want of a credential -- see begin_mcp_reattempt.
         self._mcp_reattempts: set[tuple[str, str]] = set()
+        # Per session, the hook told when one of its sign-ins ends unconnected,
+        # so the chat withdraws the dead link -- see set_mcp_sign_in_ended_hook.
+        self._mcp_sign_in_ended_hooks: dict[str, Callable[[str], None]] = {}
         if model is not None:
             if not MODEL_ID_RE.match(model):
                 raise ValueError(

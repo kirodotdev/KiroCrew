@@ -13008,6 +13008,7 @@
         "requires_authentication": "richiede l'autenticazione.",
         "superseded": "non ha più un accesso attivo: una richiesta più recente lo ha sostituito. Usa il pulsante «Autorizza» più recente per accedere.",
         "expired": "non ha più un accesso attivo: la sessione che lo ha avviato è terminata. Invia un messaggio per ottenere un nuovo link «Autorizza».",
+        "timed_out": "non ha completato l'accesso in tempo: il tempo è scaduto. Nomina questo server in un messaggio per ottenere un nuovo link «Autorizza».",
         "failed_next_step": "Per accedere di nuovo, apri Personalizza → Connessioni → Server MCP."
       },
       "notificationItem": {

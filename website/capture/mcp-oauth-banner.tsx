@@ -65,5 +65,11 @@ createRoot(document.getElementById('root')!).render(
     <div data-state="expired">
       <McpOAuthBanner serverName="github-mcp" oauthUrl={URL} completed={false} expired />
     </div>
+    {/* A KAS sign-in attempt behind this link ended unconnected, so the engine
+        closed its callback listener (issue #22897). A failure, so the same notice
+        as `failed`; the copy says the sign-in timed out and that naming the server offers again. */}
+    <div data-state="timed-out">
+      <McpOAuthBanner serverName="github-mcp" oauthUrl={URL} completed={false} expired timedOut />
+    </div>
   </div>,
 )

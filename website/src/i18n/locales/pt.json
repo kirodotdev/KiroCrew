@@ -13008,6 +13008,7 @@
         "requires_authentication": "requer autenticação.",
         "superseded": "não tem mais um início de sessão ativo: uma solicitação mais recente o substituiu. Use o botão \"Autorizar\" mais recente para entrar.",
         "expired": "não tem mais um início de sessão ativo: a sessão que o iniciou foi encerrada. Envie uma mensagem para obter um novo link \"Autorizar\".",
+        "timed_out": "não concluiu o início de sessão a tempo: o tempo esgotou. Mencione este servidor em uma mensagem para obter um novo link \"Autorizar\".",
         "failed_next_step": "Para iniciar sessão novamente, abra Personalizar → Conexões → Servidores MCP."
       },
       "notificationItem": {

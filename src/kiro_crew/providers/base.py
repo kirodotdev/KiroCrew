@@ -1033,6 +1033,23 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
+        """Have *hook* told the server name when an MCP sign-in Crew started ends unconnected.
+
+        Only a KAS session starts one (``AcpRuntime.begin_mcp_sign_in``), and its
+        link dies with the attempt. A provider that starts none ignores this.
+        """
+        return None
+
+    def mcp_sign_in_ended(self, server_name: str) -> bool:
+        """Whether the MCP sign-in Crew started for *server_name* has already ended.
+
+        Read when its link is drawn: an attempt can end before then, while the
+        link waits in the session's queue, and the hook above had no row to
+        retire. A provider that starts no sign-in answers False.
+        """
+        return False
+
     def note_user_message(self, text: str) -> None:
         """Hand the user's own message, as typed, to the MCP sign-in trigger.
 

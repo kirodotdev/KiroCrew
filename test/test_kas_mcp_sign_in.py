@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew.acp.runtime import AcpRuntime
-from kiro_crew.acp.session_handle import BUCKET_CAP, AcpSessionHandle
+from kiro_crew.acp.session_handle import BUCKET_CAP, AcpRuntimeDead, AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     EVENT_MCP_OAUTH_REQUEST,
@@ -279,6 +279,53 @@ def test_a_host_without_the_capability_starts_nothing():
     runtime = AcpRuntime()
     runtime._session_queues["s1"] = asyncio.Queue()
     assert runtime.begin_mcp_sign_in("s1", "a") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answer, told",
+    [
+        ({"success": False}, ["remote"]),
+        (TimeoutError(), ["remote"]),
+        ({"success": True}, []),
+        ({}, []),
+        (AcpRuntimeDead("process exited"), []),
+    ],
+    ids=["unconnected", "no-answer", "connected", "unstated", "process-died"],
+)
+async def test_a_sign_in_that_ends_unconnected_tells_the_chat_that_showed_its_link(
+    monkeypatch, answer, told
+):
+    """The engine closes an attempt's callback listener when the attempt ends, so a
+    link it showed is dead; the dashboard's hook withdraws it. An answer that does
+    not say the attempt failed retires nothing, and a process that died is left to
+    the dead-child banner gate."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+    from kiro_crew.providers.acp import AcpProvider
+
+    runtime = _runtime()
+    inner = AcpSessionProvider.__new__(AcpSessionProvider)
+    inner._handle = SimpleNamespace(session_id="s1")
+    inner._runtime = runtime
+    outer = AcpProvider.__new__(AcpProvider)
+    outer._client = inner
+    ended: list[str] = []
+    outer.set_mcp_sign_in_ended_hook(ended.append)
+
+    async def send_and_await(method, params, timeout=0):
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(runtime, "_send_and_await", send_and_await)
+    assert runtime.begin_mcp_sign_in("s1", "remote") is True
+    assert outer.mcp_sign_in_ended("remote") is False
+    await asyncio.gather(*runtime._answer_tasks)
+    assert ended == told
+    assert runtime._mcp_sign_in is None
+    assert outer.mcp_sign_in_ended("remote") is True
+    runtime.unregister_session("s1")
+    assert "s1" not in runtime._mcp_sign_in_ended_hooks
 
 
 # ── session handle: which servers still need a sign-in ────────────────────────
