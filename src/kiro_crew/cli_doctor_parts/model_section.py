@@ -11,7 +11,6 @@ see :mod:`kiro_crew.cli_doctor_parts`.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,12 +23,14 @@ if TYPE_CHECKING:
         acp_id_correction,
         agent_spec_path,
         agent_state,
-        is_agent_spec_name,
         is_claude_code,
+        is_markdown_spec,
         is_registered_agent_name,
         is_sensitive_path,
+        iter_agent_spec_files_strict,
         kiro_agents_dir,
         normalize_agent_model,
+        plain_markdown_document,
         project_agent_files,
         project_agent_name,
         project_agents_dir,
@@ -319,17 +320,21 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
 
 
 def _strict_agent_json_specs(directory: Path) -> list[Path]:
-    """Enumerate real spec candidates while preserving directory-read failures."""
+    """Enumerate the live spec files while preserving directory-read failures.
+
+    The roster's own listing (:func:`iter_agent_spec_files_strict`): a ``<stem>.md``
+    beside its ``<stem>.json`` twin is never read, so it is not a candidate, and
+    neither is a skill-view alias or an AppleDouble ``._`` sidecar.
+    """
     try:
-        with os.scandir(directory) as entries:
-            return sorted(
-                (
-                    Path(entry.path)
-                    for entry in entries
-                    if is_agent_spec_name(entry.name) and not entry.name.startswith("._")
-                ),
-                key=lambda path: path.stem,
-            )
+        return sorted(
+            (
+                path
+                for path in iter_agent_spec_files_strict(directory)
+                if not path.name.startswith("._")
+            ),
+            key=lambda path: path.stem,
+        )
     except (FileNotFoundError, NotADirectoryError):
         return []
 
@@ -389,6 +394,10 @@ def _agent_spec_model_problems(
         ):
             data = _read_agent_spec(path, operation="doctor", source="cli")
             if data is None:
+                # A markdown file with no opening fence is a plain document
+                # (a README, a prompt fragment), not a refused spec.
+                if is_markdown_spec(path) and plain_markdown_document(path):
+                    continue
                 return None
             model = normalize_agent_model(data.get("model"))
             correction = acp_id_correction(model)
