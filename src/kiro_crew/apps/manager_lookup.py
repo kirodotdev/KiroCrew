@@ -414,7 +414,7 @@ def list_apps() -> list[dict[str, Any]]:
             except Exception:
                 pass
         app_info: dict[str, Any] = {
-            **meta.to_dict(),
+            **meta.to_row_dict(),
             **_approved_grants_row(entry.name),
             **link_preview_grant_row(entry.name, manifest_data),
             **message_action_grant_row(entry.name, manifest_data),
@@ -458,7 +458,7 @@ def get_app(name: str) -> dict[str, Any] | None:
         except Exception:
             pass
     row = {
-        **meta.to_dict(),
+        **meta.to_row_dict(),
         **_approved_grants_row(name),
         **link_preview_grant_row(name, manifest_data),
         **message_action_grant_row(name, manifest_data),
