@@ -1351,6 +1351,7 @@ export {
   abortActiveOlderFetch, type CoverageRow,
 } from './chat/paging'
 export type { ChatState, FollowupItem, SideMessage, SideQueueEntry, SideSendStatus, SideStandingNotice, SideState, SlotState, SlotStatusDetail, WorkflowRunProgress } from './chat/state'
+export { hasSavedActivityOpen } from './chat/state'
 export { FOLDER_SUGGESTION_MAX_TURNS, capturePendingAskId, isAnsweredQuestionEnding, pendingQuestionFor, shouldResolveAskOnSend } from './chat/composerCards'
 export { mcpAppKey } from './chat/mcpApps'
 export {

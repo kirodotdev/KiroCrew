@@ -38,6 +38,7 @@ import * as transcript from './chat/transcript'
 import * as wire from './chat/wire'
 import * as windowWalk from './chat/windowWalk'
 import * as workflows from './chat/workflows'
+import * as chatState from './chat/state'
 
 const CHAT_DIR = join(__dirname, 'chat')
 const WEBSITE = join(__dirname, '..', '..')
@@ -183,6 +184,7 @@ const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
   ['windowWalk', windowWalk, ['WINDOW_WALK_MAX_PAGES']],
   ['lifecycle', lifecycle, ['PENDING_OPEN_LEASE_MS', 'captureForkOrigin', 'clearHistorySessions', 'createSlot', 'deleteHistorySession', 'fetchHistory', 'forkMayOpen', 'forkSlot', 'listForkedSlot', 'promoteSlot', 'resumeFromHistory', 'resumeStillOpening']],
   ['openCreatedSlot', openCreatedSlot, ['openCreatedSlot']],
+  ['state', chatState, ['hasSavedActivityOpen']],
 ]
 
 /** Names the facade itself defines rather than re-exports. */
