@@ -689,7 +689,7 @@ useful to Kiro Crew users.
 |-------|-------------------|
 | Scaffold | `kirocrew app init my-app` |
 | Build UI | `npm run build` in `ui/` |
-| Install locally | `POST /api/apps/install`, or `kirocrew app install <dir>` |
+| Install locally | `POST /api/apps/install`, or `kirocrew app install <dir or git URL>` |
 | Enable | Trust the app first, then `POST /api/apps/{name}/enable`, or `kirocrew app enable <name>` |
 | Live reload | `kirocrew app dev <name>` |
 | Update local copy | `POST /api/apps/{name}/update`, or `kirocrew app update <name> [--source <dir>]` |

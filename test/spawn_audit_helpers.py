@@ -383,6 +383,21 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # scrubbed that capability would break the feature it is guarding. Gated
         # behind KIROCREW_DEBUG and reachable only from the CLI.
         "cli_perf.py::_sample_out_of_process",
+        # `kirocrew app install <git-url>`: the operator's own `git clone` of the
+        # URL they typed, and a `git rev-parse HEAD --abbrev-ref HEAD` in the folder
+        # it made. Reached only from that CLI verb, never from a tool dispatch
+        # path. Fixed list argv (no shell), binary from PATH as the operator's
+        # own git; the URL passes the registry's https/ssh transport allowlist
+        # with no credentials, query or fragment, the ref and subdirectory are
+        # charset-validated, the URL follows `--`, and the destination is a
+        # fresh `mkdtemp` folder under the data home. Every spawn carries
+        # core.hooksPath=<devnull>, core.fsmonitor=false, an https/ssh-only
+        # protocol allowlist, no submodules and an empty template, so nothing
+        # the repository supplies runs. NOT sandbox-routed because the feature
+        # IS the operator's own git access: the clone needs their SSH agent,
+        # ~/.ssh and credential helpers, which the sandbox hides.
+        "apps/git_install.py::_run_clone",
+        "apps/git_install.py::_cloned_head",
         # The SINGLE shared gh spawn chokepoint (github_runner.run_gh), serving
         # Issue Radar (`_gh_run`), Code Review Sage (`run_gh_json`,
         # `current_login`, `pipeline.list_open_prs`), and any future gh caller.

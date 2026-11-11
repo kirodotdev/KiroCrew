@@ -7709,6 +7709,78 @@ Writers: `apps/credential_masks.py`, `apps/manifest.py`, `apps/app_sdk_level.py`
 `test/test_app_credential_masks.py`, `test/test_app_backend_spawn_env.py`
 (`TestTheBackendSpawnLiftsTheAppsDeclaredMasks`).
 
+## 38. A git URL install is a folder install of the operator's own clone
+
+`kirocrew app install <git-url>` (`cli_commands_app._resolve_install_source`,
+`apps/git_install.py`) clones in the CLI process, with the operator's SSH keys,
+agent and credential helpers, so a repository installs exactly when the person
+running the command could `git clone` it. The gateway's registry clone (§15) runs
+as the gateway, without that agent, and clones a host it does not trust
+credential-free, so it cannot serve a private repository the operator can read.
+
+- **Which sources clone.** A source written as a remote (`://`, scp-style
+  `user@host:path`, `<transport>::`) that does not name an existing path. An
+  existing path always installs as a folder.
+- **Refused before git runs.** Anything but `https://`, `ssh://`, `git+ssh://` and
+  scp-style `user@host:path` (the registry's `_is_supported_registry_transport`
+  allowlist; plaintext `http://` and `git://` get their own sentence); a URL with
+  a password or token in it, or any `https://` userinfo, since git would persist
+  it in the checkout's `.git/config`; a query, a fragment or colon-bearing SSH
+  userinfo (`_git_target_is_unsupported`); whitespace or a control character; no
+  repository path; a `--ref` that is not a branch or tag name; a `--subdirectory`
+  that is absolute or holds `..`; and a host without git.
+- **The clone runs nothing the repository supplies.** `git -c core.hooksPath=<devnull>
+  -c core.fsmonitor=false -c protocol.allow=never -c protocol.https.allow=always
+  -c protocol.ssh.allow=always -c submodule.recurse=false clone --depth 1
+  --single-branch --no-recurse-submodules --template= [--branch <ref>] -- <url>
+  <dest>`. The protocol allowlist also binds an `insteadOf` rewrite in the
+  operator's config. The environment is the operator's own minus the variables
+  that point git at another repository (`GIT_DIR`, `GIT_WORK_TREE`,
+  `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY` and their kin), and stdin, stdout and
+  stderr are inherited so git's own error and any SSH prompt reach the operator.
+  The clone is stopped after 10 minutes.
+- **The app folder.** `--subdirectory`, else the repository root when it holds
+  `app.json`, else the one top-level folder that does; several candidates or none
+  refuse and name `--subdirectory`. A symlink is never followed, and any other
+  link (a Windows junction, which `is_symlink` does not report) must resolve
+  inside the clone, so a linked folder or a linked `app.json` is not a candidate.
+  Its name is read with the parse `AppManifest.from_json_file` uses
+  (`loads_user_json`, one leading byte-order mark accepted), so an `app.json` that
+  installs as a folder also installs from git. A fetch refusal can quote the
+  repository's folder names and the install's own refusal its manifest's fields,
+  so the CLI prints both, and the install's success line, through
+  `safe_terminal_line`; a gateway refusal already arrives sanitized
+  (`AppGatewayError`).
+- **Where the clone lives.** Each attempt clones into a new folder of its own,
+  `<data home>/app-git-checkouts/<repository>-<random>/` (`tempfile.mkdtemp`), and
+  keeps it. Nothing renames, replaces or deletes any other folder there, so two
+  overlapping installs can never swap the source the other is still copying, and
+  a checkout someone worked in is never removed for them. An app with an
+  installed record refuses after the clone, since the install would refuse it too.
+  A failure while fetching removes only the clone that attempt made. A checkout
+  whose install then fails is kept, since a gateway that timed out may still be
+  copying it. Neither uninstall nor a later install removes an old checkout; the
+  operator deletes one they no longer need.
+- **The install is the folder install.** The app folder goes to the running
+  gateway's `POST /api/apps/install` or, with none, to `install_app`, unchanged:
+  manifest validation, admission, the disabled first record and the trust prompt
+  at enable all apply as for any folder (§7.3). The record's `source` is that
+  folder and it carries no `sourceUrl`, so its trust is a local-folder grant like
+  any folder install's, and `git -C <checkout> pull` followed by `kirocrew app
+  update <name>` re-copies it. A `--ref` that names a tag clones only that tag, so
+  a pull never moves it; for a detached HEAD the CLI prints `git -C <checkout>
+  fetch --depth 1 origin tag <tag>` and `git -C <checkout> checkout <tag>` instead.
+  Every printed checkout path is quoted for the operator's shell (`shlex.quote`,
+  or Windows' `list2cmdline`), so a data home with a space still pastes as one
+  argument. Nothing registers, builds or runs app code here, and uninstall leaves
+  the checkout in place.
+
+Writers: `apps/git_install.py`, `cli_commands_app.py` (`_resolve_install_source`,
+`_print_git_update_hint`), `cli_parser_agent.py` (`--ref`, `--subdirectory`).
+Pinned by `test/test_app_install_git.py`. Its two git spawns are not sandboxed,
+since the clone needs the operator's SSH agent, `~/.ssh` and credential helpers,
+and are listed with that justification in `test/spawn_audit_helpers.py`.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.

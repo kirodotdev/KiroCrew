@@ -923,6 +923,8 @@ def register_app_parser(sub: _Commands) -> None:
         epilog="""
 Examples:
   kirocrew app install /path/to/oncall-watchtower
+  kirocrew app install git@github.com:you/my-app.git
+  kirocrew app install https://gitlab.com/you/apps.git --subdirectory my-app --ref v1.2.0
   kirocrew app list
   kirocrew app enable oncall-watchtower
   kirocrew app update oncall-watchtower
@@ -934,8 +936,27 @@ Examples:
         formatter_class=_fmt,
     )
     app_sub = app_parser.add_subparsers(dest="app_action")
-    app_install = app_sub.add_parser("install", help="Install an app from a local directory")
-    app_install.add_argument("source", help="Path to app directory containing app.json")
+    app_install = app_sub.add_parser(
+        "install", help="Install an app from a local directory or a git URL"
+    )
+    app_install.add_argument(
+        "source",
+        help=(
+            "Path to an app directory containing app.json, or a git URL (https://, "
+            "ssh:// or git@host:org/repo.git) cloned with your own git credentials"
+        ),
+    )
+    app_install.add_argument(
+        "--ref",
+        help="Git URL only: the branch or tag to clone (default: the remote's default branch)",
+    )
+    app_install.add_argument(
+        "--subdirectory",
+        help=(
+            "Git URL only: the repository folder holding app.json (default: the "
+            "repository root, or its one top-level folder holding an app.json)"
+        ),
+    )
     app_import = app_sub.add_parser(
         "import",
         help="Convert a manifest-declared plugin package into an app directory",
