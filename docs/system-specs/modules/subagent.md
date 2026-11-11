@@ -4634,7 +4634,17 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   cleanup record, so a Claude release answers `released` rather than
   `not_disposed`. Unsupported providers and transient deletion failures preserve
   both retry surfaces for later sweeps, capped at 90 days so a permanently missing
-  cleanup route cannot accumulate private run folders forever. A legacy SID present
+  cleanup route cannot accumulate private run folders forever. A sweep does not
+  evaluate such a run again while nothing about it changed: for a run that is its
+  own retention owner, `prune_stale_tombstones` remembers two verdicts, "no trusted
+  cleanup identity exists yet" and "every transcript belongs to a provider with no
+  cleanup route", each with what it was read from (inode, size and modification
+  time of the tombstone, the state and the protected record, plus the identities
+  published in this process). While those are equal and the 90-day window is open
+  the run costs three stats; a change to any of them, or the window ending,
+  evaluates it in full. A failure on a provider that has a route is not
+  remembered and is tried on every sweep. The table (`_UNRECLAIMABLE_MEMO`) is
+  process memory only, so a restarted gateway evaluates every run once. A legacy SID present
   only in agent-folder state/tombstone likewise preserves the folder inside that
   window: it cannot authorize deletion, but the lookup gives a later trusted
   migration time to reclaim the transcript. At the hard ceiling, only the run

@@ -100,13 +100,17 @@ class _CleanupIdentitySweepReader:
         """:func:`_agent_dir` against this sweep's registry root."""
         return _agent_dir_under(self._subagents_root, self._subagents_root_resolved, agent_id)
 
+    def record_file(self, agent_id: str) -> str:
+        """Where *agent_id*'s protected record lives, as a string. Joins only, no I/O."""
+        return os.path.join(self._records_root, agent_id, _CLEANUP_IDENTITIES_FILE)
+
     def read(self, agent_id: str) -> list[dict[str, object]]:
         self.agent_dir(agent_id)
         if not self._shared_locked:
             for protected_dir in (self._records_root.parent, self._records_root):
                 _lock_down_cleanup_dir(protected_dir)
             self._shared_locked = True
-        path = self._records_root / agent_id / _CLEANUP_IDENTITIES_FILE
+        path = Path(self.record_file(agent_id))
         _lock_down_cleanup_dir(path.parent)
         _lock_down_cleanup_file(path)
         return _parse_cleanup_identities_file(path)
