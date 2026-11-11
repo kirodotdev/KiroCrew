@@ -1277,13 +1277,17 @@ every ssh child failed with `ssh exited 255: Error: session-manager-plugin is no
 installed` while the plugin sat in `/usr/local/bin`. Every ssh spawn — tunnel,
 token mint, `restart_remote`, the diagnostics probes — therefore goes through
 `token_mint.ssh_spawn_argv_env`: the `ssh` head is resolved against the inherited
-`PATH` only, and the child gets `deploy.engine.tool_spawn_env`, the same env the
-SSM transport's `aws` child gets. That helper APPENDS the well-known install dirs
+`PATH` only, and the child gets `deploy.engine.tool_spawn_env`, the env the
+SSM transport's `aws` child is built from. That helper APPENDS the well-known install dirs
 (`/opt/homebrew/bin`, `/usr/local/bin`) and withholds them for a bare head, so
 the inherited `PATH` keeps first claim on every name and an `ssh` found only in
-those dirs is never exec'd. When the proxy still cannot find its program, the
-tunnel and mint errors say so and name the `PATH` the child was given, instead of
-the "connection closed" that ssh prints afterwards reading as a network drop.
+those dirs is never exec'd. The SSM transport's `aws` child also drops the
+gateway's Python interpreter settings (`sandbox.without_python_env`), because
+aws-cli v1 is Python; the ssh children keep them, since a `ProxyCommand` can run
+any program of the user's and stripping there would change more than `aws`. When
+the proxy still cannot find its program, the tunnel and mint errors say so and
+name the `PATH` the child was given, instead of the "connection closed" that ssh
+prints afterwards reading as a network drop.
 
 ### Dev host / home server (primary)
 

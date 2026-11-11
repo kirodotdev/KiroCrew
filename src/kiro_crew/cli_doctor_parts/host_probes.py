@@ -15,7 +15,6 @@ see :mod:`kiro_crew.cli_doctor_parts`.
 from __future__ import annotations
 
 import asyncio
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,6 +39,7 @@ if TYPE_CHECKING:
         platform_compat,
         platform_context,
         resolve_kiro_cli,
+        sandbox,
         service_linux,
     )
 
@@ -191,9 +191,11 @@ def _aws_probe_env() -> dict[str, str]:
     a profile that is absent from the operator's own config while its own probe
     said that config file does not exist. Dropping them makes the CLI resolve the
     same default locations the existence probe checks, so the halves cannot
-    disagree. Everything else is inherited — ``PATH`` still has to work.
+    disagree. It also drops the gateway's Python interpreter settings, because
+    aws-cli v1 is Python and would import the gateway's packages instead.
+    Everything else is inherited — ``PATH`` still has to work.
     """
-    env = dict(os.environ)
+    env = sandbox.without_python_env()
     for relocator in ("AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"):
         env.pop(relocator, None)
     return env
