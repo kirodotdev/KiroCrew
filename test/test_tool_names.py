@@ -65,10 +65,13 @@ class TestTheTablesMatchTheRecordedEngine:
 
     @classmethod
     def _mountable(cls) -> set[str]:
-        """Every id the engine's allowlist matcher can match: the local built-ins
-        plus the ones its remote wrapper serves under a ``remote_`` prefix."""
+        """Every id the engine's allowlist matcher can match: the local built-ins,
+        the ones its remote wrapper serves under a ``remote_`` prefix, and the
+        background-process control tools."""
         reg = cls._registry()
-        return set(reg["registered"]) | set(reg["remote"]["ids"])
+        return (
+            set(reg["registered"]) | set(reg["remote"]["ids"]) | set(reg["process_control"]["ids"])
+        )
 
     def test_every_mounted_id_is_a_registered_engine_tool(self):
         mountable = self._mountable()
@@ -221,8 +224,23 @@ class TestPolicyAliasSplit:
             for kas_id in KIRO_CLI_NAME_BY_KAS_TOOL
             if kas_id not in mounted and kas_id != "run_command"
         }
-        assert POLICY_ALIAS_DENY_ONLY_IDS == unmounted_policy_keys == {"delete_file"}
+        process_control = {"control_bash_process", "control_pwsh_process"}
+        assert unmounted_policy_keys == {"delete_file"}
+        assert POLICY_ALIAS_DENY_ONLY_IDS == unmounted_policy_keys | process_control
         assert POLICY_ALIAS_DENY_ONLY_IDS <= set(KIRO_CLI_NAME_BY_KAS_TOOL)
+
+    @pytest.mark.parametrize("kas_id", ["control_bash_process", "control_pwsh_process"])
+    def test_an_execute_bash_rule_denies_process_control_but_never_admits_it(self, kas_id):
+        """Mounted beside the shell, but ``start`` runs a command the shell's
+        command checks do not read, so an ``execute_bash`` grant must not
+        auto-approve it while an ``execute_bash`` deny still reaches it."""
+        assert policy_alias_split(kas_id) == ((), ("execute_bash",))
+
+    def test_the_shell_row_still_leads_with_run_command(self):
+        """A PostToolUse call that stated no id falls back to the row's first id."""
+        from kiro_crew.acp.kas_tool_rows import KAS_TOOL_IDS_BY_KIRO_TOOL
+
+        assert KAS_TOOL_IDS_BY_KIRO_TOOL["execute_bash"][0] == "run_command"
 
 
 class TestExpand:
@@ -326,8 +344,14 @@ class TestTheTwoReadingsHaveOppositePolarity:
 
     def test_excluding_the_shell_emits_only_its_registered_id(self):
         """``run_command`` is reported, not registered; emitting it would exclude
-        nothing, and ``execute_bash`` already withholds the shell."""
-        assert expand_kiro_cli_tool_exclusions(["execute_bash"]) == ["execute_bash"]
+        nothing, and ``execute_bash`` already withholds the shell. The
+        background-process tools are registered, so excluding the shell
+        withholds them too."""
+        assert expand_kiro_cli_tool_exclusions(["execute_bash"]) == [
+            "execute_bash",
+            "control_bash_process",
+            "control_pwsh_process",
+        ]
 
     def test_exclusion_reading_passes_unknown_names_through(self):
         assert expand_kiro_cli_tool_exclusions(["@srv", "tool_search", ""]) == [
