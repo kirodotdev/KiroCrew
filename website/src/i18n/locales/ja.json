@@ -21389,6 +21389,8 @@
       "goals_new_goal_send": "{{name}} に目指すものを伝える",
       "goals_new_goal_message": "あなたにゴールを設定したい。何が大事か私に聞いて、承認できるように書き留めて。",
       "goals_new_goal_failed": "チャットに送れませんでした。もう一度お試しください。",
+      "goals_new_goal_unconfirmed": "送信が確認できません — 再送信する前に、チャットを開いて会話履歴を確認してください。",
+      "goals_new_goal_open_chat": "チャットを開く",
       "goals_goal_number": "目標 {{number}}",
       "goals_remove": "目標を削除",
       "goals_removed": "目標を削除しました",

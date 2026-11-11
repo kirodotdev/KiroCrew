@@ -22465,6 +22465,8 @@
       "goals_new_goal_send": "Dizer a {{name}} o que mirar",
       "goals_new_goal_message": "Quero definir um objetivo para você. Pergunte o que importa e depois anote para eu aprovar.",
       "goals_new_goal_failed": "Não foi possível enviar ao chat. Tente de novo.",
+      "goals_new_goal_unconfirmed": "Entrega não confirmada — abra o chat e verifique a conversa antes de enviar novamente.",
+      "goals_new_goal_open_chat": "Abrir chat",
       "goals_goal_number": "Meta {{number}}",
       "goals_remove": "Remover meta",
       "goals_removed": "Meta removida",

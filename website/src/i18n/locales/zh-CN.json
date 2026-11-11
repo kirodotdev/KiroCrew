@@ -21389,6 +21389,8 @@
       "goals_new_goal_send": "告诉 {{name}} 要瞄准什么",
       "goals_new_goal_message": "我想给你定一个目标。先问我什么最重要，然后写下来让我确认。",
       "goals_new_goal_failed": "没能发送到聊天。请重试。",
+      "goals_new_goal_unconfirmed": "尚未确认送达——再次发送前，请打开聊天查看对话记录。",
+      "goals_new_goal_open_chat": "打开聊天",
       "goals_goal_number": "目标 {{number}}",
       "goals_remove": "移除目标",
       "goals_removed": "已移除目标",

@@ -21389,6 +21389,8 @@
       "goals_new_goal_send": "{{name}}에게 무엇을 목표로 할지 말하기",
       "goals_new_goal_message": "너에게 목표를 정해 주고 싶어. 무엇이 중요한지 물어본 다음, 내가 승인할 수 있게 적어 줘.",
       "goals_new_goal_failed": "채팅으로 보내지 못했습니다. 다시 시도해 주세요.",
+      "goals_new_goal_unconfirmed": "전송이 확인되지 않았습니다 — 다시 보내기 전에 채팅을 열어 대화 기록을 확인하세요.",
+      "goals_new_goal_open_chat": "채팅 열기",
       "goals_goal_number": "목표 {{number}}",
       "goals_remove": "목표 삭제",
       "goals_removed": "목표를 삭제했습니다",

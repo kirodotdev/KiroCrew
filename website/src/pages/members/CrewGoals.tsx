@@ -1,6 +1,5 @@
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { SendReceiptStatus } from '../../chat-core/transport/sendTurn'
-import { deliveryUnconfirmedCopy } from '../../chat-core/transport/receiptCopy'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
@@ -335,6 +334,13 @@ export default function CrewGoalsPane({ slug, member, name, onSendToChat, onSent
       setNewGoal(status === 'refused' ? 'failed' : 'unconfirmed')
     }
   }
+  // An unconfirmed message may already be in the thread, so the button sends
+  // nothing more: it leaves the modal the way a delivered send does, and the
+  // user checks the conversation before trying again.
+  const openChat = () => {
+    setNewGoal('closed')
+    onSent?.()
+  }
   // A successful write alone clears its draft. Serialize the writes so one
   // settled mutation cannot release the guard for another pending request.
   const run = (fn: () => Promise<MemberGoals>, onSaved?: () => void) => {
@@ -594,7 +600,7 @@ export default function CrewGoalsPane({ slug, member, name, onSendToChat, onSent
       <div className="flex flex-col gap-4" data-testid="crew-goals-new-goal">
         {/* Nothing typed here can be lost, so the hand-off is on. */}
         {newGoal === 'failed' && <ErrorNotice message={t('pages.membersPage.goals_new_goal_failed')} askAgent testId="crew-goals-new-goal-error" />}
-        {newGoal === 'unconfirmed' && <ErrorNotice message={deliveryUnconfirmedCopy(true)} askAgent testId="crew-goals-new-goal-unconfirmed" />}
+        {newGoal === 'unconfirmed' && <ErrorNotice message={t('pages.membersPage.goals_new_goal_unconfirmed')} askAgent testId="crew-goals-new-goal-unconfirmed" />}
         <p className="m-0 text-[15px] leading-snug font-semibold text-text">{t('pages.membersPage.goals_new_goal_lead', { name })}</p>
         <ol className="m-0 p-0 list-none flex flex-col gap-3 text-[13.5px] leading-snug text-text">
           {newGoalSteps.map(step => (
@@ -607,13 +613,13 @@ export default function CrewGoalsPane({ slug, member, name, onSendToChat, onSent
         <Btn
           type="button"
           primary
-          disabled={!onSendToChat || newGoal === 'sending'}
-          onClick={() => { void tellInChat() }}
+          disabled={newGoal === 'sending' || (newGoal !== 'unconfirmed' && !onSendToChat)}
+          onClick={newGoal === 'unconfirmed' ? openChat : () => { void tellInChat() }}
           className="w-full h-11 justify-center gap-2 text-[14px] rounded-2xl"
-          data-testid="crew-goals-new-goal-send"
+          data-testid={newGoal === 'unconfirmed' ? 'crew-goals-new-goal-open-chat' : 'crew-goals-new-goal-send'}
         >
           <MessageCircle size={16} aria-hidden="true" />
-          {t('pages.membersPage.goals_new_goal_send', { name })}
+          {newGoal === 'unconfirmed' ? t('pages.membersPage.goals_new_goal_open_chat') : t('pages.membersPage.goals_new_goal_send', { name })}
         </Btn>
       </div>
     </Modal>

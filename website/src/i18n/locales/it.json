@@ -22465,6 +22465,8 @@
       "goals_new_goal_send": "Dì a {{name}} a cosa puntare",
       "goals_new_goal_message": "Voglio darti un obiettivo. Chiedimi cosa conta, poi scrivilo perché io lo approvi.",
       "goals_new_goal_failed": "Impossibile inviare alla chat. Riprova.",
+      "goals_new_goal_unconfirmed": "Consegna non confermata: apri la chat e controlla la conversazione prima di inviarlo di nuovo.",
+      "goals_new_goal_open_chat": "Apri chat",
       "goals_goal_number": "Obiettivo {{number}}",
       "goals_remove": "Rimuovi obiettivo",
       "goals_removed": "Obiettivo rimosso",

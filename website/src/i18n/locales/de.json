@@ -21927,6 +21927,8 @@
       "goals_new_goal_send": "{{name}} sagen, worauf es hinarbeiten soll",
       "goals_new_goal_message": "Ich möchte dir ein Ziel setzen. Frag mich, was zählt, und schreib es dann für mich zur Freigabe auf.",
       "goals_new_goal_failed": "Das konnte nicht an den Chat gesendet werden. Bitte noch einmal versuchen.",
+      "goals_new_goal_unconfirmed": "Zustellung nicht bestätigt — öffne den Chat und prüfe den Verlauf, bevor du erneut sendest.",
+      "goals_new_goal_open_chat": "Chat öffnen",
       "goals_goal_number": "Ziel {{number}}",
       "goals_remove": "Ziel entfernen",
       "goals_removed": "Ziel entfernt",
