@@ -187,9 +187,9 @@ def test_the_copy_check_sees_a_reworded_copy() -> None:
     """Positive control: the band copied into a piece with its code marks dropped
     and its line breaks moved is still caught."""
     planted = (
-        "Keep interval_secs within 300..900 seconds, whatever the round waits on. Pass "
-        "no max_cycles and no max_runtime_secs: a work-ledger loop has no cycle cap, and "
-        "its one bound is the gateway's 7-day runaway backstop, so it runs until you stop it."
+        "Pass no interval_secs, no max_cycles and no max_runtime_secs: a work-ledger loop "
+        "runs every 300 seconds with no cycle cap, and its one bound is the gateway's "
+        "7-day runaway backstop, so it runs until you stop it."
     )
     assert _copies({"planted": planted})
 
