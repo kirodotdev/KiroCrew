@@ -9795,7 +9795,7 @@
       "css_found_counts": "Se definirán {{dark}} colores del modo oscuro, {{light}} del modo claro y {{shared}} compartidos (de ambos modos).",
       "css_ignored_invalid": "Omitidas, valor no permitido (usa un color, un tamaño o una sombra): {{names}}",
       "css_ignored_unknown": "Omitidas, el panel de control no tiene ningún color llamado: {{names}}",
-      "css_more_names": "{{names}} y {{extra}} más",
+      "css_more_count": "{{extra}} más",
       "css_no_variables": "No se encontraron colores del tema. Usa Copiar prompt arriba o pega líneas como las del ejemplo.",
       "css_skipped_note": "Al guardar se descartan las líneas omitidas y se conserva todo lo demás.",
       "dark_mode_colors": "Colores del modo oscuro",

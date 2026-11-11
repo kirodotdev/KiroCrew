@@ -10,7 +10,7 @@ import { api, type SessionEnvironmentsCheck } from '../../api/client'
 import { ACP_BACKEND_KAS, acpBackendName } from '../../api/acpBackend'
 import { ApiError } from '../../api/apiError'
 import { AGENT_SANDBOX_PATH } from '../overview/agentSandboxLink'
-import { fmtDateTime, fmtNumber } from '../../i18n/format'
+import { fmtDateTime, fmtList, fmtNumber } from '../../i18n/format'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { isMemberThreadSlot, memberSlugOfSlot } from '../../hooks/unreadOnAttention'
 import { resumeFromHistory } from '../../store/chatSlice'
@@ -808,10 +808,10 @@ export function SessionEnvironmentsCard() {
     ? allProfiles(savedSection).map(p => p.id).filter(id => !allProfiles(draft).some(p => p.id === id))
     : []
   // Named the way the profile list shows them, with the ID a chat is bound by.
-  const removedProfiles = removedIds.map(id => {
+  const removedProfiles = fmtList(removedIds.map(id => {
     const name = savedProfiles.find(p => p.id === id)?.name.trim()
     return name && name !== id ? t('sessionEnvironments.profileNameWithId', { name, id }) : id
-  }).join(', ')
+  }), { style: 'narrow' })
   const strandedChats = (workspacesQuery.data?.workspaces ?? []).filter(row =>
     !!row.profile && removedIds.includes(row.profile) && !row.deletion_due_at && row.state !== 'deleting').length
   // Why the picker is missing, said under the free-text field. Either a transport

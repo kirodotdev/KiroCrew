@@ -9567,7 +9567,7 @@
       "css_found_counts": "Setzt {{dark}} Farben für den dunklen Modus, {{light}} für den hellen Modus und {{shared}} gemeinsame Farben (für beide Modi).",
       "css_ignored_invalid": "Übersprungen, Wert nicht zulässig (verwende eine Farbe, Größe oder einen Schatten): {{names}}",
       "css_ignored_unknown": "Übersprungen, das Dashboard hat keine Farbe namens: {{names}}",
-      "css_more_names": "{{names}} und {{extra}} weitere",
+      "css_more_count": "{{extra}} weitere",
       "css_no_variables": "Keine Theme-Farben gefunden. Nutze oben „Prompt kopieren“ oder füge Zeilen wie im Beispiel ein.",
       "css_skipped_note": "Beim Speichern werden die übersprungenen Zeilen weggelassen, alles andere bleibt erhalten.",
       "dark_mode_colors": "Farben für den dunklen Modus",

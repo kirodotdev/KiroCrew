@@ -1,4 +1,4 @@
-import { fmtTime, fmtUnit, fmtWeekday } from '../i18n/format'
+import { fmtList, fmtTime, fmtUnit, fmtWeekday } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { surfaceMachineValue } from '../surfaces/registry'
 
@@ -63,7 +63,7 @@ export function formatCadence(prefill: CronPrefill): string {
       return i18nT('utils.scheduleCadence.weekly_on_day', { day: fmtWeekday(days[0], 'long'), time })
     }
     return i18nT('utils.scheduleCadence.weekly_on_days', {
-      days: days.map(d => fmtWeekday(d, 'short')).join(', '),
+      days: fmtList(days.map(d => fmtWeekday(d, 'short')), { style: 'narrow' }),
       time,
     })
   }

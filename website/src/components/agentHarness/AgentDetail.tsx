@@ -3,6 +3,7 @@ import { ArrowRight, RefreshCw } from 'lucide-react'
 import type { AcpBackendProbe } from '../../api/client'
 import { Btn, SendBtn } from '../ui'
 import { CopyCommand } from './CopyCommand'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -38,7 +39,7 @@ export function AgentInstallDetail({ name, probe }: { name: string; probe: AcpBa
       ) : probe.missing_components.length > 0 ? (
         <p className="text-[12px] text-muted">
           {i18nT('components.kiroPrerequisiteGate.agent_missing_components', {
-            components: probe.missing_components.join(', '),
+            components: fmtList(probe.missing_components, { style: 'narrow' }),
           })}
         </p>
       ) : null}

@@ -9339,7 +9339,7 @@
       "css_found_counts": "다크 모드 색 {{dark}}개, 라이트 모드 색 {{light}}개, 공통 색(다크·라이트 모두) {{shared}}개를 설정합니다.",
       "css_ignored_invalid": "허용되지 않는 값이어서 건너뜀(색·크기·그림자를 사용하세요): {{names}}",
       "css_ignored_unknown": "대시보드에 없는 색 이름이어서 건너뜀: {{names}}",
-      "css_more_names": "{{names}} 외 {{extra}}개",
+      "css_more_count": "기타 {{extra}}개",
       "css_no_variables": "테마 색을 찾을 수 없습니다. 위의 ‘프롬프트 복사’를 사용하거나 예시처럼 줄을 붙여넣으세요.",
       "css_skipped_note": "저장하면 건너뛴 줄만 제외하고 나머지는 모두 유지됩니다.",
       "dark_mode_colors": "다크 모드 색",

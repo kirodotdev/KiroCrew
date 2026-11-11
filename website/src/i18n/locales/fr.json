@@ -9795,7 +9795,7 @@
       "css_found_counts": "Définira {{dark}} couleurs du mode sombre, {{light}} du mode clair et {{shared}} communes (modes sombre et clair).",
       "css_ignored_invalid": "Ignoré, valeur non autorisée (utilise une couleur, une taille ou une ombre) : {{names}}",
       "css_ignored_unknown": "Ignoré, le tableau de bord n’a aucune couleur nommée : {{names}}",
-      "css_more_names": "{{names}} et {{extra}} autres",
+      "css_more_count": "{{extra}} autres",
       "css_no_variables": "Aucune couleur de thème trouvée. Utilise « Copier le prompt » ci-dessus, ou colle des lignes comme dans l’exemple.",
       "css_skipped_note": "L’enregistrement omet les lignes ignorées et conserve tout le reste.",
       "dark_mode_colors": "Couleurs du mode sombre",

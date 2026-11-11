@@ -14,6 +14,7 @@ import { api, ApiError, type AddInstanceBody, type InstanceView } from '../../ap
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { Trans } from 'react-i18next'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
@@ -445,7 +446,7 @@ export function EditInstanceForm({
       {stale ? (
         <p role="alert" className="mt-2 text-[12px] text-warn">
           {i18nT('pages.settings.remoteCrewPanel.changed_outside_this_form', {
-            fields: externallyChanged.join(', '),
+            fields: fmtList(externallyChanged, { style: 'narrow' }),
           })}
         </p>
       ) : null}
