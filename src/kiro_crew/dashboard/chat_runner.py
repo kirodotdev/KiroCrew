@@ -349,6 +349,7 @@ from kiro_crew.dashboard.handlers.usage import (
 )
 from kiro_crew.dashboard.mate_thread_wakes import note_turn_end as _note_mate_wakes
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
+from kiro_crew.dashboard.prompt_handoff import prompt_handed_off
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
 from kiro_crew.dashboard.recovery_replays import ReplayFamily
 
@@ -1118,6 +1119,10 @@ async def _run_chat(
             event_stream = client.stream(_segment_user_span(turn, full_message))
         if _timed:
             turn_timing.mark("stream_open")
+        # Admission, the session claim, the prompt build and every gate are
+        # behind this turn, so the session's background helpers (title, tags)
+        # cannot delay it from here on: this is the mark they wait for.
+        prompt_handed_off(slot)
         async for event in event_stream:
             if _timed:
                 turn_timing.mark("first_event")

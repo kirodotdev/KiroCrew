@@ -15,7 +15,7 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_git_repo_touch_overflow``, ``_git_repo_touch_pending``, ``_git_repo_touch_terminal``,
 ``_git_repo_walk_pending``, ``_git_repo_walk_task``, ``_git_repos``, ``_git_repos_evicted``,
 ``_git_repos_evicted_overflow``, ``_git_repos_incomplete``, ``_git_repos_seeded``,
-``_has_reader_flag``,
+``_handoff_generation``, ``_handoff_mark``, ``_has_reader_flag``,
 ``_hook_continuation_depth``, ``_last_enqueue_ts``, ``_last_turn_auth_required``,
 ``_last_turn_awaiting_permission``, ``_last_turn_children_announced``,
 ``_linked_session_busy``, ``_lock``,
@@ -261,6 +261,12 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # (``chat_turn.queue_cycle._hand_off_unstarted_turn``). -1: none, since a
     # published ``task`` is generation 1 or later.
     self._unstarted_generation = -1
+    # The ``_turn_generation`` of the turn that last opened its stream to the
+    # engine (-1: none has, for the same reason as above), and the future the
+    # session's background helpers wait on until the running turn does
+    # (``dashboard/prompt_handoff.py``); None while nothing waits.
+    self._handoff_generation = -1
+    self._handoff_mark = None
     # How many turns have passed every dispatch gate (``_turn_dispatch_gates``),
     # so a reader can tell whether one ran since it looked (Resume all).
     self._turns_started = 0

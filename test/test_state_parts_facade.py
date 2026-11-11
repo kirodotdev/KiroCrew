@@ -512,6 +512,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_git_repos_incomplete": ("value", "False"),
     "_git_repos_seeded": ("value", "False"),
     "_guarded_history_writes": ("value", "set()"),
+    "_handoff_generation": ("value", "-1"),
+    "_handoff_mark": ("value", "None"),
     "_has_reader_flag": ("value", "False"),
     "_hook_continuation_depth": ("value", "0"),
     "_human_seen": ("value", "False"),

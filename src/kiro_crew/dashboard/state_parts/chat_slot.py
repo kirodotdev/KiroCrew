@@ -101,6 +101,8 @@ class _ChatSlot:
         "_turn_generation",
         "_turns_started",
         "_unstarted_generation",
+        "_handoff_generation",
+        "_handoff_mark",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -516,6 +518,8 @@ class _ChatSlot:
     _turn_generation: int
     _turns_started: int
     _unstarted_generation: int
+    _handoff_generation: int
+    _handoff_mark: asyncio.Future[None] | None
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event
