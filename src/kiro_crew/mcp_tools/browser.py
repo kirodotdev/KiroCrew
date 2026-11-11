@@ -531,7 +531,9 @@ class _HandbackWait(DeferredTool):
         self.interrupted = interrupted
         self.interrupted_text = interrupted_text
         now = mcp_core.time.monotonic()
-        self.deadline = now + budgets.HOLD_TIMEOUT_S
+        # The gateway ends the hold (``hold_over`` on a poll); this later bound is
+        # only for a gateway that stopped answering.
+        self.deadline = now + budgets.HOLD_TIMEOUT_S + budgets.HOLD_GRACE_S
         self.next_poll = now
         self.next_keepalive = now + HOLD_KEEPALIVE_SECS
 
@@ -560,6 +562,10 @@ class _HandbackWait(DeferredTool):
         )
         if _policy_denied(payload):
             return _POLICY_DENIED_TEXT
+        if status == 200 and isinstance(payload, dict) and payload.get("hold_over") is True:
+            return _error_text("user_in_control", "") + _handed_back_text(
+                payload.get("handed_back")
+            )
         released = status == 200 and isinstance(payload, dict) and payload.get("released") is True
         if not released:
             return None
@@ -586,7 +592,9 @@ class _HandbackWait(DeferredTool):
         text = _settle(self.op, status, payload)
         if text is not None:
             return text + said
-        # Taken over again before the op could run: keep waiting on the same deadline.
+        # Taken over again before the op could run: a new hold, as the gateway's
+        # re-park starts one (``LiveHub.park``), so the two ends stay in step.
+        self.deadline = mcp_core.time.monotonic() + budgets.HOLD_TIMEOUT_S + budgets.HOLD_GRACE_S
         self.interrupted = isinstance(payload, dict) and payload.get("code") == "interrupted"
         if self.interrupted:
             self.interrupted_text = _error_text(

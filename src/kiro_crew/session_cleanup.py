@@ -792,7 +792,7 @@ class SessionCleanup:
         # The warm-pool spare is owned by no session, so its own pass
         # (``session_cleanup_spare``) measures and recycles it off the same snapshot.
         spare_providers = _spare.spare_providers_over_ceiling_eligible(self)
-        victims: list[tuple[str, int, int, SessionEntry, int]] = []
+        victims: list[tuple[str, int, int, int, SessionEntry, int]] = []
         loop = asyncio.get_running_loop()
         measure: Callable[[int], int] | None = None
         if candidates or spare_providers or busy:
@@ -807,20 +807,20 @@ class SessionCleanup:
                     executor = self._deps.get_maintenance_executor()
                     rss = await loop.run_in_executor(executor, measure, pid)
                     rss_by_pid[pid] = rss
-                if rss > self.state.rss_max_mb:
+                if rss > (limit := _spare.rss_limit_for(self, pid, rss)):
                     # ``None`` holds a session whose fresh processes keep coming
                     # straight back over the ceiling: recycling it again cannot help.
                     rebounds = judge_rss_crossing(
                         last_recycles,
                         key,
                         rss,
-                        ceiling=self.state.rss_max_mb,
+                        ceiling=limit,
                         now=now,
                         logger=self._deps.logger,
                         notify=self._owner.on_rss_hold,
                     )
                     if rebounds is not None:
-                        victims.append((key, pid, rss, session, rebounds))
+                        victims.append((key, pid, rss, limit, session, rebounds))
 
         # One RECLAIM per runtime per tick. The threshold was crossed by a
         # process, and every session on it reads the same figure, so recycling
@@ -830,7 +830,7 @@ class SessionCleanup:
         # reset that actually happened, not on an attempt: a victim the guards
         # below decline has reclaimed nothing, so a co-tenant is still eligible.
         recycled_pids: set[int] = set()
-        for key, pid, rss, session, rebounds in victims:
+        for key, pid, rss, limit, session, rebounds in victims:
             if pid in recycled_pids:
                 self._deps.logger.debug(
                     "RSS recycle: runtime %d already recycled a session this tick; "
@@ -852,7 +852,7 @@ class SessionCleanup:
                         "but has attached sub-agent work; skipping",
                         key,
                         rss,
-                        self.state.rss_max_mb,
+                        limit,
                     )
                     continue
                 # Ask the injection counter AGAIN, here. The wrapper above asks
@@ -886,14 +886,14 @@ class SessionCleanup:
                 if (
                     launch is not None
                     and launch[0] <= hold
-                    and rss <= self.state.rss_max_mb * HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR
+                    and rss <= limit * HARNESS_BACKGROUND_WORK_HARD_CEILING_FACTOR
                 ):
                     self._deps.logger.info(
                         "RSS recycle: session %s tree rss=%dMB exceeds %dMB but its "
                         "harness launched background work %.0fs ago (%s); skipping",
                         key,
                         rss,
-                        self.state.rss_max_mb,
+                        limit,
                         launch[0],
                         launch[1],
                     )
@@ -919,10 +919,10 @@ class SessionCleanup:
                     "RSS recycle: session %s tree rss=%dMB exceeds %dMB",
                     key,
                     rss,
-                    self.state.rss_max_mb,
+                    limit,
                 )
                 self._deps.stats_factory().inc_session_cleaned()
-                reason = rss_recycle_reason(rss, self.state.rss_max_mb, rebounds)
+                reason = rss_recycle_reason(rss, limit, rebounds)
                 # Name the launched work only while the launch is still inside
                 # the hold — in practice, a hard-ceiling recycle. A recycle let
                 # through PAST the hold just presumed that work finished (that

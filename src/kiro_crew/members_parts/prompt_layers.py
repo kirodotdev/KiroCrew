@@ -303,6 +303,9 @@ def read_member_briefing_bounded(slug: str) -> tuple[str, float | None, bool]:
     from the same open as the text and ``None`` whenever the text reads as no
     briefing. Blocking file IO.
     """
+    # Local import: a module-level name would be served by this module's facade.
+    from kiro_crew.bounded_read import bounded_read_fd
+
     try:
         parent, name = _briefing_pinned_target(slug)
     except (MemberSlugError, OSError, RuntimeError):
@@ -332,7 +335,7 @@ def read_member_briefing_bounded(slug: str) -> tuple[str, float | None, bool]:
             # A FIFO, device or socket is never a briefing; reading one can
             # block or misbehave, so it reads as "no briefing yet".
             return "", None, False
-        data = os.read(fd, byte_cap + 1)
+        data = bounded_read_fd(fd, byte_cap + 1)
     except OSError:
         return "", None, False
     finally:

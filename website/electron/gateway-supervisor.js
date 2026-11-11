@@ -42,6 +42,7 @@ const {
 const {
   windowsGatewayExecutablePaths,
   windowsProcessCommand,
+  windowsTaskkill,
 } = require("./windows-port");
 const {
   gatewayWaitTimeoutMs,
@@ -358,7 +359,18 @@ function createGatewaySupervisor({
    * on retrying behind that dialog, so Retry works once the crew is back.
    */
   async function ensureManagedTunnel() {
-    if (!tunnelKeeper.start()) return;
+    if (!tunnelKeeper.start()) {
+      // A client-only crew that did not opt in still needs a forward when
+      // nothing else carries its port (tunnel-keeper.js startForUnansweredPort).
+      if (runLocalGateway || !getRemoteHostConfig(store, PORT)?.host) return;
+      try { await checkBackend(); return; }
+      catch { /* nothing answers the port */ }
+      // No HTTP answer is not a free port: the user's own forward can hold it
+      // while its far end is down. Only a port nothing listens on is taken.
+      if ((await probeGatewayPortBinding(PORT)) !== "free") return;
+      if (!tunnelKeeper.startForUnansweredPort()) return;
+      glog(`tunnel: nothing answers :${PORT}; keeping a forward to the crew for this launch`);
+    }
     sendStatus("Opening the tunnel to your crew…");
     // Counted in polls rather than read off the clock, so the injected timer
     // fully decides how long this waits.
@@ -437,6 +449,10 @@ function createGatewaySupervisor({
     sameHomeGatewayPid, runGatewayStop, runPortStop, probeLockHolderPid, fetchHealthInfo, fetchGatewayReadiness,
     resolveFamilyConflict, getRunLocalGateway, setGatewayOwnership,
     isLaunchdJob: IS_MAC ? isLaunchdJob : null,
+    windowsCommand: IS_WIN ? (pid) => windowsProcessCommand(pid, { execFileFn: execFile }) : null,
+    windowsStopPid: IS_WIN
+      ? (pid, isTrustedCommand) => windowsTaskkill(pid, { execFileFn: execFile, isTrustedCommand })
+      : null,
   });
   const {
     stopGatewayGracefully,
@@ -482,6 +498,7 @@ function createGatewaySupervisor({
     setRunLocalGateway: (value) => { runLocalGateway = value; },
     setGatewayStartFailure: (failure) => { gatewayStartFailure = failure; },
     stopGatewayGracefully, waitForPortFree, startGateway, showLoadingThenConnect,
+    applySavedTunnelChoice: () => tunnelKeeper.applySavedChoice(),
   });
   const { canRestartGateway, restartGateway } = createUserRestart({
     backendUrl: BACKEND_URL, log: glog, mainWindow, quitting,
@@ -1535,7 +1552,7 @@ function createGatewaySupervisor({
           continue;
         }
         if (action === "configure-remote") {
-          let draft = remoteCrewDraft(getRemoteHostConfig(store, PORT) || {});
+          let draft = remoteCrewDraft(getRemoteHostConfig(store, PORT) || {}, { tunnelByDefault: !IS_WIN });
           let configured = false;
           for (;;) {
             const fields = await promptRemoteCrew(window, PORT, draft);
@@ -1547,6 +1564,9 @@ function createGatewaySupervisor({
             if (saved) {
               configured = true;
               glog(`remote crew for :${PORT} configured from the error dialog`);
+              // The saved choice stands for the rest of this launch, so the
+              // Retry below never reopens a forward the form left unticked.
+              tunnelKeeper.applySavedChoice();
               break;
             }
             // Reopen on what the user typed. A refused save writes nothing, so
@@ -1740,8 +1760,9 @@ function createGatewaySupervisor({
     // wake rebuilds it at once instead of waiting out ssh's keepalive.
     reopenTunnel: () => tunnelKeeper.restart(),
     // A remote-crew edit re-applies the launch port's tunnel choice at once:
-    // start, replace (new host or port) or stop the forward to match it.
-    syncTunnel: () => tunnelKeeper.start(),
+    // start, replace (new host or port) or stop the forward to match it. The
+    // save states the choice again, so it also ends a launch-time fallback.
+    syncTunnel: () => tunnelKeeper.applySavedChoice(),
     // The Remote Crew panes a window on the launch port shows, carried by the
     // same managed forward (tunnel-keeper.js), and their release when it closes.
     forwardPanePorts: (owner, ports) => tunnelKeeper.forwardPanePorts(owner, ports),

@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
@@ -166,7 +167,7 @@ def _read_order_file(path: Path) -> bytes | None:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             logger.warning("%s is not a regular file; ignoring it", path.name)
             return None
-        data = handle.read(MAX_PINNED_ORDER_FILE_BYTES + 1)
+        data = bounded_read(handle, MAX_PINNED_ORDER_FILE_BYTES + 1)
     if len(data) > MAX_PINNED_ORDER_FILE_BYTES:
         logger.warning(
             "%s is larger than %d bytes; ignoring it",

@@ -537,11 +537,16 @@ _is_within() {
   && [ "$CLI_MANIFEST_PUBLIC_KEY_B64" != "UNCONFIGURED" ] \
   || err "manifest signing trust root is not configured; refusing unsigned installation"
 
-command -v curl    >/dev/null 2>&1 || err "curl is required"
-command -v openssl >/dev/null 2>&1 || err "openssl is required to verify the signed manifest"
+# A minimal image can lack any of these tools (Amazon Linux 2023 ships no
+# openssl binary), so each refusal names the package that provides it.
+_err_missing() {
+  err "$1. Install the $2 package (Debian/Ubuntu: 'sudo apt-get install -y $2'; Fedora/RHEL/Amazon Linux: 'sudo dnf install -y $2'), then re-run this installer."
+}
+command -v curl    >/dev/null 2>&1 || _err_missing "curl is required" curl
+command -v openssl >/dev/null 2>&1 || _err_missing "openssl is required to verify the signed manifest" openssl
 if command -v sha256sum >/dev/null 2>&1; then SHA_CMD="sha256sum"
 elif command -v shasum  >/dev/null 2>&1; then SHA_CMD="shasum -a 256"
-else err "need sha256sum or shasum to verify the download"; fi
+else _err_missing "need sha256sum or shasum to verify the download" coreutils; fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
@@ -673,15 +678,17 @@ _provision_python_via_uv() {
   _uv_py_dir="${KIROCREW_PYTHON_DIR:-${_uv_data_home%/}-python}"
   # uv draws its own download progress on a terminal and reuses an already
   # installed interpreter without a download, so it is not wrapped in _run_step.
+  # --no-bin: the interpreter is found below with `python find`, so uv must not
+  # also link a python3.12 into ~/.local/bin and warn that it is off PATH.
   echo "Installing Python ($UV_PYTHON_SERIES) into $_uv_py_dir via uv ..."
-  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES"; then
+  if ! UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install --no-bin "$UV_PYTHON_SERIES"; then
     # uv trusts its own bundled CA roots, not the system store curl uses, so
     # behind a TLS-intercepting proxy it fails (UnknownIssuer) where curl got
     # through. Retry once on the system store unless the user set UV_NATIVE_TLS
     # (the pinned uv's name); uv pins the archive's SHA-256 either way.
     [ -z "${UV_NATIVE_TLS:-}" ] || return 1
     echo "Retrying the Python download with the system certificate store (UV_NATIVE_TLS=1) ..."
-    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install "$UV_PYTHON_SERIES" \
+    UV_NATIVE_TLS=1 UV_PYTHON_INSTALL_DIR="$_uv_py_dir" "$_uv_bin" python install --no-bin "$UV_PYTHON_SERIES" \
       || return 1
   fi
   # only-managed: resolve the interpreter just installed, never a system one
@@ -1425,11 +1432,12 @@ else
   # wants a running gateway. The persistent-service path (systemd/launchd) is
   # otherwise buried in the docs, which is the #1 remote-crew onboarding
   # complaint. `service install` is the durable path; `gateway` is the foreground
-  # one for a quick look.
+  # one for a quick look. On Linux the service is a system unit, so its line says
+  # up front that it needs sudo.
   echo ""
   echo "Next steps:"
   echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
-  echo "  kirocrew service install    # run it 24/7 as a service (survives logout, restarts on crash)"
+  echo "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service (survives logout, restarts on crash)"
   echo "  kirocrew --help             # everything else"
   echo ""
   echo "Need a non-default port (e.g. 5476 is already taken)?"

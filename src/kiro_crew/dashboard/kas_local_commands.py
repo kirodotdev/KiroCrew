@@ -114,7 +114,8 @@ def local_harness_menu(backend: str) -> frozenset[str]:
     """What the ``/`` menu lists, and ``/help`` prints, on a harness with no command
     channel: the commands the dashboard serves for *backend*, plus ``/compact``,
     which has a gate of its own. ``GET /api/slash-commands`` and ``/help`` both read
-    this one function."""
+    this one function. On a harness with an ``ACP_BACKEND_PROMPT_HANDLER_COMMANDS``
+    row, ``GET /api/slash-commands`` lists this and that row."""
     from kiro_crew.dashboard.chat_utils import (
         _BLOCKED_SLASH_COMMANDS,
         _DASHBOARD_SERVED_SLASH_COMMANDS,

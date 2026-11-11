@@ -101,6 +101,8 @@ class _ChatSlot:
         "_turn_generation",
         "_turns_started",
         "_unstarted_generation",
+        "_handoff_generation",
+        "_handoff_mark",
         "_wake_starting_task",
         "_chunk_seq",
         "event",
@@ -300,6 +302,7 @@ class _ChatSlot:
         "_disk_meta_key",
         "_disk_tail_ts",
         "_frozen_prefix_cache",
+        "_append_basis",
         "_foreign_reported",
         "_pending_rewrite",
         "_file_changes",
@@ -515,6 +518,8 @@ class _ChatSlot:
     _turn_generation: int
     _turns_started: int
     _unstarted_generation: int
+    _handoff_generation: int
+    _handoff_mark: asyncio.Future[None] | None
     _wake_starting_task: asyncio.Task[Any] | None
     _chunk_seq: int
     event: asyncio.Event
@@ -723,6 +728,7 @@ class _ChatSlot:
     _disk_window_len: int
     _disk_tail_ts: str | None
     _frozen_prefix_cache: tuple[float, int, int, str, list[str]] | None
+    _append_basis: tuple[str, tuple[int, int, int, int], int, str, list[bytes], int] | None
     _foreign_reported: frozenset[int]
     _pending_rewrite: bool
 

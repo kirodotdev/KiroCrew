@@ -794,6 +794,7 @@
     "pages.developer.featurePreviewsTab.decisions_provider_none": "Picker option that runs no decision model at all; the way to stop a local model.",
     "pages.developer.featurePreviewsTab.decisions_provider_none_detail": "Detail under the no-model option: nothing leaves the machine and nothing runs.",
     "pages.developer.featurePreviewsTab.decisions_no_model_note": "Shown beside the disabled switch while no decision model is chosen.",
+    "pages.developer.featurePreviewsTab.decisions_hosted_refused": "Warning line in the model picker when the fleet policy blocks the hosted Jev model (the TypeSafe host) that was configured. 'Jev' and 'TypeSafe' are names; keep them.",
     "pages.developer.featurePreviewsTab.decisions_provider_quality": "Detail line under a local model. {{percent}} and {{hard}} are formatted percentages of Jev's accuracy, overall and on hard decisions.",
     "pages.developer.featurePreviewsTab.decisions_provider_memory": "Detail line under a local model. {{peak}} and {{total}} are formatted memory sizes (e.g. '15GB'): how much the server uses, and the machine size it is recommended for.",
     "pages.developer.featurePreviewsTab.decisions_provider_speed": "Detail line under a local model. {{p50}} and {{p95}} are formatted durations: typical time per decision and the slow tail.",

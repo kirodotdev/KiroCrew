@@ -171,6 +171,8 @@ async def _run_turn(
     # on _acquired so we never release a semaphore we didn't hold. Mirrors
     # slack/transport_dispatch.py.
     _acquired = False
+    # Whether a re-projection left this turn holding the replay gap.
+    _reprojected = False
     # The provider THIS turn acquired, for the failure handler's attribution
     # question. Bound before the try so every handler can read it -- an
     # attribution flag read on a path its assignment cannot reach is an
@@ -217,7 +219,13 @@ async def _run_turn(
         # the post-turn promotion follow compares against it, so a pick made
         # while the turn prepares is left for the next turn.
         _pick_before = self._model_pref.get(route)
-        provider, is_new, resumed = await self.sessions.get_or_create(
+        # The claim token is minted inside the acquire, the instant get_or_create
+        # returns and before any await, so the fenced re-projection reads this
+        # turn's session and never a successor claimed during a later await.
+        from kiro_crew.agent_sdk.spec_hooks import acquire_with_token
+
+        (provider, is_new, resumed), _claim_token = await acquire_with_token(
+            self.sessions,
             session_key,
             start_priority=person_priority(msg.person_origin),
             agent=agent,
@@ -284,6 +292,67 @@ async def _run_turn(
                 model_requested=requested_model_sid(self.sessions, session_key),
                 workspace=slot_workspace(self.dashboard_state, session_key),
             )
+        # After the Stop snapshot above: a KAS batch that auto-approves what a
+        # PreToolUse hook now covers is reset and claimed again under the replay
+        # gap, which the ``finally`` closes after the release. The re-claim runs
+        # the same synchronous steps as the claim above.
+        from kiro_crew.agent_sdk.spec_hooks import (
+            acquire_with_token,
+            reproject_unattended_claim,
+            running_agent,
+        )
+
+        _log_agent = agent
+
+        async def _reclaim() -> tuple[tuple[Any, bool, bool], Any]:
+            nonlocal turn_chat, _turn_provider
+            got, tok = await acquire_with_token(
+                self.sessions,
+                session_key,
+                start_priority=person_priority(msg.person_origin),
+                agent=agent,
+                channel_id=channel_id,
+                model=(None if resumed_key is not None else _pick_before or None),
+            )
+            turn_chat = (chat_id, got[0])
+            self._turn_chats[session_key] = turn_chat
+            _turn_provider = got[0]
+            if _opens_crew_log:
+                open_turn_crew_log(
+                    got[0],
+                    session_key=session_key,
+                    agent=_log_agent,
+                    resumed=got[2],
+                    ctx_builder=self.ctx_builder,
+                    sessions=self.sessions,
+                    store=_crew_log_store,
+                    model_requested=requested_model_sid(self.sessions, session_key),
+                    workspace=slot_workspace(self.dashboard_state, session_key),
+                )
+            return got, tok.entry
+
+        _reprojection = await reproject_unattended_claim(
+            self.sessions,
+            session_key,
+            running_agent(provider, agent),
+            (provider, is_new, resumed),
+            _reclaim,
+            _claim_token,
+        )
+        provider, is_new, resumed = _reprojection.claimed
+        _reprojected = _reprojection.reprojected
+        if _reprojection.superseded:
+            # A hard Stop popped the claimed session and a successor another turn
+            # owns was claimed: end this turn without streaming on the popped
+            # provider. The ``finally`` finalizes the renderer, releases and closes
+            # the gap. (The driver's ``hook_turn`` check only covers a moved Stop
+            # count, not a non-Stop pop, so abandon explicitly here.)
+            logger.info(
+                "Telegram: session replaced during re-projection; abandoning %s", session_key
+            )
+            return False
+        # A Stop during it is read by the driver's pre-stream check (``hook_turn``),
+        # which settles the turn before any stream on the old provider.
         # Extraction's approved root is the provider's OWN resolved cwd, so a
         # path lexically outside it is refused before any metadata probe.
         # Read defensively: an absent cwd must mean "no uploads", never a dead
@@ -801,13 +870,21 @@ async def _run_turn(
                 session_key,
                 exc_info=True,
             )
-        # Identity-checked, as Discord does: a second message admitted before this
-        # turn acquired the session publishes its own renderer under the same key,
-        # and this turn must not take it away from that turn's steers.
-        if self._active_renderers.get(session_key) is renderer:
-            del self._active_renderers[session_key]
-        if _acquired:
-            self.sessions.release(session_key)
+        finally:
+            # Even when a cancellation lands in the close: the permit and an open
+            # replay gap would otherwise hold every later claim on this key.
+            # Identity-checked, as Discord does: a second message admitted before
+            # this turn acquired the session publishes its own renderer under the
+            # same key, and this turn must not take it away from that turn's steers.
+            if self._active_renderers.get(session_key) is renderer:
+                del self._active_renderers[session_key]
+            if _acquired:
+                self.sessions.release(session_key)
+            if _reprojected:
+                # After the release, as the shared pipeline closes its own.
+                from kiro_crew.agent_sdk.spec_hooks import close_reprojection_gap
+
+                close_reprojection_gap(self.sessions, session_key)
         await asyncio.to_thread(facade.cleanup_attachments, attachment_temp_paths)
 
     # Now that the turn is released, run anything that queued during it

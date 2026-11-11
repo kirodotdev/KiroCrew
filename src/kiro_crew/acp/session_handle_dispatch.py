@@ -14,7 +14,7 @@ Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``
 ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
-``_cancelled``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
+``_cancelled``, ``chat_shared``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
 ``_keepalive_parked``, ``_keepalive_ts``, ``_parked_total``, ``_queue``, ``_runtime``,
 ``_session_id``, ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``,
 ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``,
@@ -1053,6 +1053,18 @@ async def _dispatch_events(
                 # no session and was fanned out to co-tenants is not this
                 # session's own.
                 yield AcpEvent(kind=EVENT_CLEAR_STATUS, runtime_global=msg.fanout_no_owner)
+            elif (
+                action == "agent_switched"
+                and extract_command_result
+                and msg.fanout_no_owner
+                and self.chat_shared
+            ):
+                # A ``commands/execute`` turn proves this handle issued the
+                # switch, and its OWNED command result reports it below. The
+                # notification was fanned out ownerless (a second queue is
+                # registered), and surfacing it would read as a peer's switch to a
+                # consumer that gates its bookkeeping on ``runtime_global``.
+                pass
             elif action == "agent_switched":
                 saw_agent_switch = True
                 params = msg.params or {}

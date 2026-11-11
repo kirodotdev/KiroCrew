@@ -609,7 +609,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_acquire_with_model_fallback",
             "async method",
-            "(self, job: 'CronJob', cron_execution: 'ExecutionContext', key: 'str', agent_id: 'str | None', cwd: 'str | None' = None, crew_agent: 'str | None' = None, *, execution: 'ExecutionContext | None' = None, replace_execution: 'bool' = False) -> \"'tuple[LLMProvider, bool, bool, bool]'\"",
+            "(self, job: 'CronJob', cron_execution: 'ExecutionContext', key: 'str', agent_id: 'str | None', cwd: 'str | None' = None, crew_agent: 'str | None' = None, *, execution: 'ExecutionContext | None' = None, replace_execution: 'bool' = False) -> \"'tuple[LLMProvider, bool, bool, bool, Any]'\"",
         ),
         (
             "_retained_session_agent_mismatch",

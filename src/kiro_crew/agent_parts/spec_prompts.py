@@ -62,9 +62,9 @@ Read the `team-lead` skill before acting on a goal: it carries the
 do-it-yourself test, the dispatch-depth rule, how to run the team and what to
 report when a conductor dispatched you. Its
 procedure is `goal-conductor` -- dispatch order, the work ledger, the patrol
-loop, acceptance and stop conditions -- and it applies to you unchanged. With
-MCP Tool Search active the dispatch tools are deferred: load them by id with
-`tool_search` before the first call.
+loop, acceptance and stop conditions -- and it applies to you unchanged. A
+dispatch tool that is not in your tool list is deferred: load it by id with
+`tool_search`, then call it.
 
 The owner can message you at any time: apply a goal change at the next natural
 boundary, except a message that invalidates work already in flight, which you

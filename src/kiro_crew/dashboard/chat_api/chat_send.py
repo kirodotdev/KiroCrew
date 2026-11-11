@@ -1574,6 +1574,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
     # Until the runner is spawned, every exit still owes the accepted work a settlement.
     turn_dispatched = False
+    _user_row: dict[str, Any] | None = None
     _reserve_turn_admission = _person_send
     try:
         # A slot created by this send binds to its member's private store BEFORE
@@ -1742,7 +1743,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
 
         # Note: untitled slots display as "New Session…" via _ChatSlot.display_title
         # (serialization layer), so there's no bare chat-N flash to patch here. The
-        # LLM titling is kicked off below, before _run_chat.
+        # LLM titling is kicked off once the turn is dispatched.
 
         # ── AutoNudge: user input cancels any pending nudge timer (user wins). ──
         responsive_chat.notify_user_input(
@@ -1759,31 +1760,6 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         if _restored_frames and not turn_scoped_stream:
             slot._pending[:0] = _restored_frames
             slot.event.set()
-
-        # Kick off LLM titling now, from the first user message, so the title lands
-        # *during* the first turn instead of waiting for the whole response to
-        # finish (chat_done). Runs on an isolated background kiro-cli session
-        # concurrent with the turn. No-ops once titled / in-flight; the instant
-        # 60-char provisional stays as the fallback if the LLM SKIPs or errors.
-        # Not from an app's text on a user's session: the user's own turns name it.
-        if may_configure and not slot._titled and not slot._title_in_flight:
-            _tt = asyncio.create_task(_maybe_auto_title(state, slot))
-            # Expose the handle so chat_done's chained title→refresh pass can wait
-            # for this attempt to settle (see title_then_refresh in chat_title).
-            slot._title_task = _tt
-            state._background_tasks.add(_tt)
-            _tt.add_done_callback(state._background_tasks.discard)
-        elif _user_row_meta.get(HUMAN_TURN_META_KEY) is True and fork_title_pending(slot):
-            # A fork child keeps its "Fork of <parent>" name until the person
-            # sends it a message; this one names it.
-            schedule_fork_title(state, slot)
-
-        # Auto-tag: derive a tag from the session's project directory (deterministic,
-        # no LLM). Fire-and-forget, same pattern as auto-title.
-        if not getattr(slot, "_auto_tagged", False):
-            _at = asyncio.create_task(maybe_auto_tag(state, slot))
-            state._background_tasks.add(_at)
-            _at.add_done_callback(state._background_tasks.discard)
 
         if _reserve_turn_admission:
             slot._turn_admission_reserved = True
@@ -1923,6 +1899,30 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             if not turn_dispatched:
                 slot._has_reader = False
                 await turn_admission.abandon()
+            if _user_row is not None:
+                # LLM titling from the first user message, so the title lands
+                # *during* the first turn, and auto-tagging. Started only here, with
+                # the turn's task published (or known not to come): both wait for
+                # that turn's prompt handoff before they use the background kiro-cli
+                # session. No-ops once titled / in-flight; the instant 60-char
+                # provisional stays as the fallback if the LLM SKIPs or errors. Not
+                # from an app's text on a user's session: the user's turns name it.
+                if may_configure and not slot._titled and not slot._title_in_flight:
+                    _tt = asyncio.create_task(_maybe_auto_title(state, slot))
+                    # The handle lets chat_done's chained title→refresh pass wait
+                    # for this attempt to settle (see title_then_refresh).
+                    slot._title_task = _tt
+                    state._background_tasks.add(_tt)
+                    _tt.add_done_callback(state._background_tasks.discard)
+                elif _user_row_meta.get(HUMAN_TURN_META_KEY) is True and fork_title_pending(slot):
+                    # A fork child keeps its "Fork of <parent>" name until the
+                    # person sends it a message; this one names it.
+                    schedule_fork_title(state, slot)
+                # The project directory's tag (no LLM), then optional topic tags.
+                if not getattr(slot, "_auto_tagged", False):
+                    _at = asyncio.create_task(maybe_auto_tag(state, slot))
+                    state._background_tasks.add(_at)
+                    _at.add_done_callback(state._background_tasks.discard)
         finally:
             if _reserve_turn_admission:
                 slot._turn_admission_reserved = False

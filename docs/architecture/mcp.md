@@ -731,6 +731,23 @@ Probes run from `POST /api/mcp/probe`:
   | challenge, `authGrantPresent` true | **Signed in** (muted) | A grant exists in either store. The badge reports THAT, never that the server answers — the probe holds no token, so validity is the one thing it cannot check, and the hover says so. Toned muted rather than warn: amber is the panel's "act now" colour, and a resolved row wearing it is indistinguishable by colour from one that still needs a sign-in. |
   | no challenge, or `authGrantPresent` absent | **Not verified** | An older gateway, or a bare `401`. Naming any state here would assert more than the probe observed. |
 
+  On the KAS harness, a remote row whose own `oauth` block reaches no engine
+  (`oauthWithheld`, from `mcp_oauth_projection.oauth_withheld`: the block names a
+  `clientSecret`, or keeps nothing Crew sends) and that is neither a Connections
+  provider nor Crew-held offers no sign-in at all (`kasCannotSignIn` in
+  `McpTab.tsx`). Neither the chat guidance nor Sign in could ever finish for it. A
+  block Crew does send (a public `clientId`) keeps the normal row. Its badge reads **Sign-in unavailable** whether or not a
+  Kiro CLI grant is held (a KAS chat does not use one), with no hover tip,
+  and the row says in plain words that the server cannot sign in with this
+  engine. The row cannot see the engine version, so an engine older than 0.66.104,
+  which drops every block, is left to the chat notice. It offers no harness switch: a Kiro CLI pick runs on KAS wherever
+  kiro-cli offers its v3 engine (`kiro_cli_pick_backend`, and the row also reads
+  the `kiro_selection_runs_on_kas` probe), so the switch would
+  not reach the sign-in either. The chat says the same at session start in a
+  notice tagged
+  `meta.kind: "mcp_sign_in_unsupported"`, which `TurnBlock.isAlwaysVisible` keeps
+  out of the turn's folded steps.
+
   The middle row is what gives the guided sign-in an ending: without it a user who
   followed the instruction landed back on the same badge they started from. It is
   deliberately not "Online" — a stored grant is evidence a sign-in happened, not
@@ -2341,7 +2358,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py` + `mcp_cron_*.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_core_parts/` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary` |
 | `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_rebuild`, `work_ledger_record` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
@@ -4626,6 +4643,55 @@ scales with the tool count. An operator's `ASBX_KIRO_MANDATORY_MCPS` value
 (comma-separated server names) in the gateway's environment always wins, including
 an explicit empty value; per-session overlays cannot change it.
 
+**Job tools.** A deferred tool also costs its first caller one extra model round
+trip, the load. For an agent whose whole procedure is a few MCP tools that is a
+round trip on every session, so each shipped agent declares its job tools, once, in
+`JOB_TOOLS` (`agent_sdk/tool_search.py`), and `job_tool_ids` puts the declared tools
+the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
+`tool_search`. Everything else the spec mounts stays deferred.
+
+| Agents | Job tools | Budget (schema tokens per request, as the engine counts them) |
+|---|---|---:|
+| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status` | 3,300 |
+| `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report` | 1,200 |
+| `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start`, `wait` | 7,600 |
+| `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the ten above and `work_brief` | 7,800 |
+
+The rules the table is held to (`test/test_job_tools.py`):
+
+- **A row is the tools the agent's own prompt makes its procedure**, not the tools
+  it might use. Anything else is one `tool_search` away.
+- **A row fits its budget.** Its tools ride in every request of that agent. The
+  budgets live in `test/test_job_tools.py` (`JOB_TOOL_BUDGETS`), beside the test
+  that enforces them, because nothing at run time reads one. They are counted the
+  way KAS's own context breakdown counts a listed tool,
+  `ceil(len(id + description + schema) / 4)` with the id `mcp_<server>_<tool>` and
+  the schema as compact JSON, which reproduces the `tools.mcp.tokens` a live
+  session reports to within six tokens on every row. Each budget is that reported
+  figure plus 5%, rounded up to the next 50. A tool joins a row, or a job tool's
+  description grows, only while the row still fits; the budget is what keeps the
+  table from becoming "defer nothing".
+- **The set is fixed per agent**, never per session, so the tool definitions an
+  agent's requests open with are the same in every session of it and the cached
+  prefix stays valid.
+- **An agent with no row is untouched**: an operator's own agent, an app's agent
+  and a crew member's template put on the wire what they did before. The table is
+  keyed by agent name, so this is about the name: a spec an operator saved under a
+  shipped name (their own `kirocrew-worker.json`, say) takes that name's row, for
+  the row's tools the spec itself mounts and for nothing else it mounts.
+- **An operator's `ASBX_KIRO_MANDATORY_MCPS` is the whole decision.** When it is
+  set, even empty, Crew adds no job tool beside it.
+- **Deferral is a prompt-size mechanism, not a permission.** The list changes one
+  key of the `initialize` request. What a session may call is still the spec's
+  `tools` minus `excludedTools`, and a never-deferred tool's call still passes
+  Crew's PreToolUse gate, governance and approvals like any other MCP call.
+
+Only KAS takes a per-tool list. kiro-cli's own engine exempts whole servers, so
+there the declaration reaches no channel and the job tools stay behind its loader.
+`neverDefer` is read once per process, at `initialize`, from the agent the process
+was spawned for; a process later asked to run a different agent keeps the first
+agent's list.
+
 That makes the placement question a real one rather than a matter of taste:
 
 - **Core** is for capabilities a session may need *without being asked* —
@@ -5834,9 +5900,14 @@ digest closes without the stuck-wave sweep.
 The loop registers it
 and, from its own 100 ms tick, runs the deferred's short `step()` whenever its
 `due_at()` has passed; the call is answered by the step that returns text. A
-`step` is one loopback round-trip (a keepalive POST, one poll pass, one wait
-slice), never a sleep, and runs with the call's caller identity installed as the
-worker had it. An ask step's wait slice is the server's fixed
+`step` is one loopback round-trip (a keepalive POST, one pass over a wave's
+children, one wait slice), never a sleep, and runs with the call's caller
+identity installed as the worker had it. A `spawn_sub_agents` pass asks the
+gateway to hold its status reads until the child ends, for at most 2s per pass,
+and at most half of the pool's threads sit in such a read at once
+(`spawn_parts/wave.py` `_HELD_READS`); a wave past that bound reads without
+holding and is stepped again on its 2s interval, so held reads never take the
+threads the quick steps and the ask slices run on. An ask step's wait slice is the server's fixed
 `validation.ASK_WAIT_SLICE_SECS` (5s; the wait route reads no body, so a caller
 cannot choose it): a step holds a pool thread for one slice, so the admitted-card
 queue budget `ceil(DEFERRED_PARKED_MAX / DEFERRED_STEP_WORKERS) * 5` = 40s stays

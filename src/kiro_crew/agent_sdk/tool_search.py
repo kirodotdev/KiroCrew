@@ -32,6 +32,15 @@ takes a different road to each:
   the host's behaviour without this list, so the gap costs a tool's directness,
   never the tool.
 
+A deferred tool costs its first caller one extra model round trip, the load. An
+agent whose whole job is a handful of MCP tools would pay that on every session,
+so :data:`JOB_TOOLS` names those tools per shipped agent and
+:func:`job_tool_ids` puts them on ``neverDefer`` for a spec that grants the
+loader. It is the one declaration: nothing else names a tool to keep direct.
+kiro-cli's Rust engine has no per-tool exemption (it exempts whole servers,
+``ASBX_KIRO_MANDATORY_MCPS``), so the declaration reaches no channel there and
+those tools stay deferred behind its loader.
+
 The thresholds are kiro-cli's own activation floor (deferral starts once the
 specs cross ``min_pct`` of the context window OR ``min_tokens``) and are
 mirrored as the defaults of ``AgentConfig.tool_search_min_pct`` /
@@ -44,19 +53,22 @@ from __future__ import annotations
 
 import copy
 import fnmatch
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 
 __all__ = [
+    "JOB_TOOLS",
     "TOOL_SEARCH_DEFAULT_MIN_PCT",
     "TOOL_SEARCH_DEFAULT_MIN_TOKENS",
     "TOOL_SEARCH_LOADER_TOOL",
     "ToolSearchSettings",
     "clamp_min_pct",
     "clamp_min_tokens",
+    "job_tool_ids",
     "kas_client_meta_settings",
     "kas_never_defer_ids",
     "resume_takes_tool_search_replay",
@@ -246,6 +258,75 @@ def kas_never_defer_ids(
     return sorted(ids)
 
 
+#: Fanning work out to sub-agents, and the status read every fan-out makes.
+_SUB_AGENTS = (
+    "kirocrew-core::spawn_run",
+    "kirocrew-core::spawn_status",
+    "kirocrew-core::spawn_sub_agents",
+)
+#: A dispatched worker's two calls: read its item, report on it.
+_WORK_ITEM = ("kirocrew-work::work_brief", "kirocrew-work::work_report")
+#: Dispatching items to worker sessions, waiting on them, patrolling and closing them.
+_DISPATCH = (
+    "kirocrew-core::monitor_start",
+    "kirocrew-core::wait",
+    "kirocrew-dashboard::session_close",
+    "kirocrew-dashboard::session_create",
+    "kirocrew-dashboard::session_read_message",
+    "kirocrew-dashboard::session_send",
+    "kirocrew-dashboard::work_dispatch",
+    "kirocrew-work::accept_eval",
+    "kirocrew-work::work_ledger_read",
+    "kirocrew-work::work_ledger_record",
+)
+#: The same, for the agents whose first call asks whether a parent dispatched them.
+_DISPATCH_UNDER_A_PARENT = (*_DISPATCH, "kirocrew-work::work_brief")
+
+#: Shipped agent name -> its job tools, as ``<server>::<tool>`` ids: the MCP tools
+#: that agent's own prompt makes its core procedure. THE declaration: a tool is
+#: kept out of deferral for an agent because it is in that agent's row here, and
+#: for no other reason. A row's tools ride in every request of that agent, so a
+#: tool joins one only when the prompt sends the agent there as procedure and the
+#: row still fits its schema-token budget; the budgets live beside the test that
+#: enforces them (``test/test_job_tools.py``), because nothing at run time reads
+#: one. The key is the agent's name: a name with no row (an operator's own agent,
+#: an app's, a crew member's template) keeps today's deferral, and a spec saved
+#: under a shipped name takes that name's row, for the tools it mounts.
+JOB_TOOLS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "kirocrew": _SUB_AGENTS,
+        "kirocrew-worker": _WORK_ITEM,
+        "kirocrew-mate-worker": _WORK_ITEM,
+        "kirocrew-conductor": _DISPATCH_UNDER_A_PARENT,
+        "kirocrew-ledger-conductor": _DISPATCH_UNDER_A_PARENT,
+        "kirocrew-team-lead": _DISPATCH_UNDER_A_PARENT,
+        "kirocrew-pipeline-conductor": _DISPATCH,
+        "kirocrew-security-conductor": _DISPATCH,
+    }
+)
+
+
+def job_tool_ids(agent: str | None, spec: dict[str, Any] | None) -> list[str]:
+    """The job tools declared for *agent* that *spec* mounts, as ``neverDefer`` ids.
+
+    Read through :func:`kas_never_defer_ids`, so a declared tool is listed only
+    when the spec's own ``tools`` reaches it: a spec that mounts none of the
+    declared servers lists nothing. A tool the spec names one by one
+    (``@server/tool``) and the row does not is dropped, so the list is never
+    wider than the row. The answer depends on the agent and its spec alone, never
+    on the session, so the tool definitions an agent's requests open with are the
+    same in every session of it.
+    """
+    declared = JOB_TOOLS.get(agent or "")
+    if declared is None:
+        return []
+    by_server: dict[str, list[str]] = {}
+    for tool_id in declared:
+        server, _, tool = tool_id.partition(_KAS_TOOL_ID_SEPARATOR)
+        by_server.setdefault(server, []).append(tool)
+    return [i for i in kas_never_defer_ids(spec, by_server.get) if i in declared]
+
+
 def kas_client_meta_settings(
     settings: ToolSearchSettings | None,
     *,
@@ -260,11 +341,14 @@ def kas_client_meta_settings(
     only when the operator turned it on AND the agent's spec grants the loader.
     An unset key would leave the decision to whatever the host defaults to.
 
-    For a spec that grants no loader, ``neverDefer`` carries *never_defer* (the
-    caller's :func:`kas_never_defer_ids`), because KAS's deferral path reads that
-    list and not ``enabled``: without it every MCP tool of such a spec would be
-    deferred. A spec that grants the loader gets no ``neverDefer``, so its
-    deferral is exactly what it was.
+    ``neverDefer`` carries *never_defer*, the caller's list of what stays direct,
+    because KAS's deferral path reads that list and not ``enabled``. For a spec
+    that grants no loader that is every MCP tool it can call
+    (:func:`kas_never_defer_ids`), and the key is sent even when empty: without
+    it every MCP tool of such a spec would be deferred with no way to load one.
+    For a spec that grants the loader it is the agent's job tools
+    (:func:`job_tool_ids`), and an empty list sends no key, so an agent with no
+    declared job tools puts on the wire exactly what it did.
     """
     if settings is None:
         return {}
@@ -273,8 +357,9 @@ def kas_client_meta_settings(
         "minPct": settings.min_pct,
         "minTokens": settings.min_tokens,
     }
-    if not loader_granted:
-        tool_search["neverDefer"] = sorted({t for t in never_defer if isinstance(t, str) and t})
+    ids = sorted({t for t in never_defer if isinstance(t, str) and t})
+    if ids or not loader_granted:
+        tool_search["neverDefer"] = ids
     return {"toolSearch": tool_search}
 
 

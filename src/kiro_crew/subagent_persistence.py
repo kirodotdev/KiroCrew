@@ -34,6 +34,7 @@ from kiro_crew.agent_sdk.claude_transcripts import (
     is_claude_provider_label,
 )
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.execution_context import ExecutionContext
 from kiro_crew.jsonl_util import rotate_jsonl_at
@@ -269,7 +270,7 @@ def _panel_result_text(agent_dir: Path) -> str:
             # cut is present whole when redaction runs, and one byte past that so
             # a value exactly at the cap is not marked as cut. The margin keeps
             # the read bounded; nothing here reads the file whole.
-            text = handle.read(_PANEL_RESULT_CAP + _PANEL_REDACT_MARGIN + 1)
+            text = bounded_read(handle, _PANEL_RESULT_CAP + _PANEL_REDACT_MARGIN + 1)
     except OSError:
         return ""
     return _redact_then_clamp(text, _PANEL_RESULT_CAP)

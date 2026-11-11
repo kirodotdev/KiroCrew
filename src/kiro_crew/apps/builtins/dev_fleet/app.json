@@ -71,6 +71,15 @@
               "type": "string",
               "description": "Optional CPU ceiling, e.g. '800%' for eight cores (default 200%, capped at the host CPU count). Kept across restarts",
               "maxLength": 16
+            },
+            "env": {
+              "type": "array",
+              "description": "Optional environment overrides for the pod's gateway, as KEY=VALUE strings, to point it at a test double. Only KIROCREW_KIRO_BIN is accepted: an absolute path to an executable, such as a fake kiro-cli that fails the way you want to see, e.g. ['KIROCREW_KIRO_BIN=/abs/path/fake-kiro-cli']. With it set, a kiro-cli that cannot start no longer stops the pod from booting, so the error shows in the pod's UI. Other keys are refused. Each pod_up replaces the overrides, so a pod_up without env clears them; pod_restart keeps them",
+              "items": {
+                "type": "string",
+                "maxLength": 1100
+              },
+              "maxItems": 4
             }
           },
           "required": [

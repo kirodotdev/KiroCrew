@@ -140,11 +140,12 @@ class TestNotice:
         spec = _spec(mcpServers={"s": {"url": "https://mcp.example.com"}})
         assert spec_keys_without_carrier(spec, discards_mcp_oauth=True) == []
 
-    def test_the_notice_names_the_server_and_the_supported_backend(self):
+    def test_the_notice_names_the_server_and_offers_no_harness_switch(self):
+        # A Kiro CLI pick runs on KAS where kiro-cli offers v3, so naming it as the fix misleads.
         text = _spec_keys_notice("a", ["mcpServers.slack-example.oauth"])
         assert "mcpServers.slack-example.oauth" in text
-        assert "Sign-in to MCP server slack-example will not work on this backend" in text
-        assert "kiro-cli backend supports it" in text
+        assert "Sign-in to MCP server slack-example will not work on this backend yet." in text
+        assert "kiro-cli" not in text
 
     def test_a_dotted_name_and_several_servers_read_back_whole(self):
         text = _spec_keys_notice("a", ["mcpServers.a.b.oauth", "mcpServers.oauth.oauth"])

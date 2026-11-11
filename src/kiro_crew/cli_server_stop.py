@@ -190,7 +190,7 @@ def _verified_loopback_gateway_pids(port: int) -> list[int]:
     return [pid]
 
 
-def _gateway_pid() -> None:
+def _gateway_pid(port: int | None = None) -> None:
     """Print this home's gateway-lock holder as one line of JSON, then exit 0.
 
     Read-only. Resolves the incumbent through :func:`gateway_lock.lock_holder`,
@@ -222,17 +222,31 @@ def _gateway_pid() -> None:
     -- it prints ``{"holder": "indeterminate", "reason": "..."}`` and exits 2:
     waiting has no end, so the caller must NOT spawn and must not wait
     unbounded -- it surfaces the terminal error.
+
+    Given *port* (``--port``), a positively held lock whose holder is
+    unnameable is named from the gateway's own run record for that port
+    instead (:func:`_recorded_gateway_pid`: ``run/gateway-<port>.pid`` whose
+    start token still matches the live pid), as ``source: "run_record"`` --
+    the fallback ``stop`` already takes. No record, or a stale one, still
+    prints ``held``.
     """
     try:
         holder = lock_holder(config_dir())
     except LockProbeError as exc:
         if exc.held:
-            # Positively held, holder unnameable: a live gateway (likely still
-            # draining). Name it as held so the caller waits for release.
-            print(json.dumps({"holder": "held", "reason": str(exc)}))
-            return
-        print(json.dumps({"holder": "indeterminate", "reason": str(exc)}))
-        sys.exit(2)
+            recorded = _recorded_gateway_pid(port) if port is not None else None
+            if recorded is not None:
+                # The same fallback _config_dir_owner takes for `stop`: the
+                # gateway's own fresh run record for this port names the holder.
+                holder = LockHolder(pid=recorded, alive=True, source="run_record")
+            else:
+                # Positively held, holder unnameable: a live gateway (likely still
+                # draining). Name it as held so the caller waits for release.
+                print(json.dumps({"holder": "held", "reason": str(exc)}))
+                return
+        else:
+            print(json.dumps({"holder": "indeterminate", "reason": str(exc)}))
+            sys.exit(2)
     if holder.pid is None or not holder.alive:
         print(json.dumps({"holder": "nobody"}))
         return

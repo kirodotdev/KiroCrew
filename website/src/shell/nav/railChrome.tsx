@@ -61,7 +61,7 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
    * header and the first nav item, without widening the 2px item gaps.
    */
   return (
-    <div className={`relative flex items-center mb-1.5 ${effectiveCollapsed ? 'justify-center' : ''}`}>
+    <div className="relative flex items-center mb-1.5">
       {/* One persistent click target that toggles the rail. The logo
           never unmounts, so there is no swap across collapse/expand; its
           size (w-7 ↔ w-9) and collapsed nudge (mt-1) both animate over
@@ -92,7 +92,7 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
           brand block makes the row taller. */}
       <button
         type="button"
-        className={`group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left ${effectiveCollapsed ? 'justify-center' : ''}`}
+        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
         onClick={() => { dismissTip(); toggleNav() }}
         {...pointerProps}
         onMouseEnter={showTip}
@@ -104,7 +104,7 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
         aria-expanded={!effectiveCollapsed}
         {...uiLocation('shell.nav-toggle', rowRef)}
       >
-        <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-1' : ''}`}>
+        <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-1 ml-0.5' : ''}`}>
           <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-9 h-9' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
           <AnimatePresence initial={false}>
             {!effectiveCollapsed && (

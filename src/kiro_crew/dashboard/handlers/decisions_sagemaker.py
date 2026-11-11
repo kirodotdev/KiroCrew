@@ -146,6 +146,177 @@ def sagemaker_target(body: dict) -> tuple[str, str, int]:
     return address, model, timeout_ms
 
 
+#: Public AWS regions the picker probes against the ceiling's ``endpoints`` list
+#: to decide whether any SageMaker runtime host is permitted. A ceiling may name one
+#: regional host, so "some host is permitted" needs a region to ask about; the
+#: configured region is asked first, so the common permissive answer costs one row.
+#: This tuple is the floor; :func:`_probe_regions` adds the regions botocore's local
+#: endpoint metadata lists, so a region the tuple lacks is still asked about.
+SAGEMAKER_REGIONS: tuple[str, ...] = (
+    "us-east-1",
+    "us-east-2",
+    "us-west-1",
+    "us-west-2",
+    "af-south-1",
+    "ap-east-1",
+    "ap-south-1",
+    "ap-south-2",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ap-southeast-3",
+    "ap-southeast-4",
+    "ap-southeast-5",
+    "ap-southeast-6",
+    "ap-southeast-7",
+    "ap-east-2",
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-northeast-3",
+    "ca-central-1",
+    "ca-west-1",
+    "mx-central-1",
+    "eu-central-1",
+    "eu-central-2",
+    "eu-west-1",
+    "eu-west-2",
+    "eu-west-3",
+    "eu-north-1",
+    "eu-south-1",
+    "eu-south-2",
+    "il-central-1",
+    "me-south-1",
+    "me-central-1",
+    "sa-east-1",
+    "us-gov-east-1",
+    "us-gov-west-1",
+    "cn-north-1",
+    "cn-northwest-1",
+)
+
+
+def endpoint_refused(endpoint: str, *, audit: bool = True) -> bool:
+    """Whether the ceiling's ``endpoints`` list refuses the host a request to *endpoint* reaches.
+
+    ``audit=False`` is for the picker's offer probe, which asks about many hosts and
+    acts on none: same answer, no SEL row.
+
+    A ``sagemaker://`` address is asked as the regional runtime URL the client is
+    pinned to. The same question the send path asks, so an option the answer refuses
+    is one a decision could never use. Blocking: call off the event loop.
+    """
+    from kiro_crew.decisions import capability, impl_sagemaker
+
+    try:
+        url = (
+            impl_sagemaker.policy_endpoint(endpoint)
+            if impl_sagemaker.is_sagemaker_endpoint(endpoint)
+            else endpoint
+        )
+    except (impl_sagemaker.SageMakerConfigError, ValueError):
+        # An address that names no host cannot be sent to, which is the send
+        # path's own answer (``gate._targets_denied`` denies on the same raise).
+        return True
+    return capability.targets_denied(point=None, model=None, endpoint=url, audit=audit)
+
+
+def consent_endpoint_refused(endpoint: str) -> bool:
+    """Whether turning consent on for *endpoint* is refused by the ceiling's ``endpoints`` list.
+
+    Only the hosted default and a ``sagemaker://`` address leave the machine through a
+    host the picker offers; anything else (a local preset, "none", a hand-written
+    address) is not asked here. Blocking: call off the event loop.
+    """
+    from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
+    from kiro_crew.decisions import impl_sagemaker
+
+    if endpoint != DECISION_PROVIDER_ENDPOINT_DEFAULT and not impl_sagemaker.is_sagemaker_endpoint(
+        endpoint
+    ):
+        return False
+    return endpoint_refused(endpoint)
+
+
+_botocore_regions_cache: tuple[str, ...] | None = None
+
+
+def _botocore_regions() -> tuple[str, ...]:
+    """Every region botocore's bundled metadata lists for the SageMaker runtime, any partition.
+
+    Local data only, no network. Computed once per process: the list is bundled
+    with the installed botocore, and a settings read must not build a ``Session``
+    each time. Empty when botocore is absent or its metadata cannot be read, so the
+    caller falls back to :data:`SAGEMAKER_REGIONS`; that failure is not cached, so a
+    later read tries again.
+    """
+    global _botocore_regions_cache
+    if _botocore_regions_cache is None:
+        found = _read_botocore_regions()
+        if found:
+            _botocore_regions_cache = found
+        return found
+    return _botocore_regions_cache
+
+
+def _read_botocore_regions() -> tuple[str, ...]:
+    """One read of botocore's endpoint metadata; empty on any failure."""
+    try:
+        from botocore.session import Session
+
+        session = Session()
+        found: list[str] = []
+        for partition in session.get_available_partitions():
+            found.extend(
+                session.get_available_regions("sagemaker-runtime", partition_name=partition)
+            )
+        return tuple(r for r in found if isinstance(r, str))
+    except Exception:
+        return ()
+
+
+def _probe_regions(configured_region: str) -> tuple[str, ...]:
+    """The regions to ask the ceiling about: configured first, botocore's, then the static floor."""
+    return tuple(dict.fromkeys((configured_region, *_botocore_regions(), *SAGEMAKER_REGIONS)))
+
+
+def sagemaker_hosts_permitted(configured_region: str = "") -> bool:
+    """Whether the ceiling permits the runtime host of at least one SageMaker region."""
+    from kiro_crew.decisions import impl_sagemaker
+
+    for region in _probe_regions(configured_region):
+        if not region:
+            continue
+        try:
+            address = impl_sagemaker.build_endpoint("probe", region)
+        except impl_sagemaker.SageMakerAddressFieldError:
+            continue
+        if not endpoint_refused(address, audit=False):
+            return True
+    return False
+
+
+def hosted_offers(hosted_denied: bool, configured_region: str = "") -> tuple[bool, bool]:
+    """``(hosted_permitted, sagemaker_permitted)``: the row's answer AND the endpoints list's."""
+    from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT
+
+    if hosted_denied:
+        return False, False
+    return (
+        not endpoint_refused(DECISION_PROVIDER_ENDPOINT_DEFAULT, audit=False),
+        sagemaker_hosts_permitted(configured_region),
+    )
+
+
+def switch_refused(endpoint: str, *, local: bool) -> bool:
+    """Whether a switch to the route-built *endpoint* is withheld by the ceiling.
+
+    The row for its side, and for an option that leaves the machine also the
+    ``endpoints`` list, so the PUT refuses what the picker would not offer.
+    """
+    from kiro_crew.decisions.capability import is_decisions_denied
+
+    return is_decisions_denied(local=local) or (not local and endpoint_refused(endpoint))
+
+
 OP_SAGEMAKER_TEST = "decisions_provider_sagemaker_test"
 
 #: What the connection test reports for each failure, by the client's own error

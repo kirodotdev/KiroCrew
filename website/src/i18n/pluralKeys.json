@@ -263,6 +263,7 @@
   "pages.chatSidebar.resume_all_sessions",
   "pages.chatSidebar.resume_all_done",
   "pages.chatSidebar.resume_all_partial",
+  "pages.chatSidebar.search_results_count",
   "pages.chatSidebar.session",
   "pages.chatSidebar.session_failed_to_archive",
   "pages.chatSidebar.session_failed_to_switch",

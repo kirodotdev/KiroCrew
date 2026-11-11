@@ -27,6 +27,9 @@ const {
   fakeDialogWindows,
 } = require("./gateway-supervisor-test-helpers");
 
+// gateway-supervisor.js's TUNNEL_READY_POLL_MS.
+const TUNNEL_READY_POLL_MS = 500;
+
 // Driving the failure dialog itself: the fake window records the document the
 // dialog loads and answers it the way the page does, by setting a title the
 // supervisor reads back. That makes the enable-retry click reachable without an
@@ -99,6 +102,29 @@ function clientOnlyClickHarness({
     webContents: { isDestroyed: () => false, loadFile() {}, send() {} },
   };
 
+  // A stored crew nothing answers gets the app's own forward first, and each
+  // launch and Retry polls the port for it (ensureManagedTunnel). Those polls run
+  // at once. They share their delay with the successor's readiness poll, which
+  // only starts once a successor is spawned and stays the test's own to fire.
+  let gatewaySpawns = [];
+  const realTimers = {
+    setTimeoutFn: setTimeout,
+    clearTimeoutFn: clearTimeout,
+    setIntervalFn: setInterval,
+    clearIntervalFn: clearInterval,
+  };
+  const base = timers || realTimers;
+  const launchTimers = {
+    ...base,
+    setTimeoutFn(fn, ms) {
+      if (gatewaySpawns.length === 0 && ms === TUNNEL_READY_POLL_MS) {
+        setImmediate(fn);
+        return 0;
+      }
+      return base.setTimeoutFn(fn, ms);
+    },
+  };
+
   const built = harness({
     store: store || fakeStore({
       runLocalGateway: false,
@@ -110,7 +136,7 @@ function clientOnlyClickHarness({
     httpMod: httpOverride || httpMod,
     mainWindow,
     ...(execFileFn ? { execFileFn } : {}),
-    ...(timers ? { timers } : {}),
+    timers: launchTimers,
     app: {
       exit: (code) => state.exits.push(code),
       releaseSingleInstanceLock: () => { state.lockReleases += 1; },
@@ -144,6 +170,8 @@ function clientOnlyClickHarness({
       readFileSync() { throw new Error("no log"); },
     },
   });
+
+  gatewaySpawns = built.spawnCalls;
 
   return { ...built, documents, mainWindow, state };
 }

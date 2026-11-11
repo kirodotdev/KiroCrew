@@ -5184,12 +5184,22 @@ kiro-cli that lacks its engine.
   (`crewmate_harness.worker_harnesses` for a worker, `crewmate_harnesses` for
   a chat) and clearing the pin only when the member route would carry it
   (`crewmate_harness.pin_remedy`). A worker on a `kiro` pin that kept the v2
-  launch also gets the `kiro-cli update`. With no pin a worker's refusal names
-  `agent.member_acp_backend` with only the kit backends selectable now, and
-  when this host cannot serve KAS (`host_unservable_reason`) it says why and
-  names the fixes: update kiro-cli or turn on `agent.kas_bundle`, then restart.
-  A `spawn_run(backend=...)` or `session_create(backend=...)` that named the
-  backend is told to name one that carries the kit.
+  launch also gets the `kiro-cli update`. A Bot's worker or DM with no pin
+  names the fixes a person can reach (`mate_worker.inherited_harness_remedy`):
+  pick a harness that can in the Bot's settings (the same `worker_harnesses` or
+  `crewmate_harnesses` list), and either change Settings → Agent Harness or,
+  when a stored `agent.member_acp_backend` wins over Settings, remove that key.
+  A chat started on a picked harness is told to start a new chat on one that
+  can, since the pick outranks the pin; a chat that is not a Bot's DM runs on
+  Settings → Agent Harness, so it names that and the selectable harnesses in
+  `ACP_BACKENDS_MEMBER_CAPABILITIES`. No refusal tells a person to set
+  `agent.member_acp_backend`. A worker's
+  refusal, when this host cannot serve KAS (`host_unservable_reason`), also
+  says why and names the fixes: update kiro-cli or turn on `agent.kas_bundle`,
+  then restart. A `spawn_run(backend=...)` or `session_create(backend=...)`
+  that named the backend is told to name one that carries the kit. The
+  `capability_tool_limits_unsupported` row names the harness the session runs
+  on, as the selection gate answers it (`turn_failures._chat_harness_name`).
 - **Read path.** Only the owner-only `GET /api/agents/resolved-model` reads the
   pin (`acp_backend`, the effective `harness`, `harnesses` from
   `crewmate_harnesses`, `worker_harnesses` (`ACP_BACKENDS_MATE_WORKER_KIT`), and

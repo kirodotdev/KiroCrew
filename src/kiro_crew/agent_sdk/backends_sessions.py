@@ -95,6 +95,31 @@ from kiro_crew.agent_sdk.backends import (
 # reach is recorded here rather than claimed.
 ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
 
+# Backends a top-level DASHBOARD CHAT slot may share a runtime on, behind the
+# off-by-default ``chat_runtime_sharing`` feature preview. Deliberately SEPARATE
+# from ``ACP_BACKENDS_SESSION_SHARING`` above (harness-parity H6): serving several
+# SUBAGENT sessions on one process does not establish that a top-level chat may
+# share one, because the two teardowns differ and it is the CHAT teardown whose
+# safety this set asserts. A chat leaving a shared process must evict only its own
+# session and keep its resume record.
+#
+# kiro-cli: ``_kiro.dev/session/terminate`` frees the session and the
+# ``keep_transcript`` guard skips the transcript unlink, so
+# ``~/.kiro/sessions/cli/{sid}.json(l)`` survives for ``session/load``.
+#
+# KAS: the shared teardown evicts with ``session/close``, which keeps the stored
+# record (``AcpRuntime.evict_session``); the delete verb is never sent for a shared
+# chat. Membership here is necessary, not sufficient: a KAS start may share only on
+# the kiro-cli relay at or above ``KAS_CHAT_SHARING_MIN_KIRO_CLI``, whose engine
+# (``@kiro/agent`` 0.66.91) admits one turn per session itself, orders turns of
+# different sessions in its own model queue, and names the session on every
+# ``session/update`` (``acp.chat_runtime_sharing.kas_chat_sharing_ready``).
+#
+# codex is NOT a member although it shares subagent sessions: its chat teardown's
+# record preservation has no lane cover. Every other backend is out because it is
+# not served by ``AcpRuntime`` (one process per session).
+ACP_BACKENDS_CHAT_RUNTIME_SHARING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
 # (kiro-cli and KAS) whose single process hosts N sessions via demux.
 # claude-agent-acp runs one AcpClient per session and is NOT a

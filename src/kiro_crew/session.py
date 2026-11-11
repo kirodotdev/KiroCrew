@@ -807,6 +807,7 @@ class SessionManager:
     stop_generation = _teardown.stop_generation
     note_stop = _teardown.note_stop
     open_replay_gap = _teardown.open_replay_gap
+    has_open_replay_gap = _teardown.has_open_replay_gap
     close_replay_gap = _teardown.close_replay_gap
     await_replay_gap = _teardown.await_replay_gap
     _send_abort_for_session = _teardown._send_abort_for_session

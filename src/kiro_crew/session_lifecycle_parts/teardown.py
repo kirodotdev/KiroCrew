@@ -16,6 +16,7 @@ Instance fields read: ``_deps``, ``_owner``, ``state``.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ from kiro_crew.metrics.sessions import (
     END_REASON_UNCLAIMED,
     record_session_ended,
 )
+from kiro_crew.runtime_ownership import RUNTIME_TENANCY, is_shared_chat_runtime
 from kiro_crew.session_lifecycle_parts.parked_queue import _park_queue, allocation_identity
 
 if TYPE_CHECKING:
@@ -51,6 +53,42 @@ _SID_RETENTION_UNKNOWN = "<unreadable session map>"
 
 
 _ANY_SESSION = object()
+
+
+def _pid_is_still_held(
+    pid: int,
+    *,
+    holders: Callable[[int], int] | None = None,
+    log_label: str = "Reset",
+) -> bool:
+    """Whether anyone still holds the live process at *pid* after a shutdown.
+
+    Asked of the ownership registry, the one the kill gate consults, rather than
+    of the session table: a joiner takes its lease during ``provider.start`` and
+    enters the table only once that returns, so the table can show no survivor
+    for a process somebody holds. A LEASE is a chat session resident on the
+    process, a TENANCY is a subagent mid-turn on it; both are parties the gate
+    refuses a kill for. The session being reset needs no excluding: its own
+    shutdown already released what it held. A dead runtime's holdings are not
+    counted, so a crashed process is still reaped and its children swept.
+
+    Asked only for a session on a SHARED chat runtime; every other reset keeps
+    its force-kill and child sweep unchanged.
+    """
+    from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+
+    if holders is None:
+
+        def holders(p: int) -> int:
+            return RUNTIME_OWNERSHIP.leases_on_pid(p) + RUNTIME_TENANCY.claims_on_pid(p)
+
+    try:
+        return bool(holders(pid))
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "%s: holders of PID %s unreadable", log_label, pid, exc_info=True
+        )
+        return False
 
 
 def _turn_in_flight(session: Any, *, refuse_only_on_active_turn: bool = False) -> bool:
@@ -336,7 +374,34 @@ async def reset(
             shutdown_error = exc
         platform_compat = self._deps.get_platform_compat()
         if pid:
-            if platform_compat.pid_exists(pid):
+            # A shared chat runtime (``chat_runtime_sharing`` preview) outlives
+            # one session's shutdown by design: its co-tenants hold it and the
+            # last to leave kills it. So a pid still held by anyone else is left
+            # alone, and so are its children.
+            shared_with_others = is_shared_chat_runtime(session.provider) and _pid_is_still_held(
+                pid, log_label=f"Reset {key}"
+            )
+            if shared_with_others:
+                logger.info(
+                    "Reset %s: PID %d still serves other live sessions; leaving it and "
+                    "its children alone",
+                    key,
+                    pid,
+                )
+                if platform_compat.pid_exists(pid):
+                    # Record the kill this reset owed, so when a subagent TENANCY
+                    # is the last holder its release hands the process back for
+                    # teardown instead of leaving it resident.
+                    try:
+                        RUNTIME_TENANCY.refuse_for_tenants(pid)
+                    except Exception:
+                        logger.debug(
+                            "Reset %s: recording the tenancy reap debt for PID %d failed",
+                            key,
+                            pid,
+                            exc_info=True,
+                        )
+            elif platform_compat.pid_exists(pid):
                 logger.warning("Reset %s: PID %d survived shutdown, force-killing", key, pid)
                 try:
                     await platform_compat.kill_process_tree_async(
@@ -348,7 +413,7 @@ async def reset(
                         await platform_compat.kill_pid_async(pid, platform_compat.SIGKILL)
                     except (ProcessLookupError, OSError):
                         pass
-            if child_pids:
+            if child_pids and not shared_with_others:
                 try:
                     sweep_loop = asyncio.get_running_loop()
                     await sweep_loop.run_in_executor(

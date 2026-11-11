@@ -1488,7 +1488,10 @@ the rule. Its sibling `availableAgents` travels as a `deny` with the listed name
 `exclude`, which only narrows and so travels whatever the ceiling says.
 
 The projection is built per session, so the translated merge asks
-`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`. The ceiling
+`may_skip_gate_for_session(session_key, app)` instead of `may_skip_gate_now`, and so does
+the spec's own sub-agent allow (`use_subagent` in `allowedTools`, a `subagent` allow in its
+`permissions`, `kas_agents._authored_allow_gate`); the spec's other authored allows still
+ask `may_skip_gate_now`. The ceiling
 and `hooks.confirm_tools` are asked as before. Of the profiles, only those the gate could
 resolve for one of that session's calls count
 (`governance_profiles.session_profiles_govern`): the one `resolve_active_scope(session_key)`
@@ -3721,8 +3724,9 @@ started by hand on a preset's port from answering. Both
 chokepoints select the row from the configured provider and the runtime, never from
 the request. `PUT /api/decisions/provider`
 refuses a switch to a withdrawn side with `403 decisions_capability_denied`, and its
-`GET` reports `hosted_permitted` / `local_permitted` so the picker greys that side
-out. `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
+`GET` reports `hosted_permitted` / `local_permitted` / `sagemaker_permitted`; the
+picker hides a refused hosted option and greys out a refused local one, and the
+PUT also asks the `endpoints` list for a hosted or SageMaker host, as does an enabling `PUT /api/decisions/consent`, and a refused hosted default reads as `active: "none"` (see decisions.md). `decisions_enabled` is `true` while EITHER side permits, so the card is withheld
 only when `capabilities.decisions` is pinned off (which covers both sides) or both
 rows are. A fleet that permits hosted Jev but wants no local model pins this row.
 

@@ -453,6 +453,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SESSION_SEND_SCHEMA,
         SESSION_SET_COLOR_SCHEMA,
         SESSION_SET_MODEL_SCHEMA,
+        SESSION_SET_NOTE_SCHEMA,
         SESSION_STATUS_SCHEMA,
         SESSION_STOP_SCHEMA,
         SESSION_SUMMARY_SCHEMA,

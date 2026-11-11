@@ -61,6 +61,7 @@ from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
 from kiro_crew.acp.kas_settings_mcp import excluded_whole, include_mcp_json, stamp_settings_mcp
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
+from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
 from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
 from kiro_crew.acp.kas_subagent_targets import _excluding_switched_off, project_subagent_targets
 from kiro_crew.acp.kas_tool_limits import (
@@ -1393,6 +1394,12 @@ class KasHarness(MembershipHarness):
         sub-agent targets :meth:`session_extras` registers
         (:mod:`~kiro_crew.acp.kas_subagent_targets`) follow it. *agent* comes back
         unchanged, so ``set_mode`` and the activation guards still run.
+
+        When that agent declares MCP servers of its own, the session starts in
+        the start agent instead (:mod:`~kiro_crew.acp.kas_start_agent`), added
+        after the batch's entries, so the ``set_mode`` that follows is what
+        queues the agent's servers, behind Kiro Crew's.
+
         ``session/load`` and a batch whose first entry has no id are sent as built,
         as the same object; the caller's dicts are never mutated.
         """
@@ -1410,7 +1417,22 @@ class KasHarness(MembershipHarness):
         wire_id = batch[0].get("id")
         if not isinstance(wire_id, str) or not wire_id:
             return params, agent
+        held = with_start_agent(batch)
+        if held is not None:
+            kiro = {**kiro, "customAgents": held}
+            wire_id = START_AGENT_ID
         return {**params, "_meta": {**meta, "kiro": {**kiro, "modeId": wire_id}}}, agent
+
+    def start_mode_ran_servers(self, mode_id: str) -> bool:
+        """``False`` for the start agent: it declares no server.
+
+        Every report staged while a session ran in it names a session-level
+        server, which the switch to the session's own agent leaves running, so
+        those reports still count toward readiness. Without this a start whose
+        Kiro Crew servers all connected before ``set_mode`` went out would wait
+        for a status frame the engine has no reason to send again.
+        """
+        return mode_id != START_AGENT_ID
 
     def activation_refusal(self, agent: str, resp: dict[str, Any]) -> str | None:
         """Refuse an id the engine advertises as ITS OWN built-in rather than ours.

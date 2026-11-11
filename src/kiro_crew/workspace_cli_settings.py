@@ -20,6 +20,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.config.paths import kiro_home
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ def _read_small(path: Path) -> str:
         os.close(fd)
         raise OSError(f"{path} is not a regular file")
     with os.fdopen(fd, encoding="utf-8", errors="surrogateescape") as handle:
-        text = handle.read(_READ_LIMIT + 1)
+        text = bounded_read(handle, _READ_LIMIT + 1)
     if len(text) > _READ_LIMIT:
         # A partial read would misjudge the trailing newline; leave it alone.
         raise OSError(f"{path} is larger than {_READ_LIMIT} characters")

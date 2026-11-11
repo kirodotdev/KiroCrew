@@ -421,6 +421,11 @@ export interface McpServer {
   url?: string
   /** Header names are preserved, but read responses redact every value. */
   headers?: Record<string, string>
+  /** The public OAuth client id the entry's own `oauth` block names, if any. */
+  clientId?: string
+  /** The entry's own `oauth` block reaches no KAS engine: it names a client
+   *  secret, or keeps nothing Crew sends. Absent means false. */
+  oauthWithheld?: boolean
   status: string; error?: string; tools?: string[]
   source: string; enabled: boolean; disabledTools?: string[]
   /** How status/tools were established: "handshake" (real spawn + tools/list)

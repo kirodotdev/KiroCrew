@@ -241,9 +241,10 @@ INFLIGHT_REPORT_SECS = 30.0
 DEFERRED_STEP_STUCK_SECS = 60.0
 
 #: Threads the loop runs deferred steps on. A ``wait`` step is a millisecond
-#: keepalive and a ``spawn_sub_agents`` step one poll pass, but an
-#: ``ask_question`` step holds the server's fixed ``ASK_WAIT_SLICE_SECS``
-#: long-poll and a parent's resume probe is held server-side up to 8s, so the pool is sized
+#: keepalive, but an ``ask_question`` step holds the server's fixed
+#: ``ASK_WAIT_SLICE_SECS`` long-poll, a parent's resume probe is held server-side
+#: up to 8s and a ``spawn_sub_agents`` pass waits on its children for up to 2s (in
+#: at most half of these threads at once), so the pool is sized
 #: for a few of those in flight at once without starving the quick steps. The
 #: bound exists so a gateway that stops answering cannot grow threads without limit.
 DEFERRED_STEP_WORKERS = 8

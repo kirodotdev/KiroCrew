@@ -62,6 +62,9 @@ class TranscriptReadProjection:
         from kiro_crew import history_page_index
 
         history_page_index.forget(path)
+        from kiro_crew.transcript_count import forget_count
+
+        forget_count(path)
 
     def recent(
         self,
@@ -1027,6 +1030,8 @@ class TranscriptReadProjection:
         worker thread and must not make a blocking event-loop writer wait. With
         nothing published, no memo depends on the lock.
         """
+        from kiro_crew.transcript_count import count_and_store, stored_count
+
         path = self._log._path(key)
         try:
             identity = self._log._cache_identity(path.stat())
@@ -1042,10 +1047,13 @@ class TranscriptReadProjection:
         with fill_lock:
             if not path.exists():
                 return 0
+            stored = stored_count(path)
+            if stored is not None:
+                return stored
             attempts = _history_facade()._METADATA_READ_ATTEMPTS
             for attempt in range(attempts):
                 try:
-                    return count_messages(path)
+                    return count_and_store(path, count_messages)
                 except FileNotFoundError:
                     return 0
                 except OSError:

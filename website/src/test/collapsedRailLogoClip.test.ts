@@ -55,7 +55,7 @@ const RAIL_INNER_WIDTH = RAIL_TRACK_COLLAPSED - 2 * RAIL_MX_EACH_PX - 2 * RAIL_B
 /** The content-box corner radius: the border-box radius minus the border. */
 const CORNER_SQUARE = ROUNDED_XL_PX - RAIL_BORDER_PX
 /** The collapsed header container's top padding: `pt-2` = 8px (navRail.tsx). The
- *  glyph's TOP is pinned here — `justify-center` centres only the main
+ *  glyph's TOP is pinned here — the `ml-0.5` nudge centres only the
  *  (horizontal) axis, so a smaller box or a wider inset never lifts the top. */
 const HEADER_PT_PX = 2 * STEP_PX
 
@@ -74,19 +74,23 @@ function collapsedBoxClass(src: string): string {
   return m![1]
 }
 
-/** True when the collapsed header centres the lone glyph in the strip. The mark's
- *  symmetric inset — hence its distance from the rounded corner — depends on it. */
-function collapsedCentresLogo(src: string): boolean {
-  // className={`group ... w-full ... ${effectiveCollapsed ? 'justify-center' : ''}`}
-  return /effectiveCollapsed \? 'justify-center' : ''/.test(src)
+const HEADER_PX_EACH = 2 * STEP_PX
+
+function collapsedLeftNudgePx(src: string): number | null {
+  const m = src.match(/min-w-0[^`]*\$\{effectiveCollapsed \? '[^']*\bml-(\d+(?:\.\d+)?)\b[^']*' : ''\}/)
+  return m ? Number(m[1]) * STEP_PX : null
+}
+
+function collapsedCentresLogo(src: string, box: number): boolean {
+  const ml = collapsedLeftNudgePx(src)
+  return ml !== null && ml === (RAIL_INNER_WIDTH - 2 * HEADER_PX_EACH - box) / 2
 }
 
 /** The collapsed top nudge on the glyph wrapper: `mt-<n>` px, or 0 when absent.
  *  Centring is horizontal-only, so this (added to the header's `pt-2`) is the
  *  only lever that lifts the mark's top out of the rounded-corner square. */
 function collapsedTopNudgePx(src: string): number {
-  // className={`flex items-center gap-2.5 min-w-0 ... ${effectiveCollapsed ? 'mt-1' : ''}`}
-  const m = src.match(/min-w-0[^`]*\$\{effectiveCollapsed \? 'mt-(\d+)' : ''\}/)
+  const m = src.match(/min-w-0[^`]*\$\{effectiveCollapsed \? '[^']*\bmt-(\d+)\b[^']*' : ''\}/)
   return m ? Number(m[1]) * STEP_PX : 0
 }
 
@@ -97,9 +101,9 @@ function collapsedTopNudgePx(src: string): number {
  * Each rounded corner occupies a `CORNER_SQUARE`-sided square at a top corner of
  * the content box. A box corner that falls inside either square is in the zone
  * the rail's `overflow-hidden` can shear. The axes are NOT symmetric: the mark is
- * centred horizontally (`justify-center`) so its left/right inset is
+ * centred horizontally (the `ml-0.5` nudge) so its left/right inset is
  * `(RAIL_INNER_WIDTH - box) / 2`, but its TOP is pinned by the header's `pt-2`
- * plus any collapsed `mt` nudge — `justify-center` never touches the vertical
+ * plus any collapsed `mt` nudge — the `ml` nudge never touches the vertical
  * axis. The box is rotated about its own centre.
  */
 function rotatedCornerEntersCurve(box: number, topInset: number): {
@@ -132,15 +136,20 @@ function rotatedCornerEntersCurve(box: number, topInset: number): {
 describe('collapsed rail header logo clears the rail rounded corner', () => {
   it('centres the collapsed brand mark in the icon strip', async () => {
     const src = await appSource()
-    expect(
-      collapsedCentresLogo(src),
-      'expected the collapsed header to centre its lone glyph (justify-center) so the mark keeps '
-        + 'symmetric clearance from both rounded corners',
-    ).toBe(true)
     const box = boxPx(collapsedBoxClass(src))
+    expect(
+      collapsedCentresLogo(src, box),
+      'expected the collapsed glyph wrapper to carry an ml-* nudge that centres the mark in the '
+        + 'strip, so it keeps symmetric clearance from both rounded corners',
+    ).toBe(true)
     // A box as wide as the strip would touch both straight edges regardless of
     // the corner; centring only buys clearance when the mark is narrower.
     expect(box).toBeLessThan(RAIL_INNER_WIDTH)
+  })
+
+  it('does not centre the collapsed logo with justify-center, which jumps mid-collapse', async () => {
+    const src = await appSource()
+    expect(/effectiveCollapsed \? 'justify-center' : ''/.test(src)).toBe(false)
   })
 
   it('the hover-rotated collapsed logo stays out of the rail corner curve', async () => {

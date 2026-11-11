@@ -73,7 +73,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``,
     # ``harness_pin``: the session's own Bot pin, which KAS's route rule 2 reads,
     # and ``governance_scope``: the (session key, app) its KAS projection meets the profiles of.
-    "__init__": ("function", False, "2ec78e475161", "runtime_class"),
+    "__init__": ("function", False, "7c98559aac93", "runtime_class"),
     "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
@@ -984,11 +984,14 @@ def test_every_base_import_stays_bound_on_the_facade() -> None:
 _INIT_HINTS = {
     "acp_backend": "<class 'str'>",
     "agent": "<class 'str'>",
+    "agent_env": "dict[str, str] | None",
     "crew_agent": "<class 'str'>",
     "expect_mcp_reports": "<class 'bool'>",
     "extra_env": "dict[str, str] | None",
+    "forward_ssh_auth_sock": "bool | None",
     "governance_scope": "tuple[str, str] | None",
     "harness_pin": "<class 'str'>",
+    "kas_telemetry": "bool | None",
     "max_age_secs": "<class 'float'>",
     "max_rss_mb": "<class 'float'>",
     "mcp_gateway_overlay": "str | pathlib.Path | None",

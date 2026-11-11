@@ -451,20 +451,51 @@ app. Quit the desktop app first, or start the WSL gateway on another port with
 
 ## Secret-at-rest posture on Windows
 
-Files under `%USERPROFILE%\.kiro\crew` that hold auth material — the token
-signing key, refresh-token state, per-app secrets, snapshot tarballs, and the
-cron internal-secret temp file — are locked down to the current user via an
-owner-only NTFS DACL (inheritance stripped, `S-1-3-4:F` = Owner Rights full
-control). This is applied through `platform_compat.restrict_to_owner`, which
-routes to `os.chmod(..., 0o600)` on POSIX and, on Windows, builds the descriptor
-in-process through `advapi32` (`SetNamedSecurityInfoW` with
-`PROTECTED_DACL_SECURITY_INFORMATION`, the equivalent of
-`icacls /inheritance:r /grant:r "*S-1-3-4:F"`). It is a direct API call rather
-than a subprocess, far cheaper than spawning `icacls`, so it is safe to call on the gateway's event loop. Failure is
-fail-loud (raises `OSError`) so the
-security-warning handlers in each caller fire — a naive `if IS_POSIX: os.chmod`
-guard would silently no-op on Windows, leaving secrets group/world-readable
-under NTFS.
+Files that hold auth material are locked down to the current user with an
+owner-only NTFS DACL: inheritance stripped, and two full-control grants. Owner
+Rights (`S-1-3-4`) covers the file's current owner. The invoking user's own SID
+keeps the file readable by that user when another principal created it (an
+elevated first run, a backup restore, a `SYSTEM` service); with Owner Rights
+alone, that user would be locked out of their own file (the token signing key,
+for example).
+
+The user's SID is read from the process's own access token. When it cannot be
+read, the lockdown raises `OSError` and applies nothing; it never falls back to
+Owner Rights alone.
+
+Which files get it is a rule, not a list: every file passed to
+`platform_compat.restrict_to_owner` or written by
+`atomic_write(restrict_to_owner=True)`, which `.env`'s writer
+`hidden_leaf_staging.publish_env` uses. Under `%USERPROFILE%\.kiro\crew` that
+includes the token signing key, refresh-token state, per-app secrets, snapshot
+tarballs, `.env` (chat-channel tokens), and the vault's key `.vault\.vault_key`
+and store `.vault\secrets.enc`. The cron internal-secret temp file gets it
+too, in `%TEMP%` (`kirocrew_secret_*`, there only while a script cron runs).
+The remote-workspace relay token file (`<name>.relay`, in the session's scratch
+directory) gets the same two grants, applied directly rather than through those
+helpers.
+
+`restrict_to_owner` routes to `os.chmod(..., 0o600)` on POSIX and, on Windows,
+builds the descriptor in-process through `advapi32` (`SetNamedSecurityInfoW` with
+`PROTECTED_DACL_SECURITY_INFORMATION`), replacing the file's whole DACL. For a
+new file, whose entries are all inherited, the equivalent command, with your SID
+from `whoami /user`, is:
+
+```text
+icacls <file> /inheritance:r /grant:r "*S-1-3-4:F" /grant:r "*<your-user-SID>:F"
+```
+
+On a file that already carries an explicit entry for another account, that
+command keeps the entry, while the in-process lockdown removes it.
+`icacls <file>` on a locked-down file lists two `(F)` entries, Owner Rights
+(`OWNER RIGHTS` on an English system, `S-1-3-4` or a translated name elsewhere)
+and your own account, and no inherited `(I)` entry.
+
+The lockdown is a direct API call rather than a subprocess, far cheaper than
+spawning `icacls`, so it is safe to call on the gateway's event loop. Failure
+is fail-loud so the security-warning handlers in each caller fire — a naive
+`if IS_POSIX: os.chmod` guard would silently no-op on Windows, leaving secrets
+group/world-readable under NTFS.
 
 `restrict_to_owner` is file-shaped by design: its grants are deliberately
 non-inheritable (inheritance flags mean nothing on a file). A **directory**

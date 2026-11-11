@@ -971,7 +971,8 @@ An update that chose to stay up rather than restart records why
 (`update_ownership.refuse_restart`): once it has moved the tree and its
 frontend build failed (`build_frontend_async` returned `failed`: a restart would
 pair the new backend with the previous bundle; the error names
-`logs/frontend-build.log`), its dependency sync failed, or it raised after the
+`logs/frontend-build.log`, or says no log was written when none could be
+opened, as on Windows), its dependency sync failed, or it raised after the
 move. The move counts from the
 moment its `git merge` / `git reset` child started: a spawn that raised wrote
 nothing, so it records nothing. A later update that synced the dependencies of

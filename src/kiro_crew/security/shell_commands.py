@@ -346,6 +346,21 @@ def _body_substitutions(body: str, base: int, track: bool) -> "list[ShellCommand
     return out
 
 
+def pipelines(commands: "list[ShellCommand]") -> "list[list[ShellCommand]]":
+    """*commands*, one :func:`read_commands` result, grouped into pipelines: a command joins
+    the one before it when that one ended in ``|``, in ``|&`` (read as ``|`` then an empty
+    ``&``), or opened the ``( … )`` group the pipe feeds (``| (sh)``)."""
+    out: list[list[ShellCommand]] = []
+    feeds = False
+    for cmd in commands:
+        if feeds:
+            out[-1].append(cmd)
+        else:
+            out.append([cmd])
+        feeds = cmd.separator == "|" or feeds and cmd.separator in ("&", "(") and not cmd.argv
+    return out
+
+
 def redirect_free_views(command: str) -> "list[str]":
     """Each command with a live redirection before an argv word, without its redirections:
     ``sh -c 2>/dev/null '<script>'`` runs ``<script>``. Read once per frame, without quoted

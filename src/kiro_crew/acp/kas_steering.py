@@ -12,11 +12,15 @@ files is dropped: KAS resolves it under the same workspace roots its native load
 scans. It is kept, exactly as before, unless Crew can show nothing is lost:
 
 * an ``inclusion: auto`` file is one KAS may never deliver (it skips one with no
-  ``description``), while the entry delivers it. shortcut: any file that might be
-  ``auto`` keeps the entry, read as text, not front matter; forward just those
-  files once a reader matches KAS's front matter and walk exactly.
-* a link in the tree, an unreadable folder or file, or a tree past KAS's walk
-  bounds keeps the entry too; nothing here follows a link.
+  ``description``), while the entry delivers it. So every file that might be
+  ``auto``, read as text, not front matter, is named by its own path in the
+  entry's place, and KAS reads just those on every turn. A dot-named one is left
+  out: the entry's glob never matched it. The entry stays when KAS might read a
+  path otherwise, or with less of its resource budget than the entry gave it: a
+  ``*`` or ``?`` in a name (KAS reads that as a glob), another file entry before
+  it or another steering entry, or files that might pass the budget.
+* a link in the tree, an unreadable folder, or a tree past KAS's walk bounds
+  keeps the entry too; nothing here follows a link.
 
 shortcut: the tree is checked once, when the session's agent is projected, while
 KAS re-reads ``resources`` every turn. A file that may be ``auto``, or a link,
@@ -30,14 +34,22 @@ import os
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from kiro_crew.bounded_read import bounded_read
+
 _FILE_SCHEME = "file://"
 _STEERING_TREE = (".kiro", "steering")
+#: The entry Crew's default agent ships, the only one named file by file.
+_WHOLE_TREE = "file://.kiro/steering/**/*.md"
 _MD = ".md"
 #: KAS reads no resource file bigger than this (``resource-resolver.ts``).
 _MAX_FILE_BYTES = 1024 * 1024
 #: The bounds of KAS's own steering walk (``steering-tree-walk.ts``).
 _MAX_DIRECTORIES = 2_000
 _MAX_DOCUMENTS = 2_000
+#: How many resource files, and characters of them, KAS reads for an agent
+#: (``BoundedReader``: 32 files, 100,000 characters less 1,000 for its marker).
+_MAX_RESOURCE_FILES = 32
+_MAX_RESOURCE_CHARS = 99_000
 
 
 def _workspace_steering_entry(entry: str) -> bool:
@@ -75,7 +87,7 @@ def _may_be_auto(path: Path) -> bool:
     """Whether *path* could be ``inclusion: auto`` steering, or cannot be read."""
     try:
         with path.open("rb") as handle:
-            data = handle.read(_MAX_FILE_BYTES + 1)
+            data = bounded_read(handle, _MAX_FILE_BYTES + 1)
     except OSError:
         return True
     text = data.decode("utf-8", errors="replace").casefold()
@@ -85,29 +97,61 @@ def _may_be_auto(path: Path) -> bool:
     return len(data) > _MAX_FILE_BYTES or "\\" in front or ("inclusion" in text and "auto" in text)
 
 
-def _native_load_covers(work_dir: str | os.PathLike[str]) -> bool:
-    """Whether KAS's native load delivers every ``.md`` of *work_dir*'s steering tree."""
-    tree = Path(work_dir, *_STEERING_TREE)
+def _maybe_auto_files(tree: Path) -> list[Path] | None:
+    """The ``.md`` files of *tree* KAS's native load may skip as ``auto``.
+
+    ``None`` when it may miss others too: a link, an unreadable folder, a name the
+    entry's glob matches in another case, or a tree past KAS's walk bounds.
+    """
     if _is_link(tree.parent) or _is_link(tree):
-        return False
+        return None
     failed: list[OSError] = []
+    maybe_auto: list[Path] = []
     dirs = docs = 0
     for directory, subdirs, files in os.walk(tree, onerror=failed.append):
         dirs += 1
         base = Path(directory)
         if any(_is_link(base / name) for name in (*subdirs, *files)):
-            return False
+            return None
         for name in files:
             # The entry's glob ignores case on macOS and Windows; KAS's walk does not.
             if name.casefold().endswith(_MD) and not name.endswith(_MD):
-                return False
+                return None
             if name.endswith(_MD):
                 docs += 1
                 if _may_be_auto(base / name):
-                    return False
+                    maybe_auto.append(base / name)
         if dirs > _MAX_DIRECTORIES or docs > _MAX_DOCUMENTS:
-            return False
-    return not failed
+            return None
+    return None if failed else maybe_auto
+
+
+def _by_path(resources: list[Any], tree: Path, files: list[Path]) -> list[str] | None:
+    """Entries naming each of *files*, for the whole-tree entry in *resources*.
+
+    ``None`` when KAS might read one of them otherwise, or with less of its budget
+    than the entry gave it (module docstring).
+    """
+    strings = [e for e in resources if isinstance(e, str)]
+    if {e for e in strings if _workspace_steering_entry(e)} != {_WHOLE_TREE}:
+        return None
+    if any(e.startswith(_FILE_SCHEME) for e in strings[: strings.index(_WHOLE_TREE)]):
+        return None
+    # node-glob's `dot: false`: the entry never matched a dot-named folder or file.
+    parts = [
+        p
+        for p in (f.relative_to(tree).parts for f in files)
+        if not any(n.startswith(".") for n in p)
+    ]
+    if len(parts) > _MAX_RESOURCE_FILES or any(set("*?") & set("".join(p)) for p in parts):
+        return None
+    try:
+        # A UTF-8 byte count is never below the character count KAS budgets.
+        if sum(tree.joinpath(*p).stat().st_size for p in parts) > _MAX_RESOURCE_CHARS:
+            return None
+    except OSError:
+        return None
+    return [_FILE_SCHEME + str(PurePosixPath(*_STEERING_TREE, *p)) for p in sorted(parts)]
 
 
 def kas_steering_resources(resources: object, work_dir: str | os.PathLike[str] | None) -> object:
@@ -120,9 +164,21 @@ def kas_steering_resources(resources: object, work_dir: str | os.PathLike[str] |
         return resources
     if not any(isinstance(e, str) and _workspace_steering_entry(e) for e in resources):
         return resources
-    if not _native_load_covers(work_dir):
+    tree = Path(work_dir, *_STEERING_TREE)
+    maybe_auto = _maybe_auto_files(tree)
+    if maybe_auto is None:
         return resources
-    return [e for e in resources if not (isinstance(e, str) and _workspace_steering_entry(e))]
+    by_path = _by_path(resources, tree, maybe_auto) if maybe_auto else []
+    if by_path is None:
+        return resources
+    out: list[Any] = []
+    for entry in resources:
+        if entry == _WHOLE_TREE:
+            out += by_path
+            by_path = []
+        elif not (isinstance(entry, str) and _workspace_steering_entry(entry)):
+            out.append(entry)
+    return out
 
 
 def with_kas_steering(

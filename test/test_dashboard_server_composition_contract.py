@@ -83,7 +83,7 @@ _BASE_NAMES = frozenset("""
         _MAX_HEADER_FIELD_SIZE _MIXED_INTERNAL_API_PATHS _NO_STORE_CACHE_CONTROL
         _OWN_HOST_WARM_TASKS _PERMISSIONS_POLICY _PNA_REQUEST_HEADER
         _PNA_RESPONSE_HEADER _PREVENT_SLEEP_POLL_INTERVAL_SECS
-        _PRE_AUDIT_DENY_STATUSES _SKILL_APPROVAL_SETTING_URL _STATIC_DIR
+        _PRE_AUDIT_DENY_STATUSES _STATIC_DIR
         _STRICT_INTERNAL_API_PATHS _STT_PREWARM_BOOT_DELAY_SECS
         _STT_SWEEP_BOOT_DELAY_SECS _TAILNET_AWAKE_TTL_SECS _TIME_WAIT_BUDGET_SECS
         _TUNNEL_STOP_TIMEOUT_SECS _UNATTENDED_EXPIRY_TITLE _VENDOR_CORS_HEADER_VALUE
@@ -298,7 +298,7 @@ def _global_names(code: types.CodeType):
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Tests and other modules read private names off the server as well as public
     ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 318
+    assert len(_BASE_NAMES) == 317
     assert sorted(name for name in _BASE_NAMES if not hasattr(server, name)) == []
 
 

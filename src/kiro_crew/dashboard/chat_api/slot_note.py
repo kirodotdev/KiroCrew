@@ -565,7 +565,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     if stale is not None:
         return stale
 
-    delivery = await deliver_note(
+    return await write_slot_note(
         state,
         slot,
         content=content,
@@ -573,6 +573,40 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         display_source=display_source,
         max_age=body.get("maxAge", _UNSET),
         ephemeral=body.get("ephemeral", True),
+        caller=request_app or request.get("user", "dashboard"),
+    )
+
+
+async def write_slot_note(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    content: str,
+    source: str,
+    display_source: str,
+    max_age: Any,
+    ephemeral: Any,
+    caller: str,
+    admission: dict[str, object] | None = None,
+) -> web.Response:
+    """Deliver a validated note on a slot its caller was just authorized for, and answer.
+
+    The body of :func:`api_chat_slot_note` after its checks, shared with
+    ``session_set_note`` so the two answer alike. Nothing suspends before
+    :func:`deliver_note`'s first write, so an authorization the caller decided
+    synchronously still holds when it lands. *admission* is the containment the
+    caller was admitted under; it rides on the context half to the drain, which
+    compares it.
+    """
+    delivery = await deliver_note(
+        state,
+        slot,
+        content=content,
+        source=source,
+        display_source=display_source,
+        max_age=max_age,
+        ephemeral=ephemeral,
+        admission=admission,
     )
     if isinstance(delivery, web.Response):
         return delivery
@@ -580,11 +614,11 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     context_skipped = delivery.context_skipped
 
     sel().log_api_access(
-        caller=request_app or request.get("user", "dashboard"),
+        caller=caller,
         operation="note_post",
         outcome="ok",
         source="app_kit",
-        resources=f"slot={name}",
+        resources=f"slot={slot.key}",
     )
 
     # A hold is delivered only if the slot still routes to the same session at
@@ -637,6 +671,7 @@ async def deliver_note(
     source_check: Callable[[], bool] | None = None,
     target_expected_keys: tuple[str, ...] | None = None,
     on_context_full: Callable[[], web.Response] | None = None,
+    admission: dict[str, object] | None = None,
 ) -> NoteDelivery | web.Response:
     """Write one validated note into *slot*: its visible row and its context half.
 
@@ -677,7 +712,8 @@ async def deliver_note(
     has no seat, and with it set, credential-shaped content is refused before
     any write with ``_refuse_secret_shaped_context``'s 400
     ``context_secret_shaped``. Without it, the visible note lands with context
-    skipped in both cases.
+    skipped in both cases. ``admission`` is the containment a ``session_set_note``
+    caller was admitted under; it rides on the context half to the drain.
 
     Returns a :class:`NoteDelivery`, or the refusal as a finished response.
     """
@@ -755,6 +791,8 @@ async def deliver_note(
         if err is not None:
             return err
         assert context_entry is not None
+        if admission is not None:
+            context_entry["admission"] = admission
         # A held note's context is queued by the flush, not here. The drain runs
         # inside the turn and after its task is assigned, so an entry queued now
         # is read by the turn already running -- the note would shape the request

@@ -962,12 +962,13 @@ def worker_kit_backend_refusal(
     remedy follows how *backend* was chosen, so it names a fix that applies:
     *requested* when the spawn named it (``spawn_run(backend=...)``); else
     *crewmate*'s own harness pin, read from *config*, which outranks
-    ``agent.member_acp_backend`` (:func:`crewmate_worker_backend`); else that
-    setting. It offers only kit backends selectable now, and when this host
-    cannot serve KAS it says why and names the fixes that bring KAS back.
+    ``agent.member_acp_backend`` (:func:`crewmate_worker_backend`); else the
+    harness the Bot inherits (:func:`inherited_harness_remedy`). It offers only
+    kit backends selectable now, and when this host cannot serve KAS it says why
+    and names the fixes that bring KAS back.
     """
     from kiro_crew.agent_sdk import backends as _backends
-    from kiro_crew.crewmate_harness import crewmate_pin_for
+    from kiro_crew.crewmate_harness import crewmate_pin_for, worker_harnesses
 
     if backend in _backends.ACP_BACKENDS_MATE_WORKER_KIT:
         return None
@@ -981,18 +982,16 @@ def worker_kit_backend_refusal(
         pin = crewmate_pin_for(config, crewmate)
         if pin is not None:
             return refusal + _pinned_worker_remedy(config, pin, backend)
-    able = ", ".join(
-        sorted(
-            _backends.backend_to_stored(b)
-            for b in _backends.ACP_BACKENDS_MATE_WORKER_KIT & _backends.selectable_backends()
-        )
+    kit = sorted(
+        _backends.backend_to_stored(b)
+        for b in _backends.ACP_BACKENDS_MATE_WORKER_KIT & _backends.selectable_backends()
     )
-    if not able:
+    if not kit:
         refusal += "no backend this gateway can select carries it"
     elif requested:
-        refusal += f"spawn it on one that does: {able}"
+        refusal += f"spawn it on one that does: {', '.join(kit)}"
     else:
-        refusal += f"set agent.member_acp_backend to {able}"
+        refusal += inherited_harness_remedy(config, worker_harnesses(config))
     kas_reason = _backends.host_unservable_reason(_backends.ACP_BACKEND_KAS)
     if kas_reason:
         refusal += (
@@ -1000,6 +999,28 @@ def worker_kit_backend_refusal(
             "turn on agent.kas_bundle, then restart Kiro Crew"
         )
     return refusal
+
+
+def inherited_harness_remedy(config: KiroCrewConfig | None, harnesses: list[str]) -> str:
+    """The fix for a session refused on the harness a Bot with no pin inherits.
+
+    Pinning the Bot to one of *harnesses* (stored spelling) always applies: the pin
+    outranks the member route. Settings -> Agent Harness applies unless a stored
+    ``agent.member_acp_backend`` wins over it; then removing that does.
+    """
+    from kiro_crew.crewmate_harness import SOURCE_LEGACY, harness_label, inherited_harness_source
+
+    fixes = []
+    if harnesses:
+        able = ", ".join(harness_label(h) for h in harnesses)
+        fixes.append(f"in this bot's settings pick a harness that can ({able})")
+    if config is not None and inherited_harness_source(config).source == SOURCE_LEGACY:
+        fixes.append(
+            "remove the stored agent.member_acp_backend to follow Settings → Agent Harness"
+        )
+    else:
+        fixes.append("change Settings → Agent Harness")
+    return " or ".join(fixes)
 
 
 def _pinned_worker_remedy(config: KiroCrewConfig, pin: CrewBackendPin, backend: str) -> str:

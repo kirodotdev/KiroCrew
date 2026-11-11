@@ -106,6 +106,7 @@ def status_snapshot(
     update_latest_version: str = "",
     update_latest_version_display: str = "",
     update_channel: str = "",
+    update_upcoming: dict[str, Any] | None = None,
     update_channel_move_pending: bool = False,
     update_managed_by: str = "",
     update_policy_file: str = "",
@@ -192,6 +193,8 @@ def status_snapshot(
         # between switching channels and the new lane's build landing, so the
         # switcher must key on this one or it would snap back on every poll.
         "update_channel": update_channel,
+        # The About page's "Upcoming update" record (``None`` when there is none).
+        "update_upcoming": update_upcoming,
         # Is the running build ahead of everything ``update_channel``
         # publishes? True means that lane never shipped these bytes, so the
         # install is not on it yet and only re-running the installer moves

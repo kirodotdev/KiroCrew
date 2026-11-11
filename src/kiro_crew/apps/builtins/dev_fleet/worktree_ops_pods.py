@@ -329,7 +329,9 @@ _POD_START_REFUSAL = (
 )
 
 
-async def _pod_up(name: str, memory: str = "", cpu: str = "") -> dict:
+async def _pod_up(
+    name: str, memory: str = "", cpu: str = "", env: dict[str, str] | None = None
+) -> dict:
     """Start the worktree's pod while holding the worktree's lock and reservation.
 
     The pod runs from the checkout a removal deletes, and its unit goes active from
@@ -351,8 +353,11 @@ async def _pod_up(name: str, memory: str = "", cpu: str = "") -> dict:
 
     *memory* and *cpu* are passed to the CLI as ``--memory`` / ``--cpu``, which
     validates them against the host and records them in the pod's env file.
+    *env* entries become ``--env=KEY=VALUE``, one argv element each so a value
+    can never read as a flag; the CLI checks them against its allowlist.
     """
-    return await _pod_start(name, "up", _limit_argv(memory, cpu))
+    env_argv = [f"--env={key}={val}" for key, val in (env or {}).items()]
+    return await _pod_start(name, "up", [*_limit_argv(memory, cpu), *env_argv])
 
 
 def _limit_argv(memory: str, cpu: str) -> list[str]:

@@ -236,6 +236,10 @@ export interface SidebarScope {
   filterCounts: SidebarRows['statusCounts']
   boardLaneActive: boolean
   flatLaneActive: boolean
+  /** The flat lane is drawn for an active search: rows in relevance order. */
+  searchLaneActive: boolean
+  /** The count / clear-filters line above the search lane's rows; null otherwise. */
+  searchHeader: React.ReactNode
   folderRowsDrawn: boolean
   setLaneScrollEl: (el: HTMLDivElement | null) => void
   rowAnimEnabled: boolean
