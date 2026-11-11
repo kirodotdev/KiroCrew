@@ -396,7 +396,7 @@ class _ChatSlot:
     # Initialised by state_parts/source_links.py.
     _projection: SlotProjection
     _source_links_revision: int
-    _source_links_cache: tuple[tuple[int, int, int], list[dict]] | None
+    _source_links_cache: tuple[tuple[int, int, int], list[dict], list[dict]] | None
     _dismissed_source_links: set[str]
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int

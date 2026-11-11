@@ -577,8 +577,9 @@ class TestChatSlot:
         append_created(slot, url)
         slot._pr_source_links()
         # Simulate a pre-upgrade cache entry.
-        key, links = slot._source_links_cache
-        slot._source_links_cache = (key, [{"provider": "github", "number": 12, "url": url}])
+        key, _links, every = slot._source_links_cache
+        old = [{"provider": "github", "number": 12, "url": url}]
+        slot._source_links_cache = (key, old, every)
 
         assert slot.to_dict(include_check_status=True)["source_links"][0]["ci"] == "failed"
 
