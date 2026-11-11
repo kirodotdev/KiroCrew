@@ -327,6 +327,8 @@ function applyNonActiveFrame(
     return
   }
   if (role === 'assistant') {
+    // An unwatched slot gets no chunk after a compaction; its result notice ends it.
+    if (effectiveKind === 'compaction' && !meta?.notice && run.state === 'compacting') { setRunState(run, 'streaming'); syncOriginRun(state, slot, 'streaming') }
     for (let i = msgs.length - 1; i >= 0; i--) {
       if (msgs[i].role === 'streaming') {
         msgs[i].role = 'assistant'; msgs[i].content = content; msgs[i].rawText = content; if (ts) msgs[i].ts = ts
