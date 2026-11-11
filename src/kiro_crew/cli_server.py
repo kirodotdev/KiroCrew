@@ -128,8 +128,8 @@ def _status(args: argparse.Namespace) -> None:
 
     Exits 1 when nothing answers the resolved port (a refused connection), so a
     script can gate on the exit code instead of parsing stdout. Every state in
-    which a gateway answers -- stats, token auth, an HTTP error, a busy timeout
-    or an unexpected body -- exits 0.
+    which a gateway answers -- stats, token auth, an HTTP error, a busy timeout,
+    a connection it accepted and then dropped, or an unexpected body -- exits 0.
     """
     port = resolve_client_port(getattr(args, "port", None))
     url = f"http://127.0.0.1:{port}/api/status"
@@ -160,9 +160,18 @@ def _status(args: argparse.Namespace) -> None:
         # surface on this split module's star-import facade.
         from kiro_crew.loopback_http import deadline_expired
 
+        reason = e.reason if isinstance(e, urllib.error.URLError) else e
         if deadline_expired(e):
             print(f"Kiro Crew gateway is running on port {port} but is busy (did not answer).")
             print("  It may be under load; try again in a moment.")
+        elif isinstance(reason, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            # The connection was accepted and then dropped, so something is
+            # listening -- often a gateway draining after `kirocrew stop`.
+            print(
+                f"Kiro Crew gateway is running on port {port} but closed the "
+                "connection without answering."
+            )
+            print("  It may be stopping or restarting; try again in a moment.")
         else:
             print("Kiro Crew gateway is not running.")
             print("  Start it with: kirocrew gateway")
