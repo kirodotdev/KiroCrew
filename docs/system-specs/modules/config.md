@@ -149,7 +149,8 @@ endorsed or written (`refuse_save_if_pending`, inside `endorsing`, raising
 sentence `PENDING_SAVE_REFUSED`): it would publish the endorsed copy plus its change over the
 pending edit, which would then be lost. Saves of the other files are unaffected. The dashboard
 save handlers answer that code (a handler with no catch of its own is answered `409` with it by
-the chain's `spa_fallback` layer) and the frontend shows its own translation with a link to the
+the chain's `spa_fallback` layer, and one whose broad `except` would catch it hands it there
+after that arm's own rollback or audit) and the frontend shows its translation with a link to the
 pending card; the CLI prints the sentence and exits 1 (`cli.main`'s `_exit_on_pending_save`, for
 every subcommand); the migration write-back each load retries is refused too and logged once per
 pending version (`log_writeback_refused_once`); an app uninstall whose grant would need
