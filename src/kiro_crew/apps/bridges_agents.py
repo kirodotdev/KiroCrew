@@ -855,11 +855,11 @@ def _render_shipped_agent(
     ``None`` when it holds one that cannot be resolved (nothing is registered rather
     than registering a config with a literal ``{ENGINE_ROOT}`` in it).
 
-    ``io_failures`` collects ONLY the write failure. This returns ``None`` for three
-    different reasons and just one of them can succeed on a retry: an unresolved
+    ``io_failures`` collects ONLY the read and write failures. This returns ``None`` for
+    four different reasons and just those two can succeed on a retry: an unresolved
     placeholder and invalid rendered JSON are properties of the template and will fail
     identically forever, so reporting them to a caller that retries would spin without
-    ever converging. The ``OSError`` arm is the transient one.
+    ever converging. The two ``OSError`` arms are the transient ones.
 
     **The gateway renders the template itself.** Verifying the app's own provisioned
     copy as "the template with only placeholders substituted" is unsound: that check
@@ -877,9 +877,16 @@ def _render_shipped_agent(
     """
     try:
         template = agent_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        # Unrendered: the caller's own read of this path reports the failure.
+    except UnicodeDecodeError:
+        # Unrendered: the caller's own read of this path fails the same way and skips it.
         return agent_path
+    except OSError as exc:
+        # Not handed to the caller: its own read could succeed and register the
+        # template with its placeholders still in it.
+        logger.warning("App %s: could not read agent %s: %s", app_name, agent_path.name, exc)
+        if io_failures is not None:
+            io_failures.append(str(agent_path))
+        return None
     if not _TEMPLATE_PLACEHOLDER_RE.search(template):
         return agent_path
 
