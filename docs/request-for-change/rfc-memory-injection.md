@@ -568,6 +568,32 @@ R1 comes next because it fixes S2 on existing stores without rewriting a row.
 R4 needs one test fix first: the golden fixture that gives every topic-less
 row the same vector must give distinct vectors, or it folds everything.
 
+R5's rules, as built (`memory_item_identity.py`, `memory_lesson_dedup.py`; R5 is
+not signed):
+
+- **One function.** `same_item` and `leader_fold` implement P3 for R4 and
+  Dreaming to reuse. Tier means rule tier (`always` or untagged) versus findings
+  (`on_topic`); the text is the rule alone, the input its vector comes from.
+- **Write.** In the consolidation transaction, a lesson whose key has no live row
+  and whose normalized rule equals a live lesson of the same scope and tier is
+  counted, and under `enforce` not written. A copy that adds a NOT-clause the
+  stored row lacks is written as today.
+- **Backfill.** Each new row joins a bounded queue. Once the backfill gives it a
+  vector, it is compared with the leaders of the stored rows written before it;
+  both steps admit only rows the rule block would serve (the renderer's own
+  eligibility and render filters), so a row no prompt shows never leads;
+  a match retires the new row under `enforce` with a revision, and the leader
+  is untouched. "Not yet served" means no dashboard turn's injection receipt
+  names it; an unreadable or oversized receipt set counts as served. Known gap:
+  only dashboard turns write receipts, and on a worker thread, so a row a CLI,
+  task-runner or incognito session was given can still be retired; its leader
+  stays served and the revision restores it.
+- **Rollback.** Flag `off`: the next backfill sweep restores every retired row
+  whose latest revision is still that retirement. With a memory write switch
+  off, the sweep changes nothing.
+- **Q1 data.** Under `shadow` or `enforce` the default store counts its cosine
+  merges and how many fall below 0.95. Its merge rule does not change.
+
 ## 7. Advanced: Dreaming (Maintain)
 
 > **Higher risk.** Dreaming is the only stage that changes rows that already

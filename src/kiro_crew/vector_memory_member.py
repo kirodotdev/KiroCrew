@@ -27,6 +27,7 @@ import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from kiro_crew import memory_lesson_dedup as lesson_dedup
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
 from kiro_crew.lesson_validation import (
@@ -468,6 +469,7 @@ def apply_consolidation(
     messages: list[dict],
     facets: memory_schema.MemoryFacets | None = None,
     kind_routing: KindRouting | None = None,
+    lesson_dedup_mode: str = "off",
 ) -> dict:
     """Publish one extracted span, its provenance and retry receipt atomically.
 
@@ -477,6 +479,11 @@ def apply_consolidation(
     *kind_routing* is the ``route_consolidation_by_kind`` answer for this
     *result*; its bounded log is written inside the same transaction, so a
     replayed span (which returns the stored receipt) logs nothing twice.
+
+    *lesson_dedup_mode* is ``memory.member_lesson_dedup``
+    (:mod:`kiro_crew.memory_lesson_dedup`): a lesson that is a textual copy of a
+    live one is counted, and under ``enforce`` not written; every new lesson row
+    is queued for the vector step the embedding backfill runs.
     """
 
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
@@ -499,6 +506,8 @@ def apply_consolidation(
     # Model metadata the schema cannot take: unknown field names dropped from
     # facts that still land, and facts skipped for an invalid known field.
     fields_dropped = metadata_rejected = 0
+    dedup = lesson_dedup.DedupLog(lesson_dedup_mode)
+    new_lessons: list[str] = []
     with self._db_lock:
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -698,6 +707,21 @@ def apply_consolidation(
                     value["applies"] = applies
                 if self.validate_semantic(key, value, 0.9, source) is not None:
                     continue
+                leader = None
+                if dedup.mode != lesson_dedup.MODE_OFF:
+                    leader = lesson_dedup.text_leader_in_transaction(self, key, value)
+                    if leader is not None:
+                        dedup.fold(lesson_dedup.STEP_TEXT, key, leader)
+                        if dedup.mode == lesson_dedup.MODE_ENFORCE:
+                            receipt["lessons_merged"] = receipt.get("lessons_merged", 0) + 1
+                            continue
+                existed = (
+                    self.db.execute(
+                        "SELECT 1 FROM semantic_memory WHERE key=? AND is_deleted=0", (key,)
+                    ).fetchone()
+                    if dedup.mode != lesson_dedup.MODE_OFF
+                    else None
+                )
                 if not self._write_semantic(
                     key,
                     json.dumps(value, ensure_ascii=False),
@@ -707,6 +731,10 @@ def apply_consolidation(
                     _consolidation=True,
                 ):
                     receipt["lessons"] += 1
+                    # A textual copy shadow already counted is not queued again,
+                    # so shadow counts what enforce would fold, once.
+                    if existed is None and leader is None and dedup.mode != lesson_dedup.MODE_OFF:
+                        new_lessons.append(key)
                     if facets:
                         self.db.execute(
                             memory_schema.FACET_STAMP_SQL,
@@ -722,6 +750,10 @@ def apply_consolidation(
                 receipt["metadata_rejected"] = metadata_rejected
             if kind_routing is not None:
                 record_kind_routing_in_transaction(self, kind_routing, source)
+            if dedup.mode != lesson_dedup.MODE_OFF:
+                dedup.count("lessons", receipt["lessons"] + receipt.get("lessons_merged", 0))
+                lesson_dedup.remember_pending_in_transaction(self.db, new_lessons)
+                lesson_dedup.record_in_transaction(self.db, dedup)
             self.db.execute(
                 "INSERT INTO memory_consolidations VALUES (?,?,?,?,?,?)",
                 (
