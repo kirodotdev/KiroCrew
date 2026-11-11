@@ -32,7 +32,7 @@ from kiro_crew.sel import sel
 from .chunker import CHUNK_OVERLAP, CHUNK_TOKEN_SIZE, HeadingAwareChunker
 from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
-from .entity_resolution import resolve_entity, sqlite_text
+from .entity_resolution import resolve_entity, resolve_or_add_entity, sqlite_text
 from .extractor import EntityExtractor, _is_harness_refusal, extraction_source
 from .ingestion_budget import ImportChunkBudget, _import_chunk_budget
 from .readers import FileReader
@@ -1560,6 +1560,13 @@ class IngestionPipeline:
                 self.store, name, ent.get('type') or 'concept', aliases,
                 aliases_complete=aliases_complete,
             )
+            created = None
+            if not existing:
+                existing, resolution_tier, created = resolve_or_add_entity(
+                    self.store, name, ent.get('type') or 'concept', aliases,
+                    aliases_complete=aliases_complete,
+                    description=ent.get('description'),
+                )
 
             if existing:
                 eid = existing['id']
@@ -1597,12 +1604,7 @@ class IngestionPipeline:
                             exc,
                         )
             else:
-                eid = self.store.add_entity(
-                    name=name,
-                    entity_type=ent.get('type') or 'concept',
-                    description=ent.get('description'),
-                    aliases=aliases or None,
-                )
+                eid = created
 
             entity_map[name] = eid
             self.store.add_mention(item_id, eid, context=ent.get('description'))

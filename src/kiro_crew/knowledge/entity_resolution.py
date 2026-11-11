@@ -128,6 +128,48 @@ def resolve_entity(
     return resolved, tier
 
 
+def resolve_or_add_entity(
+    store: KnowledgeStore,
+    name: str,
+    entity_type: str,
+    aliases: list[str],
+    *,
+    aliases_complete: bool = True,
+    description: str | None = None,
+) -> tuple[dict | None, int, str | None]:
+    """Resolve again under the writer lock, then add the entity if still absent.
+
+    For a caller whose unlocked :func:`resolve_entity` found nothing. Two ingests
+    can miss the same new name at once, and nothing in ``entities`` is unique on
+    it, so both would add a row. Holding ``BEGIN IMMEDIATE`` across the second
+    lookup and the insert makes the later one find the earlier one's row.
+
+    Returns ``(existing, tier, None)`` when the locked lookup finds an entity, or
+    ``(None, 0, new_id)`` after adding one. ``add_entity`` commits the
+    transaction; any failure rolls it back.
+    """
+    db = store.db
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        existing, tier = resolve_entity(
+            store, name, entity_type, aliases, aliases_complete=aliases_complete
+        )
+        if existing:
+            db.execute("COMMIT")
+            return existing, tier, None
+        new_id = store.add_entity(
+            name=name,
+            entity_type=entity_type,
+            description=description,
+            aliases=aliases or None,
+        )
+        return None, 0, new_id
+    except BaseException:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+
+
 def merge_split_entities(store: KnowledgeStore) -> int:
     """Merge entity pairs an alias bridge now joins; return how many were merged.
 
