@@ -26,6 +26,10 @@ from kiro_crew import milestones
 from kiro_crew.cron_service.fields import validate_managed_by
 from kiro_crew.cron_service.identity import bind_cron_memory
 from kiro_crew.cron_service.model import CronJob
+from kiro_crew.cron_service.session_bindings import (
+    record_session_binding,
+    revoke_session_bindings,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronService
@@ -249,8 +253,16 @@ def _persist_add_if_absent_locked(
         if any(predicate(existing) for existing in self._jobs):
             return False
         bind_cron_memory(job)
+        previous_session_key = job.session_key
         self._drop_owner_if_parent_gone(job)
         self._jobs.append(job)
+        if previous_session_key and previous_session_key != job.session_key:
+            try:
+                revoke_session_bindings((job.id,))
+            except BaseException:
+                self._jobs.pop()
+                job.session_key = previous_session_key
+                raise
         # A failed save must leave the list as disk still holds it: readers
         # see ``self._jobs`` itself, so a rejected row would be fired by the
         # timer and persisted by the next good save. Popping it restores the
@@ -262,6 +274,7 @@ def _persist_add_if_absent_locked(
         except BaseException:
             self._jobs.pop()
             raise
+        record_session_binding(job.id, job.session_key)
     job.audit_auto_pause_limit_change(None, job.session_key)
     return True
 
@@ -308,17 +321,26 @@ def _persist_add_locked(self: CronService, job: CronJob) -> None:
     with self._file_lock():
         self._sync_for_write()
         bind_cron_memory(job)
+        previous_session_key = job.session_key
         self._drop_owner_if_parent_gone(job)
         self._jobs.append(job)
         # Roll the append back on a failed save, for the reason
         # :meth:`_persist_add_if_absent_locked` spells out: a row the store
         # rejected must not survive in the live list. Popping restores the
         # list to what disk still holds, so no fingerprint reset is needed.
+        if previous_session_key and previous_session_key != job.session_key:
+            try:
+                revoke_session_bindings((job.id,))
+            except BaseException:
+                self._jobs.pop()
+                job.session_key = previous_session_key
+                raise
         try:
             self._save()
         except BaseException:
             self._jobs.pop()
             raise
+        record_session_binding(job.id, job.session_key)
     job.audit_auto_pause_limit_change(None, job.session_key)
 
 

@@ -19,6 +19,10 @@ from typing import TYPE_CHECKING, Collection
 
 from kiro_crew.cron_service.identity import cron_session_key_is_stable
 from kiro_crew.cron_service.model import CronJob
+from kiro_crew.cron_service.session_bindings import (
+    record_session_binding,
+    revoke_session_bindings,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronService
@@ -64,6 +68,8 @@ def _adopt_job_locked(self: CronService, job_id: str, session_key: str) -> bool:
         for job in self._jobs:
             if job.id == job_id:
                 before = job.session_key
+                if before and before != session_key:
+                    revoke_session_bindings((job.id,))
                 job.session_key = session_key
                 # Roll back a failed save: the mutated object is the one
                 # ``list_jobs`` already handed out, so an owner the store
@@ -77,6 +83,8 @@ def _adopt_job_locked(self: CronService, job_id: str, session_key: str) -> bool:
                 except BaseException:
                     job.session_key = before
                     raise
+                if job.session_key:
+                    record_session_binding(job.id, job.session_key)
                 return True
     return False
 
@@ -192,6 +200,8 @@ def _release_jobs_owned_by_locked(
         # process reads the released state, the delete reports success, and
         # the old owner resurrects on the next restart. Rolling back keeps
         # the two agreeing on the only outcome that actually happened.
+        # The gateway-only bindings are revoked before any owner is cleared,
+        # so a failed revocation leaves both the store and the bindings intact.
         restore: list[tuple[CronJob, str]] = []
         for job in self._jobs:
             if not job.session_key:
@@ -201,9 +211,11 @@ def _release_jobs_owned_by_locked(
             if not any(seams.cron_owner_matches(job.session_key, target) for target in targets):
                 continue
             restore.append((job, job.session_key))
-            job.session_key = ""
             released.append(job.id)
         if released:
+            revoke_session_bindings(released)
+            for job, _previous_owner in restore:
+                job.session_key = ""
             try:
                 self._save()
             except BaseException:

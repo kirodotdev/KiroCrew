@@ -53,7 +53,7 @@ pytestmark = pytest.mark.timeout(120)
 _JOB_ID = "nightly-dispatcher"
 
 
-def _register_script_job(gw, job_id: str = _JOB_ID) -> None:
+def _register_script_job(gw, job_id: str = _JOB_ID, session_key: str = "") -> None:
     """Record a script job on the live scheduler, as the operator's crons.json would.
 
     The internal-auth middleware refuses a ``cron:`` caller whose job record is
@@ -64,10 +64,19 @@ def _register_script_job(gw, job_id: str = _JOB_ID) -> None:
     scheduler never runs ``dispatch.py``.
     """
     from kiro_crew.cron import CronJob
+    from kiro_crew.cron_service.session_bindings import record_session_binding
 
     gw.state.crons._jobs.append(
-        CronJob(id=job_id, name=job_id.replace("-", " "), message="", script="dispatch.py:run")
+        CronJob(
+            id=job_id,
+            name=job_id.replace("-", " "),
+            message="",
+            script="dispatch.py:run",
+            session_key=session_key,
+        )
     )
+    if session_key:
+        record_session_binding(job_id, session_key)
 
 
 def _switch_session_control_off(home: Path) -> None:
@@ -82,7 +91,12 @@ def _switch_session_control_off(home: Path) -> None:
 
 
 @contextmanager
-def _script_context(gw, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[object]:
+def _script_context(
+    gw,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job_id: str = _JOB_ID,
+) -> Iterator[object]:
     """A ``ScriptContext`` built from the runner's env contract, in this process.
 
     The secret sits in a 0600 file named by ``_KIROCREW_SECRET_FILE``, the dial
@@ -97,12 +111,12 @@ def _script_context(gw, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     secret_file.write_text(gw.app["local_secret"], encoding="utf-8")
     secret_file.chmod(0o600)
     token = mint_stub_session_token()
-    publish_session_token(token, f"cron:{_JOB_ID}")
+    publish_session_token(token, f"cron:{job_id}")
     monkeypatch.setenv("_KIROCREW_SECRET_FILE", str(secret_file))
     monkeypatch.setenv("_KIROCREW_DIAL_PORT", str(gw.port))
     monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, token)
     try:
-        ctx = ScriptContext(job=SimpleNamespace(id=_JOB_ID, message=""))
+        ctx = ScriptContext(job=SimpleNamespace(id=job_id, message=""))
         # __post_init__ consumed the file and the env, as it does in a run.
         assert not secret_file.exists()
         assert "_KIROCREW_SECRET_FILE" not in os.environ
@@ -732,6 +746,16 @@ async def _cron_resets(gw, key: str, job_id: str = _JOB_ID):
     )
 
 
+def _rewrite_stored_session_key(path: Path, job_id: str, session_key: str) -> None:
+    """Rewrite the sandbox-visible cron store without touching the binding record."""
+    from kiro_crew.atomic_write import atomic_write
+
+    document = json.loads(path.read_text(encoding="utf-8"))
+    record = next(job for job in document["jobs"] if job["id"] == job_id)
+    record["session_key"] = session_key
+    atomic_write(path, json.dumps(document), fsync=True)
+
+
 @pytest.mark.asyncio
 async def test_a_cron_key_cannot_reset_the_owners_slot(gateway_boot) -> None:
     async with gateway_boot() as gw:
@@ -769,5 +793,78 @@ async def test_a_switched_off_gateway_refuses_a_cron_key_resetting_a_session(
     async with gateway_boot() as gw:
         _register_script_job(gw)
         key = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+
+        await _assert_switched_off_refusal(await _cron_resets(gw, key))
+
+
+@pytest.mark.asyncio
+async def test_a_sandbox_store_rewrite_cannot_reset_the_owners_session(
+    gateway_boot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with gateway_boot() as gw:
+        key = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+        slot = gw.state._slots[key]
+        rows_before = list(slot.messages)
+        job = await gw.state.crons.add_job_async("sandbox rewrite", "", every_secs=3600)
+
+        with _script_context(gw, tmp_path, monkeypatch, job.id) as ctx:
+            await asyncio.to_thread(
+                _rewrite_stored_session_key,
+                gw.state.crons._path,
+                job.id,
+                f"dashboard:{key}",
+            )
+            refreshed = await gw.state.crons.get_job_async(job.id)
+            assert refreshed is not None
+            assert refreshed.session_key == f"dashboard:{key}"
+
+            refusal = await asyncio.to_thread(
+                ctx._post,
+                f"/api/chat/slots/{key}/reset-conversation",
+                {"replay": False},
+            )
+
+        assert refusal.get("status_code") == 403, refusal
+        assert refusal.get("code") == "not_creator", refusal
+        assert list(slot.messages) == rows_before
+
+
+@pytest.mark.asyncio
+async def test_a_cron_key_resets_the_session_its_job_is_bound_to(gateway_boot) -> None:
+    async with gateway_boot() as gw:
+        key = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+        _register_script_job(gw, session_key=f"dashboard:{key}")
+        _register_script_job(gw, _OTHER_JOB_ID)
+
+        await _assert_not_creator_refusal(await _cron_resets(gw, key, _OTHER_JOB_ID))
+        seen = {r["entry_hash"] for r in await _audit_rows(gw, operation_prefix="slot_reset")}
+
+        resp = await _cron_resets(gw, key)
+        body = await resp.text()
+        assert resp.status == 200, body
+        assert json.loads(body).get("reset") is True, body
+        rows = await _audit_rows(gw, operation_prefix="slot_reset_conversation")
+        resets = [r for r in rows if r["entry_hash"] not in seen]
+        assert [r["caller_identity"] for r in resets] == [f"cron:{_JOB_ID}"], resets
+
+
+@pytest.mark.asyncio
+async def test_a_bound_cron_key_cannot_reset_another_owner_slot(gateway_boot) -> None:
+    async with gateway_boot() as gw:
+        bound = (await gw.post_json("/api/chat/slots", {"name": "Dispatcher"}))["key"]
+        other = (await gw.post_json("/api/chat/slots", {"name": "Owner tab"}))["key"]
+        _register_script_job(gw, session_key=f"dashboard:{bound}")
+
+        await _assert_not_creator_refusal(await _cron_resets(gw, other))
+
+
+@pytest.mark.asyncio
+async def test_a_switched_off_gateway_refuses_a_bound_cron_key_resetting_its_session(
+    gateway_boot, integration_home: Path
+) -> None:
+    _switch_session_control_off(integration_home)
+    async with gateway_boot() as gw:
+        key = (await gw.post_json("/api/chat/slots", {"name": "Dispatcher"}))["key"]
+        _register_script_job(gw, session_key=f"dashboard:{key}")
 
         await _assert_switched_off_refusal(await _cron_resets(gw, key))

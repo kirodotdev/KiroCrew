@@ -179,6 +179,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # unsandboxed gateway reads or writes it. Deliberately NOT under ``trust/``,
     # which stays read-write for the SEL log.
     "vouched-executions",
+    # Gateway-only cron session bindings (``cron_service.session_bindings``).
+    # The sandbox-writable cron store cannot authorize access to another chat
+    # session without this record, so every sandbox must hide the whole directory.
+    "cron-session-bindings",
     # Quarantine markers for auto-improvement clones whose provisional rollback AND
     # retirement both failed. Each marker is the only durable record that a clone still
     # carrying a REFUSED, unscanned commit must never be reused, and the process it has to

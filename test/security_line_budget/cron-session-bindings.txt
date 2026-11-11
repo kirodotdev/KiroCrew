@@ -1,0 +1,2 @@
++1
+Classify the gateway-only cron session binding directory as sensitive so agent file tools cannot forge reset admission.

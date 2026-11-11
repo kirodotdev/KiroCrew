@@ -311,6 +311,9 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   member-store admission. A forged file would admit a session to a peer
     #:   member's private memory, so it sits at the root, masked, rather than
     #:   under the sandbox read-write ``trust/``. Leaf-only for the same reason.
+    #: * ``cron-session-bindings`` -- the gateway's trusted copy of each cron
+    #:   job's chat binding. A sandboxed script may rewrite ``crons.json``, so
+    #:   this root-level masked directory is the separate admission record.
     #: * ``pinned-order`` -- the person's pinned-session order, person-only by
     #:   route, masked so an agent cannot rewrite it on disk.
     #:
@@ -600,6 +603,7 @@ class TestLeafOnlyPopulationIsRecorded:
         "<crew>/crew-teams": (3, "standard cc strict"),
         "<crew>/cron-history": (3, "standard cc strict"),
         "<crew>/cron-running": (3, "standard cc strict"),
+        "<crew>/cron-session-bindings": (3, "standard cc strict"),
         "<crew>/data.sqlite3": (3, "standard cc strict"),
         "<crew>/data.sqlite3-journal": (3, "standard cc strict"),
         "<crew>/data.sqlite3-shm": (3, "standard cc strict"),

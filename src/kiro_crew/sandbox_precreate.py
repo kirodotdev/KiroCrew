@@ -551,6 +551,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # First created by the first member-born session's vouch, so a sandbox spawned
     # before then would otherwise see the directory appear unmasked.
     "vouched-executions",
+    # First created by a bound cron job. It must already exist when an unbound
+    # script starts, or that script could create the admission record before the
+    # mask has a target.
+    "cron-session-bindings",
     # md-notebook's write-staging directory, for the same reason and by the same rule: a
     # direct child of the data home, so the plain ``mkdir`` above is sound. Left to lazy
     # creation, a sandbox spawned before the first state write finds it absent, the
