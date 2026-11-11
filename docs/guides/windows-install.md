@@ -81,7 +81,8 @@ Current status:
   real progress. At 100% it reopens Kiro Crew and closes automatically. A
   persistent message on that progress page warns that the handoff can take
   several minutes; a Windows notification tells the user to reopen Kiro Crew
-  from the Start menu if the relaunch does not happen. New clients call
+  from the Start menu if the relaunch does not happen (after Restart now it says
+  Kiro Crew will reopen after installing, since the app comes back on its own). New clients call
   `quitAndInstall(false, true)` so NSIS is visible;
   the installer also converts a legacy `/S --updated` launch back to this same
   visible path, which covers the first upgrade from clients that predate the

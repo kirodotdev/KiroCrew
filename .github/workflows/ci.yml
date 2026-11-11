@@ -199,6 +199,8 @@ jobs:
               # gateway-stop.js loads it to pick the shutdown secret.
               - 'website/electron/local-token.js'
               - 'website/electron/bundle-location.js'
+              # Loaded by the update lanes and gateway-stop.js to resolve the data home.
+              - 'website/electron/home-dir.js'
               - 'packaging/build-desktop.sh'
               # Sourced by build-desktop.sh; its coverage gate runs on Linux too.
               - 'packaging/desktop-bytecode.sh'

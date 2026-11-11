@@ -48,7 +48,7 @@ describe('productName interpolation variable', () => {
   })
 
   it('keeps the update-restart handoff copy rebrandable', () => {
-    const copy = i18next.t('pages.settings.aboutPanel.installing_quiet_note', { productName: 'Acme' })
+    const copy = i18next.t('components.updateModal.armed_installs_on_quit', { productName: 'Acme' })
     expect(copy).toContain('Acme')
     expect(copy).not.toContain('Kiro Crew')
   })
