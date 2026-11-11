@@ -249,6 +249,132 @@ class TestToolboxPathLauncher:
         assert calls == [] and self.wrapped == []
 
 
+class TestWindowsToolboxPathLauncher:
+    """On Windows Toolbox puts a per-tool `kirocrew.exe` in `%LOCALAPPDATA%\\Toolbox\\bin`
+    and installs the tool under `%LOCALAPPDATA%\\Toolbox`, so neither the POSIX
+    `toolbox-exec` basename nor `~/.toolbox` identifies it. Driven on any host by
+    pinning `IS_WINDOWS` and `LOCALAPPDATA`, with the real `is_toolbox_install`."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_toolbox_cache(self):
+        from kiro_crew import env
+
+        env.is_toolbox_install.cache_clear()
+        yield
+        env.is_toolbox_install.cache_clear()
+
+    def _layout(self, monkeypatch, tmp_path, *, probe, windows=True, running_under_toolbox=True):
+        from kiro_crew import env, platform_compat
+
+        local = tmp_path / "Local"
+        launcher = local / "Toolbox" / "bin" / "kirocrew.exe"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("")
+        install_root = local / "Toolbox" if running_under_toolbox else tmp_path / "Programs"
+        install = install_root / "tools" / "kirocrew" / "9.9.9"
+        running = install / "bin" / "kirocrew.cmd"
+        running.parent.mkdir(parents=True)
+        running.write_text("")
+        python = install / "python" / "python.exe"
+        python.parent.mkdir(parents=True)
+        python.write_text("")
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows)
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setattr(env.sys, "executable", str(python))
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(launcher))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(running))
+        self.calls: list[list[str]] = []
+
+        def fake_wrap(argv, mode="standard", **kwargs):
+            self.calls.append(list(argv))
+            return ["<sandbox>", *argv], {"SCRUBBED": "1"}, None
+
+        def fake_run_limited(argv, **kwargs):
+            returncode, stdout = probe
+            return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(cli_doctor.sandbox, "sandboxed_spawn_argv", fake_wrap)
+        monkeypatch.setattr(cli_doctor.sandbox, "run_limited", fake_run_limited)
+        return launcher
+
+    def test_same_version_through_the_toolbox_bin_launcher_is_clean(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        from kiro_crew import env, version_line
+
+        launcher = self._layout(monkeypatch, tmp_path, probe=(0, version_line() + "\n"))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert f"kirocrew CLI: ✅ {launcher} (Toolbox launcher, same version)" in out
+        assert "different install" not in out
+        assert self.calls == [[str(launcher), "--version"]]
+        assert env.is_toolbox_install() is True
+
+    def test_another_version_through_the_toolbox_bin_launcher_warns(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        self._layout(monkeypatch, tmp_path, probe=(0, "kirocrew 0.0.0-other\n"))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert "kirocrew CLI: ✅" not in out
+
+    def test_a_kirocrew_exe_outside_the_toolbox_bin_is_not_probed(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        from kiro_crew import version_line
+
+        self._layout(monkeypatch, tmp_path, probe=(0, version_line() + "\n"))
+        other = tmp_path / "Programs" / "bin" / "kirocrew.exe"
+        other.parent.mkdir(parents=True)
+        other.write_text("")
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(other))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert self.calls == []
+
+    def test_an_install_outside_the_toolbox_root_is_not_probed(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        from kiro_crew import env, version_line
+
+        self._layout(
+            monkeypatch,
+            tmp_path,
+            probe=(0, version_line() + "\n"),
+            running_under_toolbox=False,
+        )
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert self.calls == []
+        assert env.is_toolbox_install() is False
+
+    def test_the_windows_layout_is_not_read_off_windows(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        from kiro_crew import env, version_line
+
+        self._layout(monkeypatch, tmp_path, probe=(0, version_line() + "\n"), windows=False)
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert "⚠ kirocrew CLI on PATH belongs to a different install" in out
+        assert self.calls == []
+        assert env.is_toolbox_install() is False
+
+
 class TestSourceCheckout:
     """`kirocrew doctor` Source Checkout section — stale/off-branch source tree.
 

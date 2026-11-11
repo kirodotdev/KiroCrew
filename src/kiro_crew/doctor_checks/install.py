@@ -263,14 +263,38 @@ def _doctor_skill_currency(issues: list[str]) -> None:
 _TOOLBOX_DISPATCHER = "toolbox-exec"
 
 
-def _toolbox_launcher_runs_this_version(on_path: str) -> bool:
-    """Whether *on_path* is the Toolbox dispatcher and runs this install's version.
+def _is_toolbox_launcher(on_path: str) -> bool:
+    """Whether *on_path* is a Toolbox launcher rather than an install's own binary.
 
-    A path comparison cannot answer this for Toolbox: ``on_path`` resolves to the
-    one dispatcher every tool shares, never to this install's own binary. So when
-    THIS install is Toolbox-managed and ``on_path`` resolves to that dispatcher,
-    ask it: ``--version`` run through the PATH spelling (the dispatcher reads its
-    argv[0]) must print exactly this install's version line. Any other answer --
+    On POSIX every Toolbox tool name links to the shared ``toolbox-exec``
+    dispatcher. On Windows Toolbox puts a ``<tool>.exe`` launcher per tool in its
+    bin directory (``env._windows_toolbox_bin_dir``), so there it is the directory
+    the PATH entry sits in that identifies it.
+    """
+    from kiro_crew import env, platform_compat
+
+    if os.path.basename(os.path.realpath(on_path)) == _TOOLBOX_DISPATCHER:
+        return True
+    if not platform_compat.IS_WINDOWS:
+        return False
+    bin_dir = env._windows_toolbox_bin_dir(os.path.expanduser("~"), None)
+    if bin_dir is None:
+        return False
+
+    def canonical(path: str) -> str:
+        return os.path.normcase(os.path.realpath(path))
+
+    return canonical(os.path.dirname(os.path.abspath(on_path))) == canonical(bin_dir)
+
+
+def _toolbox_launcher_runs_this_version(on_path: str) -> bool:
+    """Whether *on_path* is a Toolbox launcher and runs this install's version.
+
+    A path comparison cannot answer this for Toolbox: ``on_path`` resolves to a
+    launcher Toolbox owns (:func:`_is_toolbox_launcher`), never to this install's
+    own binary. So when THIS install is Toolbox-managed and ``on_path`` is such a
+    launcher, ask it: ``--version`` run through the PATH spelling (the POSIX
+    dispatcher reads its argv[0]) must print exactly this install's version line. Any other answer --
     another version, a failed or timed-out run, unreadable output, a host that
     cannot build the sandbox -- is False, so the caller keeps its warning.
 
@@ -284,7 +308,7 @@ def _toolbox_launcher_runs_this_version(on_path: str) -> bool:
 
     from kiro_crew import env, version_line
 
-    if os.path.basename(os.path.realpath(on_path)) != _TOOLBOX_DISPATCHER:
+    if not _is_toolbox_launcher(on_path):
         return False
     if not env.is_toolbox_install():
         return False
@@ -337,8 +361,8 @@ def _doctor_path_launcher() -> None:
         print(f"  kirocrew CLI: ✅ {os.path.realpath(on_path)}")
         return
     if _toolbox_launcher_runs_this_version(on_path):
-        # The realpath is Toolbox's shared dispatcher, so the PATH spelling is the
-        # one that names the tool.
+        # The realpath can be Toolbox's shared dispatcher, so the PATH spelling is
+        # the one that names the tool.
         print(f"  kirocrew CLI: ✅ {on_path} (Toolbox launcher, same version)")
         return
     print("  ⚠ kirocrew CLI on PATH belongs to a different install than this one.")
