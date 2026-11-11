@@ -342,7 +342,8 @@ your own workspace.
    separately configured Slack MCP/search integration: `channels:history`,
    `channels:read`, `groups:history`, `groups:read`, `im:history`, `im:read`,
    `mpim:history`, `mpim:read`, `search:read`, and `users:read`. The gateway
-   does not consume this `xoxp-...` token.
+   does not consume this `xoxp-...` token. **Slack tools for your agent**
+   (`slack.slack_mcp`, below) replaces this list in the generated manifest.
 4. **Subscribe to bot events**: `message.im`, `message.channels`,
    `message.groups`, `app_mention`, `app_home_opened`, `file_change`, and
    `member_joined_channel`. Install or reinstall the app to grant the scopes and
@@ -375,10 +376,10 @@ things about it are worth knowing before you use it:
 Secrets are written to `.env` in the config directory with owner-only permissions, never
 to `config.json`.
 
-## Slack Code: agent sessions and code channels
+## Slack Code: agent sessions, code channels and Slack tools
 
-Two switches in the Slack channel view's **Slack Code** section, each off by default and
-applied without a restart. A switch that is on runs only once your installed Slack app can use the
+Three switches in the Slack channel view's **Slack Code** section, each off by default and
+applied without a restart. Agent sessions and code channels run only once your installed Slack app can use the
 feature: its permissions (read from Slack each time the gateway connects) include the
 feature's scope, and Slack has not refused it for your workspace. Until then Slack works
 exactly as with the switch off, and the page says why under the switch.
@@ -446,6 +447,37 @@ exactly as with the switch off, and the page says why under the switch.
   `channels:write.invites`, `groups:write.invites` and `pins:write` scopes (the last
   lets the work board pin itself in its channel). Your workspace must have
   Slack code channels enabled.
+- **Slack tools for your agent** (`slack.slack_mcp`) lets the same Slack app also serve
+  Slack's MCP server (`https://mcp.slack.com/mcp`), so each person can connect their agents
+  to Slack as themselves. It adds `settings.is_mcp_enabled: true`,
+  `oauth_config.pkce_enabled: true` and the redirect URL `http://localhost:48106/callback`,
+  and replaces the manifest's user scopes with the 18 read-only ones Slack's MCP server
+  needs (`search:read.public`, `.private`, `.mpim`, `.im`, `.files`,
+  `.users`; `channels:`, `groups:`, `mpim:` and `im:history` and `:read`; `users:read`,
+  `files:read`, `canvases:read`, `lists:read`), with no write scope. The older
+  `search:read` leaves the manifest; scopes an installed app was already granted stay on
+  it until the app is reinstalled. Off, the manifest is unchanged. The gateway runs
+  nothing for it, so the page shows no capability
+  line. The page shows the switch only while Connections offers a Slack card (the card
+  is what uses these lines; the Connections gallery must be on), or while the switch is
+  on, with a note, so it can be turned off. The switch itself only changes the generated
+  manifest and can be turned off again; saving that manifest in Slack is the step that
+  cannot be undone. Before you save it in Slack:
+  - saving the manifest in Slack turns PKCE on, and only Slack support can turn it off;
+  - the app must stay internal: Slack blocks MCP for a publicly distributed app that is not
+    listed in the Slack Marketplace;
+  - each person still connects on their own: on the Slack card under **Settings →
+    Connections** they save this app's Client ID and Client Secret, then select
+    **Connect** (see `docs/guides/oauth-app-registration/slack.md`). The card offers
+    **Connect** once the Crew-owned sign-in preview is on and chats run on Kiro Agent;
+  - on a PKCE app Slack expires refresh tokens 30 days after sign-in, so each person
+    reconnects about once a month.
+
+  Not yet tested against Slack: that guide registers a separate app and says to leave its
+  Bot Token Scopes empty, because a PKCE `localhost` sign-in cannot request bot scopes.
+  This switch keeps the bot scopes on the same app, and the sign-in asks only for user
+  scopes. If **Connect** is refused over bot scopes, turn the switch off and register a
+  separate app as the guide describes; PKCE stays on for this app either way.
 
 **Defaults for new code channels** (`slack.code_channel_defaults`, applied without a
 restart): a folder, an agent, a model, a reasoning effort and an approval mode. Set any of
@@ -501,7 +533,8 @@ report the app's scopes: select **Check again** first, and open the update steps
 copy the manifest, open the app's **App Manifest** page (the panel links it), replace the
 YAML, save, reinstall the app when Slack asks, then select **Check again**: the gateway
 picks up the new permissions at once. Slack does not report event subscriptions, so the
-check covers scopes only. If Slack refuses a feature at runtime (`feature_disabled`,
+check covers scopes only. It does not report an app's user scopes or settings to the bot
+token either, so the panel lists the Slack tools switch's lines without checking them. If Slack refuses a feature at runtime (`feature_disabled`,
 `missing_scope`), Kiro Crew posts one notification, keeps Slack working as before and
 retries after the next reconnect.
 

@@ -1,6 +1,6 @@
 /**
  * Settings → Slack → Slack Code: the registered Slack Code switches (Agent
- * sessions and Code channels; see `slackCodeSwitches`), the code-channel defaults (folder /
+ * sessions, Code channels and Slack tools for your agent; see `slackCodeSwitches`), the code-channel defaults (folder /
  * agent / model / effort), and the "Update your Slack app" panel.
  *
  * The draft lives in `SlackPanel` (one Save for the whole page); this module
@@ -8,7 +8,7 @@
  * written to the PUT, and how it renders.
  */
 import { Suspense, lazy } from 'react'
-import { CheckCircle2, Info } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Info } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { Badge } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -169,6 +169,63 @@ export function SlackCodeSection({ data, draft, onChange, readOnly, manifestText
                 </div>
               )}
             </div>
+            {/* ── Slack tools for your agent (Slack MCP). Manifest-only: the
+                gateway runs nothing for it, so it has no capability line. Shown
+                only when Connections offers the Slack card it is for, or when
+                it is already on (so it can be turned off). ── */}
+            {(data.slack_mcp_card || data.slack_mcp) && (
+            <div>
+              <SettingsToggle
+                label={i18nT('pages.settings.slackPanel.slackCode.slack_mcp')}
+                description={i18nT('pages.settings.slackPanel.slackCode.slack_mcp_desc')}
+                checked={draft.switches.slack_mcp}
+                onChange={v => onChange({ switches: { ...draft.switches, slack_mcp: v } })}
+                disabled={readOnly}
+                configKey="slack.slack_mcp"
+              />
+              {/* What the app gains, in the manifest's own terms, for the reader
+                  who wants it: the description above stays in plain words. */}
+              <details className="text-[12px] text-muted mt-1" data-testid="slack-mcp-details">
+                <summary className="cursor-pointer">{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_details_title')}</summary>
+                <p className="m-0 mt-1">{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_details')}</p>
+              </details>
+              {/* One sentence in both states, switch first and Slack step second:
+                  the switch only changes the manifest, and saving that in Slack
+                  is the one-way step. Off, it is muted like the Agent sessions
+                  note, so nothing at warning weight sits on a switch that is
+                  off. On, the same sentence opens the warning box below. */}
+              {!draft.switches.slack_mcp && (
+                <div className="flex items-start gap-2 text-[12px] text-muted mt-1" data-testid="slack-mcp-switch-safe">
+                  <Info size={12} className="flex-none mt-0.5" aria-hidden />
+                  <span>{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_switch_safe')}</span>
+                </div>
+              )}
+              {draft.switches.slack_mcp && !data.slack_mcp_card && (
+                <div className="flex items-start gap-2 text-[12px] text-warn mt-1" data-testid="slack-mcp-no-card">
+                  <AlertTriangle size={12} className="flex-none mt-0.5" aria-hidden />
+                  <span>{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_no_card')}</span>
+                </div>
+              )}
+              {/* Only once the switch is on: that is when the manifest carries
+                  these lines and saving it in Slack is the next step. No link
+                  to Connections: this page holds an unsaved draft (the switch
+                  just turned on), and leaving the page would drop it. */}
+              {draft.switches.slack_mcp && (
+                <div className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 mt-2" data-testid="slack-mcp-before">
+                  <AlertTriangle size={12} className="text-warn flex-none mt-0.5" aria-hidden />
+                  <div className="flex flex-col gap-1 min-w-0 text-[12px] text-text">
+                    <span data-testid="slack-mcp-switch-safe">{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_switch_safe')}</span>
+                    <ul className="m-0 pl-4 list-disc flex flex-col gap-0.5">
+                      <li>{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_internal')}</li>
+                      {/* No Slack card to point at: the note above says so instead. */}
+                      {data.slack_mcp_card && <li>{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_connect')}</li>}
+                      <li>{i18nT('pages.settings.slackPanel.slackCode.slack_mcp_expiry')}</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
+            )}
           </div>
 
           {draft.switches.code_channels && (

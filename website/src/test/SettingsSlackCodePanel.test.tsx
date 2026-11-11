@@ -38,9 +38,14 @@ const FOLDERS = [
   { id: 'bbbbbbbbbbbb', name: 'Slack Code', order: 1, parent_id: 'aaaaaaaaaaaa', default_agent: 'builder' },
 ]
 
-const NO_CHANGE = { added_scopes: [], removed_scopes: [], added_events: [], removed_events: [], added_features: [], removed_features: [] }
+const NO_CHANGE = {
+  added_scopes: [], removed_scopes: [], added_events: [], removed_events: [], added_features: [], removed_features: [],
+  added_user_scopes: [], removed_user_scopes: [], added_settings: [],
+}
+const MCP_SETTINGS = ['oauth_config.pkce_enabled: true', 'oauth_config.redirect_urls: http://localhost:48106/callback', 'settings.is_mcp_enabled: true']
 const CHANGES = {
   code_channels: { ...NO_CHANGE, added_features: ['code_channels'], added_scopes: ['canvases:write', 'chat:write.customize', 'code_channels:manage'], added_events: ['agent_session_stopped'] },
+  slack_mcp: { ...NO_CHANGE, added_user_scopes: ['channels:history', 'search:read.public'], removed_user_scopes: ['search:read'], added_settings: MCP_SETTINGS },
 }
 
 function status(install: Partial<SlackManifestStatus['install']> = {}, over: Partial<SlackManifestStatus> = {}): SlackManifestStatus {
@@ -107,7 +112,7 @@ describe('Slack Code payload', () => {
     const saved = slackCodeDraftFrom(config({ code_channel_defaults: { folder: 'aaaaaaaaaaaa', agent: null, model: 'gone-model', reasoning_effort: null } }))
     expect(slackCodePayload(saved, saved)).toEqual({})
     expect(slackCodePayload({ ...saved, effort: 'high' }, saved)).toEqual({ code_channel_defaults: { reasoning_effort: 'high' } })
-    expect(slackCodePayload({ ...saved, folder: '', switches: { agent_sessions: false, code_channels: true } }, saved)).toEqual({
+    expect(slackCodePayload({ ...saved, folder: '', switches: { agent_sessions: false, code_channels: true, slack_mcp: false } }, saved)).toEqual({
       code_channels: true,
       // An enabling save always carries the helper-agents value the card shows.
       code_channel_dispatch: false,
@@ -1128,6 +1133,21 @@ describe('Update your Slack app', () => {
     expect(within(panel).queryByRole('link', { name: /Open App Manifest/ })).toBeNull()
   })
 
+  it('still offers Copy and Open when the workspace lacks one feature but Slack tools is saved', async () => {
+    // Code channels cannot be fixed by an update here, but the Slack tools lines
+    // (PKCE, the redirect, user scopes) are never in a reading, so the manifest
+    // must stay on offer for them.
+    seed(
+      { code_channels: true, slack_mcp: true, slack_mcp_card: true },
+      status({ status: 'feature_disabled', disabled_features: ['code_channels'] }, { features: ['code_channels', 'slack_mcp'] }),
+    )
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'feature_disabled'))
+    expect(within(panel).getByTestId('slack-manifest-unconfirmable')).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    expect(within(panel).getByRole('link', { name: /Open App Manifest/ })).toBeInTheDocument()
+  })
+
   it('offers nothing to copy or open while a switch change is unsaved', async () => {
     // The manifest on offer is the saved switches'. Copying it before the save
     // would hand over the old one, so Copy and Open wait for the save, as the
@@ -1516,6 +1536,166 @@ describe('Capability line under a saved toggle', () => {
   })
 })
 
+
+/** The one sentence under the Slack tools switch, the same in both states. */
+const SLACK_MCP_SWITCH_SAFE = 'This switch only changes the app manifest, the setup text you copy into Slack. Once you save that text in Slack with this switch on, Slack adds a sign-in security setting that only Slack support can remove.'
+
+describe('Slack tools for your agent (Slack MCP) switch', () => {
+  it('is hidden while Connections offers no Slack card and the switch is off', async () => {
+    seed()
+    await hydrated()
+    await screen.findByRole('switch', { name: 'Code channels' })
+    expect(screen.queryByRole('switch', { name: 'Slack tools for your agent' })).toBeNull()
+    expect(screen.queryByTestId('slack-mcp-before')).toBeNull()
+    expect(screen.queryByTestId('slack-mcp-switch-safe')).toBeNull()
+  })
+
+  it('stays shown, with a note, when it is on but Connections offers no Slack card', async () => {
+    const { save } = seed({ slack_mcp: true }, status({}, { features: ['slack_mcp'] }))
+    await hydrated()
+    const toggle = await screen.findByRole('switch', { name: 'Slack tools for your agent' })
+    await waitFor(() => expect(toggle).toBeChecked())
+    // What is wrong, then what to do about it: turn the cards back on, or
+    // turn this switch off.
+    expect(screen.getByTestId('slack-mcp-no-card')).toHaveTextContent('The Slack card under Settings → Connections is turned off here, so nobody can connect a Slack account yet. To use Slack tools, set connections_ui to true in config.json. Otherwise, turn this switch off before you save the manifest in Slack.')
+    // No card to point at: the box does not send the reader to one.
+    const before = screen.getByTestId('slack-mcp-before')
+    expect(before).not.toHaveTextContent('Slack card')
+    expect(within(before).getByTestId('slack-mcp-switch-safe')).toHaveTextContent(SLACK_MCP_SWITCH_SAFE)
+    fireEvent.click(toggle)
+    // Off: nothing at warning weight is left on the switch, only the muted line.
+    expect(screen.queryByTestId('slack-mcp-before')).toBeNull()
+    expect(screen.queryByTestId('slack-mcp-no-card')).toBeNull()
+    expect(screen.getByTestId('slack-mcp-switch-safe')).toHaveTextContent(SLACK_MCP_SWITCH_SAFE)
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ slack_mcp: false })
+  })
+
+  it('says what turning it on commits to before it is on, then saves it', async () => {
+    const { save } = seed({ slack_mcp_card: true })
+    await hydrated()
+    const toggle = screen.getByRole('switch', { name: 'Slack tools for your agent' })
+    expect(toggle).not.toBeChecked()
+    expect(screen.queryByTestId('slack-mcp-no-card')).toBeNull()
+    // Off: one muted sentence, switch first and Slack step second. It says
+    // which action is one-way (saving in Slack) and who can undo it, and
+    // nothing at warning weight sits on a switch that is off.
+    expect(screen.queryByTestId('slack-mcp-before')).toBeNull()
+    const offLine = screen.getByTestId('slack-mcp-switch-safe')
+    expect(offLine).toHaveTextContent(SLACK_MCP_SWITCH_SAFE)
+    expect(offLine.textContent).toBe(SLACK_MCP_SWITCH_SAFE)
+    expect(offLine).toHaveClass('text-muted')
+    expect(screen.getByTestId('slack-code-switches').querySelector('.text-warn')).toBeNull()
+    // The row leads with what the person gets, in plain words; the manifest
+    // terms wait in a disclosure, and the box around them names no "MCP server".
+    const switches = screen.getByTestId('slack-code-switches')
+    expect(switches).toHaveTextContent('Let your agents search and read Slack as you. They see only what you can already see in Slack, private messages and DMs included')
+    expect(switches).toHaveTextContent('Nothing is read until a person connects their own Slack account.')
+    const details = screen.getByTestId('slack-mcp-details')
+    expect(details.tagName).toBe('DETAILS')
+    expect(details).not.toHaveAttribute('open')
+    expect(within(details).getByText('What this adds to your Slack app').tagName).toBe('SUMMARY')
+    expect(details).toHaveTextContent('18 read-only permissions')
+    const outsideDetails = (switches.textContent ?? '').replace(details.textContent ?? '', '')
+    expect(outsideDetails).not.toMatch(/MCP server|user scopes|18 read-only|PKCE/)
+
+    fireEvent.click(toggle)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // On: the same sentence, now opening the warning box, with what else to
+    // know once the manifest is saved in Slack. One box, no heading to swap.
+    const before = screen.getByTestId('slack-mcp-before')
+    expect(screen.getAllByTestId('slack-mcp-switch-safe')).toHaveLength(1)
+    const safe = within(before).getByTestId('slack-mcp-switch-safe')
+    expect(safe.textContent).toBe(SLACK_MCP_SWITCH_SAFE)
+    expect(safe.compareDocumentPosition(within(before).getByRole('list')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const points = within(before).getAllByRole('listitem').map(li => li.textContent)
+    expect(points).toEqual([
+      // Each names its own action and says what to do.
+      "Keep this Slack app to your own workspace: leave the app's Manage Distribution page in Slack alone. If you turn on public distribution there, Slack turns these tools off.",
+      "Save this app's Client ID and Client secret on the Slack card under Settings → Connections. Both are on the app's Basic Information page in Slack. Each person then selects Connect on that card to link their own Slack account.",
+      'With that sign-in security setting on, Slack ends each sign-in after 30 days, so each person connects again about once a month.',
+    ])
+    expect((screen.getByTestId('slack-code-switches').textContent ?? '').replace(details.textContent ?? '', '')).not.toMatch(/PKCE|MCP server/)
+    fireEvent.click(saveBtn())
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ slack_mcp: true })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('code_channels')
+  })
+
+  it('lists its user scopes and settings as lines a bot-token reading cannot confirm', async () => {
+    // A bot scope of the same name is missing: the user-scope chip must not
+    // borrow that reading.
+    seed({ slack_mcp: true }, status({ missing_scopes: ['channels:history'], status: 'needs_update' }, { features: ['slack_mcp'] }))
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    const rows = within(panel).getAllByTestId('slack-manifest-lines')
+    const user = rows.find(r => r.textContent?.startsWith('User scopes'))!
+    const settings = rows.find(r => r.textContent?.startsWith('App settings'))!
+    expect(user).toHaveTextContent('channels:history')
+    expect(user).not.toHaveTextContent('missing')
+    expect(user).not.toHaveTextContent('+ ')
+    // The legacy scope the switch drops is shown leaving, struck through.
+    const dropped = within(user).getByText('− search:read')
+    expect(dropped.closest('span.line-through')).not.toBeNull()
+    for (const line of MCP_SETTINGS) expect(settings).toHaveTextContent(line)
+    // No Slack card here, so nobody could connect: the note says what the
+    // status cannot see and does not urge the one-way save in Slack.
+    const note = within(panel).getByTestId('slack-manifest-unconfirmable')
+    expect(note.textContent).toBe("This status doesn't cover Slack tools for your agent. Slack reports an app's bot permissions but not the user scopes and app settings listed here.")
+    expect(within(panel).queryByTestId('slack-manifest-unconfirmable-save')).toBeNull()
+    // No capability line: nothing runs for it.
+    expect(screen.queryByTestId('slack-capability')).toBeNull()
+  })
+
+  it('does not promise a Stop button check when only Slack MCP is saved', async () => {
+    seed({ slack_mcp: true }, status({}, { features: ['slack_mcp'] }))
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
+    expect(panel).not.toHaveTextContent('Permissions are up to date.')
+    expect(within(panel).getByTestId('slack-manifest-unconfirmable')).toBeInTheDocument()
+    // The pill says what was checked, since the reading does not cover this
+    // switch's lines: no bare green "Up to date" above a note that says so.
+    const pill = within(panel).getByTestId('slack-manifest-status')
+    expect(pill.textContent).toBe('Bot permissions up to date')
+    // The note sits right under the pill, in place of a line that would
+    // claim more than the reading covers, and before the technical lines.
+    expect(panel).not.toHaveTextContent('Your installed app has every permission these switches need.')
+    const note = within(panel).getByTestId('slack-manifest-unconfirmable')
+    expect(within(panel).getAllByTestId('slack-manifest-unconfirmable')).toHaveLength(1)
+    // No Slack card in this seed: under the pill too, no push toward the save.
+    expect(within(panel).queryByTestId('slack-manifest-unconfirmable-save')).toBeNull()
+    const firstLines = within(panel).getAllByTestId('slack-manifest-lines')[0]
+    expect(note.compareDocumentPosition(firstLines) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The manifest stays on offer to copy, since the reading cannot vouch for it.
+    expect(within(panel).getByRole('button', { name: 'Copy manifest YAML' })).toBeInTheDocument()
+    // No events footnote: this switch subscribes none, and "Slack reports an
+    // app's permissions" would contradict the note above.
+    expect(within(panel).queryByTestId('slack-manifest-events-footnote')).toBeNull()
+  })
+
+  it('keeps the events footnote when a saved switch subscribes events beside Slack tools', async () => {
+    seed({ agent_sessions: true, slack_mcp: true, slack_mcp_card: true }, status({}, { features: ['agent_sessions', 'slack_mcp'] }))
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
+    const note = within(panel).getByTestId('slack-manifest-unconfirmable')
+    expect(note).toHaveTextContent("This status doesn't cover Slack tools for your agent.")
+    // The Slack card is offered, so the save step follows, named as the one-way step.
+    const saveStep = within(note).getByTestId('slack-manifest-unconfirmable-save')
+    expect(saveStep.textContent).toBe("If you haven't saved this manifest in Slack since turning that switch on, copy it and save it on the app's App Manifest page. That save adds the sign-in security setting only Slack support can remove.")
+    expect(within(panel).getByTestId('slack-manifest-events-footnote')).toHaveTextContent('Slack reports an app\'s permissions but not its event subscriptions')
+  })
+
+  it('adds no unconfirmable note for switches that add only bot lines', async () => {
+    seed({ code_channels: true })
+    const panel = await screen.findByTestId('slack-manifest-update', {}, CHAINED)
+    await waitFor(() => expect(within(panel).getByTestId('slack-manifest-status')).toHaveAttribute('data-status', 'up_to_date'))
+    expect(panel).toHaveTextContent('Permissions are up to date.')
+    expect(within(panel).queryByTestId('slack-manifest-unconfirmable')).toBeNull()
+    expect(within(panel).getByTestId('slack-manifest-status').textContent).toBe('Up to date')
+    expect(panel).toHaveTextContent('Your installed app has every permission these switches need.')
+    expect(within(panel).getByTestId('slack-manifest-events-footnote')).toBeInTheDocument()
+  })
+})
 
 describe('a failed Check again', () => {
   function setup() {
