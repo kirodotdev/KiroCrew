@@ -1531,6 +1531,13 @@ withholds. The KAS projection asks `may_grant_builtin_at_gate_now` once when it 
 the grant; the gate asks again on every call. A spec's `toolsSettings.shell.allowedCommands`
 takes the same row and the same question, asked about `execute_bash`: the patterns are
 recorded only when it holds, and the row asks it again for every matching command.
+One ceiling shape is not an opinion here: a deny-mode `commands` scope whose every
+pattern is string-identical to a built-in deny rule (`_commands_only_pin_the_floor`), as
+an edition writes when it pins its self-protection rules. The gate force-enables each
+such rule in its deny floor, so the deny-rules row has refused a call one names before
+this row runs, and the pins say nothing about any other command. Any other pattern beside
+them, an allow-mode set or a profile's `commands` scope still withholds the grant. The
+static writers (`may_skip_gate`) are unchanged.
 
 What no hook can do is narrow a session **already negotiated**: kiro-cli holds the grants it
 was given, and nothing reaches into a running one. That limit has the same shape as an
