@@ -369,19 +369,27 @@ written only on the default path (a `KIROCREW_HOME` override carries no `~/.kiro
 wipe risk). It is **not a backup** — just a durable signpost that survives a
 `~/.kiro/`-wide uninstaller wipe so a user or support script can find any
 surviving data or understand what was removed. This narrows, but does not
-eliminate, the one-way-door risk above; the release gate still stands.
+eliminate, the one-way-door risk above; what remains is the accepted risk below.
 
-> **Release gate (UNINSTALLER-EXCLUDE-CREW).** This is a pre-release,
-> human-sign-off dependency, NOT a code change in this repo: the code cannot
-> constrain another product's uninstaller. For every release that ships data
-> under `~/.kiro/`, the Kiro Crew product owner MUST confirm the
-> Kiro-family uninstaller either excludes `~/.kiro/crew` or prompts — because
-> there is no `~/.kirocrew.archived` fallback for any install, so a
-> `~/.kiro/`-wide wipe would be unrecoverable total data loss. Until confirmed,
-> the placement decision is acknowledged-but-owned here under this name so it is
-> not lost. **Tracked as release-blocking in
-> [issue #355](https://github.com/kirodotdev/KiroCrew/issues/355)**; the sign-off
-> must be recorded there.
+> **Accepted risk (UNINSTALLER-EXCLUDE-CREW).** A Kiro-family uninstaller that
+> removes `~/.kiro/` wholesale also removes `~/.kiro/crew`, and with no
+> `~/.kirocrew.archived` fallback that is unrecoverable total data loss. The code
+> cannot constrain another product's uninstaller, and Kiro Crew holds no written
+> confirmation that a Kiro-family uninstaller excludes `~/.kiro/crew` or prompts
+> first, so this is a documented accepted risk, not a release gate. The
+> protections Kiro Crew owns:
+>
+> - every uninstall path this repository owns keeps the data home (the
+>   repository-controlled uninstall contract above);
+> - the `~/.kirocrew.breadcrumb` pointer above, written outside `~/.kiro/`;
+> - `KIROCREW_HOME`, which puts the data home outside `~/.kiro/` (the crewmate
+>   agent files in `~/.kiro/mates` do not move with it);
+> - `snapshot_dir` set outside `~/.kiro/`, so a `kirocrew snapshot` written there
+>   survives such a removal; the default, `<data home>/snapshots`, survives it
+>   only when the data home itself is outside `~/.kiro/`.
+>
+> Reopen [issue #355](https://github.com/kirodotdev/KiroCrew/issues/355) if a
+> Kiro-family uninstaller is found to remove `~/.kiro/` wholesale.
 
 **Paths are resolved per call, never captured at import.** Because
 `config_dir()` re-reads `$KIROCREW_HOME` on every call and resolution/maintenance
