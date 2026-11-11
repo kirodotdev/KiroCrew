@@ -20,6 +20,10 @@ A managed server that only ran out of time starting is the other failure a secon
 attempt can cure: :func:`is_start_timeout_failure` reads it, and the KAS readiness
 barrier (``session_handle_mcp.wait_mcp_ready``) re-attempts such a server once,
 while the session start is still waiting for it.
+
+:func:`is_sse_fallback_failure` reads the one failure KAS reports for a remote OAuth
+server it holds no grant for, the error its legacy SSE fallback gets back; the
+KAS sign-in probe (``session_handle_mcp._probe_mcp_sign_in``) runs only on it.
 """
 
 from __future__ import annotations
@@ -83,3 +87,17 @@ def is_start_timeout_failure(error_message: object) -> bool:
     if INITIALIZE_DEADLINE_REASON in error_message:
         return True
     return _TIMED_OUT.search(error_message) is not None
+
+
+#: How the legacy SSE transport reports a stream request answered with anything but
+#: 200; the status code follows in parentheses.
+_SSE_NON_200 = "SSE error: Non-200 status code"
+
+
+def is_sse_fallback_failure(error_message: object) -> bool:
+    """Whether a failed server's error is its legacy SSE fallback's non-200 answer.
+
+    KAS reports a remote OAuth server it holds no grant for this way
+    (``SSE error: Non-200 status code (405)``), with any status code.
+    """
+    return isinstance(error_message, str) and _SSE_NON_200 in error_message

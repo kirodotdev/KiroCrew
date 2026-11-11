@@ -148,6 +148,7 @@ class AcpSessionHandle:
     wait_for_declared_mcp = _sh_mcp.wait_for_declared_mcp
     wait_mounted_mcp = _sh_mcp.wait_mounted_mcp
     _note_mcp_sign_in_status = _sh_mcp._note_mcp_sign_in_status
+    _probe_mcp_sign_in = _sh_mcp._probe_mcp_sign_in
     _offer_mcp_sign_in = _sh_mcp._offer_mcp_sign_in
     want_mcp_sign_in_named = _sh_mcp.want_mcp_sign_in_named
     _match_mcp_sign_in_ask = _sh_mcp._match_mcp_sign_in_ask
@@ -407,6 +408,9 @@ class AcpSessionHandle:
         # roster: an MCP call on one of them gets the network silence bound
         # (``acp.tool_silence``), any other MCP call the stdio one.
         self._mcp_network_servers: frozenset[str] = frozenset()
+        # Each of those servers' declared url: the sign-in probe asks only a
+        # discovery row at that url (``_probe_mcp_sign_in``).
+        self._mcp_network_urls: dict[str, str] = {}
         # The calls this session's native sub-agents have open this turn, of any
         # kind (``_note_child_calls``), keyed by the child-scoped call and naming
         # the call's own id: while one is open, a sub-agent call is not judged by
@@ -735,6 +739,14 @@ class AcpSessionHandle:
         # See kiro_crew.acp.mcp_reattempt.
         self._mcp_reattempt_waiting: set[str] = set()
         self._mcp_reattempt_counts: dict[str, int] = {}
+        # Failed servers whose error is the SSE fallback's non-200 answer, each
+        # probed once for whether it wants a sign-in (``_probe_mcp_sign_in``), at most
+        # ``BUCKET_CAP`` names; those whose probe said so and that have not
+        # connected since; and those that connected or were disabled this session,
+        # whose probe answer is spent.
+        self._mcp_sign_in_probes: dict[str, asyncio.Task[bool]] = {}
+        self._mcp_sign_in_probed: set[str] = set()
+        self._mcp_sign_in_spent: set[str] = set()
         # What THIS session's MCP servers reported — parity with
         # AcpClient._mcp_report. The runtime creates it together with this
         # session's queue and folds each frame that names the session into it

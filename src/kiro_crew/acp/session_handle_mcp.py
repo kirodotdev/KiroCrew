@@ -9,12 +9,13 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_config_options``, ``_mcp_launches``, ``_mcp_network_servers``,
-``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``, ``_mcp_sign_in_completed``,
-``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
+``_mcp_network_urls``, ``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``,
+``_mcp_sign_in_completed``, ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``,
+``_mcp_sign_in_needed``, ``_mcp_sign_in_probed``, ``_mcp_sign_in_probes``, ``_mcp_sign_in_spent``,
 ``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
 
 Instance fields read: ``_mcp_report``, ``_queue``, ``_runtime``, ``_session_id``,
-``_watchdog``.
+``_session_key``, ``_watchdog``.
 """
 
 from __future__ import annotations
@@ -31,7 +32,11 @@ from kiro_crew.acp._dispatch import classify_notification
 from kiro_crew.acp.client import _is_safe_oauth_url
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
-from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure, is_start_timeout_failure
+from kiro_crew.acp.mcp_reattempt import (
+    is_recoverable_auth_failure,
+    is_sse_fallback_failure,
+    is_start_timeout_failure,
+)
 from kiro_crew.acp.mcp_session_report import (
     BUCKET_CAP,
     NAME_CAP,
@@ -148,16 +153,18 @@ def mcp_launch_roster(
     return {name: tuple(argvs) for name, argvs in roster.items()}, refused
 
 
-def mcp_network_servers(spec: object, wire_servers: object) -> frozenset[str]:
-    """The names of one session's MCP servers declared with a ``url``. Pure, never raises.
+def mcp_network_urls(spec: object, wire_servers: object) -> dict[str, str]:
+    """The ``url`` each of one session's MCP servers was declared with, by name. Pure, never raises.
 
-    Read from the same two sources as :func:`mcp_launch_roster`. A server is a
-    network server only when no source declares it as a stdio ``command``, so a
-    name both ways keeps the longer stdio bound of the per-call silence timer
-    (``acp.tool_silence``). Bounded like the roster: at most ``BUCKET_CAP`` names
-    of at most ``NAME_CAP`` characters.
+    Read from the same two sources as :func:`mcp_launch_roster`, the wire entry
+    winning. A server is a network server only when no source declares it as a
+    stdio ``command``, so a name both ways keeps the longer stdio bound of the
+    per-call silence timer (``acp.tool_silence``) and is never probed for a
+    sign-in. Bounded like the roster: at most ``BUCKET_CAP`` names of at most
+    ``NAME_CAP`` characters; a url past :data:`_LAUNCH_MAX_TOKEN` characters is
+    kept as ``""``, so its server stays a network server and is never probed.
     """
-    url_named: set[str] = set()
+    url_named: dict[str, str] = {}
     stdio_named: set[str] = set()
 
     def _add(name: object, entry: object) -> None:
@@ -167,8 +174,8 @@ def mcp_network_servers(spec: object, wire_servers: object) -> frozenset[str]:
             return
         url = entry.get("url")
         if isinstance(url, str) and url:
-            if len(url_named) < BUCKET_CAP:
-                url_named.add(name)
+            if name in url_named or len(url_named) < BUCKET_CAP:
+                url_named[name] = url if len(url) <= _LAUNCH_MAX_TOKEN else ""
         elif _launch_argv(entry) is not None:
             stdio_named.add(name)
 
@@ -183,8 +190,13 @@ def mcp_network_servers(spec: object, wire_servers: object) -> frozenset[str]:
                     _add(element.get("name"), element)
     except Exception:
         logger.debug("MCP network servers unreadable", exc_info=True)
-        return frozenset()
-    return frozenset(url_named - stdio_named)
+        return {}
+    return {name: url for name, url in url_named.items() if name not in stdio_named}
+
+
+def mcp_network_servers(spec: object, wire_servers: object) -> frozenset[str]:
+    """The names of one session's MCP servers declared with a ``url`` (:func:`mcp_network_urls`)."""
+    return frozenset(mcp_network_urls(spec, wire_servers))
 
 
 # MCP-server-init drain (parity with AcpClient._drain_notifications): after
@@ -282,7 +294,8 @@ def record_mcp_launches(self: AcpSessionHandle, spec: Any, wire_servers: Any) ->
         logger.debug("session %s: MCP launch roster not recorded", self._session_id, exc_info=True)
         roster, refused = {}, 0
     self._mcp_launches = roster
-    self._mcp_network_servers = mcp_network_servers(spec, wire_servers)
+    self._mcp_network_urls = mcp_network_urls(spec, wire_servers)
+    self._mcp_network_servers = frozenset(self._mcp_network_urls)
     if refused:
         logger.warning(
             "session %s: %d MCP server launch(es) past the roster bounds are not "
@@ -884,7 +897,9 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
             dropped += 1
             continue
         present.add(name)
-        if server.get("failedAuthorization") is True:
+        if server.get("failedAuthorization") is True or (
+            server.get("status") == "failed" and name in self._mcp_sign_in_probed
+        ):
             self._mcp_sign_in_needed.add(name)
             self._mcp_reattempt_waiting.discard(name)
         elif server.get("status") in ("connected", "disabled"):
@@ -906,13 +921,25 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
                     dropped += 1
             self._mcp_sign_in_needed.discard(name)
             self._mcp_reattempt_waiting.discard(name)
+            # A tokenless probe answers the same with or without a grant, so its
+            # answer is spent once the server is up or switched off.
+            if name in self._mcp_sign_in_spent or len(self._mcp_sign_in_spent) < BUCKET_CAP:
+                self._mcp_sign_in_spent.add(name)
+            probe = self._mcp_sign_in_probes.get(name)
+            if probe is not None:
+                probe.cancel()
+            if name in self._mcp_sign_in_probed:
+                self._mcp_sign_in_probed.discard(name)
+                self._mcp_report.set_unauthorized(self._mcp_sign_in_probed)
         elif (
             server.get("status") == "failed"
             and name not in self._mcp_sign_in_needed
             and name not in self._mcp_reattempt_waiting
-            and is_recoverable_auth_failure(server.get("errorMessage"))
         ):
-            self._mcp_reattempt_waiting.add(name)
+            if is_recoverable_auth_failure(server.get("errorMessage")):
+                self._mcp_reattempt_waiting.add(name)
+            elif is_sse_fallback_failure(server.get("errorMessage")):
+                self._probe_mcp_sign_in(name)
     self._mcp_sign_in_needed &= present
     self._mcp_sign_in_wanted &= self._mcp_sign_in_needed
     self._mcp_reattempt_waiting &= present
@@ -936,6 +963,99 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
         # A server this turn's ask named may only now be tracked.
         self._match_mcp_sign_in_ask()
         self._offer_mcp_sign_in()
+
+
+def _probe_mcp_sign_in(self: AcpSessionHandle, name: str) -> None:
+    """Ask once, in the background, whether failed server *name* wants a sign-in.
+
+    KAS can report a remote OAuth server it holds no grant for with the error of
+    its legacy SSE fallback (``SSE error: Non-200 status code (405)``) instead of
+    ``failedAuthorization``, so nothing would ever offer that server a sign-in.
+    The MCP Servers page's tokenless probe tells the two apart: a ``needs_auth``
+    answer lists the server as awaiting authorization in the session report and
+    tracks it like a ``failedAuthorization`` entry while it stays failed. The
+    answer is matched against the turn's held ask when it lands, and offered at
+    once if a turn is reading, because it usually lands after the turn-start
+    match. Only on a host that runs sign-ins, once per server, and never for one
+    that connected or was disabled this session: the answer is spent, before or
+    after it lands. Only for a name this session declared with a url, and only
+    at that url. No-ops without a running loop, like
+    ``mcp_mount_check.schedule_mount_check``.
+    """
+    # Only a name this session declared with a url is probed; a url entry with a
+    # placeholder ``command`` is still in ``_mcp_network_urls``, an over-long url
+    # is kept there as ``""``.
+    if (
+        not self._mcp_network_urls.get(name)
+        or name in self._mcp_sign_in_spent
+        or name in self._mcp_sign_in_probes
+        or len(self._mcp_sign_in_probes) >= BUCKET_CAP
+    ):
+        return
+    # The capability that gates the per-server reset gates the consent URL too.
+    if not self._runtime_reattempts_mcp():
+        return
+    from kiro_crew.connections import crew_oauth_proxy
+
+    # A Crew-owned Connection runs as Crew's local bridge, which the engine's
+    # sign-in cannot serve.
+    if crew_oauth_proxy.is_connection_server(self._session_key, name):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    probe = loop.create_task(_remote_wants_sign_in(name, self._mcp_network_urls[name]))
+    self._mcp_sign_in_probes[name] = probe
+
+    def _landed(done: asyncio.Future[bool]) -> None:
+        if done.cancelled() or name in self._mcp_sign_in_spent or not done.result():
+            return
+        self._mcp_sign_in_probed.add(name)
+        self._mcp_sign_in_needed.add(name)
+        self._mcp_report.set_unauthorized(self._mcp_sign_in_probed)
+        self._match_mcp_sign_in_ask()
+        if self.is_turn_active:
+            self._offer_mcp_sign_in()
+
+    probe.add_done_callback(_landed)
+
+
+async def _remote_wants_sign_in(name: str, declared_url: str) -> bool:
+    """Whether configured remote server *name* answers the tokenless probe with ``needs_auth``.
+
+    The probe the MCP Servers page runs (``mcp_discovery.probe_server`` on the
+    ``list_servers`` row), so its SSRF vet, consent gate and header handling
+    apply; a row whose fresh cached probe of its url already says ``needs_auth`` is
+    not probed again (``probe_server`` never answers from that cache). False for a
+    name with no remote row, for a row whose url is not the *declared_url* this
+    session declared the name with, and for a probe that raised.
+    Also False for a row with headers: KAS withholds them, so it reaches that
+    server through Crew's local bridge or without them, never as the probe asks.
+    And False when the KAS grant vault holds a grant for the url: that server
+    failed for another reason.
+    """
+    from kiro_crew import mcp_discovery, mcp_grant_kas  # deferred: discovery is heavy
+
+    try:
+        rows = await asyncio.to_thread(mcp_discovery.list_servers)
+        row = next((r for r in rows if r.name == name and r.is_remote), None)
+        if row is None or row.headers:
+            return False
+        if row.url != declared_url:
+            return False
+        if row.status != "needs_auth":
+            row = await mcp_discovery.probe_server(row)
+        if row.status != "needs_auth":
+            return False
+        return await mcp_grant_kas.kas_grant_observed(row.url) is not True
+    except Exception as exc:  # noqa: BLE001 -- no answer leaves the failure as it reads
+        logger.debug(
+            "MCP sign-in probe of %s raised %s",
+            sanitize_sink_text(name, NAME_CAP),
+            type(exc).__name__,
+        )
+        return False
 
 
 #: Separators an MCP server name may use between words.
