@@ -1291,9 +1291,9 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 | `campaign/lifecycle.py` | Validation, create/transition/delete, which transitions are legal, the per-campaign transition lock, the `started_at` run-generation fence of `_guarded_transition`, settle-before-cancel for worker-thread writes, SSE fan-out, the SEL audit trail |
 | `campaign/publication.py` | `brief.md` (published after the row it renders commits, in commit order), the report and its artifact export, the Knowledge Library export |
 | `campaign/exploration.py` | Emergent sub-questions, the reserve zone of trailing cycles, FINALIZE MODE |
-| `campaign/agent_mode.py` | Agent-mode execution: launching, pausing and tearing down the autonudge worker, the `worker_done.json` marker, cycle accounting |
+| `campaign/agent_mode.py` | Agent-mode execution: launching, pausing and tearing down the autonudge worker, the `worker_done.json` marker, cycle accounting, the worker slot's trust (`grant_worker_trust` is the app's only grant, `release_worker_trust` its only revoke, and it remembers which slot object held trust so a person's revoke on that same slot is told apart from a new, untrusted slot after a restart; only a start or Resume clears a recorded revoke) |
 | `campaign/workflow_mode.py` | Workflow-mode execution: Dynamic Workflow launch and cancel, the poll adapter, the `workflow_run.json` run id and cycle offset |
-| `campaign/watchdog.py` | The watchdog loop body: disabled-app suspension, the 24h trust expiry, question pauses, the stall verdict, terminal settlement |
+| `campaign/watchdog.py` | The watchdog loop body: disabled-app suspension, the 24h trust expiry, parking a campaign in NEEDS_INPUT when a person (or a policy) revoked its worker's trust (never granting it back; a new slot is still re-trusted), question pauses, the stall verdict, terminal settlement |
 | `campaign/grill.py` | The question-tree planner behind the grill endpoint |
 | `session_keys.py`, `subquestion_queue.py`, `workflow_template.py` | Worker-slot identity, the emergent-question queue, the Dynamic Workflow template |
 | `seams.py` | The app's provider for the core's `stopped_loop_tombstone` seam (see "Repository boundary" below) |
