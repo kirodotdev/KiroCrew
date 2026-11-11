@@ -470,6 +470,7 @@ class TestAdvertisedSet:
             "session_continue",
             "session_set_model",
             "session_set_color",
+            "session_set_note",
             "session_reload",
             "session_rename",
             "session_generate_title",
