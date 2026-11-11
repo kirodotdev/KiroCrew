@@ -46,16 +46,14 @@ A workflow whose last step writes somewhere (sends a message, opens a pull reque
 
 ## 2. Prior art
 
-Behaviors only, from public documentation. No code or text is taken from any of these.
+Behaviors only. Approval steps in workflow and agent tools commonly work like this:
 
-| Product | License | Behavior that informs this design | Source |
-|---|---|---|---|
-| Zapier Human in the Loop | proprietary | A step sends approve or reject (and optionally edit) by Slack, email, Teams or the app. The author sets a timeout value and unit, picks "skip and continue" or "end run" on timeout, and can send a reminder. | https://help.zapier.com/hc/en-us/articles/38731463206029 |
-| Windmill approval steps | AGPL-3.0 core, commercial enterprise edition | A suspend step can need N approvals and is cancelled after a timeout; approval steps take the same retry settings as other steps. | https://www.windmill.dev/docs/flows/flow_approval |
-| Trigger.dev waitpoint tokens | Apache-2.0 | A run waits on a token with a timeout; the wait returns a result that says whether it timed out, and the task decides what to do. | https://trigger.dev/docs/wait-for-token |
-| n8n human review for AI tools | Sustainable Use License | Review can gate only selected tools of an agent step, with the review sent to a chat channel. | https://docs.n8n.io/advanced-ai/human-in-the-loop-tools/ |
-| Activepieces waitpoints | MIT community edition, commercial enterprise edition | Approval barriers persist the paused execution and support quorum and veto. | https://www.activepieces.com/docs/install/architecture/waitpoints |
-| OpenClaw mobile apps | not checked in this recon | The Android app marks sessions waiting on an answer or an approval, so a phone shows what is blocked. | https://raw.githubusercontent.com/openclaw/openclaw/HEAD/docs/platforms/android.md |
+- A step sends approve or reject, and sometimes edit, through chat, email or the app. The author sets a timeout, chooses whether the run skips the step or ends on timeout, and can send one reminder.
+- A suspend step needs a set number of approvals and is cancelled after a timeout, with the same retry settings as other steps.
+- A run waits on a token with a timeout. The wait returns whether it timed out, and the task decides what to do next.
+- Review gates only selected tools of an agent step, and the review is sent to a chat channel.
+- An approval barrier keeps the paused run on disk and supports quorum and veto.
+- A phone view marks the sessions waiting on an answer or an approval, so a person away from the desk sees what is blocked.
 
 What carries over: a per-step timeout, a declared default on timeout, one reminder, delivery where the person already is. What this design declines: approve-on-timeout (§6.2), quorum (§6.3), and a decision by link in email (§6.4).
 
@@ -94,7 +92,7 @@ async def approve(
 
 - New parameters are keyword-only with defaults, so every existing call shape `ctx.approve("text")` keeps working. The conformance pin at `test/test_workflows_conformance.py` (`EXPECTED_CTX_METHODS`) gains the three `KEYWORD_ONLY` rows.
 - `timeout_secs` is clamped into `[60, remaining run ceiling]`. The approval wait counts against the run timeout like any other step.
-- `on_timeout="reject"` returns `False`, so the script takes its own "not approved" branch (the Trigger.dev shape). `on_timeout="fail"` ends the run as `run_failed` with `where="approval_timeout"` (Zapier's "end run"). There is no `"approve"`.
+- `on_timeout="reject"` returns `False`, so the script takes its own "not approved" branch (the token-wait shape in section 2). `on_timeout="fail"` ends the run as `run_failed` with `where="approval_timeout"` (an "end run" default). There is no `"approve"`.
 - `remind_after_secs` sends one reminder if no decision has arrived by then; it must be less than `timeout_secs` or it is ignored with a `log` event.
 - `validate.py` rejects a non-literal `on_timeout` and an unknown literal. `approve` stays in `NULLABLE_CTX_METHODS` (`validate.py` `NULLABLE_CTX_METHODS`) unchanged.
 - At most 8 pending approvals per run, so a `ctx.parallel` fan-out cannot flood the owner's DMs. The ninth call raises in the script.
@@ -185,8 +183,8 @@ The prompt is built by a script and often holds agent output. Before storage and
 ## 6. Alternatives considered
 
 1. **Reuse the blocking ask-question card.** `ask_question.py` already holds a request open and rehydrates. It is scoped to a chat slot, it has no channel delivery, and a workflow run started by cron has no slot. The card UI is reused; the route and store are not.
-2. **Allow `on_timeout="approve"`.** Zapier's "skip and continue" amounts to this. Rejected: it makes silence a yes, which `messaging/approval.py` rules out for tool approvals, and a run that would proceed anyway does not need the gate.
-3. **Quorum and veto.** Useful for teams (Windmill, Activepieces). Kiro Crew is a single-owner gateway, so N-of-M has one possible approver. Revisit with Shared Crew roles.
+2. **Allow `on_timeout="approve"`.** A "skip and continue" default amounts to this. Rejected: it makes silence a yes, which `messaging/approval.py` rules out for tool approvals, and a run that would proceed anyway does not need the gate.
+3. **Quorum and veto.** Useful for teams. Kiro Crew is a single-owner gateway, so N-of-M has one possible approver. Revisit with Shared Crew roles.
 4. **Approve by signed link** (email or push). One tap from anywhere, but whoever holds the link can approve. Rejected for this feature (§5.3).
 5. **A second, workflow-only channel registry.** Simpler to land, but every channel would implement two nearly identical hooks. Generalizing `spawn_approval_delivery.py` costs one parameter.
 6. **Keep the approval in memory only.** Smaller, but a dashboard reload loses the card unless the run tree re-derives it from events, and a restart leaves stale buttons in Slack with no record of why they stopped working. The file is small and follows an existing discipline.
