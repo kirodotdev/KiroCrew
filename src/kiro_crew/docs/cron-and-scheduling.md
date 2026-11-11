@@ -136,6 +136,8 @@ A command cron runs under `sh -c` and is vetted when it is added and again each 
 
 The `command` field is capped at 5000 characters. A command cron needs a working POSIX `/bin/sh` that passes the gateway's probe, so it never runs on Windows. For any of these, use a script cron instead: its body is scanned in full.
 
+A command cron runs in the same sandbox as a script body, which hides credential directories such as `~/.aws`, `~/.kube` and an SSO cookie directory from the command and from every process it starts. So a command that reads its credential from a file there fails in a command cron even though it works in your terminal, and a script cron fails the same way. Run that job as an agent cron instead, whose commands run at the `agent.sandbox` [tier](configuration.md#sandbox), or [outside Kiro Crew](#a-long-job-that-must-outlive-the-chat).
+
 For script crons, `message` is available as `ctx.message`. Import the context helpers and flow-control exceptions from `kiro_crew.cron_script`:
 
 ```python
