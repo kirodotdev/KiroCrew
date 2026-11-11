@@ -208,6 +208,10 @@ class HybridRetriever:
         Returns at most ``limit`` ranked rows, plus at most ONE extra trailing
         row -- the keyword leg's protected top hit (see below).
         """
+        # A lone surrogate (a JSON "\ud83d" escape, a query cut mid-emoji)
+        # cannot be bound to SQLite and raised from every leg; swap it for
+        # U+FFFD so the rest of the query still searches.
+        query = query.encode("utf-8", "replace").decode("utf-8")
         kw = self._keyword_search(
             query, limit=limit * 2, source_id=source_id, namespace=namespace, status=status
         )
