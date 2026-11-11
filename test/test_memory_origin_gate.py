@@ -657,3 +657,89 @@ async def test_a_retier_is_left_as_it_is_otherwise(
 ) -> None:
     got = await _learn_update(tmp_path, monkeypatch, mode, messages, session=session)
     assert got == (200, "always")
+
+
+# kirocrew learn add
+
+
+def _cli_learn_add(tmp_path, monkeypatch, mode: str, *, in_agent: bool, name: str):
+    """Run ``kirocrew learn add`` under *mode*; return the stored row, the log and stdout."""
+    import argparse
+
+    from kiro_crew import cli_commands
+    from kiro_crew.cloud import aws
+
+    probes: list[bool] = []
+
+    def _probe() -> bool:
+        probes.append(True)
+        return in_agent
+
+    monkeypatch.setattr(aws, "_in_agent_session", _probe)
+    monkeypatch.setattr(mog._kind_log, "_utcnow", lambda: _T0)
+    cfg = MagicMock()
+    cfg.memory.lesson_origin_gate = mode
+    db = tmp_path / f"cli-{name}.db"
+    args = argparse.Namespace(
+        learn_action="add", rule="Use uv for installs", category="tool", negative="pip"
+    )
+    with (
+        patch.object(
+            cli_commands,
+            "VectorMemoryStore",
+            side_effect=lambda **_: VectorMemoryStore(db_path=db, embedding_dim=4),
+        ),
+        patch.object(cli_commands, "LessonStore", return_value=MagicMock()),
+        patch.object(cli_commands.KiroCrewConfig, "load", return_value=cfg),
+    ):
+        cli_commands._learn(args)
+    reader = VectorMemoryStore(db_path=db, embedding_dim=4)
+    reader.init()
+    try:
+        (row,) = [json.loads(r["value_json"]) for r in reader.get_lessons()]
+        return _stored(reader)["Use uv for installs"], row, _log(reader), probes
+    finally:
+        reader.close()
+
+
+def test_cli_learn_add_from_an_agent_session_is_a_finding_under_enforce(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    stored, row, log, _ = _cli_learn_add(tmp_path, monkeypatch, "enforce", in_agent=True, name="e")
+    assert stored == ("on_topic", mog.LESSON_SOURCE_AGENT_LEARN_ADD)
+    assert not row.get("negative"), "a demoted write carries no NOT-clause"
+    counts = log[mog.COUNTS_PREFIX + _T0.date().isoformat()]
+    assert counts["enforce"][mog.PATH_CLI_LEARN_ADD]["demoted"] == 1
+    assert "Stored as an on_topic finding" in capsys.readouterr().out
+
+
+def test_cli_learn_add_from_an_agent_session_is_counted_under_shadow(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    stored, row, log, _ = _cli_learn_add(tmp_path, monkeypatch, "shadow", in_agent=True, name="s")
+    assert stored == (None, "user_explicit")
+    assert row.get("negative") == "pip"
+    day = _T0.date().isoformat()
+    assert log[mog.COUNTS_PREFIX + day]["shadow"][mog.PATH_CLI_LEARN_ADD]["demoted"] == 1
+    assert [i["path"] for i in log[mog.IDS_PREFIX + day]] == [mog.PATH_CLI_LEARN_ADD]
+    assert "on_topic finding" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "mode, in_agent",
+    [
+        ("off", True),
+        # A person's own terminal carries no agent marker: never gated, never logged.
+        ("shadow", False),
+        ("enforce", False),
+    ],
+)
+def test_cli_learn_add_keeps_user_explicit_otherwise(tmp_path, monkeypatch, mode, in_agent) -> None:
+    stored, row, log, probes = _cli_learn_add(
+        tmp_path, monkeypatch, mode, in_agent=in_agent, name=f"{mode}-{in_agent}"
+    )
+    assert stored == (None, "user_explicit")
+    assert row.get("negative") == "pip"
+    assert log == {}
+    if mode == "off":
+        assert probes == [], "off reads nothing"

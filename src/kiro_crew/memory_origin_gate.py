@@ -27,6 +27,10 @@ never wording or a model guess. Human is an ALLOWLIST, as
   :data:`LESSON_SOURCE_AGENT_LEARN_ADD`, so it never carries ``user_explicit``
   authority.
 
+``kirocrew learn add`` has no chat to read. Run from a shell inside an agent
+session (the markers ``cloud.aws._in_agent_session`` reads), it counts as a
+``learn_add`` no person triggered, even when a person asked the agent to run it:
+the shell cannot tell. Run from a person's own terminal, it is never gated.
 A span that holds a human turn keeps its tiers, even when agent turns sit beside
 it: tracing one lesson to one turn is not deterministic, so a mixed span is a
 known gap. A ``learn_add`` from a session with no live chat (a sub-agent, a
@@ -76,6 +80,8 @@ MODE_ENFORCE: Final = "enforce"
 
 PATH_CONSOLIDATION: Final = "consolidation"
 PATH_LEARN_ADD: Final = "learn_add"
+#: ``kirocrew learn add`` run from a shell inside an agent session.
+PATH_CLI_LEARN_ADD: Final = "cli_learn_add"
 
 #: The ``source`` of a ``learn_add`` an agent-sent or automatic turn triggered,
 #: under ``enforce``. Anything but ``user_explicit`` ranks below a person's write
@@ -271,20 +277,33 @@ def gate_learn_add(
     :data:`LESSON_SOURCE_AGENT_LEARN_ADD`.
     """
     mode = lesson_origin_gate_mode_from(mode)
-    unchanged = LearnAddGate(applies, "user_explicit", OriginGate({}, mode, PATH_LEARN_ADD))
-    if mode == MODE_OFF:
-        return unchanged
-    trigger = triggering_turn(rows)
-    if trigger is None:
+    trigger = None if mode == MODE_OFF else triggering_turn(rows)
+    return gate_learn_add_turn(applies, trigger, mode, rule=rule, repo_scope=repo_scope)
+
+
+def gate_learn_add_turn(
+    applies: str | None,
+    trigger: str | None,
+    mode: str,
+    *,
+    rule: str = "",
+    repo_scope: str | None = None,
+    path: str = PATH_LEARN_ADD,
+) -> LearnAddGate:
+    """:func:`gate_learn_add` for a caller that already knows the *trigger* turn class.
+
+    ``None`` (no triggering turn) leaves the write as submitted, as does ``off``.
+    """
+    mode = lesson_origin_gate_mode_from(mode)
+    unchanged = LearnAddGate(applies, "user_explicit", OriginGate({}, mode, path))
+    if mode == MODE_OFF or trigger is None:
         return unchanged
     item = {"rule": rule, "applies": applies, "repo_scope": repo_scope}
     standing = _is_standing(item)
     no_human = trigger != TURN_HUMAN
     demoted = int(standing and no_human)
     key = _candidate_key(item) if demoted else None
-    gate = OriginGate(
-        {}, mode, PATH_LEARN_ADD, 1, int(standing), no_human, demoted, (key,) if key else ()
-    )
+    gate = OriginGate({}, mode, path, 1, int(standing), no_human, demoted, (key,) if key else ())
     if mode == MODE_ENFORCE and no_human:
         return LearnAddGate(LESSON_APPLIES_ON_TOPIC, LESSON_SOURCE_AGENT_LEARN_ADD, gate, True)
     return LearnAddGate(applies, "user_explicit", gate)

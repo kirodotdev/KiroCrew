@@ -346,8 +346,8 @@ standing rule applies whatever the topic.
 | Lesson prompt states P1; examples show one finding and one standing rule | P1 | both stores |
 | Kind routing moves to `enforce` for facts | P1 | both stores; its own flag and RFC already exist |
 
-A person's own dashboard and CLI writes are unchanged. Existing rows are
-unchanged.
+A person's own dashboard writes, and CLI writes from a person's own terminal, are
+unchanged. Existing rows are unchanged.
 
 **Identify.**
 
@@ -502,13 +502,19 @@ shadow answers the C2 agent-text question with live counts. Its rules:
   result branches to the two write paths. With no human turn, every rule-tier
   lesson (`always` or untagged) is stored `on_topic`.
 - **`learn_add`.** Only the agent's own writes (the MCP tool's internal call)
-  are read; a person's dashboard or CLI write is the person. The triggering
+  are read; a person's dashboard write is the person. The triggering
   turn is the latest input row in the caller's chat. When it is not human,
   `enforce` stores the lesson `on_topic` under source `agent_learn_add`, which
   ranks below `user_explicit` in every authority check. The same check guards
   the agent's `learn_update`: under `enforce`, a re-tier into the standing tier
   from a turn that is not human is refused, so a demoted lesson cannot be moved
   back to `always`.
+- **`kirocrew learn add`.** The shell command has no chat to read. Run inside an
+  agent session (the spawn and sandbox markers `cloud.aws._in_agent_session`
+  already reads to refuse agent cloud actions), it is gated as a `learn_add` no
+  person triggered, fail-closed, and logged under path `cli_learn_add` in the
+  same log. Run from a person's own terminal, it carries no marker and is never
+  gated. `off` reads no marker.
 - **Modes.** `off`: nothing is read; prompt and writes are byte-identical.
   `shadow`: writes as `off` and logs. `enforce`: applies the demotion. No mode
   changes the prompt or a stored row.
@@ -520,7 +526,11 @@ shadow answers the C2 agent-text question with live counts. Its rules:
   reads as automatic. A messaging-channel session (Discord, Telegram, Slack and
   the rest) is not gated at all: most channel transports write the person's
   row without `meta.human`, so stamping it there comes first. A person's `learn_add` made after a note the gateway
-  wrote inside the turn is stored as a finding (the fail-closed cost). The JSONL fallback store has no `source` field, so
+  wrote inside the turn is stored as a finding (the fail-closed cost). A
+  `kirocrew learn add` an agent runs because a person asked it to is stored as a
+  finding too: the shell cannot see the turn, so the `learn_add` tool is the path
+  that keeps a person's ask. An agent that scrubs the environment markers on a
+  host without the agents cgroup reads as a terminal. The JSONL fallback store has no `source` field, so
   there the gate changes the tier only.
 
 R1 comes next because it fixes S2 on existing stores without rewriting a row.
