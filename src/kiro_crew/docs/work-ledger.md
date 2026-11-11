@@ -191,7 +191,10 @@ the conductor's own writes do not.
 
 **`wake_at` says a `progress` report is a wait until a known time.** The item is
 not flagged `stale` before that time, so the Ultra Mode sidebar does not call the
-worker stalled; once it passes, the staleness window runs from it. A `wake_at`
+worker stalled; once it passes, the staleness window runs from it. The exception is
+a worker whose own loop is active but cannot fire (held on an unanswered approval,
+or past its budget or cycle cap): its `wake_at` is ignored and the normal window
+runs, because the wait it declared leans on a loop that wakes nobody. A `wake_at`
 that does not parse with a zone, is in the past or is more than a day ahead is
 refused (`wake_at_invalid`, `wake_at_in_past`, `wake_at_too_far`), and so is one
 on any other status (`wake_at_requires_progress`): a longer wait is a `blocked`

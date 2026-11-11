@@ -134,6 +134,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _remote_row_fields,
         _row_with_flags,
         _slot_closed,
+        _slot_loop_held,
         _slot_looping,
         _slot_open,
         _slot_running,

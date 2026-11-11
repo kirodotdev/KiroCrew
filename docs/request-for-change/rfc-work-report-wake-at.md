@@ -92,6 +92,8 @@ A new `wait_brief` in `src/kiro_crew/ledger_wake.py`, next to `stall_brief`, wri
 
 `is_stale` in `src/kiro_crew/work_ledger_rules.py` returns false for an item whose `wake_at` is still in the future. The worker said when it would be back, so silence before then is expected. Once `wake_at` passes, the quiet window is measured from the later of `last_report_at` and `wake_at`. So the `wait_due` wake comes first, and if the conductor's nudge does not get the worker moving, the stall wake still fires one window later. This uses the same exemption shape as `worker_looping`.
 
+Amended 2026-11-11: the exemption does not hold while the worker's session has an ACTIVE loop that cannot fire (held on an unanswered approval, or past its runtime budget or cycle cap; `ledger_wake.worker_loop_held`). Such a report leans on a loop that wakes nobody, so `wake_at` is ignored and the normal window runs. A worker with no loop, or a stopped one, keeps the exemption: its wait is the plain time wait this section describes, and `wait_due` ends it. On 2026-11-10 a worker's `wake_at` 7.5 h ahead hid a dead test queue for about 5 h while its loop sat held.
+
 ### 3.5 Conductor and worker text
 
 - `PATROL_MESSAGE` in `conductor_patrol.py`: "Ignore progress" becomes "Ignore progress, except a `wait_due` wake: read that item, then session_send its worker to continue."

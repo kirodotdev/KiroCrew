@@ -1295,6 +1295,12 @@ class AutoNudgeService:
 
         return ledger_wake.worker_looping(self, session_key)
 
+    def _worker_loop_held(self, session_key: str) -> bool:
+        """Whether *session_key*'s session holds an active loop that cannot fire."""
+        from kiro_crew import ledger_wake
+
+        return ledger_wake.worker_loop_held(self, session_key)
+
     def _observes_work_ledger(self, loop: NudgeLoop) -> bool:
         """Whether *loop*'s monitor is a work-ledger watch THIS gateway may arm.
 

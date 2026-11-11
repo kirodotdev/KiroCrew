@@ -230,16 +230,21 @@ def _row_with_flags(
     """
     row = item.to_dict()
     row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-    running, closed, looping = work_ledger.item_liveness(
+    running, closed, looping, held = work_ledger.item_liveness(
         board,
         item,
         running=lambda k: _slot_running(state, k),
         closed=lambda k: _slot_closed(state, k),
         looping=_slot_looping,
+        held=_slot_loop_held,
         remote=remote_live if item.worker_instance_id else None,
     )
     row["stale"] = work_ledger.is_stale(
-        item, worker_running=running, worker_closed=closed, worker_looping=looping
+        item,
+        worker_running=running,
+        worker_closed=closed,
+        worker_looping=looping,
+        worker_loop_held=held,
     )
     row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
     row["unpatrolled"] = item.state == "open" and not patrolled
@@ -422,6 +427,13 @@ def _slot_looping(key: str) -> bool:
     from kiro_crew.autonudge import get_instance
 
     return ledger_wake.worker_looping(get_instance(), key)
+
+
+def _slot_loop_held(key: str) -> bool:
+    """Whether *key*'s session holds an active loop that cannot fire, as the wake gate reads it."""
+    from kiro_crew.autonudge import get_instance
+
+    return ledger_wake.worker_loop_held(get_instance(), key)
 
 
 def worker_holds_open_item(slot_key: str) -> bool:
