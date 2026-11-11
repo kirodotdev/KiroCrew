@@ -1599,9 +1599,18 @@ the Kiro Crew home, which lives outside the install directory. Each signed Windo
 installer must pass an install, create-sentinel-under-`~/.kiro/crew`,
 uninstall, verify-sentinel smoke test before release. A separate Kiro-family
 uninstaller could remove the parent `~/.kiro/` directory; it must exclude
-`~/.kiro/crew` or prompt explicitly. That release-blocking cross-product
-sign-off is tracked in
-[issue #355](https://github.com/kirodotdev/KiroCrew/issues/355).
+`~/.kiro/crew` or prompt explicitly. Kiro Crew cannot enforce that on another
+product, so it is a documented accepted risk, not a release gate
+(UNINSTALLER-EXCLUDE-CREW in
+[config](../system-specs/modules/config.md#data-home-location)). To keep your
+data home out of reach of such a removal, set `KIROCREW_HOME` to a folder
+outside `~/.kiro/` (Kiro Crew starts a new data home there; it does not move an
+existing one). That does not move your crewmates' agent files in
+`~/.kiro/mates` (see [Folders beside the data home](#folders-beside-the-data-home)),
+so back that folder up separately. To keep your snapshots out of its reach
+too, set `snapshot_dir` in `config.json` to a folder outside `~/.kiro/`: by
+default `kirocrew snapshot` writes into the data home's `snapshots/` folder. A
+snapshot is not a full backup; see [Removing user data](#removing-user-data).
 
 ## Next steps
 
