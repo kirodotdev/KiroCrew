@@ -55,16 +55,19 @@ class _GateTally:
     sequence, because status and history are per-run, not per-agent.
 
     Only an unconditional security block counts as a refusal here. A governance
-    denial and an unattended-approval timeout also arrive unapproved, but they
-    describe the policy state or an absent approver rather than a defect in the
-    job — and a job's failure counter drives auto-pause, which is durable.
+    denial, a spec hook's refusal and a rejected or timed-out approval also
+    arrive unapproved, but they describe the policy state or an absent approver
+    rather than a defect in the job — and a job's failure counter drives
+    auto-pause, which is durable. Each such call is kept with its reason in
+    ``unresolved_calls``, so a run in which none of them ran can name them.
 
     A refusal is reported whether or not other calls got through. The prose
     a run returns is the model's account of what it did, and a model whose
     final write was refused still reports the write as done: the refused
     call's work simply never happened, and the only record of it was the SEL
     audit row. ``all_blocked`` decides the FAILURE budget; ``partially_blocked``
-    decides whether the run's status and its delivery name the refusal.
+    and ``none_approved`` decide whether the run's status and its delivery name
+    the refusal.
     """
 
     def __init__(self) -> None:
@@ -74,6 +77,8 @@ class _GateTally:
         self.refused_rules: list[str] = []
         self.approved = 0
         self.unresolved = 0
+        # (title, first reason line) of each unresolved call, in order.
+        self.unresolved_calls: list[tuple[str, str]] = []
         # An approved call whose bare tool name is ``send_message``. Titles
         # arrive as ``Running: @server/send_message`` (kiro-cli) or
         # ``mcp__server__send_message`` (ACP); ``_bare_tool_name`` strips
@@ -92,6 +97,7 @@ class _GateTally:
             self.refused_rules.append((reason or "").strip().split("\n", 1)[0].strip())
         else:
             self.unresolved += 1
+            self.unresolved_calls.append((title, (reason or "").strip().split("\n", 1)[0].strip()))
 
     def _empty_reply_text(self, count: str) -> str:
         """The empty-reply shape this tally names, with *count* in the count slot.
@@ -158,6 +164,15 @@ class _GateTally:
         cannot work and spends nothing from the failure budget."""
         return bool(self.refused) and not self.all_blocked
 
+    @property
+    def none_approved(self) -> bool:
+        """No call was approved and none was security-blocked, but at least
+        one was refused another way (a governance denial, a spec hook's
+        refusal, a rejected or timed-out approval). Nothing ran, so the run is
+        reported, but a policy state or an absent approver is not evidence of
+        a job that cannot work, so it spends nothing from the failure budget."""
+        return bool(self.unresolved) and self.approved == 0 and not self.refused
+
     def refusal_summary(self) -> str:
         """One redacted, capped line naming what the gate refused.
 
@@ -178,13 +193,20 @@ class _GateTally:
 
         Each named call carries the rule that refused it, in parentheses, when
         the gate reported one: a bare "blocked" leaves the reader unable to
-        tell which rule fired or whether it was the right one.
+        tell which rule fired or whether it was the right one. A run in which
+        no call was approved (``none_approved``) names its unresolved calls
+        the same way, with "not approved" for a rejected or timed-out approval,
+        which records no reason.
         """
 
         def _named(title: str, rule: str) -> str:
             name = title or "<untitled tool>"
             return f"{name} ({rule})" if rule else name
 
+        if self.none_approved:
+            named = ", ".join(_named(t, r or "not approved") for t, r in self.unresolved_calls[:3])
+            head = f"none of {self.unresolved} tool call(s) ran, all refused or not approved: "
+            return display_safe(head + named)[:_CRON_FAILURE_DETAIL_CAP]
         rules = self.refused_rules + [""] * (len(self.refused) - len(self.refused_rules))
         named = ", ".join(_named(t, r) for t, r in zip(self.refused[:3], rules[:3], strict=True))
         if self.all_blocked:
@@ -201,11 +223,13 @@ def _annotate_partial_block(result_text: str, tally: _GateTally) -> str:
     The result is what every delivery leg (dashboard bell and slot, channel,
     Slack) shows and what the dedup hash is taken over, so one prefix here is
     what puts the refused call in front of the user beside the prose that may
-    claim the work was done. A fully blocked run is not annotated: its verdict
-    is a failure alert in its own right, and a tool-free or clean run has
-    nothing to name.
+    claim the work was done. A run in which no call was approved and none was
+    security-blocked (``none_approved``) is prefixed the same way, naming its
+    unresolved calls. A fully blocked run is not annotated: its verdict is a
+    failure alert in its own right, and a tool-free or clean run has nothing
+    to name.
     """
-    if not tally.partially_blocked:
+    if not (tally.partially_blocked or tally.none_approved):
         return result_text
     return f"⛔ {tally.refusal_summary()} — that work did not happen.\n\n{result_text}"
 
