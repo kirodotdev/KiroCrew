@@ -905,7 +905,7 @@ def test_an_exception_outside_the_slot_work_still_sends_the_outcome(
     naming every slot it never recorded, and is logged through
     ``_log_task_exception``."""
 
-    async def resume_one_then_fail(_state, candidates, _claims, outcome):
+    async def resume_one_then_fail(_state, candidates, _claims, outcome, **_kwargs):
         outcome["resumed"].append(candidates[0][0])
         raise OSError("boom")
 
@@ -1292,6 +1292,136 @@ def test_a_planned_restart_resumes_only_the_chats_it_recorded_once(
     dispatched.started.assert_awaited_once()
 
 
+def _lineage_from_these_slots(monkeypatch) -> None:
+    """The Crew Mode lineage from the test's own slots, as the shared count
+    fixture builds it, so no root a test sees is remembered past it."""
+    from kiro_crew import crew_mode
+
+    monkeypatch.setattr(crew_mode, "_known_roots", set())
+    monkeypatch.setattr(crew_mode, "_known_mate_roots", set())
+    monkeypatch.setattr(crew_mode, "persisted_parents", dict)
+    monkeypatch.setattr(crew_mode, "_live_cfg", lambda: None)
+
+
+def test_a_planned_restart_resumes_a_bot_thread_it_recorded_once(tmp_path, dispatched, monkeypatch):
+    """A Bot thread (slot mode ``member``) resumes with the chat page's sessions.
+
+    The Resume-all button still counts the chat page's sessions only: a Bot
+    thread has a Resume of its own on the Bot's page.
+    """
+    _lineage_from_these_slots(monkeypatch)
+    state = _make_state(tmp_path)
+    _interrupted(state.get_or_create_slot("chat"))
+    dm = state.get_or_create_slot("dm")
+    _interrupted(dm)
+    dm.mode = "member"
+    path = _record(monkeypatch, tmp_path, ["chat", "dm"])
+
+    assert [name for name, _ in mod.collect_interrupted_idle(state, crew_mode=True)] == ["chat"]
+    ((_event, outcome),) = [c.args for c in _boot(state).call_args_list]
+
+    assert sorted(outcome["resumed"]) == ["chat", "dm"]
+    assert [e["content"] for e in dm._queue] == [_MANUAL_RESUME_MSG]
+    assert not path.exists()
+    assert dispatched.started.await_count == 2
+    _boot(state)
+    assert dispatched.started.await_count == 2
+
+
+def test_a_planned_restart_resumes_no_chat_as_a_turn_the_person_sent(
+    tmp_path, dispatched, monkeypatch
+):
+    """The gateway resumes the recorded chats, not a person: the cut turn may have
+    been a check-in, a cron or a loop wake, and the record is a data-home file.
+    So no resumed turn carries the person's origin, a Bot thread's or a chat
+    page session's."""
+    _lineage_from_these_slots(monkeypatch)
+    state = _make_state(tmp_path)
+    chat = state.get_or_create_slot("chat")
+    _interrupted(chat)
+    dm = state.get_or_create_slot("dm")
+    _interrupted(dm)
+    dm.mode = "member"
+    _record(monkeypatch, tmp_path, ["chat", "dm"])
+
+    _boot(state)
+
+    for slot in (chat, dm):
+        (entry,) = list(slot._queue)
+        assert entry["content"] == _MANUAL_RESUME_MSG
+        assert entry.get("_directive_user_origin") is not True, slot.key
+
+
+def test_a_planned_restart_resumes_a_bot_threads_workers_but_not_a_listed_roots(
+    tmp_path, dispatched, monkeypatch
+):
+    """A session a Bot thread dispatched resumes beside the Bot thread. A Crew
+    Mode worker whose root is listed is still left to its conductor."""
+    _lineage_from_these_slots(monkeypatch)
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("dm").mode = "member"
+    state.get_or_create_slot("bot-worker")._created_by = "dm"
+    state.get_or_create_slot("conductor").agent = "kirocrew-conductor"
+    crew_worker = state.get_or_create_slot("crew-worker")
+    crew_worker._created_by = "conductor"
+    names = ["dm", "bot-worker", "conductor", "crew-worker"]
+    for name in names:
+        _interrupted(state._slots[name])
+    _record(monkeypatch, tmp_path, names)
+
+    ((_event, outcome),) = [c.args for c in _boot(state).call_args_list]
+
+    assert sorted(outcome["resumed"]) == ["bot-worker", "conductor", "dm"]
+    assert list(crew_worker._queue) == []
+
+
+def _approval_pending(state, slot) -> None:
+    pending = MagicMock()
+    pending.done.return_value = False
+    slot._approval_futures = {"tool-1": pending}
+
+
+def _queued_now(state, slot) -> None:
+    slot.queue_append("a card queued in this process")
+
+
+def _children_running(state, slot) -> None:
+    key = ch.effective_session_key(slot)
+    state.subagents = SimpleNamespace(running_agents_for=lambda k: ["child"] if k == key else [])
+
+
+@pytest.mark.parametrize(
+    ("hold", "skipped"),
+    [
+        (_approval_pending, [{"slot": "dm", "code": "slot_approval_pending"}]),
+        (_queued_now, [{"slot": "dm", "code": "slot_queue_pending"}]),
+        # Never a candidate, so no run starts and no frame is sent.
+        (_children_running, None),
+    ],
+    ids=["approval", "queue", "sub-agents"],
+)
+def test_a_recorded_bot_thread_is_refused_as_any_chat_is(
+    hold, skipped, tmp_path, dispatched, monkeypatch
+):
+    _lineage_from_these_slots(monkeypatch)
+    state = _make_state(tmp_path)
+    dm = state.get_or_create_slot("dm")
+    _interrupted(dm)
+    dm.mode = "member"
+    hold(state, dm)
+    _record(monkeypatch, tmp_path, ["dm"])
+
+    frames = [c.args for c in _boot(state).call_args_list]
+
+    dispatched.started.assert_not_awaited()
+    if skipped is None:
+        assert frames == []
+    else:
+        ((_event, outcome),) = frames
+        assert outcome["resumed"] == []
+        assert outcome["skipped"] == skipped
+
+
 def test_a_record_left_by_a_restart_that_never_happened_resumes_nothing(
     tmp_path, dispatched, monkeypatch
 ):
@@ -1326,10 +1456,12 @@ def test_a_planned_restart_with_no_running_chat_clears_an_earlier_record(tmp_pat
     assert not path.exists()
 
 
-def test_a_boot_with_no_record_resumes_nothing(tmp_path, dispatched, monkeypatch):
+@pytest.mark.parametrize("mode", ["", "member"], ids=["chat", "bot-thread"])
+def test_a_boot_with_no_record_resumes_nothing(mode, tmp_path, dispatched, monkeypatch):
     """A crash writes no record: its chats keep Resume and wait for the owner."""
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("crashed")
+    slot.mode = mode
     _interrupted(slot)
     path = _record(monkeypatch, tmp_path, None)
 
