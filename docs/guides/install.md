@@ -334,9 +334,11 @@ checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
 the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
 when `origin` has none of them. After the reset the update rebuilds the
 dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
-`logs/frontend-build.log` in the data home. If the build fails, the update still
-installs the new revision's dependencies, then stops before restarting, names
-that file, and the gateway keeps running its current version: a restart would
+`logs/frontend-build.log` in the data home; on Windows no log is written, so
+that output is not kept. If the build fails, the update still installs the new
+revision's dependencies, then stops before restarting, names that file (or, with
+no log, says so: run `npm ci` and `npm run build` in `website/` to see the
+output), and the gateway keeps running its current version: a restart would
 pair the new backend with the previous dashboard bundle. The checkout already
 holds the new revision, so a second update reports it up to date: fix the cause
 the log names, then run the frontend and stage steps below before restarting. A clone with no `website/` or no `npm` skips the build and keeps its

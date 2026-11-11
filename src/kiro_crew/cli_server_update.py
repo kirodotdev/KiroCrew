@@ -615,7 +615,8 @@ def _update(force: bool = False) -> None:
         sys.exit(1)
     if build.outcome == "failed":
         print(f"  ❌ {build.failure_message()}")
-        print("      Do not restart the gateway until the dashboard builds; see the log above.")
+        see_log = "; see the log above" if build.tail else ""
+        print(f"      Do not restart the gateway until the dashboard builds{see_log}.")
         sys.exit(1)
 
     print("\n✅ Kiro Crew updated!")

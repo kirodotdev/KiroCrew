@@ -1878,7 +1878,11 @@ One flag is a MODE rather than a check and short-circuits before the list above 
    dependencies must still land or any later restart dies at import. After the
    install the update prints the failure, the log path and the log's last lines
    (redacted), and exits 1 without the restart hint, because a restart would pair
-   the new backend with the stale bundle. `POST /api/update` and the gateway's
+   the new backend with the stale bundle. Where no log is opened (no pinned walk,
+   so always on Windows, or a refused log destination) the output is discarded;
+   the failure then says no build log was written and to run `npm ci` and
+   `npm run build` in `website/` to see it, and the CLI's "see the log above"
+   prints only when a tail was printed. `POST /api/update` and the gateway's
    auto-apply take `build_frontend_async()` and do the same: install, then refuse
    the restart (`update_ownership.refuse_restart(..., import_probe_clears=False)`,
    an `error` progress card).
