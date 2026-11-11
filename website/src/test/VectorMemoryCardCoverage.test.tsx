@@ -1508,3 +1508,23 @@ describe('embedding setup UX regressions', () => {
     else expect(bar).toHaveAttribute('aria-valuenow', value)
   })
 })
+
+describe('VectorMemoryCard — cell text', () => {
+  beforeEach(() => { vi.clearAllMocks(); setupApi() })
+
+  it('shows semantic, episodic and audit text with its own characters, markup left inert', async () => {
+    const user = userEvent.setup()
+    setupApi({
+      semantic: { entries: [{ key: 'k<b>&1', value_json: '"v >> & <i>x</i>"', confidence: 1 }] },
+      episodic: { entries: [{ id: 'x1', text: 'ep >> & <i>y</i>', tags: [], importance: 0.9 }] },
+      events: { events: [{ event_type: 'memory_write', memory_key: 'a<b>&k', new_value: 'au >> & <i>z</i>' }] },
+    })
+    renderWithProviders(<VectorMemoryCard />)
+    for (const t of ['k<b>&1', 'v >> & <i>x</i>']) expect((await screen.findByText(t)).querySelector('b,i')).toBeNull()
+    await user.click(tab(/^Episodic$/))
+    expect((await screen.findByText('ep >> & <i>y</i>')).querySelector('i')).toBeNull()
+    await user.click(tab(/^Audit$/))
+    expect((await screen.findByText('a<b>&k')).querySelector('b')).toBeNull()
+    expect(screen.getByText('au >> & <i>z</i>').querySelector('i')).toBeNull()
+  })
+})

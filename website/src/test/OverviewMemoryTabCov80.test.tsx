@@ -1314,3 +1314,14 @@ describe('MemoryTab — manual consolidation', () => {
     expect(screen.queryByText(/Summarized/)).toBeNull()
   })
 })
+
+describe('MemoryTab — lesson cell text', () => {
+  it('shows a lesson rule and an unlabelled source with their own characters, markup left inert', async () => {
+    api.lessons.mockResolvedValue({
+      lessons: [{ rule: 'append >> & <b>wait</b>', category: 'tool', ts: '2026-01-04T00:00:00Z', repo_scope: '', source: 'x<i>&y' }],
+    })
+    renderWithProviders(<MemoryTab refreshTrigger={0} />)
+    expect((await screen.findByText('append >> & <b>wait</b>')).querySelector('b')).toBeNull()
+    expect(screen.getByText('x<i>&y').querySelector('i')).toBeNull()
+  })
+})

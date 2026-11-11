@@ -8,7 +8,6 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { memoryQueryRetry } from './MemoryStoreCard'
 import { queryReadFailed } from '../../utils/queryReadFailed'
-import { esc } from '../../api/helpers'
 import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, semanticWriteErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
 
 import { i18nT } from '../../i18n/t'
@@ -133,7 +132,7 @@ export function parseTags(raw: unknown): string[] {
 
 // Cap how many semantic rows we render at once. The store can hold thousands of
 // entries (vector-only mode); rendering them all synchronously — each row does a
-// JSON.parse + JSON.stringify(…, null, 2) + esc() — froze the Settings page for
+// JSON.parse + JSON.stringify(…, null, 2) — froze the Settings page for
 // 10-20s on open. The full set stays in memory for key-suggestion
 // dedup; only the rendered window is bounded. Filter to reach entries past the cap.
 export const SEMANTIC_RENDER_CAP = 100
@@ -670,7 +669,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             const isEditing = editKey === e.key
             return (
               <tr key={e.key} className="hover:bg-bg-hover transition-colors group">
-                <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-accent/80">{esc(e.key)}</td>
+                <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-accent/80">{e.key}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm cursor-pointer max-w-[400px]" onClick={() => { if (!isEditing) { setEditKey(e.key); setEditVal(valStr) } }}>
                   {isEditing ? (
                     // Presentational wrapper: stops the parent cell's edit-trigger
@@ -695,7 +694,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                       aria-label={i18nT('pages.overview.vectorMemoryCard.edit_value_label', { key: e.key })}
                       aria-describedby={`${semValueIdPrefix}-${i}`}
                       className="flex w-full justify-start text-left p-0 border-none rounded-none text-sm hover:bg-transparent">
-                      <span id={`${semValueIdPrefix}-${i}`} className="break-words whitespace-pre-wrap group-hover:underline group-hover:decoration-dotted group-hover:underline-offset-2">{esc(valStr)}</span>
+                      <span id={`${semValueIdPrefix}-${i}`} className="break-words whitespace-pre-wrap group-hover:underline group-hover:decoration-dotted group-hover:underline-offset-2">{valStr}</span>
                     </Btn>
                   )}
                 </td>
@@ -763,7 +762,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             const tags = parseTags(e.tags);
             return (
               <tr key={e.id} className="hover:bg-bg-hover transition-colors">
-                <td className="px-2.5 py-2 border-b border-border text-sm max-w-[450px]"><span className="break-words whitespace-pre-wrap">{esc(e.text)}</span></td>
+                <td className="px-2.5 py-2 border-b border-border text-sm max-w-[450px]"><span className="break-words whitespace-pre-wrap">{e.text}</span></td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><div className="flex gap-1 flex-wrap">{tags.map((t: string) => <Badge key={t} variant="ok">{t}</Badge>)}</div></td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{confidenceBadge(e.importance)}</td>
                 {epRequest.query && <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-[12px]">{e.score != null ? e.score.toFixed(3) : '—'}</td>}
@@ -810,8 +809,8 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
               <td className="px-2.5 py-2 border-b border-border text-sm">
                 <Badge variant={e.event_type.includes('block') || e.event_type.includes('reject') ? 'err' : e.event_type.includes('skip') ? 'warn' : 'ok'}>{e.event_type}</Badge>
               </td>
-              <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-[12px]">{esc(e.memory_type === 'episodic' ? `episodic` : (e.memory_key || e.memory_type || ''))}</td>
-              <td className="px-2.5 py-2 border-b border-border text-sm max-w-[350px]"><span className="break-words whitespace-pre-wrap">{esc(e.new_value || e.old_value || '')}</span></td>
+              <td className="px-2.5 py-2 border-b border-border text-sm font-mono text-[12px]">{e.memory_type === 'episodic' ? 'episodic' : (e.memory_key || e.memory_type || '')}</td>
+              <td className="px-2.5 py-2 border-b border-border text-sm max-w-[350px]"><span className="break-words whitespace-pre-wrap">{e.new_value || e.old_value || ''}</span></td>
               <td className="px-2.5 py-2 border-b border-border text-sm text-muted whitespace-nowrap">{e.created_at ? fmtDateTimeNumeric(e.created_at.replace(' ', 'T') + (e.created_at.includes('+') || e.created_at.includes('Z') ? '' : 'Z')) : '—'}</td>
             </tr>
           ))}
