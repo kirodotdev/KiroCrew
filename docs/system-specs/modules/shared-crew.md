@@ -1385,10 +1385,13 @@ Nothing else the owner set receives reaches a collaborator socket. `GET /api/sha
 
 Message attribution. The session's creator is its default owner, shown on the
 session row in the list (`SessionCreatorByline`). In the transcript a user message
-the viewer wrote carries no extra label; a message anyone else wrote, the session's
-creator included, carries the sender's name (`MessageByline`,
-`sharedCrewUi.bylineFor`), so a right-aligned message without a name is always the
-reader's own. Until the viewer read lands, the session's recorded creator stands in
+the viewer wrote carries no extra label and keeps the filled bubble; a message
+anyone else wrote, the session's creator included, is drawn in an outlined bubble
+(`OtherSenderBubble`) and carries the sender's name (`MessageByline`,
+`sharedCrewUi.bylineFor`), so a filled message without a name is always the
+reader's own. The name is shown once per run of one person's consecutive messages
+(`sharedCrewUi.continuesAuthorRun`): a different author, a steer, or any drawn row
+between them, such as an agent reply, starts a new run. Until the viewer read lands, the session's recorded creator stands in
 for the viewer (`sharedCrewUi.bylineSelfId`); with neither known nothing is
 labelled. A single-operator transcript is unchanged, and a personal Crew, one with
 the preview off or one nobody else has joined shows no bylines at all. An Unknown author reads as Unknown.

@@ -30,6 +30,7 @@ import { type FileChangeEntry } from '../components/FileChangeChips'
 import { FileCard } from '../components/FileCard'
 import { parseFileRecord } from '../lib/fileRecord'
 import UserMessage from '../pages/chat/UserMessage'
+import { continuesAuthorRun } from '../api/sharedCrewUi'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
@@ -704,6 +705,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
           timestamp={formatTs(m.ts)}
           timestampTitle={fmtMessageTimeFull(m.ts)}
           renderContent={(c, mt) => renderUserContent({ content: c, meta: mt, onFileOpen: ctx.onFileOpen, onFolderOpen: ctx.onFolderOpen })}
+          continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
           onReplyInThread={replyInThreadFor(m, ctx)}
           onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
         />

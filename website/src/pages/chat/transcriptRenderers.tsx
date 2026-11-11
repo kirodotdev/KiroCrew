@@ -58,6 +58,7 @@ import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
 import { isModelUnavailable } from '../../lib/modelUnavailable'
 import UserMessage from './UserMessage'
+import { continuesAuthorRun } from '../../api/sharedCrewUi'
 import SessionMessageCard from './SessionMessageCard'
 import { isSessionSendTool, parseSessionSend } from './sessionRelay'
 import { i18nT } from '../../i18n/t'
@@ -917,6 +918,7 @@ export function createTranscriptRenderers(
                 // (#17839); a host that hides the steer badge without a
                 // crewmate keeps the neutral surface.
                 tone={crewmate ? 'accent' : 'default'}
+                continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
               />
