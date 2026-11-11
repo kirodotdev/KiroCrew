@@ -4449,7 +4449,8 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   `require_policy_signature` / `trust_keys` / `trust_public_keys`, and
   `read_policy_trust_root` (the side-effect-free trust-root reader).
 - `platform/update_governance.py` — the shared update seam (`resolve_remote_url`,
-  `git_command_env`, `update_blocked_reason`, `update_required`, `min_version`) called by
+  `git_command_env`, `update_blocked_reason`, `update_required`, `min_version`,
+  `manual_check_operator_transport`) called by
   the update handler owners (`dashboard/handlers/updates_verdict.py`, `updates_check.py`,
   `updates_apply.py`), `cli_server_update.py` and the gateway's update owners
   (`slack/gateway_runtime/update_schedule.py`, `slack/gateway_runtime/update_apply.py`).
