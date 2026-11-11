@@ -353,7 +353,13 @@ async def _snapshot_process_tree(self: AcpClient) -> None:
 
     Merges with any early snapshot taken in _spawn().  MCP servers
     (the internal MCP server, node) may not exist until after _initialize_session().
+
+    A no-op where the walk cannot see a descendant
+    (``runtime_process_tree.walk_observes_descendants``): there is nothing to
+    record, and waiting for the retry below could not change that.
     """
+    if not runtime_process_tree.walk_observes_descendants():
+        return
     _loop = asyncio.get_running_loop()
     descendants = await _loop.run_in_executor(
         subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
