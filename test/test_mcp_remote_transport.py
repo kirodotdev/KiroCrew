@@ -138,7 +138,7 @@ class TestRewriter:
     def test_a_listed_remote_entry_passes_through_unwrapped(self, tmp_path: Path) -> None:
         """Opting a remote entry in leaves it as declared; a stdio one is still wrapped."""
         servers = {**REMOTE_WITH_COMMAND, "local-mcp": {"command": sys.executable}}
-        spec = {"name": "alpha", "mcpServers": servers}
+        spec = {"name": "alpha", "tools": ["*"], "mcpServers": servers}
 
         new_spec, wrapped = self._rewrite(spec, tmp_path, stub_servers=frozenset(servers))
 
@@ -154,7 +154,7 @@ class TestRewriter:
         assert _injectable_settings_servers(settings, listed) == {}
 
         new_spec, wrapped = self._rewrite(
-            {"name": "alpha", "mcpServers": {}},
+            {"name": "alpha", "tools": ["*"], "mcpServers": {}},
             tmp_path,
             stub_servers=listed,
             inject_servers=dict(REMOTE_WITH_COMMAND),
@@ -168,7 +168,7 @@ class TestRewriter:
             "odd-type": {"command": "http", "type": ["http"], "url": URL},
             "local-mcp": {"command": sys.executable},
         }
-        spec = {"name": "alpha", "mcpServers": servers}
+        spec = {"name": "alpha", "tools": ["*"], "mcpServers": servers}
 
         new_spec, wrapped = self._rewrite(spec, tmp_path, stub_servers=frozenset(servers))
 
