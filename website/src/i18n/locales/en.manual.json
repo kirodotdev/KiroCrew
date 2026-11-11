@@ -216,7 +216,7 @@
     "hide_full_changelog": "▾ Hide Full Changelog",
     "i_d_like_to_request_a_feature": "I’d like to request a feature!",
     "iam_identity_center": "IAM Identity Center",
-    "kiro_credit_usage_signin_required": "Kiro account & credits — no live Kiro sign-in could be read; sign in again to restore it",
+    "kiro_credit_usage_signin_required": "Kiro account & credits — no active Kiro sign-in; sign in to see your credits",
     "kiro_credit_usage_unavailable": "Kiro account & credits — unavailable",
     "memory_unavailable": "Memory: unavailable",
     "n_more_one": "{{count}} more",
@@ -1881,6 +1881,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
+      "credit_usage_sign_in_to_see": "No active Kiro sign-in. Sign in to see your account and credits.",
+      "credit_usage_sign_in_lapsed": "Your Kiro sign-in is no longer valid, so your account and credits can’t be shown. Sign in again to see them.",
+      "sign_in_in_settings": "Sign in to Kiro in Settings",
       "balance_checked_at": "Checked at {{time}}",
       "forecast_lasts": "At this cycle's pace, your credits should last until the reset.",
       "forecast_runs_out": "At this cycle's pace, you'll run out around {{date}}, before the reset.",

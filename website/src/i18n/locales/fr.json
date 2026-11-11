@@ -244,7 +244,7 @@
     "k_search_for_anything": "⌘K — Rechercher n'importe quoi…",
     "kiro_credit_usage_checking": "Compte et crédits Kiro — vérification…",
     "kiro_credit_usage_checking_2": "Compte et crédits Kiro — vérification",
-    "kiro_credit_usage_signin_required": "Compte et crédits Kiro — aucune connexion Kiro active n’a pu être lue ; reconnecte-toi",
+    "kiro_credit_usage_signin_required": "Compte et crédits Kiro — aucune connexion Kiro active ; connecte-toi pour voir tes crédits",
     "kiro_credit_usage_unavailable": "Compte et crédits Kiro — indisponible",
     "kiro_discord_community": "Communauté Discord Kiro",
     "main_navigation": "Navigation principale",
@@ -6293,6 +6293,9 @@
     },
     "kiroAccountModal": {
       "account_details_unavailable": "Les détails du compte ne sont pas disponibles",
+      "credit_usage_sign_in_to_see": "Aucune connexion Kiro active. Connecte-toi pour voir ton compte et tes crédits.",
+      "credit_usage_sign_in_lapsed": "Ta connexion Kiro n’est plus valide, ton compte et tes crédits ne peuvent donc pas s’afficher. Reconnecte-toi pour les voir.",
+      "sign_in_in_settings": "Se connecter à Kiro dans les Paramètres",
       "balance_checked_at": "Vérifié à {{time}}",
       "forecast_lasts": "Au rythme de ce cycle, tes crédits devraient tenir jusqu’à la réinitialisation.",
       "forecast_runs_out": "Au rythme de ce cycle, tu seras à court de crédits vers le {{date}}, avant la réinitialisation.",
