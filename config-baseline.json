@@ -52,6 +52,7 @@
         "sandbox_readonly_paths": [],
         "sandbox_readonly_exceptions": [],
         "apps_allow_third_party": false,
+        "apps_never_adopt_backend_listener": false,
         "apps_trusted": [],
         "apps_trusted_local": [],
         "apps_trusted_repositories": {},
@@ -806,6 +807,20 @@
       "tags": [],
       "label": "Allow Third-Party Apps",
       "help": "Explicitly allow executable code from third-party (non-builtin) apps. Defaults to false. Only the JSON boolean true admits in-process Python hooks, backend processes, lifecycle/install scripts, and openCommand. App code can access the filesystem, network, and in-memory credentials; enable this only for apps you trust (CSE SEC-012). Prefer apps_trusted, which grants the same admission to ONE named app.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.apps_never_adopt_backend_listener",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Never Adopt App Backend Listener",
+      "help": "When true, the gateway never adopts or re-binds a healthy app backend listener that it did not start in this run, such as an uninstall survivor or a backend an earlier gateway run started. A config that fails to load still adopts, as when the setting is off. Defaults to false: any healthy listener on the app's port is adopted.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

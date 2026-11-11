@@ -855,6 +855,16 @@ class TestSpawnPortResolution:
         assert bmod._MIN_PORT <= bmod._allocated_ports["fuzzy"] <= bmod._MAX_PORT
 
 
+def _require_recorded_spawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn the ``agent.apps_never_adopt_backend_listener`` opt-in on."""
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = SimpleNamespace(
+        agent=SimpleNamespace(apps_never_adopt_backend_listener=True),
+    )
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
+
+
 # Spawn body: adopting an existing instance on a fixed port
 
 
@@ -900,6 +910,51 @@ class TestAdoptExistingInstance:
         assert ap.adopted_start_times == {111: "st-111", 222: "st-222"}
         assert bmod._processes["adoptee"] is ap
         assert bmod._allocated_ports["adoptee"] == port
+
+    def test_a_listener_is_adopted_by_default(
+        self, occupied: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With the opt-in off, a healthy listener is adopted as on main."""
+
+        monkeypatch.setattr(bmod, "loopback_urlopen", lambda *_a, **_k: _FakeResp(200))
+        _stub_listeners(monkeypatch, [bmod.platform_compat.PortListener(111, "127.0.0.1", "4")])
+        monkeypatch.setattr(bmod, "_proc_start_time", lambda pid: f"st-{pid}")
+        ap = self._run(bmod._MIN_PORT + 41)
+        assert ap is not None
+        assert ap.adopted_pids == [111]
+
+    def test_a_listener_this_run_did_not_start_is_not_adopted_when_required(
+        self, occupied: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """With apps_never_adopt_backend_listener on, a healthy listener this run did not
+        start, e.g. an uninstall survivor, is not adopted."""
+
+        _require_recorded_spawn(monkeypatch)
+        monkeypatch.setattr(bmod, "loopback_urlopen", lambda *_a, **_k: _FakeResp(200))
+        _stub_listeners(monkeypatch, [bmod.platform_compat.PortListener(111, "127.0.0.1", "4")])
+        monkeypatch.setattr(bmod, "_proc_start_time", lambda pid: f"st-{pid}")
+        with caplog.at_level(logging.WARNING):
+            assert self._run(bmod._MIN_PORT + 40) is None
+        assert any("did not start is not adopted" in r.message for r in caplog.records)
+        assert "adoptee" not in bmod._processes
+
+    @pytest.mark.parametrize(
+        ("required", "outcome"), [(False, "adopted"), (True, "refused_not_spawned_this_run")]
+    )
+    def test_the_start_path_writes_one_sel_row_with_the_decision(
+        self, occupied: Any, monkeypatch: pytest.MonkeyPatch, required: bool, outcome: str
+    ) -> None:
+        rows: list[dict[str, Any]] = []
+        sink = SimpleNamespace(log_api_access=lambda **kw: rows.append(kw))
+        monkeypatch.setattr(bmod, "sel", lambda: sink)
+        if required:
+            _require_recorded_spawn(monkeypatch)
+        monkeypatch.setattr(bmod, "loopback_urlopen", lambda *_a, **_k: _FakeResp(200))
+        _stub_listeners(monkeypatch, [bmod.platform_compat.PortListener(111, "127.0.0.1", "4")])
+        monkeypatch.setattr(bmod, "_proc_start_time", lambda pid: f"st-{pid}")
+        self._run(bmod._MIN_PORT + 42)
+        adopt_rows = [r for r in rows if r["operation"] == "app_backend_adopt"]
+        assert [r["outcome"] for r in adopt_rows] == [outcome]
 
     def test_adoption_records_only_the_probed_address_owner(
         self, occupied: Any, monkeypatch: pytest.MonkeyPatch

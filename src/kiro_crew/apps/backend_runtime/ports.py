@@ -145,6 +145,26 @@ def _probe_adoption_health(port: int, health_path: str) -> bool:
     return _health_probe(port, health_path, timeout=3).healthy
 
 
+def _adoption_allowed() -> bool:
+    """Whether a healthy listener on an app's port may be adopted or re-bound.
+
+    ``agent.apps_never_adopt_backend_listener`` on means never: the gateway adopts or
+    re-binds no listener it did not start in this run. Off keeps the default of adopting,
+    and so does a config that fails to load, with one warning.
+    """
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig.load()
+        return cfg.agent.apps_never_adopt_backend_listener is not True
+    except Exception as exc:  # noqa: BLE001 - an unreadable setting keeps the default
+        logger.warning(
+            "Could not read apps_never_adopt_backend_listener (%s); adopting, as when the setting is off",
+            exc,
+        )
+        return True
+
+
 def _capture_adopted_owners(
     app_name: str, port: int, health_path: str
 ) -> tuple[list[int], dict[int, str]] | None:
