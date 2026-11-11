@@ -99,6 +99,7 @@ class AcpRuntime:
     _root_identity_holds = _rt_tree._root_identity_holds
     refresh_process_tree = _rt_tree.refresh_process_tree
     _snapshot_descendants = _rt_tree._snapshot_descendants
+    _rescan_descendants_later = _rt_tree._rescan_descendants_later
     _signal_tree = _rt_tree._signal_tree
     kill = _rt_tree.kill
     _kill_inner = _rt_tree._kill_inner
@@ -586,6 +587,9 @@ class AcpRuntime:
         # newer pass's descendants are dropped from both the record and the file.
         # Sessions start concurrently on a shared runtime, so this is reachable.
         self._descendant_scan_lock = asyncio.Lock()
+        # The one deferred scan a spawn schedules when its own saw no
+        # descendant (_snapshot_descendants). Cancelled by the kill.
+        self._descendant_rescan_task: asyncio.Task[None] | None = None
         # Two independent clocks so a failure never extends the life of an old
         # success: ``_result_at`` is stamped ONLY when a non-empty result is
         # stored (that result may be replayed until it expires), while
@@ -987,11 +991,10 @@ class AcpRuntime:
     #: reaped by their new parent before reporting them as survivors.
     _FAILED_START_REAP_WAIT = 1.0
 
-    #: One retry for a descendant scan that came back empty. The spawned root
-    #: is a launcher that forks the agent, which forks again, so a scan racing a
-    #: cold start can legitimately see nothing. A single retry is enough because
-    #: every later session start scans again. Class attribute so tests can zero
-    #: it rather than pay it.
+    #: How long after a spawn-time descendant scan that saw nothing the one
+    #: deferred scan runs (``_rescan_descendants_later``). The root has only
+    #: just answered ``initialize`` and may fork a moment later. One is enough
+    #: because every later session start scans again. Nothing waits on it.
     _DESCENDANT_RESCAN_DELAY = 0.5
 
     #: Why a teardown reached nothing, per ``_root_identity`` verdict. "holds" is
