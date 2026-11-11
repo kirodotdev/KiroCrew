@@ -163,6 +163,20 @@ class TestClaudeReviewCodeOnlyScope:
         for stage in ("opus-discovery", "opus-validate"):
             assert "gh pr diff" not in _review_prompt(stage)
 
+    def test_both_stages_state_there_is_no_shell(self) -> None:
+        """Both stages run with Read/Grep/Glob only, the grant the tests above pin.
+
+        A prompt that leaves a shell path open makes the model spend its pass on
+        denied Bash calls and quit before its marker line, which fails the capture
+        closed. So each prompt says there is no shell, names the tools it does
+        have, and never offers "a command to run".
+        """
+        for stage in ("opus-discovery", "opus-validate"):
+            flat = _flat(_review_prompt(stage))
+            assert "You have no shell" in flat, stage
+            assert "Use Read, Glob and Grep" in flat, stage
+            assert "a command to run" not in flat, stage
+
     def test_rescan_is_scaled_to_diff_size(self) -> None:
         discovery = _review_prompt("opus-discovery")
 
