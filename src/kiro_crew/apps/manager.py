@@ -311,6 +311,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         platform_compat,
     )
     from kiro_crew.apps import (  # noqa: F401
+        agent_readonly_dirs,
         credential_masks,
         protected_app_state,
     )

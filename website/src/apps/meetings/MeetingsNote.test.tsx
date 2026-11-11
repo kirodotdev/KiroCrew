@@ -22,7 +22,7 @@ const ViewSource = readFileSync('src/apps/meetings/MeetingView.tsx', 'utf-8')
 const StoreSource = readFileSync(
   '../src/kiro_crew/apps/builtins/meetings/backend/store.py', 'utf-8',
 )
-const SecuritySource = readFileSync('../src/kiro_crew/security/paths_lists.py', 'utf-8')
+const ManifestSource = readFileSync('../src/kiro_crew/apps/builtins/meetings/app.json', 'utf-8')
 
 const NOTE = EN_CATALOG.apps.meetings.note
 const SESSION = EN_CATALOG.apps.meetings.session
@@ -424,13 +424,13 @@ describe('note wiring', () => {
 })
 
 describe('the note lives outside the agent-writable meeting directory', () => {
-  it('is stored under an app-owned notes/ root the shared write gate fences', () => {
+  it('is stored under an app-owned notes/ root the manifest fences from agent writes', () => {
     // Every meeting agent ships fs_write and is handed the meeting directory, so a
     // note in there was one prompt-injected write away from being overwritten. The
     // Python side pins the location and the gate; this is the frontend-side reminder
     // that the path the panel renders images from is a security property.
     expect(StoreSource).toContain('def notes_root(')
     expect(StoreSource).toContain('k.NOTES_DIR')
-    expect(SecuritySource).toContain('apps/meetings/data/notes')
+    expect(JSON.parse(ManifestSource).agentReadOnlyDirs).toContain('notes')
   })
 })

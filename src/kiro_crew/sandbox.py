@@ -69,7 +69,7 @@ from kiro_crew import (  # noqa: F401
     sandbox_plan,
     sandbox_seatbelt,
 )
-from kiro_crew.apps import credential_masks  # noqa: F401
+from kiro_crew.apps import agent_readonly_dirs, credential_masks  # noqa: F401
 from kiro_crew.atomic_write import fsync_dir, refuse_linked_parent  # noqa: F401
 from kiro_crew.config.paths import config_dir, kiro_agents_dir  # noqa: F401
 from kiro_crew.config.write_provenance import (  # noqa: F401
@@ -267,7 +267,10 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _CREW_ALIAS_TOLERATED_LEAVES,
         _CREW_HARDLINK_REFUSED_LEAVES,
         _AliasMask,
+        _app_data_dir_settled,
         _app_declared_leaves,
+        _app_declared_readonly_leaves,
+        _establish_app_readonly_dirs,
         _first_linked_component_below,
         _hardlink_refused_leaves,
         _hidden_leaves,
@@ -732,6 +735,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _sandbox_policy,
         app_backend_visible_targets,
         app_declared_mask_targets,
+        app_declared_readonly_targets,
         carveout_chain_has_planted_link,
         carveout_shadowed_by_foreign_mask,
         configured_readonly_layer,

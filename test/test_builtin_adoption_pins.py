@@ -366,6 +366,7 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
         ),
         ({"permissions": {"agentTurns": "true"}}, {}, {}),
         ({"credentialMasks": ["data/token.json"]}, {}, {"app.json credentialMasks": 3}),
+        ({"agentReadOnlyDirs": ["notes"]}, {}, {"app.json agentReadOnlyDirs": 7}),
         ({}, {"backend/routes.py": "def f(ctx):\n    return ctx.turns.run\n"}, {"ctx.turns": 2}),
         ({}, {"backend/_host.py": "x = _bound_ctx().lifecycle\n"}, {"ctx.lifecycle": 2}),
         (

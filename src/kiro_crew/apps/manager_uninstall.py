@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.apps import credential_masks, protected_app_state
+from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
     invalidate_orphan_cache,
@@ -183,8 +183,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         if keep_data:
             # The manifest leaves with the app directory and the data stays: its
             # credential masks must stand in the record first (apps.credential_masks),
-            # and a record that cannot be written refuses the uninstall.
+            # and a record that cannot be written refuses the uninstall. The same holds for
+            # its read-only directories (apps.agent_readonly_dirs).
             credential_masks.remember_declaration(name)
+            agent_readonly_dirs.remember_declaration(name)
             # ONE string for the pin below and every path-based step after it,
             # or verify() guards a path the renames and deletes do not use.
             dest = _pinned_ancestors(dest)

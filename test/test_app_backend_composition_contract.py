@@ -239,6 +239,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "app_backend_lifecycle_flock",
     "app_backend_visible_targets",
     "app_declared_mask_targets",
+    "app_declared_readonly_targets",
     "app_deps_dir",
     "app_dir",
     "app_enabled_state",

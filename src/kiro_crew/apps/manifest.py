@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX  # noqa: F401
-from kiro_crew.apps import credential_masks
+from kiro_crew.apps import agent_readonly_dirs, credential_masks
 from kiro_crew.apps.desktop_manifest import DesktopConfig
 from kiro_crew.apps.manifest_agent_tools import (  # noqa: F401
     _BLOCK_KEYS,
@@ -432,6 +432,7 @@ _KNOWN_FIELDS = frozenset(
         "desktop",
         "agentTools",
         "credentialMasks",
+        "agentReadOnlyDirs",
     }
 )
 
@@ -516,6 +517,9 @@ class AppManifest:
     # --- Files under the app's own data dir the sandbox hides (apps.credential_masks) ---
     credentialMasks: list[str] = field(default_factory=list)  # noqa: N815
     credential_masks_errors: list[str] = field(default_factory=list, repr=False)
+    # --- Dirs under the app's own data dir agents may read, never write (agent_readonly_dirs) ---
+    agentReadOnlyDirs: list[str] = field(default_factory=list)  # noqa: N815
+    agent_readonly_dirs_errors: list[str] = field(default_factory=list, repr=False)
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -578,6 +582,7 @@ class AppManifest:
         if self.config_keys_error:
             errors.append(self.config_keys_error)
         errors.extend(self.credential_masks_errors)
+        errors.extend(self.agent_readonly_dirs_errors)
 
         # Path containment check on all app-root-relative resource paths.
         # Canonical (screened canonicalisation + is_relative_to) when app_root is known; lexical
@@ -868,6 +873,10 @@ class AppManifest:
             # must invalidate the signature. Only when non-empty, so a manifest signed
             # before this key existed keeps producing the identical payload.
             body["credentialMasks"] = sorted(self.credentialMasks)
+        if self.agentReadOnlyDirs:
+            # Dropping an entry lets agents write a directory the app fences, so tampering
+            # must invalidate the signature. Only when non-empty, like the masks above.
+            body["agentReadOnlyDirs"] = sorted(self.agentReadOnlyDirs)
         if self.notifications.channels:
             # Channel declarations gate what an app may push and at which
             # default priority -- tampering must invalidate the signature.
@@ -1089,6 +1098,8 @@ class AppManifest:
             d["config_keys"] = self.config_keys
         if self.credentialMasks:
             d["credentialMasks"] = list(self.credentialMasks)
+        if self.agentReadOnlyDirs:
+            d["agentReadOnlyDirs"] = list(self.agentReadOnlyDirs)
         if self.crons:
             d["crons"] = [c.to_dict() for c in self.crons]
         ui_d = self.ui.to_dict()
@@ -1293,6 +1304,16 @@ class AppManifest:
             credential_masks_errors=credential_masks.declaration_errors(
                 data.get(credential_masks.MANIFEST_KEY)
             ),
+            agentReadOnlyDirs=list(  # noqa: N815
+                agent_readonly_dirs.valid_entries(data.get(agent_readonly_dirs.MANIFEST_KEY))
+            ),
+            agent_readonly_dirs_errors=[
+                *agent_readonly_dirs.declaration_errors(data.get(agent_readonly_dirs.MANIFEST_KEY)),
+                *agent_readonly_dirs.mask_conflict_errors(
+                    data.get(agent_readonly_dirs.MANIFEST_KEY),
+                    data.get(credential_masks.MANIFEST_KEY),
+                ),
+            ],
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],
