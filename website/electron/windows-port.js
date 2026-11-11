@@ -354,7 +354,11 @@ async function windowsProcessCommand(
   } = {}
 ) {
   const safePid = positiveInteger(pid, "pid");
-  const script = `$p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = ${safePid}"; `
+  // A redirected console writes in the OEM code page, which turns a non-ASCII
+  // install path into replacement characters once it is read back as UTF-8.
+  // Write UTF-8 without a BOM so the path arrives byte-for-byte.
+  const script = `[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; `
+    + `$p = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = ${safePid}"; `
     + `if ($null -ne $p -and $p.ExecutablePath) { `
     + `[Console]::Out.Write(('"' + $p.ExecutablePath + '" ' + $p.CommandLine).Trim()) }`;
   try {
