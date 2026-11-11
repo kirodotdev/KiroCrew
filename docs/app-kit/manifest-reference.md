@@ -1964,7 +1964,7 @@ in-gateway code your app runs.
 - The masks follow your data when Kiro Crew moves it: during an update, and after an
   uninstall that keeps your data. Kiro Crew keeps a copy of the list beside your app
   folder for that, `apps/.<name>-credential-masks.json`.
-- On macOS a sandboxed process cannot rename or remove the folders above a listed file
+- A sandboxed process cannot rename or remove the folders above a listed file
   (`apps/<name>/data` and the ones between); it can still create and edit files in them.
 - The installed app folder is writable from inside the sandbox, so this protects your
   file from an agent that reads it, not from one that rewrites your `app.json`.

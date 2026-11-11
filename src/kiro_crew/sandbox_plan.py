@@ -199,6 +199,11 @@ class PlanHost:
     #: spelling: renaming one carries the seal away. Seatbelt gets every one; the namespace
     #: backend only those this uid could rename, since it pins each with a mount.
     readonly_ancestor_guards: tuple[str, ...] = ()
+    #: The parents of every app-declared credential mask this uid could rename and the
+    #: entries above do not already hold, for the namespace backend only. Pinned AFTER
+    #: the masks (``mask_parent_pins``), so each pin carries a copy of the masks below it
+    #: and the outer mount keeps the original when the gateway moves the app's folders.
+    mask_parent_pins: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The real uid and gid the namespace launcher maps.
@@ -373,6 +378,9 @@ class ConfinementPlan:
     #: :attr:`PlanHost.sealed_socket_patterns`, which Seatbelt renders as
     #: ``file-write*`` and ``file-link`` denies. Always empty on the namespace plan.
     sealed_socket_patterns: tuple[str, ...] = ()
+    #: :attr:`PlanHost.mask_parent_pins`, which the namespace launcher binds over
+    #: themselves after every mask. Always empty on the Seatbelt plan.
+    mask_parent_pins: tuple[str, ...] = ()
 
     @property
     def sensitive_dirs(self) -> tuple[str, ...]:
@@ -1043,6 +1051,7 @@ def _namespace_plan(
         cancellations=cancellations,
         refusals=tuple(window_refusals + carveout_refusals),
         exec_cwd=request.exec_cwd,
+        mask_parent_pins=host.mask_parent_pins,
     )
 
 
@@ -1246,6 +1255,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "private_dir_ids": {path: list(pair) for path, pair in ids.private_dir_ids.items()},
         "readonly_dirs": list(plan.readonly),
         "parent_pins": list(plan.runtime_ancestor_guards),
+        "mask_parent_pins": list(plan.mask_parent_pins),
         "writable_dirs": list(plan.writable),
         "sensitive_files": list(plan.sensitive_files),
         "fail_closed_file_masks": [list(entry) for entry in ids.fail_closed_file_masks],

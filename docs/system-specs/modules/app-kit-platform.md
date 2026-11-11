@@ -7602,13 +7602,29 @@ leaf or at any component below the data home refuses the spawn; and
 inside a data home is masked too and one outside every data home refuses the spawn,
 which `kirocrew doctor` reports first. An entry names a file: a directory at a declared
 spelling in the live home refuses the spawn (`_refuse_aliased_masked_leaves`), so no
-declared directory hides files the hard-link pass never judged. On Seatbelt, whose masks are path rules, every parent of every
-declared spelling joins the literal ancestor guards (`readonly_ancestor_guards`), so no
-parent can be renamed from under its deny; only the entries are guarded, not their
-contents. The spawn that lifts a leaf (the app's own backend, below) leaves that
-spelling's parents unguarded, so the backend can create, rotate and remove the folders it
-keeps its credential in. A namespace mask is a mount, which moves with a renamed parent,
-so that plan gains no guard. No seal or keystone disposition reads a declaration, the
+declared directory hides files the hard-link pass never judged. Every parent of every
+declared spelling joins the rename guards (`readonly_ancestor_guards`) on both backends,
+so no parent can be renamed from under the mask; only the entries are guarded, not their
+contents. On Seatbelt the mask is a path rule, which a renamed parent would leave behind.
+On the namespace backend it is a mount, which moves with the renamed parent: that spawn's
+mask follows it, but the next spawn masks the declared path, where nothing is left, so the
+launcher binds each parent the spawn could rename over itself (`mask_parent_pins`), and the
+kernel refuses to rename a mountpoint. Those pins are bound after every mask
+(`pin_mask_parents`, the last mask stage), not with the seal parents before the seals: the
+gateway moves an app's `data/` into a new `apps/<app>` on an update, from its own
+namespace, and a mask placed on a pin of the old folder would sit on a mount no later lookup
+reaches. Placed first, the mask stays on the outer mount the move keeps, and each pin only
+adds a copy of it above. They are bound deepest first, so each also sits on that outer
+mount, and a shallower pin bound after carries a copy of it on its own root: the restored
+`data/` stays pinned through the replacement `apps/<app>`. The limit, stated: the
+replacement `apps/<app>` itself is created after the spawn, so a session already running can
+rename it until its next spawn. `test_seal_parent_pin_real_sandbox.py` checks the refusals
+and the mask across that move in a real namespace. The one lifecycle path that could run inside a sandbox, the `kirocrew
+app install` / `uninstall` fallback when no gateway answers (`cli_commands_app.py`), is
+refused a move of a declaring app's folders there; agent sessions always have a gateway, which
+moves them from its own namespace. The spawn that lifts a leaf (the app's own backend,
+below) leaves that spelling's parents unguarded, so the backend can create, rotate and
+remove the folders it keeps its credential in. No seal or keystone disposition reads a declaration, the
 tool gate reads the shipped built-ins' only, as more refusals (`declared_crew_leaves(installed=False)`, in
 `security._CREW_SECRET_LEAVES`), and the one carve-out that does (the app's own backend,
 below) never lifts a core leaf, so a manifest can only add masks. A built-in's declared

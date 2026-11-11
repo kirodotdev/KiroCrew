@@ -416,34 +416,46 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         )
         for entry in (os.path.dirname(os.path.normpath(target)), *_resolution_entries(target))
     )
-    # Seatbelt's masks are path rules, so renaming a parent of a declared leaf would carry
-    # the credential out from under its deny: every parent of every declared spelling is
-    # guarded against rename too. Only the directory entries; what is inside them stays
-    # writable. A namespace mask is a mount, which moves with a renamed parent. A leaf this
-    # spawn lifts (its own app's backend, the leaf's reader) leaves its parents unguarded
-    # here, so the backend can create, rotate and remove the folders it keeps them in.
-    app_mask_parents = (
-        ()
-        if namespace
-        else tuple(
-            os.path.dirname(os.path.normpath(target))
-            for target in (
-                *(
-                    os.path.join(home, f"{prefix}/{leaf}")
-                    for prefix in _CREW_HOME_PREFIXES
-                    for leaf in app_leaves
-                ),
-                *_relocated_crew_targets(app_leaves),
-            )
-            if not sandbox_plan.hidden_path_contains_visible_path(
-                target, request.extra_visible_dirs
-            )
+    # Renaming a parent of a declared leaf would carry the credential out from under its
+    # mask, so every parent of every declared spelling is guarded against rename on both
+    # backends. On Seatbelt the mask is a path rule, which the renamed file leaves behind.
+    # On the namespace backend it is a mount, which moves with the renamed parent: this
+    # spawn's mask follows it, but the NEXT spawn masks the declared path, where nothing is
+    # left now, and the file is plain at its new name. Only the directory entries are
+    # guarded; what is inside them stays writable. A leaf this spawn lifts (its own app's
+    # backend, the leaf's reader) leaves its parents unguarded here, so the backend can
+    # create, rotate and remove the folders it keeps them in.
+    #
+    # The namespace pins are a separate list, bound AFTER every mask, not with the seal
+    # parents before them. The gateway moves an app's ``data/`` into a NEW ``apps/<app>``
+    # on an update, from its own namespace; a mask placed on a pin of the old folder would
+    # then sit on a mount no lookup reaches. Placed first, the mask stays on the outer
+    # mount the move keeps, and each later pin only adds a copy above it.
+    app_mask_parents = tuple(
+        os.path.dirname(os.path.normpath(target))
+        for target in (
+            *(
+                os.path.join(home, f"{prefix}/{leaf}")
+                for prefix in _CREW_HOME_PREFIXES
+                for leaf in app_leaves
+            ),
+            *_relocated_crew_targets(app_leaves),
         )
+        if not sandbox_plan.hidden_path_contains_visible_path(target, request.extra_visible_dirs)
     )
     readonly_ancestor_guards = (
         _renameable_ancestor_guards(seal_parents, uid)
         if namespace
         else _literal_ancestor_guards((*seal_parents, *app_mask_parents))
+    )
+    mask_parent_pins = (
+        tuple(
+            entry
+            for entry in _renameable_ancestor_guards(app_mask_parents, uid)
+            if entry not in readonly_ancestor_guards
+        )
+        if namespace
+        else ()
     )
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     host_paths = [
@@ -485,6 +497,7 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         kiro_agents_targets=kiro_agents_targets,
         install_root_targets=install_root_targets,
         readonly_ancestor_guards=readonly_ancestor_guards,
+        mask_parent_pins=mask_parent_pins,
         carveout_probes=carveout_probes,
         uid=uid,
         gid=gid,
