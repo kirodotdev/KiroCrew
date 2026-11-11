@@ -708,6 +708,10 @@ async def api_secrets_delete(request: web.Request) -> web.Response:
 
 def setup_secrets_routes(app: web.Application) -> None:
     """Register /api/secrets routes on the dashboard app."""
+    # Imported here: that module imports this one for the owner gate.
+    from kiro_crew.dashboard.handlers.secrets_usage import api_secrets_usage
+
     app.router.add_get("/api/secrets", api_secrets_list)
+    app.router.add_get("/api/secrets/usage", api_secrets_usage)
     app.router.add_post("/api/secrets", api_secrets_set)
     app.router.add_delete("/api/secrets/{name}", api_secrets_delete)

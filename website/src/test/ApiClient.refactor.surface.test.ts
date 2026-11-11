@@ -83,7 +83,7 @@ const API_KEY_ORDER = [
   'deleteWorkspace', 'crons', 'createCron', 'deleteCron',
   'batchDeleteCron', 'updateCron', 'runCron', 'cronSecretsGrant',
   'cancelCron', 'cronToChat', 'toggleCron', 'cronHistory',
-  'cronRunDetail', 'cronScript', 'secretsList', 'secretsSave',
+  'cronRunDetail', 'cronScript', 'secretsList', 'secretsUsage', 'secretsSave',
   'secretsDelete', 'ackCron', 'cronHistoryAll', 'cronFolders',
   'createCronFolder', 'updateCronFolder', 'deleteCronFolder', 'lessons',
   'createLesson', 'deleteLesson', 'hooks', 'kiroHooks', 'rescanKiroHooks',

@@ -876,6 +876,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/cron_script_source.py",
         "dashboard/handlers/cron_secret_grants.py",
         "dashboard/handlers/cron_shared.py",
+        # The Secrets usage scan redacts every place name and key it returns
+        # (a job's name and grant key, a spec's server and env key) exactly as
+        # the Schedule board (cron_board.py, above) does, for the same
+        # owner-only dashboard HTTP surface; it opens no other output path.
+        "dashboard/handlers/secrets_usage.py",
         # Same class as the dashboard handlers around it: the five debug reads
         # redact every string they return -- a gateway description, a classified
         # refusal, a process roster -- but the egress boundary is the loopback

@@ -361,3 +361,27 @@ kirocrew config set agent.env '{"HTTPS_PROXY": "http://proxy.example:3128", "NO_
   via filesystem reads. A root-owned service environment file does not fix the
   runtime boundary: its values enter the gateway before server selection. Use
   the vault.
+
+## Where a vault item is used
+
+With the **Secrets vault redesign** preview on, each item's pane in Settings →
+Secrets has a **Used by** card. It lists the places that read the item now:
+
+- **MCP server**: a `secret://NAME` value in the server's `env`, or the sign-in
+  entries Kiro Crew keeps for an owner-added remote server.
+- **File**: a `secret://NAME` line on a credential key of the data-home `.env`.
+- **Scheduled job**: an approved secret grant on the job.
+- **Setting**: `agent.deepseek_env`, `agent.strands_env` or
+  `tunnel.relay_lease_credential`.
+- **Connection**: the sign-in entries of a Connections card.
+- **Integration**: the Bitbucket Server host token, the Linear API key, the Jev
+  decision key (while referenced and consented to) and vault-sourced
+  OpenTelemetry trace headers.
+- **Approved API**: an item `kirocrew secrets authorize` approved for an origin.
+- **Sprites profile**: the token a Sprites profile names, and the token each
+  saved Sprites machine was made with (it is still needed to archive, reopen or
+  delete that machine after its profile is removed).
+
+"No use found" means none of these places reads the item. It is not proof that
+nothing does: a feature that reads the vault by name and is not on this list
+shows as no use found. When a place cannot be read, the card says so instead.

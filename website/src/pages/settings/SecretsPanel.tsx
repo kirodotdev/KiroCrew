@@ -27,6 +27,7 @@ import { PREVIEW_SECRETS_VAULT } from '../../utils/previewFlags'
 import { SECRETS_GUIDE_URL as SECRETS_SETUP_GUIDE } from '../../utils/docsLink'
 import { copyToClipboard } from '../../utils/clipboard'
 import { SECRETS_AUTHORIZE_COMMAND, SECRETS_SERVER_GRANT } from './secretsAuthorizeCommand'
+import { SecretInUseNote, SecretUsageCard, useReferencedNames } from './SecretUsage'
 
 const UNUSED_REASON_KEYS = {
   wakatime_disabled: 'settings.secrets.wakatime_unused_hint',
@@ -782,6 +783,7 @@ function ItemPane({
 
       {deleteConfirm && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-danger-subtle bg-danger-subtle px-3 py-2">
+          <SecretInUseNote name={item.name} />
           <span className="text-[13px] text-danger">{i18nT('settings.secrets.delete_confirm', { name: item.name })}</span>
           <Btn danger onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
             {i18nT('settings.secrets.delete')}
@@ -853,6 +855,8 @@ function ItemPane({
           )}
         </FieldCard>
       )}
+
+      <SecretUsageCard name={item.name} allowAgentHandoff={allowAgentHandoff} />
 
       <FieldCard title={i18nT('settings.secrets.reference_title')}>
         <p className="pb-2 text-[13px] text-muted">{i18nT('settings.secrets.reference_hint')}</p>
@@ -971,6 +975,7 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
     if (!current) select(target.name)
   }, [basePath, location.pathname, location.search, managed, select])
   const unusedReasons = useMemo(() => new Map((data?.unused ?? []).map(entry => [entry.name, entry.reason])), [data?.unused])
+  const referenced = useReferencedNames()
 
   const handleManagedDraftChange = useCallback((name: string, hasDraft: boolean) => {
     setManagedDraftNames(current => {
@@ -1022,7 +1027,7 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
         // warning has to be read here too. Unreadable outranks unused.
         summary: item.corrupt
           ? <StatusLine tone="warn" text={i18nT('settings.secrets.status_unreadable')} />
-          : unusedReasons.has(name)
+          : unusedReasons.has(name) && !referenced.has(name)
             ? <StatusLine tone="warn" text={i18nT('settings.secrets.status_unused')} />
             : pub?.username
               ? <span className="text-[11.5px] text-muted">{pub.username}</span>
@@ -1095,7 +1100,8 @@ export function SecretsPanel({ basePath }: { basePath?: string } = {}) {
           <ItemPane
             key={active}
             item={item}
-            unusedReason={unusedReasons.get(active) as keyof typeof UNUSED_REASON_KEYS | undefined}
+            // Same rule as the rail: an item some place uses is not "Not used".
+            unusedReason={referenced.has(active) ? undefined : unusedReasons.get(active) as keyof typeof UNUSED_REASON_KEYS | undefined}
             allowAgentHandoff={!hasAnyDraft}
             onDraftChange={handleManagedDraftChange}
             onDeleted={() => select(ADD_KEY)}
