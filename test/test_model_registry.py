@@ -251,14 +251,13 @@ class TestModelRegistry:
         # Cold cache: nothing was advertised, so the alias folds onto the
         # registry's versioned provider id.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
-        assert mr.to_provider_id("opus", "claude_code") == "global.anthropic.claude-opus-4-8[1m]"
+        assert mr.to_provider_id("opus", "claude_code") == "global.anthropic.claude-opus-5-5[1m]"
         assert (
-            mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-4-6[1m]"
+            mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-5-5[1m]"
         )
 
-    def test_claude_code_alias_folds_when_backend_advertises_only_versioned_ids(self, monkeypatch):
-        # A backend that advertises only versioned ids (e.g. a Bedrock deployment)
-        # does not advertise the bare alias, so the registry fold applies.
+    def test_claude_code_alias_picks_the_newest_advertised_versioned_id(self, monkeypatch):
+        # Versioned-only backends (Bedrock) advertise no bare alias: take the newest.
         monkeypatch.setattr(
             mr,
             "_ADVERTISED_MODELS",
@@ -283,9 +282,9 @@ class TestModelRegistry:
             == "global.anthropic.claude-opus-4-8[1m]"
         )
         # bare 'opus'/'sonnet' aliases
-        assert mr.to_provider_id("opus", "claude_code") == "global.anthropic.claude-opus-4-8[1m]"
+        assert mr.to_provider_id("opus", "claude_code") == "global.anthropic.claude-opus-5-5[1m]"
         assert (
-            mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-4-6[1m]"
+            mr.to_provider_id("sonnet", "claude_code") == "global.anthropic.claude-sonnet-5-5[1m]"
         )
 
     def test_legacy_dotted_ids_do_not_regress_to_flagship(self):
@@ -511,9 +510,9 @@ class TestCorruptRegistryFallback:
         for canonical, entry in mr._REGISTRY.items():
             if entry.get("providers", {}).get("claude_code") is None:
                 continue
-            keys = [canonical, *entry.get("aliases", [])]
+            keys = [canonical, *entry.get("aliases", []), *entry.get("claude_code_aliases", [])]
             for k in keys:
-                # An alias two rows list (bare "opus") resolves to the first row.
+                # Map each key through the live index, the path the fallback mirrors.
                 pid = mr._REGISTRY[index[k]]["providers"]["claude_code"]
                 assert k in mr._FALLBACK_PROVIDER_IDS, (
                     f"{k!r} missing from _FALLBACK_PROVIDER_IDS (corrupt-registry "
@@ -879,9 +878,24 @@ class TestAdvertisedModelCache:
             == "fable"
         )
         assert (
+            mr.resolve_wire_model_id("global.anthropic.claude-opus-5-5[1m]", "claude_code")
+            == "opus"
+        )
+        assert (
             mr.resolve_wire_model_id("global.anthropic.claude-opus-4-8[1m]", "claude_code")
             == "opus"
         )
+        assert (
+            mr.resolve_wire_model_id("global.anthropic.claude-sonnet-4-6[1m]", "claude_code")
+            == "sonnet"
+        )
+
+    def test_acp_bare_family_aliases_keep_their_4_8_and_4_6_ids(self):
+        # The claude-only 5.5 alias must not leak onto the acp (Kiro/KAS) path.
+        assert mr.acp_id_correction("opus") == "claude-opus-4.8"
+        assert mr.acp_id_correction("sonnet") == "claude-sonnet-4.6"
+        assert mr.from_provider_id("opus", "acp") == "opus-4.8-1m"
+        assert mr.from_provider_id("sonnet", "acp") == "sonnet-4.6-1m"
 
     def test_wire_id_never_folds_onto_a_substitution_alias(self, monkeypatch):
         # The Sonnet entry lists "claude-haiku-4.5" as an alias because the
@@ -904,6 +918,34 @@ class TestAdvertisedModelCache:
             mr, "_ADVERTISED_MODELS", {"claude_code": ["global.anthropic.claude-opus-5[1m]"]}
         )
         assert mr.to_provider_id("claude-opus-5", "claude_code") == "claude-opus-5"
+
+    def test_wire_id_folds_a_bare_alias_onto_the_newest_advertised_family_member(self, monkeypatch):
+        # The cold-start wire read goes through resolve_wire_model_id, not to_provider_id.
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-opus-4-7[1m]",
+                    "global.anthropic.claude-opus-4-8[1m]",
+                    "global.anthropic.claude-sonnet-4-6[1m]",
+                ]
+            },
+        )
+        assert (
+            mr.resolve_wire_model_id("opus", "claude_code")
+            == "global.anthropic.claude-opus-4-8[1m]"
+        )
+        assert (
+            mr.resolve_wire_model_id("sonnet", "claude_code")
+            == "global.anthropic.claude-sonnet-4-6[1m]"
+        )
+        assert mr.resolve_wire_model_id("claude-opus-9-9", "claude_code") == "claude-opus-9-9"
+        assert mr.resolve_wire_model_id("haiku", "claude_code") == "haiku"
+
+    def test_wire_id_bare_alias_stays_raw_on_a_non_claude_provider(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"acp": ["claude-opus-4.8"]})
+        assert mr.resolve_wire_model_id("opus", "acp") == "opus"
 
 
 class TestImportDoesNotCreateTheDataHome:
@@ -1047,3 +1089,103 @@ class TestClaude55Rows:
     def test_every_spelling_of_a_row_with_no_acp_id_lacks_one(self, monkeypatch, pin):
         add_claude_only_row(monkeypatch)
         assert mr.lacks_acp_id(pin) is True
+
+
+class TestBareFamilyAliases:
+    @pytest.mark.parametrize("family", ["opus", "sonnet"])
+    def test_bare_alias_resolves_to_the_newest_model_like_claude_code(self, family):
+        assert mr.from_provider_id(family, "claude_code") == f"{family}-5.5-1m"
+
+    @pytest.mark.parametrize("family", ["opus", "sonnet"])
+    def test_acp_and_claude_code_indices_resolve_the_bare_alias_differently(self, family):
+        # The claude-only alias lives in the claude_code index; acp keeps 4.8 / 4.6.
+        acp_row = mr._CANONICAL_INDEX["acp"][family]
+        cc_row = mr._CANONICAL_INDEX["claude_code"][family]
+        assert acp_row == f"{family}-{'4.8' if family == 'opus' else '4.6'}-1m"
+        assert cc_row == f"{family}-5.5-1m"
+
+    @pytest.mark.parametrize("family", ["opus", "sonnet"])
+    def test_acp_bare_alias_resolves_to_its_4_8_or_4_6_row(self, family):
+        assert mr.canonical_key(family) == f"{family}-{'4.8' if family == 'opus' else '4.6'}-1m"
+
+    @pytest.mark.parametrize(
+        "advertised, family, expected",
+        [
+            (
+                [
+                    "global.anthropic.claude-opus-4-7[1m]",
+                    "global.anthropic.claude-opus-4-8[1m]",
+                    "global.anthropic.claude-sonnet-4-6[1m]",
+                ],
+                "opus",
+                "global.anthropic.claude-opus-4-8[1m]",
+            ),
+            (
+                ["claude-opus-4-1-20250805", "global.anthropic.claude-opus-4-8[1m]"],
+                "opus",
+                "global.anthropic.claude-opus-4-8[1m]",
+            ),
+            (
+                ["global.anthropic.claude-opus-4-8", "global.anthropic.claude-opus-4-8[1m]"],
+                "opus",
+                "global.anthropic.claude-opus-4-8[1m]",
+            ),
+            (
+                ["global.anthropic.claude-opus-4-8[1m]", "global.anthropic.claude-opus-5-5[1m]"],
+                "opus",
+                "global.anthropic.claude-opus-5-5[1m]",
+            ),
+            (
+                ["global.anthropic.claude-sonnet-4-6[1m]"],
+                "sonnet",
+                "global.anthropic.claude-sonnet-4-6[1m]",
+            ),
+            (
+                ["global.anthropic.claude-sonnet-5-5[1m]"],
+                "opus",
+                "global.anthropic.claude-opus-5-5[1m]",
+            ),
+            (
+                ["global.anthropic.claude-fable-5-1[1m]"],
+                "fable",
+                "global.anthropic.claude-fable-5[1m]",
+            ),
+            (
+                ["claude-opus-4-1@20250805", "claude-opus-4-5@20251101"],
+                "opus",
+                "claude-opus-4-5@20251101",
+            ),
+            (["claude-sonnet-4@20250514"], "sonnet", "claude-sonnet-4@20250514"),
+            (
+                ["claude-opus-4-20250514", "global.anthropic.claude-opus-4-8[1m]"],
+                "opus",
+                "global.anthropic.claude-opus-4-8[1m]",
+            ),
+            (
+                [
+                    "anthropic.claude-opus-4-20250514-v1:0",
+                    "us.anthropic.claude-opus-4-1-20250805-v1:0",
+                ],
+                "opus",
+                "us.anthropic.claude-opus-4-1-20250805-v1:0",
+            ),
+        ],
+        ids=[
+            "opus-picks-4-8-over-4-7-and-sonnet",
+            "dated-4-1-loses-to-4-8",
+            "1m-spelling-wins-the-tie",
+            "5-5-beats-4-8",
+            "sonnet-only-versioned",
+            "sonnet-only-falls-back-to-registry",
+            "fable-versioned-keeps-registry-row",
+            "vertex-at-dated-4-5-beats-4-1",
+            "vertex-at-dated-sonnet-4",
+            "undated-4-loses-to-4-8",
+            "bedrock-dated-4-1-beats-dated-4-0",
+        ],
+    )
+    def test_bare_alias_takes_the_newest_advertised_id_of_its_family(
+        self, monkeypatch, advertised, family, expected
+    ):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": advertised})
+        assert mr.to_provider_id(family, "claude_code") == expected

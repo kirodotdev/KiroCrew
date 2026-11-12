@@ -261,3 +261,31 @@ class TestBestEffort:
 
         with pytest.raises(AcpProcessDied):
             await client._apply_startup_model()
+
+
+class TestAStartupBareAliasFoldsOntoTheNewestAdvertisedId:
+    @pytest.mark.asyncio
+    async def test_bare_opus_pin_is_pushed_as_the_newest_advertised_id(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            mr,
+            "_ADVERTISED_MODELS",
+            {
+                "claude_code": [
+                    "global.anthropic.claude-opus-4-7[1m]",
+                    "global.anthropic.claude-opus-4-8[1m]",
+                ]
+            },
+        )
+        client = AcpClient(work_dir=tmp_path, model="opus", acp_backend=ACP_BACKEND_CLAUDE)
+        client._session_id = "sess-1"
+        client._available_models = [
+            {"modelId": "global.anthropic.claude-opus-4-7[1m]"},
+            {"modelId": "global.anthropic.claude-opus-4-8[1m]"},
+        ]
+        client.set_config_option = AsyncMock()  # type: ignore[method-assign]
+
+        await client._apply_startup_model()
+
+        client.set_config_option.assert_awaited_once_with(
+            "model", "global.anthropic.claude-opus-4-8[1m]"
+        )
