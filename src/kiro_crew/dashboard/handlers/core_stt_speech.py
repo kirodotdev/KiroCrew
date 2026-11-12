@@ -451,7 +451,11 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
             status=503,
         )
 
-    reader = await request.multipart()
+    from kiro_crew.dashboard.handlers._shared import open_multipart
+
+    reader, not_multipart = await open_multipart(request)
+    if reader is None:
+        return not_multipart  # type: ignore[return-value]
     field = await reader.next()
     if field is None or not hasattr(field, "name") or field.name != "audio":  # type: ignore[union-attr]
         return web.json_response(
