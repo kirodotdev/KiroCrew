@@ -633,10 +633,23 @@ logs a console warning and stops switching back, showing no chat, until it gets 
 <ChatPanel slotKey="coder-abc123" conversationOnly />
 ```
 
+Set `expandSteps` when the user watches a long run and the agent's work should be readable
+without a click per row. The panel's transcript then reads as if the user had turned on **Show
+Thinking Inline**, **Tool calls start expanded** and **Reasoning starts expanded** in Settings:
+working steps show inline, and reasoning and tool-call rows open expanded. It applies to this
+panel only and never changes the user's saved settings; a row the user opens or closes by hand
+keeps that choice. As with those settings, a finished turn still gathers its tool calls behind
+its steps toggle. An older host ignores the prop and keeps its rows collapsed.
+
+```tsx
+<ChatPanel slotKey="coder-abc123" conversationOnly expandSteps />
+```
+
 | Prop | Type | Required | Purpose |
 |---|---|---|---|
 | `slotKey` | `string` | yes | Select the Kiro Crew session rendered by the panel |
 | `conversationOnly` | `boolean` | no | Hide ChatPage's sessions rail and disable ChatPage URL synchronization |
+| `expandSteps` | `boolean` | no | Show the transcript's reasoning and tool steps expanded in this panel, without changing the user's settings |
 
 ## Pull Request Panel
 
