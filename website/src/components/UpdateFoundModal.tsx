@@ -19,7 +19,7 @@ import { updateAffordance } from '../utils/updateAffordance'
 import { settingsPath } from './settingsPath'
 import { shouldNudge, snoozeRecord, skipRecord, type UpdateNudgeRecord, type UpdateNudgeVerdict } from '../utils/updateNudge'
 import { foldStableStamp } from '../utils/displayVersion'
-import type { UpdateState } from '../hooks/useUpdateSubscription'
+import { editionOwnsUpdatePrompts, type UpdateState } from '../hooks/useUpdateSubscription'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 
 /**
@@ -162,12 +162,14 @@ export default function UpdateFoundModal({ held = false }: { held?: boolean } = 
   // defers its own check (`managed_by_app`), so the two cannot both report.
   // When a security policy provider governs the install, the Electron feed lane
   // stands down (feed-lane.js), so the desktop candidate is skipped here too.
+  // It is skipped as well when the edition's own update widget owns the prompts
+  // (editionOwnsUpdatePrompts): that widget offers the found build itself.
   // Candidacy waits for a read finished since this build was found (or for it
   // to fail), otherwise the popup opens for a frame on a stale preference and
   // then vanishes when the current one lands.
   const preferenceSettled = foundKey !== null && readForKey === foundKey && (bridgeInfo !== undefined || preferenceUnread)
   let candidate: Candidate | null = null
-  if (!gwPolicyManaged && desktop && buildFound && !desktop.replayed && desktop.version && desktopCanDownload() && preferenceSettled && (preferenceUnread || bridgeInfo?.autoDownload !== true)) {
+  if (!gwPolicyManaged && !editionOwnsUpdatePrompts(desktop) && desktop && buildFound && !desktop.replayed && desktop.version && desktopCanDownload() && preferenceSettled && (preferenceUnread || bridgeInfo?.autoDownload !== true)) {
     // Desktop-reported version never crosses the gateway, so the fold is
     // computed locally, keyed on the followed channel like the backend's.
     candidate = {

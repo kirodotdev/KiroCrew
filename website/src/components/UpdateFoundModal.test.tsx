@@ -122,6 +122,15 @@ describe('UpdateFoundModal — desktop source', () => {
     expect(mockedApi.kirocrewConfig).not.toHaveBeenCalled()
   })
 
+  it('never opens when the edition update widget owns the prompts', async () => {
+    // The edition's own top-bar widget offers the found build itself; a
+    // second offer here would contradict it. Not a candidate at all, so the
+    // nudge record is never consulted, the same detector as the replay case.
+    const { container } = await mount({ ...found, updatePrompts: 'edition' })
+    expect(container.firstChild).toBeNull()
+    expect(mockedApi.kirocrewConfig).not.toHaveBeenCalled()
+  })
+
   it('never opens once the state moves past found/available', async () => {
     const { container } = await mount({ state: 'downloading', version: '9.9.9', percent: 10 })
     expect(container.firstChild).toBeNull()

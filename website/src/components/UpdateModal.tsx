@@ -4,7 +4,7 @@ import { AlertTriangle, Download, Loader2, X } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
-import { gatewayStopCommand } from '../hooks/useUpdateSubscription'
+import { editionOwnsUpdatePrompts, gatewayStopCommand } from '../hooks/useUpdateSubscription'
 import { useInstallDispatch } from '../hooks/useInstallDispatch'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { CopyCommand } from './agentHarness/CopyCommand'
@@ -109,7 +109,11 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
     armed, canArmOnQuit, canRestartNow, restartNow, restartNowPending, restartNowFailed,
   } = useInstallDispatch(update)
 
+  // An edition whose own update widget owns the prompts (editionOwnsUpdatePrompts)
+  // gets no ready dialog: on its lane `downloaded` also answers an arm the widget
+  // made, and the widget already says when that update installs.
   const open = !!update && update.state === 'downloaded' && !update.replayed && dismissed === null && !held
+    && !editionOwnsUpdatePrompts(update)
 
   // Escape dismisses the modal (unless an install is in flight), matching the
   // backdrop-click affordance and keeping the overlay keyboard-accessible.
