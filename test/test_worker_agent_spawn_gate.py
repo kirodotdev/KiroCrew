@@ -878,11 +878,11 @@ def test_a_default_spec_refused_at_the_read_gate_refuses_the_spawn(tmp_path, mon
 
 
 def test_the_gate_has_no_early_return_at_all(tmp_path):
-    """By construction rather than by audit. Every earlier version of this check grew an
-    early ``return`` for a case it could not evaluate — a missing default, an unreadable
-    one — and each was a fail-OPEN pass on the one path where the mirror is
-    unverifiable. The freshness body now has NO return statement, so falling off the end
-    is reachable only after a verified match or a successful re-derive."""
+    """By construction rather than by audit. An early ``return`` for a case the check
+    cannot evaluate — a missing default, an unreadable one — is a fail-OPEN pass on the
+    one path where the mirror is unverifiable, so the freshness body has NO return
+    statement and falling off the end is reachable only after a verified match or a
+    successful re-derive."""
     import ast
     import inspect
     import textwrap

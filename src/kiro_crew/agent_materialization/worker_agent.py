@@ -168,12 +168,11 @@ def _whole_server_ref(ref: str) -> str | None:
 def _pattern_reaches_excluded(pattern: str) -> list[str]:
     """The refs in :data:`_WORKER_EXCLUDED_GRANTS` that *pattern* would match.
 
-    THE predicate. Every earlier version of this subtraction matched a SPELLING --
-    the exact ref, then the bare server, then ``/*`` -- and each round a reviewer
-    found the next spelling that slipped past: a partial-verb glob
-    (``"@kirocrew-cron/cron_*"``) matches ``cron_add`` while being none of those
-    three. Asking instead "could this entry match any excluded ref?" is closed under
-    spelling, so a form nobody has thought of is covered by construction.
+    THE predicate. Matching a SPELLING -- the exact ref, the bare server, ``/*`` --
+    misses a partial-verb glob (``"@kirocrew-cron/cron_*"``), which matches
+    ``cron_add`` while being none of those three. Asking instead "could this entry
+    match any excluded ref?" is closed under spelling, so a form nobody has thought of
+    is covered by construction.
 
     ``fnmatchcase`` in the direction that matters: the ENTRY is the pattern and the
     excluded ref is the concrete string, because the question is what the entry would
@@ -630,19 +629,20 @@ def _install_worker_agent() -> None:
     # both files' writer locks, because this function reads one file and writes
     # another and each has its own independent writers.
     #
-    # ``agents_spec_lock`` is the template-spec lock every other read-modify-writer
-    # in this module holds (the reset path, the fork refresh, the dashboard PATCH):
-    # it serializes against anyone editing ``kirocrew-worker.json`` under us.
+    # ``agents_spec_lock`` is the lock the reset path, the fork refresh and the
+    # dashboard PATCH also hold, so none of them can edit ``kirocrew-worker.json``
+    # under us.
     # ``bridges._mcp_lock`` is ``kirocrew.json``'s OWN writer lock -- the one the app
     # MCP registration path takes for its read-modify-write of that file, as the
-    # comment above ``_finalize_and_write`` spells out. Without it, a deregistration
-    # landing after the mirror snapshot leaves a removed server's grant auto-approved
-    # on the worker; ``agents_spec_lock`` alone would not serialize against it,
-    # because that writer does not hold it.
+    # comment above ``default_spec_commit``'s ``_finalize_and_write`` spells out.
+    # Without it, a deregistration landing after the mirror snapshot leaves a removed
+    # server's grant auto-approved on the worker; ``agents_spec_lock`` alone would not
+    # serialize against it, because that writer does not hold it.
     #
-    # LOCK ORDER is established HERE, since nothing else in the tree nests these two:
-    # the file this function WRITES outermost, the file it READS innermost. A future
-    # nester takes them in that order.
+    # LOCK ORDER: the file this function WRITES outermost, the file it READS
+    # innermost. ``_install_heartbeat_agent``, ``_refilter_kept_mirrors`` and
+    # ``rebuild_agent_config`` (through ``write_default_spec``) nest the same two
+    # locks in the same order, and a future nester takes them in that order too.
     from kiro_crew.apps.bridges import _mcp_lock  # noqa: PLC0415 - boot path
 
     with agent_mod.agents_spec_lock(agents_dir), _mcp_lock():
@@ -984,10 +984,10 @@ def default_spec_fingerprint() -> str | None:
     CONTENT, not mtime. Two writes inside one filesystem timestamp tick, a restored
     backup, and a clock that steps backwards all produce a stale mirror with a
     plausible mtime, and each of those is a case where a revoked server would stay
-    auto-approved on a worker. The hash covers exactly the surface *agent*'s derived
-    spec copies (:func:`_mirrored_surface`) -- for the worker the same
-    :data:`_WORKER_MIRRORED_SHAPES` map the derivation reads -- so an edit to a key the
-    derived spec does not inherit does not force a pointless re-derive.
+    auto-approved on a worker. The hash covers exactly the surface the worker's derived
+    spec copies (:func:`_mirrored_surface`: the :data:`_WORKER_MIRRORED_SHAPES` keys plus
+    the default's ``skill://`` resources), so an edit to a key the derived spec does not
+    inherit does not force a pointless re-derive.
 
     ``None`` when the default spec is absent or unreadable: there is nothing to be
     stale against, and the caller treats that as "no check possible" rather than as
@@ -1008,7 +1008,9 @@ def _spec_fingerprint(spec: dict[str, Any] | None) -> str | None:
     Split from :func:`default_spec_fingerprint` because a caller that has the bytes must
     not go back to the file for their hash: the two reads are separate observations, and
     a write landing between them yields a fingerprint describing a generation the caller
-    never saw. Every pairing of a fingerprint with a file identity goes through here.
+    never saw. The worker derivation pairs its fingerprint with a file identity through
+    here; :func:`require_fresh_derived_spec` hashes the bytes it read with
+    :func:`_surface_fingerprint`, the same hash, for any derived agent.
     """
     return _surface_fingerprint(spec, _WORKER_AGENT)
 
@@ -1147,9 +1149,9 @@ def require_fresh_derived_spec(
     ``kirocrew.json`` has six write sites across three modules under two different
     file locks (the rebuild, three app-registration paths, the dashboard MCP sync,
     the agent-config PUT), so a re-derive hung off each writer leaks one hole per
-    writer nobody named -- which is how this arrived three rounds running. A check
-    here is ONE place, covers a writer added tomorrow, and cannot lose the race a
-    post-write hook can: it is not near the spawn, it IS the spawn.
+    writer nobody named. A check here is ONE place, covers a writer added tomorrow,
+    and cannot lose the race a post-write hook can: it is not near the spawn, it IS
+    the spawn.
 
     Cheap on the hot path: an identity comparison short-circuits before any hashing,
     and only the derived agents are examined at all, so every other spawn pays one
@@ -1274,12 +1276,11 @@ def require_unchanged_derived_spec(
 def _require_fresh_worker_spec(work_dir: str | Path | None) -> None:
     """Return only on POSITIVELY established freshness; raise on anything else.
 
-    Written with NO ``return`` statement, which is the point: every earlier version of
-    this check grew an early ``return`` for a case it could not evaluate -- a missing
-    default, an unreadable one -- and each of those is a fail-OPEN pass on the one
-    path where the mirror is unverifiable. Falling off the end is reachable only after
-    a verified match or a re-derive that succeeded, so the shape carries the invariant
-    instead of the reader having to audit each exit.
+    Written with NO ``return`` statement, which is the point: an early ``return`` for a
+    case the check cannot evaluate -- a missing default, an unreadable one -- is a
+    fail-OPEN pass on the one path where the mirror is unverifiable. Falling off the
+    end is reachable only after a verified match or a re-derive that succeeded, so the
+    shape carries the invariant instead of the reader having to audit each exit.
 
     A re-derive is itself positive establishment: it reads the installed default and
     writes the mirror inside one locked critical section, so on success the spec on
@@ -1614,10 +1615,10 @@ def _foreign_dashboard_author_spec_reason(spec: dict[str, Any] | None) -> str | 
 
     PROVENANCE by an installer-recorded digest in the ``agent_state`` sidecar, NOT by
     content marks. The dashboard-author stem was a user-creatable template name before it
-    became owned, so a user could hand-place a ``kirocrew-dashboard-author.json`` -- and,
-    as review found, so could a copy of ANOTHER owned agent (``kirocrew``, a conductor)
-    renamed onto the stem, which would forge any mark chosen from the managed spec's own
-    shape (its name, its ``kirocrew-core`` reference, even a narrowed server map). Content
+    became owned, so a user could hand-place a ``kirocrew-dashboard-author.json`` -- and
+    so could a copy of ANOTHER owned agent (``kirocrew``, a conductor) renamed onto
+    the stem, which would forge any mark chosen from the managed spec's own shape
+    (its name, its ``kirocrew-core`` reference, even a narrowed server map). Content
     marks cannot tell such a duplicate apart from the managed spec. The digest can: it is
     recorded by the installer AFTER it lands a write (:func:`_install_dashboard_author_agent`
     calls :func:`kiro_crew.agent_state.set_managed_digest`), so only a file whose exact
@@ -1761,12 +1762,11 @@ def _install_dashboard_author_agent() -> None:
     agents_dir = agent_mod.kiro_agents_dir_path()
     agents_dir.mkdir(parents=True, exist_ok=True)
     path = agents_dir / _DASHBOARD_AUTHOR_AGENT_FILENAME
-    # The whole read -> attribute -> write runs under ``agents_spec_lock``, the template-spec
-    # writer lock every other read-modify-writer of this directory holds (the worker
-    # installer, the reset path, the fork refresh, the dashboard PATCH). Without it two
-    # overlapping rebuilds could interleave their reads and writes. Holding the lock makes
-    # the ownership attribution and the write one atomic step, as the sibling worker
-    # installer does.
+    # The whole read -> attribute -> write runs under ``agents_spec_lock``, the lock the
+    # worker installer, the reset path, the fork refresh and the dashboard PATCH also
+    # hold. Without it two overlapping rebuilds could interleave their reads and writes.
+    # Holding the lock makes the ownership attribution and the write one atomic step, as
+    # the sibling worker installer does.
     with agent_mod.agents_spec_lock(agents_dir):
         # Preserve the two AUTHORIZED, persisted user settings a rebuild would otherwise
         # discard, taken ONLY from a file this installer confirms is its own prior managed
@@ -1778,7 +1778,7 @@ def _install_dashboard_author_agent() -> None:
         existing = agent_mod._read_spec_capped(path)
         removed_all_skills = False
         if isinstance(existing, dict) and _is_confirmed_managed_dashboard_author(existing):
-            # Strict, for the reason ``_worker_model_is_pinned`` gives: an unreadable
+            # Strict, for the reason ``_worker_model_is_user_pinned`` gives: an unreadable
             # sidecar is unknown ownership, so the spec's model (a possible pin) is kept.
             try:
                 managed = agent_state.get_model_managed(_MANAGED_OWNED_NAME, strict=True)
