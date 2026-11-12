@@ -95,7 +95,7 @@ def _gateway_memory_lines() -> list[str]:
         if ceiling > 0:
             lines.append(
                 f"  session ceiling: ✅ {ceiling} MiB per session process tree "
-                "(session.watchdog_rss_max_mb; idle sessions above it are recycled)"
+                "(session.watchdog_rss_max_mb; idle sessions that grow past it are recycled)"
             )
         else:
             lines.append(

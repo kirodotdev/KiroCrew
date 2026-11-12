@@ -268,6 +268,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
     named_cron_caller,
     opened,
     plant_day_link,
+    rss_runtimes_read_under_ceiling,
     short_sock_dir,
 )
 

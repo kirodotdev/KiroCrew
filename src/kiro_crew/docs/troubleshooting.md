@@ -544,6 +544,29 @@ About 700 MB of RSS is expected while the embedding model is loaded. One copy is
 shared by vector memory and the Knowledge Library. The model loads lazily on
 first use and stays resident afterwards.
 
+### A chat with many MCP servers uses several GB
+
+Each local MCP server is a process of its own, so a chat with many of them is
+large from its first reply: measured on Windows, about 0.6 GB plus 0.11 GB for
+each local server, which is 7 GB with 57 servers and 10.6 GB with 93. Linux and
+macOS count memory differently, so the same chat reads a different size there.
+
+The memory watchdog (`session.watchdog_rss_max_mb`, default 4096) recycles an
+idle chat that grows past the limit. It takes a chat's size at its second
+reading of the chat's process, about five minutes after the first. A chat that
+is above the limit then is that large by design: it is left running, with no
+notice in the chat, and recycled only once it passes twice that size. Such a
+chat can therefore hold twice its starting size before it is recycled (14 GB
+and 21 GB in the two examples). The gateway log has one `RSS footprint` WARNING
+for each chat left running this way.
+
+Once the watchdog has recycled a chat, it judges that chat by the limit alone
+for the next 24 hours: if the fresh process is over the limit again it is
+recycled again, and after three recycles in a row the watchdog stops, leaves
+the chat running, and says so in the chat with the name of the setting.
+
+To use less memory, turn off the local MCP servers the chat does not need.
+
 ### `~/.kiro/crew/scratch/` is using a lot of disk
 
 Every agent process gets a directory under `~/.kiro/crew/scratch/` for its
