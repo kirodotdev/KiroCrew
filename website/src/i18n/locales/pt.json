@@ -9795,7 +9795,7 @@
       "css_found_counts": "Serão definidas {{dark}} cores do modo escuro, {{light}} do modo claro e {{shared}} compartilhadas (modos escuro e claro).",
       "css_ignored_invalid": "Ignoradas, valor não permitido (use uma cor, um tamanho ou uma sombra): {{names}}",
       "css_ignored_unknown": "Ignoradas, o painel não tem nenhuma cor chamada: {{names}}",
-      "css_more_names": "{{names}} e mais {{extra}}",
+      "css_more_count": "mais {{extra}}",
       "css_no_variables": "Nenhuma cor de tema encontrada. Use Copiar prompt acima ou cole linhas como no exemplo.",
       "css_skipped_note": "Ao salvar, as linhas ignoradas ficam de fora e todo o resto é mantido.",
       "dark_mode_colors": "Cores do modo escuro",

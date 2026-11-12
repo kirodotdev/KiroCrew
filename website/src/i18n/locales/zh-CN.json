@@ -9339,7 +9339,7 @@
       "css_found_counts": "将设置 {{dark}} 个深色模式颜色、{{light}} 个浅色模式颜色和 {{shared}} 个通用颜色（深色和浅色模式均适用）。",
       "css_ignored_invalid": "已跳过，值不允许（应为颜色、尺寸或阴影）：{{names}}",
       "css_ignored_unknown": "已跳过，仪表板中没有此名称的颜色：{{names}}",
-      "css_more_names": "{{names}}，以及另外 {{extra}} 个",
+      "css_more_count": "另外 {{extra}} 个",
       "css_no_variables": "未找到主题颜色。使用上方的“复制提示词”，或按示例粘贴各行。",
       "css_skipped_note": "保存时会忽略已跳过的行，其余内容全部保留。",
       "dark_mode_colors": "深色模式配色",

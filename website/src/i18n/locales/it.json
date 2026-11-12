@@ -9795,7 +9795,7 @@
       "css_found_counts": "Imposterà {{dark}} colori della modalità scura, {{light}} della modalità chiara e {{shared}} condivisi (sia scura sia chiara).",
       "css_ignored_invalid": "Ignorati, valore non consentito (usa un colore, una dimensione o un’ombra): {{names}}",
       "css_ignored_unknown": "Ignorati, la dashboard non ha nessun colore con questo nome: {{names}}",
-      "css_more_names": "{{names}} e altri {{extra}}",
+      "css_more_count": "altri {{extra}}",
       "css_no_variables": "Nessun colore del tema trovato. Usa Copia il prompt qui sopra o incolla righe come quelle dell’esempio.",
       "css_skipped_note": "Il salvataggio esclude le righe ignorate e mantiene tutto il resto.",
       "dark_mode_colors": "Colori della modalità scura",

@@ -9339,7 +9339,7 @@
       "css_found_counts": "ダークモード {{dark}} 色、ライトモード {{light}} 色、両モード共通 {{shared}} 色を設定します。",
       "css_ignored_invalid": "スキップ（使用できない値。色・サイズ・シャドウのいずれかを使います）: {{names}}",
       "css_ignored_unknown": "スキップ（ダッシュボードにこの名前の色はありません）: {{names}}",
-      "css_more_names": "{{names}} ほか {{extra}} 件",
+      "css_more_count": "ほか {{extra}} 件",
       "css_no_variables": "テーマの色が見つかりません。上の「プロンプトをコピー」を使うか、例のような行を貼り付けます。",
       "css_skipped_note": "保存時はスキップした行を除き、それ以外をすべて保持します。",
       "dark_mode_colors": "ダークモード色",

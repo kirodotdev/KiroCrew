@@ -14,6 +14,7 @@ import { Badge, Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { api, type SlackConfigData, type SlackManifestChange, type SlackManifestStatus } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
+import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { SlackCodeDraft } from './SlackCodePanel'
 import { SLACK_CODE_SWITCHES, SLACK_CODE_SWITCH_LABEL, isSlackCodeSwitch } from './slackCodeSwitches'
@@ -374,9 +375,7 @@ export function SlackManifestUpdate({ data, draft, manifestText, onSave, saving 
       {current && (savedOn.length > 0 || (readingShown && installStatus === 'unknown')) && !pending && !TOKEN_ERRORS.has(installStatus) && !checkFailed(reading) && (
         <p className="text-[12px] text-muted m-0">
           {i18nT(detailKey, {
-            features: (reading?.install.disabled_features ?? [])
-              .map(featureLabel)
-              .join(', '),
+            features: fmtList((reading?.install.disabled_features ?? []).map(featureLabel), { style: 'narrow' }),
           })}
         </p>
       )}

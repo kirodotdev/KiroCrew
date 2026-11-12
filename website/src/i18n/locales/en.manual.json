@@ -3641,7 +3641,7 @@
       "css_case_hint": "Names are case-sensitive: use {{right}}, not {{wrong}}.",
       "css_ignored_invalid": "Skipped, value not allowed (use a color, size or shadow): {{names}}",
       "css_skipped_note": "Save leaves the skipped lines out and keeps everything else.",
-      "css_more_names": "{{names}} and {{extra}} more",
+      "css_more_count": "{{extra}} more",
       "ai_prompt_title": "✨ Design it with AI",
       "ai_prompt_help": "Copy this prompt into any AI chat with a screenshot of a look you like, then paste the CSS it replies with below.",
       "ai_prompt_copy": "Copy prompt",
