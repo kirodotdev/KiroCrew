@@ -1260,9 +1260,11 @@ destination from the transport's own `configured_targets()` through
 `_deliver_channel_dm` — which is what makes it the route for a proactive notice
 raised somewhere other than the channel itself. Its optional `posted` list receives
 `(conversation id, message id)` for each confirmed part; the notification bridge
-uses it to link a pending-approval note to the approval a Telegram reply answers
-(app-notifications, phase B4d), and a Telegram message carries the quoted
-message's id as `TelegramInboundMessage.reply_to_message_id`.
+uses it to link a pending-approval note to the approval a Telegram or Discord reply
+answers (app-notifications, phases B4d and B4g), and a Telegram or Discord message
+carries the quoted message's id as `TelegramInboundMessage.reply_to_message_id` /
+`DiscordInboundMessage.reply_to_message_id` (Discord reads it from a REPLY-type
+message's `message_reference` only).
 
 **A proactive channel send names its sender.** Every session and cron can reach
 the same owner DM, so `_deliver_send_message_fallback` ends the text with one line,

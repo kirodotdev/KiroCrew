@@ -107,6 +107,18 @@ class DiscordInbound:
     guild_id: str = ""  # empty string == DM channel
     is_bot: bool = False
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    #: Id of the message this one REPLIES to, or "". With the channel id it names
+    #: a bridged note an ``approve`` / ``deny`` reply answers (notifications, B4g).
+    reply_to_message_id: str = ""
+
+
+def _reply_message_id(d: dict[str, Any]) -> str:
+    """The id of the message a REPLY (type 19) quotes, or "", read defensively."""
+    if d.get("type", 0) != 19:
+        return ""
+    ref = d.get("message_reference")
+    raw = ref.get("message_id") if isinstance(ref, dict) else None
+    return raw if isinstance(raw, str) and raw.isdigit() else ""
 
 
 @dataclass
@@ -430,6 +442,7 @@ def _on_dispatch(self: DiscordClient, event: str, d: dict) -> None:
                 for attachment in (d.get("attachments") or [])
                 if isinstance(attachment, dict)
             ],
+            reply_to_message_id=_reply_message_id(d),
         )
         if inbound.is_bot or inbound.user_id == self.bot_user_id:
             return  # never respond to bots (incl. ourselves) — loop guard
