@@ -2260,6 +2260,12 @@ interval one call dials as a half-open probe, and any answered read, a `200` or 
 included, re-arms the window and refuses as the cache would have. The
 `tool_policy.resolution_failed` audit row names the port it dialled and the
 resolution step that chose it (`port=`, `port_source=`) beside `error_class=`.
+Every one of these rows is written best effort (`mcp_shared_policy._audit_policy`):
+an audit that cannot be written -- under an enforced harness's credential mask the
+SEL trust root is withheld, so `sel()` raises -- is logged and never decides the
+answer. Left unguarded, that failure escaped as the resolver's own result, so a
+masked child reported `FileExistsError` on `trust/` where the truth was "the policy
+is unresolved", and `tools/list` broke with it.
 
 The other reasons stay permissive, each because no operator exclusion is known to exist
 for that caller or because refusal would be permanent rather than a window that closes. `agent_not_resolved` is the `404`, returned both for a session still
