@@ -241,6 +241,7 @@
     "gateway_offline_reconnecting": "Gateway offline — riconnessione in corso",
     "relay_access_refused": "Il relay ha rifiutato la connessione — nuovo tentativo",
     "relay_session_ended": "Sessione del relay terminata — riapri questa Crew",
+    "relay_crew_reconnecting": "Riconnessione…",
     "gateway_offline_session_expired_see_banner_above": "Gateway offline — sessione scaduta, vedi il banner qui sopra",
     "gateway_restarting_reconnecting": "Il gateway si sta riavviando — riconnessione in corso…",
     "hide_full_changelog": "▾ Nascondi il changelog completo",

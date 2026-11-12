@@ -21,10 +21,18 @@
  * non-secret sign-in marker from its first grant and sends it on every
  * renewal. The gateway refuses SIGN_IN_CHANGED when the vault now holds
  * another account, and that one window closes at its own next renewal.
+ *
+ * A window stops waiting for its Crew, and shows a notice in place of the
+ * Crew's page, when renewal stops on CREW_OFFLINE or CREW_ACCESS_NOT_GRANTED,
+ * or when the window reports the Crew unreachable (its retries ran out). The
+ * renewal is stopped either way, so nothing retries behind the notice. Check
+ * again is one fresh attempt through `restart`; a refusal puts the notice back.
+ * Access refusals are noticed at the next renewal, up to 240 s after the change.
  */
 
 // The relay's endpoint ID grammar has one definition, in the window module.
 const { isEndpointId } = require("./relay-crew-window");
+const { NOTICE, NOTICE_FOR_CODE, noticeText } = require("./relay-crew-notice");
 
 // Client codes that renewal must read differently from the open call: the
 // feature turned off stops renewal, and a gateway that can't be reached (or
@@ -63,6 +71,11 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       if (o.code === "SIGNED_OUT") closeAll("SIGNED_OUT");
       // An account switch closes only the window this renewal drives.
       if (o.code === "SIGN_IN_CHANGED") closeOne(endpointId, renewal, "SIGN_IN_CHANGED");
+      const kind = NOTICE_FOR_CODE[o.code];
+      if (kind) {
+        const entry = windows.get(endpointId);
+        if (entry && entry.renewal === renewal) showNotice(endpointId, entry, kind);
+      }
     };
     const renewal = createRenewal({ endpointId, mint, holder, onOutcome, log });
     const first = await renewal.start();
@@ -96,6 +109,14 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     say(endpointId, `closed (${reason})`);
   }
 
+  // Replace the Crew's page with a notice. The name is the Crew's own, shown
+  // only in the window and never logged.
+  function showNotice(endpointId, entry, kind) {
+    entry.notice = kind;
+    try { entry.win.showNotice(noticeText(kind, entry.crew && entry.crew.name)); } catch { /* window gone */ }
+    say(endpointId, `notice (${kind})`);
+  }
+
   function wire(entry) {
     entry.renewal.attach(entry.win);
     entry.win.onVisibilityChange((hidden) => entry.renewal.setHidden(hidden));
@@ -121,6 +142,19 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       win = openWindow({ endpointId, crewUrl: crew.crewUrl, title: crew.name, getToken: holder.current });
       wire({ win, renewal });
       win.onClosed(() => { if (windows.get(endpointId)?.win === win) windows.delete(endpointId); });
+      // Registered once per window, not in wire(): a restart re-wires the same window.
+      win.onUnreachable(() => {
+        const entry = windows.get(endpointId);
+        if (!entry || entry.win !== win) return;
+        try { entry.renewal.stop(); } catch { /* still show the notice */ }
+        showNotice(endpointId, entry, NOTICE.UNAVAILABLE);
+      });
+      win.onNoticeAction((action) => {
+        const entry = windows.get(endpointId);
+        if (!entry || entry.win !== win) return;
+        if (action === "close") { try { win.close(); } catch { /* already gone */ } return; }
+        if (action === "check" && entry.renewal.isStopped()) once(endpointId, () => restart(endpointId, entry));
+      });
     } catch {
       renewal.stop();
       if (win) win.close();
@@ -134,7 +168,9 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
 
   // An open window whose renewal stopped (the Crew went offline, the sign-in
   // ended): mint again on the same holder, which the window already reads,
-  // and reload. A refusal leaves the window as it is and answers its code.
+  // and reload. A refusal answers its code and leaves the window as it is,
+  // except that a refusal with a notice of its own shows it, and a notice
+  // already up is shown again so Check again visibly tried.
   async function restart(endpointId, entry) {
     // The same window, so the same sign-in: its first mint sends its marker.
     const crew = { signInMarker: entry.crew ? entry.crew.signInMarker : null };
@@ -148,6 +184,11 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
         return { ok: false, error };
       }
       say(endpointId, error);
+      const kind = NOTICE_FOR_CODE[error] || entry.notice;
+      if (kind && windows.get(endpointId) === entry && !entry.win.isClosed()) {
+        // The name from the window's first grant: this refused mint brought none.
+        showNotice(endpointId, entry, kind);
+      }
       return { ok: false, error };
     }
     // The window closed while the mint was in flight: its close listeners have
@@ -159,6 +200,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     }
     entry.renewal = renewal;
     entry.crew = crew;
+    entry.notice = null;
     wire(entry);
     entry.win.reload();
     entry.win.focus();
