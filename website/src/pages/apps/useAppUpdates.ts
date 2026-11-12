@@ -66,6 +66,15 @@ export function useAppUpdates({
   const [updatingAll, setUpdatingAll] = useState<{ done: number; total: number } | null>(null)
   /** Name of the app whose single in-place update is in flight, or null. */
   const [updatePending, setUpdatePending] = useState<string | null>(null)
+  /**
+   * The last Update All notice that sent apps to their details (repository
+   * trust, or chat-control consent), with those apps, so the page can link
+   * each one there. `rerunUpdate` is true for a repository-trust app, whose
+   * detail page reruns the update and offers that trust; a consent app's
+   * update already landed, so its link only opens the page. Keyed on the
+   * notice text: the page shows the links only while that notice is its error.
+   */
+  const [trustHandoff, setTrustHandoff] = useState<{ message: string; apps: { name: string; label: string; rerunUpdate: boolean }[] } | null>(null)
   const label = (name: string) => apps.find(a => a.name === name)?.displayName || name
   /**
    * The `source` override for an update of *name*: the registry for a path
@@ -107,7 +116,18 @@ export function useAppUpdates({
   // shape). Not `runUpdate` itself — that catch-all resolves on failure and
   // would make the gate report success over a failed update.
   const retryUpdate = async (name: string) => {
-    const updateResult = await callUpdate(name)
+    let updateResult: Awaited<ReturnType<typeof callUpdate>>
+    try {
+      updateResult = await callUpdate(name)
+    } catch (e) {
+      // The grant just saved covers the app's local folder only, which the
+      // registry update does not install from: the detail page asks to trust
+      // the repository, as `runUpdate` hands off. The trust step itself worked.
+      if (!localOnlyTrustRepository(e)) throw e
+      announceAppsChanged()
+      updateApp(name)
+      return
+    }
     announceAppsChanged()
     if (updateResult?.notice === 'session_approval_reconsent') {
       updateApp(name)
@@ -174,6 +194,7 @@ export function useAppUpdates({
     const targets = updatables.map(a => a.name)
     setUpdatingAll({ done: 0, total: targets.length })
     setError('')
+    setTrustHandoff(null)
     const failed: string[] = []
     const needsTrust: string[] = []
     let succeeded = 0
@@ -231,9 +252,18 @@ export function useAppUpdates({
     // One line per fact: the notice surface is whitespace-pre-wrap, so a
     // newline keeps "Docs failed" and "Crew Keyboard awaits consent" from
     // reading as one sentence about each other.
-    if (notices.length) setError(notices.join('\n'))
-    else setSuccess(i18nT('pages.appsPage.updated_app', { count: targets.length }))
+    if (notices.length) {
+      const message = notices.join('\n')
+      setError(message)
+      // The consent and trust lines tell the user to open each app's details,
+      // so the page offers that step for every app named.
+      const handoff = [
+        ...consentNeeded.map(name => ({ name, label: label(name), rerunUpdate: false })),
+        ...trustNeeded.map(name => ({ name, label: label(name), rerunUpdate: true })),
+      ]
+      if (handoff.length) setTrustHandoff({ message, apps: handoff })
+    } else setSuccess(i18nT('pages.appsPage.updated_app', { count: targets.length }))
   }
 
-  return { updatingAll, updatePending, runUpdate, updateAll }
+  return { updatingAll, updatePending, runUpdate, updateAll, trustHandoff }
 }
