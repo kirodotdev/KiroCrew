@@ -2841,6 +2841,13 @@ account's identity before advising the setting. A server the host did report
 (still connecting, or a same-named entry that is not `client` origin) gets the
 plain timeout.
 
+Every readiness-barrier timeout (`_readiness_timeout`, whichever message it
+carries) has `mcp_readiness_timeout = True` (declared `False` on
+`AcpRequestTimeout`). The dashboard chat's terminal row reads that tag, never the
+message, and carries the `tools_not_ready` gateway notice, which the dashboard
+words in the reader's language. The message stays the row's English content and
+the gateway log line.
+
 A governed host is not always silent. KAS 0.66.62 under an enterprise registry
 sends a `_kiro/mcp/status` snapshot for the session with `servers` empty and the
 dropped name in `accessModeFilteredServers`. (`unresolvedRegistryServers` is

@@ -7220,6 +7220,7 @@
         "retry_session_busy": "Session busy — resume to pick up where it stopped.",
         "retry_turn_stalled": "Turn stalled — resume to pick up where it stopped.",
         "retry_tool_stalled": "Tool appeared stalled — resume to pick up where it stopped.",
+        "retry_tools_not_ready": "The agent could not start because its built-in tools were not ready in time. Your message is still here — resume to try again. If it keeps happening, the gateway log has the details.",
         "retry_backend_hiccup": "The agent hit a brief problem — resume to pick up where it stopped.",
         "default_model": "Change default model",
         "default_model_hint": "Open Settings → Chat → Default Model. New sessions start on this value.",
@@ -7551,6 +7552,7 @@
         "kas_signed_out": "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro Agent → Kiro sign-in, then send your message again.",
         "kas_signed_out_sign_in_below": "Not signed in to Kiro. Sign in below, then send your message again.",
         "windows_spawn_blocked": "Windows would not start the agent program ({{binary}}). AppLocker, an EDR product or group policy on this computer likely blocked it. Ask your IT administrator to allow that file, then start a new chat.",
+        "tools_not_ready": "The agent could not start because its built-in tools were not ready in time. Your message is still here. Try again in a moment. If it keeps happening, the gateway log has the details.",
         "kas_route_relay": "Your agent runs through kiro-cli.",
         "kas_route_bundle": "Your agent runs on {{productName}}'s own engine.",
         "kas_route_lead": "{{route}} {{message}}"

@@ -12390,6 +12390,7 @@
         "retry_session_busy": "会话正忙 — 恢复即可从中断处继续。",
         "retry_turn_stalled": "本轮已停滞 — 恢复即可从中断处继续。",
         "retry_tool_stalled": "工具似乎已停滞 — 恢复即可从中断处继续。",
+        "retry_tools_not_ready": "智能体未能启动，因为它的内置工具没有及时就绪。你的消息仍在这里 — 恢复即可重试。如果反复出现，详情见网关日志。",
         "retry_backend_hiccup": "智能体遇到了短暂故障 — 恢复即可从中断处继续。",
         "default_model": "更改默认模型",
         "default_model_hint": "打开“设置 → 对话 → 默认模型”。新会话都从这个值开始。",
@@ -12977,6 +12978,7 @@
         "kas_signed_out": "尚未登录 Kiro。请在“设置 → 代理运行框架 → Kiro Agent → Kiro 登录”中登录，然后重新发送你的消息。",
         "kas_signed_out_sign_in_below": "尚未登录 Kiro。请在下方登录，然后重新发送你的消息。",
         "windows_spawn_blocked": "Windows 未能启动代理程序（{{binary}}）。很可能是这台电脑上的 AppLocker、EDR 产品或组策略拦截了它。请联系 IT 管理员放行该文件，然后开始新的对话。",
+        "tools_not_ready": "智能体未能启动，因为它的内置工具没有及时就绪。你的消息仍在这里。请稍后重试。如果反复出现，详情见网关日志。",
         "kas_route_relay": "你的代理通过 kiro-cli 运行。",
         "kas_route_bundle": "你的代理在 {{productName}} 自带的引擎上运行。",
         "kas_route_lead": "{{route}}{{message}}"
