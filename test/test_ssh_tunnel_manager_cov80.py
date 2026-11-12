@@ -76,12 +76,16 @@ class _FakeProc:
 
 
 class _FakeStderr:
-    def __init__(self, data: bytes) -> None:
-        self._data = data
+    """A read never crosses into the next of *chunks*, so a test sets the boundaries."""
+
+    def __init__(self, *chunks: bytes) -> None:
+        self._chunks = list(chunks)
 
     async def read(self, n: int = -1) -> bytes:
-        cut = len(self._data) if n < 0 else n
-        data, self._data = self._data[:cut], self._data[cut:]
+        head = self._chunks[0] if self._chunks else b""
+        cut = len(head) if n < 0 else n
+        data, rest = head[:cut], head[cut:]
+        self._chunks[:1] = [rest] if rest else []
         return data
 
 
@@ -380,12 +384,20 @@ with open(marker, "w") as f:
 time.sleep(60)
 """
 
-# A child that fails the way ExitOnForwardFailure does: stderr, then exit 255.
+# A child that fails the way ssh does when the tunnel's own forward cannot bind:
+# under ExitOnForwardFailure=no it keeps running, and only stderr names the port.
+# With a marker path it first waits for that file, so the tunnel is up by then.
 _BIND_FAILURE_CHILD = r"""
-import sys
-sys.stderr.write("bind [127.0.0.1]:53997: Address already in use\r\n")
-sys.stderr.write("Could not request local forwarding.\r\n")
-sys.exit(255)
+import os, sys, time
+port = sys.argv[1]
+if len(sys.argv) > 2:
+    deadline = time.monotonic() + 30
+    while not os.path.exists(sys.argv[2]) and time.monotonic() < deadline:
+        time.sleep(0.05)
+sys.stderr.write(f"bind [127.0.0.1]:{port}: Address already in use\r\n")
+sys.stderr.write(f"channel_setup_fwd_listener_tcpip: cannot listen to port: {port}\r\n")
+sys.stderr.flush()
+time.sleep(60)
 """
 
 
@@ -477,21 +489,61 @@ class TestStderrIsDrainedWhileRunning:
         # Held bound but not listening, so the readiness wait's connect is refused
         # and no other process can start listening on this port mid-test.
         held = _held_port(listening=False)
-        tunnel = _SshTunnel(
-            "cd-1", "cd-1-alias", held.getsockname()[1], 7777, connect_timeout_secs=10
-        )
-        argv = [sys.executable, "-c", _BIND_FAILURE_CHILD]
+        port = held.getsockname()[1]
+        tunnel = _SshTunnel("cd-1", "cd-1-alias", port, 7777, connect_timeout_secs=10)
+        argv = [sys.executable, "-c", _BIND_FAILURE_CHILD, str(port)]
         monkeypatch.setattr(tunnel, "_build_argv", lambda: argv)
 
         try:
             assert await tunnel.start() is False
         finally:
             held.close()
+            proc = tunnel._proc
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
         assert tunnel.status.state is TunnelState.ERROR
         assert tunnel.status.error.startswith(
             "ssh forward bind failed (local port already in use)"
         ), tunnel.status.error
         assert "Address already in use" in tunnel.status.error
+        assert _pending_tasks() == []
+
+    @pytest.mark.asyncio
+    async def test_a_bind_lost_after_the_start_ends_the_child(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Another process already LISTENS on the port, so the readiness wait is
+        # answered before ssh binds; the failure only arrives on stderr later.
+        import sys
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        held = _held_port(listening=True)
+        port = held.getsockname()[1]
+        marker = tmp_path / "tunnel-up"
+        exits: list[str] = []
+        tunnel = _SshTunnel("cd-1", "cd-1-alias", port, 7777, on_exit=exits.append)
+        argv = [sys.executable, "-c", _BIND_FAILURE_CHILD, str(port), str(marker)]
+        monkeypatch.setattr(tunnel, "_build_argv", lambda: argv)
+        proc = None
+        try:
+            assert await tunnel.start() is True
+            proc = tunnel._proc
+            marker.write_text("up")
+            await async_wait_until(
+                lambda: exits == ["cd-1"],
+                describe=lambda: f"state={tunnel.status.state} exits={exits}",
+            )
+            assert tunnel.status.state is TunnelState.ERROR
+            assert tunnel.status.error.startswith(
+                "ssh forward bind failed (local port already in use)"
+            ), tunnel.status.error
+            await tunnel.stop()
+        finally:
+            held.close()
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
         assert _pending_tasks() == []
 
     @pytest.mark.asyncio
@@ -554,6 +606,78 @@ class TestStderrIsDrainedWhileRunning:
         assert exits == [], f"a deliberate stop fired the self-heal seam: {exits}"
         assert tunnel.status.state == TunnelState.STOPPED
         assert _pending_tasks() == []
+
+
+class TestAForwardTheSshConfigAdds:
+    """A forward the host's ssh_config block adds on another port is not the tunnel's own.
+
+    ssh names the port of every forward it could not bind and, under
+    ``ExitOnForwardFailure=no``, keeps running; another port the user's own ssh
+    session already holds must neither end the child nor label a later exit.
+    """
+
+    _FOREIGN = (
+        b"bind [127.0.0.1]:8888: Address already in use\r\n"
+        b"channel_setup_fwd_listener_tcpip: cannot listen to port: 8888\r\n"
+    )
+    _OWN = b"channel_setup_fwd_listener_tcpip: cannot listen to port: 53997\r\n"
+
+    @pytest.mark.asyncio
+    async def test_its_bind_failure_is_not_the_tunnels(self) -> None:
+        tunnel = _tunnel()  # local port 53997
+        proc = _FakeProc(stderr=_FakeStderr(self._FOREIGN))
+        tunnel._proc = proc  # type: ignore[assignment]
+        await tunnel._drain_stderr()
+        assert proc.terminated is False
+
+        tunnel._stderr_buf += "Timeout, server cd-1-alias not responding.\r\n"
+        assert tunnel._exit_error(255).startswith("ssh exited 255: ")
+        tunnel._proc = _FakeProc(stderr=_FakeStderr(self._OWN))  # type: ignore[assignment]
+        await tunnel._drain_stderr()
+        assert tunnel._exit_error(255).startswith("ssh forward bind failed")
+
+    @pytest.mark.asyncio
+    async def test_the_tunnels_failure_counts_after_the_tail_drops_it(self) -> None:
+        from kiro_crew.instances.ssh_tunnel_manager_child import _STDOUT_READ_CHUNK
+
+        # One read: the tunnel's own line, then enough of the inherited forward's
+        # to push it out of the bounded stderr tail.
+        burst = self._OWN + self._FOREIGN * 20
+        assert len(burst) <= _STDOUT_READ_CHUNK
+        tunnel = _tunnel()  # local port 53997
+        proc = _FakeProc(stderr=_FakeStderr(burst))
+        tunnel._proc = proc  # type: ignore[assignment]
+        await tunnel._drain_stderr()
+        assert "port: 53997" not in tunnel._stderr_buf
+        assert proc.terminated is True
+        assert tunnel._exit_error(255).startswith(
+            "ssh forward bind failed (local port already in use)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_line_cut_at_the_tunnels_port_is_not_the_tunnels(self) -> None:
+        # A read ends inside "54007" exactly where the tunnel's "5400" stops.
+        tunnel = _SshTunnel("cd-1", "cd-1-alias", 5400, 7777)
+        proc = _FakeProc(
+            stderr=_FakeStderr(
+                b"channel_setup_fwd_listener_tcpip: cannot listen to port: 5400", b"7\r\n"
+            )
+        )
+        tunnel._proc = proc  # type: ignore[assignment]
+        await tunnel._drain_stderr()
+        assert proc.terminated is False
+        assert not tunnel._exit_error(255).startswith("ssh forward bind failed")
+
+    @pytest.mark.asyncio
+    async def test_the_tunnels_failure_outranks_a_banner_phrase(self) -> None:
+        # A server banner, shown at the pinned LogLevel=INFO, can carry an auth phrase.
+        banner = b"Permission denied to anyone not authorised to use this host.\r\n"
+        tunnel = _tunnel()  # local port 53997
+        tunnel._proc = _FakeProc(stderr=_FakeStderr(banner + self._OWN))  # type: ignore[assignment]
+        await tunnel._drain_stderr()
+        assert tunnel._exit_error(255).startswith(
+            "ssh forward bind failed (local port already in use)"
+        )
 
 
 class TestMonitor:

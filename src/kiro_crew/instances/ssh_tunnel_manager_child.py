@@ -46,6 +46,7 @@ from kiro_crew.instances.ssh_tunnel_manager_child_text import (
     _build_ssm_tunnel_argv,
     _first_hit,
     _sanitize_banner,
+    _ssh_cannot_listen_on,
     _ssm_close_reason,
     _strip_benign_ssh_noise,
 )
@@ -241,6 +242,7 @@ class _SshTunnel:
         self._probe_failed = False  # set when the health probe forced teardown
         self._stopping = False
         self._stderr_buf = ""
+        self._own_bind_failed = False  # set by _drain_stderr, read by _exit_error
         # SSM only: the child's close notices go to stdout, so that pipe is
         # drained concurrently for the whole session by _stdout_task rather than
         # read once after exit. A second pipe read only at exit would deadlock a
@@ -492,7 +494,8 @@ class _SshTunnel:
         """Poll the local forward until it accepts a connection or we time out.
 
         Fails early if the ssh child exits before the port comes up (e.g. auth
-        failure, ExitOnForwardFailure), capturing stderr for diagnostics.
+        failure, or its own forward failing to bind, which :meth:`_drain_stderr`
+        ends it on), capturing stderr for diagnostics.
 
         A timeout with the child still running is reported by
         :meth:`_ready_timeout_error`, which names the timeout tunable.
@@ -504,7 +507,7 @@ class _SshTunnel:
             if await self._port_reachable():
                 # A reachable port is NOT proof THIS child bound it: a lingering
                 # tunnel or orphaned ssh can answer while our child already lost
-                # the bind race (ExitOnForwardFailure -> exit 255). Confirm our
+                # the bind race (the stderr drain then ends it). Confirm our
                 # child is still alive before declaring the tunnel ready.
                 if await self._failed_on_child_exit():
                     return False
@@ -699,6 +702,12 @@ class _SshTunnel:
         # failure (the loop symptom was this warning hiding "bind: ... in use").
         tail = _strip_benign_ssh_noise(self._stderr_buf)
         low = tail.lower()
+        # The drain saw this tunnel's own port fail to bind and ended the child for
+        # it, so no phrase in the tail outranks that, and the tail may have dropped
+        # the line. A forward the user's ssh_config adds on another port never sets it.
+        if self._own_bind_failed:
+            detail = _sanitize_banner(tail, anchor=_first_hit(low, _SSH_BIND_SIGNALS))
+            return f"ssh forward bind failed (local port already in use): {detail}"
         # Genuine ssh auth signals first, so a real auth failure is never masked
         # by a transport phrase that happens to co-occur in the same banner.
         hit = _first_hit(low, _SSH_AUTH_SIGNALS)
@@ -723,10 +732,6 @@ class _SshTunnel:
             if first_connect:
                 return f"ssh tunnel transport drop ({_FIRST_CONNECT_DROP_HINT}): {detail}"
             return f"ssh tunnel transport drop: {detail}"
-        hit = _first_hit(low, _SSH_BIND_SIGNALS)
-        if hit is not None:
-            detail = _sanitize_banner(tail, anchor=hit)
-            return f"ssh forward bind failed (local port already in use): {detail}"
         if tail:
             return f"ssh exited {returncode}: {_sanitize_banner(tail)}"
         return f"ssh exited with code {returncode}"
@@ -923,20 +928,39 @@ class _SshTunnel:
         while the tunnel still reads CONNECTED.
 
         The buffer keeps the last ``_MAX_STDERR_CHARS`` of the whole stream,
-        which is what the exit classifiers read. The decoder is incremental, so
+        which is what the phrase classifiers read. The decoder is incremental, so
         a multi-byte sequence split across two reads decodes as it does whole.
+
+        An ssh child whose OWN forward could not bind is ended here, at any
+        point in its life. It runs with ``ExitOnForwardFailure=no`` so that a
+        forward the user's ssh_config adds on another port cannot end the
+        tunnel, and only the stderr line naming the port tells the two apart;
+        ending it hands the exit to the readiness wait or :meth:`_monitor`, as
+        ssh's own exit did.
+        That line is looked for in every complete line as it arrives, not in the
+        tail, and the finding is latched in ``_own_bind_failed`` for
+        :meth:`_exit_error`; a line still unterminated waits for the next read.
         """
         proc = self._proc
         if proc is None or proc.stderr is None:
             return
         stream = proc.stderr
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
         with contextlib.suppress(Exception):
             while True:
                 data = await stream.read(_STDOUT_READ_CHUNK)
                 text = decoder.decode(data, final=not data)
                 if text:
                     self._stderr_buf = (self._stderr_buf + text)[-_MAX_STDERR_CHARS:]
+                if self._transport == "ssh":
+                    pending += text
+                    lines, _, pending = pending.rpartition("\n") if data else (pending, "", "")
+                    pending = pending[-_MAX_STDERR_CHARS:]
+                    if _ssh_cannot_listen_on(lines, self._local_port):
+                        self._own_bind_failed = True
+                        with contextlib.suppress(ProcessLookupError):
+                            proc.terminate()
                 if not data:
                     return
 
