@@ -14,7 +14,7 @@ import logging
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import memory_v2
-from kiro_crew.embeddings import PRIORITY_INTERACTIVE
+from kiro_crew.embeddings import PRIORITY_INTERACTIVE, enter_work_phase
 from kiro_crew.vector_memory_runtime import episodic_search as _episodic_search
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime.embedding import _RecallQuery, _RecallSpaceChanged
@@ -134,14 +134,17 @@ def recall(
     non-list, or names rows this search did not produce leaves the recall result
     exactly as it is.
     """
+    enter_work_phase("search")
     with store._db_lock:
         generation = store._space_generation
         signature = store.recorded_embedding_space()
+    enter_work_phase("embed")
     vector = (
         store._try_embed(query_text, PRIORITY_INTERACTIVE)
         if query_text.strip() and cap > 0 and store.embed_fn
         else None
     )
+    enter_work_phase("search")
     query = _RecallQuery(vector, generation, signature)
     try:
         return store._recall_once(
@@ -325,7 +328,10 @@ def recall_once(
     # the hook WIDENING the result rather than narrowing it. Screening what `fit`
     # selected can only shrink the payload, and `bound_recall_payload` below renders
     # the contexts and char counts from the evidence, so the numbers follow.
-    episodes = _kept_episodes(episodes, keep)
+    if keep is not None:
+        enter_work_phase("decision")
+        episodes = _kept_episodes(episodes, keep)
+        enter_work_phase("search")
     # Contexts, char counts and previews are rendered from the evidence here.
     result = bound_recall_payload(
         {

@@ -1233,16 +1233,25 @@ def recall_executor() -> ThreadPoolExecutor:
 
 
 async def run_with_recall_deadline(awaitable: Awaitable[_T]) -> _T:
-    """Bound an entire recall, including cold store opening and pool admission."""
+    """Bound an entire recall, including cold store opening and pool admission.
+
+    The deadline's owner logs one WARNING when it expires, naming the phase the
+    recall was in and the time spent in each.
+    """
     import time
 
     from kiro_crew.embeddings import EmbeddingWork, embedding_work
 
     inherited = embedding_work.get()
-    work = inherited or EmbeddingWork(time.monotonic() + RECALL_TIMEOUT_SECS)
+    now = time.monotonic()
+    work = inherited or EmbeddingWork(now + RECALL_TIMEOUT_SECS, phases=[("authorize", now)])
     token = embedding_work.set(work)
     try:
         return await asyncio.wait_for(awaitable, timeout=max(0.0, work.deadline - time.monotonic()))
+    except asyncio.TimeoutError:
+        if inherited is None:
+            logger.warning("Memory recall timed out in %s", work.phase_report())
+        raise
     finally:
         if inherited is None:
             work.cancelled.set()

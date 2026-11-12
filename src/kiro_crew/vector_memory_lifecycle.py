@@ -112,7 +112,13 @@ class StoreDbLock:
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         if blocking:
             _note_loop_thread_acquire()
-        acquired = self._lock.acquire(blocking, timeout)
+        acquired = self._lock.acquire(False)
+        if not acquired and blocking:
+            # Only a real wait is recorded, so a timed-out recall can name the lock.
+            from kiro_crew.embeddings import work_phase
+
+            with work_phase("store_lock"):
+                acquired = self._lock.acquire(True, timeout)
         if acquired:
             self._local.depth = getattr(self._local, "depth", 0) + 1
         return acquired

@@ -263,6 +263,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         embedding_idle_evict_secs,
         embedding_weight_repack,
         embedding_work,
+        enter_work_phase,
+        work_phase,
     )
     from kiro_crew.embeddings_shared import (  # noqa: F401
         _EMBED_CACHE_MAX,
