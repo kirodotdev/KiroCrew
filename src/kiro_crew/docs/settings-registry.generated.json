@@ -1504,6 +1504,14 @@
       "hint": "The font the whole dashboard uses, including chat, the composer, and sidebar session and folder names. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders its glyphs and a programming font shows its ligatures."
     },
     {
+      "id": "display.dark-from",
+      "label": "Dark from",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=key%3Adashboard.theme_schedule_dark",
+      "hint": "Scheduled mode switches to dark at this time, in this device's time zone.",
+      "configKey": "dashboard.theme_schedule_dark"
+    },
+    {
       "id": "display.default-for-new-sessions",
       "label": "Default for New Sessions",
       "tab": "display",
@@ -1611,6 +1619,14 @@
       "tab": "display",
       "route": "/settings/display/view?highlight=display.language",
       "hint": "Language for the dashboard interface."
+    },
+    {
+      "id": "display.light-from",
+      "label": "Light from",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=key%3Adashboard.theme_schedule_light",
+      "hint": "Scheduled mode switches to light at this time, in this device's time zone.",
+      "configKey": "dashboard.theme_schedule_light"
     },
     {
       "id": "display.mode",

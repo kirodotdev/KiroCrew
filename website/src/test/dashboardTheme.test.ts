@@ -3,6 +3,7 @@ import {
   adoptDashboardTheme,
   applyThemeId,
   extractStylesheetHrefs,
+  watchThemeChanges,
 } from '../apps/crew-companion/dashboardTheme'
 
 /**
@@ -100,6 +101,47 @@ describe('applyThemeId — copies the dashboard theme selection onto <html>', ()
     applyThemeId()
     expect(document.documentElement.dataset.theme).toBe('kiro-dark')
     expect(document.documentElement.dataset.mode).toBe('dark')
+  })
+
+  it('resolves `schedule` from the stored times on the device clock', () => {
+    localStorage.setItem('mc-color-theme', 'kiro')
+    localStorage.setItem('mc-theme', 'schedule')
+    localStorage.setItem('mc-theme-schedule', JSON.stringify({ light: '07:00', dark: '19:00' }))
+    vi.setSystemTime(new Date(2026, 0, 1, 20, 0))
+    try {
+      applyThemeId()
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(document.documentElement.dataset.theme).toBe('kiro-dark')
+    expect(document.documentElement.dataset.mode).toBe('dark')
+  })
+
+  it('re-resolves Scheduled when the shell re-pins the appearance, and stops on cleanup', () => {
+    // Under Scheduled the desktop shell pins prefers-color-scheme to the resolved
+    // mode at each switch time; that change event is this window's only clock.
+    const listeners = new Set<() => void>()
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: false,
+      addEventListener: (_: string, cb: () => void) => listeners.add(cb),
+      removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
+    }) as unknown as typeof window.matchMedia
+    localStorage.setItem('mc-color-theme', 'kiro')
+    localStorage.setItem('mc-theme', 'schedule')
+    localStorage.setItem('mc-theme-schedule', JSON.stringify({ light: '07:00', dark: '19:00' }))
+    const stop = watchThemeChanges()
+    try {
+      vi.setSystemTime(new Date(2026, 0, 1, 18, 0))
+      applyThemeId()
+      expect(document.documentElement.dataset.mode).toBe('light')
+      vi.setSystemTime(new Date(2026, 0, 1, 19, 0))
+      listeners.forEach((cb) => cb())
+      expect(document.documentElement.dataset.mode).toBe('dark')
+    } finally {
+      vi.useRealTimers()
+      stop()
+    }
+    expect(listeners.size).toBe(0)
   })
 
   it('falls back to the kiro default when nothing is persisted', () => {

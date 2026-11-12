@@ -509,6 +509,11 @@ async def api_ready(request: web.Request) -> web.Response:
 _LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,2}$")
 
 
+#: A 24-hour ``HH:MM``, the value a browser's time field submits. Matched with
+#: ``fullmatch``: a ``$`` anchor would also accept a trailing newline.
+_CLOCK_TIME_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+
+
 def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
     """Workspace display preferences shared by the boot + config endpoints.
 
@@ -527,6 +532,8 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
 
     return {
         "mode": cfg.dashboard.theme_mode or "",
+        "schedule_light": cfg.dashboard.theme_schedule_light or "",
+        "schedule_dark": cfg.dashboard.theme_schedule_dark or "",
         "color": cfg.dashboard.theme_color or "",
         "language": cfg.dashboard.language or "",
         "translucent_panels": cfg.dashboard.translucent_panels or "",
@@ -557,9 +564,9 @@ async def api_theme_config(request: web.Request) -> web.Response:
     """GET/PUT /api/config/theme — read or update workspace display settings.
 
     GET returns the current config. PUT accepts
-    {mode?, color?, language?, translucent_panels?, onboarded?, import_onboarded?,
-    privacy_acked?, privacy_ack_version?, crewmates_onboarded?} and persists ONLY
-    those ``dashboard.*`` keys.
+    {mode?, schedule_light?, schedule_dark?, color?, language?, translucent_panels?,
+    onboarded?, import_onboarded?, privacy_acked?, privacy_ack_version?,
+    crewmates_onboarded?} and persists ONLY those ``dashboard.*`` keys.
 
     The PUT is a locked delta read-modify-write, never a whole-document
     ``KiroCrewConfig.save()``. A momentarily unreadable ``config.json`` (a torn
@@ -591,9 +598,17 @@ async def api_theme_config(request: web.Request) -> web.Response:
     updates: dict[str, object] = {}
     if "mode" in body:
         mode = body["mode"]
-        if mode not in ("", "dark", "light", "system"):
-            raise web.HTTPBadRequest(text="mode must be '', 'dark', 'light', or 'system'")
+        if mode not in ("", "dark", "light", "system", "schedule"):
+            raise web.HTTPBadRequest(
+                text="mode must be '', 'dark', 'light', 'system', or 'schedule'"
+            )
         updates["theme_mode"] = mode
+    for key in ("schedule_light", "schedule_dark"):
+        if key in body:
+            value = body[key]
+            if value != "" and not (isinstance(value, str) and _CLOCK_TIME_RE.fullmatch(value)):
+                raise web.HTTPBadRequest(text=f"{key} must be '' or a 24-hour HH:MM time")
+            updates[f"theme_{key}"] = value
     if "color" in body:
         color = body["color"]
         if not isinstance(color, str) or len(color) > 64:

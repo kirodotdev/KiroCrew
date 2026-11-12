@@ -328,8 +328,8 @@ function createIpcRegistrar({
       restoreClipboardIfEmpty(saved);
       return false;
     });
-    ipcMain.on("theme-mode-changed", (_event, pref) =>
-      windows.chrome.setThemeMode(pref));
+    ipcMain.on("theme-mode-changed", (event, pref) =>
+      windows.chrome.setThemeMode(pref, event.sender));
     ipcMain.on("titlebar-overlay-theme", (_event, mode) =>
       windows.chrome.setTitlebarMode(mode));
 
