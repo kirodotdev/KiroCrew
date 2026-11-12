@@ -365,6 +365,7 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
     apply_session_directive_outcome,
 )
 from kiro_crew.dashboard.session_health import RAW_FRAME_LOG_LABEL
+from kiro_crew.dashboard.skill_read_ahead import read_beside_claim  # noqa: F401
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_CONSUMED_MERGE_CARDS,
     _MAX_CONTEXT_PER_SOURCE,

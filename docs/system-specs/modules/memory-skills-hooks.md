@@ -5379,8 +5379,25 @@ read of a fresh list refreshes nothing, so a floor as long as the lifetime could
 the one read that matters wait a whole lifetime. The lifetime itself is unchanged, and
 it stays the bound on an out-of-band change, which sends no signal. Nothing is kept
 outside the loader, and nothing but the skill catalog is read: no memory, agent spec,
-steering file or hook. A send more than the lifetime after the last frame (the tab left
-alone, then a message pasted and sent at once) still starts its own re-walk, as today.
+steering file or hook.
+
+**A turn that starts its session asks as its claim begins.** A message no frame came
+before (an API client, a tab left alone and then a message pasted and sent at once)
+would start its re-walk inside its own build. `_turn_admit` therefore calls
+`skill_read_ahead.read_beside_claim` for a turn that builds a session-start context
+and is not a slash command, just before the session claim, with the project the claim
+itself uses. The claim lasts seconds, and tens of seconds when the session starts many
+MCP servers, so a due re-walk ends long before the build begins. This is also why the
+build used to look slower with more MCP servers: nothing in the build reads a server
+declaration or grows with their number, but a longer claim puts more session starts
+past the list's lifetime, and each of those paid the re-walk inside its build. The
+call shares the frame's one read in flight but not its floor, because a frame may have
+read a list seconds before it expired and the claim is the last moment before the
+build; a turn starts a session once, so it cannot repeat fast. It keeps nothing and
+leaves the lifetime and the out-of-band bound as they are; the build that follows reads the
+re-walked list, so a change made before the send is in that turn's context. A turn
+that takes a session already started has a claim too short to hide a re-walk; the
+frame is what covers that chat.
 
 The scope key is a digest of the skills root, the resolved `extra_paths` and the
 trusted project key (`_catalog_scope_id`), because two loaders can share a project

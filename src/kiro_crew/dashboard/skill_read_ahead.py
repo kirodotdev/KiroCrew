@@ -11,11 +11,13 @@ with it for the path gate, after the person has sent the message.
 The dashboard announces a slot when its composer gets focus or a key press
 (``slot_focused``, at most one frame per ten seconds per slot). On that frame the
 gateway asks the loader for the slot's scope on a worker thread, so a re-walk that is
-due starts while the person is still typing. Nothing is kept here and the list's
-lifetime is unchanged: the read is the loader's own, a fresh list is returned as it
-is, and an expired one is refreshed by the loader exactly as a session start's read
-would refresh it. Only the skill catalog is read. No memory, agent spec, steering
-file or hook is touched.
+due starts while the person is still typing. A turn that starts its own session asks
+the same as its session claim begins, which covers a message no frame came before and
+a list that expired after the last frame's read.
+Nothing is kept here and the list's lifetime is unchanged: the read is the loader's
+own, a fresh list is returned as it is, and an expired one is refreshed by the loader
+exactly as a session start's read would refresh it. Only the skill catalog is read.
+No memory, agent spec, steering file or hook is touched.
 
 All state here is read and written on the event loop.
 """
@@ -59,26 +61,58 @@ def read_ahead(state: "DashboardState", slot_key: object) -> "asyncio.Task[None]
     build makes no session-start skill read. Returns the task, or ``None``.
     """
     slot = state.get_slot(slot_key) if isinstance(slot_key, str) and slot_key else None
-    builder = getattr(state, "context_builder", None)
     sessions = getattr(state, "sessions", None)
-    if slot is None or slot.running or builder is None or sessions is None:
+    if slot is None or slot.running or sessions is None:
         return None
     session_key = effective_session_key(slot)
     if sessions.has_session(session_key) and not sessions.fresh_start_unclaimed(session_key):
         return None
-    scope = slot.project or ""
+    return _start(state, slot.project or "")
+
+
+def read_beside_claim(state: "DashboardState", project: str) -> "asyncio.Task[None] | None":
+    """Start a read of *project*'s skill scope for a turn that starts its session. Loop only.
+
+    A turn nobody announced (a message sent to a chat with no frame before it: an
+    API client, a pasted message sent at once) reaches its prompt build only after
+    the session claim, which lasts seconds and, with many MCP servers, tens of
+    seconds. Called as that claim starts, so a due re-walk runs beside the claim,
+    while the build is still far off, instead of beside the build, when the
+    session's servers are starting too. Same single read in flight as
+    :func:`read_ahead`, but not its floor: a frame may have read a list seconds
+    before it expired, and this is the last moment before the build. A turn
+    starts a session once, so nothing here can repeat fast.
+    """
+    return _start(state, project or "", floor=False)
+
+
+def _start(
+    state: "DashboardState", scope: str, *, floor: bool = True
+) -> "asyncio.Task[None] | None":
+    """Start one read of *scope* unless one is in flight or, with *floor*, one began too recently.
+
+    Never raises: a state with no context builder, or a builder with no loader,
+    starts nothing.
+    """
+    skills = getattr(getattr(state, "context_builder", None), "skills", None)
+    if skills is None:
+        return None
     now = time.monotonic()
     last = _started.get(scope)
-    if scope in _in_flight or (last is not None and now - last < MIN_INTERVAL_SECS):
+    if scope in _in_flight:
+        return None
+    if floor and last is not None and now - last < MIN_INTERVAL_SECS:
         return None
     _started.pop(scope, None)
     while len(_started) >= _MAX_SCOPES:
         del _started[next(iter(_started))]
     _started[scope] = now
     _in_flight.add(scope)
-    task = asyncio.create_task(_read(builder.skills, scope))
-    state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
+    task = asyncio.create_task(_read(skills, scope))
+    tracked = getattr(state, "_background_tasks", None)
+    if tracked is not None:
+        tracked.add(task)
+        task.add_done_callback(tracked.discard)
     return task
 
 

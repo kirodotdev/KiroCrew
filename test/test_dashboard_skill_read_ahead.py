@@ -22,7 +22,15 @@ from context_composition_contract_helpers import (  # noqa: F401 -- the fixture 
 )
 from skills_helpers import _settled
 
+from kiro_crew import pinned_fs
 from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
+
+#: A folder's steering is skipped where a directory cannot be opened relative to a
+#: descriptor (native Windows), so a change to it reaches no build there.
+_needs_pinned_walk = pytest.mark.skipif(
+    not pinned_fs.supports_pinned_tree_walk(),
+    reason="folder steering is skipped where a directory cannot be opened relative to a descriptor",
+)
 
 pytestmark = [pytest.mark.usefixtures("ample_host_resources", "close_skills_loaders")]
 
@@ -196,6 +204,93 @@ async def test_the_scopes_remembered_are_bounded(mod: Any) -> None:
     assert "/repo-0" not in mod._started
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs", [{}, {"running": True}, {"live": True, "fresh": False}])
+async def test_a_turn_that_starts_its_session_reads_whatever_the_slot_looks_like(
+    mod: Any, kwargs: dict[str, bool]
+) -> None:
+    loader = _Loader()
+    state = _state(loader, **kwargs)
+
+    await await_until(mod.read_beside_claim(state, "/repo"), what="the read did not end")
+    assert [(p, o) for p, o, _ in loader.calls] == [("/repo", None)]
+    assert loader.calls[0][2] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_the_claim_shares_the_frames_read_in_flight_but_not_its_floor(mod: Any) -> None:
+    loader = _Loader(hold=True)
+    state = _state(loader)
+
+    task = mod.read_ahead(state, "s1")
+    await await_until(loader.entered, what="the read never reached the loader")
+    assert mod.read_beside_claim(state, "") is None
+
+    loader.release.set()
+    await await_until(task, what="the read ahead did not end")
+    # The frame's read may have found a list that expires before the send, so the
+    # claim reads again inside the floor. The frame after it still waits the floor out.
+    await await_until(mod.read_beside_claim(state, ""), what="the claim's read did not end")
+    assert len(loader.calls) == 2
+    assert mod.read_ahead(state, "s1") is None
+
+
+@pytest.mark.asyncio
+async def test_a_claim_on_a_gateway_with_no_context_builder_reads_nothing(mod: Any) -> None:
+    assert mod.read_beside_claim(_state(None), "") is None
+    # A builder with no loader, and a state that tracks no tasks, fail no turn.
+    bare = SimpleNamespace(context_builder=SimpleNamespace())
+    assert mod.read_beside_claim(bare, "") is None
+    untracked = SimpleNamespace(context_builder=SimpleNamespace(skills=_Loader()))
+    await await_until(mod.read_beside_claim(untracked, "/x"), what="the read did not end")
+
+
+@pytest.mark.asyncio
+async def test_a_turn_asks_as_its_claim_starts_and_only_when_it_builds_a_session_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from turn_harness import TurnContext, TurnScript, run_turn
+
+    from kiro_crew.acp.types import (
+        EVENT_COMPLETE,
+        EVENT_TEXT_CHUNK,
+        STOP_REASON_END_TURN,
+        AcpEvent,
+    )
+    from kiro_crew.dashboard import chat_runner
+
+    journal: list[str] = []
+    monkeypatch.setattr(
+        chat_runner,
+        "read_beside_claim",
+        lambda _state, project: journal.append(f"read {project!r}"),
+    )
+
+    def _setup(ctx: TurnContext) -> None:
+        claim = ctx.state.sessions.get_or_create
+
+        async def _claim(*args: Any, **kwargs: Any) -> Any:
+            journal.append("claim")
+            return await claim(*args, **kwargs)
+
+        ctx.state.sessions.get_or_create = _claim
+
+    reply = [
+        AcpEvent(kind=EVENT_TEXT_CHUNK, text="the reply"),
+        AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+    ]
+
+    def _resumable(ctx: TurnContext) -> None:
+        ctx.state.sessions.resumable_hint.side_effect = lambda _key: True
+
+    resumed = TurnScript(events=reply, message="again", setup=_resumable)
+    await run_turn(TurnScript(events=reply, setup=_setup, then=resumed))
+
+    # The first turn starts the session and asks before its claim. The second finds
+    # a session it can resume, builds no session-start context, and asks nothing.
+    assert journal == ["read ''", "claim", "claim"]
+
+
 def test_only_the_owners_focus_frame_starts_a_read() -> None:
     from kiro_crew.dashboard import ws
 
@@ -251,7 +346,7 @@ def _edit_a_steering_file(rig: _Rig, tmp: Path) -> dict[str, Any]:
         (_write_memory, "Always keep safeguards"),
         (_change_config, "[RESPONSE PREFERENCES"),
         (_edit_the_agent_prompt, "CHANGED-CONTRACT"),
-        (_edit_a_steering_file, "RULE-TWO"),
+        pytest.param(_edit_a_steering_file, "RULE-TWO", marks=_needs_pinned_walk),
     ],
     ids=["skill", "memory", "config", "agent-prompt", "steering"],
 )
