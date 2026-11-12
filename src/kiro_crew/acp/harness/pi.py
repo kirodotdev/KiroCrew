@@ -33,6 +33,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import acp_tool_gate, agent_sdk
 from kiro_crew import env as env_mod
@@ -936,6 +937,7 @@ class PiLaunch(ProcessAdapter):
     backend = ACP_BACKEND_PI
 
     def __init__(self) -> None:
+        super().__init__()
         # The launcher the read-back verified, and the nonce its dialogs echo --
         # carried from the read-back to the child's environment.
         self._launcher = ""
@@ -1097,6 +1099,10 @@ class PiLaunch(ProcessAdapter):
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
         )
+
+    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
+        """The pi session's own ``mcpServers`` entries, warmed by the spawn."""
+        return session._pi_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Point the adapter at the verified launcher, and hand pi its nonce.

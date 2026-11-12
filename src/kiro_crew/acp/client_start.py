@@ -1,7 +1,9 @@
 """Start an ``AcpClient`` session: spawn the child, run the initialize handshake, and create, load or fork the session.
 
 ``_spawn``, ``_initialize_params``, ``_initialize_session``, ``_new_session_following_substitution``,
-``_fork_session`` and ``ensure_ready``, the entry point that drives them.
+``_fork_session`` and ``ensure_ready``, the entry point that drives them, with
+``_harness_read_back`` and ``_adapter_session_mcp_servers``, which ask the kept
+process adapter.
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -12,7 +14,7 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 ``_derived_spec_snapshot``, ``_fork_request``, ``_jsonl_pos``, ``_kill_sent``,
 ``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_model``, ``_native_skill_projection``, ``_pid``,
-``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
+``_process``, ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_resume_session_id``, ``_resumed``, ``_session_id``, ``_session_mcp_cache``,
 ``_spawn_start_token``, ``_start_time``, ``_stderr_task``, ``_work_dir_ready``.
 
@@ -58,7 +60,7 @@ from kiro_crew.acp.client_spawn_env import (
 )
 from kiro_crew.acp.client_timeouts import _ACP_RESPAWN_BACKOFF_S, _INIT_TIMEOUT
 from kiro_crew.acp.harness import process_adapter_for
-from kiro_crew.acp.harness.base import SpawnContext, SpawnPlan
+from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
 from kiro_crew.acp.pi_mcp_registration import verify_registration
 from kiro_crew.acp.transport_errors import (
@@ -209,6 +211,29 @@ def _jsonl_size(path: Path) -> int:
         return 0
 
 
+def _harness_read_back(self: AcpClient) -> HarnessReadBack:
+    """What this process's adapter read back of its host's own config.
+
+    An empty read-back when no adapter is kept: the kiro-cli arm, and a client that
+    has not spawned. Every field of it is then the "nothing known" default.
+    """
+    adapter = getattr(self, "_process_adapter", None)
+    return adapter.read_back if adapter is not None else HarnessReadBack()
+
+
+def _adapter_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
+    """This host's own entries in the ``session/new`` / ``session/load`` array.
+
+    Asked of the kept adapter. A client that reaches the array without having
+    spawned asks a fresh adapter for its backend, so its answer is the same one the
+    spawned session gives. kiro-cli has no process adapter and adds nothing here.
+    In memory, never an executor hop: this call site is shared with kiro-cli
+    (harness-parity H13).
+    """
+    adapter = getattr(self, "_process_adapter", None) or process_adapter_for(self.backend)
+    return adapter.session_mcp_servers(self) if adapter is not None else []
+
+
 async def _spawn(self: AcpClient) -> None:
     """Start the ACP backend subprocess with stdio pipes, suspended, then track it.
 
@@ -238,6 +263,9 @@ async def _spawn(self: AcpClient) -> None:
         await asyncio.to_thread(assert_voice_runtime_outside_agent_workspace, self._work_dir)
 
     adapter = process_adapter_for(self.backend)
+    # Kept BEFORE the plan, so what the launch reads back lands where the session
+    # reads it (``_harness_read_back``). ``_reset_state`` drops it.
+    self._process_adapter = adapter
     if adapter is not None:
         # The host's own launch knowledge -- its binary, argv, labels, credential
         # mask and gate -- in its own file. The context names this session, which
@@ -662,12 +690,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
                 if self._is_claude and not getattr(self, "_side_read_only", False)
                 else []
             ),
-            *(self._opencode_session_mcp_servers() if self._is_opencode else []),
-            *(self._mimocode_session_mcp_servers() if self._is_mimocode else []),
-            *(self._goose_session_mcp_servers() if self._is_goose else []),
-            *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
-            *(self._copilot_session_mcp_servers() if self._is_copilot else []),
-            *(self._pi_session_mcp_servers() if self._is_pi else []),
+            *self._adapter_session_mcp_servers(),
             *(await asyncio.to_thread(self._pooled_mcp_servers)),
         ],
     }
@@ -747,12 +770,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
                 if self._is_claude and not getattr(self, "_side_read_only", False)
                 else []
             ),
-            *(self._opencode_session_mcp_servers() if self._is_opencode else []),
-            *(self._mimocode_session_mcp_servers() if self._is_mimocode else []),
-            *(self._goose_session_mcp_servers() if self._is_goose else []),
-            *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
-            *(self._copilot_session_mcp_servers() if self._is_copilot else []),
-            *(self._pi_session_mcp_servers() if self._is_pi else []),
+            *self._adapter_session_mcp_servers(),
             *(await asyncio.to_thread(self._pooled_mcp_servers)),
         ]
         if self.backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
@@ -982,12 +1000,7 @@ async def _initialize_session(self: AcpClient) -> None:
                             if self._is_claude and not getattr(self, "_side_read_only", False)
                             else []
                         ),
-                        *(self._opencode_session_mcp_servers() if self._is_opencode else []),
-                        *(self._mimocode_session_mcp_servers() if self._is_mimocode else []),
-                        *(self._goose_session_mcp_servers() if self._is_goose else []),
-                        *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
-                        *(self._copilot_session_mcp_servers() if self._is_copilot else []),
-                        *(self._pi_session_mcp_servers() if self._is_pi else []),
+                        *self._adapter_session_mcp_servers(),
                         *(await asyncio.to_thread(self._pooled_mcp_servers)),
                     ],
                 }

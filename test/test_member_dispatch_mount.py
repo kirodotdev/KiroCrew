@@ -23,6 +23,7 @@ import pytest
 import kiro_crew.validation  # noqa: F401 - break the legacy import cycle first
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.kas_agents import to_client_custom_agent
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
@@ -705,7 +706,8 @@ class TestOpencodeSessionArray:
             encoding="utf-8",
         )
         client = self._client(agents_dir, tmp_path, MEMBER_KEY)
-        client._opencode_denies_in_force = frozenset()
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
+        client._harness_read_back().denies_in_force = frozenset()
         names = [e["name"] for e in client._resolve_session_mcp_servers()]
         assert MEMBER_DISPATCH_SERVER not in names, names
         assert "kirocrew-core" in names, names

@@ -27,7 +27,8 @@ from kiro_crew.acp.client import (
     _resolve_self_served_bin,
 )
 from kiro_crew.acp.harness import opencode as opencode_mod
-from kiro_crew.acp.harness.base import SpawnContext
+from kiro_crew.acp.harness import process_adapter_for
+from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE, Routing, routing_for
 from kiro_crew.acp_tool_gate import seeded_setting_issue
 from kiro_crew.agent_sdk.backends import launch_for
@@ -249,7 +250,9 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
     """A read-back that could not run must never read as "in force"."""
 
     def _client(self, tmp_path):
-        return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
+        return client
 
     @staticmethod
     def _verify(client, argv, config_content):
@@ -290,12 +293,12 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
 
         monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = self._client(tmp_path)
-        assert client._opencode_config_mcp_servers == ()
+        assert client._harness_read_back().config_mcp_servers == ()
         issue, _remedy = opencode_mod._verify_opencode_routing(
             client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
         )
         assert issue == ""
-        assert client._opencode_config_mcp_servers == ("docs.server",)
+        assert client._harness_read_back().config_mcp_servers == ("docs.server",)
 
     def test_only_the_names_opencode_rewrites_are_kept(self):
         from kiro_crew.acp.client import _opencode_config_mcp_server_names
@@ -910,6 +913,7 @@ def test_the_observed_value_is_redacted_before_it_reaches_a_refusal(
 
     monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+    client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
     issue, _remedy = opencode_mod._verify_opencode_routing(
         client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
     )
@@ -935,7 +939,10 @@ def test_the_read_back_quotes_through_the_scrub_its_session_hands_it(tmp_path) -
     class _Session:
         _spawn_work_dir = str(tmp_path)
         _extra_env: dict[str, str] = {}
-        _opencode_config_mcp_servers: tuple[str, ...] = ()
+        _read_back = HarnessReadBack()
+
+        def _harness_read_back(self) -> HarnessReadBack:
+            return self._read_back
 
         @staticmethod
         def _agent_env_for_spawn() -> dict[str, str]:
@@ -1200,6 +1207,7 @@ class TestATrailingAskRuleOutranksTheRulesBeforeIt:
 
         monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         assert opencode_mod._verify_opencode_routing(
             client, ACP_BACKEND_OPENCODE, _ARGV, '{"permission": "ask"}'
         ) == ("", "")
@@ -1216,6 +1224,7 @@ class TestATrailingAskRuleOutranksTheRulesBeforeIt:
 
         monkeypatch.setattr(opencode_mod.subprocess_mod, "run", lambda *_a, **_kw: _Completed())
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         issue, _remedy = opencode_mod._verify_opencode_routing(
             client, ACP_BACKEND_OPENCODE, _ARGV, "{}"
         )

@@ -10,6 +10,7 @@ confirmation over what it recorded. The live round trip is
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 from pathlib import Path
@@ -209,7 +210,11 @@ def test_every_session_composition_reads_pi_s_array_before_its_pooled_stubs() ->
     pooled = [m.start() for m in re.finditer(r"self\._pooled_mcp_servers\b", source)]
     assert len(pooled) == 3
     for at in pooled:
-        assert "self._pi_session_mcp_servers()" in source[max(0, at - 400) : at], at
+        assert "self._adapter_session_mcp_servers()" in source[max(0, at - 400) : at], at
+    # The adapter for pi answers with pi's own array.
+    from kiro_crew.acp.harness.pi import PiLaunch
+
+    assert "session._pi_session_mcp_servers()" in inspect.getsource(PiLaunch.session_mcp_servers)
 
 
 def test_kiro_stub_composition_makes_no_projection_lookup(tmp_path, monkeypatch) -> None:

@@ -19,6 +19,7 @@ from kiro_crew.acp import client_turn
 from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
 from kiro_crew.acp.client_timeouts import _MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT
 from kiro_crew.acp.harness import mimocode as mimocode_mod
+from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness_tool_names import (
     harness_tool_match_names,
     mimocode_spelling,
@@ -1174,10 +1175,11 @@ class TestMimoCodeBackendResolvesTheTool:
 
 def _probe_client(tmp_path, known: tuple[str, ...], placed: tuple[str, ...] = ()) -> AcpClient:
     """MiMo client mounting *known* natively, *placed* from Crew. All native names go in
-    ``_mimocode_native_mounts``, rewritten ones in ``_mimocode_config_mcp_servers``."""
+    the read-back's ``native_mounts``, rewritten ones in its ``config_mcp_servers``."""
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
-    client._mimocode_native_mounts = frozenset(known)
-    client._mimocode_config_mcp_servers = mimocode_mod._mimocode_config_mcp_server_names(
+    client._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
+    client._harness_read_back().native_mounts = frozenset(known)
+    client._harness_read_back().config_mcp_servers = mimocode_mod._mimocode_config_mcp_server_names(
         {"mcp": {name: {} for name in known}}
     )[0]
     client._placed_mcp_server_names = lambda: placed  # type: ignore[method-assign]
@@ -1208,7 +1210,8 @@ def test_an_mcp_call_names_no_server_as_on_opencode(tmp_path, backend) -> None:
     """The precedent: no ``(server, tool)`` pair is read off the fused title."""
     client = _probe_client(tmp_path, ("crew-probe",), placed=("crew-probe",))
     client._acp_backend = backend
-    client._opencode_config_mcp_servers = ("crew-probe",)
+    client._process_adapter = process_adapter_for(backend)
+    client._harness_read_back().config_mcp_servers = ("crew-probe",)
     event = _probe_permission(client)
     assert (event.mcp_server_name, event.tool_name) == ("", "")
     assert harness_tool_match_names(event.harness_tool_id)[0] == "@crew-probe/crew_probe_echo"
@@ -1267,21 +1270,23 @@ def test_the_read_back_refuses_a_native_mount_of_a_disabled_server(
         lambda argv, **kw: SimpleNamespace(returncode=0, stdout=document, stderr=""),
     )
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
-    client._mimocode_disabled_servers = frozenset({"ops"})
+    client._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
+    client._harness_read_back().disabled_servers = frozenset({"ops"})
     seed = mimocode_mod._mimocode_routing_config(ACP_BACKEND_MIMOCODE)
     issue, remedy = mimocode_mod._verify_mimocode_routing(
         client, ACP_BACKEND_MIMOCODE, ["mimo", "debug", "config"], seed
     )
     assert ("'ops' is switched off in Kiro Crew" in issue) is refused
     assert ("switch it back on" in remedy) is refused
-    assert ("ops" in client._mimocode_native_mounts) is (native == {"ops": {}})
+    assert ("ops" in client._harness_read_back().native_mounts) is (native == {"ops": {}})
 
 
 def test_a_re_projection_that_disables_a_native_mount_refuses(tmp_path) -> None:
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
-    client._mimocode_native_mounts = frozenset({"ops"})
+    client._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
+    client._harness_read_back().native_mounts = frozenset({"ops"})
     assert mimocode_mod.refuse_native_mount_of_unhonoured(client) is None
-    client._mimocode_disabled_servers = frozenset({"ops"})
+    client._harness_read_back().disabled_servers = frozenset({"ops"})
     with pytest.raises(AcpToolGateUnroutable, match="'ops' is switched off"):
         mimocode_mod.refuse_native_mount_of_unhonoured(client)
 
@@ -1293,6 +1298,7 @@ def test_the_projection_records_the_servers_it_switched_off(tmp_path, monkeypatc
     seen = SessionProjection(params={"mcpServers": []}, disabled_servers=frozenset({"ops"}))
     monkeypatch.setattr(mirror_mod.MimoCodeMirror, "session_projection", lambda *a, **k: seen)
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
+    client._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
     monkeypatch.setattr(client, "_pooled_broker_stubs", lambda: [])
     client._resolve_session_mcp_servers()
-    assert client._mimocode_disabled_servers == frozenset({"ops"})
+    assert client._harness_read_back().disabled_servers == frozenset({"ops"})

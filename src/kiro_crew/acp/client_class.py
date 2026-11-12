@@ -89,6 +89,7 @@ from kiro_crew.config.paths import KEYLESS_WORK_DIR_NAME, config_dir
 from kiro_crew.mcp_gateway.claim import mint_stub_session_token
 
 if TYPE_CHECKING:
+    from kiro_crew.acp.harness.base import ProcessAdapter
     from kiro_crew.acp.harness.pi_steer import PiSteerChannel
     from kiro_crew.acp.session_mcp import ToolsAllowlist
     from kiro_crew.acp.skill_projection import NativeSkillProjection
@@ -348,25 +349,10 @@ class AcpClient:
         # Tool ids the projection asks the harness itself to deny
         # (``SessionProjection.harness_deny_rules``), seeded by the opencode routing.
         self._session_harness_deny_rules: tuple[str, ...] = ()
-        # The subset of those rules the opencode read-back found IN FORCE, handed back
-        # to every later projection so it withholds a server whose rule is not. None
-        # until this spawn has seeded any.
-        self._opencode_denies_in_force: frozenset[str] | None = None
-        # The seeded rules the last read-back found outranked by another rule.
-        self._opencode_denies_unenforced: frozenset[str] = frozenset()
-        # Servers opencode mounts from its own config, from this spawn's read-back.
-        self._opencode_native_mounts: frozenset[str] = frozenset()
-        # The MCP server names opencode's routing read-back found in the harness's
-        # own resolved config, so a fused tool title from one of them splits back
-        # exactly. Recorded by its launch (``acp.harness.opencode``).
-        self._opencode_config_mcp_servers: tuple[str, ...] = ()
-        # MiMo Code's own copies of the four read-back fields above, recorded by its
-        # launch (``acp.harness.mimocode``) and read only on a mimocode session.
-        self._mimocode_denies_in_force: frozenset[str] | None = None
-        self._mimocode_denies_unenforced: frozenset[str] = frozenset()
-        self._mimocode_native_mounts: frozenset[str] = frozenset()
-        self._mimocode_disabled_servers: frozenset[str] = frozenset()
-        self._mimocode_config_mcp_servers: tuple[str, ...] = ()
+        # This process's harness adapter (``acp.harness.process_adapter_for``), kept
+        # from the spawn until ``_reset_state``. It holds what its launch read back
+        # (``_harness_read_back``). None for the kiro-cli arm and before a spawn.
+        self._process_adapter: ProcessAdapter | None = None
         self._mimocode_governed_stop: tuple[str, str] | None = None
         # The per-session nonce a gate extension echoes in every dialog it raises;
         # minted by the pi, DeepSeek Harness or Strands launch, placed in the child's
@@ -1493,6 +1479,8 @@ class AcpClient:
     _fork_session = _client_start._fork_session
     _initialize_session = _client_start._initialize_session
     ensure_ready = _client_start.ensure_ready
+    _harness_read_back = _client_start._harness_read_back
+    _adapter_session_mcp_servers = _client_start._adapter_session_mcp_servers
     # A fresh conversation on the live process: ``kiro_crew.acp.client_new_conversation``.
     new_conversation = _client_new_conversation.new_conversation
     # Run an ``AcpClient`` prompt turn and dispatch the frames it reads: ``kiro_crew.acp.client_turn``.
