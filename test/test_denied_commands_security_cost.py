@@ -29,7 +29,7 @@ from conftest import assert_rejected_without_backtracking
 from kiro_crew import security
 from kiro_crew.security import _GIT_PUBLISH_RULE_PATTERNS, BUILTIN_DENIED_RULES
 from kiro_crew.security import argv_floor as _argv_floor
-from kiro_crew.security import is_denied, is_safe_user_regex
+from kiro_crew.security import deny_gate, is_denied, is_safe_user_regex
 
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
@@ -231,6 +231,50 @@ class TestBuiltinRuleMatcherShape:
             assert not matcher.match(text)
 
         assert_rejected_without_backtracking(reject, lambda n: "echo " + "a" * n)
+
+
+class TestInterpreterViewIsBuiltOnlyWhenItCanMatch:
+    """The interpreter rows also read a copy of the command in which every use of a name
+    bound to a quoted literal is replaced by that literal. It is built only when the
+    collapsed command holds the text every alternative of those rows spells, so a
+    command without it keeps its answer."""
+
+    def test_a_command_without_the_name_builds_no_copy(self, monkeypatch):
+        built = []
+        real = deny_gate._inline_interpreter_bindings
+        monkeypatch.setattr(
+            deny_gate, "_inline_interpreter_bindings", lambda t: built.append(t) or real(t)
+        )
+        cmd = "export A='" + " ".join(["a"] * 3000) + "'; " + "; ".join(["echo hi"] * 450)
+        assert is_denied(cmd) is None
+        assert built == []
+
+    def test_every_interpreter_row_spells_the_text_the_copy_needs(self):
+        # Sound only while every way through both rows spells it as plain characters.
+        from re import _parser
+
+        def always_spells(items) -> bool:
+            run = ""
+            for op, value in items:
+                kind = str(op).lower()
+                if kind == "literal":
+                    run += chr(value)
+                    if deny_gate._INTERP_ROW_NEEDS in run:
+                        return True
+                    continue
+                run = ""
+                if (
+                    (kind == "subpattern" and always_spells(value[-1]))
+                    or (kind == "branch" and all(always_spells(alt) for alt in value[1]))
+                    or (kind == "max_repeat" and value[0] >= 1 and always_spells(value[2]))
+                ):
+                    return True
+            return False
+
+        patterns = security._INTERPRETER_RULE_PATTERNS
+        assert patterns
+        for pattern in patterns:
+            assert always_spells(_parser.parse(pattern)), pattern
 
 
 class TestSelfFloorShortCircuit:
