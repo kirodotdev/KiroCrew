@@ -1473,6 +1473,11 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
 
         async with _get_mcp_lock():
             for change in changes:
+                # Phases 0 and 1 skip a non-object change; this loop read it
+                # with `.get` and raised (500). Reported like an empty name.
+                if not isinstance(change, dict):
+                    results.append({"error": "change must be an object", "change": change})
+                    continue
                 name = str(change.get("name", "")).strip()
                 if not name:
                     results.append({"error": "empty name", "change": change})
