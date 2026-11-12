@@ -198,6 +198,23 @@ def _login(args: argparse.Namespace) -> int:
     if args.provider == "idc" and not (args.start_url or "").strip():
         print("❌ --provider idc requires --start-url", file=sys.stderr)
         return 2
+    # Only IdC consumes a start URL, and only the AWS providers (builder_id, idc)
+    # consume a region: begin_device hardcodes the Builder ID URL for builder_id
+    # and threads no region for a social provider. A flag the chosen provider
+    # drops is reported ignored, and the sign-in proceeds as before, rather than
+    # silently dropping it or refusing a line that works today.
+    if (args.start_url or "").strip() and args.provider != "idc":
+        print(
+            f"⚠️  ignoring --start-url: it is only used with --provider idc; "
+            f"signing in with {args.provider}",
+            file=sys.stderr,
+        )
+    if (args.region or "").strip() and args.provider not in ("builder_id", "idc"):
+        print(
+            f"⚠️  ignoring --region: it is only used with --provider builder_id "
+            f"or idc; signing in with {args.provider}",
+            file=sys.stderr,
+        )
     # A lapsed entry in another slot would outrank a fresh lower-priority sign-in
     # at resolve time (the store picks by fixed slot order, not recency), so it is
     # named as the slot this login replaces: the service removes every other slot
