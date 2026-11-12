@@ -63,6 +63,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.config import live
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
+from kiro_crew.mcp_gateway.session_servers import attach_stub_start_priority
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import START_QUEUE_SESSION_NEW, StartPriority, notify_start_queue
 
@@ -241,6 +242,13 @@ async def create_session(
                 launch_spec,
                 session_key or "",
             )
+            # A start a person is waiting on: its stubs' server spawns go first
+            # at the gateway daemon's spawn gate (``kiro_crew.start_priority``).
+            # shortcut: a mirrored host's stubs are not stamped and stay background
+            # there, because a mirror admits a Kiro Crew stub only with an ``env``
+            # of exactly the session token; stamp them when the priority can
+            # reach the stub without a second env pair.
+            pooled = attach_stub_start_priority(pooled, start_priority)
             mcp_servers = await self._unpooled_control_planes(
                 pooled, agent or self._agent, session_work_dir
             )

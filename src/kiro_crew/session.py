@@ -896,10 +896,13 @@ class SessionManager:
         # path and the event loop, so "auto" is sized from the cached host
         # reading only (the floors until it exists); widen_cold_start_queues
         # grows both once the gateway's post-bind sizing has read the host.
-        configure_runtime_spawn_width(getattr(cfg, "agent", None))
+        # Kept so a later widening sizes from the settings this manager was built
+        # with: a config change replaces ``_cfg`` before a restart applies them.
+        self._cold_start_agent = getattr(cfg, "agent", None)
+        configure_runtime_spawn_width(self._cold_start_agent)
         self._allocation_state = SessionRegistryState(
             start_sem=new_cold_start_semaphore(
-                cached_cold_start_concurrency(getattr(cfg, "agent", None))
+                cached_cold_start_concurrency(self._cold_start_agent)
             )
         )
         self._allocation_boundary()

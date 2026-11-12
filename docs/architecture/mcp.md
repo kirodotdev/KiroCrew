@@ -1594,7 +1594,15 @@ connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
   passes on argv (never below `max_backends`) and descriptors from the daemon's
   own `RLIMIT_NOFILE`, and leaves memory unbounded.
 - **`SpawnGate`** is one daemon-wide count of spawn+initialize windows in
-  flight, FIFO past that. Fixed capacity from `spawn_concurrency_initial`
+  flight, in start order past that (`kiro_crew.start_priority.StartOrder`, the order the gateway's own start queues follow: a spawn a person's session start is waiting on first, FIFO within a priority, a background spawn passed at most four times).
+  The priority is the session start's own: `create_session` writes
+  `KIROCREW_STUB_START_PRIORITY=fg` onto the stub entries of a start a person is
+  waiting on (`session_servers.attach_stub_start_priority`; nothing is written for
+  a background start), the stub reports it as `start_priority` on its Register
+  frame and removes the variable from its own environment, and the daemon passes
+  it to the gate. A frame without the field, as an older stub or a stub launched
+  from an agent file sends, is background. It is queue order only: never a
+  `PoolKey` dimension, and it moves no capacity. Fixed capacity from `spawn_concurrency_initial`
   (default 4), clamped to `[spawn_concurrency_min, spawn_concurrency_max]`
   (1/8, the ceiling raised on the daemon's argv to the subagent ceiling when that
   is higher, so a fan-out the subagent cap admits is not queued behind eight
@@ -1629,7 +1637,7 @@ Acquisition order inside `_acquire_backend`'s spawn closure -- after the per-key
 during a breaker cooldown and no pool lock is held while queued -- is
 **SpawnGate → HostBudget → resident slot → fork**, released in reverse on any
 failure before the fork. Deadlock argument: the budget and the slot never wait
-(they succeed or raise), so the only wait is the gate's FIFO, and a gate waiter
+(they succeed or raise), so the only wait is the gate's queue, and a gate waiter
 holds nothing another waiter needs; a holder of resource k only ever waits for
 resource k+1, so the wait-for graph is acyclic. **That is why the gate is first
 and not last.** A charge taken before the wait prices a process that does not

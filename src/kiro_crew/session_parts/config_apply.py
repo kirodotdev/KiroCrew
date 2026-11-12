@@ -11,7 +11,7 @@ on an instance reaches every caller.
 
 Instance fields written: ``_adopted_autocompact_pct``, ``_cfg``.
 
-Instance fields read: ``_background_runtime``, ``_compaction``.
+Instance fields read: ``_background_runtime``, ``_cold_start_agent``, ``_compaction``.
 """
 
 from __future__ import annotations
@@ -165,7 +165,12 @@ def widen_cold_start_queues(self: SessionManager) -> None:
     published runtime spawn width move from their floors to the host-sized
     widths without a probe here. An explicit integer is already at its
     width, so this is a no-op for it. Never shrinks a queue.
+
+    Sized from the settings the manager was built with, not from ``_cfg``: both
+    widths are restart settings and this runs again whenever a later host
+    reading raises the ``auto`` width (``start_gate_widening``), by which time
+    a config change may have replaced ``_cfg``.
     """
-    agent = getattr(self._cfg, "agent", None)
+    agent = self._cold_start_agent
     configure_runtime_spawn_width(agent)
     widen_cold_start_semaphore(self._start_sem, cached_cold_start_concurrency(agent))

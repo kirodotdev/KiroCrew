@@ -6720,7 +6720,13 @@ to one manager, at `agent.cold_start_concurrency` background permits
 from the cached host reading without probing (the `auto` floor until the reading
 exists); the gateway's post-bind sizing task then grows them with
 `SessionManager.widen_cold_start_queues` (`PrioritySemaphore.widen_to`, which only
-adds background permits and leaves the person reserve as it is). The narrower common runtime chokepoint adds
+adds background permits and leaves the person reserve as it is). The same task then
+re-reads the host's available memory every 60 s while memory, not the cores, sets the
+`auto` width (`start_gate_widening`), and grows the queues again each time the width
+rises, so a gateway that boots while memory is short does not keep that moment's
+widths. The cached reading's memory figure only rises
+(`session_start_sizing.refresh_host_capacity`), so nothing narrows and no width passes
+what the cores give; `agent.spawn_min_memory_gb` still bounds memory at each start. The narrower common runtime chokepoint adds
 a gateway-wide `AcpRuntime.spawn()` coordinator capped at
 `agent.runtime_spawn_concurrency` concurrent spawn + `initialize` handshakes. Both
 default to `"auto"`, which `cold_start_sizing` derives from the effective

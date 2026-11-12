@@ -64,6 +64,7 @@ from kiro_crew.mcp_gateway.daemon.wire import (
 )
 from kiro_crew.mcp_gateway.pool import BackendPool, PoolKey
 from kiro_crew.mcp_gateway.prewarm import HotKeyStore
+from kiro_crew.start_priority import priority_from_wire
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -193,6 +194,10 @@ async def _handle_connection(
     # It arrives over the uid socket from the stub the rewriter wrote, which is
     # what makes it an answer the governed agent cannot author.
     stub_agent = str(register.get("agent_name") or "")
+    # Where this stub's spawn waits in the gate's queue: the priority its
+    # session start has (``kiro_crew.start_priority``). Not a pool dimension. A
+    # frame without the field, as an older stub sends, is background.
+    start_priority = priority_from_wire(register.get("start_priority"))
     # Absent ``poolable`` means this connection gets its own backend. Absence is
     # the safe default in both directions: an overlay written before the flag
     # existed never silently starts sharing, and a malformed frame cannot widen
@@ -487,6 +492,7 @@ async def _handle_connection(
                                 admission=admission,
                                 wait_deadline=deadline,
                                 on_queued=_on_queued if queue_aware else None,
+                                priority=start_priority,
                             ),
                             stub_uuid=stub_uuid,
                         )
@@ -546,6 +552,7 @@ async def _handle_connection(
                                 if admission is None
                                 else time.monotonic() + _LEGACY_SPAWN_WAIT_SECS
                             ),
+                            priority=start_priority,
                         ),
                         stub_uuid=stub_uuid,
                     )

@@ -490,9 +490,19 @@ def _schedule_session_start_sizing(self: GatewayOrchestrator) -> None:
     """Run :meth:`_log_session_start_sizing` as a tracked background task.
 
     Called after the dashboard/API socket binds, so the host probe never
-    delays READY (AUTOSDE ``no-new-work-on-gateway-boot-path``).
+    delays READY (AUTOSDE ``no-new-work-on-gateway-boot-path``). The same task
+    then re-reads the host on a slow interval and widens the ``auto`` gates, so
+    a gateway that boots while memory is short does not keep that moment's
+    widths for its whole life (``start_gate_widening``).
     """
-    task = asyncio.create_task(self._log_session_start_sizing())
+
+    async def _size_then_widen() -> None:
+        from kiro_crew.start_gate_widening import widen_start_gates_as_memory_frees
+
+        await self._log_session_start_sizing()
+        await widen_start_gates_as_memory_frees(self._cfg.agent, getattr(self, "sessions", None))
+
+    task = asyncio.create_task(_size_then_widen())
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
 
