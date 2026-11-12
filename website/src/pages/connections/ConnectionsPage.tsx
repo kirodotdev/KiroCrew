@@ -300,6 +300,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
             case 'mint_process_gone':
               error = t('pages.connectionsPage.mint_failure_process_gone')
               break
+            case 'mint_kiro_cli_missing':
+              error = t('pages.connectionsPage.mint_failure_kiro_cli_missing')
+              break
             case 'expired':
             case 'crew_oauth_consent_expired':
               error = t('pages.connectionsPage.mint_failure_sign_in_timed_out')

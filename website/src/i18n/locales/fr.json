@@ -15227,6 +15227,7 @@
       "mcp_servers": "Serveurs MCP",
       "mint_failure_grant_unproven": "La connexion enregistrée n’a pas pu être confirmée. Réessaie de te connecter.",
       "mint_failure_process_gone": "Le processus d’autorisation s’est arrêté avant la fin de l’approbation. Réessayez de vous connecter.",
+      "mint_failure_kiro_cli_missing": "Pour te connecter, kiro-cli doit être installé et connecté sur cette machine. Installe kiro-cli, lance kiro-cli login, puis réessaie.",
       "mint_failure_server_absent": "L’entrée du serveur MCP a disparu avant le début de l’autorisation. Réessayez de vous connecter.",
       "mint_failure_sign_in_rejected": "Le fournisseur n’a pas accepté la connexion. Connecte-toi à nouveau.",
       "mint_failure_sign_in_timed_out": "La connexion a expiré. Connecte-toi à nouveau.",

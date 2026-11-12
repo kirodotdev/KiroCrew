@@ -7029,6 +7029,7 @@
       "mcp_servers": "MCP Servers",
       "mint_failure_grant_unproven": "The saved sign-in could not be confirmed. Try connecting again.",
       "mint_failure_process_gone": "The authorization process stopped before approval finished. Try connecting again.",
+      "mint_failure_kiro_cli_missing": "Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.",
       "mint_failure_server_absent": "The MCP server entry disappeared before authorization could start. Try connecting again.",
       "mint_failure_sign_in_rejected": "The provider did not accept the sign-in. Connect again.",
       "mint_failure_sign_in_timed_out": "Sign-in timed out. Connect again.",

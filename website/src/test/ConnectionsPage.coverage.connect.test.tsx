@@ -216,6 +216,11 @@ describe('connecting a new provider', () => {
       expected: 'Action failed: The MCP server entry disappeared before authorization could start. Try connecting again.',
     },
     {
+      reason: 'mint_kiro_cli_missing',
+      state: 'failed',
+      expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
+    },
+    {
       reason: 'mint_url_rejected',
       state: 'failed',
       expected: 'Action failed: The provider returned an approval address containing credential-like data, so it was not displayed.',

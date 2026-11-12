@@ -1166,6 +1166,26 @@ def test_a_rejected_endpoint_rides_the_card_view_only_beside_its_reason():
 
 
 @pytest.mark.asyncio
+async def test_a_missing_kiro_cli_records_its_own_reason(monkeypatch: pytest.MonkeyPatch):
+    from kiro_crew.acp.transport_errors import AcpError
+
+    class _NoCli(_FakeClient):
+        async def ensure_ready(self) -> None:
+            missing = AcpError("kiro-cli not found in /opt/example/bin")
+            missing.kiro_cli_missing = True
+            raise missing
+
+    monkeypatch.setattr(mint, "_acp_client_factory", lambda: _NoCli)
+
+    await mint.start_oauth_mint("notion", _URL)
+
+    assert _state_only(mint.pending_mint_for("notion")) == {
+        "state": "failed",
+        "reason": "mint_kiro_cli_missing",
+    }
+
+
+@pytest.mark.asyncio
 async def test_a_failure_records_an_audit_event_with_no_exception_text(
     monkeypatch: pytest.MonkeyPatch,
 ):
