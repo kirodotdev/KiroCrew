@@ -8559,6 +8559,7 @@
       "discard_new_schedule_body": "The schedule you typed has not been saved and will be lost.",
       "discard_schedule_confirm": "Discard schedule",
       "display_name": "Display name",
+      "done": "Done",
       "e_g_oncall": "e.g. oncall",
       "edit_crew_named": "Edit bot {{name}}",
       "edit_model": "Edit default model",
@@ -8618,6 +8619,7 @@
       "view_list_tooltip": "List",
       "workspace": "workspace",
       "workspace_2": "Workspace",
+      "workspace_created_named": "Workspace “{{name}}” was created.",
       "workspace_hint_member": "The folder this bot reads and writes. Switch it and new chats start fresh in the new folder; the old one is kept.",
       "yes_delete_it": "Yes, delete it"
     },
