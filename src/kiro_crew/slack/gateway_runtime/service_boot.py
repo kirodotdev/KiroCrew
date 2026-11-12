@@ -1176,6 +1176,17 @@ async def run(self: GatewayOrchestrator) -> None:
         self._background_tasks.add(_consent_task)
         _consent_task.add_done_callback(self._background_tasks.discard)
 
+        # The first session's skill read, made once for the gateway so that
+        # session's prompt build does not wait for it. Past KIROCREW_READY
+        # (no-new-work-on-gateway-boot-path), on a worker thread, never raises.
+        from kiro_crew.skill_first_read import first_read_after_ready
+
+        _skill_read_task = asyncio.create_task(
+            first_read_after_ready(self.ctx_builder, self._skills_sync_task)
+        )
+        self._background_tasks.add(_skill_read_task)
+        _skill_read_task.add_done_callback(self._background_tasks.discard)
+
     # The run directories a PREDECESSOR gateway of this data home left behind
     # (session_work_dir). Ordered after ``cleanup_orphaned_sessions`` above,
     # which reaped this home's pid ledger -- the ledger's remaining entries

@@ -106,7 +106,11 @@ build happens *after* the user's message arrives, so it lands directly on
 time-to-first-token: `build_session_context` stamps `_mark(...)` per group
 (`member`, `preamble`, `profile`, `workspace`, `docs`, `steering`,
 `thread_history`, `stop_notes`, `memory`, `skills`, `lessons`, `provenance`,
-`finalize`) and `_emit_context_section_timings` logs and histograms them.
+`finalize`) and `_emit_context_section_timings` logs and histograms them. A
+gateway makes the skills read once ahead of its first session
+(`skill_first_read.first_read_after_ready`, past readiness and on a worker
+thread), so that session's `skills` mark does not carry the process's first
+read; the build itself reads through the loader as before.
 
 ### What memory contributes at session start
 
