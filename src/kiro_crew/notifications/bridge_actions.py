@@ -130,6 +130,8 @@ class ActionContext:
     owner: str = ""
     #: The answer that resolved the decision, once one was admitted.
     answered: str = ""
+    #: What is being decided: ``"approval"`` or ``"question"``, as bound.
+    kind: str = "approval"
 
 
 #: Expired bindings remembered for their audit, so a late press on one is recorded
@@ -224,6 +226,7 @@ class BridgeActionRegistry:
                 crew_log_session=crew_log_session,
                 turn=turn,
                 owner=owner,
+                kind=kind,
             ),
         )
         self._expired.pop(key, None)
