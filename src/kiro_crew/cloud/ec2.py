@@ -491,7 +491,7 @@ def discover_network(
     # even without MapPublicIpOnLaunch — but we still must not pick a subnet whose
     # only "egress" is an IGW when the launch can't get a public IP. Prefer, in
     # order: NAT (always works) > IGW (works via the associated public IP).
-    egress = _subnet_egress_kinds(vpc_id, profile, region)  # {subnet_id: "igw"|"nat"}
+    egress, dead = _subnet_egress_kinds(vpc_id, profile, region)  # egress: {subnet: "igw"|"nat"}
 
     def _picked(subnet_id: str, kind: str) -> tuple[str, str, str]:
         if fallback and on_fallback is not None:
@@ -513,10 +513,19 @@ def discover_network(
         # conditional AssociatePublicIpAddress makes any IGW subnet workable.
         igw.sort(key=lambda s: not s.get("MapPublicIpOnLaunch"))
         return _picked(igw[0]["SubnetId"], "igw")
+    blackholed = [
+        f"{s['SubnetId']} -> {dead[s['SubnetId']]}" for s in candidates if s["SubnetId"] in dead
+    ]
+    dead_note = (
+        " Default routes whose target is no longer available (route state blackhole): "
+        f"{', '.join(blackholed)}; point each at a working NAT or internet gateway."
+        if blackholed
+        else ""
+    )
     raise aws.AWSError(
         f"no subnet in VPC {vpc_id} has a verified internet egress route (internet "
-        "gateway or NAT). KiroCrew needs outbound access to install packages and "
-        "reach SSM. Add an internet gateway + public route (or a NAT), or pass a "
+        f"gateway or NAT).{dead_note} Kiro Crew needs outbound access to install packages and "
+        "reach SSM. Add or repair an internet gateway or NAT default route, or pass a "
         "subnet that has one via `--subnet`, then retry.",
         action="ec2:DescribeRouteTables",
     )
@@ -562,7 +571,16 @@ def resolve_explicit_subnet(
                 f"{', '.join(sorted(ok_azs))}, or a different size.",
                 action="ec2:DescribeInstanceTypeOfferings",
             )
-    egress = _subnet_egress_kinds(vpc_id, profile, region)
+    egress, dead = _subnet_egress_kinds(vpc_id, profile, region)
+    if subnet_id in dead:
+        raise aws.AWSError(
+            f"subnet {subnet_id}'s default route points to {dead[subnet_id]}, which is no "
+            "longer available (route state blackhole), so the subnet has no internet "
+            "egress. Leave the subnet unset to let Kiro Crew pick one automatically, choose "
+            "another subnet, or point the route at a working NAT or internet gateway, then "
+            "retry.",
+            action="ec2:DescribeRouteTables",
+        )
     if subnet_id not in egress:
         raise aws.AWSError(
             f"subnet {subnet_id} has no verified internet egress route (NAT or "
@@ -576,14 +594,18 @@ def resolve_explicit_subnet(
     return vpc_id, subnet_id, egress[subnet_id]
 
 
-def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
+def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> tuple[dict, dict]:
     """Map subnet id -> egress kind (``"nat"`` or ``"igw"``) for subnets in ``vpc_id``.
 
     A subnet uses its explicitly-associated route table, else the VPC main route
     table. NAT is distinguished from IGW because reachability differs: a NAT
     default route gives outbound access from a private subnet, whereas an
     internet-gateway route only works when the instance has a public IP. Subnets
-    with no 0.0.0.0/0 route are omitted (no egress).
+    with no active 0.0.0.0/0 route are omitted (no egress).
+
+    The second map holds, for a subnet without egress whose 0.0.0.0/0 NAT or IGW
+    route is not active (``blackhole``: its target was deleted, or its IGW
+    detached), that target, so a refusal can name the dead route.
     """
     rts = aws.checked_json(
         ["ec2", "describe-route-tables", "--filters", f"Name=vpc-id,Values={vpc_id}"],
@@ -593,19 +615,23 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
     )
     rt_list = rts.get("RouteTables", []) if isinstance(rts, dict) else []
 
-    def _egress_kind(rt: dict[str, Any]) -> Optional[str]:
+    def _egress_kind(rt: dict[str, Any]) -> tuple[Optional[str], str]:
         # NAT wins over IGW if both somehow present (private-subnet semantics).
         kind = None
+        dead = ""
         for route in rt.get("Routes", []):
             if route.get("DestinationCidrBlock", "") != "0.0.0.0/0":
                 continue
+            nat = route.get("NatGatewayId") or route.get("NetworkInterfaceId")
+            igw = route.get("GatewayId", "")
             if route.get("State", "active") != "active":
+                dead = nat or (igw if igw.startswith("igw-") else "")
                 continue
-            if route.get("NatGatewayId") or route.get("NetworkInterfaceId"):
-                return "nat"
-            if route.get("GatewayId", "").startswith("igw-"):
+            if nat:
+                return "nat", ""
+            if igw.startswith("igw-"):
                 kind = "igw"
-        return kind
+        return kind, dead
 
     main_kind: Optional[str] = None
     # A subnet's EXPLICIT route-table association overrides the main table — even
@@ -614,21 +640,25 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
     # an explicitly-bound no-egress subnet must be EXCLUDED from the main-table
     # fallback, not silently treated as having the main table's egress (which
     # would let discover_network pick a dead subnet and hang to WaitCondition).
+    main_dead = ""
     explicit_kind: dict = {}
+    dead: dict = {}
     explicitly_bound: set = set()
     for rt in rt_list:
-        kind = _egress_kind(rt)
+        kind, dead_target = _egress_kind(rt)
         for assoc in rt.get("Associations", []):
-            if assoc.get("Main") and kind:
-                main_kind = kind
+            if assoc.get("Main"):
+                main_kind, main_dead = kind, dead_target
             subnet_id = assoc.get("SubnetId")
             if subnet_id:
                 explicitly_bound.add(subnet_id)
                 if kind:
                     explicit_kind[subnet_id] = kind
+                elif dead_target:
+                    dead[subnet_id] = dead_target
 
     result: dict = dict(explicit_kind)
-    if main_kind:
+    if main_kind or main_dead:
         # Only subnets with NO explicit association fall back to the main table.
         subnets = aws.checked_json(
             ["ec2", "describe-subnets", "--filters", f"Name=vpc-id,Values={vpc_id}"],
@@ -639,8 +669,11 @@ def _subnet_egress_kinds(vpc_id: str, profile: str, region: str) -> dict:
         for s in subnets.get("Subnets", []) if isinstance(subnets, dict) else []:
             sid = s.get("SubnetId", "")
             if sid and sid not in explicitly_bound:
-                result[sid] = main_kind
-    return result
+                if main_kind:
+                    result[sid] = main_kind
+                else:
+                    dead[sid] = main_dead
+    return result, dead
 
 
 def release_tag_exists(ref: str, repo: str = "") -> bool:

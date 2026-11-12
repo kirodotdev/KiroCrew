@@ -161,7 +161,12 @@ with only a local route (no 0.0.0.0/0 egress) is never chosen — the deploy wou
 otherwise hang to the `WaitCondition` timeout. An **explicit** route-table
 association overrides the main table even when it has no egress: a subnet bound
 to a local-only table is treated as no-egress (excluded from the main-table
-fallback), so it can't be mistaken for having the main table's egress.
+fallback), so it can't be mistaken for having the main table's egress. A NAT or
+IGW default route whose `State` is not `active` (`blackhole`: the NAT gateway or
+interface it points to was deleted, or the IGW detached) gives no egress either, and
+`_subnet_egress_kinds` returns its target beside the egress map, so both
+refusals name the dead route (subnet and target) instead of only asking for a
+route the table already has.
 
 With no default VPC, discovery falls back to the Region's only VPC (none, or two
 or more, is the "no default VPC" error). That pick is the launcher's, not the
