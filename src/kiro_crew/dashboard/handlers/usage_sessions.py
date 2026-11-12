@@ -224,10 +224,10 @@ def _shard_sessions(days: int) -> dict[str, tuple[str, int]]:
     """Sessions of :data:`_SHARD_COUNTED_PROVIDERS` and :data:`_SHARD_COUNTED_HARNESSES`
     over the last *days*, from the usage rows.
 
-    ``{session: (day, messages)}``. A session is the row's ``transcript`` key, else
-    its ``slot``. Its day is the local day of its earliest row in the window, the
+    ``{session: (day, messages)}``. A session is the row's ``acp_session_id``, else
+    its ``transcript`` key, else its ``slot``. Its day is the local day of its earliest row in the window, the
     way a transcript is filed under its first row's day. A row outside the per-row
-    epoch cutoff, with no parseable day, with neither key, written by a
+    epoch cutoff, with no parseable day, with no key, written by a
     background one-liner (:data:`_BACKGROUND_CALL_SURFACE_PREFIX`), or whose slot
     is not a session in its own right (:func:`is_session_slot`, which leaves out
     subagents) is skipped. A shard that cannot be read costs only its own rows.
@@ -268,10 +268,15 @@ def _shard_sessions(days: int) -> dict[str, tuple[str, int]]:
                     if isinstance(slot, str) and slot and not is_session_slot(slot):
                         continue
                     day = _parse_row_day(ts_raw)
-                    # A slot-only row names a bare dashboard slot; file it under the
-                    # session key a transcript row of the same chat carries.
-                    key = obj.get("transcript") or (
-                        spend_key_for_slot(slot) if isinstance(slot, str) and slot else None
+                    # One conversation per ACP session, as kiro-cli writes one
+                    # transcript per session: a cron job or a channel thread reuses
+                    # its slot for every run. A row from before the field falls back
+                    # to its transcript key, then to its slot (a bare dashboard slot
+                    # filed under the session key its chat's transcript rows carry).
+                    key = (
+                        obj.get("acp_session_id")
+                        or obj.get("transcript")
+                        or (spend_key_for_slot(slot) if isinstance(slot, str) and slot else None)
                     )
                     if day is None or not isinstance(key, str) or not key:
                         continue

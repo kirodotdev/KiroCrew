@@ -64,9 +64,11 @@ records `provider: acp`, the same value kiro-cli does, so it is the row's
 `harness` that tells their turns apart. A row is parsed only when its text holds
 one of those providers or a counted `"harness": "<id>"` member, so on an install
 where none ran the pass costs a substring test per row. A
-session is the row's `transcript` key, else its `slot` through
-`spend_key_for_slot` (so a bare `chat-…` slot joins its `dashboard:chat-…`
-session). It is filed under the
+session is the row's `acp_session_id` (one per ACP session, as kiro-cli writes
+one transcript per session, so each run of a cron job, a heartbeat or a channel
+thread on one slot is its own session), else its `transcript` key, else its
+`slot` through `spend_key_for_slot` (so a bare `chat-…` slot joins its
+`dashboard:chat-…` session). It is filed under the
 local day of its earliest row in the window, the way a transcript is filed under
 its first row's day, and counts two messages per turn (the prompt and the reply,
 the two rows a kiro-cli turn's transcript holds), or one when the row says
@@ -79,8 +81,9 @@ whose sessions do write those transcripts, are counted from them and never twice
 and `test_every_known_harness_is_counted_from_rows_or_from_its_transcripts` makes
 each id in `ACP_BACKENDS_KNOWN` sit in exactly one of the two. A row written
 before the `harness` field records only `provider: acp` and is not counted, as
-before. A session counted from rows that wrote no `transcript` key (a cron job, a
-channel thread) is grouped by its slot for the whole window.
+before. A row written before the `acp_session_id` field that
+has no `transcript` key either (a cron job, a channel thread) is still grouped by
+its slot for the whole window.
 
 When the local session transcript directory does not exist, `/api/usage/kiro`
 returns the same complete zero-valued session statistics as an empty directory,
