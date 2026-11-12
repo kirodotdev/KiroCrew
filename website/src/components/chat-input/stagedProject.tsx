@@ -10,11 +10,17 @@
  *  `isRunning` is the composer's busy flag, which stays true while attached
  *  sub-agents run after the reply itself ends. That is the window in which the
  *  server's deferred session reset stays armed, so the pending state lasts
- *  exactly as long as the old directory can still be in use, and clears only
- *  once the composer is idle and the next turn starts in the picked project. */
-import { useState } from 'react'
+ *  exactly as long as the old directory can still be in use. It clears as
+ *  soon as the composer goes idle: from then on the chip names the project the
+ *  next message will use, so nothing is pending any more. A queued message
+ *  that starts the next turn straight away also takes the pick, so a new
+ *  turn opening (`turnKey`) clears it the same way. */
+import { useRef } from 'react'
+import { Clock } from 'lucide-react'
 import { i18nT } from '../../i18n/t'
 import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
+import { opensRunTurn } from '../../pages/chat/groupDisplayItems'
+import type { ChatMessage } from '../../types'
 
 const folderName = (path: string) => pathBasename(stripTrailingSeparators(path)) || path
 
@@ -29,28 +35,52 @@ export interface StagedProject {
   pendingNote: string
 }
 
-export function useStagedProject(projectProp: string | undefined, isRunning: boolean, slotId: string | null | undefined): StagedProject {
+/** Names the turn a chat is on: the `ts` of its last turn-opening row. A
+ *  queued message that starts right after the reply ends opens a new turn
+ *  without the composer ever going idle, and the project switch applies to
+ *  that turn, so the composer needs this to re-take its start project. A
+ *  steer, or a send still parked behind the running turn, belongs to the turn
+ *  already running and does not count. Older history loaded above the
+ *  transcript leaves the last opener unchanged. */
+export function stagedProjectTurnKey(messages: readonly ChatMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (opensRunTurn(m)) return `${m.role}:${m.ts ?? i}`
+  }
+  return ''
+}
+
+interface Baseline { start: string; turnKey: string | undefined }
+
+export function useStagedProject(
+  projectProp: string | undefined,
+  isRunning: boolean,
+  slotId: string | null | undefined,
+  turnKey?: string,
+  projectLocked = false,
+): StagedProject {
   const project = projectProp || ''
-  // Captured when the composer turns busy, and adjusted during render rather
-  // than in an effect so the first busy frame is right. Re-taken when the
-  // composer moves to another chat as well: it is not remounted per chat, so
-  // going from one busy chat to another keeps `isRunning` true and would
-  // otherwise compare against the previous chat's project.
-  const [turnStartProject, setTurnStartProject] = useState(project)
-  const [sawRunning, setSawRunning] = useState(isRunning)
-  const [sawSlot, setSawSlot] = useState(slotId)
-  let start = turnStartProject
-  if (slotId !== sawSlot) {
-    setSawSlot(slotId)
-    setSawRunning(isRunning)
-    setTurnStartProject(project)
-    start = project
-  } else if (isRunning !== sawRunning) {
-    setSawRunning(isRunning)
-    if (isRunning) {
-      setTurnStartProject(project)
-      start = project
-    }
+  // The start project of each busy chat, keyed by slot. The composer is not
+  // remounted per chat, so leaving a busy chat and coming back must restore
+  // that chat's own start project: taking the current project then would
+  // adopt the pending pick as the start and hide it. Taken on the first busy
+  // render for a chat (during render, so the first busy frame is right),
+  // re-taken when a new turn opens (`turnKey`), and dropped once the chat is
+  // seen idle, so its next busy window starts fresh. While the chip is locked
+  // (`projectLocked`: sub-agents still attached) the server keeps the project
+  // reset deferred, so a turn a sub-agent completion opens still runs in the
+  // start project: the held start survives that turn-key change.
+  const baselines = useRef(new Map<string, Baseline>())
+  const key = slotId ?? ''
+  let start = project
+  if (!isRunning) {
+    baselines.current.delete(key)
+  } else {
+    const held = baselines.current.get(key)
+    if (held && (held.turnKey === turnKey || projectLocked)) {
+      start = held.start
+      held.turnKey = turnKey
+    } else baselines.current.set(key, { start: project, turnKey })
   }
   const pending = isRunning && !!project && stripTrailingSeparators(project) !== stripTrailingSeparators(start || '')
   if (!isRunning) return { turnStartProject: start, pending: false, midTurnNote: '', pendingNote: '' }
@@ -66,10 +96,23 @@ export function useStagedProject(projectProp: string | undefined, isRunning: boo
 
 /** Visible marker inside the project chip while a staged pick waits. The chip's
  *  accessible name already carries the full pending line, so the marker is
- *  hidden from assistive tech; on a compact shelf it shrinks to a dot. */
-export function ProjectPendingBadge({ compact }: { compact: boolean }) {
+ *  hidden from assistive tech. Its text says the switch is still to come
+ *  ("Starts next message"), so it reads without the tooltip. On a compact
+ *  shelf the chip shows no folder name, and a clock glyph alone did not say
+ *  what is waiting, so there the marker is the clock followed by the picked
+ *  folder's name, truncated: still visible text, never a tooltip only. */
+export function ProjectPendingBadge({ compact, project }: { compact: boolean; project: string }) {
   if (compact) {
-    return <span aria-hidden="true" className="shrink-0 w-1.5 h-1.5 rounded-full bg-accent" data-testid="composer-project-pending" />
+    return (
+      <span
+        aria-hidden="true"
+        className="inline-flex min-w-0 items-center gap-0.5 rounded px-1 py-px text-[10px] leading-4 font-medium text-accent bg-[color-mix(in_srgb,var(--accent)_14%,transparent)]"
+        data-testid="composer-project-pending"
+      >
+        <Clock size={11} strokeWidth={2.25} className="shrink-0" data-testid="composer-project-pending-clock" />
+        <span className="truncate max-w-[88px]">{folderName(project)}</span>
+      </span>
+    )
   }
   return (
     <span

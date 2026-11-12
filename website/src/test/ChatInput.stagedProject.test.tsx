@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { act, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { SlotProvider } from '../providers/SlotContext'
+import { stagedProjectTurnKey } from '../components/chat-input/stagedProject'
+import type { ChatMessage } from '../types'
 
 // #20350: a project picked while the composer is busy is staged for the next
 // turn. The chip shows that as visible text (not only in a hover tooltip,
@@ -45,7 +47,10 @@ describe('project chip staged-switch badge', () => {
     const { rerender } = renderWithProviders(<ChatInput {...base} project={START} isRunning />)
     rerender(<ChatInput {...base} project={OTHER} isRunning />)
     expect(badge()).toBeVisible()
-    expect(badge()).toHaveTextContent('Next message')
+    // The badge says on its own that the switch is still to come, so it reads
+    // without the tooltip a touch user cannot open (a bare "Next message"
+    // named when but not what).
+    expect(badge()).toHaveTextContent(/^Starts next message$/)
     expect(chip()).toHaveTextContent('OtherRepo')
     expect(chip()).toHaveAccessibleName(/Switching to OtherRepo from your next message\./)
     expect(chip()).toHaveAccessibleName(/This reply finishes in StartRepo\./)
@@ -107,6 +112,56 @@ describe('project chip staged-switch badge', () => {
     expect(chip()).toHaveAccessibleName(/This reply finishes in ThirdRepo\./)
   })
 
+  it('keeps a pending pick when the user leaves a busy chat and comes back', () => {
+    const inSlot = (slot: string, project: string) => (
+      <SlotProvider slotId={slot}>
+        <ChatInput {...base} project={project} isRunning />
+      </SlotProvider>
+    )
+    const { rerender } = renderWithProviders(inSlot('chat-a', START))
+    rerender(inSlot('chat-a', OTHER))
+    rerender(inSlot('chat-b', THIRD))
+    expect(badge()).toBeNull()
+    // Back in chat A, still busy: its reply still runs in StartRepo, so the
+    // pick is still waiting, not adopted as the start project.
+    rerender(inSlot('chat-a', OTHER))
+    expect(badge()).toBeVisible()
+    expect(chip()).toHaveAccessibleName(/Switching to OtherRepo from your next message\./)
+    expect(chip()).toHaveAccessibleName(/This reply finishes in StartRepo\./)
+    expect(status()).toHaveTextContent('Switching to OtherRepo from your next message.')
+  })
+
+  it('clears the badge when a queued message opens the next turn without the composer going idle', () => {
+    const { rerender } = renderWithProviders(<ChatInput {...base} project={START} isRunning projectTurnKey="user:t1" />)
+    rerender(<ChatInput {...base} project={OTHER} isRunning projectTurnKey="user:t1" />)
+    expect(badge()).toBeVisible()
+    // The queued message starts its turn in OtherRepo: the pick has applied.
+    rerender(<ChatInput {...base} project={OTHER} isRunning projectTurnKey="user:t2" />)
+    expect(badge()).toBeNull()
+    expect(chip()).toHaveAccessibleName(/This reply finishes in OtherRepo\./)
+    expect(status()).toHaveTextContent('')
+  })
+
+  it('keeps the pick pending when a sub-agent completion opens a turn while the chip is locked', () => {
+    const { rerender } = renderWithProviders(<ChatInput {...base} project={START} isRunning projectTurnKey="user:t1" />)
+    rerender(<ChatInput {...base} project={OTHER} isRunning projectTurnKey="user:t1" />)
+    rerender(<ChatInput {...base} project={OTHER} isRunning projectLocked projectTurnKey="user:t1" />)
+    // One of two sub-agents finishes: its completion row opens a turn, but the
+    // server keeps the reset deferred while the other is attached, so that
+    // turn still runs in StartRepo.
+    rerender(<ChatInput {...base} project={OTHER} isRunning projectLocked projectTurnKey="subagent:t2" />)
+    expect(badge()).toBeVisible()
+    expect(chip()).toHaveAccessibleName(/Switching to OtherRepo from your next message\./)
+    expect(status()).toHaveTextContent('Switching to OtherRepo from your next message.')
+    // The last sub-agent detaches while that turn still runs: still StartRepo.
+    rerender(<ChatInput {...base} project={OTHER} isRunning projectTurnKey="subagent:t2" />)
+    expect(badge()).toBeVisible()
+    expect(chip()).toHaveAccessibleName(/This reply finishes in StartRepo\./)
+    // The next turn opens unlocked: the pick applies.
+    rerender(<ChatInput {...base} project={OTHER} isRunning projectTurnKey="user:t3" />)
+    expect(badge()).toBeNull()
+  })
+
   it('is reachable by keyboard: focus names the pending pick and Enter reopens the picker', async () => {
     const user = userEvent.setup()
     const onProjectClick = vi.fn()
@@ -132,5 +187,51 @@ describe('project chip staged-switch badge', () => {
     fireEvent.pointerDown(chip(), { pointerType: 'touch' })
     fireEvent.click(chip())
     expect(onProjectClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the picked folder next to a clock on a compact shelf, where the chip drops its folder name', () => {
+    const observers = new Map<Element, ResizeObserverCallback>()
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) { observers.set(target, this.callback) }
+      unobserve(target: Element) { observers.delete(target) }
+      disconnect() {}
+    })
+    try {
+      const { rerender } = renderWithProviders(<ChatInput {...base} project={START} isRunning />)
+      const shelf = screen.getByTestId('composer-context-shelf')
+      act(() => observers.get(shelf)?.([{ target: shelf, contentRect: { width: 300, height: 32 } } as ResizeObserverEntry], {} as ResizeObserver))
+      rerender(<ChatInput {...base} project={OTHER} isRunning />)
+      // The chip's own folder label is gone; the pending marker carries the
+      // picked folder's name as visible text, since a clock glyph alone did
+      // not say what is waiting and a touch screen cannot show the tooltip.
+      expect(badge()).toBeVisible()
+      expect(badge()).toHaveTextContent(/^OtherRepo$/)
+      expect(badge()!.className).not.toContain('sr-only')
+      // A glyph, not a bare colour dot: the clock shape marks "waiting" for a
+      // reader who cannot tell the accent colour apart.
+      expect(screen.getByTestId('composer-project-pending-clock')).toHaveClass('lucide-clock')
+      expect(badge()).toContainElement(screen.getByTestId('composer-project-pending-clock'))
+      expect(badge()).toHaveAttribute('aria-hidden', 'true')
+      expect(chip()).toContainElement(badge())
+      expect(chip()).toHaveAccessibleName(/Switching to OtherRepo from your next message\./)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
+describe('stagedProjectTurnKey', () => {
+  it('names the last turn opener and skips steers and parked sends', () => {
+    const rows = [
+      { role: 'user', content: 'a', ts: 't1' },
+      { role: 'assistant', content: 'r', ts: 't2' },
+      { role: 'user', content: 's', ts: 't3', meta: { steer: true } },
+      { role: 'user', content: 'q', ts: 't4', meta: { queuedEntryId: 'x' } },
+      { role: 'queued', content: 'q2', ts: 't5' },
+    ] as ChatMessage[]
+    expect(stagedProjectTurnKey(rows)).toBe('user:t1')
+    expect(stagedProjectTurnKey([...rows, { role: 'user', content: 'q', ts: 't6' } as ChatMessage])).toBe('user:t6')
+    expect(stagedProjectTurnKey([])).toBe('')
   })
 })

@@ -219,6 +219,7 @@ function ChatInput({
   showContextPct,
   showContextTokens,
   isRunning = false,
+  projectTurnKey,
   projectLocked = false,
   projectSwitching = false,
   compacting = false,
@@ -491,7 +492,7 @@ function ChatInput({
   }, [projectProp, projectBranch, projectDetached])
   // A pick made while the composer is busy is staged: the chip names it at
   // once, marks it pending, and the tooltip names the running reply's project.
-  const stagedProject = useStagedProject(projectProp, isRunning, slotId)
+  const stagedProject = useStagedProject(projectProp, isRunning, slotId, projectTurnKey, projectLocked)
   const midTurnProjectNote = stagedProject.midTurnNote
   const lockedProjectNote = [stagedProject.pendingNote, i18nT('components.chatInput.project_locked_while_subagents_run')].filter(Boolean).join('\n')
   const { ctxPopoverOpen, setCtxPopoverOpen } = useContextPopover()
@@ -1941,7 +1942,7 @@ function ChatInput({
                 alone, so both segments still shrink below these caps on a
                 narrow window. */}
             {!shelfCompact && <span className="truncate max-w-[160px]">{projectSwitching ? i18nT('components.chatInput.switching_project') : project ? (pathBasename(stripTrailingSeparators(project)) || project) : i18nT('components.chatInput.project')}</span>}
-            {stagedProject.pending && !projectSwitching && <ProjectPendingBadge compact={shelfCompact} />}
+            {stagedProject.pending && !projectSwitching && <ProjectPendingBadge compact={shelfCompact} project={project || ''} />}
           </button>
           {!shelfCompact && !!projectBranch && (
             <>
