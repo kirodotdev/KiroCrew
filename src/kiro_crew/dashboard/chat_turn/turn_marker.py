@@ -49,11 +49,51 @@ _LOCAL_TURN_PROMPT_META_KEYS = ("mid", "files", "dirs", "injectKind")
 #: drained sub-agent completion opens its own turn too; without its copy a crash
 #: before the flush loses the row, and the interrupted-turn restore would walk
 #: past it to the previous, already-answered request.
+#: Roles the dispatcher starts a turn from, beside a dispatching ``inject``.
 _LOCAL_TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
 
+#: Observers of local turns: ``(admitted, retired)`` pairs. ``admitted(slot, row)``
+#: is awaited at admission with the row the dispatcher started the turn from
+#: (this process's own copy, or ``None``); ``retired(slot)`` runs when that
+#: turn's marker is retired. Each decides for itself whether *slot* concerns it
+#: and does nothing otherwise; a failure in one is logged and never refuses or
+#: delays the turn beyond its own await.
+_TURN_OBSERVERS: list[tuple[Any, Any]] = []
 
-def _local_turn_opening_row(slot: _ChatSlot) -> "dict[str, Any] | None":
+
+def register_turn_observer(admitted: Any, retired: Any) -> None:
+    """Add one ``(admitted, retired)`` pair once (see :data:`_TURN_OBSERVERS`)."""
+    if (admitted, retired) not in _TURN_OBSERVERS:
+        _TURN_OBSERVERS.append((admitted, retired))
+
+
+async def _turn_admitted(slot: _ChatSlot, row: "dict[str, Any] | None") -> None:
+    for admitted, _ in tuple(_TURN_OBSERVERS):
+        try:
+            await admitted(slot, row)
+        except Exception:
+            logger.warning("turn observer failed at admission for %s", slot.key, exc_info=True)
+
+
+def _turn_retired(slot: _ChatSlot) -> None:
+    for _, retired in tuple(_TURN_OBSERVERS):
+        try:
+            retired(slot)
+        except Exception:
+            logger.warning("turn observer failed at retirement for %s", slot.key, exc_info=True)
+
+
+def _local_turn_opening_row(
+    slot: _ChatSlot, opener: "dict[str, Any] | None" = None
+) -> "dict[str, Any] | None":
     """A durable copy of the row that opened the turn being admitted.
+
+    *opener* is the row the dispatcher started this turn from (the queue drain's
+    own row, handed to the turn as ``_current_message``). When it is still in the
+    window it is the opener, whatever came after it: a message queued behind the
+    turn writes its row on arrival, and a steer lands mid-turn, so neither may
+    stand in for the row the turn was started from. Without one (a direct send,
+    whose row is the window tail), the walk below finds it.
 
     Walks back from the window tail to the newest row that opens a turn: a
     ``user`` row, a ``nudge`` row (a monitor loop's cycle, which always
@@ -71,7 +111,10 @@ def _local_turn_opening_row(slot: _ChatSlot) -> "dict[str, Any] | None":
     ``local_turn_prompt_within_bounds`` (serialized size, attachment count,
     per-field length) is not carried at all.
     """
-    for row in reversed(slot.messages):
+    rows: "list[dict[str, Any]]" = slot.messages
+    if opener is not None and any(row is opener for row in rows):
+        rows = [opener]
+    for row in reversed(rows):
         role = row.get("role")
         if role == "assistant" and row.get("content"):
             return None
@@ -99,7 +142,12 @@ def _local_turn_opening_row(slot: _ChatSlot) -> "dict[str, Any] | None":
     return None
 
 
-async def _begin_local_turn_marker(state: DashboardState, slot: _ChatSlot, generation: int) -> None:
+async def _begin_local_turn_marker(
+    state: DashboardState,
+    slot: _ChatSlot,
+    generation: int,
+    opener: "dict[str, Any] | None" = None,
+) -> None:
     """Persist this turn's generation on the slot's metadata line before dispatch.
 
     The transcript cannot record a process death: a turn cut by a force exit
@@ -142,7 +190,8 @@ async def _begin_local_turn_marker(state: DashboardState, slot: _ChatSlot, gener
     # the current prompt as history), so a death inside that window loses it
     # and the restore would judge the previous turn's tail instead. With the
     # copy on the metadata line the restore puts the row back first.
-    slot._turn_in_flight_prompt = _local_turn_opening_row(slot)
+    slot._turn_in_flight_prompt = _local_turn_opening_row(slot, opener)
+    await _turn_admitted(slot, slot._turn_in_flight_prompt)
     log = state.conversation_log
     if log is None:
         return
@@ -215,6 +264,7 @@ def _retire_local_turn_marker(slot: _ChatSlot, generation: int) -> bool:
         return False
     slot._turn_in_flight_generation = 0
     slot._turn_in_flight_prompt = None
+    _turn_retired(slot)
     return True
 
 

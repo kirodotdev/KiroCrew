@@ -306,6 +306,7 @@ from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
 from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _clear_local_turn_marker,
     _gateway_shutdown_requested,
+    register_turn_observer,
 )
 from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_stream, _notify_turn_died
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook

@@ -39,6 +39,17 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** `slack.code_channel_dispatch`: let a code channel's conductor hand work to
+   *  worker sessions. Its own opt-in under Code channels; off by default. */
+  code_channel_dispatch?: boolean
+  /** `config.local.json` sets `slack.code_channel_dispatch`, so a save here cannot
+   *  change it (the server refuses one with 409). */
+  code_channel_dispatch_overlay?: boolean
+  /** `pinned`: the value shown is the one `config.local.json` sets; `unreadable`:
+   *  the file cannot be read, so what it sets is unknown; `absent`: not set there. */
+  code_channel_dispatch_overlay_state?: 'pinned' | 'unreadable' | 'absent'
+  /** Where `config.local.json` is, home shown as `~` (for the notes that name it). */
+  code_channel_dispatch_overlay_path?: string
   /** What a new code-channel session starts with (null = not set here). */
   code_channel_defaults?: SlackCodeChannelDefaults
   /** How a new code-channel session resolves right now, from the saved defaults. */
@@ -149,6 +160,8 @@ export interface SlackConfigSave extends Partial<Record<SlackCodeSwitchKey, bool
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** Sent only when changed; turning Code channels on never sends it. */
+  code_channel_dispatch?: boolean
   /** Keys sent replace the stored value (null clears); omitted keys are kept. */
   code_channel_defaults?: Partial<SlackCodeChannelDefaults>
 }

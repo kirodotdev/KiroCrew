@@ -25,11 +25,11 @@ Writes: ``_acp_client``, ``_active_turn_session_key``, ``_approval_futures``,
 ``_question_pending``, ``_queue``, ``_queue_persist_inflight``, ``_queue_persist_owed``,
 ``_queue_persisted_sig``, ``_queue_repository``, ``_regenerate_target``,
 ``_rejection_reasons``, ``_responsive``, ``_side``,
-``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
+``_restored_turn_marker``, ``_stop_declined_at``, ``_stop_escalated_card_id``, ``_stop_event_id``,
 ``_stop_generation``, ``_stop_state_raw``, ``_subagent_delivery_pending``, ``_swap_in_flight``,
 ``_synthesis_recheck``, ``_task``, ``_trust``, ``_trust_reads``, ``_trust_scope``,
 ``_trusted_pattern_deadlines``, ``_trusted_patterns``, ``_turn_admission_reserved``,
-``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``,
+``_turn_generation``, ``_turn_in_flight_generation``, ``_turn_in_flight_prompt``, ``_turn_lineage``,
 ``_turn_reply_mids``, ``_turns_started``, ``_unstarted_generation``, ``_wake_starting_task``,
 ``_window_swap_applying``, ``_window_swap_epoch``, ``credential_evidence``,
 ``event``,
@@ -212,6 +212,10 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # put it back before the interruption is judged. None when no turn is
     # in flight.
     self._turn_in_flight_prompt = None
+    # The generation and opening-row identity a restore read from a marker that
+    # outlived its process (the dispatcher's own evidence that the restart cut
+    # that turn), kept for readers that run after the restore clears the marker.
+    self._restored_turn_marker = None
     self._buffers = SlotBufferCoordinator()
     self._queue_repository = SlotQueueRepository(
         id_provider=lambda: uuid.uuid4().hex[:12],
@@ -255,6 +259,9 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # None after teardown, so consumers that span awaits cannot distinguish
     # "stayed idle" from "ran and finished" by comparing task references.
     self._turn_generation = 0
+    # ``(generation, first generation)`` of the latest dispatch that was a turn's
+    # own retry (``queue_drain``), so it counts as that turn, not a new one.
+    self._turn_lineage = (0, 0)
     # The ``_turn_generation`` of a dispatch that ended without starting its
     # turn (``turn_dispatch.mark_turn_unstarted``), so no tail hands off the
     # queue a send built behind it; its done callback does

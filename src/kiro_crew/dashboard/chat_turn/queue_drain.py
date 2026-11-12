@@ -1582,7 +1582,13 @@ async def _start_next_queued_turn(
             slot,
             _run_chat(state, slot, next_msg, **_run_kwargs),
         )
+    # A retry the ending turn queued for itself (``_is_own_recovery``) is that
+    # turn again under a new generation: it keeps the turn's first generation.
+    lineage = slot._turn_lineage_generation()
+    own_retry = _is_own_recovery(consumed, predecessor_actor, predecessor_turn_id)
     slot.task = task
+    if own_retry:
+        slot._turn_lineage = (slot._turn_generation, lineage)
     if _run_kwargs.get("_turn_start_background"):
         BACKGROUND_START_TASKS.add(task)
     # A recovery replay of a Regenerate's message takes over its target now

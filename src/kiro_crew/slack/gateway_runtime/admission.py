@@ -448,3 +448,35 @@ def _start_dashboard_workers_after_memory_ready(self: GatewayOrchestrator) -> No
     self.dashboard_state.resume_channel_agents = None
     if resume_channel_agents is not None:
         resume_channel_agents()
+    # Slack code channels a restart interrupted: past the memory barrier here, and
+    # the pass waits (bounded) for Slack to connect before it continues or posts.
+    state = self.dashboard_state
+    import asyncio
+
+    tasks = getattr(self, "_background_tasks", None)
+    try:
+        from kiro_crew.slack.code_channels import dispatch_record
+
+        # On every start, Slack or not: take out the turn openers the last process
+        # recorded (so none outlives this start), then record this process's own.
+        started = asyncio.get_running_loop().create_task(dispatch_record.start())
+    except Exception:  # pragma: no cover - best-effort at start-up
+        logger.warning("code channel turn records not started", exc_info=True)
+    else:
+        if isinstance(tasks, set):
+            tasks.add(started)
+            started.add_done_callback(tasks.discard)
+    if getattr(self, "slack", None) is None:
+        return
+    try:
+        from kiro_crew.slack.code_channels.resume import resume_when_ready
+
+        task = asyncio.get_running_loop().create_task(
+            resume_when_ready(state, lambda: bool(getattr(state, "slack_socket_connected", False)))
+        )
+    except Exception:  # pragma: no cover - resume is best-effort at start-up
+        logger.warning("code channel resume not scheduled", exc_info=True)
+        return
+    if isinstance(tasks, set):
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
