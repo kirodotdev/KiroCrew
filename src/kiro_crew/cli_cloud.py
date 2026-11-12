@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 
+from kiro_crew.cloud import aws
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import login as login_mod
@@ -691,6 +692,18 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
     reach = iam.reachability_check(profile, region)
     if reach["reachable"]:
         ui.ok(f"AWS reachable — account {reach['account']} · {region}")
+        # Only an unchosen default: --region, or a crew the last launch left there, chose it.
+        if (
+            not getattr(args, "region", "")
+            and region == DEFAULT_REGION
+            and not LaunchState.load().last_tag
+        ):
+            configured = aws.configured_region(profile)
+            if configured and configured != region:
+                ui.warn(
+                    f"Your AWS profile sets Region {configured}; Kiro Crew uses its default "
+                    f"{region} unless you pass --region {configured}."
+                )
         for svc in ("ec2", "cloudformation", "ssm"):
             key = f"{svc}_reachable"
             (ui.ok if reach[key] else ui.warn)(
