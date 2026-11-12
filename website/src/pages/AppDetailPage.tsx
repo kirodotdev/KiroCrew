@@ -102,9 +102,6 @@ export default function AppDetailPage() {
    * Stays until the next action, which is the user's chance to act on it.
    */
   const [backendRefusedMsg, setBackendRefusedMsg] = useState('')
-  // The page is reused across /apps/detail/:name, so a refusal belongs to the
-  // app it was reported for and goes when the route names another one.
-  useEffect(() => { setBackendRefusedMsg('') }, [name])
   const reconsentMsg = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
     : ''
