@@ -3366,7 +3366,7 @@ alignment requires readiness.
 - **Daemon-thread download** (`_run_download_on_daemon_thread`): the blocking HTTPS transfer runs on a daemon thread (deliberately NOT `run_in_executor` — executor threads are joined at interpreter exit), so Ctrl-C or a finished one-shot CLI is never pinned by an in-flight 610MB transfer
 - **Retry ladder**: background startup task = up to 6 attempts with exponential backoff (60s base, 30min cap, may span hours); every gateway restart retries; dashboard Enable/Retry click = `DOWNLOAD_ATTEMPTS_INTERACTIVE` (3) attempts for fast feedback. `kirocrew run` (one-shot CLI) never kicks downloads — only the long-lived gateway does
 - Escape hatch: `KIROCREW_SKIP_MODEL_DOWNLOAD=1` skips the download entirely (tests/CI must never trigger a 610MB download; tests additionally pin `OLLAMA_MODELS` to a tmp dir so the salvage path can't fire)
-- Concurrent `ensure_model()` calls (startup task + dashboard Enable click) share one in-flight download
+- Concurrent `ensure_model()` calls (startup task + dashboard Enable click) share one in-flight download. A call that finds the bundled model absent and a custom model configured (`memory.embed_model_path` or `KIROCREW_EMBED_MODEL_PATH`) returns `False` and sets `step: custom_model`, except while a download holds the lock: that download keeps `status` until it ends
 - `status` dict (`step`: `idle`/`downloading`/`verifying`/`waiting_retry`/`ready`/`failed`, plus `error` and `attempt`) is readable at any time by the dashboard status endpoint
 
 **Dashboard Enable Flow** (non-blocking, retryable):
