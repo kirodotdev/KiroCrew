@@ -212,6 +212,17 @@ class KnowledgeHarnessUnavailable(RuntimeError):
         )
 
 
+class LLMPoolClosed(RuntimeError):
+    """A send on a shut-down pool, or one its shutdown cut short.
+
+    Not a failed item: the reply never comes, so an ingest must fail rather
+    than store the chunk with no extraction.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("the LLM pool is shut down")
+
+
 def _kiro_fallback(reason: str) -> str:
     """``ACP_BACKEND_KIRO`` as the pool's FALLBACK harness: ``oss`` only.
 
@@ -1170,6 +1181,8 @@ class LLMPool:
         self._workers: list[Worker] = []
         self._available: asyncio.Queue[int] = asyncio.Queue()
         self._started = False
+        # Set by shutdown() for good: acquire() would otherwise respawn the pool.
+        self._closed = False
         self._provider_type: str = ""
         self._config: dict = {}
         self._start_lock = asyncio.Lock()
@@ -1348,9 +1361,12 @@ class LLMPool:
         """Acquire a worker from the pool. Blocks if all busy.
 
         Returns (worker_index, worker). Caller must release after use.
-        Transparently restarts the pool if the idle reaper scaled it to zero.
+        Transparently restarts the pool if the idle reaper scaled it to zero,
+        never after shutdown().
         """
         while True:
+            if self._closed:
+                raise LLMPoolClosed()
             if not self._started:
                 await self.start()
             await self._semaphore.acquire()
@@ -1497,6 +1513,10 @@ class LLMPool:
         idx, worker = await self.acquire()
         try:
             return await worker.send_message(prompt, timeout=timeout)
+        except Exception as exc:
+            if self._closed:
+                raise LLMPoolClosed() from exc
+            raise
         finally:
             try:
                 await self._maybe_recycle(idx, worker)
@@ -1547,7 +1567,7 @@ class LLMPool:
         async def _do_one(idx: int, prompt: str) -> None:
             try:
                 results[idx] = await self.send(prompt, timeout=timeout)
-            except KnowledgeHarnessUnavailable:
+            except (KnowledgeHarnessUnavailable, LLMPoolClosed):
                 # Not a failed item: no prompt in the batch can run, and an empty
                 # reply would let the ingest commit a document with no extraction.
                 raise
@@ -1559,7 +1579,8 @@ class LLMPool:
         return results
 
     async def shutdown(self) -> None:
-        """Destroy all workers and stop the idle reaper."""
+        """Destroy all workers and stop the idle reaper; the pool stays closed."""
+        self._closed = True
         task = self._reaper_task
         self._reaper_task = None
         if task is not None:

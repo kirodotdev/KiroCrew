@@ -50,6 +50,17 @@ def _is_harness_refusal(exc: BaseException) -> bool:
     return isinstance(exc, KnowledgeHarnessUnavailable)
 
 
+def _fails_the_ingest(exc: BaseException) -> bool:
+    """The harness refusal, or the pool shut down under the extraction.
+
+    Either way no reply comes, so the error reaches the ingest instead of an
+    empty extraction it would store under the document's hash.
+    """
+    from kiro_crew.knowledge.llm_pool import LLMPoolClosed
+
+    return _is_harness_refusal(exc) or isinstance(exc, LLMPoolClosed)
+
+
 _PAYLOAD_KEYS = frozenset({"title", "entities", "relations", "category", "summary"})
 
 
@@ -124,7 +135,7 @@ class EntityExtractor:
             )
             response = await self._pool.send(prompt, timeout=EXTRACTION_TIMEOUT)
         except Exception as exc:
-            if _is_harness_refusal(exc):
+            if _fails_the_ingest(exc):
                 raise
             # The type only: an exception's message can echo the prompt, which
             # carries the document text.
@@ -164,7 +175,7 @@ class EntityExtractor:
         try:
             responses = await self._pool.send_batch(prompts, timeout=EXTRACTION_TIMEOUT)
         except Exception as exc:
-            if _is_harness_refusal(exc):
+            if _fails_the_ingest(exc):
                 raise
             # The type only: an exception's message can echo the prompt, which
             # carries the document text.

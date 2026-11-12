@@ -2116,8 +2116,9 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   artifact in hand. `stop()` neither cancels nor waits: a cancel mid-ingest
   skips finalize and strands committed chunks that no artifact owns, and a
   wait would hold the live-config applier's timeout or the 10 s graceful
-  shutdown on an LLM-backed ingest. The artifact in hand at exit can still
-  be cut short by the pool shutdown, as before this stop existed.
+  shutdown on an LLM-backed ingest. When the pool shutdown cuts the artifact
+  in hand short, its ingest fails and records no content hash, so the next
+  start ingests it again (`knowledge.md`, Pool mechanics).
   - **Converged is free.** `ingest_artifact` already skips unchanged content, so
     the steady state spends no extraction calls and logs at debug.
   - **Removals are judged against every artifact, not the eligible kinds.**
