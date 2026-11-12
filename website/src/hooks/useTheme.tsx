@@ -19,6 +19,13 @@ import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
 import {
+  normalizeThemeSchedule,
+  readStoredThemeSchedule,
+  scheduledMode,
+  type ThemeSchedule,
+} from '../utils/themeSchedule'
+import { useThemeSchedule } from './useThemeSchedule'
+import {
   adoptServerLiquidGlass,
   readLiquidGlass,
   type TranslucentPanelsStored,
@@ -49,7 +56,7 @@ import { i18nT } from '../i18n/t'
 import { PRIVACY_NOTICE_VERSION } from '../components/privacyNotice'
 import type { ThemeLoaderIconName } from '../themeLoaderIcons'
 
-export type ModePreference = 'dark' | 'light' | 'system'
+export type ModePreference = 'dark' | 'light' | 'system' | 'schedule'
 export type ResolvedMode = 'dark' | 'light'
 export type ColorTheme = string  // built-in slug or 'custom-{slug}'
 
@@ -193,8 +200,10 @@ function getSystemMode(): ResolvedMode {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
-function resolveMode(pref: ModePreference): ResolvedMode {
-  return pref === 'system' ? getSystemMode() : pref
+function resolveMode(pref: ModePreference, schedule: ThemeSchedule = readStoredThemeSchedule()): ResolvedMode {
+  if (pref === 'system') return getSystemMode()
+  if (pref === 'schedule') return scheduledMode(schedule)
+  return pref
 }
 
 /**
@@ -523,6 +532,11 @@ export interface ThemeContextValue {
   preference: ModePreference
   cycle: () => void
   setTheme: (pref: ModePreference) => void
+  /** The times Scheduled mode switches at, in the device's time zone. */
+  schedule: ThemeSchedule
+  setSchedule: (schedule: ThemeSchedule) => void
+  /** The last `setSchedule` save was refused; this device still uses those times. */
+  scheduleSaveFailed: boolean
   colorTheme: ColorTheme
   setColorTheme: (t: ColorTheme) => void
   /**
@@ -1133,6 +1147,11 @@ function useThemeState(): ThemeContextValue {
       privacy_ack_version?: number
     }) => api.updateThemeConfig(body),
   })
+  // Its own observer: a mode or colour write right after would drop this save's onError.
+  const { mutate: persistSchedule } = useMutation({
+    mutationFn: (body: { schedule_light: string; schedule_dark: string }) => api.updateThemeConfig(body),
+  })
+  const { schedule, setSchedule, adoptSchedule, saveFailed: scheduleSaveFailed } = useThemeSchedule(mode, setResolved, persistSchedule)
 
   // Fetch workspace theme config from server on boot.
   // Server is the source of truth; localStorage is a render cache.
@@ -1185,9 +1204,14 @@ function useThemeState(): ThemeContextValue {
     const onboarding = legacyMigrationStartedRef.current
       ? 'keep'
       : needsLegacyMigration ? 'migrate' : 'adopt'
+    // Saved as a pair; a workspace that never saved one keeps this browser's.
+    const servedSchedule = bootData.schedule_light || bootData.schedule_dark
+      ? normalizeThemeSchedule(bootData.schedule_light, bootData.schedule_dark)
+      : null
+    if (servedSchedule) adoptSchedule(servedSchedule)
     if (modeChanged) {
       setMode(bootData.mode as ModePreference)
-      setResolved(resolveMode(bootData.mode as ModePreference))
+      setResolved(resolveMode(bootData.mode as ModePreference, servedSchedule ?? schedule))
     }
     if (colorChanged) setColorThemeState(bootData.color)
     if (typeof bootData.privacy_ack_version === 'number') {
@@ -1296,10 +1320,11 @@ function useThemeState(): ThemeContextValue {
   // rather than only pulled on window focus so switching Dark → Auto un-pins
   // `prefers-color-scheme` immediately; Chromium then fires a change event on
   // the media query below if the effective value moved. No-op in a browser.
+  // Scheduled has no OS-side equivalent, so the shell is pinned to what it resolved to.
   useEffect(() => {
     const bridge = window.electronAPI
-    bridge?.setThemeMode?.(mode)
-  }, [mode])
+    bridge?.setThemeMode?.(mode === 'schedule' ? resolved : mode)
+  }, [mode, resolved])
 
   // Sync the Windows titleBarOverlay colors whenever the resolved dark/light
   // mode changes. The overlay strip must match the dashboard chrome at all
@@ -1370,10 +1395,14 @@ function useThemeState(): ThemeContextValue {
     persistTheme({ mode: pref })
   }, [persistTheme])
 
+  // From Scheduled, a toggle is a manual pick of the other appearance: a hop to
+  // Auto would often change nothing on screen.
   const cycleMode = useCallback(() => {
-    const next: ModePreference = mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
+    const next: ModePreference = mode === 'schedule'
+      ? (resolved === 'dark' ? 'light' : 'dark')
+      : mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
     setMode_(next)
-  }, [mode, setMode_])
+  }, [mode, resolved, setMode_])
 
   const setColorTheme = useCallback((t: ColorTheme) => {
     // No-op a same-value re-select: nothing changes, and flipping themeSwitching
@@ -1626,6 +1655,9 @@ function useThemeState(): ThemeContextValue {
     preference: mode,
     cycle: cycleMode,
     setTheme: setMode_,
+    schedule,
+    setSchedule,
+    scheduleSaveFailed,
     colorTheme,
     setColorTheme,
     themeSwitching,

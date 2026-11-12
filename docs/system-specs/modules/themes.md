@@ -407,8 +407,36 @@ dashboard load into header-only round trips.
 | Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `scopeOverridesCss` + `rewriteOverridesUrls` (`themeCss.ts`); `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
-| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona), or a registered theme's Overlays alone, as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
+| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Mode switch (Auto / Light / Dark / Scheduled, with Scheduled's two times) + single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona), or a registered theme's Overlays alone, as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
+
+### Mode preference
+
+`useTheme` holds one mode preference, workspace-backed as `dashboard.theme_mode`
+(config.md, *Dashboard theme persistence*): `system` (Auto) follows
+`prefers-color-scheme`, `light` and `dark` are fixed, and `schedule` (Scheduled)
+is light from `theme_schedule_light` until `theme_schedule_dark` on the device's
+own clock and time zone, wrapping past midnight, 07:00 and 19:00 when unset.
+A manual pick replaces the schedule and keeps its times. First run's look step
+offers Auto, Light and Dark only, because Scheduled needs the two times. A
+schedule save the workspace refuses shows an inline notice under the two times;
+this device keeps the new times, and leaving a time field saves them again.
+
+- **One resolver.** `website/src/utils/themeSchedule.ts` has no imports, so the
+  crew companion and Mochi windows, which paint from `localStorage["mc-theme"]`,
+  resolve `schedule` the same way from the `mc-theme-schedule` copy.
+- **A minute tick, not a timer to the next switch.** While Scheduled is active
+  the dashboard (`useThemeSchedule.ts`) re-reads the clock every minute, so the
+  switch lands within a minute of each time and of the device waking from sleep.
+- **The desktop shell.** `nativeTheme.themeSource` has no scheduled value, so
+  under Scheduled the shell is sent the resolved `light` or `dark`. That re-pin
+  fires `prefers-color-scheme` change events, which is how a switch reaches the
+  companion and Mochi windows; they hold no clock of their own. The shell takes
+  that push only while no other dashboard window has focus: `themeSource` is
+  process-wide and the focused window re-syncs it when it gains focus, so a
+  background window's switch cannot re-pin the focused one.
+- **Toggle Theme** from Scheduled picks the appearance not on screen, a manual
+  pick like any other, rather than stepping to Auto, which often looks the same.
 
 ### Boot sequence: themed first paint
 

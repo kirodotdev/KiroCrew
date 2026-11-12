@@ -1040,3 +1040,51 @@ describe('DisplayPanel – sidebar session colors', () => {
     expect(state().sessionDefaultColor).toBeNull()
   })
 })
+
+describe('DisplayPanel – Scheduled mode times', () => {
+  beforeEach(() => {
+    displaySub = 'theme'
+    vi.clearAllMocks()
+  })
+
+  // A time field reports each segment it edits, and '' while one is cleared:
+  // saving per edit would re-theme and write the workspace once per keystroke.
+  it('saves a time once on blur, and keeps the saved one when the field is cleared', () => {
+    const setSchedule = vi.fn()
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00' },
+      setSchedule,
+    }))
+    renderPanel()
+    const light = screen.getByLabelText('Light from')
+    fireEvent.change(light, { target: { value: '02:00' } })
+    fireEvent.change(light, { target: { value: '21:00' } })
+    expect(setSchedule).not.toHaveBeenCalled()
+    fireEvent.blur(light)
+    expect(setSchedule).toHaveBeenCalledTimes(1)
+    expect(setSchedule).toHaveBeenCalledWith({ light: '21:00', dark: '19:00' })
+
+    const dark = screen.getByLabelText('Dark from')
+    fireEvent.change(dark, { target: { value: '' } })
+    fireEvent.blur(dark)
+    expect(setSchedule).toHaveBeenCalledTimes(1)
+    expect(dark).toHaveValue('19:00')
+  })
+
+  it('shows a refused save under the times, and leaving a field saves the same pair again', () => {
+    const setSchedule = vi.fn()
+    mockUseTheme.mockImplementation(() => ({
+      ...DEFAULT_THEME,
+      preference: 'schedule',
+      schedule: { light: '07:00', dark: '19:00' },
+      setSchedule,
+      scheduleSaveFailed: true,
+    }))
+    renderPanel()
+    expect(screen.getByText("Couldn't save these times. This device uses them; other devices keep the old ones. Try again.")).toBeInTheDocument()
+    fireEvent.blur(screen.getByLabelText('Light from'))
+    expect(setSchedule).toHaveBeenCalledWith({ light: '07:00', dark: '19:00' })
+  })
+})

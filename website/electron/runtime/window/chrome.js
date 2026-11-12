@@ -211,7 +211,11 @@ function createWindowChrome({
     focusCursorWatch.watch(win, watching);
   }
 
-  function setThemeMode(pref) {
+  function setThemeMode(pref, sender) {
+    // themeSource is process-wide and a focused dashboard window re-syncs it on
+    // focus, so a background window's push must not re-pin the focused one.
+    const focused = BaseWindow.getFocusedWindow();
+    if (focused && focused._mcView && focused !== windowForWebContents(sender)) return;
     if (pref === "system" || pref === "dark" || pref === "light") {
       nativeTheme.themeSource = resolveThemeSource(pref, "");
     }

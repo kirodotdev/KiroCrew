@@ -31,6 +31,7 @@
 // The rules themselves live in a stylesheet (see that file's header for why);
 // imported as text because this guard must be injected LAST into <head>.
 import transparentCss from './windowTransparent.css?raw'
+import { THEME_SCHEDULE_STORAGE_KEY, readStoredThemeSchedule, scheduledMode } from '../../utils/themeSchedule'
 
 /** Marks each stylesheet link we inject so a second call is a no-op. */
 const THEME_LINK_ATTR = 'data-cc-dashboard-theme'
@@ -164,10 +165,10 @@ export function applyThemeId(): void {
   try {
     const color = localStorage.getItem('mc-color-theme') || 'kiro'
     const pref = localStorage.getItem('mc-theme') || 'system'
-    // Mirror the dashboard's getSystemMode(): dark when the OS prefers dark, else light.
+    // Mirror the dashboard's resolveMode(): Auto follows the OS, Scheduled the clock.
     const mode = pref === 'system'
       ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : pref
+      : pref === 'schedule' ? scheduledMode(readStoredThemeSchedule()) : pref
     const el = document.documentElement
     el.dataset.theme = color === 'emerald' ? mode : `${color}-${mode}`
     el.dataset.mode = mode
@@ -176,11 +177,18 @@ export function applyThemeId(): void {
   }
 }
 
-/** Follow the dashboard when the user switches theme while the companion is open. */
+/** Follow the dashboard when the user switches theme while the companion is open.
+ *  The media query also fires when the desktop shell re-pins the appearance,
+ *  which is how a Scheduled switch reaches this window. */
 export function watchThemeChanges(): () => void {
   const onStorage = (e: StorageEvent) => {
-    if (e.key === 'mc-color-theme' || e.key === 'mc-theme') applyThemeId()
+    if (e.key === 'mc-color-theme' || e.key === 'mc-theme' || e.key === THEME_SCHEDULE_STORAGE_KEY) applyThemeId()
   }
+  const scheme = window.matchMedia?.('(prefers-color-scheme: dark)')
   window.addEventListener('storage', onStorage)
-  return () => window.removeEventListener('storage', onStorage)
+  scheme?.addEventListener?.('change', applyThemeId)
+  return () => {
+    window.removeEventListener('storage', onStorage)
+    scheme?.removeEventListener?.('change', applyThemeId)
+  }
 }

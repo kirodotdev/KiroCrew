@@ -124,12 +124,13 @@ describe('DisplayPanel button-group labels under the pseudolocale', () => {
     expect(screen.queryByRole('radio', { name: 'Chat' })).not.toBeInTheDocument()
   })
 
-  it('translates the Mode options Auto / Light / Dark and keeps writing the wire values', async () => {
+  it('translates the Mode options Auto / Light / Dark / Scheduled and keeps writing the wire values', async () => {
     renderWithProviders(<DisplayPanel />, { route: route('theme') })
     for (const [key, english, wire] of [
       ['theme_mode_auto', 'Auto', 'system'],
       ['theme_mode_light', 'Light', 'light'],
       ['theme_mode_dark', 'Dark', 'dark'],
+      ['theme_mode_scheduled', 'Scheduled', 'schedule'],
     ] as const) {
       const label = xa(key)
       expect(label).toMatch(/^\[/)

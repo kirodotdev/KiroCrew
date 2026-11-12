@@ -9646,6 +9646,8 @@
         "session_folder_root": "",
         "default_session_folder": "",
         "theme_mode": "",
+        "theme_schedule_light": "",
+        "theme_schedule_dark": "",
         "sso_login_flags": "",
         "theme_color": "",
         "language": "",
@@ -11059,14 +11061,43 @@
       "sensitive": false,
       "tags": [],
       "label": "Theme Mode",
-      "help": "Dashboard color mode preference: 'dark', 'light', or 'system'. Empty = unset (frontend falls back to localStorage or 'system').",
+      "help": "Dashboard color mode preference: 'dark', 'light', 'system', or 'schedule' (light from theme_schedule_light, dark from theme_schedule_dark). Empty = unset (frontend falls back to localStorage or 'system').",
       "hasChildren": false,
       "enumValues": [
         "",
         "dark",
         "light",
-        "system"
+        "system",
+        "schedule"
       ],
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.theme_schedule_light",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Theme Schedule Light",
+      "help": "24-hour HH:MM at which the 'schedule' theme mode turns light, read in the time zone of the device showing the dashboard. Empty = never set (07:00).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.theme_schedule_dark",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Theme Schedule Dark",
+      "help": "24-hour HH:MM at which the 'schedule' theme mode turns dark, read in the time zone of the device showing the dashboard. Empty = never set (19:00).",
+      "hasChildren": false,
+      "enumValues": null,
       "defaultValue": ""
     },
     {

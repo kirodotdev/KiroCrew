@@ -610,7 +610,7 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     ["focus-mode-chrome", "chrome.focusMode", [sender, false]],
     ["focus-mode-watch-cursor", "chrome.watchFocusCursor", [sender, true]],
     ["window-control", "chrome.windowControl", [sender, "maximize", senderFrame]],
-    ["theme-mode-changed", "chrome.setThemeMode", ["dark"]],
+    ["theme-mode-changed", "chrome.setThemeMode", ["dark", sender]],
     ["titlebar-overlay-theme", "chrome.setTitlebarMode", ["light"]],
   ];
   for (const [channel, owner, args] of chromeCases) {

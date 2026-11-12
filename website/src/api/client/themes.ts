@@ -51,6 +51,9 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
       language?: string
       /** The Translucent panels switch; '' means never chosen on this workspace. */
       translucent_panels?: TranslucentPanelsStored
+      /** Scheduled mode's switch times, 24-hour `HH:MM`; '' means never saved. */
+      schedule_light?: string
+      schedule_dark?: string
       onboarded?: boolean
       import_onboarded?: boolean
       /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */
