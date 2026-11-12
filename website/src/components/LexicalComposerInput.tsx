@@ -75,6 +75,7 @@ import {
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
 import InlineMarkdownPlugin, { INLINE_MARKDOWN_THEME } from './InlineMarkdownPlugin'
+import { INPUT_DEFAULT_MAX_H } from './chat-input/sizing'
 
 const CONTROLLED_SYNC_TAG = 'kirocrew-controlled-composer-sync'
 
@@ -107,6 +108,12 @@ interface LexicalComposerInputProps {
    *  Display only: the value stays the markdown they typed. Default false. */
   inlineMarkdown?: boolean
   className?: string
+  /** Without a pinned drag height, the editor stops at this cap and scrolls
+   *  inside itself, matching the textarea's autosize cap (#35680), and never
+   *  past 50vh on a short window. `null`:
+   *  the user pinned a height, so the wrapper sizes it under the drag's 50vh
+   *  ceiling. */
+  maxHeight?: number | null
   controlRef?: React.MutableRefObject<ComposerControl | null>
   editorRef?: React.RefCallback<LexicalEditor> | React.RefObject<LexicalEditor | null | undefined>
   onReady?: () => void
@@ -878,6 +885,7 @@ export default function LexicalComposerInput({
   spellCheck = true,
   inlineMarkdown = false,
   className = '',
+  maxHeight = INPUT_DEFAULT_MAX_H,
   controlRef,
   editorRef,
   onReady,
@@ -931,6 +939,7 @@ export default function LexicalComposerInput({
               data-lexical-composer=""
               data-composer-typo=""
               className={`relative w-full min-h-[44px] max-h-[50vh] overflow-y-auto border-none bg-transparent text-text outline-hidden whitespace-pre-wrap break-words ${INPUT_TYPO}`}
+              style={maxHeight === null ? undefined : { maxHeight: `min(${maxHeight}px, 50vh)` }}
             />
           }
           placeholder={
