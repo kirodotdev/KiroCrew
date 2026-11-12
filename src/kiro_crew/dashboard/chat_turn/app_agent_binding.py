@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_sdk.capabilities import SessionCapabilities
 from kiro_crew.dashboard.chat_utils import APP_AGENT_REFUSED_KIND
 from kiro_crew.dashboard.slot_ownership import (
-    APP_ISOLATION_SOURCE,
     BOT_IDENTITY_DENIED,
+    _record_isolation_denial,
     selects_bot_identity,
 )
 
@@ -31,7 +31,6 @@ if TYPE_CHECKING:
         resolve_agent_bindings,
         resolve_session_agent_bindings,
         routing_for,
-        sel,
         select_provider_backend,
         subprocess_executor,
     )
@@ -83,19 +82,9 @@ def _refuse_app_bot_turn(slot: "_ChatSlot", bindings: "ResolvedBindings | None")
             else "the name is stamped on the slot, with no execution record yet"
         ),
     )
-    # An authorization denial belongs in the audit chain, not only the process
-    # log. Best-effort: the refusal stands if auditing fails.
-    try:
-        sel().log_api_access(
-            caller=slot._app,
-            operation="chat_runner.turn_admission",
-            outcome="denied",
-            source=APP_ISOLATION_SOURCE,
-            resources=f"slot={slot.key}",
-            error=BOT_IDENTITY_DENIED,
-        )
-    except Exception:  # noqa: BLE001 - auditing must not unblock the turn
-        logger.warning("SEL denial audit failed for an app session's Bot turn", exc_info=True)
+    _record_isolation_denial(
+        slot._app, "chat_runner.turn_admission", f"slot={slot.key}", BOT_IDENTITY_DENIED
+    )
     # shortcut: English only; give it a gateway-notice token when an app can be
     # granted a Bot and this row starts naming the missing grant.
     slot.append("error", APP_BOT_TURN_REFUSAL, "msg msg-err", meta={"kind": APP_AGENT_REFUSED_KIND})

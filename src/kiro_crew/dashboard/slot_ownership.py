@@ -52,6 +52,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
+from kiro_crew import mate_worker
 from kiro_crew import members as members_mod
 from kiro_crew.apps import permissions as app_permissions
 from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
@@ -61,6 +62,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import SlotOrigin, load_window_off_loop
+from kiro_crew.execution_context import is_bot_own_execution
 from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.sel import sel
@@ -178,22 +180,27 @@ def slot_not_found() -> web.Response:
 def selects_bot_identity(bindings: Any) -> bool:
     """Whether resolved *bindings* would run a session on what is a Bot's own.
 
-    A Bot's own is its memory store and its chat. So this is a ``config.agents``
-    record bound to a store other than the shared one, or one whose chat runs on
-    the conductor (a Bot with its own file: that chat takes the Bot's Permissions
-    and dispatches its workers), and any execution record that carries a Bot's
-    id, whatever template runs on that store. A record on the shared store with a
-    plain template (the reserved ``default`` row, a row the agent sync wrote) has
-    nothing of its own to give: it names a template with a workspace and a model
-    pin, on the memory a template session already has, and is not judged here.
+    A Bot's own is its memory store, its chat and its own file. Bindings that
+    run a Bot's own file (``mate_worker.is_mate_owned_agent``), in either
+    namespace, take that Bot's prompt, servers and tools. Bindings that carry an
+    execution record are judged on that record alone, by the one test every
+    path uses (``execution_context.is_bot_own_execution``): a record on a store
+    other than the shared one counts whatever its kind. Bindings with no record
+    are a ``config.agents`` row judged the same way: bound to a store other than
+    the shared one, or chatting on the conductor (a Bot with its own file: that
+    chat takes the Bot's Permissions and dispatches its workers). A row on the
+    shared store with a plain template (the reserved ``default`` row, a row the
+    agent sync wrote) has nothing of its own to give: it names a template with a
+    workspace and a model pin, on the memory a template session already has.
     """
     if bindings is None:
         return False
-    execution = getattr(bindings, "execution_context", None)
-    if getattr(execution, "member_id", None) is not None:
+    if mate_worker.is_mate_owned_agent(str(getattr(bindings, "kiro_agent", "") or "")):
         return True
-    kinds = (getattr(bindings, "selection_kind", ""), getattr(execution, "selection_kind", ""))
-    if "member" not in kinds:
+    execution = getattr(bindings, "execution_context", None)
+    if execution is not None:
+        return is_bot_own_execution(execution)
+    if getattr(bindings, "selection_kind", "") != "member":
         return False
     store = getattr(bindings, "memory_store_name", "") or DEFAULT_MEMORY_STORE
     return store != DEFAULT_MEMORY_STORE or bindings.kiro_agent == MATE_CONDUCTOR_AGENT

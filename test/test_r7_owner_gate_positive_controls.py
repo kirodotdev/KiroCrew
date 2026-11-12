@@ -279,7 +279,10 @@ async def test_app_token_caller_can_still_spawn(attested_internal_identity) -> N
     """``GET/POST /api/spawn`` is a declarable App Kit path (docs/app-kit/api-reference.md)."""
     app, spawn = _spawn_app()
     async with _client(app, _app_token_claims()) as client:
-        response = await client.post("/api/spawn", json={"task": "app work"})
+        # An app token names one of its own agents, as the App Kit SDK does.
+        response = await client.post(
+            "/api/spawn", json={"task": "app work", "agent": f"{APP_NAME}--worker"}
+        )
         status, body = response.status, await _body(response)
 
     _assert_not_owner_refused(status, body, "POST /api/spawn (app token)")

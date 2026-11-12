@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -28,10 +28,12 @@ from chat_test_helpers import drain_background_tasks
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.config.sections import MemoryStoreConfig
-from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard import chat_runner, slot_ownership
 from kiro_crew.dashboard.chat_utils import APP_AGENT_REFUSED_KIND
 from kiro_crew.dashboard.slot_ownership import slot_ownership_middleware
 from kiro_crew.execution_context import (
+    ExecutionContext,
+    MemoryStoreRef,
     bind_session_execution,
     read_session_execution,
     resolve_member_execution,
@@ -173,11 +175,22 @@ async def test_a_bot_name_stamped_on_an_app_session_is_refused_at_turn_admission
     await asyncio.to_thread(_add_bots, monkeypatch)
     state = _turn_state(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("shop-1", agent=bot, app=APP)
+    recorder = MagicMock()
+    monkeypatch.setattr(slot_ownership, "sel", lambda: recorder)
 
     await _finished(chat_runner._run_chat(state, slot, "hi"), "the chat turn")
     await _finished(drain_background_tasks(state), "the background tasks draining")
 
     await _assert_nothing_of_a_bot(state, slot)
+    # The refusal is filed as the app-isolation row every other app denial writes.
+    recorder.log_api_access.assert_called_once_with(
+        caller=APP,
+        operation="chat_runner.turn_admission",
+        outcome="denied",
+        source=slot_ownership.APP_ISOLATION_SOURCE,
+        resources=f"slot={slot.key}",
+        error=slot_ownership.BOT_IDENTITY_DENIED,
+    )
     assert not [m for m in slot.messages if m["role"] == "assistant"]
     refusals = [m for m in slot.messages if m["role"] == "error"]
     assert [m["content"] for m in refusals] == [chat_runner.APP_BOT_TURN_REFUSAL]
@@ -342,13 +355,13 @@ def test_only_an_app_session_is_judged_and_only_on_what_is_a_bots_own():
     template_on_bot_store = bindings(
         "template",
         store="reviewer-store",
-        record=SimpleNamespace(selection_kind="template", member_id="m-1"),
+        record=ExecutionContext("m-1", MemoryStoreRef("reviewer-store", "m-1"), "template", "w"),
     )
     # A record whose Bot is gone from the config resolves as a template.
     removed_bot = bindings(
         "template",
         store="reviewer-store",
-        record=SimpleNamespace(selection_kind="member", member_id=None),
+        record=ExecutionContext(None, MemoryStoreRef("reviewer-store", None), "member", "kirocrew"),
     )
     shared_row = bindings("member")
     template = bindings("template")
@@ -361,3 +374,109 @@ def test_only_an_app_session_is_judged_and_only_on_what_is_a_bots_own():
         assert not chat_runner.app_session_selects_bot(owner_slot, refused)
     for allowed in (shared_row, template, conductor_template, None):
         assert not chat_runner.app_session_selects_bot(app_slot, allowed)
+
+
+def test_a_record_is_judged_by_the_one_rule_for_what_is_a_bots_own():
+    """``selects_bot_identity`` on bindings that carry a record answers as the record does."""
+    from itertools import product
+
+    from kiro_crew.execution_context import is_bot_own_execution
+    from kiro_crew.mate_worker import member_chat_agent
+
+    for kind, store, template, member_id in product(
+        ("member", "template"),
+        ("default", "reviewer-store"),
+        ("kirocrew", MATE_CONDUCTOR_AGENT),
+        (None, "m-1"),
+    ):
+        if member_id and store == "default":
+            continue  # a Bot's id is never bound to the shared store
+        record = ExecutionContext(member_id, MemoryStoreRef(store, member_id), kind, template)
+        agent = member_chat_agent(template) if kind == "member" else template
+        resolved = SimpleNamespace(
+            selection_kind="member",
+            memory_store_name=store,
+            kiro_agent=agent,
+            execution_context=record,
+        )
+        case = (kind, store, template, member_id)
+        assert slot_ownership.selects_bot_identity(resolved) == is_bot_own_execution(record), case
+
+
+def _bot_owns_its_file(monkeypatch) -> None:
+    """The private Bot has its own file: the template of that name is the Bot's."""
+    from kiro_crew import mate_worker
+
+    monkeypatch.setattr(mate_worker, "is_mate_owned_agent", lambda name: name == PRIVATE_BOT)
+
+
+@pytest.mark.asyncio
+async def test_an_app_cannot_name_a_bots_own_file_as_a_template(tmp_path, monkeypatch):
+    await asyncio.to_thread(_add_bots, monkeypatch)
+    _bot_owns_its_file(monkeypatch)
+    state = _turn_state(tmp_path, monkeypatch)
+    async with _client(state) as client:
+        response = await _finished(
+            client.post(
+                "/api/chat/slots",
+                json={"name": "shop-new", "agent": PRIVATE_BOT, "agent_kind": "template"},
+                headers={"X-Test-App": APP},
+            ),
+            "the request's response",
+        )
+        text = await response.text()
+
+    assert response.status == 404, text
+    assert json.loads(text)["code"] == "slot_not_found"
+    assert "shop-new" not in state._slots
+
+
+@pytest.mark.asyncio
+async def test_a_bots_own_file_stamped_as_a_template_is_refused_at_turn_admission(
+    tmp_path, monkeypatch
+):
+    await asyncio.to_thread(_add_bots, monkeypatch)
+    _bot_owns_its_file(monkeypatch)
+    state = _turn_state(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("shop-1", agent=PRIVATE_BOT, app=APP)
+    slot.agent_kind = "template"
+
+    await _finished(chat_runner._run_chat(state, slot, "hi"), "the chat turn")
+    await _finished(drain_background_tasks(state), "the background tasks draining")
+
+    await _assert_nothing_of_a_bot(state, slot)
+    refusals = [m for m in slot.messages if m["role"] == "error"]
+    assert [m["content"] for m in refusals] == [chat_runner.APP_BOT_TURN_REFUSAL]
+
+
+@pytest.mark.asyncio
+async def test_the_owner_still_runs_a_bots_own_file_as_a_template(tmp_path, monkeypatch):
+    await asyncio.to_thread(_add_bots, monkeypatch)
+    _bot_owns_its_file(monkeypatch)
+    state = _turn_state(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("mine", agent=PRIVATE_BOT)
+    slot.agent_kind = "template"
+
+    await _finished(chat_runner._run_chat(state, slot, "hi"), "the chat turn")
+    await _finished(drain_background_tasks(state), "the background tasks draining")
+
+    state.sessions.get_or_create.assert_awaited_once()
+    assert not [m for m in slot.messages if m["role"] == "error"]
+
+
+def test_a_record_on_a_bots_own_file_is_a_bots_own(monkeypatch):
+    from kiro_crew.execution_context import is_bot_own_execution
+
+    _bot_owns_its_file(monkeypatch)
+    for kind in ("member", "template"):
+        record = ExecutionContext(None, MemoryStoreRef("default"), kind, PRIVATE_BOT)
+        assert is_bot_own_execution(record), kind
+        bound = SimpleNamespace(
+            selection_kind=kind,
+            memory_store_name="default",
+            kiro_agent=PRIVATE_BOT,
+            execution_context=None,
+        )
+        assert slot_ownership.selects_bot_identity(bound), kind
+    plain = ExecutionContext(None, MemoryStoreRef("default"), "template", APP_AGENT)
+    assert not is_bot_own_execution(plain)

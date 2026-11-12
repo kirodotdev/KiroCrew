@@ -84,6 +84,88 @@ def split_cron_agent_member(
     return agent_id, member_id
 
 
+def app_schedule_names_bot(
+    agent_id: str,
+    member_id: str,
+    *,
+    maker_session: str = "",
+    job: CronJob | None = None,
+) -> bool:
+    """Whether a schedule an app is creating or changing would run as a Bot.
+
+    The create and update entries that carry an app claim ask this before storing:
+    ``POST /api/crons`` and ``PATCH /api/crons/{id}`` from an app token, and the
+    ``cron_add`` and ``cron_update`` tools called from an app's session, scheduled
+    run or background run (*maker_session*). It judges the record the write would
+    store: for a create, what :func:`cron_capture_execution` captures (the function
+    ``bind_cron_memory`` stores); for an update of *job*, the job's capture
+    re-pointed by :func:`recapture_cron_template`. With that record R and the
+    maker's own record M, it refuses when any holds:
+
+    1. ``agent`` is a Bot's own file (``mate_worker.is_mate_owned_agent``) and is not
+       M's template, whatever ``member_id`` names;
+    2. R is a Bot's own (``execution_context.is_bot_own_execution``) and M is not
+       already that Bot (``execution_context.is_same_bot``);
+    3. R names no member and ``agent`` keys ``config.agents``: fire time collapses
+       such an alias onto its row, so that row's execution is judged as in 2.
+
+    A selection that does not resolve is refused rather than handed to an app on a
+    guess. Naming neither an agent nor a member is allowed: the job runs as its
+    maker, or as the operator's default agent. Neither entry takes an
+    ``agent_sequence``; a step an App Kit job stores is refused at fire time.
+
+    shortcut: a job the ``cron_add`` tool makes carries no ``app:`` tag, so it is
+    judged once, here; a later config change (an alias rebound to a Bot, a template
+    that becomes a Bot's file, a Bot's file set as the default agent) is not judged
+    again at fire time. Upgrade by tagging such jobs once the fire-time guards
+    exempt a Bot that schedules as itself.
+
+    Reads the configuration and session records from disk, so an ``async`` caller
+    hands this function to ``asyncio.to_thread``.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.execution_context import (
+        execution_from_record,
+        is_bot_own_execution,
+        is_same_bot,
+        read_session_execution,
+        resolve_member_execution,
+    )
+    from kiro_crew.mate_worker import is_mate_owned_agent
+
+    try:
+        config = KiroCrewConfig.load()
+        maker = read_session_execution(maker_session) if maker_session else None
+        if job is None:
+            agent, member = split_cron_agent_member(agent_id, member_id, config=config)
+            if not agent and not member:
+                return False
+            stored = cron_capture_execution(maker_session, "", agent, member)
+        else:
+            agent, member = agent_id, member_id or job.member_id
+            if member != job.member_id or job.execution_context is None:
+                # The store refuses a member change on update; judged as the capture
+                # it would make, so an app never learns otherwise.
+                stored = cron_capture_execution(job.session_key, job.memory_store, agent, member)
+            else:
+                record = recapture_cron_template(job, agent) or job.execution_context
+                stored = execution_from_record({"execution_context": record}, required=True)
+        alias = (
+            resolve_member_execution(config, agent)
+            if stored.member_id is None and agent in config.agents
+            else None
+        )
+    except (OSError, ValueError):
+        return True
+    if is_mate_owned_agent(agent) and not (maker is not None and agent == maker.template_id):
+        return True
+    return any(
+        is_bot_own_execution(record, config) and not is_same_bot(maker, record)
+        for record in (stored, alias)
+        if record is not None
+    )
+
+
 def build_cron_session_context(job: CronJob) -> tuple[str, str]:
     """Compute (session_key, prompt) for one cron run.
 
@@ -729,8 +811,18 @@ def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | Non
     return replace(execution, template_id=template_id).to_record()
 
 
-def bind_cron_memory(job: CronJob) -> None:
-    """Capture existing member or creator once inside the new job record."""
+def cron_capture_execution(
+    session_key: str, memory_store: str, agent_id: str, member_id: str
+) -> ExecutionContext:
+    """The execution a new job created with these fields captures.
+
+    The creator session's record, else the job's store under ``agent_id`` (or the
+    ``kirocrew`` floor); moved to ``member_id`` when one is named; its template
+    replaced by ``agent_id`` when one is named. :func:`bind_cron_memory` stores
+    this and :func:`app_schedule_names_bot` judges it, so the two cannot disagree
+    about what a create runs as. Reads the session record and configuration
+    from disk; raises ``ValueError`` when a selection does not resolve.
+    """
     from dataclasses import replace
 
     from kiro_crew.execution_context import (
@@ -739,19 +831,27 @@ def bind_cron_memory(job: CronJob) -> None:
         read_session_execution,
     )
 
+    creator = read_session_execution(session_key) if session_key else None
+    execution = creator or execution_for_store(memory_store, template_id=agent_id or "kirocrew")
+    if member_id:
+        execution = derive_execution(execution, target_member=member_id)
+    if agent_id:
+        execution = replace(execution, template_id=agent_id)
+    return execution
+
+
+def bind_cron_memory(job: CronJob) -> None:
+    """Capture existing member or creator once inside the new job record."""
     if job.execution_context is not None:
         resolve_cron_memory(job, validate_memory_files=False)
         return
-    creator = read_session_execution(job.session_key) if job.session_key else None
-    execution = creator or execution_for_store(
-        job.memory_store, template_id=job.agent_id or "kirocrew"
+    execution = cron_capture_execution(
+        job.session_key, job.memory_store, job.agent_id, job.member_id
     )
-    if job.member_id:
-        execution = derive_execution(execution, target_member=job.member_id)
+    # The template swap leaves the mode as derived, so checking it after the
+    # swap refuses exactly what checking it before did.
     if execution.memory_mode != "persistent":
         raise ValueError("Restricted sessions cannot create persistent schedules")
-    if job.agent_id:
-        execution = replace(execution, template_id=job.agent_id)
     job.execution_context = execution.to_record()
     job.member_id = execution.member_id or ""
     job.memory_store = execution.store.legacy_name

@@ -1299,8 +1299,25 @@ client when it fires.
 job's `created_by` as `app:<name>` from the token. An app token may update,
 delete, enable, run, cancel or acknowledge only jobs that carry its own stamp.
 Any other id, foreign or missing, answers 403 `owner_only`. A job without an
-app stamp is owner-only. An acknowledgement's `ts` must name a cron
+app stamp is owner-only. A create whose `agent` or `member_id` names one of the
+owner's Bots that has memory of its own or a chat of its own answers the same
+403 and stores nothing; the `cron_add` tool answers an agent in your app's
+sessions with an error for the same create. Name an agent of your own instead.
+`POST /api/spawn` holds the same rule: `crew` or `target_member` naming such a
+Bot answers 404 `unknown_member`, and a `parent_session` that is such a Bot's
+answers 409 `member_identity_unavailable`. An acknowledgement's `ts` must name a cron
 notification of that same job.
+
+**Runs for app tokens.** `POST /api/spawn` from an app token starts one of your
+app's own agents, as `sdk.spawn` does. Pass `agent` (`spawn(task, agent)`): a
+request without one answers 400 `spawn_rejected`, and a name that is not one of
+your app's agents is refused with a 400 that carries the reason. A
+`parent_session` must be one of your app's own sessions; any other answers 409
+`member_identity_unavailable`. The run is recorded under your app, and that
+record is what the other routes read: `GET /api/spawn` lists, and
+`GET`/`DELETE /api/spawn/{agent_id}` with `retry`, `continue`, `steer` and
+`release` reach, only the runs your app started. Any other run id answers 404
+`task_scope_denied`, the same answer a run id that does not exist gets.
 
 #### Watching something without paying for a model call (`kiro_crew.irq`)
 

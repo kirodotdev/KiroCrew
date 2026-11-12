@@ -294,16 +294,27 @@ async def _app_claim_refused(
     return False
 
 
-async def _app_send_names_bot(request_app: str, agent: object, existing: Any, key: str) -> bool:
-    """True, audited, when an app's ``POST /api/chat`` names a Bot for a session of its own.
+async def _app_send_refused(
+    state: DashboardState, request_app: str, agent: object, existing: Any, key: str
+) -> bool:
+    """True, audited, when an app's ``POST /api/chat`` may not go ahead on *key*.
 
-    Its own session is a slot this send would create, or a live app-owned one.
-    Owning a session is not being given a Bot, so the caller answers with the
-    uniform ``slot_not_found`` 404 (:func:`slot_ownership.app_names_bot`). A
+    Two refusals, both answered with the uniform ``slot_not_found`` 404. A slot
+    this send would auto-create must not land on a transcript the app does not
+    own (:func:`_app_claim_refused`): its first save would stamp the app onto
+    that transcript's metadata line. And the app's own session, a slot this send
+    would create or a live app-owned one, does not take a Bot's name: owning a
+    session is not being given a Bot (:func:`slot_ownership.app_names_bot`). A
     user's session the ``sessionApproval`` grant reaches is not the app's own: a
-    Bot thread the ``memberThreads`` scope reaches keeps its pinned name, and
-    the send path's own checks decide it.
+    Bot thread the ``memberThreads`` scope reaches keeps its pinned name, and the
+    send path's own checks decide it.
     """
+    if (
+        key
+        and existing is None
+        and await _app_claim_refused(state, request_app, "chat_send", (_history_key_for(key),))
+    ):
+        return True
     if existing is not None and not getattr(existing, "_app", ""):
         return False
     return await app_names_bot(

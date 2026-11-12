@@ -202,6 +202,9 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     api_update_message,
 )
 from kiro_crew.dashboard.messaging_api.run_control import (  # noqa: F401
+    _app_token_batch_refusal,
+    _app_token_caller,
+    _app_token_parent_refusal,
     _flag_collected_inline,
     _log_panel_dismissal,
     _native_child_refusal,
@@ -254,6 +257,8 @@ from kiro_crew.dashboard.messaging_api.slack_workspace import (  # noqa: F401
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     STOPPED_BEFORE_START_CODE,
+    _app_bot_spawn_refusal,
+    _app_token_spawn_refusal,
     _backend_name,
     _chain_note,
     _continue_on_loop,
@@ -300,6 +305,9 @@ from kiro_crew.dashboard.messaging_api.wecom_settings import (  # noqa: F401
 )
 from kiro_crew.dashboard.notification_coordinator import unread_count  # noqa: F401
 from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request  # noqa: F401
+from kiro_crew.dashboard.slot_ownership import (  # noqa: F401 -- read by messaging_api.run_control, .spawn
+    _record_isolation_denial,
+)
 from kiro_crew.dashboard.state import (  # noqa: F401
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,

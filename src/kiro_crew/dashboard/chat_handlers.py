@@ -117,7 +117,7 @@ from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401
     _app_claim_refused,
     _app_may_send_to_slot,
     _app_resume_refusal,
-    _app_send_names_bot,
+    _app_send_refused,
     _app_slot_acquisition_denial,
     _app_slot_acquisition_recheck,
     _deny_app_session_settings,
