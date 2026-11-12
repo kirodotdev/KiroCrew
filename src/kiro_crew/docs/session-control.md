@@ -495,11 +495,14 @@ the target then reads the correction last. Moving it ahead would make the older
 message run last and undo the correction.
 
 The target must be a session you manage: one you created, or one handed to you
-with `session_handoff`. Once you hand a session on, you lose its queue as you do
-its transcript (`not_creator`). It passes the same gate as the other
-session tools: an archived session is not open (`target_not_found`), and
-scheduled-run, incognito, app-scoped, channel-linked and mirrored sessions are
-refused.
+with `session_handoff`. With `agent.session_manager_chain` on, it can also be a
+session managed by a session you manage, down the line. With the switch off,
+once you hand a session on, you lose its queue as you do its transcript
+(`not_creator`); with it on, you keep it while you still manage the session you
+handed it to. It passes the
+same gate as the other session tools: an archived session is not open
+(`target_not_found`), and scheduled-run, incognito, app-scoped, channel-linked
+and mirrored sessions are refused.
 
 ### `session_adopt` and `session_release`
 

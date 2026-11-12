@@ -505,6 +505,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "below, with the reader being an LLM rather than the browser.",
     ),
     (
+        "Session control queue",
+        "dashboard/session_control_queue.py",
+        "The first 50 queued entries on a session the caller manages, whether a "
+        "person, another session or the caller queued them, served by "
+        "`POST /api/session-control/queue` to the calling agent. Queued text has "
+        "not run yet, so it can carry a key someone pasted; the excerpt and the "
+        "entry id are redacted on the way out for the same reason as the "
+        "session-control read above.",
+    ),
+    (
         "Session storage inventory",
         "dashboard/handlers/session_storage.py",
         "A session's title and its first message, served by "

@@ -585,6 +585,24 @@ def test_a_malformed_restored_queue_id_does_not_break_the_reorder():
     assert [m["content"] for m in messages] == ["hi", "a", "b", "bad", "badcls"]
 
 
+def test_a_cron_twin_row_names_one_id_in_both_spellings(tmp_path):
+    """Remove matches either spelling but the reorder reads ``meta.queueId`` first, so
+    the one writer of both must write the same id in each."""
+    from kiro_crew.dashboard.chat_utils_injected_rows import (
+        _queued_row_id,
+        _remove_queued_by_id,
+    )
+    from kiro_crew.dashboard.cron_inject import queue_cron_notification
+
+    slot = _make_state(tmp_path).get_or_create_slot("chat-2")
+    qid = queue_cron_notification(slot, "wrapped", "nightly")
+    (row,) = [m for m in slot.messages if m.get("role") == "queued"]
+    assert json.loads(row["cls"])["queue_id"] == qid
+    assert row["meta"]["queueId"] == qid
+    assert _queued_row_id(row) == qid
+    assert _remove_queued_by_id(slot.messages, qid)
+
+
 def test_an_unknown_action_is_refused(tmp_path):
     state, caller, _peer_slot, _target = _setup(tmp_path)
     with pytest.raises(sc.SessionControlError) as exc:

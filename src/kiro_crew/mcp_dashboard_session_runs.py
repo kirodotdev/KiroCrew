@@ -1471,8 +1471,8 @@ def _render_session_queue(resp: dict[str, Any]) -> str:
     for e in entries:
         label = from_labels.get(str(e.get("from")), "other ")
         # Every whitespace run, CR, CRLF and U+2028 included, becomes one space: an
-        # entry's text is untrusted, and a line break in it would render as an extra
-        # listing row with a forged position, id and owner label.
+        # entry's id and text are untrusted, and a line break in either would render
+        # as an extra listing row with a forged position, id and owner label.
         excerpt = " ".join(str(e.get("excerpt") or "").split())
         entry_id = " ".join(str(e.get("id") or "").split())
         lines.append(f"{e.get('position')}  {entry_id}  {label}  \"{excerpt}\"")
