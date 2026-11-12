@@ -487,6 +487,30 @@ def test_a_title_only_chat_history_search_is_capped_by_the_window(
     assert seen == [2]
 
 
+def test_search_chat_history_builds_no_ranking_snippets(tmp_path: Path, monkeypatch) -> None:
+    """The tool excerpts only the rows it keeps, so ranking the window reads no snippet."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:global-v1")
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+    for i in range(30):
+        log.append(f"dashboard_chat-{i}", "user", f"the platypus note {i}")
+    built: list[str] = []
+    original = ConversationLog._content_snippet
+
+    def _spy(self, key, query):
+        built.append(key)
+        return original(self, key, query)
+
+    monkeypatch.setattr(ConversationLog, "_content_snippet", _spy)
+    out = mcp_core._call_tool_inner("search_chat_history", {"query": "platypus", "limit": 3})
+    assert out.count("the platypus note") == 3
+    assert built == []
+    assert len(log.search_sessions("platypus", 50, snippets=False)) == 30
+    assert built == []
+    assert all(row.get("snippet") for row in log.search_sessions("platypus", 5))
+    assert len(built) == 5
+
+
 class _CutShortLog(_ConversationLog):
     """A shared search whose scan window left older sessions out."""
 

@@ -591,11 +591,18 @@ class SessionCatalogProjection:
         return usage
 
     def search_sessions(
-        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+        self,
+        query: str,
+        limit: int = 50,
+        *,
+        keys: Container[str] | None = None,
+        snippets: bool = True,
     ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
         Ranking, gating and *keys* are documented on :meth:`_search_sessions`.
+        ``snippets=False`` skips the per-row excerpt read for a caller that
+        builds its own excerpts for the rows it keeps.
 
         Unrestricted callers asking the same *query* and *limit* while one such
         search is running wait for it and get its rows, rather than each paying
@@ -604,8 +611,8 @@ class SessionCatalogProjection:
         that starts after a write never returns rows computed before it.
         """
         if keys is not None or not query or limit <= 0:
-            return self._search_sessions(query, limit, keys=keys)
-        slot = (str(self._log._dir), query, limit)
+            return self._search_sessions(query, limit, keys=keys, snippets=snippets)
+        slot = (str(self._log._dir), query, limit, snippets)
         epoch = self._log._dir_write_epoch()
         with _flights_lock:
             running = _flights.get(slot)
@@ -617,9 +624,9 @@ class SessionCatalogProjection:
             running.done.wait()
             if running.result is not None:
                 return _copy_rows(running.result)
-            return self._search_sessions(query, limit)
+            return self._search_sessions(query, limit, snippets=snippets)
         try:
-            rows = self._search_sessions(query, limit)
+            rows = self._search_sessions(query, limit, snippets=snippets)
             # A private copy, so a caller editing the rows it was handed cannot
             # change what a waiting caller receives.
             flight.result = _copy_rows(rows)
@@ -645,7 +652,12 @@ class SessionCatalogProjection:
         self._index_shortlist(window, [])
 
     def _search_sessions(
-        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+        self,
+        query: str,
+        limit: int = 50,
+        *,
+        keys: Container[str] | None = None,
+        snippets: bool = True,
     ) -> list[dict]:
         """Return session metadata for files whose message content matches *query*.
 
@@ -778,7 +790,15 @@ class SessionCatalogProjection:
             _pinned(self._snippet_memo, [snippet_group]),
         ):
             return self._search_parsed(
-                query, limit, keys, needles, phrase, adjacency_floor, gate, title_filter
+                query,
+                limit,
+                keys,
+                needles,
+                phrase,
+                adjacency_floor,
+                gate,
+                title_filter,
+                snippets=snippets,
             )
 
     def _search_titles(
@@ -817,6 +837,8 @@ class SessionCatalogProjection:
         adjacency_floor: bool,
         gate: "_MemoGate",
         title_filter: Callable[[str], bool] | None = None,
+        *,
+        snippets: bool = True,
     ) -> list[dict]:
         """The scoring and snippet half of :meth:`_search_sessions`.
 
@@ -1002,7 +1024,9 @@ class SessionCatalogProjection:
         # original text, so offsets line up), so building one per match put a
         # full re-read back on the hot path — dominating the query once the fold
         # itself was memoized.
-        picked = [(meta, needs_snippet) for _v, _s, _r, meta, needs_snippet in scored[:limit]]
+        picked = [
+            (meta, needs_snippet and snippets) for _v, _s, _r, meta, needs_snippet in scored[:limit]
+        ]
         return SearchRows(
             self._result_rows(picked, keys, query), searched=searched, eligible=eligible
         )
