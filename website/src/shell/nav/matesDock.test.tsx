@@ -208,10 +208,11 @@ describe('DockMatesSection', () => {
     expect(within(screen.getByTestId('dock-mate-a')).getByRole('button')).not.toHaveAttribute('aria-current')
   })
 
-  it('marks a working mate before live slot data arrives', () => {
+  it('marks a working mate on its face, not with a dot, before live slot data arrives', () => {
     renderDock([row('busy', { starred: true, running: true }), row('idle', { starred: true })])
-    expect(within(screen.getByTestId('dock-mate-busy')).getByRole('status')).toBeInTheDocument()
-    expect(within(screen.getByTestId('dock-mate-idle')).queryByRole('status')).toBeNull()
+    expect(within(screen.getByTestId('dock-mate-busy')).getByTestId('face-busy')).toHaveAttribute('data-working', 'subtle')
+    expect(within(screen.getByTestId('dock-mate-busy')).queryByRole('status')).toBeNull()
+    expect(within(screen.getByTestId('dock-mate-idle')).getByTestId('face-idle')).toHaveAttribute('data-working', 'idle')
   })
 
   // jsdom computes no layout, so this pins the structure that makes overlap
@@ -441,59 +442,56 @@ describe('DockMatesSection', () => {
 })
 
 describe.each(['section', 'tiles'] as const)('live presence in %s', surface => {
-  it('updates both the dot and face from live activity rather than the HTTP snapshot', () => {
+  it('updates the face from live activity rather than the HTTP snapshot, with no dot for working', () => {
     const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a', running: true })], { surface })
     const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
-    expect(within(mate).getByRole('status')).toBeInTheDocument()
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
     act(() => { liveStore.dispatch(sseSlots([slot('a', false)])) })
-    expect(within(mate).queryByRole('status')).toBeNull()
     expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'idle')
     act(() => { liveStore.dispatch(sseSlots([slot('a', true)])) })
-    expect(within(mate).getByRole('status')).toBeInTheDocument()
     expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
+    expect(within(mate).queryByRole('status')).toBeNull()
   })
 
-  it('resolves a new member slot by name and includes live child work', () => {
+  it('resolves a new member slot by name and includes live child work on the face', () => {
     const { liveStore } = renderDock([row('a', { starred: true })], { surface })
     const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
-    expect(within(mate).queryByRole('status')).toBeNull()
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'idle')
     act(() => { liveStore.dispatch(sseSlots([slot('a', false, { subagents_running: 1 })])) })
-    expect(within(mate).getByRole('status')).toBeInTheDocument()
     expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
     act(() => {
       liveStore.dispatch(sseSlots([slot('a', false)]))
       liveStore.dispatch(sseSubagentQueued({ slot: 'member-a', queued: 1 }))
     })
-    expect(within(mate).getByRole('status')).toBeInTheDocument()
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
     act(() => { liveStore.dispatch(sseSubagentQueued({ slot: 'member-a', queued: 0 })) })
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'idle')
     expect(within(mate).queryByRole('status')).toBeNull()
   })
 
-  it('shows its one dot for an unread reply or a turn waiting on the person, and drops it after', () => {
+  it('shows the dot only for an unread reply, and drops it once read even while still working', () => {
     const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a' })], { surface })
     const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
     act(() => { liveStore.dispatch(sseSlots([slot('a', false)])) })
     expect(within(mate).queryByRole('status')).toBeNull()
     act(() => { liveStore.dispatch(markSlotUnread('member-a')) })
     expect(within(mate).getByRole('status', { name: 'Unread message' })).toBeInTheDocument()
-    act(() => { liveStore.dispatch(sseSlots([slot('a', false, { needs_input: true })])) })
-    expect(within(mate).getAllByRole('status')).toHaveLength(1)
-    expect(within(mate).getByRole('status', { name: 'Needs your approval or answer' })).toBeInTheDocument()
-    act(() => { liveStore.dispatch(sseSlots([slot('a', false)])) })
+    act(() => { liveStore.dispatch(sseSlots([slot('a', false, { subagents_running: 1 })])) })
     act(() => { liveStore.dispatch(markSlotRead('member-a')) })
     expect(within(mate).queryByRole('status')).toBeNull()
+    expect(within(mate).getByTestId('face-a')).toHaveAttribute('data-working', 'subtle')
   })
 
-  it('marks the mate when a session it dispatched waits on an approval', () => {
+  it('puts no dot on a mate whose turn or dispatched session waits on the person', () => {
     const { liveStore } = renderDock([row('a', { starred: true, slot_key: 'member-a' })], { surface })
     const mate = screen.getByTestId(surface === 'section' ? 'dock-mate-a' : 'rail-mate-a')
     act(() => {
       liveStore.dispatch(sseSlots([
-        slot('a', false),
+        slot('a', false, { needs_input: true }),
         { key: 'chat-worker', agent: 'kirocrew', running: false, mate_root: 'member-a', pending_approval: true } as ChatSlot,
       ]))
     })
-    expect(within(mate).getByRole('status', { name: 'Needs your approval or answer' })).toBeInTheDocument()
+    expect(within(mate).queryByRole('status')).toBeNull()
   })
 })
 
