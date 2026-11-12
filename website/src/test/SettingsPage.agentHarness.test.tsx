@@ -60,7 +60,6 @@ vi.mock('../pages/settings/SecurityPanel', () => ({ SecurityPanel: () => <div />
 vi.mock('../pages/settings/PrivacyPanel', () => ({ PrivacyPanel: () => <div /> }))
 vi.mock('../pages/settings/NotificationsPanel', () => ({ NotificationsPanel: () => <div /> }))
 vi.mock('../pages/settings/DeveloperPanel', () => ({ DeveloperPanel: () => <div /> }))
-vi.mock('../pages/settings/ReleasesPanel', () => ({ default: () => <div /> }))
 vi.mock('../pages/settings/ChannelsPanel', () => ({ ChannelsPanel: () => <div />, CHANNEL_KEYS: [] }))
 
 // Developer page tabs: heavy and irrelevant here.

@@ -43,10 +43,9 @@ export interface SidePanelTab {
   /** Contain THIS tab's pane to the viewport instead of letting the page grow:
    *  the tab's own header stays put and the pane's `overflow-y-auto` children
    *  do the scrolling. Per-tab because a page can legitimately mix the two —
-   *  Settings is one long scrolling form on sixteen tabs and a two-column
-   *  archive with its own rail on one, and a page-wide switch would have to
-   *  break one of them. The page-level `fixedContent` prop still forces it for
-   *  every tab. */
+   *  long scrolling forms beside a two-column pane with its own rail — and a
+   *  page-wide switch would have to break one of them. The page-level
+   *  `fixedContent` prop still forces it for every tab. */
   fixedContent?: boolean
   /** THIS tab's pane hosts a SettingsSubNav, so a second-level selection param
    *  (?sub= or a legacy alias) means a deeper level is showing its own back
@@ -220,7 +219,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   const navigate = useNavigate()
   const isMobile = useIsMobile()
   // "More below" cue under the desktop tab list. Settings has twenty rows, so
-  // on a laptop-height window the last few (Developer, Releases, About) sit
+  // on a laptop-height window the last few (Developer, About) sit
   // below the fold, and the overlay scrollbar stays hidden until hovered: the
   // list read as complete and a first-time user could not find Developer. The
   // cue says so while rows are hidden below, in its own strip outside every

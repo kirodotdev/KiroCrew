@@ -419,7 +419,7 @@ one with no exact kernel version (a non-`.0` macOS 11+ floor).
 Every channel file, on every platform, also carries `releaseNotes`: the version's
 `CHANGELOG.md` section, which the desktop app shows for a pending update before the
 user installs it. `scripts/feed_release_notes.py` picks the section the way
-Settings > Releases does (`0.4.0-insider.14` reads `## [0.4.0]`) and prints it as one
+the release notes in Settings > About do (`0.4.0-insider.14` reads `## [0.4.0]`) and prints it as one
 JSON string, which is also a YAML double-quoted scalar, so no changelog text can
 break the file. A version with no section, in practice a nightly, gets `""`.
 

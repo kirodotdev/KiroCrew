@@ -15561,7 +15561,7 @@
         "decisions": "निर्णय (Jev)",
         "decisions_desc": "एक छोटा, तेज़ मॉडल {{productName}} के लिए झटपट फ़ैसले करता है, जैसे तेरे संदेश के लिए कौन-सी स्किल ठीक है। नीचे मॉडल चुन। अगर यह धीमा हो या जवाब न दे, तो बिल्ट-इन नियम फ़ैसला करता है, इसलिए तेरा जवाब कभी नहीं अटकता।",
         "decisions_egress": "यह चालू रहते हुए तुम्हारे संदेश और तुम्हारी स्किल के नाम और विवरण इंटरनेट से उस निर्णय मॉडल को भेजे जाते हैं जिसे तुम नीचे चुनते हो। हर दूसरे तरह के डेटा का नीचे अपना स्विच है, और जब तक तुम उसे चालू नहीं करते, वह बंद रहता है।",
-        "decisions_backend_required": "इस डैशबोर्ड को चलाने वाला {{productName}} इस फ़ीचर से पुराना है, इसलिए अभी चालू करने को कुछ नहीं है। पहले Settings › Releases से {{productName}} अपडेट करो।",
+        "decisions_backend_required": "इस डैशबोर्ड को चलाने वाला {{productName}} इस फ़ीचर से पुराना है, इसलिए अभी चालू करने को कुछ नहीं है। पहले Settings › परिचय से {{productName}} अपडेट करो।",
         "decisions_sent_to": "यहाँ भेजा जाता है",
         "decisions_endpoint_moved": "तुमने जिस पते पर भेजने की सहमति दी थी, वह अब सेटिंग्स के पते से अलग है, इसलिए कुछ नहीं भेजा जा रहा। नए पते की सहमति देने के लिए इसे बंद करके फिर चालू करो।",
         "decisions_points": "यह चालू रहते हुए Jev जो तय करता है:",
@@ -15612,7 +15612,7 @@
         "decisions_judge_model": "छोटे मॉडल वाले निर्णायक का मॉडल",
         "decisions_judge_model_desc": "यह केवल तब उपयोग होता है जब उपर का निर्णायक छोटा मॉडल हो। सस्ता मॉडल चाहिए हो तभी बदला जाए, वरना निर्णायक एजेंट का अपना मॉडल ही रहने दिया जाए।",
         "decisions_judge_model_inherit": "निर्णायक एजेंट का अपना मॉडल",
-        "decisions_points_unavailable": "इस डैशबोर्ड को चला रहा {{productName}} अभी यह नहीं गिनाता कि Jev क्या तय करता है। इसे <0>सेटिंग › Releases</0> से अपडेट करो।",
+        "decisions_points_unavailable": "इस डैशबोर्ड को चला रहा {{productName}} अभी यह नहीं गिनाता कि Jev क्या तय करता है। इसे <0>सेटिंग › परिचय</0> से अपडेट करो।",
         "decisions_pointer_skills_max_triggered": "एक टर्न कितनी स्किल जोड़ सकता है, यह ~/.kiro/crew/config.json में skills.max_triggered से तय होता है।",
         "decisions_endpoint_pointer": "यह पता ~/.kiro/crew/config.json में decisions.provider.endpoint से तय होता है। डैशबोर्ड इसे दिखाता है, बदलता नहीं।",
         "decisions_provider_label": "निर्णय मॉडल",
@@ -18738,7 +18738,6 @@
         "updates": "अपडेट",
         "updating": "अपडेट हो रहा है…",
         "v": "v",
-        "view_all_releases": "सभी रिलीज़ देखो",
         "view_this_commit_on_github": "इस कमिट को GitHub पर देखें",
         "what_s_new": "नया क्या है",
         "you_are_on_the_latest_version": "आप नवीनतम संस्करण पर हैं।",
@@ -18789,7 +18788,17 @@
         "gateway_lane_title": "वह बैकग्राउंड सेवा जो तुम्हारे एजेंट चलाती है और यह डैशबोर्ड परोसती है। ब्रांच और कमिट चिप इसी का बिल्ड हैं।",
         "update_refused_dirty_worktree": "तुम्हारे स्थानीय बदलावों को सुरक्षित रखने के लिए अपडेट रोक दिया गया: तुम्हारे {{productName}} फ़ोल्डर में बिना कमिट किए बदलाव हैं ({{changed}})। उन्हें कमिट या stash करो, फिर अपडेट बटन को दोबारा दबाओ। सब कुछ stash करने के लिए, अपने {{productName}} फ़ोल्डर में खुले टर्मिनल में नीचे दिया गया कमांड चलाओ।",
         "app_updates_heading": "ऐप अपडेट",
-        "downloaded_and_verified_installs_on_quit": "डाउनलोड और सत्यापित हो गया। यह ऐप बंद करने पर इंस्टॉल होगा; तब तक कुछ भी रीस्टार्ट नहीं होगा।"
+        "downloaded_and_verified_installs_on_quit": "डाउनलोड और सत्यापित हो गया। यह ऐप बंद करने पर इंस्टॉल होगा; तब तक कुछ भी रीस्टार्ट नहीं होगा।",
+        "what_you_d_get_one": "तुम्हें क्या मिलेगा (तुम्हारे बिल्ड के बाद {{count}} बदलाव)",
+        "what_you_d_get_other": "तुम्हें क्या मिलेगा (तुम्हारे बिल्ड के बाद {{count}} बदलाव)",
+        "what_you_d_get_read_all": "पूरे नोट्स पढ़ो",
+        "what_you_d_get_no_entries": "इस अपडेट के नोट्स यहाँ नहीं दिखाए जाते।",
+        "what_you_d_get_view_on_github": "उन्हें GitHub पर पढ़ो",
+        "what_you_d_get_load": "देखो इस अपडेट में क्या है",
+        "what_you_d_get_more_one": "पूरे नोट्स में {{count}} और बदलाव है।",
+        "what_you_d_get_more_other": "पूरे नोट्स में {{count}} और बदलाव हैं।",
+        "what_you_d_get_in_version_one": "{{version}} में क्या है ({{count}} बदलाव)",
+        "what_you_d_get_in_version_other": "{{version}} में क्या है ({{count}} बदलाव)"
       },
       "botChannelPanel": {
         "allowed_user_ids": "अनुमत उपयोगकर्ता ID",
@@ -19959,17 +19968,23 @@
         "badge_unreleased": "रिलीज़ नहीं",
         "detail_no_date": "तारीख़ अज्ञात",
         "detail_on_prerelease": "तुम प्री-रिलीज़ {{version}} पर हो",
-        "detail_unreleased": "अभी रिलीज़ नहीं हुआ",
         "empty_in_progress": "इस संस्करण के रिलीज़ नोट्स अभी लिखे नहीं गए हैं।",
         "empty_released": "यह संस्करण बिना रिलीज़ नोट्स के जारी हुआ।",
         "list_label": "संस्करण",
         "load_failed": "रिलीज़ नोट्स लोड नहीं किए जा सके।",
         "loading": "रिलीज़ लोड हो रहे हैं…",
-        "row_current_no_notes": "तुम्हारा संस्करण · कोई नोट्स नहीं लिखे गए",
         "row_no_notes": "कोई नोट्स नहीं लिखे गए",
         "stale_note": "यह सूची तुम्हारे बिल्ड ({{version}}) से आती है और हो सकता है कि इसमें नई प्रविष्टियाँ शामिल न हों।",
         "unavailable": "इस बिल्ड में कोई रिलीज़ नोट्स उपलब्ध नहीं हैं।",
-        "view_commits": "GitHub पर कमिट देखो"
+        "view_commits": "GitHub पर कमिट देखो",
+        "whats_new_in": "{{version}} में नया क्या है",
+        "earlier_title": "पिछली रिलीज़",
+        "releases_title": "रिलीज़",
+        "earlier_count_one": "{{count}} रिलीज़",
+        "earlier_count_other": "{{count}} रिलीज़",
+        "show_more_one": "{{count}} और दिखाओ",
+        "show_more_other": "{{count}} और दिखाओ",
+        "link_not_found": "संस्करण {{version}} इस बिल्ड की रिलीज़ सूची में नहीं है।"
       },
       "reportProblemCard": {
         "blurb": "कुछ काम नहीं कर रहा? हमें डायग्नोस्टिक रिपोर्ट भेजें — लॉग से सीक्रेट पहले ही हटा दिए जाते हैं।",
@@ -22382,10 +22397,6 @@
       "overview": {
         "description": "सिस्टम स्वास्थ्य, गतिविधि, और उपयोग व मेमोरी एक नज़र में",
         "label": "अवलोकन"
-      },
-      "releases": {
-        "description": "हर संस्करण के रिलीज़ नोट्स",
-        "label": "रिलीज़"
       },
       "security": {
         "description": "सुरक्षा स्थिति, रक्षा की परतें और प्रमाणन",

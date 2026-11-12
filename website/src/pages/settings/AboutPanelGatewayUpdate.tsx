@@ -21,6 +21,7 @@ import { WorkConfirmDeclined } from '../../utils/workInFlight'
 import { useAppSelector } from '../../store'
 import { fmtRelative } from '../../i18n/format'
 import { InAppUpdateFlow, RestartGatewayButton, copyCommand } from './AboutPanelUpdateFlow'
+import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 
@@ -479,6 +480,17 @@ export function AboutPanelGatewayUpdates({
                   : i18nT('pages.settings.aboutPanel.update_when_i_restart')}
               </Btn>
             </div>
+          )}
+          {showUpdate && (
+            <AboutPanelUpdateChanges
+              notes={gwChanges}
+              sinceBuild
+              version={gwTargetDisplay || gwStatusLatestDisplay || namedTarget || gwStatusLatest}
+              // A checkout that applies its own update: its check carries the
+              // changelog lines, and this tab has not run one yet.
+              onLoad={!showManualUpdate && !gwCheck.isSuccess ? () => gwCheck.mutate() : undefined}
+              loading={gwCheck.isPending}
+            />
           )}
         </>
       ) : (

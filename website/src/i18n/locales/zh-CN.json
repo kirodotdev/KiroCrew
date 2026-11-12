@@ -15159,7 +15159,7 @@
         "decisions": "决策（Jev）",
         "decisions_desc": "一个小而快的模型替 {{productName}} 做快速判断，比如哪个技能适合你的消息。在下方选择模型。模型太慢或没有回应时，改用内置规则判断，不会拖慢你的回复。",
         "decisions_egress": "开启后，你的消息以及技能名称和描述会通过互联网发送给你在下方选择的决策模型。其他类型数据在下方各有开关，打开之前都不会发送。",
-        "decisions_backend_required": "运行这个面板的 {{productName}} 比这个功能旧，因此暂时无法开启。请先在设置 › Releases 中更新 {{productName}}。",
+        "decisions_backend_required": "运行这个面板的 {{productName}} 比这个功能旧，因此暂时无法开启。请先在设置 › 关于 中更新 {{productName}}。",
         "decisions_sent_to": "发送到",
         "decisions_endpoint_moved": "你同意发送的地址和现在设置里的地址不一样，所以什么都没有发送。请关掉再打开这个开关，以同意新地址。",
         "decisions_points": "开启期间由 Jev 决定的事项：",
@@ -15210,7 +15210,7 @@
         "decisions_judge_model": "小模型判定者使用的模型",
         "decisions_judge_model_desc": "只在上方判定者选为小模型时生效。除非想用更便宜的模型，建议保持判定代理自己的模型。",
         "decisions_judge_model_inherit": "保持判定代理自己的模型",
-        "decisions_points_unavailable": "运行本面板的 {{productName}} 还列不出 Jev 决定哪些事。请到<0>设置 › Releases</0> 更新。",
+        "decisions_points_unavailable": "运行本面板的 {{productName}} 还列不出 Jev 决定哪些事。请到<0>设置 › 关于</0> 更新。",
         "decisions_pointer_skills_max_triggered": "一个轮次最多加载几个技能，由 ~/.kiro/crew/config.json 里的 skills.max_triggered 决定。",
         "decisions_endpoint_pointer": "这个地址由 ~/.kiro/crew/config.json 里的 decisions.provider.endpoint 决定。仪表板只显示，不修改。",
         "decisions_provider_label": "决策模型",
@@ -18246,7 +18246,6 @@
         "updates": "更新内容",
         "updating": "正在更新…",
         "v": "v",
-        "view_all_releases": "查看全部更新日志",
         "view_this_commit_on_github": "在 GitHub 上查看此提交",
         "what_s_new": "新增内容",
         "you_are_on_the_latest_version": "你已使用最新版本。",
@@ -18297,7 +18296,14 @@
         "gateway_lane_title": "运行你的智能体并提供此仪表板的后台服务。分支和提交标签显示的是它的构建。",
         "update_refused_dirty_worktree": "为保护本地修改，更新已停止：{{productName}} 文件夹有未提交更改（{{changed}}）。请先提交或 stash 这些更改，然后再次点击“立即更新”。要 stash 全部更改，请在 {{productName}} 文件夹中打开终端，运行下方命令。",
         "app_updates_heading": "应用更新",
-        "downloaded_and_verified_installs_on_quit": "已下载并验证。它将在你退出应用时安装，在此之前不会重启。"
+        "downloaded_and_verified_installs_on_quit": "已下载并验证。它将在你退出应用时安装，在此之前不会重启。",
+        "what_you_d_get_other": "更新后可获得（自你的构建以来 {{count}} 项变更）",
+        "what_you_d_get_read_all": "阅读完整说明",
+        "what_you_d_get_no_entries": "此处不显示这次更新的说明。",
+        "what_you_d_get_view_on_github": "在 GitHub 上阅读",
+        "what_you_d_get_load": "查看这次更新包含什么",
+        "what_you_d_get_more_other": "完整说明中还有 {{count}} 项变更。",
+        "what_you_d_get_in_version_other": "{{version}} 包含的内容（{{count}} 项变更）"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",
@@ -19446,17 +19452,21 @@
         "badge_unreleased": "未发布",
         "detail_no_date": "日期未知",
         "detail_on_prerelease": "你正在使用预览版 {{version}}",
-        "detail_unreleased": "尚未发布",
         "empty_in_progress": "此版本的更新日志尚未撰写。",
         "empty_released": "此版本发布时未附更新日志。",
         "list_label": "版本",
         "load_failed": "无法加载更新日志。",
         "loading": "正在加载更新日志…",
-        "row_current_no_notes": "你的版本 · 未撰写更新日志",
         "row_no_notes": "未撰写更新日志",
         "stale_note": "此列表来自你的构建版本（{{version}}），可能不包含更新的条目。",
         "unavailable": "此构建版本没有可用的更新日志。",
-        "view_commits": "在 GitHub 上查看提交"
+        "view_commits": "在 GitHub 上查看提交",
+        "whats_new_in": "{{version}} 的新内容",
+        "earlier_title": "更早的版本",
+        "releases_title": "版本",
+        "earlier_count_other": "{{count}} 个版本",
+        "show_more_other": "再显示 {{count}} 个",
+        "link_not_found": "此构建的版本列表中没有 {{version}}。"
       },
       "reportProblemCard": {
         "blurb": "遇到问题？发送一份诊断报告给我们 — 日志会先移除密钥。",
@@ -21837,10 +21847,6 @@
       "overview": {
         "description": "系统健康状况、活动以及用量与记忆一览",
         "label": "概览"
-      },
-      "releases": {
-        "description": "各版本的更新日志",
-        "label": "更新日志"
       },
       "security": {
         "description": "安全态势、防御层级与认证",

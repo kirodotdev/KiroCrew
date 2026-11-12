@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Download, Copy } from 'lucide-react'
-import { SettingsLink } from '../../components/SettingsLink'
+import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Download, Copy } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
@@ -15,6 +14,8 @@ import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGateway
 import { DesktopGatewayRestartRow, useDesktopGatewayRestart } from './DesktopGatewayRestartRow'
 import { AppAutoDownloadSwitch, GatewayAutoUpdateSwitch } from './AboutPanelUpdateSwitches'
 import { AboutPanelUpcomingUpdate } from './AboutPanelUpcomingUpdate'
+import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
+import ReleasesPanel from './ReleasesPanel'
 import { api } from '../../api/client'
 import { useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
@@ -642,9 +643,7 @@ export function AboutPanel() {
           </span>
         </span>
       )}
-      {updateState?.notes ? (
-        <div className="p-2.5 bg-card rounded-md border border-border max-h-40 overflow-y-auto text-[12px] text-text whitespace-pre-wrap">{updateState.notes}</div>
-      ) : null}
+      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} />
     </div>
   ) : null
 
@@ -937,6 +936,49 @@ export function AboutPanel() {
           </span>
         </div>
 
+        {isPrerelease && (
+          // NOT behind the disclosure: a user already running prerelease bytes
+          // is exactly who must see the ask, and hiding it behind a click means
+          // the people whose bug reports matter most never read it.
+          //
+          // NOT gated on `isDesktop` either, which is what it used to be: a
+          // wheel install is a first-class insider/nightly lane (release.yml
+          // publishes to cli/<channel>/), and gating on the desktop shell meant
+          // every CLI prerelease user — the ones with no updater and no app
+          // menu — saw nothing here at all.
+          // Deliberately NOT warn-tinted with an alert triangle: a first-time
+          // reader took that as "something is wrong with my installation" and
+          // was reluctant to click a link inside it. This is a request for help,
+          // so it speaks in the app's own accent voice, and the anchor names
+          // GitHub because the destination is a new-issue form — a surprise
+          // worth spending four words to avoid.
+          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
+               data-testid="prerelease-report-note">
+            <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
+            <span className="text-text leading-relaxed">
+              {/* ONE catalog string carrying the anchor: splitting it into
+                  fragments around the link would lock every language into
+                  English clause order. `Trans` (not a hand-rolled split on a
+                  mustache literal) is what lets the translator move the anchor
+                  to wherever the target grammar needs it. */}
+              <Trans
+                i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
+                components={{
+                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
+                  report: <a href={reportIssueUrl()} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
+                }}
+              />
+            </span>
+          </div>
+        )}
+        {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
+      </Card>
+
+      <Card>
+        <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
+        {/* The channel controls open the card: switching lanes is how the next
+            update is chosen, and the pending-move note below them points at the
+            installer command further down this card. */}
         {isDesktop && channel && !isExternallyManaged && !isGatewayPolicyManaged && (
           info?.channelSwitchable && desktopApi?.setChannel ? (
             <div className="flex flex-col" data-testid="channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
@@ -1172,46 +1214,6 @@ export function AboutPanel() {
             )}
           </div>
         )}
-        {isPrerelease && (
-          // NOT behind the disclosure: a user already running prerelease bytes
-          // is exactly who must see the ask, and hiding it behind a click means
-          // the people whose bug reports matter most never read it.
-          //
-          // NOT gated on `isDesktop` either, which is what it used to be: a
-          // wheel install is a first-class insider/nightly lane (release.yml
-          // publishes to cli/<channel>/), and gating on the desktop shell meant
-          // every CLI prerelease user — the ones with no updater and no app
-          // menu — saw nothing here at all.
-          // Deliberately NOT warn-tinted with an alert triangle: a first-time
-          // reader took that as "something is wrong with my installation" and
-          // was reluctant to click a link inside it. This is a request for help,
-          // so it speaks in the app's own accent voice, and the anchor names
-          // GitHub because the destination is a new-issue form — a surprise
-          // worth spending four words to avoid.
-          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
-               data-testid="prerelease-report-note">
-            <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
-            <span className="text-text leading-relaxed">
-              {/* ONE catalog string carrying the anchor: splitting it into
-                  fragments around the link would lock every language into
-                  English clause order. `Trans` (not a hand-rolled split on a
-                  mustache literal) is what lets the translator move the anchor
-                  to wherever the target grammar needs it. */}
-              <Trans
-                i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
-                components={{
-                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
-                  report: <a href={reportIssueUrl()} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
-                }}
-              />
-            </span>
-          </div>
-        )}
-        {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
-      </Card>
-
-      <Card>
-        <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
         {isDesktop ? (<>
           {isExternallyManaged ? (
             // The marker's owner (a distro/enterprise package manager) replaces
@@ -1456,27 +1458,15 @@ export function AboutPanel() {
 
         {/* Directly under the update controls, never a pop-up. */}
         <AboutPanelUpcomingUpdate />
-
-        {/* The full changelog used to be inlined here, open by default. It grows
-            without bound while this card's job -- stating the identity of this
-            install -- is bounded to one screen forever, so the archive moved to
-            its own Releases panel and this is the link to it. See
-            pages/settings/ReleasesPanel.tsx. */}
-        <div className="mt-3 pt-3 border-t border-border">
-          <SettingsLink
-            tab="releases"
-            className="text-[13px] text-accent hover:underline inline-flex items-center gap-1.5"
-          >
-            <History size={13} className="lucide-inline" aria-hidden="true" />
-            {i18nT('pages.settings.aboutPanel.view_all_releases')}
-          </SettingsLink>
-        </div>
       </Card>
 
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
         <AboutPanelUpdateConfirm gwUpdate={gwUpdate} gwDiverged={gwDiverged} gwDivergedText={gwDivergedText} runningVersion={gatewayVersion} />
       )}
+
+      {/* The running release's notes, then a capped list of earlier ones. */}
+      <ReleasesPanel />
 
       <ReportProblemCard />
     </>

@@ -553,5 +553,10 @@
   "components.publicPublishAckModal.exposure_window_provider_expiry",
   "components.jobLogsView.idle_runs_hidden",
   "pages.overview.skillsTab.budget_group_counting_detail",
-  "pages.overview.skillsTab.budget_group_cold_detail"
+  "pages.overview.skillsTab.budget_group_cold_detail",
+  "pages.settings.aboutPanel.what_you_d_get",
+  "pages.settings.aboutPanel.what_you_d_get_in_version",
+  "pages.settings.aboutPanel.what_you_d_get_more",
+  "pages.settings.releases.earlier_count",
+  "pages.settings.releases.show_more"
 ]

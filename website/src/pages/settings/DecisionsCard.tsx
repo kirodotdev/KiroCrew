@@ -615,7 +615,7 @@ export function DecisionsCard() {
 
           A gateway with no consent route is the one read failure that gets its own
           words and NO hand-off: the copy already names the exact step (update, from
-          Settings > Releases), an agent cannot shorten it, and "reload to try again"
+          Settings > About), an agent cannot shorten it, and "reload to try again"
           would send a reader round a loop that cannot succeed. It keeps the note id so
           the switch's aria-describedby resolves to whichever message is drawn. */}
       {readFailed && (
@@ -751,7 +751,7 @@ export function DecisionsCard() {
               it wherever its grammar needs. */}
           <Trans
             i18nKey="pages.developer.featurePreviewsTab.decisions_points_unavailable"
-            components={[<SettingsLink key="l" tab="releases" />]}
+            components={[<SettingsLink key="l" tab="about" />]}
           />
         </p>
       )}

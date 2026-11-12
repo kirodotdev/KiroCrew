@@ -8925,7 +8925,17 @@
         "gateway_lane_label": "Gateway",
         "gateway_lane_title": "The background service that runs your agents and serves this dashboard. The branch and commit chips are its build.",
         "app_updates_heading": "App updates",
-        "downloaded_and_verified_installs_on_quit": "Downloaded and verified. It installs when you quit the app; nothing restarts until you do."
+        "downloaded_and_verified_installs_on_quit": "Downloaded and verified. It installs when you quit the app; nothing restarts until you do.",
+        "what_you_d_get_one": "What you'd get ({{count}} change since your build)",
+        "what_you_d_get_other": "What you'd get ({{count}} changes since your build)",
+        "what_you_d_get_read_all": "Read the full notes",
+        "what_you_d_get_no_entries": "This update's notes aren't shown here.",
+        "what_you_d_get_view_on_github": "Read them on GitHub",
+        "what_you_d_get_load": "Show what's in this update",
+        "what_you_d_get_more_one": "{{count}} more change is in the full notes.",
+        "what_you_d_get_more_other": "{{count}} more changes are in the full notes.",
+        "what_you_d_get_in_version_one": "What's in {{version}} ({{count}} change)",
+        "what_you_d_get_in_version_other": "What's in {{version}} ({{count}} changes)"
       },
       "crewmatesSection": {
         "reply_threads": "Reply threads on bot chat messages",
@@ -10464,6 +10474,16 @@
         "row_label": "Mute sessions {{app}} opens",
         "failed_to_save": "Couldn't save the mute for {{app}}.",
         "config_load_failed": "Couldn't load your saved app mutes. The switches are unavailable until they load."
+      },
+      "releases": {
+        "whats_new_in": "What's new in {{version}}",
+        "earlier_title": "Earlier releases",
+        "releases_title": "Releases",
+        "earlier_count_one": "{{count}} release",
+        "earlier_count_other": "{{count}} releases",
+        "show_more_one": "Show {{count}} more",
+        "show_more_other": "Show {{count}} more",
+        "link_not_found": "Version {{version}} is not in this build's release list."
       }
     },
     "worldsPage": {
@@ -10489,7 +10509,7 @@
         "decisions": "Decisions (Jev)",
         "decisions_desc": "A small, fast model makes quick calls for {{productName}}, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up.",
         "decisions_egress": "While this is on, your messages and your skills' names and descriptions are sent over the internet to the decision model you pick below. Every other kind of data has its own switch below and stays off until you turn it on.",
-        "decisions_backend_required": "The {{productName}} running this dashboard is older than this feature, so there is nothing to turn on yet. Update {{productName}} first, from Settings › Releases.",
+        "decisions_backend_required": "The {{productName}} running this dashboard is older than this feature, so there is nothing to turn on yet. Update {{productName}} first, from Settings › About.",
         "decisions_sent_to": "Sent to",
         "decisions_endpoint_moved": "You agreed to send to a different address than the one in the settings now, so nothing is being sent. Turn this off and on again to agree to the new address.",
         "decisions_points": "What Jev decides while this is on:",
@@ -10540,7 +10560,7 @@
         "decisions_judge_model": "Model for the small-model judge",
         "decisions_judge_model_desc": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one.",
         "decisions_judge_model_inherit": "Keep the judge agent's own model",
-        "decisions_points_unavailable": "The {{productName}} running this dashboard does not list what Jev decides yet. Update it from <0>Settings › Releases</0>.",
+        "decisions_points_unavailable": "The {{productName}} running this dashboard does not list what Jev decides yet. Update it from <0>Settings › About</0>.",
         "decisions_pointer_skills_max_triggered": "How many skills a turn may inject is skills.max_triggered in ~/.kiro/crew/config.json.",
         "decisions_endpoint_pointer": "This address is set in decisions.provider.endpoint in ~/.kiro/crew/config.json. The dashboard shows it and does not change it.",
         "decisions_provider_label": "Decision model",
@@ -10929,10 +10949,6 @@
       "overview": {
         "description": "System health, activity, and usage & memory at a glance",
         "label": "Overview"
-      },
-      "releases": {
-        "description": "Release notes for each version",
-        "label": "Releases"
       },
       "security": {
         "description": "Security posture, defense layers, and certifications",

@@ -4,7 +4,7 @@
 The desktop app shows a pending update's notes from the channel file's
 ``releaseNotes`` (``notesFrom`` in ``website/electron/runtime/update/feed-lane.js``),
 and the publish lanes write that file by hand; this script supplies the field. The
-section is picked the way Settings > Releases picks the installed build's row
+section is picked the way the release notes in Settings > About pick the installed build's release
 (``changelog.build_release_list``): ``0.4.0-insider.14`` reads ``## [0.4.0]``, and a
 version with no section (a nightly) gets empty notes.
 

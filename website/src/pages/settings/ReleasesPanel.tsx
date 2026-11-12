@@ -1,14 +1,23 @@
 /**
- * Settings → Releases: the changelog archive, as a version list plus a detail pane.
+ * The release notes section at the foot of Settings → About: the running
+ * build's own release, then a capped list of earlier ones.
  *
- * ## Why this is not inside About
+ * ## Why it lives inside About, and why the list is capped
  *
  * About states the identity of *this install* — version, licence, platform,
- * channel, update controls — and its content is bounded: it is one screen today
- * and one screen in five years. A changelog grows without limit. Nesting the
- * unbounded thing inside the bounded one is what made About's disclosure an
- * ever-growing scroll blob, so the archive is a sibling of About rather than a
- * child of it, and About links here.
+ * channel, update controls — and that content is bounded: one screen today and
+ * one screen in five years. A changelog grows without limit, and when it was
+ * once inlined in About, open by default, the page became an ever-growing
+ * scroll. It then moved to a Releases tab of its own, which kept About short
+ * but split one question ("what am I on, can I update, what changes?") across
+ * two tabs.
+ *
+ * The section keeps About bounded instead by what it shows unasked: the notes
+ * for the running release, and FIVE earlier releases as collapsed one-line
+ * rows. A row opens in place; "Show N more" adds five rows at a time, only
+ * when asked. `RELEASE_PARAM` (`/settings/about?release=<version>`, where the
+ * old `/settings/releases/<version>` links now land) opens and scrolls to one
+ * release.
  *
  * ## Why the list is short
  *
@@ -17,23 +26,24 @@
  * version that shipped without a section is deliberately absent, because a row
  * that cannot say anything is indistinguishable from a broken one. The running
  * build's release is the single exception: "what am I on?" is the question this
- * page is opened to answer. `kiro_crew/changelog.py` owns that rule.
+ * section answers first. `kiro_crew/changelog.py` owns that rule.
  *
  * ## Why prereleases have no rows of their own
  *
  * `0.2.0-rc.1` and `0.2.0-nightly.<stamp>` are drafts of 0.2.0, not releases.
- * Both collapse onto the single `0.2.0` row, flagged in-progress, so one
+ * Both collapse onto the single `0.2.0` release, flagged in-progress, so one
  * mechanism serves both channels, nightly does not add ~4 rows a day forever,
- * and the list does not move when 0.2.0 is promoted — the row is already there
- * and merely loses the flag. Which RC you are on is stated in the detail pane.
+ * and the list does not move when 0.2.0 is promoted — the release is already
+ * there and merely loses the flag. Which RC you are on is stated under its
+ * heading.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { CircleDot, FileText, GitCommitHorizontal, Loader2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { ChevronRight, FileText, GitCommitHorizontal, History, Loader2, Sparkles } from 'lucide-react'
 import { api } from '../../api/client'
-import { sanitize } from '../../api/helpers'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
-import Clickable from '../../components/Clickable'
+import { Card, CardTitle, Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 
@@ -54,22 +64,74 @@ interface ReleasesPayload {
 
 const REPO = 'https://github.com/kirodotdev/KiroCrew'
 
-/** Small-print state note for a row, or `''` when the row needs none.
- *
- * Deliberately never the running build's full version. A prerelease stamp is
- * ~30 characters (`0.2.0-nightly.20260806t065257`) and the rail is 192px, so it
- * would truncate to something useless ("You are on 0.2.0-nigh…"). The exact
- * build is named in the detail pane, where there is room for it.
- *
- * An in-progress row returns `''`: its badge already states the state, and
- * repeating it underneath said the same thing three times on one screen (badge,
- * note, and the detail heading).
- */
+/** Earlier releases shown before "Show more", and how many each click adds. */
+export const EARLIER_PAGE = 5
+
+/** The About query parameter that opens one release: `?release=0.12.0`. */
+export const RELEASE_PARAM = 'release'
+
+/** A linked version as a release: `v0.12.0-rc.1` → `0.12.0`. */
+function linkedRelease(raw: string): string {
+  return raw.trim().replace(/^v/i, '').split(/[-+]/)[0]
+}
+
+/** Small-print date for a row, or the reason it has none. */
 function rowNote(r: Release): string {
-  if (r.in_progress) return ''
-  if (r.date) return r.date
-  if (r.is_current) return i18nT('pages.settings.releases.row_current_no_notes')
-  return i18nT('pages.settings.releases.row_no_notes')
+  return r.date || i18nT('pages.settings.releases.row_no_notes')
+}
+
+/**
+ * The commit range behind a release: from the newest RELEASED version older
+ * than it. An in-progress version has NO tag yet -- `compare/v0.1.2...v0.2.0`
+ * 404s while 0.2.0 is unreleased -- so it is compared against the branch. A
+ * release that shipped without a section widens the range; that is a known
+ * over-report, and the alternative (guessing tags) needs the network this
+ * section deliberately does not use.
+ */
+function commitsUrl(release: Release, older: Release | undefined): string {
+  if (!older) return `${REPO}/commits`
+  return `${REPO}/compare/v${older.version}...${release.in_progress ? 'main' : `v${release.version}`}`
+}
+
+function CommitsLink({ href }: { href: string }) {
+  return (
+    <a
+      className="inline-flex items-center gap-2 text-sm text-accent hover:underline"
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+    >
+      <GitCommitHorizontal className="lucide-inline" aria-hidden="true" />
+      {i18nT('pages.settings.releases.view_commits')}
+    </a>
+  )
+}
+
+/** A release's notes, or why it has none and where its changes are. */
+function ReleaseNotes({ release, older, alwaysLinkCommits }: { release: Release; older: Release | undefined; alwaysLinkCommits?: boolean }) {
+  const href = commitsUrl(release, older)
+  if (release.body) {
+    return (
+      <div className="flex flex-col gap-3">
+        <MarkdownRenderer content={release.body} />
+        {alwaysLinkCommits && <CommitsLink href={href} />}
+      </div>
+    )
+  }
+  // No section for this version. It still opens, precisely so the absence can
+  // be explained here and a real path offered: a row that refused to respond
+  // would leave the reader with no answer and no idea why.
+  return (
+    <div className="space-y-3 text-sm text-muted">
+      <p className="flex items-center gap-2">
+        <FileText className="lucide-inline" aria-hidden="true" />
+        {release.in_progress
+          ? i18nT('pages.settings.releases.empty_in_progress')
+          : i18nT('pages.settings.releases.empty_released')}
+      </p>
+      <CommitsLink href={href} />
+    </div>
+  )
 }
 
 export default function ReleasesPanel() {
@@ -77,33 +139,67 @@ export default function ReleasesPanel() {
     queryKey: ['releases'],
     queryFn: () => api.releases() as Promise<ReleasesPayload>,
   })
+  const [params] = useSearchParams()
+  const linked = params.get(RELEASE_PARAM) || ''
 
   // Memoised so the `?? []` fallback does not mint a new array identity on
-  // every render and re-fire the selection effect below.
+  // every render and re-fire the link effect below.
   const releases = useMemo(() => data?.releases ?? [], [data?.releases])
-  const [selected, setSelected] = useState<string>('')
+  const current = releases.find(r => r.is_current)
+  const earlier = useMemo(() => releases.filter(r => !r.is_current), [releases])
+  const [shown, setShown] = useState(EARLIER_PAGE)
+  const [open, setOpen] = useState('')
+  // The link this section last acted on, and what it found: `''` none, a
+  // version, `current`, or `missing`.
+  const handledLink = useRef('')
+  const [linkTarget, setLinkTarget] = useState('')
+  const currentRef = useRef<HTMLDivElement>(null)
+  const earlierRef = useRef<HTMLDivElement>(null)
 
-  // Default selection is the release the running build belongs to — for a
-  // prerelease that resolves to the in-progress row, for a stable build to its
-  // own. Falling back to the newest row keeps the pane populated when the
-  // running version cannot be matched at all.
+  // `/settings/about?release=<version>`: open that release and bring it into
+  // view, once per link, after the list has loaded.
   useEffect(() => {
-    if (selected || releases.length === 0) return
-    setSelected((releases.find(r => r.is_current) ?? releases[0]).version)
-  }, [releases, selected])
+    if (!linked) {
+      setLinkTarget('')
+      handledLink.current = ''
+      return
+    }
+    if (releases.length === 0 || handledLink.current === linked) return
+    handledLink.current = linked
+    const want = linkedRelease(linked)
+    if (current?.version === want) {
+      setLinkTarget('current')
+      return
+    }
+    const index = earlier.findIndex(r => r.version === want)
+    if (index < 0) {
+      setLinkTarget('missing')
+      return
+    }
+    setOpen(want)
+    setShown(s => Math.max(s, Math.ceil((index + 1) / EARLIER_PAGE) * EARLIER_PAGE))
+    setLinkTarget(want)
+  }, [linked, releases, current, earlier])
 
-  const active = useMemo(
-    () => releases.find(r => r.version === selected) ?? releases[0],
-    [releases, selected],
-  )
-  const safeBody = useMemo(() => (active?.body ? sanitize(active.body) : ''), [active?.body])
+  useEffect(() => {
+    if (!linkTarget) return
+    const el = linkTarget === 'current'
+      ? currentRef.current
+      : linkTarget === 'missing'
+        ? earlierRef.current ?? currentRef.current
+        : document.getElementById(`release-${linkTarget}`)
+    // Optional call: jsdom has no scrollIntoView.
+    el?.scrollIntoView?.({ block: 'start' })
+  }, [linkTarget])
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 p-6 text-sm text-muted">
-        <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
-        {i18nT('pages.settings.releases.loading')}
-      </div>
+      <Card>
+        <div className="flex items-center gap-2 text-sm text-muted">
+          <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
+          {i18nT('pages.settings.releases.loading')}
+        </div>
+      </Card>
     )
   }
   if (releases.length === 0) {
@@ -112,156 +208,119 @@ export default function ReleasesPanel() {
     // look for a build problem that does not exist. `isError` is only reached
     // with no cached entries: a failed REFETCH keeps `data`, and the archive is
     // a static document, so stale-but-present beats both messages.
-    if (isError) {
-      // Nothing to lose: the archive is read-only, so the hand-off is on.
-      return <ErrorNotice className="m-6" message={i18nT('pages.settings.releases.load_failed')} askAgent />
-    }
-    return <div className="p-6 text-sm text-muted">{i18nT('pages.settings.releases.unavailable')}</div>
+    return (
+      <Card>
+        {isError
+          // Nothing to lose: the archive is read-only, so the hand-off is on.
+          ? <ErrorNotice message={i18nT('pages.settings.releases.load_failed')} askAgent />
+          : <p className="text-sm text-muted">{i18nT('pages.settings.releases.unavailable')}</p>}
+      </Card>
+    )
   }
 
-  // The newest released row that is not the one being viewed -- the base of the
-  // "what changed since" range below. Skipping `active` matters for a RELEASED
-  // version that shipped without notes: it is not in progress, so it would
-  // otherwise select itself and the range would collapse to a bare commit list.
-  const prevStable = releases.find(r => !r.in_progress && r.version !== active?.version)
+  /** The newest RELEASED version older than `r` (the list is newest first). */
+  const olderReleased = (r: Release) => {
+    const index = releases.indexOf(r)
+    return releases.slice(index + 1).find(x => !x.in_progress)
+  }
+  // Shown in the earlier-releases card, or the running release's when that is
+  // the only one, so a link to an unknown version always says why nothing opened.
+  const missingNotice = linkTarget === 'missing' && (
+    <p className="mb-3 rounded-lg bg-bg-accent px-3 py-2 text-xs text-muted" data-testid="releases-link-missing">
+      {i18nT('pages.settings.releases.link_not_found', { version: linkedRelease(linked) })}
+    </p>
+  )
+  const visible = earlier.slice(0, shown)
+  const remaining = earlier.length - visible.length
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
-      {/* No title here: `SidePanelLayout` already renders the tab's label and
-          description above the panel, as it does for every other Settings tab.
-          Repeating them inside said "Releases / Release notes for each version"
-          twice on one screen. */}
-
-      {/* The archive is read from this install, never the network, so a
-          prerelease build shows it as of its branch point. Said out loud
-          instead of letting the list look complete when it is not.
-          `shrink-0` so a short window compresses the notes, not this. */}
-      {data?.stale && (
-        <p className="shrink-0 rounded-lg bg-bg-accent px-3 py-2 text-xs text-muted">
-          {i18nT('pages.settings.releases.stale_note', { version: data.current_version })}
-        </p>
-      )}
-
-      {/* Stacked while narrow: a 192px version list beside the notes left the
-          release text roughly 150px of a 390px viewport, and the notes are the
-          reason the panel exists.
-          The list keeps its own scrolling at EVERY width and is capped when
-          stacked. Both are load-bearing: it is `shrink-0`, and a changelog grows
-          without limit, so an uncapped list would take its natural height and push
-          the notes heading down the pane.
-          The cap is `vh`, not a percentage: no ancestor here has a definite
-          height, so a percentage max-height does not resolve at all. Measured by
-          injecting caps on the live page -- a 10% cap left the list at its full
-          289px while 10vh brought it to 84px and made it scroll. */}
-      <div className="flex flex-col sm:flex-row min-h-0 flex-1 gap-5">
-        <nav
-          aria-label={i18nT('pages.settings.releases.list_label')}
-          className="w-full sm:w-48 shrink-0 space-y-1 max-h-[40vh] sm:max-h-none overflow-y-auto border-b sm:border-b-0 sm:border-r border-border pb-3 sm:pr-3 sm:pb-6"
-        >
-          {releases.map(r => {
-            const isActive = r.version === active?.version
-            return (
-              <Clickable
-                key={r.version}
-                onClick={() => setSelected(r.version)}
-                aria-current={isActive ? 'true' : undefined}
-                className={
-                  'block w-full rounded-lg px-3 py-2 text-left ' +
-                  // INSET ring, as in SearchResultsList: the row is flush with
-                  // the top and left edges of a `overflow-y-auto` column, so an
-                  // outside ring is drawn 1px beyond the scroll container's
-                  // padding box and the top edge gets clipped away entirely.
-                  (isActive ? 'bg-accent-subtle ring-1 ring-inset ring-accent' : 'hover:bg-bg-hover')
-                }
-              >
-                <span className="flex items-center gap-1.5">
-                  <span className="text-sm font-semibold tabular-nums">{r.version}</span>
-                  {r.in_progress && (
-                    // OUTLINE, not a solid accent fill. The selected row is
-                    // marked with `bg-accent-subtle` + an accent ring, which is
-                    // accent at 12-20% alpha -- a solid `bg-accent` badge on a
-                    // passive status label therefore outranked the reader's own
-                    // selection in the same hue. A soft `bg-accent/10` fill is
-                    // worse still: on the selected row (the DEFAULT row for a
-                    // prerelease build) it stacks with `accent-subtle` and reads
-                    // as a lighter hole rather than a chip. A hairline reads
-                    // against both. Solid `bg-accent`/`text-accent-fg` at this
-                    // size is this codebase's notification-COUNT idiom.
-                    <span className="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] font-medium text-accent">
-                      {i18nT('pages.settings.releases.badge_unreleased')}
-                    </span>
-                  )}
-                  {r.is_current && !r.in_progress && (
-                    <CircleDot className="lucide-inline text-accent" aria-hidden="true" />
-                  )}
-                </span>
-                {rowNote(r) && (
-                  <span className="block text-xs text-muted tabular-nums">{rowNote(r)}</span>
-                )}
-              </Clickable>
-            )
-          })}
-        </nav>
-
-        {/* The only scroller on this screen once the pane is contained, so the
-            heading and the rail beside it stay put while the notes move. `pb-6`
-            replaces the page wrapper's own bottom padding, which a contained
-            pane does not get. */}
-        <article className="min-w-0 flex-1 overflow-y-auto pb-6">
-          <header className="mb-4">
-            <h3 className="flex items-center gap-2 text-xl font-semibold">
-              {active?.version}
-              {active?.in_progress && (
-                <span className="text-xs font-normal text-muted">
-                  {i18nT('pages.settings.releases.detail_unreleased')}
+    <>
+      {current && (
+        <Card>
+          <div ref={currentRef} className="scroll-mt-4" data-testid="releases-current">
+            <CardTitle className="mb-1 flex-wrap">
+              <Sparkles size={15} className="lucide-inline" aria-hidden="true" />
+              {i18nT('pages.settings.releases.whats_new_in', { version: current.version })}
+              {current.in_progress && (
+                // OUTLINE, not a solid accent fill: solid `bg-accent` with
+                // `text-accent-fg` at this size is this codebase's
+                // notification-COUNT idiom, and a passive status label must
+                // not read as a count of something waiting.
+                <span className="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                  {i18nT('pages.settings.releases.badge_unreleased')}
                 </span>
               )}
-            </h3>
-            <p className="text-xs text-muted tabular-nums">
-              {active?.in_progress
+            </CardTitle>
+            <p className="mb-3 text-xs text-muted tabular-nums">
+              {current.in_progress
                 ? i18nT('pages.settings.releases.detail_on_prerelease', { version: data!.current_version })
-                : active?.date || i18nT('pages.settings.releases.detail_no_date')}
+                : current.date || i18nT('pages.settings.releases.detail_no_date')}
             </p>
-          </header>
-
-          {safeBody ? (
-            <MarkdownRenderer content={safeBody} />
-          ) : (
-            // No section for this version. The row stays selectable precisely so
-            // the absence can be explained here and a real path offered —
-            // a row that merely refused to respond would leave the reader with
-            // no answer and no idea why.
-            <div className="space-y-3 text-sm text-muted">
-              <p className="flex items-center gap-2">
-                <FileText className="lucide-inline" aria-hidden="true" />
-                {active?.in_progress
-                  ? i18nT('pages.settings.releases.empty_in_progress')
-                  : i18nT('pages.settings.releases.empty_released')}
+            {/* The archive is read from this install, never the network, so a
+                prerelease build shows it as of its branch point. Said out loud
+                instead of letting the list look complete when it is not. */}
+            {earlier.length === 0 && missingNotice}
+            {data?.stale && (
+              <p className="mb-3 rounded-lg bg-bg-accent px-3 py-2 text-xs text-muted">
+                {i18nT('pages.settings.releases.stale_note', { version: data.current_version })}
               </p>
-              <a
-                className="inline-flex items-center gap-2 text-accent hover:underline"
-                href={
-                  prevStable
-                    // An in-progress version has NO tag yet -- `compare/v0.1.2...v0.2.0`
-                    // 404s while 0.2.0 is unreleased, which is the one row every
-                    // prerelease reader lands on. Compare against the branch instead.
-                    // The base is the newest release WITH notes, so a release that
-                    // shipped without a section widens the range; that is a known
-                    // over-report, and the alternative (guessing tags) needs the
-                    // network this page deliberately does not use.
-                    ? `${REPO}/compare/v${prevStable.version}...${active?.in_progress ? 'main' : `v${active?.version}`}`
-                    : `${REPO}/commits`
-                }
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                <GitCommitHorizontal className="lucide-inline" aria-hidden="true" />
-                {i18nT('pages.settings.releases.view_commits')}
-              </a>
-            </div>
-          )}
-        </article>
-      </div>
-    </div>
+            )}
+            <ReleaseNotes release={current} older={olderReleased(current)} alwaysLinkCommits />
+          </div>
+        </Card>
+      )}
+
+      {earlier.length > 0 && (
+        <Card>
+          <div ref={earlierRef} className="scroll-mt-4" data-testid="releases-earlier">
+            <CardTitle className="flex-wrap">
+              <History size={15} className="lucide-inline" aria-hidden="true" />
+              {current ? i18nT('pages.settings.releases.earlier_title') : i18nT('pages.settings.releases.releases_title')}
+              <span className="text-xs font-normal text-muted tabular-nums">
+                {i18nT('pages.settings.releases.earlier_count', { count: earlier.length })}
+              </span>
+            </CardTitle>
+            {missingNotice}
+            <ul className="flex flex-col divide-y divide-border" aria-label={i18nT('pages.settings.releases.list_label')}>
+              {visible.map(r => {
+                const isOpen = open === r.version
+                const panelId = `release-notes-${r.version}`
+                return (
+                  <li key={r.version} id={`release-${r.version}`} className="scroll-mt-4">
+                    <button
+                      type="button"
+                      aria-expanded={isOpen}
+                      aria-controls={panelId}
+                      onClick={() => setOpen(isOpen ? '' : r.version)}
+                      className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-bg-hover cursor-pointer bg-transparent border-none"
+                    >
+                      <ChevronRight
+                        size={14}
+                        className={`lucide-inline shrink-0 text-muted transition-transform motion-reduce:transition-none ${isOpen ? 'rotate-90' : ''}`}
+                        aria-hidden="true"
+                      />
+                      <span className="text-sm font-semibold tabular-nums text-text">{r.version}</span>
+                      <span className="ml-auto text-xs text-muted tabular-nums">{rowNote(r)}</span>
+                    </button>
+                    {isOpen && (
+                      <div id={panelId} className="px-2 pb-4 pt-1 sm:pl-8">
+                        <ReleaseNotes release={r} older={olderReleased(r)} />
+                      </div>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+            {remaining > 0 && (
+              <div className="mt-2">
+                <Btn onClick={() => setShown(s => s + EARLIER_PAGE)} data-testid="releases-show-more">
+                  {i18nT('pages.settings.releases.show_more', { count: Math.min(EARLIER_PAGE, remaining) })}
+                </Btn>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+    </>
   )
 }

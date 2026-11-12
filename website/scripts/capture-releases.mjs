@@ -1,185 +1,209 @@
 /**
- * Screenshot harness for Settings > Releases (the per-version changelog archive).
+ * Screenshot harness for Settings > About: the install card, Updates with its
+ * "What you'd get" list, and the release notes section (running release, then
+ * the capped list of earlier ones).
  *
- * Same shape as capture-channel-explainer.mjs: serves the REAL built SPA
- * (website/dist) and answers /api/** from the shared fixture router, so the shot
- * goes through the app's own router, Settings nav, react-query and markdown
- * renderer rather than a hand-mounted panel.
+ * Starts its own Vite dev server bound to loopback only (127.0.0.1), or uses
+ * the base URL given, and answers /api/** from the shared fixture router, so the shot goes through
+ * the app's own router, Settings nav, react-query and markdown renderer rather
+ * than a hand-mounted panel.
  *
  * The /api/releases bodies are not written by hand and not checked in either:
  * they are produced at capture time by running the real backend parser over the
- * repo's real CHANGELOG.md — see scripts/lib/releases-fixtures.mjs, which the
- * scroll harness shares so the two cannot disagree about the archive.
- *
- * Builds the SPA first: serve-dist serves whatever is on disk, so shooting a
- * UI-only change against a stale dist yields an "after" image identical to
- * before -- indistinguishable from the change not working.
+ * repo's real CHANGELOG.md (scripts/lib/releases-fixtures.mjs). The update's
+ * changelog lines are the newest section of that same file, standing in for
+ * the lines a git checkout's check adds.
  *
  * Scenario, theme and locale ride QUERY PARAMS rather than being flipped in
- * place: a hash-only change is a same-document navigation, so the init script
- * would not re-run and the next pass would silently re-shoot the previous state.
+ * place: the init script reads them on every load.
  *
- * Usage: node scripts/capture-releases.mjs [outDir]   (SKIP_BUILD=1 to reuse dist)
+ * Usage: node scripts/capture-releases.mjs [outDir] [viteBase]
  *        PYTHON=/path/to/python overrides the interpreter used for the parser.
  */
 import { chromium } from 'playwright'
-import { mkdirSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
-import { serveDist } from './lib/serve-dist.mjs'
+import { createServer } from 'vite'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { installApiFixtures, logPageFailures, json } from './lib/api-fixtures.mjs'
 import { realReleasePayloads } from './lib/releases-fixtures.mjs'
 
-const OUT = process.argv[2] || '../temp-screenshots/releases'
-const W = 1500
-const H = 950
+const OUT = process.argv[2] || '../temp-screenshots/about-releases'
+// Loopback only: the harness serves nothing to any other machine.
+const server = process.argv[3] ? null : await createServer({ server: { host: '127.0.0.1', port: 5199, strictPort: true } })
+if (server) await server.listen()
+const BASE = process.argv[3] || 'http://127.0.0.1:5199'
+const WIDE = { width: 1440, height: 1000 }
+const NARROW = { width: 390, height: 844 }
 
-const FIXTURES = realReleasePayloads()
+const FIXTURES = realReleasePayloads([
+  ['stable', '0.12.1'],
+  ['nightly', '0.13.0-nightly.20261111t060622'],
+])
+
+/** The newest CHANGELOG.md section, as the lines a checkout's check adds. */
+function newestSection() {
+  const md = readFileSync('../CHANGELOG.md', 'utf8')
+  const start = md.indexOf('\n## [')
+  const next = md.indexOf('\n## [', start + 1)
+  return md.slice(start + 1, next).trim()
+}
+
+function statusFor(rel, update) {
+  const version = FIXTURES[rel].current_version
+  const channel = rel === 'stable' ? 'stable' : rel
+  return {
+    sessions: 0, crons: 0, lessons: 0, uptime: 120,
+    version, version_display: version, release_channel: channel, update_channel: channel,
+    branch: 'main', commit: '4dd046d206',
+    update_available: update, update_can_apply: true, update_check_status: 'succeeded',
+    update_latest_version: update ? '0.13.0' : version,
+    update_latest_version_display: update ? '0.13.0' : version,
+    update_last_checked_at: Math.floor(Date.now() / 1000) - 600,
+    update_commits_ahead: 0, update_commits_behind: update ? 42 : 0,
+  }
+}
 
 mkdirSync(OUT, { recursive: true })
 
-async function main() {
-  if (!process.env.SKIP_BUILD) {
-    console.log('building dist (SKIP_BUILD=1 to reuse)…')
-    execFileSync('npm', ['run', 'build'], { stdio: 'inherit' })
-  }
+const browser = await chromium.launch()
 
-  const { srv, base } = await serveDist()
-  const browser = await chromium.launch()
-  const context = await browser.newContext({
-    viewport: { width: W, height: H },
-    // Settings rows are 12-13px type; a 1x shot renders soft on GitHub.
-    deviceScaleFactor: 2,
-  })
+async function open({ rel = 'stable', update = false, notes = true, theme = 'light', size = WIDE, path = '/settings/about' }) {
+  const context = await browser.newContext({ viewport: size, deviceScaleFactor: size === NARROW ? 2 : 1 })
   const page = await context.newPage()
-
-  await installApiFixtures(page)
   logPageFailures(page)
-
-  // Registered AFTER the shared router so it wins (Playwright runs the most
-  // recently added matching handler first), and reads the scenario off the live
-  // URL so one handler serves every pass.
-  await page.route('**/api/releases', route => {
-    const rel = new URL(route.request().url()).searchParams.get('rel')
-      || new URL(page.url()).searchParams.get('rel')
-      || 'prerelease'
-    // `error` is not a payload: the panel has to tell a failed fetch apart from
-    // an archive with nothing in it, and only a real non-2xx exercises that.
-    if (rel === 'error') return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
-    return json(route, FIXTURES[rel])
+  await installApiFixtures(page, {
+    '/api/status': statusFor(rel, update),
+    '/api/theme/boot': { mode: theme, theme: '' },
+    '/api/releases': FIXTURES[rel],
+    '/api/members': { members: [] },
   })
-  await page.route('**/api/theme/boot', route => {
-    const mode = new URL(page.url()).searchParams.get('theme') === 'light' ? 'light' : 'dark'
-    return json(route, { mode, theme: '' })
-  })
-
-  await page.addInitScript(() => {
-    const q = new URLSearchParams(location.search)
+  // The fixture router's `**/api/**` glob also matches dev-server module paths
+  // such as /src/api/client.ts; hand those back to Vite.
+  await page.route(url => !url.pathname.startsWith('/api/'), route => route.continue())
+  await page.route('**/api/update/check', route => json(route, {
+    check_status: 'succeeded', update_available: update, latest_version: update ? '0.13.0' : FIXTURES[rel].current_version,
+    changes: update && notes ? newestSection() : '', can_apply: true, channel: rel === 'stable' ? 'stable' : rel,
+    commits_ahead: 0, commits_behind: update ? 42 : 0, last_checked_at: Math.floor(Date.now() / 1000),
+  }))
+  await page.addInitScript(t => {
     localStorage.clear()
     localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-theme', q.get('theme') === 'light' ? 'light' : 'dark')
-    if (q.get('lang')) localStorage.setItem('mc-lang', q.get('lang'))
-  })
-
-  /** Load a Settings tab and wait for the panel to settle. */
-  async function load({ tab = 'releases', rel = 'prerelease', theme = 'dark', lang = '' } = {}) {
-    const q = new URLSearchParams({ tab, rel, theme })
-    if (lang) q.set('lang', lang)
-    await page.goto(`${base}/settings?${q}`, { waitUntil: 'domcontentloaded' })
-    // The error scenario renders a single line and never an <article>, so it
-    // cannot share the populated page's wait condition.
-    const settled = tab !== 'releases' ? '[data-testid="channel-switcher"], main'
-      : rel === 'error' ? 'main' : 'article h3'
-    await page.waitForSelector(settled, { timeout: 15_000 })
-    await page.waitForTimeout(1200)
-    // The pointer sits where the last pass left it, so its hover styling would
-    // otherwise leak into the next "at rest" shot.
-    await page.mouse.move(W - 40, H - 40)
+    localStorage.setItem('mc-theme', t)
+  }, theme)
+  await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('[data-testid="releases-current"], [data-testid="releases-earlier"]', { timeout: 30_000 })
+  await page.waitForTimeout(800)
+  // An available update also opens the app-wide "update found" prompt; this
+  // harness shoots the About page underneath it.
+  for (let i = 0; i < 2 && await page.locator('div[role="presentation"].fixed').count(); i++) {
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
   }
-
-  const shot = async name => {
-    await page.screenshot({ path: `${OUT}/${name}.png` })
-    console.log('wrote', `${OUT}/${name}.png`)
-  }
-
-  /** Crop the union of two elements plus padding -- used for the nav fence. */
-  async function cropUnion(name, a, b, pad = 20) {
-    const [x, y] = [a, b].reduce(([mx, my], box) => [Math.min(mx, box.x), Math.min(my, box.y)], [Infinity, Infinity])
-    const right = Math.max(a.x + a.width, b.x + b.width)
-    const bottom = Math.max(a.y + a.height, b.y + b.height)
-    await page.screenshot({
-      path: `${OUT}/${name}.png`,
-      clip: {
-        x: Math.max(0, x - pad),
-        y: Math.max(0, y - pad),
-        width: Math.min(W - Math.max(0, x - pad), right - x + pad * 2),
-        height: bottom - y + pad * 2,
-      },
-    })
-    console.log('wrote', `${OUT}/${name}.png`)
-  }
-
-  /** Report what the page actually says, so a wrong-state shot is caught here. */
-  async function describe(label) {
-    const heading = (await page.locator('article h3').first().innerText()).replace(/\n/g, ' | ')
-    const rows = (await page.locator('nav').filter({ hasText: '0.1.2' }).first().innerText()).replace(/\n/g, ' | ')
-    const body = await page.locator('article').first().innerText()
-    console.log(`  ${label}\n    heading: ${heading}\n    rows:    ${rows}\n    bodyLen: ${body.length}`)
-  }
-
-  // 1-2. An insider on 0.2.0-rc.1: the unreleased 0.2.0 row is selected by
-  //      default and the staleness caveat is stated.
-  for (const theme of ['dark', 'light']) {
-    await load({ rel: 'prerelease', theme })
-    await describe(`prerelease-${theme}`)
-    await shot(`01-prerelease-in-progress-${theme}`)
-
-    // 3-4. The real 0.1.2 notes, rendered by the app's own markdown renderer.
-    await page.locator('nav').filter({ hasText: '0.1.2' }).getByText('0.1.2').first().click()
-    await page.waitForTimeout(400)
-    await page.mouse.move(W - 40, H - 40)
-    await describe(`notes-${theme}`)
-    await shot(`02-real-notes-0.1.2-${theme}`)
-  }
-
-  // 5. A stable build whose own version shipped without a changelog section.
-  await load({ rel: 'real', theme: 'light' })
-  await describe('current-no-notes')
-  await shot('03-current-shipped-no-notes-light')
-
-  // 6. The nav fence: Releases sits after the divider, About stays last.
-  const relBtn = await page.getByRole('button', { name: 'Releases', exact: true }).first().boundingBox()
-  const aboutBtn = await page.getByRole('button', { name: 'About', exact: true }).first().boundingBox()
-  await cropUnion('04-settings-nav-fence-light', relBtn, aboutBtn)
-
-  // 7. The other half of the diff: About no longer inlines the whole changelog,
-  //    it links here. Cropped to the card that carries the link -- a blind
-  //    padded box around a 20px-tall link lands half on the nav column.
-  await load({ tab: 'about', rel: 'real', theme: 'light' })
-  const link = page.getByRole('link', { name: /View all releases/i }).first()
-  if (await link.count()) {
-    const card = link.locator('xpath=ancestor::div[contains(@class,"card")][1]')
-    const target = (await card.count()) ? card.first() : link
-    const b = await target.boundingBox()
-    await cropUnion('05-about-links-to-releases-light', b, b, 16)
-  } else {
-    await shot('05-about-links-to-releases-light')
-    console.log('  (link not found -- full-page fallback)')
-  }
-
-  // 8. A non-English locale. German, not zh/ja: this box has no CJK font, so a
-  //    CJK shot would show tofu boxes that say nothing about the UI.
-  await load({ rel: 'prerelease', theme: 'light', lang: 'de' })
-  await shot('06-prerelease-de-light')
-
-  // 9. /api/releases answered 500. Distinct wording from the empty archive, so
-  //    the reader is not sent hunting a build problem that does not exist.
-  await load({ rel: 'error', theme: 'light' })
-  const failed = await page.getByText(/Could not load the release notes/).count()
-  console.log(`  load-failed state present: ${failed === 1}`)
-  await shot('07-load-failed-light')
-
-  await browser.close()
-  srv.close()
+  await page.mouse.move(size.width - 5, size.height - 5)
+  return { page, context }
 }
 
-main().catch(err => { console.error(err); process.exit(1) })
+async function shot(page, name, opts = {}) {
+  const file = `${OUT}/${name}.png`
+  await page.screenshot({ path: file, ...opts })
+  console.log('wrote', file)
+}
+
+// 1-4. Wide and narrow, light and dark, a stable build with an update available
+//      and its changes loaded.
+for (const theme of ['light', 'dark']) {
+  for (const [label, size] of [['wide', WIDE], ['narrow', NARROW]]) {
+    const { page, context } = await open({ update: true, theme, size })
+    await page.getByRole('button', { name: "Show what's in this update" }).click()
+    await page.waitForSelector('[data-testid="update-changes"]')
+    await page.waitForTimeout(300)
+    await shot(page, `${label}-${theme}-update`, { fullPage: true })
+    await context.close()
+  }
+}
+
+// 5. A nightly build: the running release is unreleased and badged.
+{
+  const { page, context } = await open({ rel: 'nightly' })
+  await page.locator('[data-testid="releases-current"]').scrollIntoViewIfNeeded()
+  await shot(page, 'wide-light-nightly')
+  await context.close()
+}
+
+// 6. Expanded release and the next page of rows.
+{
+  const { page, context } = await open({ theme: 'dark' })
+  await page.locator('[data-testid="releases-earlier"]').scrollIntoViewIfNeeded()
+  await page.getByRole('button', { name: /^0\.11\.0/ }).click()
+  await page.waitForTimeout(300)
+  await shot(page, 'wide-dark-expanded')
+  await context.close()
+}
+
+// 7. An old /settings/releases/<version> link lands on About with that release open.
+{
+  const { page, context } = await open({ path: '/settings/releases/0.9.0' })
+  await page.waitForTimeout(500)
+  console.log('  landed on', page.url())
+  await shot(page, 'redirect-0.9.0')
+  await context.close()
+}
+
+// 8. Update available before this tab has checked: the offer to load its changes.
+{
+  const { page, context } = await open({ update: true })
+  await page.getByTestId('update-changes-load').scrollIntoViewIfNeeded()
+  await shot(page, 'wide-light-update-load-offer')
+  // 9. The check answered with no changelog lines: the no-notes state.
+  await context.close()
+}
+{
+  const { page, context } = await open({ update: true, notes: false })
+  await page.getByTestId('update-changes-load').click()
+  await page.waitForSelector('[data-testid="update-changes-empty"]')
+  await shot(page, 'wide-light-update-no-notes')
+  await context.close()
+}
+
+// 10. A link to a version this build does not list, and the Show N more control.
+{
+  const { page, context } = await open({ path: '/settings/about?release=9.9.9' })
+  await page.waitForSelector('[data-testid="releases-link-missing"]')
+  await page.waitForTimeout(400)
+  await shot(page, 'wide-light-unknown-version-and-show-more')
+  await context.close()
+}
+
+// 11. A recording: an old /settings/releases/<version> link lands on About with
+//    that release open, then another release is opened in place and more rows
+//    are shown.
+{
+  const context = await browser.newContext({ viewport: WIDE, recordVideo: { dir: OUT, size: WIDE } })
+  const page = await context.newPage()
+  await installApiFixtures(page, {
+    '/api/status': statusFor('stable', false),
+    '/api/theme/boot': { mode: 'light', theme: '' },
+    '/api/releases': FIXTURES.stable,
+    '/api/members': { members: [] },
+  })
+  await page.route(url => !url.pathname.startsWith('/api/'), route => route.continue())
+  await page.addInitScript(() => { localStorage.clear(); localStorage.setItem('mc-onboarded', '1'); localStorage.setItem('mc-theme', 'light') })
+  await page.goto(`${BASE}/settings/releases/0.10.0`, { waitUntil: 'domcontentloaded' })
+  await page.waitForSelector('#release-0\\.10\\.0 [aria-expanded="true"]', { timeout: 30_000 })
+  await page.waitForTimeout(2000)
+  await page.getByRole('button', { name: /^0\.10\.0/ }).click()
+  await page.waitForTimeout(800)
+  await page.locator('[data-testid="releases-earlier"]').scrollIntoViewIfNeeded()
+  await page.waitForTimeout(800)
+  await page.getByRole('button', { name: /^0\.12\.0/ }).click()
+  await page.waitForTimeout(1500)
+  await page.getByRole('button', { name: /^0\.12\.0/ }).click()
+  await page.waitForTimeout(600)
+  await page.getByTestId('releases-show-more').click()
+  await page.waitForTimeout(1500)
+  const video = page.video()
+  await context.close()
+  console.log('VIDEO', await video.path())
+}
+
+await browser.close()
+await server?.close()

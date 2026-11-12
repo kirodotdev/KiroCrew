@@ -1,17 +1,20 @@
-// Settings > Releases: the changelog archive.
+// Settings > About: the release notes section (running release, then a capped
+// list of earlier ones).
 //
 // Contract under test:
-// - the release the running build belongs to is selected by DEFAULT, so a
+// - the release the running build belongs to is the one shown open, so a
 //   prerelease user does not land on someone else's older version (the defect
-//   this panel replaces: a 0.2.0-nightly build showed [0.1.2] as the newest
+//   this section replaced: a 0.2.0-nightly build showed [0.1.2] as the newest
 //   entry, headlined "First public release")
-// - a version with no changelog section stays SELECTABLE and explains the
-//   absence, rather than being an inert row the reader cannot tell from a
-//   broken one
-// - the in-progress row is badged and offers a commit range instead of prose
+// - a version with no changelog section still opens and explains the absence,
+//   rather than being an inert row the reader cannot tell from a broken one
+// - the in-progress release is badged and offers a commit range
 // - the list-is-from-your-build caveat shows only when it can actually bite
+// - earlier releases are capped at five rows, grow five at a time, and open in
+//   place; `?release=<version>` opens and reveals one
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
+import { MemoryRouter, useNavigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
@@ -40,78 +43,230 @@ const STABLE_NO_NOTES = {
   ],
 }
 
-function mount(payload: unknown) {
+/** A stable build with twelve earlier releases: more than two pages of rows. */
+const MANY = {
+  current_version: '0.13.0',
+  stale: false,
+  releases: Array.from({ length: 13 }, (_, i) => ({
+    version: `0.${13 - i}.0`,
+    date: `2026-10-${String(13 - i).padStart(2, '0')}`,
+    body: `Notes for 0.${13 - i}.0.`,
+    is_current: i === 0,
+    in_progress: false,
+  })),
+}
+
+function mount(payload: unknown, url = '/settings/about') {
   vi.spyOn(api, 'releases').mockResolvedValue(payload as never)
-  return renderPanel()
+  return renderPanel(url)
 }
 
 /** The gateway answered non-2xx, so `api.releases()` rejects and nothing is cached. */
 function mountFailing() {
   vi.spyOn(api, 'releases').mockRejectedValue(new Error('500 Internal Server Error'))
-  return renderPanel()
+  return renderPanel('/settings/about')
 }
 
-function renderPanel() {
+function renderPanel(url: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <Provider store={store}>
       <QueryClientProvider client={qc}>
-        <ReleasesPanel />
+        <MemoryRouter initialEntries={[url]}>
+          <ReleasesPanel />
+        </MemoryRouter>
       </QueryClientProvider>
     </Provider>,
   )
 }
 
+const current = () => screen.getByTestId('releases-current')
+const rows = () => within(screen.getByRole('list', { name: 'Versions' })).getAllByRole('button')
+
 describe('ReleasesPanel', () => {
   beforeEach(() => vi.restoreAllMocks())
   afterEach(() => cleanup())
 
-  it('selects the running build’s release by default, not the newest with notes', async () => {
+  it('heads the section with the running build’s release, not the newest with notes', async () => {
     mount(PRERELEASE)
-    // 0.2.0 is the in-progress row and must win the default selection even
-    // though 0.1.2 is the only row carrying prose.
-    await waitFor(() => expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('0.2.0'))
-    expect(screen.getByRole('heading', { level: 3 })).not.toHaveTextContent('0.1.2')
+    // 0.2.0 is the in-progress release and must win even though 0.1.2 is the
+    // only one carrying prose.
+    await waitFor(() => expect(within(current()).getByRole('heading')).toHaveTextContent('What\'s new in 0.2.0'))
+    expect(within(current()).getByRole('heading')).not.toHaveTextContent('0.1.2')
   })
 
-  it('states which prerelease you are on, since the row itself says only 0.2.0', async () => {
+  it('states which prerelease you are on, since the heading itself says only 0.2.0', async () => {
     mount(PRERELEASE)
-    await waitFor(() =>
-      expect(screen.getAllByText(/0\.2\.0-nightly\.20260806t065257/).length).toBeGreaterThan(0),
-    )
+    await waitFor(() => expect(within(current()).getByText(/You are on the prerelease 0\.2\.0-nightly\.20260806t065257/)).toBeInTheDocument())
   })
 
   it('compares an unreleased version against the branch, not a tag that does not exist', async () => {
     mount(PRERELEASE)
-    const link = await screen.findByRole('link')
-    // `v0.2.0` is not tagged while 0.2.0 is in progress, so `compare/v0.1.2...v0.2.0`
-    // 404s -- on the one row every prerelease reader lands on.
+    await waitFor(() => expect(current()).toBeInTheDocument())
+    const link = within(current()).getByRole('link', { name: /View commits/ })
+    // `v0.2.0` is not tagged while 0.2.0 is in progress, so `compare/v0.1.2...v0.2.0` 404s.
     expect(link).toHaveAttribute('href', expect.stringContaining('/compare/v0.1.2...main'))
   })
 
   it('compares a RELEASED notes-less version against its own tag', async () => {
     mount(STABLE_NO_NOTES)
-    const link = await screen.findByRole('link')
-    expect(link).toHaveAttribute('href', expect.stringContaining('/compare/v0.1.2...v0.1.3'))
+    await waitFor(() => expect(current()).toBeInTheDocument())
+    expect(within(current()).getByText(/shipped without release notes/)).toBeInTheDocument()
+    expect(within(current()).getByRole('link', { name: /View commits/ }))
+      .toHaveAttribute('href', expect.stringContaining('/compare/v0.1.2...v0.1.3'))
   })
 
-  it('keeps a notes-less row selectable so the absence can be explained', async () => {
-    mount(STABLE_NO_NOTES)
-    await waitFor(() => expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('0.1.3'))
-    // Selectable in both directions: away to a row WITH notes and back again.
-    fireEvent.click(screen.getByText('0.1.2'))
-    await waitFor(() => expect(screen.getByText(/First public release/)).toBeInTheDocument())
-    fireEvent.click(screen.getByText('0.1.3'))
-    await waitFor(() => expect(screen.getByRole('link')).toBeInTheDocument())
+  it('links the running release’s commits even when it has notes', async () => {
+    mount(MANY)
+    await waitFor(() => expect(within(current()).getByText('Notes for 0.13.0.')).toBeInTheDocument())
+    expect(within(current()).getByRole('link', { name: /View commits/ }))
+      .toHaveAttribute('href', expect.stringContaining('/compare/v0.12.0...v0.13.0'))
   })
 
-  it('renders the section body when the selected version has one', async () => {
+  it('opens an earlier release in place, and closes it again', async () => {
     mount(STABLE_NO_NOTES)
-    await waitFor(() => expect(screen.getByText('0.1.2')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('0.1.2'))
-    await waitFor(() => expect(screen.getByText(/First public release/)).toBeInTheDocument())
-    // A row with prose must NOT also offer the empty-state fallback.
-    expect(screen.queryByRole('link')).toBeNull()
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    const row = rows()[0]
+    expect(row).toHaveTextContent('0.1.2')
+    expect(row).toHaveTextContent('2026-07-30')
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText(/First public release/)).toBeNull()
+
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+    const panel = document.getElementById(row.getAttribute('aria-controls')!)!
+    expect(within(panel).getByText(/First public release/)).toBeInTheDocument()
+    // A row with prose does NOT also offer the empty-state fallback.
+    expect(within(panel).queryByRole('link')).toBeNull()
+
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText(/First public release/)).toBeNull()
+  })
+
+  it('preserves angle-bracket placeholders in an opened release’s code spans', async () => {
+    mount({ ...STABLE_NO_NOTES, releases: [STABLE_NO_NOTES.releases[0], { ...STABLE_NO_NOTES.releases[1], body: '`kirocrew app update <name> --source <dir>`' }] })
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    fireEvent.click(rows()[0])
+    expect(screen.getByText('kirocrew app update <name> --source <dir>', { selector: 'code' })).toBeInTheDocument()
+  })
+
+  it('sanitizes raw script elements in an opened release after parsing markdown', async () => {
+    const { container } = mount({ ...STABLE_NO_NOTES, releases: [STABLE_NO_NOTES.releases[0], { ...STABLE_NO_NOTES.releases[1], body: 'Safe notes.\n\n<script>alert("unsafe")</script>' }] })
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    fireEvent.click(rows()[0])
+    expect(screen.getByText('Safe notes.')).toBeInTheDocument()
+    expect(screen.getByText('[unsupported: script]')).toBeInTheDocument()
+    expect(container.querySelector('script')).toBeNull()
+  })
+
+  it('caps earlier releases at five rows and shows five more per click', async () => {
+    mount(MANY)
+    await waitFor(() => expect(rows()).toHaveLength(5))
+    // The running release is the section above, never a row of its own.
+    expect(rows().map(r => r.textContent)).not.toContainEqual(expect.stringContaining('0.13.0'))
+    expect(screen.getByText('12 releases')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show 5 more' }))
+    expect(rows()).toHaveLength(10)
+    // The last page names what is actually left.
+    fireEvent.click(screen.getByRole('button', { name: 'Show 2 more' }))
+    expect(rows()).toHaveLength(12)
+    expect(screen.queryByTestId('releases-show-more')).toBeNull()
+  })
+
+  it('offers no Show more when fewer than five earlier releases exist', async () => {
+    mount(STABLE_NO_NOTES)
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(screen.getByText('1 release')).toBeInTheDocument()
+    expect(screen.queryByTestId('releases-show-more')).toBeNull()
+  })
+
+  it('opens and reveals a linked release beyond the first page', async () => {
+    const scrolled: Element[] = []
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this) }
+    try {
+      mount(MANY, '/settings/about?release=0.4.0')
+      // 0.4.0 is the ninth earlier release, so the list grows to the page holding it.
+      await waitFor(() => expect(rows()).toHaveLength(10))
+      const row = rows().find(r => r.textContent?.includes('0.4.0'))!
+      expect(row).toHaveAttribute('aria-expanded', 'true')
+      expect(screen.getByText('Notes for 0.4.0.')).toBeInTheDocument()
+      await waitFor(() => expect(scrolled).toContain(document.getElementById('release-0.4.0')))
+    } finally {
+      Element.prototype.scrollIntoView = original
+    }
+  })
+
+  it('reads a prerelease link as its release', async () => {
+    mount(MANY, '/settings/about?release=v0.12.0-rc.2')
+    await waitFor(() => expect(screen.getByText('Notes for 0.12.0.')).toBeInTheDocument())
+  })
+
+  it('says so when a linked version is not in the list', async () => {
+    mount(MANY, '/settings/about?release=9.9.9')
+    await waitFor(() => expect(screen.getByTestId('releases-link-missing'))
+      .toHaveTextContent("Version 9.9.9 is not in this build's release list."))
+    // Nothing else moves: still the first page, all collapsed.
+    expect(rows()).toHaveLength(5)
+    expect(rows().every(r => r.getAttribute('aria-expanded') === 'false')).toBe(true)
+  })
+
+  it('clears a removed release link without resetting the mounted panel and handles later links', async () => {
+    function Navigation() {
+      const navigate = useNavigate()
+      return (
+        <>
+          <button onClick={() => navigate('/settings/about')}>About</button>
+          <button onClick={() => navigate('/settings/about?release=0.4.0')}>Link to 0.4.0</button>
+        </>
+      )
+    }
+    vi.spyOn(api, 'releases').mockResolvedValue(MANY as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter initialEntries={['/settings/about?release=9.9.9']}>
+            <Navigation />
+            <ReleasesPanel />
+          </MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    expect(await screen.findByTestId('releases-link-missing'))
+      .toHaveTextContent("Version 9.9.9 is not in this build's release list.")
+    const panel = current()
+    fireEvent.click(screen.getByRole('button', { name: 'Show 5 more' }))
+    const row = rows().find(r => r.textContent?.includes('0.4.0'))!
+    fireEvent.click(row)
+
+    fireEvent.click(screen.getByRole('button', { name: 'About', exact: true }))
+    await waitFor(() => expect(screen.queryByTestId('releases-link-missing')).toBeNull())
+    expect(current()).toBe(panel)
+    expect(rows()).toHaveLength(10)
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(row)
+    fireEvent.click(screen.getByRole('button', { name: 'Link to 0.4.0' }))
+    await waitFor(() => expect(row).toHaveAttribute('aria-expanded', 'true'))
+    expect(screen.getByText('Notes for 0.4.0.')).toBeInTheDocument()
+
+    // Removing the parameter must also allow the same link to be handled again.
+    fireEvent.click(screen.getByRole('button', { name: 'About', exact: true }))
+    fireEvent.click(row)
+    fireEvent.click(screen.getByRole('button', { name: 'Link to 0.4.0' }))
+    await waitFor(() => expect(row).toHaveAttribute('aria-expanded', 'true'))
+    expect(current()).toBe(panel)
+  })
+
+  it('explains a linked version that is missing even when no earlier release exists', async () => {
+    const only = { current_version: '0.1.3', stale: false, releases: [STABLE_NO_NOTES.releases[0]] }
+    mount(only, '/settings/about?release=9.9.9')
+    await waitFor(() => expect(within(current()).getByTestId('releases-link-missing'))
+      .toHaveTextContent("Version 9.9.9 is not in this build's release list."))
+    expect(screen.queryByTestId('releases-earlier')).toBeNull()
   })
 
   it('warns the list came from this build only when a prerelease is running', async () => {
@@ -121,7 +276,7 @@ describe('ReleasesPanel', () => {
     cleanup()
 
     mount(STABLE_NO_NOTES)
-    await waitFor(() => expect(screen.getByRole('heading', { level: 3 })).toHaveTextContent('0.1.3'))
+    await waitFor(() => expect(current()).toBeInTheDocument())
     expect(screen.queryByText(/may not include newer entries/)).toBeNull()
   })
 
@@ -130,12 +285,14 @@ describe('ReleasesPanel', () => {
     await waitFor(() => expect(screen.getByText(/No release notes are available/)).toBeInTheDocument())
   })
 
+  it('titles the list plainly when the running version matches no release', async () => {
+    mount({ current_version: '', stale: false, releases: [STABLE_NO_NOTES.releases[1]] })
+    await waitFor(() => expect(rows()).toHaveLength(1))
+    expect(screen.queryByTestId('releases-current')).toBeNull()
+    expect(screen.getByRole('heading', { name: /^Releases/ })).toBeInTheDocument()
+  })
+
   it('badges an unreleased version with an outline chip, never a solid accent fill', async () => {
-    // The selected row is marked with `bg-accent-subtle` + an accent ring, i.e.
-    // accent at 12-20% alpha. A solid `bg-accent` badge on a PASSIVE status
-    // label therefore outranked the reader's own selection in the same hue, and
-    // a soft `bg-accent/10` fill stacks with `accent-subtle` on the selected row
-    // -- which is the DEFAULT row for a prerelease build. Hence no fill at all.
     mount(PRERELEASE)
     const badge = await screen.findByText('Unreleased')
     expect(badge.className).toContain('border-accent/40')
@@ -150,32 +307,5 @@ describe('ReleasesPanel', () => {
     mountFailing()
     await waitFor(() => expect(screen.getByText(/Could not load the release notes/)).toBeInTheDocument())
     expect(screen.queryByText(/No release notes are available/)).toBeNull()
-  })
-
-  it('scrolls the notes and nothing else, and keeps the rail full height', async () => {
-    // The panel is contained by its tab (SidePanelTab.fixedContent), so these
-    // classes are what turn that bounded height into "header and rail hold
-    // still, notes move" -- and into a divider that reaches the bottom of the
-    // pane instead of stopping under the last version. Geometry is jsdom's
-    // blind spot, so the real gesture is measured in
-    // website/scripts/capture-releases-scroll.mjs; this guards the wiring.
-    mount(PRERELEASE)
-    const rail = await screen.findByRole('navigation')
-    const notes = document.querySelector('article')!
-    const root = rail.parentElement!.parentElement!
-
-    // Every level has to yield its height or the innermost scroller never engages.
-    expect(root.className).toContain('min-h-0')
-    expect(rail.parentElement!.className).toContain('min-h-0')
-
-    // The rail carries the divider, so it must stretch (no self-sizing) and own
-    // the scroll for a long version list.
-    expect(rail.className).toContain('border-r')
-    expect(rail.className).toContain('overflow-y-auto')
-
-    expect(notes.className).toContain('overflow-y-auto')
-    // Pinned: the caveat is chrome, not content, so a short window compresses
-    // the notes instead of squeezing this out of shape.
-    expect(screen.getByText(/may not include newer entries/).className).toContain('shrink-0')
   })
 })

@@ -15963,7 +15963,7 @@
         "decisions": "Decisões (Jev)",
         "decisions_desc": "Um modelo pequeno e rápido toma decisões rápidas pelo {{productName}}, como qual das tuas habilidades se ajusta à tua mensagem. Escolhe o modelo abaixo. Se for lento ou não responder, decide a regra integrada, por isso a tua resposta nunca fica à espera.",
         "decisions_egress": "Enquanto isto estiver ligado, suas mensagens e os nomes e descrições das suas habilidades são enviados pela internet ao modelo de decisões que você escolher abaixo. Cada um dos outros tipos de dados tem seu próprio interruptor abaixo e fica desligado até você ligá-lo.",
-        "decisions_backend_required": "O {{productName}} que executa este painel é mais antigo que este recurso, então ainda não há nada para ligar. Atualize o {{productName}} primeiro, em Configurações › Releases.",
+        "decisions_backend_required": "O {{productName}} que executa este painel é mais antigo que este recurso, então ainda não há nada para ligar. Atualize o {{productName}} primeiro, em Configurações › Sobre.",
         "decisions_sent_to": "Enviado para",
         "decisions_endpoint_moved": "Você concordou em enviar para um endereço diferente do que está agora nas configurações, então nada está sendo enviado. Desligue e ligue isto de novo para concordar com o novo endereço.",
         "decisions_points": "O que o Jev decide enquanto isto está ligado:",
@@ -16014,7 +16014,7 @@
         "decisions_judge_model": "Modelo para o juiz de modelo pequeno",
         "decisions_judge_model_desc": "Só é usado quando o juiz acima é o modelo pequeno. Deixe no modelo próprio do agente juiz, a menos que queira um mais barato.",
         "decisions_judge_model_inherit": "Manter o modelo próprio do agente juiz",
-        "decisions_points_unavailable": "O {{productName}} que roda este painel ainda não lista o que Jev decide. Atualize em <0>Configurações › Releases</0>.",
+        "decisions_points_unavailable": "O {{productName}} que roda este painel ainda não lista o que Jev decide. Atualize em <0>Configurações › Sobre</0>.",
         "decisions_pointer_skills_max_triggered": "Quantas habilidades um turno pode carregar fica em skills.max_triggered no ~/.kiro/crew/config.json.",
         "decisions_endpoint_pointer": "Este endereço fica em decisions.provider.endpoint no ~/.kiro/crew/config.json. O painel mostra e não altera.",
         "decisions_provider_label": "Modelo de decisões",
@@ -19230,7 +19230,6 @@
         "updates": "Atualizações",
         "updating": "Atualizando…",
         "v": "v",
-        "view_all_releases": "Ver todos os lançamentos",
         "view_this_commit_on_github": "Ver este commit no GitHub",
         "what_s_new": "Novidades",
         "you_are_on_the_latest_version": "Você está na versão mais recente.",
@@ -19281,7 +19280,20 @@
         "gateway_lane_title": "O serviço em segundo plano que executa seus agentes e serve este painel. Os chips de branch e commit são o build dele.",
         "update_refused_dirty_worktree": "A atualização foi interrompida para proteger suas edições locais: sua pasta do {{productName}} tem alterações não confirmadas ({{changed}}). Faça commit ou stash delas e pressione Atualizar agora de novo. Para guardar tudo com stash, execute o comando abaixo em um terminal na sua pasta do {{productName}}.",
         "app_updates_heading": "Atualizações do app",
-        "downloaded_and_verified_installs_on_quit": "Baixada e verificada. Ela é instalada quando você sai do app; nada é reiniciado até lá."
+        "downloaded_and_verified_installs_on_quit": "Baixada e verificada. Ela é instalada quando você sai do app; nada é reiniciado até lá.",
+        "what_you_d_get_one": "O que você ganha ({{count}} mudança desde a sua compilação)",
+        "what_you_d_get_many": "O que você ganha ({{count}} mudanças desde a sua compilação)",
+        "what_you_d_get_other": "O que você ganha ({{count}} mudanças desde a sua compilação)",
+        "what_you_d_get_read_all": "Ler as notas completas",
+        "what_you_d_get_no_entries": "As notas desta atualização não aparecem aqui.",
+        "what_you_d_get_view_on_github": "Leia no GitHub",
+        "what_you_d_get_load": "Ver o que vem nesta atualização",
+        "what_you_d_get_more_one": "Há mais {{count}} mudança nas notas completas.",
+        "what_you_d_get_more_many": "Há mais {{count}} mudanças nas notas completas.",
+        "what_you_d_get_more_other": "Há mais {{count}} mudanças nas notas completas.",
+        "what_you_d_get_in_version_one": "O que vem na {{version}} ({{count}} mudança)",
+        "what_you_d_get_in_version_many": "O que vem na {{version}} ({{count}} mudanças)",
+        "what_you_d_get_in_version_other": "O que vem na {{version}} ({{count}} mudanças)"
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuário permitidos",
@@ -20472,17 +20484,25 @@
         "badge_unreleased": "Não lançada",
         "detail_no_date": "Data desconhecida",
         "detail_on_prerelease": "Você está na versão antecipada {{version}}",
-        "detail_unreleased": "Ainda não lançada",
         "empty_in_progress": "As notas desta versão ainda não foram escritas.",
         "empty_released": "Esta versão foi lançada sem notas de versão.",
         "list_label": "Versões",
         "load_failed": "Não foi possível carregar as notas de versão.",
         "loading": "Carregando lançamentos…",
-        "row_current_no_notes": "Sua versão · nenhuma nota escrita",
         "row_no_notes": "Nenhuma nota escrita",
         "stale_note": "Esta lista vem da sua compilação ({{version}}) e pode não incluir entradas mais recentes.",
         "unavailable": "Nenhuma nota de versão está disponível nesta compilação.",
-        "view_commits": "Ver commits no GitHub"
+        "view_commits": "Ver commits no GitHub",
+        "whats_new_in": "Novidades da {{version}}",
+        "earlier_title": "Versões anteriores",
+        "releases_title": "Versões",
+        "earlier_count_one": "{{count}} versão",
+        "earlier_count_many": "{{count}} versões",
+        "earlier_count_other": "{{count}} versões",
+        "show_more_one": "Mostrar mais {{count}}",
+        "show_more_many": "Mostrar mais {{count}}",
+        "show_more_other": "Mostrar mais {{count}}",
+        "link_not_found": "A versão {{version}} não está na lista de versões desta compilação."
       },
       "reportProblemCard": {
         "blurb": "Algo não está funcionando? Envie um relatório de diagnóstico — os segredos são removidos dos logs primeiro.",
@@ -22927,10 +22947,6 @@
       "overview": {
         "description": "Visão rápida da saúde do sistema, da atividade e do uso e memória",
         "label": "Visão geral"
-      },
-      "releases": {
-        "description": "Notas de versão de cada lançamento",
-        "label": "Lançamentos"
       },
       "security": {
         "description": "Postura de segurança, camadas de defesa e certificações",
