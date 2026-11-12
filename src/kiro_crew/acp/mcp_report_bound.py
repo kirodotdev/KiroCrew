@@ -24,6 +24,8 @@ from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from kiro_crew.acp.mcp_reattempt import is_refused_sign_in
+
 _T = TypeVar("_T", bound=Hashable)
 
 #: The statuses a report tells apart. Any other status, or none, is a server
@@ -101,7 +103,11 @@ def read_status_snapshot(
             status = entry.get("status")
             status = status if isinstance(status, str) and status in _SETTLED else ""
             error = clean_error(str(entry.get("errorMessage") or ""))
-            yield name, status, entry.get("failedAuthorization") is True, error
+            # The raw text, not the cleaned one: a cut error may lose the part read.
+            needs_sign_in = entry.get("failedAuthorization") is True or (
+                status == "failed" and is_refused_sign_in(entry.get("errorMessage"))
+            )
+            yield name, status, needs_sign_in, error
 
     def dropped_names() -> Iterable[str]:
         for key in dropped_fields:

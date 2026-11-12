@@ -163,6 +163,7 @@ class _ChatSlot:
         "_mcp_report_session_id",
         "_mcp_banner_shown",
         "_hidden_scratch_notice_shown",
+        "_mcp_sign_in_notice_shown",
         "_telemetry_notice_shown",
         "_project_hook_files_notice_shown",
         "_session_notice_marks",
@@ -485,6 +486,9 @@ class _ChatSlot:
     # Whether this chat already showed the hidden-scratch-folder start notice in
     # this gateway run; in memory only, so a restart shows it once more.
     _hidden_scratch_notice_shown: bool
+    # Whether this chat has shown its "waiting for a sign-in" notice during this
+    # gateway run; in memory only, so a restart shows it once more.
+    _mcp_sign_in_notice_shown: bool
     # A mark of the last KAS telemetry notice this chat showed, "" for none; saved
     # on the metadata line, so a restart does not show the same notice again.
     _telemetry_notice_shown: str
