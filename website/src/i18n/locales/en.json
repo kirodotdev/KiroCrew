@@ -7120,8 +7120,8 @@
         "pin_message": "Pin message",
         "unpin_message": "Unpin message",
         "turn_credits": "{{credits}} credits",
-        "turn_cache_rewritten": "Cache rewritten",
-        "turn_cache_rewritten_hint": "The prompt cache was rebuilt this turn, so its input was billed at the cache-write rate."
+        "turn_cache_rewritten": "Cache rebuilt",
+        "turn_cache_rewritten_hint": "This reply had to store the whole conversation again, so it cost more than usual."
       },
       "browserLiveCard": {
         "allow_explainer_asked_once": "Your browser is asking “Allow remote debugging?”. Click Allow and {{productName}} can work in the tab. Asked once; {{productName}} only touches tabs it opens itself.",
