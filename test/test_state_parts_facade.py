@@ -653,6 +653,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_synthesis_rechecks": ("value", "0"),
     "_tab_id": ("value", "''"),
     "_task": ("value", "None"),
+    "_telemetry_notice_shown": ("value", "''"),
     "_title_epoch": ("value", "0"),
     "_title_in_flight": ("value", "False"),
     "_title_low_signal": ("value", "False"),

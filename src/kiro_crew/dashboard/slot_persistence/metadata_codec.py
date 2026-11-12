@@ -745,6 +745,17 @@ def _read_human_seen(r: _Read) -> None:
         r.slot._human_seen = True
 
 
+#: The characters of the mark ``_telemetry_notice_is_new`` writes: 16 of these.
+#: Any other value is not a mark.
+_HEX = frozenset("0123456789abcdef")
+
+
+def _read_telemetry_notice_shown(r: _Read) -> None:
+    mark = r.meta.get("telemetry_notice_shown")
+    if isinstance(mark, str) and len(mark) == 16 and set(mark) <= _HEX:
+        r.slot._telemetry_notice_shown = mark
+
+
 def _read_deferred_notes(r: _Read) -> None:
     # Sanitized and bounded by the DURABLE CEILING; entries whose delivered row
     # is already committed are dropped by ``settle``, against the loaded rows.
@@ -1273,6 +1284,17 @@ FIELDS: tuple[Field, ...] = (
         read=_read_human_seen,
         why="RESUME does not restore it; the key is unowned, so a save never clears it",
     ),
+    # The last KAS telemetry notice the chat showed, as a mark of its text. Written
+    # when set and never cleared, like the once-flags above: without it a restart
+    # shows the same notice again on the chat's next session start.
+    Field(
+        "telemetry_notice_shown",
+        _ALL,
+        attr="_telemetry_notice_shown",
+        line=_truthy(lambda s: s._telemetry_notice_shown),
+        merge=_truthy(lambda s: s._telemetry_notice_shown),
+        read=_read_telemetry_notice_shown,
+    ),
     Field(
         "last_user_at",
         frozenset(),
@@ -1454,6 +1476,7 @@ LINE_ORDER: tuple[str, ...] = (
     "tags",
     "auto_tagged",
     "human_seen",
+    "telemetry_notice_shown",
     "last_user_at",
     "deferred_notes",
     "queued_prompts",
@@ -1512,6 +1535,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "tab_id",
     "auto_tagged",
     "human_seen",
+    "telemetry_notice_shown",
     "channel_folder_filed",
     "closed",
     "closed_at",
