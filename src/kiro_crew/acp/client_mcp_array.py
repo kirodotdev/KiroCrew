@@ -633,13 +633,12 @@ def _with_crew_connections(
     receipt names ``mcp_json``), as for every other server Crew hands pi.
     """
     from kiro_crew.acp import kas_env_launch
-    from kiro_crew.connections.crew_oauth import SUPPORTED_SLUGS
 
     narrowed = {server for server, _tool in projection.disabled_tools}
+    # Every remote element is offered: bridge_array keeps only those Crew owns
+    # (a registry card, or an owner-added server whose grant Crew holds).
     wanted = [
-        e
-        for e in projection.servers
-        if isinstance(e, dict) and e.get("name") in SUPPORTED_SLUGS and e["name"] not in narrowed
+        e for e in projection.servers if isinstance(e, dict) and e.get("name") not in narrowed
     ]
     if not wanted:
         return out

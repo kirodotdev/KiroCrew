@@ -1471,7 +1471,7 @@ or the entry's `dcr_client_name`) once per card in the vault entry
 (`none` first), and registers again when the redirect or issuer differs, the
 secret has expired, or after `invalid_client` (the card then asks to reconnect).
 Every authorize, token and refresh call sends `resource`; `offline_access` is
-asked for when listed; the callback's `iss` is checked. All DCR sign-ins share
+asked for when listed; the callback's `iss` is checked. All DCR card sign-ins share
 the loopback port `registry.DCR_CALLBACK_PORT` (48100, which no pre-registered
 entry may use) and `state` picks the pending sign-in. A gateway with a public
 HTTPS `dashboard.url` (never the request's `Host`) registers
@@ -1492,6 +1492,35 @@ false`), and keeps the registered client. TickTick issues no refresh token (a
 which answers 401: its pair is served up to its recorded expiry (no refresh skew),
 then dropped with `needs_auth` so the card offers Connect again, and Disconnect
 deletes locally, leaving the card's manual revoke link.
+
+Crew can also hold an **owner-added remote server** (no card): an entry the
+owner recorded from the dashboard (`connections/owner_servers.py`, sealed
+`config.json`), at that exact url, under a name that is not a registry slug, at
+a url that is no registry provider's `mcp_url` (`crew_oauth._is_registry_url`:
+a card keeps that url's custody), not legacy `type: "sse"`, with no credential
+header. With the preview on a bridged chat backend, the MCP Servers page's Sign
+in runs Crew's sign-in (`dashboard/handlers/connections_custom_oauth.py`,
+`crew_oauth.signs_in_custom`). Its grant is keyed by name AND url
+(`crew_oauth.custom_key`: `custom-<sha256[:20]>`, vault entries
+`CONNECTIONS_CUSTOM_<KEY>_OAUTH_TOKENS` / `_CLIENT`), and a session bridges the
+entry only while that grant is held (`crew_oauth._custom_slug`). Discovery runs
+from the url without its query (`crew_oauth_dcr.prepare_custom`), which is also
+the `resource` and the audited url. Unlike a card it **commits no issuer**: it
+follows the one the url advertises, because the url is the owner's sealed record;
+`iss` is still checked. The client is the entry's `oauth.clientId` (public, or
+confidential with `clientSecret`), else Crew's own by DCR; the scopes are the
+entry's own (`kiro_entry_scopes`) ahead of a challenge's. Either client (the
+owner's, or one Crew just registered) is stored only with the pair it issued, in
+one vault write
+(`crew_oauth_dcr.keep_client`, `SecretVault.set_many_sync`), and `invalid_client`
+forgets only the stored client. An owner loopback `redirectUri`
+(`http://localhost|127.0.0.1:<port>/<path>`) gets its own listener for that one
+consent (`crew_oauth_dcr.own_listener`); without one the shared 48100 port or the
+gateway route above serves it, and any other redirect is refused. The consent
+link passes the banner gate because the sign-in records exactly the
+`authorization_endpoint` its discovery found (`record_discovered_oauth_endpoint`).
+After the first grant, live providers that apply an MCP change at their next turn
+are marked so they re-project with the bridge.
 
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until

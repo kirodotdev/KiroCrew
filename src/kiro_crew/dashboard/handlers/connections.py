@@ -515,6 +515,11 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     if isinstance(configured, web.Response):
         return configured
     if configured is not None:
+        from kiro_crew.dashboard.handlers.connections_custom_oauth import crew_sign_in
+
+        crew = await crew_sign_in(request, configured, _open_project_dirs(request.app.get("state")))
+        if crew is not None:
+            return crew
         # An owner-configured server has no pre-registered OAuth app to check
         # and no premint row to adopt, so it goes straight to the cold path.
         name = configured["slug"]
