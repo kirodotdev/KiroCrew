@@ -12083,6 +12083,8 @@
       "app_one": "{{count}} app",
       "app_other": "{{count}} apps",
       "backend_refused_notice": "O backend de {{name}} não foi iniciado: {{reason}}",
+      "action_warnings_disabled": "{{name}} foi desativado, mas nem todas as etapas foram concluídas. Detalhes: {{warnings}}",
+      "action_warnings_enabled": "{{name}} foi ativado, mas nem todas as etapas foram concluídas. Detalhes: {{warnings}}",
       "built_in_kirocrew": "Integrado · kirocrew",
       "cancel": "Cancelar",
       "category": "Categoria",

@@ -11571,6 +11571,8 @@
       "all_apps": "모든 앱",
       "app_other": "앱 {{count}}개",
       "backend_refused_notice": "{{name}}의 백엔드가 시작되지 않았습니다: {{reason}}",
+      "action_warnings_disabled": "{{name}}이(가) 비활성화되었지만 일부 단계가 완료되지 않았습니다. 세부 정보: {{warnings}}",
+      "action_warnings_enabled": "{{name}}이(가) 활성화되었지만 일부 단계가 완료되지 않았습니다. 세부 정보: {{warnings}}",
       "built_in_kirocrew": "기본 제공 · kirocrew",
       "cancel": "취소",
       "category": "카테고리",

@@ -48,6 +48,7 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideSelection } from '../../guide/guidePredicates'
 import { appDisplayName } from '../../components/appstore/appManifest'
 import AppStoreDialog from '../../components/appstore/AppStoreDialog'
+import { appActionNotice } from '../../components/appstore/backendRefused'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
@@ -216,7 +217,12 @@ export default function LibraryPage() {
     refocusApp.current = { name, enabled: action === 'disable' }
     try {
       if (action === 'enable') await runEnable(name)
-      else if (action === 'disable') await api.disableApp(name)
+      else if (action === 'disable') {
+        // Disabled, but a hook, config sync or service notify failed: say so.
+        const row = installedApps.find(a => a.name === name)
+        const warned = appActionNotice(row ? appDisplayName(row) : name, await api.disableApp(name), 'disable')
+        if (warned) setError(warned)
+      }
       announceAppsChanged()
     } catch (e) {
       refocusApp.current = null
