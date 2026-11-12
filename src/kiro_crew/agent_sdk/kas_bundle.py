@@ -268,6 +268,16 @@ def kas_route(
     return resolve_kas_route(environ=environ, home=home, pin=pin)
 
 
+def route_chosen_by_sharing_preview(route: Any) -> bool:
+    """Whether *route* (a :func:`kas_route` answer) is the ACP runtime sharing
+    preview's pick of the bundle, with ``agent.kas_bundle`` off. No IO."""
+    from kiro_crew.acp.kas_route import REASON_SHARING_PREVIEW
+
+    return bool(getattr(route, "bundle", False)) and (
+        getattr(route, "reason", "") == REASON_SHARING_PREVIEW
+    )
+
+
 def crew_sign_in_starts_spawn() -> bool:
     """Whether the next KAS spawn starts on Kiro Crew's usable sign-in alone.
 

@@ -190,6 +190,21 @@ PROTOCOL_VERSION_KAS = 1
 #: names no engine at all; this does.
 KAS_BUNDLE_SPAWN_LABEL = "kas-bundle"
 
+#: ``(node path, engine version)`` of bundles whose Node already ran once in this
+#: process for the preview's route, so the probe costs one spawn per install.
+_PROBED_BUNDLE_NODES: set[tuple[str, str]] = set()
+
+
+def _chat_sharing_preview_on() -> bool:
+    """Whether the ``chat_runtime_sharing`` preview is on. Blocking; never raises."""
+    try:
+        from kiro_crew.acp.chat_runtime_sharing import chat_runtime_sharing_enabled
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        return chat_runtime_sharing_enabled(KiroCrewConfig.load())
+    except Exception:  # noqa: BLE001 - an unreadable config keeps the preview off
+        return False
+
 
 def _bundle_route_selected() -> bool:
     """``agent.kas_bundle`` as configured. Blocking (reads config); call off the loop.
@@ -779,10 +794,50 @@ class KasHarness(MembershipHarness):
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
         self.bundle_engine_version = ""
+        # The route reason of this spawn's bundle plan ("" on the relay): the
+        # runtime reads it when the start fails (``runtime_spawn_entry``).
+        self.spawn_route_reason = ""
+        # Whether the engine this spawn runs may host several chats
+        # (``chat_runtime_sharing.engine_shares_chats``), asked only while the
+        # ``chat_runtime_sharing`` preview is on; ``None`` otherwise, which the
+        # runtime reads as "not a sharing question". With the preview on, the
+        # runtime publishes a process whose engine may not as closed to joins, so a
+        # chat placed as shared before a fallback never lands on a queueing engine.
+        self.spawn_engine_shares_chats: bool | None = None
+        self._sharing_preview_on = await asyncio.to_thread(_chat_sharing_preview_on)
         if await asyncio.to_thread(_bundle_route_selected):
             return await self._bundle_spawn_plan(
                 ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
             )
+        if await asyncio.to_thread(
+            partial(
+                kas_route_mod.sharing_preview_selects_bundle,
+                pin=ctx.harness_pin,
+                environ=ctx.environ,
+            )
+        ):
+            # The ACP runtime sharing preview runs KAS on Crew's own pinned engine.
+            # An engine that cannot be installed or started is not a reason to
+            # refuse the chat: it takes the default route below instead, on its
+            # own process (the sharing gate refuses it while no engine is installed).
+            try:
+                plan = await self._bundle_spawn_plan(
+                    ctx,
+                    kas_route_mod.KasRoute(
+                        bundle=True, reason=kas_route_mod.REASON_SHARING_PREVIEW
+                    ),
+                    probe_node=True,
+                )
+                self.spawn_route_reason = kas_route_mod.REASON_SHARING_PREVIEW
+                return plan
+            except AcpRuntimeError as exc:
+                self.bundle_engine_version = ""
+                kas_route_mod.note_preview_bundle_failed(str(exc))
+                logger.warning(
+                    "chat-runtime-sharing: Crew's KAS engine could not start (%s); this "
+                    "chat takes the default KAS route on its own process",
+                    exc,
+                )
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
         # Read only when the route is still open: a stored Kiro CLI pick, the
@@ -905,6 +960,10 @@ class KasHarness(MembershipHarness):
             )
             if overlap:
                 raise AcpRuntimeError(overlap)
+        if self._sharing_preview_on:
+            from kiro_crew.acp.chat_runtime_sharing import relay_engine_shares_chats
+
+            self.spawn_engine_shares_chats = await asyncio.to_thread(relay_engine_shares_chats)
         return SpawnPlan(
             argv=build_kas_argv(kas_bin, host_auth=host_auth, client_flag=client_flag),
             host_auth=host_auth,
@@ -912,9 +971,15 @@ class KasHarness(MembershipHarness):
         )
 
     async def _bundle_spawn_plan(
-        self, ctx: SpawnContext, route: kas_route_mod.KasRoute
+        self, ctx: SpawnContext, route: kas_route_mod.KasRoute, *, probe_node: bool = False
     ) -> SpawnPlan:
-        """The bundle route's plan, installing the pinned engine first when it is missing."""
+        """The bundle route's plan, installing the pinned engine first when it is missing.
+
+        *probe_node* (the preview's route) also runs the installed Node once, as
+        the installer does, so a runtime that cannot run on this host (another
+        architecture or libc, a lost exec bit) is a refusal here, where the
+        preview can still fall back, instead of a failed launch.
+        """
         # Imported here, not at module top: the installer modules are the bundle
         # route's alone, and this harness is imported on every KAS gateway
         # whether or not that route is used.
@@ -937,6 +1002,16 @@ class KasHarness(MembershipHarness):
                 raise AcpKasHostUnsupported(f"{route.describe()}. {exc}") from exc
             except kas_bundle_mod.KasBundleError as exc:
                 raise AcpRuntimeError(f"{route.describe()}. {exc}") from exc
+        if probe_node:
+            key = (str(bundle.node_bin), bundle.version)
+            try:
+                if key not in _PROBED_BUNDLE_NODES:
+                    await asyncio.to_thread(
+                        kas_bundle_mod._probe_node, Path(bundle.node_bin), bundle.node_version
+                    )
+                    _PROBED_BUNDLE_NODES.add(key)
+            except kas_bundle_mod.KasBundleError as exc:
+                raise AcpRuntimeError(f"{route.describe()}. {exc}") from exc
         logger.info(
             "KAS auth owner=crew — spawning Crew's own engine bundle %s (node %s, agent=%s)",
             bundle.version,
@@ -947,6 +1022,10 @@ class KasHarness(MembershipHarness):
         self.agent_prompt_notice = ""
         self.agent_prompt_applied = False
         self.bundle_engine_version = bundle.version
+        if getattr(self, "_sharing_preview_on", False):
+            from kiro_crew.acp.chat_runtime_sharing import engine_shares_chats
+
+            self.spawn_engine_shares_chats = engine_shares_chats(bundle.version)
         return SpawnPlan(
             argv=build_kas_bundle_argv(str(bundle.node_bin), str(bundle.acp_server)),
             spawn_label=KAS_BUNDLE_SPAWN_LABEL,

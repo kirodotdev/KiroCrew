@@ -364,6 +364,24 @@ class TestDoctorKasBundle:
         assert "downloads it at the first chat" in out
         assert issues == []
 
+    def test_the_sharing_preview_route_without_its_engine_is_not_an_issue(
+        self, monkeypatch, capsys
+    ):
+        """The preview picks the bundle with agent.kas_bundle off and the first chat
+        installs it: doctor must not claim the setting is on or fail the summary."""
+        from kiro_crew.acp import kas_route
+        from kiro_crew.agent_sdk import kas_bundle
+
+        self._automatic_route_without_the_pin(monkeypatch, [], installable=True)
+        preview = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_SHARING_PREVIEW)
+        monkeypatch.setattr(kas_bundle, "kas_route", lambda: preview)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "downloads it at the first chat" in out
+        assert "agent.kas_bundle is on" not in out
+        assert issues == []
+
     @pytest.mark.parametrize("on_disk", [[], ["0.66.33"]])
     def test_a_pin_this_host_cannot_download_stays_an_issue(self, monkeypatch, capsys, on_disk):
         """A host the engine cannot run on, or a version override the gateway does

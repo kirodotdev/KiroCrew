@@ -248,6 +248,16 @@ class TestKasUnrunnable:
         assert fix == lts_boot.KAS_FIX_ENGINE_UNAVAILABLE_CONFIGURED
         assert "`agent.kas_bundle` to false" in fix
 
+    def test_the_sharing_preview_bundle_is_not_told_to_turn_the_setting_off(self, monkeypatch):
+        """The preview picks the bundle with agent.kas_bundle off: the fix is not
+        the configured one, which would tell the user to turn off a setting that is off."""
+        from kiro_crew.acp.kas_route import REASON_SHARING_PREVIEW, KasRoute
+
+        _bundle(monkeypatch, installed=False, installable=False)
+        route = KasRoute(bundle=True, reason=REASON_SHARING_PREVIEW)
+        _failed, fix = lts_boot.kas_unrunnable(kas_route=route)
+        assert fix == lts_boot.KAS_FIX_ENGINE_UNAVAILABLE
+
 
 def _record_then_fresh_start(monkeypatch, tmp_path, *, stderr, fake_start=True):
     """A ``starts: false`` entry is on record; a fresh v3 start answers *stderr*.
