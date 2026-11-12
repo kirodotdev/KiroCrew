@@ -759,7 +759,9 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
     value = body.get("value")
     confidence = bounded_semantic_confidence(body.get("confidence"))
     source = body.get("source", "user_explicit")
-    if not key or value is None:
+    # A non-string key reached `validate_key` (`len`, a regex match) and raised
+    # there as a 500; it is refused here like a missing one.
+    if not isinstance(key, str) or not key or value is None:
         return web.json_response({"error": "key and value required"}, status=400)
     # set_semantic may embed via blocking in-process model inference (and a
     # ~1s model load on first call); offload so it can't stall the event loop.
@@ -1183,6 +1185,23 @@ async def api_memory_import(request: web.Request) -> web.Response:
     if data_err is not None:
         return data_err
     assert data is not None  # read_bounded_json returns (dict, None) on success
+    # The CLI's `memory import` refuses the same shapes before it writes. Here a
+    # null or non-list collection raised inside `import_memory` as a 500, and a
+    # bad `episodic` after a good `semantic` did so with the semantic rows
+    # already saved, so a retry imported them twice. Checked before any write,
+    # so a refusal saved nothing and says so.
+    for collection in ("semantic", "episodic"):
+        if not isinstance(data.get(collection, []), list):
+            return web.json_response(
+                {
+                    "error": f"{collection} must be a list; nothing was imported",
+                    "code": "import_collection_not_list",
+                    "semantic": 0,
+                    "episodic": 0,
+                    "skipped": 0,
+                },
+                status=400,
+            )
     # import_memory embeds each imported entry via blocking in-process model
     # inference (unbounded — one per entry); offload so a large import can't
     # stall the gateway event loop.
