@@ -524,6 +524,29 @@ class TestMemoryCli:
         h.store.close.assert_called_once()
         assert "Usage: kirocrew memory" in capsys.readouterr().out
 
+    def test_no_verb_lists_every_verb_and_creates_no_store(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        import argparse
+
+        from kiro_crew.cli_parser_agent import register_memory_parser
+        from kiro_crew.config.loader import config_dir
+        from kiro_crew.memory_stores import MEMORY_DB_FILE
+
+        commands = argparse.ArgumentParser().add_subparsers(dest="command")
+        register_memory_parser(commands)
+        verbs = next(
+            a
+            for a in commands.choices["memory"]._actions
+            if isinstance(a, argparse._SubParsersAction)
+        ).choices
+        cc._memory_cmd(_ns(mem_action=None))
+        out = capsys.readouterr().out
+        assert out.startswith("Usage: kirocrew memory {")
+        listed = out.strip().split("{", 1)[1].rstrip("}").split("|")
+        assert sorted(listed) == sorted(verbs)
+        assert not (config_dir() / MEMORY_DB_FILE).exists()
+
 
 # ── artifact subcommands ──
 
