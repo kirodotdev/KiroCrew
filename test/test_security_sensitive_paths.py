@@ -1025,7 +1025,7 @@ class TestAdaptiveHomeTargetsExpiry:
                 expected.add(os.path.join(roots.kiro_home, "agents"))
             if roots.kiro_home and gate._KIRO_MATE_AGENTS_DIR in tier:
                 expected.add(os.path.join(roots.kiro_home, "mates", "agents"))
-            for mate_leaf in gate._KIRO_MATE_STATE_LEAVES:
+            for mate_leaf in (*gate._KIRO_MATE_STATE_LEAVES, *gate._KIRO_PERMISSION_RULE_LEAVES):
                 if roots.kiro_home and mate_leaf in tier:
                     expected.add(os.path.join(roots.kiro_home, *gate._leaf_segments(mate_leaf)[1:]))
             # The registry leaf shares that class: one root, one guard shape. Derived

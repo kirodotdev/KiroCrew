@@ -748,6 +748,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _KIRO_CLI_WRITE_TIER_LEAVES,
         _KIRO_MATE_AGENTS_DIR,
         _KIRO_MATE_STATE_LEAVES,
+        _KIRO_PERMISSION_RULE_LEAVES,
         _KIRO_SETTINGS_MCP_JSON,
         _LEAF_SEPARATOR,
         _NATIVE_ALLOW_STORE_LEAVES,
